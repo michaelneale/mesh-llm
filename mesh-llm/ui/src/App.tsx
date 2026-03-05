@@ -22,15 +22,18 @@ import {
   Gauge,
   Hash,
   Laptop,
+  Link2,
   Loader2,
   MessageSquarePlus,
   Maximize2,
   Minimize2,
   Moon,
   Network,
+  ExternalLink,
   Pencil,
   RotateCcw,
   Send,
+  ShieldCheck,
   Square,
   Sparkles,
   Sun,
@@ -104,6 +107,17 @@ type StatusPayload = {
   inflight_requests: number;
   launch_pi?: string | null;
   launch_goose?: string | null;
+  mesh_id?: string | null;
+  mesh_link_state?: 'unlinked' | 'linking' | 'linked' | 'degraded' | string;
+  membership_enforcement?: 'local' | 'hub_enforced' | string;
+  hub_mesh_url?: string | null;
+  hub_base_url?: string | null;
+  hub_auth_state?: 'logged_out' | 'logged_in' | 'auth_pending' | string;
+  hub_user_name?: string | null;
+  hub_user_handle?: string | null;
+  hub_user_avatar_url?: string | null;
+  hub_profile_url?: string | null;
+  hub_meshes_url?: string | null;
 };
 
 type ChatMessage = {
@@ -454,6 +468,10 @@ export function App() {
     const port = status?.api_port ?? 9337;
     return `http://127.0.0.1:${port}/v1`;
   }, [status?.api_port]);
+  const meshLinkState = status?.mesh_link_state ?? 'unlinked';
+  const isHubLinked = meshLinkState === 'linked' || status?.membership_enforcement === 'hub_enforced';
+  const hubBaseUrl = status?.hub_base_url ?? 'https://inferencehub.cc';
+  const hubMeshUrl = status?.hub_mesh_url ?? (status?.mesh_id ? `${hubBaseUrl}/meshes/${encodeURIComponent(status.mesh_id)}` : `${hubBaseUrl}/meshes`);
 
   useEffect(() => {
     if (!warmModels.length) return;
@@ -969,6 +987,15 @@ export function App() {
           inviteWithModelName={inviteWithModelName}
           inviteClientCommand={inviteClientCommand}
           inviteToken={inviteToken}
+          isHubLinked={isHubLinked}
+          hubBaseUrl={hubBaseUrl}
+          hubMeshUrl={hubMeshUrl}
+          hubAuthState={status?.hub_auth_state ?? 'logged_out'}
+          hubUserName={status?.hub_user_name ?? null}
+          hubUserHandle={status?.hub_user_handle ?? null}
+          hubUserAvatarUrl={status?.hub_user_avatar_url ?? null}
+          hubProfileUrl={status?.hub_profile_url ?? null}
+          hubMeshesUrl={status?.hub_meshes_url ?? null}
           apiDirectUrl={apiDirectUrl}
           launchPi={status?.launch_pi ?? null}
           launchGoose={status?.launch_goose ?? null}
@@ -985,6 +1012,9 @@ export function App() {
                 setSelectedModel={setSelectedModel}
                 selectedModelNodeCount={selectedModelNodeCount}
                 selectedModelVramGb={selectedModelVramGb}
+                isHubLinked={isHubLinked}
+                hubMeshUrl={hubMeshUrl}
+                hubBaseUrl={hubBaseUrl}
                 conversations={conversations}
                 activeConversationId={activeConversationId}
                 onConversationCreate={createNewConversation}
@@ -1072,6 +1102,15 @@ function AppHeader({
   inviteWithModelName,
   inviteClientCommand,
   inviteToken,
+  isHubLinked,
+  hubBaseUrl,
+  hubMeshUrl,
+  hubAuthState,
+  hubUserName,
+  hubUserHandle,
+  hubUserAvatarUrl,
+  hubProfileUrl,
+  hubMeshesUrl,
   apiDirectUrl,
   launchPi,
   launchGoose,
@@ -1086,6 +1125,15 @@ function AppHeader({
   inviteWithModelName: string;
   inviteClientCommand: string;
   inviteToken: string;
+  isHubLinked: boolean;
+  hubBaseUrl: string;
+  hubMeshUrl: string;
+  hubAuthState: string;
+  hubUserName: string | null;
+  hubUserHandle: string | null;
+  hubUserAvatarUrl: string | null;
+  hubProfileUrl: string | null;
+  hubMeshesUrl: string | null;
   apiDirectUrl: string;
   launchPi: string | null;
   launchGoose: string | null;
@@ -1097,6 +1145,16 @@ function AppHeader({
   const [launchPiCopied, setLaunchPiCopied] = useState(false);
   const [launchGooseCopied, setLaunchGooseCopied] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
+  const [hubSignedOutLocal, setHubSignedOutLocal] = useState(false);
+  const [hubAuthBusy, setHubAuthBusy] = useState(false);
+  const [hubPendingCode, setHubPendingCode] = useState<string | null>(null);
+  const hubPollTimerRef = useRef<number | null>(null);
+  const isHubLoggedIn = hubAuthState === 'logged_in' && !hubSignedOutLocal;
+  const effectiveHubProfileUrl = hubProfileUrl || `${hubBaseUrl}/profile`;
+  const effectiveHubMeshesUrl = hubMeshesUrl || `${hubBaseUrl}/meshes`;
+  const hubDisplayName = hubUserName || hubUserHandle || 'InferenceHub User';
+  const hubHandleText = hubUserHandle ? `@${hubUserHandle.replace(/^@/, '')}` : null;
+  const hubAvatarFallback = (hubUserName || hubUserHandle || 'I').trim().charAt(0).toUpperCase();
 
   async function copyInviteWithModelCommand() {
     if (!inviteWithModelCommand) return;
@@ -1168,6 +1226,109 @@ function AppHeader({
     setThemeMode(mode);
     setIsThemePopoverOpen(false);
   }
+
+  function openHub(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  function clearHubPollTimer() {
+    if (hubPollTimerRef.current !== null) {
+      window.clearTimeout(hubPollTimerRef.current);
+      hubPollTimerRef.current = null;
+    }
+  }
+
+  function scheduleHubAuthPoll(deviceCode: string, intervalSeconds: number) {
+    clearHubPollTimer();
+    hubPollTimerRef.current = window.setTimeout(() => {
+      void pollHubAuth(deviceCode, intervalSeconds);
+    }, Math.max(1, intervalSeconds) * 1000);
+  }
+
+  async function pollHubAuth(deviceCode: string, fallbackIntervalSeconds: number) {
+    try {
+      const response = await fetch('/api/hub/login-device/poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_code: deviceCode }),
+      });
+      const payload = await response.json().catch(() => null) as {
+        status?: string;
+        interval?: number;
+        error?: string;
+      } | null;
+      const status = payload?.status ?? '';
+      if (status === 'pending') {
+        scheduleHubAuthPoll(deviceCode, payload?.interval ?? fallbackIntervalSeconds);
+        return;
+      }
+      clearHubPollTimer();
+      setHubAuthBusy(false);
+      setHubPendingCode(null);
+      if (status && status !== 'authorized' && status !== 'consumed') {
+        window.alert(`InferenceHub login ${status}. Please try again.`);
+      }
+    } catch {
+      scheduleHubAuthPoll(deviceCode, fallbackIntervalSeconds);
+    }
+  }
+
+  async function openHubLogin() {
+    if (hubAuthBusy) return;
+    setHubSignedOutLocal(false);
+    setHubAuthBusy(true);
+    setHubPendingCode(null);
+    clearHubPollTimer();
+    try {
+      const response = await fetch('/api/hub/login-device/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_name: 'mesh-llm' }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json() as {
+        device_code?: string;
+        user_code?: string;
+        verification_uri_complete?: string;
+        verification_uri?: string;
+        interval?: number;
+      };
+      const deviceCode = payload.device_code?.trim() || '';
+      if (!deviceCode) throw new Error('Missing device_code');
+      const verificationUrl = payload.verification_uri_complete || payload.verification_uri || `${hubBaseUrl}/link/device`;
+      openHub(verificationUrl);
+      if (payload.user_code) setHubPendingCode(payload.user_code);
+      scheduleHubAuthPoll(deviceCode, payload.interval ?? 3);
+    } catch (err) {
+      setHubAuthBusy(false);
+      setHubPendingCode(null);
+      const message = err instanceof Error ? err.message : 'Failed to start device login';
+      window.alert(`InferenceHub login failed: ${message}`);
+    }
+  }
+
+  async function signOutHub() {
+    try {
+      await fetch('/api/hub/logout', { method: 'POST' });
+    } catch {
+      // best-effort until backend logout route is available
+    }
+    clearHubPollTimer();
+    setHubAuthBusy(false);
+    setHubPendingCode(null);
+    setHubSignedOutLocal(true);
+  }
+
+  useEffect(() => () => clearHubPollTimer(), []);
+  useEffect(() => {
+    if (!isHubLoggedIn) return;
+    clearHubPollTimer();
+    setHubAuthBusy(false);
+    setHubPendingCode(null);
+  }, [isHubLoggedIn]);
+  useEffect(() => {
+    if (hubAuthState === 'logged_in') setHubSignedOutLocal(false);
+  }, [hubAuthState]);
 
   return (
     <header className="shrink-0 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
@@ -1308,102 +1469,191 @@ function AppHeader({
                       variant="outline"
                       size="icon"
                       aria-label="Invite"
-                      disabled={!inviteToken}
+                      disabled={!inviteToken && !isHubLinked}
                     >
                       <UserPlus className="h-4 w-4" />
                     </Button>
                   </PopoverTrigger>
                 </TooltipTrigger>
-                <TooltipContent>Invite</TooltipContent>
+                <TooltipContent>{isHubLinked ? 'Managed by InferenceHub' : 'Invite'}</TooltipContent>
               </Tooltip>
               <PopoverContent className="w-[420px] space-y-3" align="end">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  <UserPlus className="h-4 w-4 text-muted-foreground" />
-                  <span>Invite to this mesh</span>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Invite with a model loaded to add compute, or invite as a client for API-only access.
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 text-xs font-medium">
-                  <span>Contribute compute</span>
-                  <Badge className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10px] text-emerald-700 dark:text-emerald-300">
-                    <Sparkles className="h-3 w-3" />
-                    Recommended
-                  </Badge>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Joins and serves the model {inviteWithModelName || 'selected model'}
-                </div>
-              </div>
-              {inviteWithModelCommand ? (
-                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                    {inviteWithModelCommand}
-                  </code>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 shrink-0"
-                    aria-label="Copy model command"
-                    onClick={() => void copyInviteWithModelCommand()}
-                  >
-                    {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground">No warm model selected yet.</div>
-              )}
-              <div className="space-y-1 pt-1">
-                <div className="text-xs font-medium">Join as client</div>
-                <div className="text-xs text-muted-foreground">Connects for API access without loading a model.</div>
-              </div>
-              {inviteClientCommand ? (
-                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                    {inviteClientCommand}
-                  </code>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    className="h-7 w-7 shrink-0"
-                    aria-label="Copy client command"
-                    onClick={() => void copyInviteClientCommand()}
-                  >
-                    {inviteClientCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  </Button>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground">No invite token available yet.</div>
-              )}
-              <div className="space-y-1 pt-1">
-                <div className="text-xs font-medium">Invite token</div>
-                {inviteToken ? (
-                  <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                    <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                      {inviteToken}
-                    </code>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 shrink-0"
-                      aria-label="Copy invite token"
-                      onClick={() => void copyInviteToken()}
-                    >
-                      {tokenCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {isHubLinked ? (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                      <span>This mesh is managed by InferenceHub</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Local invite links are disabled for linked meshes. Manage membership and invites in InferenceHub.
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button type="button" size="sm" onClick={() => openHub(hubMeshUrl)} className="gap-1.5">
+                      This mesh
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={() => openHub(effectiveHubMeshesUrl)} className="gap-1.5">
+                      Your meshes
+                      <ExternalLink className="h-3.5 w-3.5" />
                     </Button>
                   </div>
-                ) : (
-                  <div className="text-xs text-muted-foreground">No invite token available yet.</div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <UserPlus className="h-4 w-4 text-muted-foreground" />
+                      <span>Invite to this mesh</span>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Invite with a model loaded to add compute, or invite as a client for API-only access.
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-xs font-medium">
+                      <span>Contribute compute</span>
+                      <Badge className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10px] text-emerald-700 dark:text-emerald-300">
+                        <Sparkles className="h-3 w-3" />
+                        Recommended
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Joins and serves the model {inviteWithModelName || 'selected model'}
+                    </div>
+                  </div>
+                  {inviteWithModelCommand ? (
+                    <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                      <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                        {inviteWithModelCommand}
+                      </code>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0"
+                        aria-label="Copy model command"
+                        onClick={() => void copyInviteWithModelCommand()}
+                      >
+                        {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">No warm model selected yet.</div>
+                  )}
+                  <div className="space-y-1 pt-1">
+                    <div className="text-xs font-medium">Join as client</div>
+                    <div className="text-xs text-muted-foreground">Connects for API access without loading a model.</div>
+                  </div>
+                  {inviteClientCommand ? (
+                    <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                      <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                        {inviteClientCommand}
+                      </code>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0"
+                        aria-label="Copy client command"
+                        onClick={() => void copyInviteClientCommand()}
+                      >
+                        {inviteClientCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">No invite token available yet.</div>
+                  )}
+                  <div className="space-y-1 pt-1">
+                    <div className="text-xs font-medium">Invite token</div>
+                    {inviteToken ? (
+                      <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                          {inviteToken}
+                        </code>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 shrink-0"
+                          aria-label="Copy invite token"
+                          onClick={() => void copyInviteToken()}
+                        >
+                          {tokenCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">No invite token available yet.</div>
+                    )}
+                  </div>
+                </>
+              )}
               </PopoverContent>
             </Popover>
+            {isHubLoggedIn ? (
+              <Popover>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <Button type="button" variant="outline" size="icon" className="h-9 w-9 overflow-hidden rounded-full p-0" aria-label="InferenceHub profile">
+                        {hubUserAvatarUrl ? (
+                          <img src={hubUserAvatarUrl} alt={hubDisplayName} className="h-full w-full object-cover" />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center bg-muted text-xs font-semibold">
+                            {hubAvatarFallback}
+                          </span>
+                        )}
+                      </Button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent>InferenceHub</TooltipContent>
+                </Tooltip>
+                <PopoverContent className="w-64 space-y-2" align="end">
+                  <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-2">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-background">
+                      {hubUserAvatarUrl ? (
+                        <img src={hubUserAvatarUrl} alt={hubDisplayName} className="h-full w-full object-cover" />
+                      ) : (
+                        <span className="text-xs font-semibold">{hubAvatarFallback}</span>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{hubDisplayName}</div>
+                      {hubHandleText ? <div className="truncate text-xs text-muted-foreground">{hubHandleText}</div> : null}
+                    </div>
+                  </div>
+                  <Button type="button" variant="ghost" className="w-full justify-between" onClick={() => openHub(hubMeshUrl)} disabled={!isHubLinked}>
+                    This mesh
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button type="button" variant="ghost" className="w-full justify-between" onClick={() => openHub(effectiveHubMeshesUrl)}>
+                    Your meshes
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button type="button" variant="ghost" className="w-full justify-between" onClick={() => openHub(effectiveHubProfileUrl)}>
+                    Profile
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </Button>
+                  <Separator />
+                  <Button type="button" variant="ghost" className="w-full justify-start text-destructive hover:text-destructive" onClick={() => void signOutHub()}>
+                    Sign out
+                  </Button>
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button type="button" size="sm" className="gap-1.5" onClick={() => void openHubLogin()} disabled={hubAuthBusy}>
+                  {hubAuthBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+                  {hubAuthBusy ? 'Waiting for approval...' : 'Login with InferenceHub'}
+                </Button>
+                {hubPendingCode ? (
+                  <Badge variant="outline" className="h-8 px-2 font-mono text-[10px] tracking-wide">
+                    {hubPendingCode}
+                  </Badge>
+                ) : null}
+              </div>
+            )}
             <Popover open={isThemePopoverOpen} onOpenChange={setIsThemePopoverOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1493,6 +1743,9 @@ function ChatPage(props: {
   setSelectedModel: (v: string) => void;
   selectedModelNodeCount: number | null;
   selectedModelVramGb: number | null;
+  isHubLinked: boolean;
+  hubMeshUrl: string;
+  hubBaseUrl: string;
   conversations: ChatConversation[];
   activeConversationId: string;
   onConversationCreate: () => void;
@@ -1521,6 +1774,9 @@ function ChatPage(props: {
     setSelectedModel,
     selectedModelNodeCount,
     selectedModelVramGb,
+    isHubLinked,
+    hubMeshUrl,
+    hubBaseUrl,
     conversations,
     activeConversationId,
     onConversationCreate,
@@ -1766,7 +2022,11 @@ function ChatPage(props: {
             >
               {messages.length === 0 ? (
                 <div className="flex min-h-full items-center justify-center">
-                  <InviteFriendEmptyState inviteToken={inviteToken} selectedModel={selectedModel || warmModels[0] || ''} />
+                  {isHubLinked ? (
+                    <InferenceHubEmptyState hubMeshUrl={hubMeshUrl} hubBaseUrl={hubBaseUrl} />
+                  ) : (
+                    <InviteFriendEmptyState inviteToken={inviteToken} selectedModel={selectedModel || warmModels[0] || ''} />
+                  )}
                 </div>
               ) : (
                 <>
@@ -1835,6 +2095,51 @@ function ChatPage(props: {
               </div>
             </div>
           </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function InferenceHubEmptyState({ hubMeshUrl, hubBaseUrl }: { hubMeshUrl: string; hubBaseUrl: string }) {
+  function openUrl(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  return (
+    <Card className="mx-auto max-w-3xl border-dashed">
+      <CardContent className="space-y-4 p-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border">
+            <ShieldCheck className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold">This mesh is managed by InferenceHub</h2>
+            <p className="text-sm text-muted-foreground">
+              Membership and invites are verified through InferenceHub.
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3 text-sm leading-6 text-muted-foreground">
+          <p>
+            Add peers by inviting members from InferenceHub. Connected nodes are validated as mesh members before
+            they can participate.
+          </p>
+          <p>
+            Use the mesh page to manage access, view members, and keep this mesh identity consistent across nodes.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" onClick={() => openUrl(hubMeshUrl)} className="gap-1.5">
+            This mesh
+            <ExternalLink className="h-3.5 w-3.5" />
+          </Button>
+          <Button type="button" variant="outline" onClick={() => openUrl(`${hubBaseUrl}/meshes`)} className="gap-1.5">
+            Your meshes
+            <ExternalLink className="h-3.5 w-3.5" />
+          </Button>
         </div>
       </CardContent>
     </Card>
@@ -1969,6 +2274,15 @@ function DashboardPage({
 }) {
   const [modelFilter, setModelFilter] = useState<'all' | 'warm' | 'cold'>('all');
   const [isMeshOverviewFullscreen, setIsMeshOverviewFullscreen] = useState(false);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const meshLinkState = status?.mesh_link_state ?? 'unlinked';
+  const isHubLinked = meshLinkState === 'linked' || status?.membership_enforcement === 'hub_enforced';
+  const isHubLinking = meshLinkState === 'linking';
+  const hubBaseUrl = status?.hub_base_url ?? 'https://inferencehub.cc';
+  const hubAuthState = status?.hub_auth_state ?? 'logged_out';
+  const isHubLoggedIn = hubAuthState === 'logged_in';
+  const hubMeshUrl = status?.hub_mesh_url
+    ?? (status?.mesh_id ? `${hubBaseUrl}/meshes/${encodeURIComponent(status.mesh_id)}` : `${hubBaseUrl}/meshes`);
   const filteredModels = useMemo(() => {
     const models = status?.mesh_models ?? [];
     return [...models]
@@ -2026,8 +2340,177 @@ function DashboardPage({
     setIsMeshOverviewFullscreen((prev) => !prev);
   }
 
+  function openUrl(url: string) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function linkCurrentMeshToHub() {
+    if (linkBusy) return;
+    if (!isHubLoggedIn) {
+      window.alert('Login with InferenceHub first from the top-right button.');
+      return;
+    }
+    setLinkBusy(true);
+    try {
+      const preflightFor = async (hubMeshId?: string) => {
+        const resp = await fetch('/api/hub/link-preflight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(hubMeshId ? { hub_mesh_id: hubMeshId } : {}),
+        });
+        const payload = await resp.json().catch(() => null) as {
+          hub_mesh_id?: string;
+          peer_total?: number;
+          peer_verified?: number;
+          peer_unverified?: number;
+          verified_host_capable_count?: number;
+          self_host_capable?: boolean;
+          would_block_reason?: string | null;
+          error?: string;
+        } | null;
+        return { resp, payload };
+      };
+
+      let { resp: preflightResp, payload: preflight } = await preflightFor();
+      if (!preflightResp.ok && (preflight?.error || '').includes('hub_mesh_id is required')) {
+        const manualMeshId = window.prompt('Enter the InferenceHub mesh ID to link this running mesh:')?.trim();
+        if (!manualMeshId) return;
+        ({ resp: preflightResp, payload: preflight } = await preflightFor(manualMeshId));
+      }
+
+      const resolvedHubMeshId = preflight?.hub_mesh_id?.trim();
+      if (!preflightResp.ok) {
+        window.alert(preflight?.error ? `Preflight failed: ${preflight.error}` : `Preflight failed: HTTP ${preflightResp.status}`);
+        return;
+      }
+      if (!resolvedHubMeshId) {
+        window.alert('Preflight failed: could not resolve InferenceHub mesh target.');
+        return;
+      }
+
+      if (preflight?.would_block_reason) {
+        window.alert(`Link blocked: ${preflight.would_block_reason}`);
+        return;
+      }
+      const confirmImpact = window.confirm(
+        `Target mesh: ${resolvedHubMeshId}\n\n` +
+        `Preflight summary:\n` +
+        `- Peers total: ${preflight?.peer_total ?? 0}\n` +
+        `- Verified peers: ${preflight?.peer_verified ?? 0}\n` +
+        `- Unverified peers to drop: ${preflight?.peer_unverified ?? 0}\n` +
+        `- Verified host-capable peers: ${preflight?.verified_host_capable_count ?? 0}\n\n` +
+        `Proceed with immediate hard cutover?`,
+      );
+      if (!confirmImpact) return;
+      const confirmPhrase = window.prompt('Type LINK MESH NOW to confirm cutover:')?.trim() || '';
+      if (confirmPhrase !== 'LINK MESH NOW') {
+        window.alert('Cutover cancelled: confirmation phrase did not match.');
+        return;
+      }
+      const commitResp = await fetch('/api/hub/link-commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hub_mesh_id: resolvedHubMeshId, confirm_phrase: confirmPhrase }),
+      });
+      const commit = await commitResp.json().catch(() => null) as { dropped_peer_count?: number; error?: string } | null;
+      if (!commitResp.ok) {
+        window.alert(commit?.error ? `Link failed: ${commit.error}` : `Link failed: HTTP ${commitResp.status}`);
+        return;
+      }
+      window.alert(`Mesh linked successfully. Dropped peers: ${commit?.dropped_peer_count ?? 0}.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      window.alert(`Link failed: ${message}`);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
+  async function leaveAndJoinOrCreateOnHub() {
+    if (linkBusy) return;
+    const confirmed = window.confirm(
+      'Leave the current local mesh and continue mesh setup in InferenceHub? This disconnects local peers immediately.',
+    );
+    if (!confirmed) return;
+    setLinkBusy(true);
+    try {
+      const response = await fetch('/api/hub/leave-local', { method: 'POST' });
+      const payload = await response.json().catch(() => null) as { dropped_peer_count?: number; error?: string } | null;
+      if (!response.ok) {
+        window.alert(payload?.error ? `Leave failed: ${payload.error}` : `Leave failed: HTTP ${response.status}`);
+        return;
+      }
+      const dropped = payload?.dropped_peer_count ?? 0;
+      window.alert(`Left local mesh. Disconnected peers: ${dropped}.`);
+      openUrl(`${hubBaseUrl}/meshes/new`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      window.alert(`Leave failed: ${message}`);
+    } finally {
+      setLinkBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
+      <Card className={cn('border-dashed', isHubLinked ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-primary/40 bg-primary/5')}>
+        <CardHeader className="pb-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2 text-base">
+                {isHubLinked ? <ShieldCheck className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}
+                {isHubLinked ? 'Connected to InferenceHub' : isHubLinking ? 'Connecting to InferenceHub' : 'Connect this mesh to InferenceHub'}
+              </CardTitle>
+              <div className="text-sm text-muted-foreground">
+                {isHubLinked
+                  ? 'Membership and mesh management are now handled by InferenceHub.'
+                  : 'Enable verified mesh membership, secure invites, and centralized mesh management. You can link this mesh or leave it and join/create in InferenceHub.'}
+              </div>
+            </div>
+            <Badge variant="outline" className="shrink-0">
+              {isHubLinked ? 'Linked' : isHubLinking ? 'Linking' : 'Unlinked'}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-0">
+          {isHubLinked ? (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" className="gap-1.5" onClick={() => openUrl(hubMeshUrl)}>
+                This mesh
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+              <Button type="button" variant="outline" className="gap-1.5" onClick={() => openUrl(`${hubBaseUrl}/meshes`)}>
+                Manage on InferenceHub
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ) : (
+            <>
+              <ul className="space-y-1 text-sm text-muted-foreground">
+                <li>Cryptographic verification that each node is a valid mesh member.</li>
+                <li>Invite, revoke, and manage access directly from InferenceHub.</li>
+                <li>Consistent mesh identity and profile-backed peer visibility.</li>
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={() => void linkCurrentMeshToHub()} disabled={linkBusy}>
+                  {linkBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Link this current mesh
+                </Button>
+                <Button type="button" variant="outline" onClick={() => void leaveAndJoinOrCreateOnHub()} disabled={linkBusy}>
+                  Leave and join/create on InferenceHub
+                </Button>
+                <Button type="button" variant="outline" onClick={() => openUrl('https://developers.inferencehub.cc')}>
+                  Learn more
+                </Button>
+                <Button type="button" variant="outline" onClick={() => openUrl(hubBaseUrl)}>
+                  Open InferenceHub
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <TooltipProvider>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard
@@ -2206,7 +2689,9 @@ function DashboardPage({
             <DashboardPanelEmpty
               icon={<Network className="h-4 w-4" />}
               title="No peers connected"
-              description="Invite another node to join this mesh to see connected peers."
+              description={isHubLinked
+                ? 'Invite members from InferenceHub to connect additional verified peers.'
+                : 'Invite another node to join this mesh to see connected peers.'}
             />
           )}
         </CardContent>

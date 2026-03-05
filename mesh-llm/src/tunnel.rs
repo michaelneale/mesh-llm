@@ -376,10 +376,8 @@ async fn relay_quic_to_tcp(
 
     // First-byte timeout: if remote doesn't respond within 10s, it's dead.
     // After first byte arrives, no timeout (streaming responses can take minutes).
-    let first_read = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        quic_recv.read(&mut buf),
-    ).await;
+    let first_read =
+        tokio::time::timeout(std::time::Duration::from_secs(10), quic_recv.read(&mut buf)).await;
     match first_read {
         Err(_) => {
             anyhow::bail!("QUIC→TCP: no response within 10s — host likely dead");
