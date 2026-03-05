@@ -815,6 +815,10 @@ pub fn default_models_for_vram(vram_gb: f64) -> Vec<String> {
     let local_models = crate::mesh::scan_local_models();
     let tiers = model_tiers();
 
+    // Preferred default: GLM-4.7-Flash — MoE, fast, 18GB, fits on most machines
+    const PREFERRED: &str = "GLM-4.7-Flash-Q4_K_M";
+    let preferred_fits = tiers.iter().any(|(name, min_vram)| *name == PREFERRED && *min_vram <= vram_gb);
+
     // Find the largest model that fits AND is already on disk
     let on_disk_fit = tiers
         .iter()
@@ -823,11 +827,17 @@ pub fn default_models_for_vram(vram_gb: f64) -> Vec<String> {
     // Find the largest model that fits (may need download)
     let any_fit = tiers.iter().find(|(_, min_vram)| *min_vram <= vram_gb);
 
-    // Primary: prefer on-disk, fall back to downloadable
+    // Primary: prefer on-disk, then GLM-4.7-Flash if it fits, then largest that fits
     let primary = on_disk_fit
-        .or(any_fit)
         .map(|(name, _)| name.to_string())
-        .unwrap_or_else(|| "Qwen2.5-3B-Instruct-Q4_K_M".into());
+        .unwrap_or_else(|| {
+            if preferred_fits {
+                PREFERRED.to_string()
+            } else {
+                any_fit.map(|(name, _)| name.to_string())
+                    .unwrap_or_else(|| "Qwen2.5-3B-Instruct-Q4_K_M".into())
+            }
+        });
 
     let mut models = vec![primary.clone()];
 
