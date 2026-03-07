@@ -253,6 +253,11 @@ pub(super) async fn initialize(state: &MeshApi) {
         if let Err(err) = state.auto_link_default_target_on_startup().await {
             tracing::warn!("Hub auto-link on startup failed: {err}");
         }
+        // If startup already has a valid linked hub session, publish telemetry immediately
+        // instead of waiting for the first interval tick.
+        if let Err(err) = state.publish_hub_telemetry_once().await {
+            tracing::warn!("Startup telemetry publish failed: {err}");
+        }
     }
 }
 
@@ -779,6 +784,10 @@ impl MeshApi {
         }
 
         if self.recover_hub_link_if_needed().await? {
+            // Emit one telemetry report immediately after startup link recovery.
+            if let Err(err) = self.publish_hub_telemetry_once().await {
+                tracing::warn!("Startup telemetry publish after link recovery failed: {err}");
+            }
             self.set_hub_first_time_onboarding(false).await;
         }
         Ok(())
