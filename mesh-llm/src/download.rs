@@ -15,6 +15,10 @@ pub struct CatalogModel {
     /// MoE expert routing config. If set, this model supports expert sharding.
     /// Pre-computed from `moe-analyze --export-ranking --all-layers`.
     pub moe: Option<MoeConfig>,
+    /// Additional split GGUF files (for models too large for a single file).
+    /// Each entry is (filename, url). llama.cpp auto-discovers splits from the
+    /// first file, but all parts must be present in the same directory.
+    pub extra_files: &'static [(&'static str, &'static str)],
 }
 
 /// Pre-computed MoE expert sharding configuration for a model.
@@ -59,6 +63,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Qwen3 starter, thinking/non-thinking modes",
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-3B-Instruct-Q4_K_M",
@@ -68,6 +73,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Small & fast general chat",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Llama-3.2-3B-Instruct-Q4_K_M",
@@ -77,6 +83,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Meta Llama 3.2, goose default, good tool calling",
         draft: Some("Llama-3.2-1B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     // ── Small (6-8GB VRAM) ──────────────────────────────────────────
     CatalogModel {
@@ -87,6 +94,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Qwen3 mid-tier, strong for its size",
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-Coder-7B-Instruct-Q4_K_M",
@@ -96,6 +104,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Code generation & completion",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Gemma-3-12B-it-Q4_K_M",
@@ -105,6 +114,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Google Gemma 3 12B, punches above weight",
         draft: Some("Gemma-3-1B-it-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Hermes-2-Pro-Mistral-7B-Q4_K_M",
@@ -114,6 +124,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Goose default, strong tool calling for agents",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     // ── Medium (11-17GB VRAM) ───────────────────────────────────────
     CatalogModel {
@@ -124,6 +135,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Qwen3 strong chat, thinking modes",
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-14B-Instruct-Q4_K_M",
@@ -133,6 +145,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Solid general chat",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-Coder-14B-Instruct-Q4_K_M",
@@ -142,6 +155,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Strong code gen, fills gap between 7B and 32B",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M",
@@ -151,6 +165,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "DeepSeek R1 reasoning distilled into Qwen 14B",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Devstral-Small-2505-Q4_K_M",
@@ -160,6 +175,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Mistral agentic coding, tool use",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Mistral-Small-3.1-24B-Instruct-Q4_K_M",
@@ -169,6 +185,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Mistral general chat, good tool calling",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     // ── Large (20-24GB VRAM) ────────────────────────────────────────
     CatalogModel {
@@ -184,6 +201,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             min_experts_per_node: 24,
             ranking: &[], // no pre-baked ranking — uses GGUF auto-detect + fallback
         }),
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen3-30B-A3B-Q4_K_M",
@@ -198,6 +216,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             min_experts_per_node: 46,
             ranking: QWEN3_30B_A3B_RANKING, // same arch as Coder variant
         }),
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M",
@@ -212,6 +231,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             min_experts_per_node: 46,
             ranking: QWEN3_30B_A3B_RANKING, // same arch as Qwen3-30B-A3B
         }),
+        extra_files: &[],
     },
     CatalogModel {
         name: "GLM-4-32B-0414-Q4_K_M",
@@ -221,6 +241,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Strong 32B, good tool calling",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen3-32B-Q4_K_M",
@@ -230,6 +251,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Best Qwen3 dense, thinking/non-thinking modes",
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M",
@@ -239,6 +261,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "DeepSeek R1 reasoning distilled into Qwen 32B",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-32B-Instruct-Q4_K_M",
@@ -248,6 +271,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Proven general chat",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-Coder-32B-Instruct-Q4_K_M",
@@ -257,6 +281,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Top-tier code gen, matches GPT-4o on code",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Llama-4-Scout-Q4_K_M",
@@ -271,6 +296,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             min_experts_per_node: 6,
             ranking: &[], // no pre-baked ranking — uses GGUF auto-detect
         }),
+        extra_files: &[],
     },
     CatalogModel {
         name: "Gemma-3-27B-it-Q4_K_M",
@@ -280,6 +306,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Google Gemma 3 27B, strong reasoning",
         draft: Some("Gemma-3-1B-it-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     // ── XL (48-53GB VRAM, tensor split candidates) ──────────────────
     CatalogModel {
@@ -290,6 +317,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Meta Llama 3.3 70B, strong all-around",
         draft: Some("Llama-3.2-1B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen2.5-72B-Instruct-Q4_K_M",
@@ -299,6 +327,29 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Flagship Qwen2.5, great tensor split showcase",
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
+        extra_files: &[],
+    },
+    // ── XXL (100GB+ VRAM, split GGUF) ─────────────────────────────
+    CatalogModel {
+        name: "GLM-5-UD-IQ2_XXS",
+        file: "GLM-5-UD-IQ2_XXS-00001-of-00006.gguf",
+        url: "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00001-of-00006.gguf",
+        size: "224GB",
+        description: "GLM-5 MoE 300B/24B active, 256 experts top-8, ultra-quantised IQ2_XXS",
+        draft: None,
+        moe: Some(MoeConfig {
+            n_expert: 256,
+            n_expert_used: 8,
+            min_experts_per_node: 96,
+            ranking: &[],
+        }),
+        extra_files: &[
+            ("GLM-5-UD-IQ2_XXS-00002-of-00006.gguf", "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00002-of-00006.gguf"),
+            ("GLM-5-UD-IQ2_XXS-00003-of-00006.gguf", "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00003-of-00006.gguf"),
+            ("GLM-5-UD-IQ2_XXS-00004-of-00006.gguf", "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00004-of-00006.gguf"),
+            ("GLM-5-UD-IQ2_XXS-00005-of-00006.gguf", "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00005-of-00006.gguf"),
+            ("GLM-5-UD-IQ2_XXS-00006-of-00006.gguf", "https://huggingface.co/unsloth/GLM-5-GGUF/resolve/main/UD-IQ2_XXS/GLM-5-UD-IQ2_XXS-00006-of-00006.gguf"),
+        ],
     },
     // ── Draft models ────────────────────────────────────────────────
     CatalogModel {
@@ -309,6 +360,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Draft for Qwen2.5 and DeepSeek-R1-Distill models",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Qwen3-0.6B-Q4_K_M",
@@ -318,6 +370,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Draft for Qwen3 models",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Llama-3.2-1B-Instruct-Q4_K_M",
@@ -327,6 +380,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Draft for Llama 3.x and Llama 4 models",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
     CatalogModel {
         name: "Gemma-3-1B-it-Q4_K_M",
@@ -336,6 +390,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         description: "Draft for Gemma 3 models",
         draft: None,
         moe: None,
+        extra_files: &[],
     },
 ];
 
@@ -372,27 +427,58 @@ pub fn find_model(query: &str) -> Option<&'static CatalogModel> {
 }
 
 /// Download a model to ~/.models/ with resume support.
-/// Returns the path to the downloaded file.
+/// Returns the path to the primary downloaded file.
+/// For split GGUFs (extra_files), downloads all parts to the same directory.
 pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
     let dir = models_dir();
     tokio::fs::create_dir_all(&dir).await?;
     let dest = dir.join(model.file);
 
-    if dest.exists() {
-        let size = tokio::fs::metadata(&dest).await?.len();
-        if size > 1_000_000 {
-            eprintln!(
-                "✅ {} already exists ({:.1}GB)",
-                model.file,
-                size as f64 / 1e9
-            );
-            return Ok(dest);
+    // Collect all files to download: primary + extra splits
+    let mut files: Vec<(&str, &str)> = vec![(model.file, model.url)];
+    for (f, u) in model.extra_files {
+        files.push((f, u));
+    }
+
+    let mut all_present = true;
+    let mut total_size: u64 = 0;
+    for (file, _) in &files {
+        let path = dir.join(file);
+        let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+        if size < 1_000_000 {
+            all_present = false;
+            break;
         }
+        total_size += size;
+    }
+
+    if all_present {
+        eprintln!(
+            "✅ {} already exists ({:.1}GB, {} file{})",
+            model.name,
+            total_size as f64 / 1e9,
+            files.len(),
+            if files.len() > 1 { "s" } else { "" },
+        );
+        return Ok(dest);
     }
 
     eprintln!("📥 Downloading {} ({})...", model.name, model.size);
-    download_with_resume(&dest, model.url).await?;
-    eprintln!("✅ Downloaded to {}", dest.display());
+    for (i, (file, url)) in files.iter().enumerate() {
+        let path = dir.join(file);
+        if path.exists() {
+            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            if size > 1_000_000 {
+                eprintln!("  ✅ {file} already exists ({:.1}GB)", size as f64 / 1e9);
+                continue;
+            }
+        }
+        if files.len() > 1 {
+            eprintln!("  📥 [{}/{}] {file}...", i + 1, files.len());
+        }
+        download_with_resume(&path, url).await?;
+    }
+    eprintln!("✅ Downloaded {} to {}", model.name, dir.display());
     Ok(dest)
 }
 
