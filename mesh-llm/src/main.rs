@@ -174,6 +174,14 @@ enum Command {
     },
     /// Rotate the Nostr identity key (forces new keypair on next --publish)
     RotateKey,
+    /// Explode a MoE GGUF into trunk + per-expert files
+    Explode {
+        /// Path to the MoE GGUF model file
+        model: String,
+        /// Output directory for trunk.gguf + expert-NNN.gguf files
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 #[tokio::main]
@@ -232,6 +240,12 @@ async fn main() -> Result<()> {
             }
             Command::RotateKey => {
                 return nostr::rotate_keys().map_err(Into::into);
+            }
+            Command::Explode { model, output } => {
+                let model_path = std::path::Path::new(model);
+                let output_dir = std::path::Path::new(output);
+                moe::explode_model(model_path, output_dir)?;
+                return Ok(());
             }
         }
     }
