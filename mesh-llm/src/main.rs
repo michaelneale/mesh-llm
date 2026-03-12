@@ -1722,15 +1722,14 @@ async fn probe_mesh_health(invite_token: &str, relay_urls: &[String]) -> Result<
 }
 
 /// Helper for StartNew path — configure CLI to start a new mesh.
-fn start_new_mesh(cli: &mut Cli, models: &[String], my_vram_gb: f64) {
+fn start_new_mesh(cli: &mut Cli, _models: &[String], my_vram_gb: f64) {
+    // Pick models to actually serve (opinionated packs based on VRAM)
+    let pack = nostr::auto_model_pack(my_vram_gb);
     eprintln!("🆕 Starting a new mesh");
-    eprintln!("   Primary model: {}", models[0]);
-    if models.len() > 1 {
-        eprintln!("   Also declaring: {:?}", &models[1..]);
-    }
+    eprintln!("   Serving: {:?}", pack);
     eprintln!("   VRAM: {:.0}GB", my_vram_gb);
     if cli.model.is_empty() {
-        for m in models {
+        for m in &pack {
             cli.model.push(m.into());
         }
     }

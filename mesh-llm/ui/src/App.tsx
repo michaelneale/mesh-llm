@@ -1864,6 +1864,7 @@ function ChatPage(props: {
 }
 
 function InviteFriendEmptyState({ inviteToken, selectedModel }: { inviteToken: string; selectedModel: string }) {
+  const [open, setOpen] = useState(false);
   const [inviteWithModelCopied, setInviteWithModelCopied] = useState(false);
   const [inviteClientCopied, setInviteClientCopied] = useState(false);
   const inviteWithModelCommand = inviteToken && selectedModel ? `mesh-llm --join ${inviteToken} --model ${selectedModel}` : '';
@@ -1892,89 +1893,78 @@ function InviteFriendEmptyState({ inviteToken, selectedModel }: { inviteToken: s
   }
 
   return (
-    <Card className="mx-auto max-w-3xl border-dashed">
-      <CardContent className="space-y-4 p-6">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg border">
-            <Sparkles className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold">Invite a friend to Mesh LLM</h2>
-            <p className="text-sm text-muted-foreground">
-              Open models exist. Excess compute exists. What&apos;s missing is coordination.
-            </p>
-          </div>
-        </div>
+    <div className="mx-auto max-w-3xl">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ChevronDown className={cn('h-4 w-4 transition-transform', open ? '' : '-rotate-90')} />
+        <Network className="h-4 w-4" />
+        <span>Invite a friend to the mesh</span>
+      </button>
+      {open ? (
+        <Card className="mt-2 border-dashed">
+          <CardContent className="space-y-4 p-4">
+            <div className="space-y-3 rounded-md border p-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-xs font-medium">
+                  <span>Contribute compute</span>
+                  <Badge className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10px] text-emerald-700 dark:text-emerald-300">
+                    <Sparkles className="h-3 w-3" />
+                    Recommended
+                  </Badge>
+                </div>
+                <div className="text-xs text-muted-foreground">Joins and serves the model {selectedModel || 'selected model'}</div>
+              </div>
+              {inviteWithModelCommand ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                    {inviteWithModelCommand}
+                  </code>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 shrink-0"
+                    aria-label="Copy model command"
+                    onClick={() => void copyInviteWithModelCommand()}
+                  >
+                    {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No warm model selected yet.</div>
+              )}
 
-        <div className="space-y-3 text-sm leading-6 text-muted-foreground">
-          <p>
-            Mesh LLM is a shared network for open AI inference. Instead of relying only on centralized infrastructure,
-            people contribute idle compute and gain access to collective capacity.
-          </p>
-          <p>
-            Invite others to join the mesh and load the current model. As more nodes participate, available capacity
-            grows and the network can run larger models and serve more requests.
-          </p>
-        </div>
-
-        <div className="space-y-3 rounded-md border p-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-xs font-medium">
-              <span>Contribute compute</span>
-              <Badge className="h-5 gap-1 border-emerald-500/40 bg-emerald-500/10 px-2 text-[10px] text-emerald-700 dark:text-emerald-300">
-                <Sparkles className="h-3 w-3" />
-                Recommended
-              </Badge>
+              <div className="space-y-1 pt-1">
+                <div className="text-xs font-medium">Join as client</div>
+                <div className="text-xs text-muted-foreground">Connects for API access without loading a model.</div>
+              </div>
+              {inviteClientCommand ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                    {inviteClientCommand}
+                  </code>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 shrink-0"
+                    aria-label="Copy client command"
+                    onClick={() => void copyInviteClientCommand()}
+                  >
+                    {inviteClientCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">No invite token available yet.</div>
+              )}
             </div>
-            <div className="text-xs text-muted-foreground">Joins and serves the model {selectedModel || 'selected model'}</div>
-          </div>
-          {inviteWithModelCommand ? (
-            <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-              <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                {inviteWithModelCommand}
-              </code>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7 shrink-0"
-                aria-label="Copy model command"
-                onClick={() => void copyInviteWithModelCommand()}
-              >
-                {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
-          ) : (
-            <div className="text-xs text-muted-foreground">No warm model selected yet.</div>
-          )}
-
-          <div className="space-y-1 pt-1">
-            <div className="text-xs font-medium">Join as client</div>
-            <div className="text-xs text-muted-foreground">Connects for API access without loading a model.</div>
-          </div>
-          {inviteClientCommand ? (
-            <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-              <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                {inviteClientCommand}
-              </code>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-7 w-7 shrink-0"
-                aria-label="Copy client command"
-                onClick={() => void copyInviteClientCommand()}
-              >
-                {inviteClientCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              </Button>
-            </div>
-          ) : (
-            <div className="text-xs text-muted-foreground">No invite token available yet.</div>
-          )}
-
-        </div>
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
   );
 }
 
