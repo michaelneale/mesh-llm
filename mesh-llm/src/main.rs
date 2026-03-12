@@ -7,6 +7,8 @@ mod moe;
 mod nostr;
 mod proxy;
 mod rewrite;
+#[allow(dead_code)]  // Ready for proxy response inspection — not wired yet
+mod quality;
 mod router;
 mod tunnel;
 
@@ -1377,17 +1379,13 @@ async fn api_proxy(node: mesh::Node, port: u16, target_rx: tokio::sync::watch::R
                     // Smart routing: if no model specified (or model="auto"), classify and pick
                     let effective_model = if model_name.is_none() || model_name.as_deref() == Some("auto") {
                         if let Some(body_json) = proxy::extract_body_json(&buf[..n]) {
-                            let category = router::classify(&body_json);
-                            let tools_required = body_json.get("tools")
-                                .and_then(|t| t.as_array())
-                                .map(|a| !a.is_empty())
-                                .unwrap_or(false);
+                            let cl = router::classify(&body_json);
                             let available: Vec<(&str, f64)> = targets.targets.keys()
                                 .map(|name| (name.as_str(), 0.0))
                                 .collect();
-                            let picked = router::pick_model_with_tools(category, &available, tools_required);
+                            let picked = router::pick_model_classified(&cl, &available);
                             if let Some(name) = picked {
-                                tracing::info!("router: {:?} → {name} (tools={})", category, tools_required);
+                                tracing::info!("router: {:?}/{:?} tools={} → {name}", cl.category, cl.complexity, cl.needs_tools);
                                 Some(name.to_string())
                             } else {
                                 None

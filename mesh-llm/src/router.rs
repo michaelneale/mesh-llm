@@ -13,6 +13,22 @@ pub enum Category {
     Creative,
 }
 
+/// How complex/heavy the request appears to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Complexity {
+    Quick,    // simple fact, short answer, casual
+    Moderate, // normal conversation, standard code
+    Deep,     // long reasoning, complex analysis, architecture
+}
+
+/// Full classification result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Classification {
+    pub category: Category,
+    pub complexity: Complexity,
+    pub needs_tools: bool,
+}
+
 // ── Model profiles ──────────────────────────────────────────────────
 
 /// Quality tier: higher = better quality, slower.
@@ -233,19 +249,24 @@ fn strip_split_suffix(name: &str) -> &str {
 
 /// Classify a chat completion request body using heuristics.
 /// No LLM call, just pattern matching on the request structure.
-pub fn classify(body: &Value) -> Category {
-    // 1. Has tools → tool_call
-    if let Some(tools) = body.get("tools") {
-        if tools.is_array() && !tools.as_array().unwrap().is_empty() {
-            return Category::ToolCall;
-        }
-    }
+/// Classify a request body into category + complexity + needs_tools.
+/// Tools presence is an attribute, not a category override — a code request
+/// with tools is still Code (with needs_tools=true), not ToolCall.
+pub fn classify(body: &Value) -> Classification {
+    // Check tools presence (attribute, not category)
+    let needs_tools = body.get("tools")
+        .and_then(|t| t.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
 
     // Collect all text from messages for keyword analysis
     let text = collect_message_text(body);
     let lower = text.to_lowercase();
 
-    // 2. Code signals
+    // Count last user message tokens (rough proxy for complexity)
+    let last_user_len = last_user_message_len(body);
+
+    // Code signals
     let code_signals = [
         "```", "def ", "fn ", "func ", "class ", "import ",
         "function", "const ", "let ", "var ", "return ",
@@ -261,7 +282,7 @@ pub fn classify(body: &Value) -> Category {
         .filter(|s| lower.contains(*s))
         .count();
 
-    // 3. Reasoning signals
+    // Reasoning signals
     let reasoning_signals = [
         "prove", "explain why", "step by step", "calculate",
         "solve", "derive", "what is the probability", "how many",
@@ -273,7 +294,7 @@ pub fn classify(body: &Value) -> Category {
         .filter(|s| lower.contains(*s))
         .count();
 
-    // 4. Creative signals
+    // Creative signals
     let creative_signals = [
         "write a story", "write a poem", "creative", "imagine",
         "fiction", "narrative", "compose", "brainstorm",
@@ -283,30 +304,72 @@ pub fn classify(body: &Value) -> Category {
         .filter(|s| lower.contains(*s))
         .count();
 
-    // 5. System prompt hints
+    // Deep-thinking signals (want the biggest brain)
+    let deep_signals = [
+        "architect", "design a system", "trade-off", "tradeoff",
+        "in depth", "comprehensive", "thorough", "detailed analysis",
+        "long-term", "strategy", "plan for", "review this codebase",
+        "rewrite", "from scratch",
+    ];
+    let deep_score: usize = deep_signals.iter()
+        .filter(|s| lower.contains(*s))
+        .count();
+
+    // System prompt hints
+    let mut system_code = false;
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         for msg in messages {
             if msg.get("role").and_then(|r| r.as_str()) == Some("system") {
                 if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
                     let sys = content.to_lowercase();
                     if sys.contains("developer") || sys.contains("coding") || sys.contains("programmer") {
-                        return Category::Code;
+                        system_code = true;
                     }
                 }
             }
         }
     }
 
-    // Pick highest scoring category
-    if code_score >= 2 || (code_score >= 1 && reasoning_score == 0 && creative_score == 0) {
+    // Pick category — tools don't override, content wins
+    let category = if system_code || code_score >= 2 || (code_score >= 1 && reasoning_score == 0 && creative_score == 0) {
         Category::Code
     } else if reasoning_score >= 2 {
         Category::Reasoning
     } else if creative_score >= 1 {
         Category::Creative
+    } else if needs_tools && code_score == 0 && reasoning_score == 0 && creative_score == 0 {
+        // Only ToolCall if tools present AND no other signal dominates
+        Category::ToolCall
     } else {
         Category::Chat
-    }
+    };
+
+    // Complexity: Quick / Moderate / Deep
+    let total_messages = body.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let complexity = if deep_score >= 1 || last_user_len > 500 || total_messages > 10 {
+        Complexity::Deep
+    } else if last_user_len < 60 && total_messages <= 2 && reasoning_score == 0 && deep_score == 0 {
+        Complexity::Quick
+    } else {
+        Complexity::Moderate
+    };
+
+    Classification { category, complexity, needs_tools }
+}
+
+/// Length of last user message in characters (rough complexity proxy).
+fn last_user_message_len(body: &Value) -> usize {
+    body.get("messages")
+        .and_then(|m| m.as_array())
+        .and_then(|msgs| msgs.iter().rev().find(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+        }))
+        .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+        .map(|s| s.len())
+        .unwrap_or(0)
 }
 
 fn collect_message_text(body: &Value) -> String {
@@ -324,35 +387,17 @@ fn collect_message_text(body: &Value) -> String {
 
 // ── Model selection ─────────────────────────────────────────────────
 
-/// Pick the best model from available models for a given category (no tool filter).
-#[cfg(test)]
-pub fn pick_model<'a>(
-    category: Category,
+/// Pick the best model using full classification (category + complexity + tools).
+pub fn pick_model_classified<'a>(
+    classification: &Classification,
     available_models: &[(&'a str, f64)],
-) -> Option<&'a str> {
-    pick_model_inner(category, available_models, false)
-}
-
-/// Pick the best model, filtering for tool-capable models when needed.
-pub fn pick_model_with_tools<'a>(
-    category: Category,
-    available_models: &[(&'a str, f64)],
-    tools_required: bool,
-) -> Option<&'a str> {
-    pick_model_inner(category, available_models, tools_required)
-}
-
-fn pick_model_inner<'a>(
-    category: Category,
-    available_models: &[(&'a str, f64)],
-    tools_required: bool,
 ) -> Option<&'a str> {
     if available_models.is_empty() {
         return None;
     }
 
     // Filter for tool-capable models if tools are required
-    let filtered: Vec<(&str, f64)> = if tools_required {
+    let filtered: Vec<(&str, f64)> = if classification.needs_tools {
         available_models.iter()
             .filter(|(name, _)| {
                 profile_for(name).map(|p| p.tools).unwrap_or(false)
@@ -365,17 +410,16 @@ fn pick_model_inner<'a>(
     // Fall back to all models if no tool-capable model found
     let candidates = if filtered.is_empty() { available_models } else { &filtered };
 
-    // Score each available model for this category
+    let category = classification.category;
+
+    // Score each available model
     let mut scored: Vec<(&str, i32)> = candidates
         .iter()
         .map(|(name, tok_s)| {
             let profile = profile_for(name);
             let tier = profile.map(|p| p.tier).unwrap_or(1) as i32;
 
-            // Task match is the primary signal. If a model lists this category
-            // as a strength, it gets a massive bonus that tier alone can never beat.
-            // Among models that match, tier + position break ties.
-            // Models that don't match only win if NOTHING matches.
+            // Task match is the primary signal.
             let has_match = profile
                 .map(|p| p.strengths.contains(&category))
                 .unwrap_or(false);
@@ -395,17 +439,52 @@ fn pick_model_inner<'a>(
                 })
                 .unwrap_or(0);
 
+            // Complexity adjusts tier preference:
+            //   Quick → prefer lower tier (faster) — invert tier bonus
+            //   Deep  → prefer higher tier (smarter) — amplify tier bonus
+            //   Moderate → neutral
+            let tier_bonus = match classification.complexity {
+                Complexity::Quick => (5 - tier) * 10,   // tier 1→40, tier 2→30, tier 3→20, tier 4→10
+                Complexity::Moderate => tier * 5,         // tier 1→5, tier 4→20 (mild preference for bigger)
+                Complexity::Deep => tier * 15,            // tier 1→15, tier 4→60 (strong preference for biggest)
+            };
+
             // Speed bonus: normalize tok/s to 0-10 range (100+ tok/s = max bonus)
             let speed_bonus = (tok_s / 10.0).min(10.0) as i32;
 
-            // match_bonus gates entry. Tier + position + speed break ties.
-            let score = match_bonus + tier * 10 + position_bonus + speed_bonus;
+            let score = match_bonus + tier_bonus + position_bonus + speed_bonus;
             (*name, score)
         })
         .collect();
 
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored.first().map(|(name, _)| *name)
+}
+
+/// Convenience: pick model from just a category (no complexity/tools info).
+/// Used by tests and simple call sites.
+#[cfg(test)]
+pub fn pick_model<'a>(
+    category: Category,
+    available_models: &[(&'a str, f64)],
+) -> Option<&'a str> {
+    pick_model_classified(
+        &Classification { category, complexity: Complexity::Moderate, needs_tools: false },
+        available_models,
+    )
+}
+
+/// Legacy wrapper for tests that have category + tools but no complexity.
+#[cfg(test)]
+pub fn pick_model_with_tools<'a>(
+    category: Category,
+    available_models: &[(&'a str, f64)],
+    tools_required: bool,
+) -> Option<&'a str> {
+    pick_model_classified(
+        &Classification { category, complexity: Complexity::Moderate, needs_tools: tools_required },
+        available_models,
+    )
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -421,7 +500,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "tools": [{"type": "function", "function": {"name": "bash"}}]
         });
-        assert_eq!(classify(&body), Category::ToolCall);
+        assert_eq!(classify(&body).category, Category::ToolCall);
     }
 
     #[test]
@@ -431,7 +510,7 @@ mod tests {
                 {"role": "user", "content": "Write a Python function to implement binary search and debug any issues"}
             ]
         });
-        assert_eq!(classify(&body), Category::Code);
+        assert_eq!(classify(&body).category, Category::Code);
     }
 
     #[test]
@@ -441,7 +520,7 @@ mod tests {
                 {"role": "user", "content": "Prove that the square root of 2 is irrational. Explain step by step."}
             ]
         });
-        assert_eq!(classify(&body), Category::Reasoning);
+        assert_eq!(classify(&body).category, Category::Reasoning);
     }
 
     #[test]
@@ -451,7 +530,7 @@ mod tests {
                 {"role": "user", "content": "Write a story about a robot who learns to paint"}
             ]
         });
-        assert_eq!(classify(&body), Category::Creative);
+        assert_eq!(classify(&body).category, Category::Creative);
     }
 
     #[test]
@@ -461,7 +540,45 @@ mod tests {
                 {"role": "user", "content": "What's the capital of France?"}
             ]
         });
-        assert_eq!(classify(&body), Category::Chat);
+        let cl = classify(&body);
+        assert_eq!(cl.category, Category::Chat);
+        assert_eq!(cl.complexity, Complexity::Quick); // short simple question
+        assert!(!cl.needs_tools);
+    }
+
+    #[test]
+    fn test_classify_deep_analysis() {
+        let body = json!({
+            "messages": [
+                {"role": "user", "content": "Design a system architecture for a distributed database with strong consistency guarantees. Provide a detailed analysis of the trade-offs between CAP theorem constraints and explain how to handle network partitions in depth."}
+            ]
+        });
+        let cl = classify(&body);
+        assert_eq!(cl.complexity, Complexity::Deep);
+    }
+
+    #[test]
+    fn test_classify_code_with_tools() {
+        // Code request that happens to have tools — should be Code, not ToolCall
+        let body = json!({
+            "messages": [{"role": "user", "content": "Write a Python function to sort a list and debug it"}],
+            "tools": [{"type": "function", "function": {"name": "bash"}}]
+        });
+        let cl = classify(&body);
+        assert_eq!(cl.category, Category::Code);
+        assert!(cl.needs_tools);
+    }
+
+    #[test]
+    fn test_classify_tools_only() {
+        // Tools present but no strong content signal — ToolCall category
+        let body = json!({
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [{"type": "function", "function": {"name": "bash"}}]
+        });
+        let cl = classify(&body);
+        assert_eq!(cl.category, Category::ToolCall);
+        assert!(cl.needs_tools);
     }
 
     #[test]
@@ -472,17 +589,43 @@ mod tests {
                 {"role": "user", "content": "Help me with this."}
             ]
         });
-        assert_eq!(classify(&body), Category::Code);
+        assert_eq!(classify(&body).category, Category::Code);
     }
 
     #[test]
-    fn test_pick_model_prefers_tier() {
+    #[test]
+    fn test_pick_model_primary_strength_wins() {
+        // Qwen3-8B has Chat as primary strength; 235B has Chat as 3rd.
+        // Primary strength bonus beats tier advantage at Moderate complexity.
         let available = vec![
             ("Qwen3-8B-Q4_K_M", 50.0),
             ("Qwen3-235B-A22B-Q4_K_M", 20.0),
         ];
-        let result = pick_model(Category::Chat, &available);
+        let result = pick_model_classified(&Classification { category: Category::Chat, complexity: Complexity::Moderate, needs_tools: false }, &available);
+        assert_eq!(result, Some("Qwen3-8B-Q4_K_M"));
+    }
+
+    #[test]
+    fn test_deep_complexity_prefers_bigger() {
+        // Deep complexity amplifies tier bonus, so 235B wins even though
+        // Chat is not its primary strength.
+        let available = vec![
+            ("Qwen3-8B-Q4_K_M", 50.0),
+            ("Qwen3-235B-A22B-Q4_K_M", 20.0),
+        ];
+        let result = pick_model_classified(&Classification { category: Category::Chat, complexity: Complexity::Deep, needs_tools: false }, &available);
         assert_eq!(result, Some("Qwen3-235B-A22B-Q4_K_M"));
+    }
+
+    #[test]
+    fn test_quick_complexity_prefers_smaller() {
+        // Quick complexity inverts tier — fast small model wins.
+        let available = vec![
+            ("Qwen3-8B-Q4_K_M", 50.0),
+            ("Qwen2.5-72B-Instruct-Q4_K_M", 10.0),
+        ];
+        let result = pick_model_classified(&Classification { category: Category::Chat, complexity: Complexity::Quick, needs_tools: false }, &available);
+        assert_eq!(result, Some("Qwen3-8B-Q4_K_M"));
     }
 
     #[test]
@@ -491,7 +634,7 @@ mod tests {
             ("DeepSeek-R1-Distill-70B-Q4_K_M", 10.0), // tier 3, reasoning specialist
             ("Qwen2.5-72B-Instruct-Q4_K_M", 10.0),     // tier 3, chat primary
         ];
-        let result = pick_model(Category::Reasoning, &available);
+        let result = pick_model_classified(&Classification { category: Category::Reasoning, complexity: Complexity::Moderate, needs_tools: false }, &available);
         assert_eq!(result, Some("DeepSeek-R1-Distill-70B-Q4_K_M"));
     }
 
@@ -501,20 +644,20 @@ mod tests {
             ("Qwen2.5-Coder-32B-Instruct-Q4_K_M", 15.0),
             ("Qwen2.5-32B-Instruct-Q4_K_M", 15.0),
         ];
-        let result = pick_model(Category::Code, &available);
+        let result = pick_model_classified(&Classification { category: Category::Code, complexity: Complexity::Moderate, needs_tools: false }, &available);
         assert_eq!(result, Some("Qwen2.5-Coder-32B-Instruct-Q4_K_M"));
     }
 
     #[test]
     fn test_pick_model_empty() {
         let available: Vec<(&str, f64)> = vec![];
-        assert_eq!(pick_model(Category::Chat, &available), None);
+        assert_eq!(pick_model_classified(&Classification { category: Category::Chat, complexity: Complexity::Moderate, needs_tools: false }, &available), None);
     }
 
     #[test]
     fn test_pick_model_unknown_model_still_works() {
         let available = vec![("SomeUnknownModel", 30.0)];
-        let result = pick_model(Category::Chat, &available);
+        let result = pick_model_classified(&Classification { category: Category::Chat, complexity: Complexity::Moderate, needs_tools: false }, &available);
         assert_eq!(result, Some("SomeUnknownModel"));
     }
 
@@ -538,7 +681,7 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}],
             "tools": []
         });
-        assert_eq!(classify(&body), Category::Chat);
+        assert_eq!(classify(&body).category, Category::Chat);
     }
 
     #[test]
