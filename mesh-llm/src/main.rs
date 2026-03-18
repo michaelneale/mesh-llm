@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use mesh::NodeRole;
 use std::path::PathBuf;
 
-pub const VERSION: &str = "0.36.6";
+pub const VERSION: &str = "0.37.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "mesh-llm", version = VERSION, about = "P2P mesh for distributed llama.cpp inference over QUIC")]
@@ -178,27 +178,25 @@ enum Command {
     RotateKey,
     /// Launch Goose with mesh-llm as the inference provider.
     ///
-    /// Requires an already-running mesh-llm API on --port.
-    /// This command configures Goose and launches it; it does not start a mesh.
+    /// If no mesh is running on --port, this auto-joins the mesh as a client.
     #[command(name = "goose")]
     Goose {
-        /// Model id to use from /v1/models (default: first available model)
+        /// Model id to use from /v1/models (default: auto = mesh picks best)
         #[arg(long)]
         model: Option<String>,
-        /// API port of the running mesh-llm instance (must match mesh-llm --port)
+        /// API port for mesh-llm (default: 9337)
         #[arg(long, default_value = "9337")]
         port: u16,
     },
     /// Launch Claude Code with mesh-llm as the inference provider.
     ///
-    /// Requires an already-running mesh-llm API on --port.
-    /// This command launches Claude with mesh-compatible Anthropic env settings.
+    /// If no mesh is running on --port, this auto-joins the mesh as a client.
     #[command(name = "claude")]
     Claude {
-        /// Model id to use from /v1/models (default: first available model)
+        /// Model id to use from /v1/models (default: auto = mesh picks best)
         #[arg(long)]
         model: Option<String>,
-        /// API port of the running mesh-llm instance (must match mesh-llm --port)
+        /// API port for mesh-llm (default: 9337)
         #[arg(long, default_value = "9337")]
         port: u16,
     },
@@ -1914,44 +1912,89 @@ async fn run_drop(model_name: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Check that mesh-llm is running on `port`, and return (available_models, chosen_model).
+/// Ensure mesh-llm is running on `port`, then return (available_models, chosen_model, spawned_child).
 ///
-/// This is intentionally strict for launcher commands: it does not auto-start mesh-llm.
-async fn check_mesh(client: &reqwest::Client, port: u16, model: &Option<String>) -> Result<(Vec<String>, String)> {
+/// Launcher behavior: if nothing is listening yet, auto-start `mesh-llm --client --auto`
+/// (client node — tunnels to mesh peers without publishing to Nostr).
+/// Returns the child process handle if we spawned one, so callers can clean up on exit.
+async fn check_mesh(client: &reqwest::Client, port: u16, model: &Option<String>) -> Result<(Vec<String>, String, Option<std::process::Child>)> {
     let url = format!("http://127.0.0.1:{port}/v1/models");
-    let resp = client.get(&url).send().await
-        .with_context(|| {
-            format!(
-                "No mesh-llm running on port {port}.\n\
-                 Start one first in another terminal, for example:\n\
-                 - host/auto mode:   mesh-llm --auto --port {port}\n\
-                 - client-only mode: mesh-llm --client --auto --port {port}"
-            )
-        })?;
-    let body: serde_json::Value = resp.json().await?;
-    let models: Vec<String> = body["data"].as_array().unwrap_or(&vec![])
-        .iter().filter_map(|m| m["id"].as_str().map(String::from)).collect();
-    if models.is_empty() {
-        anyhow::bail!("mesh-llm on port {port} has no models yet. Wait for mesh peers to connect.");
+
+    // If no local mesh API is up, start a full auto-join node in the background.
+    let mut child: Option<std::process::Child> = None;
+    if client.get(&url).send().await.is_err() {
+        eprintln!("🔍 No mesh-llm on port {port} — starting background auto-join node...");
+        let exe = std::env::current_exe().unwrap_or_else(|_| "mesh-llm".into());
+        child = Some(
+            std::process::Command::new(&exe)
+                .args(["--client", "--auto", "--port", &port.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .context("Failed to start mesh-llm node")?
+        );
     }
+
+    // Wait for API/models readiness.
+    let mut models: Vec<String> = Vec::new();
+    for i in 0..40 {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                models = body["data"].as_array().unwrap_or(&vec![])
+                    .iter().filter_map(|m| m["id"].as_str().map(String::from)).collect();
+                if !models.is_empty() {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if i % 5 == 4 {
+            eprintln!("   Waiting for mesh/models... ({:.0}s)", (i + 1) as f64 * 3.0);
+        }
+    }
+
+    if models.is_empty() {
+        // Clean up the child we spawned before bailing
+        if let Some(mut c) = child {
+            let _ = c.kill();
+        }
+        anyhow::bail!(
+            "mesh-llm on port {port} has no models yet (or could not be reached).\n\
+             Ensure at least one serving peer is available on the mesh."
+        );
+    }
+
     let chosen = if let Some(ref m) = model {
         if !models.iter().any(|n| n == m) {
+            if let Some(mut c) = child {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
             anyhow::bail!("Model '{}' not available. Available: {}", m, models.join(", "));
         }
         m.clone()
     } else {
-        models[0].clone()
+        // Pick the strongest tool-capable model for agentic work.
+        let available: Vec<(&str, f64)> = models.iter().map(|n| (n.as_str(), 0.0)).collect();
+        let agentic = router::Classification {
+            category: router::Category::Code,
+            complexity: router::Complexity::Deep,
+            needs_tools: true,
+        };
+        router::pick_model_classified(&agentic, &available)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| models[0].clone())
     };
     eprintln!("   Models: {}", models.join(", "));
     eprintln!("   Using: {chosen}");
-    Ok((models, chosen))
+    Ok((models, chosen, child))
 }
 
 async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-    let (models, chosen) = check_mesh(&client, port, &model).await?;
+    let (models, chosen, mut _mesh_child) = check_mesh(&client, port, &model).await?;
 
     // Write custom provider JSON
     let goose_config_dir = dirs::home_dir()
@@ -1992,6 +2035,10 @@ async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
             .env("GOOSE_PROVIDER", "mesh")
             .env("GOOSE_MODEL", &chosen)
             .spawn()?;
+        // Goose.app is a GUI — can't wait for it. Mesh stays running.
+        if _mesh_child.is_some() {
+            eprintln!("ℹ️  mesh-llm node running in background (kill manually or use `mesh-llm stop`)");
+        }
     } else {
         eprintln!("🪿 Launching goose session...");
         let status = std::process::Command::new("goose")
@@ -2008,6 +2055,12 @@ async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
                 eprintln!("  GOOSE_PROVIDER=mesh GOOSE_MODEL={chosen} goose session");
             }
         }
+        // CLI goose exited — clean up mesh if we started it
+        if let Some(ref mut c) = _mesh_child {
+            eprintln!("🧹 Stopping mesh-llm node we started...");
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
     Ok(())
 }
@@ -2016,7 +2069,7 @@ async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-    let (_models, chosen) = check_mesh(&client, port, &model).await?;
+    let (_models, chosen, mut _mesh_child) = check_mesh(&client, port, &model).await?;
 
     // Configure and launch Claude Code
     // llama-server natively serves the Anthropic /v1/messages API, and
@@ -2025,7 +2078,6 @@ async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     let settings = serde_json::json!({
         "env": {
             "ANTHROPIC_BASE_URL": &base_url,
-            "ANTHROPIC_AUTH_TOKEN": "mesh",
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_MODEL": &chosen,
             "ANTHROPIC_DEFAULT_OPUS_MODEL": &chosen,
@@ -2053,8 +2105,14 @@ async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
         Err(_) => {
             eprintln!("claude not found. Install: https://docs.anthropic.com/en/docs/claude-code");
             eprintln!("Or run manually:");
-            eprintln!("  ANTHROPIC_BASE_URL={base_url} ANTHROPIC_AUTH_TOKEN=mesh ANTHROPIC_API_KEY= claude --model {chosen}");
+            eprintln!("  ANTHROPIC_BASE_URL={base_url} ANTHROPIC_API_KEY= claude --model {chosen}");
         }
+    }
+    // Claude exited — clean up mesh if we started it
+    if let Some(ref mut c) = _mesh_child {
+        eprintln!("🧹 Stopping mesh-llm node we started...");
+        let _ = c.kill();
+        let _ = c.wait();
     }
     Ok(())
 }

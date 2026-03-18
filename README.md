@@ -129,38 +129,28 @@ Build-from-source and UI development instructions are in [CONTRIBUTING.md](CONTR
 
 mesh-llm exposes an OpenAI-compatible API on `localhost:9337`. Any tool that supports custom OpenAI endpoints works. `/v1/models` lists available models; the `model` field in requests routes to the right node.
 
+For built-in launcher integrations (`goose`, `claude`):
+
+- If a mesh is already running locally on `--port`, it is reused.
+- If not, `mesh-llm` auto-starts a background client node that auto-joins the mesh.
+- If `--model` is omitted, the launcher picks the strongest tool-capable model available on the mesh.
+- When the harness exits (e.g. `claude` quits), the auto-started node is cleaned up automatically.
+
 ### goose
 
-[Goose](https://github.com/block/goose) is an AI agent available as both a CLI (`goose session`) and a desktop app (Goose.app).
+[Goose](https://github.com/block/goose) is available as both CLI (`goose session`) and desktop app (Goose.app).
 
-1. Add a custom provider file at `~/.config/goose/custom_providers/mesh.json`:
-
-```json
-{
-  "name": "mesh",
-  "engine": "openai",
-  "display_name": "mesh-llm",
-  "description": "Distributed LLM inference via mesh-llm",
-  "api_key_env": "",
-  "base_url": "http://localhost:9337",
-  "models": [
-    { "name": "MiniMax-M2.5-Q4_K_M", "context_limit": 65536 },
-    { "name": "Qwen3-8B-Q4_K_M", "context_limit": 8192 }
-  ],
-  "timeout_seconds": 600,
-  "supports_streaming": true,
-  "requires_auth": false
-}
-```
-
-Adjust model names to match what's running in your mesh (`curl localhost:9337/v1/models`).
-
-2. Run goose:
 ```bash
-GOOSE_PROVIDER=mesh GOOSE_MODEL=MiniMax-M2.5-Q4_K_M goose session
+mesh-llm goose
 ```
 
-In the desktop app, select "mesh-llm" as the provider in settings.
+Use a specific model (example: MiniMax):
+
+```bash
+mesh-llm goose --model MiniMax-M2.5-Q4_K_M
+```
+
+This command writes/updates `~/.config/goose/custom_providers/mesh.json` and launches Goose.
 
 ### pi
 
@@ -218,14 +208,17 @@ OPENAI_API_KEY=dummy OPENAI_BASE_URL=http://localhost:9337/v1 opencode -m openai
 
 ### claude code
 
-Claude Code uses Anthropic's API format, not OpenAI. Community proxies translate between the two:
+Claude Code can be launched directly through mesh-llm (no proxy required):
 
 ```bash
-# Using claude-code-proxy (github.com/1rgs/claude-code-proxy)
-ANTHROPIC_BASE_URL=http://localhost:8082 claude
+mesh-llm claude
 ```
 
-See [claude-code-proxy](https://github.com/1rgs/claude-code-proxy) or [litellm](https://docs.litellm.ai/docs/tutorials/claude_responses_api) for setup.
+Use a specific model (example: MiniMax):
+
+```bash
+mesh-llm claude --model MiniMax-M2.5-Q4_K_M
+```
 
 ### curl / any OpenAI client
 

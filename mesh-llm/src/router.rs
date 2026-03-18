@@ -267,32 +267,32 @@ pub fn classify(body: &Value) -> Classification {
     let lower = text.to_lowercase();
 
     // Check if the request actually needs tool execution.
-    // Tools in the schema just means "client supports tools" — most agent clients
-    // always send tools. Only set needs_tools when the message content implies
-    // the model needs to call a tool (read files, run commands, edit, etc).
+    // If the client sends a tools schema, this is an agentic session (Claude Code,
+    // Goose, etc.) — always prefer the strongest tool-capable model regardless of
+    // what the first message says.  Keyword matching on content is a secondary signal
+    // but not required when tools are present.
     let has_tools_schema = body.get("tools")
         .and_then(|t| t.as_array())
         .map(|a| !a.is_empty())
         .unwrap_or(false);
-    let content_needs_tools = has_tools_schema && (
-        lower.contains("read ") || lower.contains("read the ") ||
-        lower.contains("edit ") || lower.contains("edit the ") ||
-        lower.contains("write ") || lower.contains("write the ") || lower.contains("write a ") ||
-        lower.contains("run ") || lower.contains("execute") ||
-        lower.contains("find ") || lower.contains("search ") || lower.contains("grep") ||
-        lower.contains("fix ") || lower.contains("fix the ") ||
-        lower.contains("create ") || lower.contains("create the ") || lower.contains("create a ") ||
-        lower.contains("delete ") || lower.contains("remove ") ||
-        lower.contains("list ") || lower.contains("show ") ||
-        lower.contains("check ") || lower.contains("verify ") ||
-        lower.contains("install ") || lower.contains("build ") ||
-        lower.contains("the file") || lower.contains("this file") ||
-        lower.contains("this directory") || lower.contains("this repo") ||
-        lower.contains(".py") || lower.contains(".js") || lower.contains(".rs") ||
-        lower.contains(".ts") || lower.contains(".txt") || lower.contains(".md") ||
-        lower.contains(".json") || lower.contains(".yaml") || lower.contains(".toml")
-    );
-    let needs_tools = content_needs_tools;
+    // Anthropic-style requests may include structured content blocks with
+    // explicit tool_use/tool_result blocks — definitely tool-driven.
+    let has_tool_blocks = body.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|msgs| {
+            msgs.iter().any(|msg| {
+                msg.get("content")
+                    .and_then(|c| c.as_array())
+                    .map(|blocks| {
+                        blocks.iter().any(|b| {
+                            matches!(b.get("type").and_then(|t| t.as_str()), Some("tool_use") | Some("tool_result"))
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    let needs_tools = has_tools_schema || has_tool_blocks;
 
     // Count last user message tokens (rough proxy for complexity)
     let last_user_len = last_user_message_len(body);
@@ -422,7 +422,7 @@ fn last_user_message_len(body: &Value) -> usize {
         .and_then(|msgs| msgs.iter().rev().find(|m| {
             m.get("role").and_then(|r| r.as_str()) == Some("user")
         }))
-        .and_then(|m| m.get("content").and_then(|c| c.as_str()))
+        .map(message_text)
         .map(|s| s.len())
         .unwrap_or(0)
 }
@@ -431,13 +431,35 @@ fn collect_message_text(body: &Value) -> String {
     let mut text = String::new();
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         for msg in messages {
-            if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-                text.push_str(content);
+            let content = message_text(msg);
+            if !content.is_empty() {
+                text.push_str(&content);
                 text.push('\n');
             }
         }
     }
     text
+}
+
+/// Extract message text for both OpenAI-style and Anthropic-style payloads.
+fn message_text(msg: &Value) -> String {
+    if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+        return s.to_string();
+    }
+
+    // Anthropic content blocks: [{"type":"text","text":"..."}, ...]
+    if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+        let mut out = String::new();
+        for b in blocks {
+            if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                out.push_str(t);
+                out.push('\n');
+            }
+        }
+        return out;
+    }
+
+    String::new()
 }
 
 // ── Model selection ─────────────────────────────────────────────────
@@ -638,15 +660,15 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_tools_schema_but_chat_content() {
-        // Tools in schema but content is just chat — should NOT need tools
+    fn test_classify_tools_schema_always_needs_tools() {
+        // Tools schema present = agentic session, always needs_tools
+        // even if the message content is plain chat
         let body = json!({
             "messages": [{"role": "user", "content": "hello"}],
             "tools": [{"type": "function", "function": {"name": "bash"}}]
         });
         let cl = classify(&body);
-        assert_eq!(cl.category, Category::Chat);
-        assert!(!cl.needs_tools);
+        assert!(cl.needs_tools);
     }
 
     #[test]
@@ -658,6 +680,69 @@ mod tests {
         });
         let cl = classify(&body);
         assert!(cl.needs_tools);
+    }
+
+    #[test]
+    fn test_classify_anthropic_text_blocks_with_tools() {
+        // Anthropic-style content blocks should still be parsed as text
+        // and trigger needs_tools when tool-intent is present.
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "List files in this directory and read README.md"}
+                    ]
+                }
+            ],
+            "tools": [{"name": "shell"}]
+        });
+        let cl = classify(&body);
+        assert!(cl.needs_tools);
+        assert!(matches!(cl.category, Category::Code | Category::ToolCall));
+    }
+
+    #[test]
+    fn test_classify_anthropic_tool_use_block_sets_needs_tools() {
+        // If an explicit tool_use/tool_result block is present, mark as needs_tools.
+        let body = json!({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_123", "name": "shell", "input": {"command": "ls"}}
+                    ]
+                }
+            ]
+        });
+        let cl = classify(&body);
+        assert!(cl.needs_tools);
+    }
+
+    #[test]
+    fn test_anthropic_tool_request_prefers_stronger_tool_model() {
+        // Reproduces Claude-like tool request shape and verifies needs_tools=true
+        // pushes selection toward the stronger tool-capable model.
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "List files in this directory and read README.md"}
+                    ]
+                }
+            ],
+            "tools": [{"name": "shell"}]
+        });
+        let cl = classify(&body);
+        assert!(cl.needs_tools);
+
+        let available = vec![
+            ("Qwen3-8B-Q4_K_M", 40.0),
+            ("MiniMax-M2.5-Q4_K_M", 20.0),
+        ];
+        let picked = pick_model_classified(&cl, &available);
+        assert_eq!(picked, Some("MiniMax-M2.5-Q4_K_M"));
     }
 
     #[test]
@@ -855,3 +940,5 @@ mod tests {
         let result = pick_model_classified(&cl, &available);
         assert_eq!(result, Some("MiniMax-M2.5-Q4_K_M"));
     }
+
+

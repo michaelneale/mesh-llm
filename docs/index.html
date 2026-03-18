@@ -235,11 +235,13 @@
         <h2>Use with coding agents</h2>
         <p class="section-lead">Standard OpenAI API on <code>localhost:9337</code>. Works with anything.</p>
 
-        <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ goose</summary>
+        <details style="margin-bottom:1rem;" open>
+            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ goose (built-in launcher)</summary>
+            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Uses a local mesh if present; otherwise auto-starts a client node. Picks the strongest model automatically. Cleans up on exit.</p>
             <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">GOOSE_PROVIDER</span>=openai <span class="cmd">OPENAI_API_KEY</span>=dummy <span class="cmd">OPENAI_HOST</span>=<span class="val">http://localhost:9337</span> \<br>
-                &nbsp;&nbsp;<span class="cmd">GOOSE_MODEL</span>=<span class="val">GLM-4.7-Flash-Q4_K_M</span> goose session
+                <span class="cmd">mesh-llm</span> goose<br><br>
+                <span class="comment"># Specify model explicitly (example: MiniMax)</span><br>
+                <span class="cmd">mesh-llm</span> goose <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span>
             </div>
         </details>
 
@@ -278,12 +280,13 @@
             </div>
         </details>
 
-        <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ claude code (via proxy)</summary>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Claude Code uses Anthropic's API format. Use <a href="https://github.com/1rgs/claude-code-proxy">claude-code-proxy</a> or <a href="https://docs.litellm.ai/docs/tutorials/claude_responses_api">litellm</a> to translate.</p>
+        <details style="margin-bottom:1rem;" open>
+            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ claude code (built-in launcher)</summary>
+            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Uses a local mesh if present; otherwise auto-starts a client node. Picks the strongest model automatically. Cleans up on exit.</p>
             <div class="code-block" style="margin-top:0.5rem;">
-                <span class="comment"># Start the proxy, then:</span><br>
-                <span class="cmd">ANTHROPIC_BASE_URL</span>=<span class="val">http://localhost:8082</span> claude
+                <span class="cmd">mesh-llm</span> claude<br><br>
+                <span class="comment"># Specify model explicitly (example: MiniMax)</span><br>
+                <span class="cmd">mesh-llm</span> claude <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span>
             </div>
         </details>
 
