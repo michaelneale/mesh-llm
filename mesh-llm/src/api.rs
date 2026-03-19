@@ -42,6 +42,7 @@ struct ApiInner {
     mesh_name: Option<String>,
     latest_version: Option<String>,
     nostr_relays: Vec<String>,
+    nostr_discovery: bool,
     sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
@@ -70,6 +71,8 @@ struct StatusPayload {
     mesh_id: Option<String>,
     /// Human-readable mesh name (from Nostr publishing)
     mesh_name: Option<String>,
+    /// true when this node found the mesh via Nostr discovery (community/public mesh)
+    nostr_discovery: bool,
 }
 
 #[derive(Serialize)]
@@ -116,6 +119,7 @@ impl MeshApi {
                     .iter()
                     .map(|s| s.to_string())
                     .collect(),
+                nostr_discovery: false,
                 sse_clients: Vec::new(),
             })),
         }
@@ -137,6 +141,10 @@ impl MeshApi {
         self.inner.lock().await.nostr_relays = relays;
     }
 
+    pub async fn set_nostr_discovery(&self, v: bool) {
+        self.inner.lock().await.nostr_discovery = v;
+    }
+
     pub async fn update(&self, is_host: bool, llama_ready: bool) {
         {
             let mut inner = self.inner.lock().await;
@@ -156,7 +164,7 @@ impl MeshApi {
         // we don't hold inner.lock() hostage, so other handlers can still proceed.
         let (node, node_id, token, my_vram_gb, inflight_requests,
              model_name, model_size_bytes, llama_ready, is_host, is_client,
-             api_port, draft_name, mesh_name, latest_version) = {
+             api_port, draft_name, mesh_name, latest_version, nostr_discovery) = {
             let inner = self.inner.lock().await;
             (
                 inner.node.clone(),
@@ -173,6 +181,7 @@ impl MeshApi {
                 inner.draft_name.clone(),
                 inner.mesh_name.clone(),
                 inner.latest_version.clone(),
+                inner.nostr_discovery,
             )
         }; // inner lock dropped here
 
@@ -303,6 +312,7 @@ impl MeshApi {
             inflight_requests,
             mesh_id,
             mesh_name,
+            nostr_discovery,
         }
     }
 

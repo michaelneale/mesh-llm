@@ -107,6 +107,7 @@ type StatusPayload = {
   inflight_requests: number;
   launch_pi?: string | null;
   launch_goose?: string | null;
+  nostr_discovery?: boolean;
 };
 
 type ChatMessage = {
@@ -993,6 +994,7 @@ export function App() {
             <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-7xl flex-1 flex-col overflow-hidden p-2 md:p-4">
               <ChatPage
                 inviteToken={status?.token ?? ''}
+                isPublicMesh={status?.nostr_discovery ?? false}
                 warmModels={warmModels}
                 modelStatsByName={modelStatsByName}
                 selectedModel={selectedModel}
@@ -1501,6 +1503,7 @@ function AppHeader({
 
 function ChatPage(props: {
   inviteToken: string;
+  isPublicMesh: boolean;
   warmModels: string[];
   modelStatsByName: Record<string, ModelServingStat>;
   selectedModel: string;
@@ -1810,7 +1813,7 @@ function ChatPage(props: {
             >
               {messages.length === 0 ? (
                 <div className="flex min-h-full items-center justify-center">
-                  <InviteFriendEmptyState inviteToken={inviteToken} selectedModel={selectedModel || warmModels[0] || ''} />
+                  <InviteFriendEmptyState inviteToken={inviteToken} selectedModel={selectedModel || warmModels[0] || ''} isPublicMesh={props.isPublicMesh} />
                 </div>
               ) : (
                 <>
@@ -1885,7 +1888,7 @@ function ChatPage(props: {
   );
 }
 
-function InviteFriendEmptyState({ inviteToken, selectedModel }: { inviteToken: string; selectedModel: string }) {
+function InviteFriendEmptyState({ inviteToken, selectedModel, isPublicMesh }: { inviteToken: string; selectedModel: string; isPublicMesh: boolean }) {
   const [open, setOpen] = useState(false);
   const [inviteWithModelCopied, setInviteWithModelCopied] = useState(false);
   const inviteWithModelCommand = inviteToken && selectedModel ? `mesh-llm --join ${inviteToken} --model ${selectedModel}` : '';
@@ -1901,53 +1904,92 @@ function InviteFriendEmptyState({ inviteToken, selectedModel }: { inviteToken: s
     }
   }
 
+  if (isPublicMesh) {
+    return (
+      <div className="mx-auto w-full max-w-md space-y-4 px-2 text-center">
+        <p className="text-sm text-muted-foreground">
+          A shared pool of compute, powered by the community. Chat away.
+        </p>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="mx-auto flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+        >
+          <ChevronDown className={cn('h-3 w-3 transition-transform', open ? '' : '-rotate-90')} />
+          <span>More info…</span>
+        </button>
+        {open ? (
+          <div className="space-y-4 rounded-md border border-dashed p-3 text-left">
+            <div className="space-y-2">
+              <div className="text-xs font-medium">Contribute to the pool</div>
+              <div className="text-xs text-muted-foreground">
+                Have a spare machine? Add it to this mesh and share compute with others.
+              </div>
+              {inviteWithModelCommand ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+                  <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+                    {inviteWithModelCommand}
+                  </code>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 shrink-0"
+                    aria-label="Copy command"
+                    onClick={() => void copyInviteWithModelCommand()}
+                  >
+                    {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <Separator />
+            <div className="space-y-2">
+              <div className="text-xs font-medium">Run your own private mesh</div>
+              <div className="text-xs text-muted-foreground">
+                Pool machines across your home, office, or friends — fully private, no cloud needed.{' '}
+                <a href="https://mesh-llm.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
+                  Getting started →
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  // Private mesh — invite a friend to join
   return (
-    <div className="mx-auto w-full max-w-md space-y-4 px-2 text-center">
-      <p className="text-sm text-muted-foreground">
-        A shared pool of compute, powered by the community. Chat away.
-      </p>
+    <div className="mx-auto w-full max-w-md space-y-3 px-2 text-center">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="mx-auto flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-foreground transition-colors"
+        className="mx-auto flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
       >
-        <ChevronDown className={cn('h-3 w-3 transition-transform', open ? '' : '-rotate-90')} />
-        <span>More info…</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open ? '' : '-rotate-90')} />
+        <Network className="h-3.5 w-3.5" />
+        <span>Invite someone to the mesh</span>
       </button>
-      {open ? (
-        <div className="space-y-4 rounded-md border border-dashed p-3 text-left">
-          <div className="space-y-2">
-            <div className="text-xs font-medium">Contribute to the pool</div>
-            <div className="text-xs text-muted-foreground">
-              Have a spare machine? Add it to this mesh and share compute with others.
-            </div>
-            {inviteWithModelCommand ? (
-              <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
-                <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
-                  {inviteWithModelCommand}
-                </code>
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7 shrink-0"
-                  aria-label="Copy command"
-                  onClick={() => void copyInviteWithModelCommand()}
-                >
-                  {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                </Button>
-              </div>
-            ) : null}
+      {open && inviteWithModelCommand ? (
+        <div className="space-y-2 rounded-md border border-dashed p-3 text-left">
+          <div className="text-xs text-muted-foreground">
+            Share this command — they'll join and contribute compute:
           </div>
-          <Separator />
-          <div className="space-y-2">
-            <div className="text-xs font-medium">Run your own private mesh</div>
-            <div className="text-xs text-muted-foreground">
-              Pool machines across your home, office, or friends — fully private, no cloud needed.{' '}
-              <a href="https://mesh-llm.com" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
-                Getting started →
-              </a>
-            </div>
+          <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-2 py-1.5">
+            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">
+              {inviteWithModelCommand}
+            </code>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 shrink-0"
+              aria-label="Copy command"
+              onClick={() => void copyInviteWithModelCommand()}
+            >
+              {inviteWithModelCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </Button>
           </div>
         </div>
       ) : null}

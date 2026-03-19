@@ -136,6 +136,10 @@ struct Cli {
     /// Nostr relay URLs for publishing/discovery (default: damus, nos.lol, nostr.band).
     #[arg(long)]
     nostr_relay: Vec<String>,
+
+    /// Internal: set when this node joined via Nostr discovery (not --join).
+    #[arg(skip)]
+    nostr_discovery: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -276,6 +280,7 @@ async fn main() -> Result<()> {
 
     // --- Auto-discover ---
     if cli.auto && cli.join.is_empty() {
+        cli.nostr_discovery = true;
         eprintln!("🔍 Discovering meshes via Nostr...");
 
         let relays = nostr_relays(&cli.nostr_relay);
@@ -1046,6 +1051,7 @@ async fn run_auto(mut cli: Cli, resolved_models: Vec<PathBuf>, requested_model_n
         let model_size_bytes = election::total_model_bytes(&model);
         let cs = api::MeshApi::new(node.clone(), model_name_for_console.clone(), api_port, model_size_bytes);
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
+        cs.set_nostr_discovery(cli.nostr_discovery).await;
         if let Some(draft) = &cli.draft {
             let dn = draft.file_stem().unwrap_or_default().to_string_lossy().to_string();
             cs.set_draft_name(dn).await;
@@ -1322,6 +1328,7 @@ async fn run_passive(cli: &Cli, node: mesh::Node, is_client: bool) -> Result<Opt
         let label = if is_client { "(client)".to_string() } else { "(standby)".to_string() };
         let cs = api::MeshApi::new(node.clone(), label, local_port, 0);
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
+        cs.set_nostr_discovery(cli.nostr_discovery).await;
         if is_client { cs.set_client(true).await; }
         // Both clients and standby nodes can proxy requests through the mesh
         cs.update(false, true).await;
