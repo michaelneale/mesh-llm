@@ -21,6 +21,7 @@ import {
   Cpu,
   Gauge,
   Hash,
+  ImagePlus,
   Laptop,
   Loader2,
   MessageSquarePlus,
@@ -77,6 +78,7 @@ type MeshModel = {
   status: 'warm' | 'cold' | string;
   node_count: number;
   size_gb: number;
+  vision?: boolean;
 };
 
 type Peer = {
@@ -120,6 +122,8 @@ type ChatMessage = {
   model?: string;
   stats?: string;
   error?: boolean;
+  /** Base64 data URL for attached image (vision) */
+  image?: string;
 };
 
 type ChatConversation = {
@@ -404,6 +408,7 @@ export function App() {
   const [chatState, setChatState] = useState<ChatState>(() => createInitialChatState());
   const [chatStateHydrated, setChatStateHydrated] = useState(false);
   const [input, setInput] = useState('');
+  const [pendingImage, setPendingImage] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
@@ -448,6 +453,17 @@ export function App() {
     return stats;
   }, [status, warmModels]);
   const selectedChatModel = selectedModel || warmModels[0] || status?.model_name || '';
+  const visionModels = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of status?.mesh_models ?? []) {
+      if (m.vision) set.add(m.name);
+    }
+    return set;
+  }, [status?.mesh_models]);
+  const selectedModelVision = useMemo(() => {
+    if (selectedModel) return visionModels.has(selectedModel);
+    return (status?.mesh_models ?? []).some((m) => m.status === 'warm' && m.vision);
+  }, [status?.mesh_models, selectedModel, visionModels]);
   const selectedModelStat = selectedChatModel ? modelStatsByName[selectedChatModel] : undefined;
   const selectedModelNodeCount = selectedModelStat ? selectedModelStat.nodes : null;
   const selectedModelVramGb = selectedModelStat ? selectedModelStat.vramGb : null;
@@ -675,7 +691,15 @@ export function App() {
         signal: controller.signal,
         body: JSON.stringify({
           model,
-          messages: historyForRequest.map((m) => ({ role: m.role, content: m.content })),
+          messages: historyForRequest.map((m) => ({
+            role: m.role,
+            content: m.image
+              ? [
+                  { type: 'text' as const, text: m.content },
+                  { type: 'image_url' as const, image_url: { url: m.image } },
+                ]
+              : m.content,
+          })),
           stream: true,
           stream_options: { include_usage: true },
         }),
@@ -779,11 +803,11 @@ export function App() {
 
   async function sendMessage(text: string) {
     const trimmed = text.trim();
-    if (!trimmed || !status || isSending) return;
+    if ((!trimmed && !pendingImage) || !status || isSending) return;
 
     const model = selectedModel || status.model_name;
     const conversationId = activeConversation?.id ?? randomId();
-    const userMessage: ChatMessage = { id: randomId(), role: 'user', content: trimmed, model };
+    const userMessage: ChatMessage = { id: randomId(), role: 'user', content: trimmed, model, image: pendingImage ?? undefined };
     const assistantId = randomId();
     const assistantMessage: ChatMessage = { id: assistantId, role: 'assistant', content: '', model };
     const existingMessages = activeConversation?.messages ?? [];
@@ -819,6 +843,7 @@ export function App() {
     setRoutedChatId(conversationId);
     pushRoute({ section: 'chat', chatId: conversationId });
     setInput('');
+    setPendingImage(null);
     setIsSending(true);
     await streamAssistantReply({ conversationId, assistantId, model, historyForRequest });
   }
@@ -1002,6 +1027,10 @@ export function App() {
                 setSelectedModel={setSelectedModel}
                 selectedModelNodeCount={selectedModelNodeCount}
                 selectedModelVramGb={selectedModelVramGb}
+                selectedModelVision={selectedModelVision}
+                visionModels={visionModels}
+                pendingImage={pendingImage}
+                setPendingImage={setPendingImage}
                 conversations={conversations}
                 activeConversationId={activeConversationId}
                 onConversationCreate={createNewConversation}
@@ -1471,6 +1500,10 @@ function ChatPage(props: {
   setSelectedModel: (v: string) => void;
   selectedModelNodeCount: number | null;
   selectedModelVramGb: number | null;
+  selectedModelVision: boolean;
+  visionModels: Set<string>;
+  pendingImage: string | null;
+  setPendingImage: (v: string | null) => void;
   conversations: ChatConversation[];
   activeConversationId: string;
   onConversationCreate: () => void;
@@ -1499,6 +1532,10 @@ function ChatPage(props: {
     setSelectedModel,
     selectedModelNodeCount,
     selectedModelVramGb,
+    selectedModelVision,
+    visionModels,
+    pendingImage,
+    setPendingImage,
     conversations,
     activeConversationId,
     onConversationCreate,
@@ -1526,6 +1563,18 @@ function ChatPage(props: {
   const [editingTitle, setEditingTitle] = useState('');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') setPendingImage(reader.result);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }
 
   useEffect(() => {
     if (!canChat || isSending) return;
@@ -1720,7 +1769,10 @@ function ChatPage(props: {
                       className="group py-2 data-[state=checked]:bg-accent data-[state=checked]:text-accent-foreground"
                     >
                       <div className="flex min-w-0 flex-col gap-0.5">
-                        <span className="truncate leading-5">{shortName(model)}</span>
+                        <span className="truncate leading-5">
+                          {shortName(model)}
+                          {visionModels.has(model) && <span className="ml-1.5" title="Vision — understands images">👁</span>}
+                        </span>
                         {modelStats ? (
                           <span className="grid grid-cols-[108px_132px] gap-x-3 text-xs leading-4 text-muted-foreground group-data-[highlighted]:text-accent-foreground group-data-[state=checked]:text-accent-foreground">
                             <span className="inline-flex items-center gap-1">
@@ -1797,6 +1849,18 @@ function ChatPage(props: {
             </div>
             <Separator />
             <div className="shrink-0 box-border w-full max-w-full space-y-2 overflow-hidden p-3 md:space-y-3 md:p-4">
+              {pendingImage && (
+                <div className="relative inline-block">
+                  <img src={pendingImage} alt="Attached" className="h-20 rounded-md border object-cover" />
+                  <button
+                    onClick={() => setPendingImage(null)}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs hover:bg-destructive/80"
+                    aria-label="Remove image"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
               <Textarea
                 ref={chatInputRef}
                 value={input}
@@ -1815,6 +1879,28 @@ function ChatPage(props: {
               <div className="flex items-center justify-between gap-2">
                 <div className="hidden md:block text-xs text-muted-foreground">Enter to send. Shift+Enter for newline.</div>
                 <div className="flex items-center gap-2">
+                  {selectedModelVision && (
+                    <>
+                      <input
+                        ref={imageInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleImageSelect}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => imageInputRef.current?.click()}
+                        disabled={!props.canChat || isSending}
+                        title="Attach image"
+                        aria-label="Attach image"
+                      >
+                        <ImagePlus className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
                   {isSending ? (
                     <Button type="button" variant="outline" size="icon" onClick={onStop} aria-label="Stop">
                       <Square className="h-3.5 w-3.5" />
@@ -1834,7 +1920,7 @@ function ChatPage(props: {
                   <Button
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={onSubmit}
-                    disabled={!props.canChat || !input.trim() || isSending}
+                    disabled={!props.canChat || (!input.trim() && !pendingImage) || isSending}
                   >
                     {isSending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Send className="mr-2 h-4 w-4" />}
                     Send
@@ -2161,7 +2247,10 @@ function DashboardPage({
                       </div>
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                         <span>{model.node_count} node{model.node_count === 1 ? '' : 's'}</span>
-                        <span>{model.size_gb.toFixed(1)} GB</span>
+                        <span className="flex items-center gap-2">
+                          {model.vision && <span title="Vision — understands images">👁</span>}
+                          {model.size_gb.toFixed(1)} GB
+                        </span>
                       </div>
                     </div>
                   ))}
@@ -2788,6 +2877,13 @@ function ChatBubble({
               </AccordionContent>
             </AccordionItem>
           </Accordion>
+        ) : null}
+
+        {/* Attached image */}
+        {isUser && message.image ? (
+          <div className="mb-2">
+            <img src={message.image} alt="Attached" className="max-h-48 rounded-lg border object-contain" />
+          </div>
         ) : null}
 
         {/* Main content */}

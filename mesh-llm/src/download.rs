@@ -19,6 +19,9 @@ pub struct CatalogModel {
     /// Each entry is (filename, url). llama.cpp auto-discovers splits from the
     /// first file, but all parts must be present in the same directory.
     pub extra_files: &'static [(&'static str, &'static str)],
+    /// Multimodal projector for vision models (filename, url).
+    /// When set, llama-server is launched with `--mmproj <file>`.
+    pub mmproj: Option<(&'static str, &'static str)>,
 }
 
 /// Pre-computed MoE expert sharding configuration for a model.
@@ -64,6 +67,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-3B-Instruct-Q4_K_M",
@@ -74,6 +78,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Llama-3.2-3B-Instruct-Q4_K_M",
@@ -84,6 +89,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Llama-3.2-1B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     // ── Small (6-8GB VRAM) ──────────────────────────────────────────
     CatalogModel {
@@ -95,6 +101,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-Coder-7B-Instruct-Q4_K_M",
@@ -105,6 +112,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Gemma-3-12B-it-Q4_K_M",
@@ -115,6 +123,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Gemma-3-1B-it-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Hermes-2-Pro-Mistral-7B-Q4_K_M",
@@ -125,6 +134,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     // ── Medium (11-17GB VRAM) ───────────────────────────────────────
     CatalogModel {
@@ -136,6 +146,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-14B-Instruct-Q4_K_M",
@@ -146,6 +157,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-Coder-14B-Instruct-Q4_K_M",
@@ -156,6 +168,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "DeepSeek-R1-Distill-Qwen-14B-Q4_K_M",
@@ -166,6 +179,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Devstral-Small-2505-Q4_K_M",
@@ -176,6 +190,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Mistral-Small-3.1-24B-Instruct-Q4_K_M",
@@ -186,6 +201,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     // ── Large (20-24GB VRAM) ────────────────────────────────────────
     CatalogModel {
@@ -202,6 +218,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: &[], // no pre-baked ranking — uses GGUF auto-detect + fallback
         }),
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen3-30B-A3B-Q4_K_M",
@@ -217,6 +234,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: QWEN3_30B_A3B_RANKING, // same arch as Coder variant
         }),
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M",
@@ -232,6 +250,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: QWEN3_30B_A3B_RANKING, // same arch as Qwen3-30B-A3B
         }),
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "GLM-4-32B-0414-Q4_K_M",
@@ -242,6 +261,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen3-32B-Q4_K_M",
@@ -252,6 +272,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M",
@@ -262,6 +283,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-32B-Instruct-Q4_K_M",
@@ -272,6 +294,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-Coder-32B-Instruct-Q4_K_M",
@@ -282,6 +305,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Llama-4-Scout-Q4_K_M",
@@ -297,6 +321,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: &[], // no pre-baked ranking — uses GGUF auto-detect
         }),
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Gemma-3-27B-it-Q4_K_M",
@@ -307,16 +332,18 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Gemma-3-1B-it-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen3.5-27B-Q4_K_M",
         file: "Qwen3.5-27B-Q4_K_M.gguf",
         url: "https://registry.ollama.ai/v2/library/qwen3.5/blobs/sha256:d4b8b4f4c350f5d322dc8235175eeae02d32c6f3fd70bdb9ea481e3abb7d7fc4",
         size: "17GB",
-        description: "Qwen3.5 27B, latest Qwen dense, strong reasoning and coding",
+        description: "Qwen3.5 27B, vision + text, strong reasoning and coding",
         draft: Some("Qwen3-0.6B-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: Some(("Qwen3.5-27B-mmproj-BF16.gguf", "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/mmproj-BF16.gguf")),
     },
     // ── Large (40GB+ VRAM) ────────────────────────────────────────
     CatalogModel {
@@ -332,6 +359,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ("Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf", "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00003-of-00004.gguf"),
             ("Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf", "https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00004-of-00004.gguf"),
         ],
+        mmproj: None,
     },
     CatalogModel {
         name: "Llama-3.3-70B-Instruct-Q4_K_M",
@@ -342,6 +370,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Llama-3.2-1B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen2.5-72B-Instruct-Q4_K_M",
@@ -352,6 +381,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: Some("Qwen2.5-0.5B-Instruct-Q4_K_M"),
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "DeepSeek-R1-Distill-70B-Q4_K_M",
@@ -362,6 +392,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Mixtral-8x22B-Instruct-Q4_K_M",
@@ -377,6 +408,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: &[],
         }),
         extra_files: &[],
+        mmproj: None,
     },
     // ── XXL (100GB+ VRAM) ─────────────────────────────────────────
     CatalogModel {
@@ -393,6 +425,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ranking: &[],
         }),
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Llama-3.1-405B-Instruct-Q2_K",
@@ -403,6 +436,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     // ── XXL (100GB+ VRAM, split GGUF) ─────────────────────────────
     CatalogModel {
@@ -423,6 +457,41 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
             ("MiniMax-M2.5-Q4_K_M-00003-of-00004.gguf", "https://huggingface.co/unsloth/MiniMax-M2.5-GGUF/resolve/main/Q4_K_M/MiniMax-M2.5-Q4_K_M-00003-of-00004.gguf"),
             ("MiniMax-M2.5-Q4_K_M-00004-of-00004.gguf", "https://huggingface.co/unsloth/MiniMax-M2.5-GGUF/resolve/main/Q4_K_M/MiniMax-M2.5-Q4_K_M-00004-of-00004.gguf"),
         ],
+        mmproj: None,
+    },
+    // ── Vision models ───────────────────────────────────────────────
+    CatalogModel {
+        name: "Qwen3.5-0.8B-Vision-Q4_K_M",
+        file: "Qwen3.5-0.8B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
+        size: "508MB",
+        description: "Tiny vision model, OCR, screenshots, runs anywhere",
+        draft: None,
+        moe: None,
+        extra_files: &[],
+        mmproj: Some(("Qwen3.5-0.8B-mmproj-BF16.gguf", "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf")),
+    },
+    CatalogModel {
+        name: "Qwen3.5-4B-Vision-Q4_K_M",
+        file: "Qwen3.5-4B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+        size: "2.7GB",
+        description: "Small vision model, good quality/size balance",
+        draft: None,
+        moe: None,
+        extra_files: &[],
+        mmproj: Some(("Qwen3.5-4B-mmproj-BF16.gguf", "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/mmproj-BF16.gguf")),
+    },
+    CatalogModel {
+        name: "Qwen3.5-9B-Vision-Q4_K_M",
+        file: "Qwen3.5-9B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+        size: "5.8GB",
+        description: "Vision + text, replaces Qwen3-8B with image understanding",
+        draft: None,
+        moe: None,
+        extra_files: &[],
+        mmproj: Some(("Qwen3.5-9B-mmproj-BF16.gguf", "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/mmproj-BF16.gguf")),
     },
     // ── Draft models ────────────────────────────────────────────────
     CatalogModel {
@@ -434,6 +503,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Qwen3-0.6B-Q4_K_M",
@@ -444,6 +514,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Llama-3.2-1B-Instruct-Q4_K_M",
@@ -454,6 +525,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
     CatalogModel {
         name: "Gemma-3-1B-it-Q4_K_M",
@@ -464,6 +536,7 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
         draft: None,
         moe: None,
         extra_files: &[],
+        mmproj: None,
     },
 ];
 
@@ -507,9 +580,12 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
     tokio::fs::create_dir_all(&dir).await?;
     let dest = dir.join(model.file);
 
-    // Collect all files to download: primary + extra splits
+    // Collect all files to download: primary + extra splits + mmproj
     let mut files: Vec<(&str, &str)> = vec![(model.file, model.url)];
     for (f, u) in model.extra_files {
+        files.push((f, u));
+    }
+    if let Some((f, u)) = &model.mmproj {
         files.push((f, u));
     }
 

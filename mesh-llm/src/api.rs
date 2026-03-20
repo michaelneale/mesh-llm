@@ -92,6 +92,8 @@ struct MeshModelPayload {
     status: String,
     node_count: usize,
     size_gb: f64,
+    /// Whether this model supports vision/image input
+    vision: bool,
     /// Total requests seen across the mesh (from demand map)
     #[serde(skip_serializing_if = "Option::is_none")]
     request_count: Option<u64>,
@@ -244,11 +246,17 @@ impl MeshApi {
                 ),
                 None => (None, None),
             };
+            let vision = download::MODEL_CATALOG.iter()
+                .find(|m| m.name == name.as_str()
+                    || m.file.strip_suffix(".gguf").unwrap_or(m.file) == name.as_str())
+                .map(|m| m.mmproj.is_some())
+                .unwrap_or(false);
             MeshModelPayload {
                 name: name.clone(),
                 status: if is_warm { "warm".into() } else { "cold".into() },
                 node_count,
                 size_gb,
+                vision,
                 request_count,
                 last_active_secs_ago,
             }

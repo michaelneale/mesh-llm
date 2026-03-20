@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 use mesh::NodeRole;
 use std::path::PathBuf;
 
-pub const VERSION: &str = "0.37.6";
+pub const VERSION: &str = "0.38.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "mesh-llm", version = VERSION, about = "P2P mesh for distributed llama.cpp inference over QUIC")]

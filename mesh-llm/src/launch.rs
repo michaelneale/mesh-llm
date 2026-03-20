@@ -126,6 +126,7 @@ pub async fn start_llama_server(
     draft_max: u16,
     model_bytes: u64,
     my_vram: u64,
+    mmproj: Option<&Path>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>> {
     let llama_server = bin_dir.join("llama-server");
     anyhow::ensure!(
@@ -226,6 +227,15 @@ pub async fn start_llama_server(
             tracing::info!("Speculative decoding: draft={}, draft-max={}", draft_path.display(), draft_max);
         } else {
             tracing::warn!("Draft model not found at {}, skipping speculative decoding", draft_path.display());
+        }
+    }
+    if let Some(proj) = mmproj {
+        if proj.exists() {
+            args.push("--mmproj".to_string());
+            args.push(proj.to_string_lossy().to_string());
+            tracing::info!("Vision: mmproj={}", proj.display());
+        } else {
+            tracing::warn!("mmproj not found at {}, skipping vision", proj.display());
         }
     }
     let mut child = Command::new(&llama_server)

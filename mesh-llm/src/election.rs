@@ -606,7 +606,7 @@ async fn moe_election_loop(
 
                 let mb = total_model_bytes(&model);
                 match launch::start_llama_server(
-                    &bin_dir, &model, llama_port, &[], None, None, 0, mb, my_vram,
+                    &bin_dir, &model, llama_port, &[], None, None, 0, mb, my_vram, None,
                 ).await {
                     Ok(_death_rx) => {
                         node.set_role(NodeRole::Host { http_port: llama_port }).await;
@@ -677,7 +677,7 @@ async fn moe_election_loop(
 
             let shard_bytes = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
             match launch::start_llama_server(
-                &bin_dir, &shard_path, llama_port, &[], None, None, 0, shard_bytes, my_vram,
+                &bin_dir, &shard_path, llama_port, &[], None, None, 0, shard_bytes, my_vram, None,
             ).await {
                 Ok(_death_rx) => {
                     node.set_role(NodeRole::Host { http_port: llama_port }).await;
@@ -948,6 +948,13 @@ async fn start_llama(
         }
     };
 
+    // Look up mmproj for vision models
+    let mmproj_path = download::MODEL_CATALOG.iter()
+        .find(|m| m.name == model_name || m.file.strip_suffix(".gguf").unwrap_or(m.file) == model_name)
+        .and_then(|m| m.mmproj)
+        .map(|(filename, _url)| download::models_dir().join(filename))
+        .filter(|p| p.exists());
+
     match launch::start_llama_server(
         bin_dir,
         model,
@@ -958,6 +965,7 @@ async fn start_llama(
         draft_max,
         model_bytes,
         my_vram,
+        mmproj_path.as_deref(),
     )
     .await
     {

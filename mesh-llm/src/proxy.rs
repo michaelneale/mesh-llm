@@ -224,10 +224,18 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
     let data: Vec<serde_json::Value> = models
         .iter()
         .map(|m| {
+            let has_vision = crate::download::MODEL_CATALOG.iter()
+                .find(|c| c.name == m.as_str()
+                    || c.file.strip_suffix(".gguf").unwrap_or(c.file) == m.as_str())
+                .map(|c| c.mmproj.is_some())
+                .unwrap_or(false);
+            let mut caps = vec!["text"];
+            if has_vision { caps.push("vision"); }
             serde_json::json!({
                 "id": m,
                 "object": "model",
                 "owned_by": "mesh-llm",
+                "capabilities": caps,
             })
         })
         .collect();
