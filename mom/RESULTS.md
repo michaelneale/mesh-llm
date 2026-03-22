@@ -184,11 +184,16 @@ MoA's aggregation prompt (`"synthesize these responses..."`) confused MiniMax in
 2. **`model=moa` is useful for chat** — non-agentic single-turn questions where quality matters
 3. **`model=best-of-n` for code review/analysis** — when you want the best answer, not a merged one
 4. **Filter MoA to tier 3+ models** — implemented, prevents weak model drag
-5. **Don't use MoA as an agent backend** — it breaks tool-use flows
+5. **MoA + tool-use needs a separate tool extraction pass** — see next steps
 
 ## Next Steps
 
-- [ ] Test MoA on harder tasks where models genuinely disagree (edge cases, ambiguous requirements)
-- [ ] Try MoA-2 (two-layer) to see if quality justifies 3x latency for chat
-- [ ] Consider `model=auto` using MoA only for single-turn non-tool requests
-- [ ] Profile MoA latency breakdown: fan-out vs aggregation vs thinking overhead
+- [ ] **MoA tool-call strategy**: MoA synthesis produces good reasoning but breaks tool protocol. Solution: run MoA for the thinking/planning phase, then a second model pass that takes the MoA output and produces the correct tool calls for the harness. Two options:
+  - (a) MoA produces a plan → dedicated pass converts plan to tool calls using the original tools schema
+  - (b) Fan out proposals including tool calls → Best-of-N evaluator picks the proposal with the best tool calls → return that proposal's tool calls verbatim (no synthesis)
+  - Option (b) is simpler and avoids the format-conversion problem entirely
+- [ ] **Test MoA on harder tasks** where models genuinely disagree (ambiguous requirements, edge cases)
+- [ ] **Try MoA-2 (two-layer)** to see if quality justifies 3x latency for chat
+- [ ] **Consider `model=auto` using MoA only for non-tool requests** — router can detect `needs_tools` and skip MoA
+- [ ] **Profile MoA latency breakdown**: fan-out vs aggregation vs thinking overhead
+- [ ] **More diverse models on the mesh** — current mesh has 3 hosts; adding more strong models (Qwen3-Coder-30B, DeepSeek) would make MoA more valuable

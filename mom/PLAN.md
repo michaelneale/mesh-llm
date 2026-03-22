@@ -57,8 +57,9 @@ All run client-side in `mesh-llm/src/moa.rs`. Select via model name:
 
 **Two-layer** (`moa-2`): Advanced MoA. Each model refines having seen all other models' Layer 1 responses, then aggregator synthesizes Layer 2. The paper showed this improves quality on benchmarks, at the cost of another full fan-out round.
 
-### Not implemented (considered)
+### Not yet implemented
 
+- **MoA + tool calls**: The current approach breaks tool-use because the aggregation prompt confuses the agent's tool protocol. Fix: run MoA for the *reasoning/planning* step, then do a separate model pass to extract tool calls from the synthesized answer. Alternatively, MoA produces a plan/answer, and a dedicated "tool extractor" pass converts it into the correct tool-call format for the harness. This is the key unsolved problem.
 - **Full NSED** (3-7 round deliberation with voting): Too slow for interactive use. Our experiments showed 3-10x latency for marginal improvement on most tasks. The one exception is tool routing, which Best-of-N handles.
 - **Speculative routing**: Already exists as `pipeline.rs` — small model pre-plans, big model executes. Orthogonal to MoA.
 - **Confidence-based early exit**: Fan out but stop collecting when first 2 models agree. Would reduce latency but adds complexity.
@@ -100,13 +101,16 @@ The question: does MiniMax-253B match Claude? Does MoA/Best-of-N improve?
 
 ```
 mom/
-  PLAN.md           — this file
-  RESULTS.md        — experiment results
-  eval-agent.sh     — pi-based agentic eval (Claude vs mesh models)
-  mom.py            — NSED protocol experiment (ran on Studio, historical)
-  compare.py        — Claude vs Qwen single-turn comparison (historical)
-  moa-mesh.py       — Python prototype (superseded by moa.rs)
-  results/          — eval outputs
+  PLAN.md              — this file
+  RESULTS.md           — experiment results and conclusions
+  REFERENCE.md         — MoA/MoM/NSED/RouteMoA literature notes
+  eval-agent.sh        — pi-based agentic eval (Claude vs mesh models vs MoA)
+  local-moa-test.py    — fast local algorithm comparison (8 strategies)
+  mom.py               — NSED protocol experiment (ran on Studio)
+  historical/          — superseded Python prototypes
+  results/             — eval outputs
 mesh-llm/src/
-  moa.rs            — MoA implementation (client-side)
+  moa.rs               — MoA strategies (synthesize, best-of-n, moa-2), client-side
+  proxy.rs             — MoA interception in handle_mesh_request
+  main.rs              — MoA interception in api_proxy
 ```
