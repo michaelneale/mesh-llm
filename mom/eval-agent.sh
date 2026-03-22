@@ -10,6 +10,7 @@ PI_CONFIG_DIR="$RESULTS_DIR/.pi-config"
 LLAMA_SERVER="$SCRIPT_DIR/../llama.cpp/build/bin/llama-server"
 MODEL_PATH="$HOME/.models/Qwen3-8B-Q4_K_M.gguf"
 LLAMA_PORT=8081
+MESH_PORT=9337
 TIMEOUT=300  # 5 min per run
 
 mkdir -p "$RESULTS_DIR" "$PI_CONFIG_DIR"
@@ -167,6 +168,34 @@ setup_mesh_pi_config() {
         "contextWindow": 16384,
         "maxTokens": 4096
       }]
+    },
+    "mesh": {
+      "baseUrl": "http://localhost:$MESH_PORT/v1",
+      "api": "openai-completions",
+      "apiKey": "not-needed",
+      "compat": {
+        "supportsUsageInStreaming": false,
+        "maxTokensField": "max_tokens",
+        "supportsDeveloperRole": false
+      },
+      "models": [
+        {
+          "id": "MiniMax-M2.5-Q4_K_M",
+          "name": "MiniMax-253B",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 32768,
+          "maxTokens": 4096
+        },
+        {
+          "id": "moa",
+          "name": "MoA (mixture)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 32768,
+          "maxTokens": 4096
+        }
+      ]
     }
   }
 }
@@ -276,16 +305,30 @@ for i in $(seq 1 60); do
     sleep 1
 done
 
+# Check mesh is available
+if curl -s "http://localhost:$MESH_PORT/v1/models" | grep -q "moa"; then
+    MESH_AVAILABLE=1
+    echo "  ✅ Mesh available with MoA"
+else
+    MESH_AVAILABLE=0
+    echo "  ⚠️  Mesh not available — skipping MiniMax and MoA evals"
+fi
+
 # Run evals
 run_eval "claude" "anthropic" "claude-sonnet-4-20250514"
-run_eval "qwen3-8b" "mesh-local" "Qwen3-8B-Q4_K_M.gguf"
+
+if [ "$MESH_AVAILABLE" = "1" ]; then
+    run_eval "minimax-solo" "mesh" "MiniMax-M2.5-Q4_K_M"
+    run_eval "moa" "mesh" "moa"
+    run_eval "best-of-n" "mesh" "best-of-n"
+fi
 
 # Summary
 echo ""
 echo "============================================================"
 echo "SUMMARY"
 echo "============================================================"
-for d in "$RESULTS_DIR"/claude "$RESULTS_DIR"/qwen3-8b; do
+for d in "$RESULTS_DIR"/claude "$RESULTS_DIR"/minimax-solo "$RESULTS_DIR"/moa "$RESULTS_DIR"/best-of-n; do
     name=$(basename "$d")
     if [ -f "$d/meta.json" ]; then
         elapsed=$(python3 -c "import json; print(json.load(open('$d/meta.json'))['elapsed_s'])")
