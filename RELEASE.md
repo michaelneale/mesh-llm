@@ -3,6 +3,8 @@
 ## Prerequisites
 
 - `just` installed (`brew install just`)
+- `cmake` installed (`brew install cmake`)
+- `cargo` installed (packaged with rust)
 - `gh` CLI authenticated (`gh auth status`)
 - llama.cpp fork cloned (`just build` does this automatically)
 
@@ -38,7 +40,7 @@ Creates `/tmp/mesh-bundle.tar.gz` containing `mesh-llm`, `rpc-server`, `llama-se
 
 ```bash
 mkdir /tmp/test-bundle && tar xzf /tmp/mesh-bundle.tar.gz -C /tmp/test-bundle --strip-components=1
-/tmp/test-bundle/mesh-llm --model Qwen2.5-3B --console
+/tmp/test-bundle/mesh-llm --model Qwen2.5-3B
 # Should download model, start solo, API on :9337, console on :3131
 # Hit http://localhost:9337/v1/chat/completions to verify inference works
 # Ctrl+C to stop
