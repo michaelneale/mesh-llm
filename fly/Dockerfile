@@ -1,10 +1,6 @@
-# mesh-llm Fly.io apps — shared builder, different configs
+# mesh-llm Fly.io console
 #
-# Console (dashboard + API):
 #   fly deploy --config fly/console/fly.toml --dockerfile fly/Dockerfile
-#
-# API only (rate-limited public endpoint):
-#   fly deploy --config fly/api/fly.toml --dockerfile fly/Dockerfile --build-arg CMD=api
 #
 # Or run natively (no Docker):
 #   mesh-llm --client --auto

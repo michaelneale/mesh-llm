@@ -135,6 +135,11 @@ pub static MODEL_PROFILES: &[ModelProfile] = &[
     },
     // ── Tier 2: Good ────────────────────────────────────────────
     ModelProfile {
+        name: "Qwen3.5-9B-Q4_K_M",
+        strengths: &[Category::Chat, Category::Code],
+        tier: 2, tools: false,
+    },
+    ModelProfile {
         name: "Mistral-Small-3.1-24B-Instruct-Q4_K_M",
         strengths: &[Category::Chat, Category::ToolCall],
         tier: 2, tools: true,
@@ -524,11 +529,12 @@ pub fn pick_model_classified<'a>(
                 // tier 1→20, tier 2→40, tier 3→60, tier 4→80
                 tier * 20
             } else {
-                // Chat/no-tools: complexity adjusts preference
+                // Chat/no-tools: always prefer bigger models, but less aggressively
+                // than agentic. Small models are fallbacks, not first choice.
                 match classification.complexity {
-                    Complexity::Quick => (5 - tier) * 10,   // tier 1→40, tier 2→30, tier 3→20
-                    Complexity::Moderate => tier * 5,         // mild bigger preference
-                    Complexity::Deep => tier * 15,            // strong bigger preference
+                    Complexity::Quick => tier * 5,            // tier 2→10, tier 3→15, tier 4→20
+                    Complexity::Moderate => tier * 10,        // tier 2→20, tier 3→30, tier 4→40
+                    Complexity::Deep => tier * 15,            // tier 2→30, tier 3→45, tier 4→60
                 }
             };
 
@@ -549,12 +555,13 @@ pub fn pick_model_classified<'a>(
     scored.sort_by(|a, b| b.1.cmp(&a.1));
 
     // For non-agentic requests, spread load across top-scoring models.
-    // Pick randomly among candidates within 50 points of the best score.
-    // This avoids queueing all concurrent chat users on the same model.
+    // Pick randomly among candidates within 15 points of the best score.
+    // This avoids queueing all concurrent chat users on the same model
+    // while keeping weak models as fallbacks, not equal contenders.
     if !classification.needs_tools && scored.len() > 1 {
         let best_score = scored[0].1;
         let top_tier: Vec<&(&str, i32)> = scored.iter()
-            .filter(|(_, s)| best_score - s <= 50)
+            .filter(|(_, s)| best_score - s <= 15)
             .collect();
         if top_tier.len() > 1 {
             // Simple pseudo-random: use current time nanos to pick

@@ -167,10 +167,12 @@ pub async fn start_llama_server(
         65536  // 30GB+ free: full 64K context
     } else if vram_after_model >= 12 * GB {
         32768  // 12-30GB free: 32K
-    } else if vram_after_model >= 4 * GB {
-        8192   // 4-12GB free: 8K
+    } else if vram_after_model >= 6 * GB {
+        16384  // 6-12GB free: 16K
+    } else if vram_after_model >= 3 * GB {
+        8192   // 3-6GB free: 8K
     } else {
-        4096   // <4GB free: minimal
+        4096   // <3GB free: minimal
     };
     tracing::info!("Context size: {ctx_size} tokens (model {:.1}GB, {:.0}GB VRAM, {:.1}GB free)", model_bytes as f64 / GB as f64, my_vram as f64 / GB as f64, vram_after_model as f64 / GB as f64);
 
@@ -192,6 +194,12 @@ pub async fn start_llama_server(
         // Goose/OpenAI clients parse this correctly. "none" leaks raw <think>
         // tags into content which is worse.
         "--reasoning-format".to_string(), "deepseek".to_string(),
+        // Disable thinking by default. Thinking models (Qwen3, MiniMax) burn
+        // 15-80s on hidden reasoning for no quality gain on most tasks, and
+        // Qwen3.5-9B is completely broken (reasoning consumes all max_tokens).
+        // API users can opt-in per-request with:
+        //   "chat_template_kwargs": {"enable_thinking": true}
+        "--reasoning-budget".to_string(), "0".to_string(),
     ]);
     // KV cache quantization based on model size:
     //   < 5GB: leave default (FP16) — small models, KV cache is negligible

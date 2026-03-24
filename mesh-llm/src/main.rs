@@ -1,6 +1,8 @@
 mod api;
 mod download;
 mod election;
+mod blackboard;
+mod blackboard_mcp;
 mod launch;
 mod mesh;
 mod moe;
@@ -16,7 +18,7 @@ use clap::{Parser, Subcommand};
 use mesh::NodeRole;
 use std::path::PathBuf;
 
-pub const VERSION: &str = "0.38.4";
+pub const VERSION: &str = "0.41.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "mesh-llm", version = VERSION, about = "P2P mesh for distributed llama.cpp inference over QUIC")]
@@ -137,6 +139,14 @@ struct Cli {
     #[arg(long)]
     nostr_relay: Vec<String>,
 
+    /// Enable the blackboard — agents share status, findings, and questions across the mesh. Works on any node (with or without a model).
+    #[arg(long)]
+    blackboard: bool,
+
+    /// Your display name on the blackboard (default: short node ID).
+    #[arg(long)]
+    name: Option<String>,
+
     /// Internal: set when this node joined via Nostr discovery (not --join).
     #[arg(skip)]
     nostr_discovery: bool,
@@ -204,6 +214,40 @@ enum Command {
         #[arg(long, default_value = "9337")]
         port: u16,
     },
+    /// Blackboard — post, search, and read messages shared across the mesh.
+    ///
+    /// Post a message:   mesh-llm blackboard "your message here"
+    /// Show feed:        mesh-llm blackboard
+    /// Search:           mesh-llm blackboard --search "query"
+    /// From a peer:      mesh-llm blackboard --from tyler
+    /// MCP server:       mesh-llm blackboard --mcp
+    /// Install skill:    mesh-llm blackboard install-skill
+    ///
+    /// Conventions: prefix messages with QUESTION:, STATUS:, FINDING:, TIP: etc.
+    /// Search picks these up naturally via multi-term OR matching.
+    #[command(name = "blackboard")]
+    Blackboard {
+        /// Message to post (if provided).
+        text: Option<String>,
+        /// Search the blackboard.
+        #[arg(long)]
+        search: Option<String>,
+        /// Filter by author name.
+        #[arg(long)]
+        from: Option<String>,
+        /// Only show items from the last N hours (default: 24).
+        #[arg(long)]
+        since: Option<f64>,
+        /// Max items to show (default: 20).
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Console/API port of the running mesh-llm instance.
+        #[arg(long, default_value = "3131")]
+        port: u16,
+        /// Run as an MCP server over stdio (for agent integration).
+        #[arg(long)]
+        mcp: bool,
+    },
 }
 
 #[tokio::main]
@@ -268,6 +312,15 @@ async fn main() -> Result<()> {
             }
             Command::Claude { model, port } => {
                 return run_claude(model.clone(), *port).await;
+            }
+            Command::Blackboard { text, search, from, since, limit, port, mcp } => {
+                if *mcp {
+                    return blackboard_mcp::run_mcp_server(*port).await;
+                }
+                if text.as_deref() == Some("install-skill") {
+                    return install_skill();
+                }
+                return run_blackboard(text.clone(), search.clone(), from.clone(), *since, *limit, *port).await;
             }
 
         }
@@ -799,6 +852,17 @@ async fn run_auto(mut cli: Cli, resolved_models: Vec<PathBuf>, requested_model_n
     let (node, channels) = mesh::Node::start(role, &cli.relay, cli.bind_port, max_vram).await?;
     node.start_accepting();
     let token = node.invite_token();
+
+    // Enable blackboard if requested
+    if cli.blackboard {
+        node.blackboard.set_enabled(true);
+        let display_name = cli.name.clone()
+            .or_else(|| std::env::var("USER").ok())
+            .or_else(|| std::env::var("USERNAME").ok())
+            .unwrap_or_else(|| node.id().fmt_short().to_string());
+        node.set_blackboard_name(display_name.clone()).await;
+        eprintln!("📝 Blackboard enabled (name: {display_name})");
+    }
 
     // Advertise what we have on disk and what we want the mesh to serve
     node.set_available_models(local_models.clone()).await;
@@ -2140,17 +2204,160 @@ async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
+async fn run_blackboard(
+    text: Option<String>,
+    search: Option<String>,
+    from: Option<String>,
+    since_hours: Option<f64>,
+    limit: usize,
+    port: u16,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let base = format!("http://127.0.0.1:{port}");
+
+    // Quick connectivity check
+    let status_resp = client.get(format!("{base}/api/status")).send().await;
+    if status_resp.is_err() {
+        eprintln!("No mesh-llm node running on port {port}.");
+        eprintln!();
+        eprintln!("Blackboard requires a running mesh. Add --blackboard to any node (client or full GPU):");
+        eprintln!("  Private mesh:  mesh-llm --client --blackboard  (share the join token printed out)");
+        eprintln!("  Join a mesh:   mesh-llm --client --blackboard --join <token>");
+        eprintln!("  Public mesh:   mesh-llm --client --blackboard --auto");
+        eprintln!();
+        eprintln!("See https://michaelneale.github.io/decentralized-inference for setup guide.");
+        std::process::exit(1);
+    }
+
+    // Check if blackboard is enabled on this node
+    let feed_check = client.get(format!("{base}/api/blackboard/feed?limit=1")).send().await;
+    if let Ok(resp) = feed_check {
+        if resp.status().as_u16() == 404 {
+            eprintln!("Mesh is running but blackboard is not enabled. Restart with --blackboard.");
+            std::process::exit(1);
+        }
+    }
+
+    // Default: 24h for feed/search, override with --since
+    let default_hours = 24.0;
+    let since_secs = {
+        let hours = since_hours.unwrap_or(default_hours);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now.saturating_sub((hours * 3600.0) as u64)
+    };
+
+    // Post a message
+    if let Some(msg) = text {
+        // PII check
+        let issues = blackboard::pii_check(&msg);
+        if !issues.is_empty() {
+            eprintln!("⚠️  PII/secret issues detected:");
+            for issue in &issues {
+                eprintln!("   • {issue}");
+            }
+            eprintln!("Scrubbing and posting...");
+        }
+        let clean = blackboard::pii_scrub(&msg);
+
+        let body = serde_json::json!({ "text": clean });
+        let resp = client.post(format!("{base}/api/blackboard/post"))
+            .json(&body)
+            .send().await
+            .context("Cannot reach mesh-llm — is it running with --blackboard?")?;
+        if resp.status().is_success() {
+            let item: blackboard::BlackboardItem = resp.json().await?;
+            eprintln!("📝 Posted (id: {:x})", item.id);
+        } else {
+            let err = resp.text().await.unwrap_or_default();
+            eprintln!("Error: {err}");
+        }
+        return Ok(());
+    }
+
+    // Search
+    if let Some(q) = search {
+        let resp = client.get(format!("{base}/api/blackboard/search"))
+            .query(&[("q", q.as_str()), ("limit", &limit.to_string()), ("since", &since_secs.to_string())])
+            .send().await
+            .context("Cannot reach mesh-llm — is it running with --blackboard?")?;
+        let items: Vec<blackboard::BlackboardItem> = resp.json().await?;
+        if items.is_empty() {
+            eprintln!("No results.");
+        } else {
+            print_blackboard_items(&items);
+        }
+        return Ok(());
+    }
+
+    // Feed (optionally filtered by peer)
+    let mut params = vec![("limit", limit.to_string()), ("since", since_secs.to_string())];
+    if let Some(ref f) = from {
+        params.push(("from", f.clone()));
+    }
+    let resp = client.get(format!("{base}/api/blackboard/feed"))
+        .query(&params)
+        .send().await
+        .context("Cannot reach mesh-llm — is it running with --blackboard?")?;
+    let items: Vec<blackboard::BlackboardItem> = resp.json().await?;
+    if items.is_empty() {
+        eprintln!("Blackboard is empty.");
+    } else {
+        print_blackboard_items(&items);
+    }
+    Ok(())
+}
+
+fn print_blackboard_items(items: &[blackboard::BlackboardItem]) {
+    for item in items {
+        let time = chrono_format(item.timestamp);
+        println!("{:x} │ {} │ {}", item.id, time, item.from);
+        // Indent the text
+        for line in item.text.lines() {
+            println!("  {line}");
+        }
+        println!();
+    }
+}
+
+fn chrono_format(ts: u64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ago = now.saturating_sub(ts);
+    if ago < 60 { format!("{ago}s ago") }
+    else if ago < 3600 { format!("{}m ago", ago / 60) }
+    else if ago < 86400 { format!("{}h ago", ago / 3600) }
+    else { format!("{}d ago", ago / 86400) }
+}
+
+fn install_skill() -> Result<()> {
+    let skill_content = include_str!("../skills/blackboard/SKILL.md");
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let skill_dir = home.join(".agents").join("skills").join("blackboard");
+    std::fs::create_dir_all(&skill_dir)?;
+    let skill_path = skill_dir.join("SKILL.md");
+    std::fs::write(&skill_path, skill_content)?;
+    eprintln!("✅ Installed blackboard skill to {}", skill_path.display());
+    eprintln!("   Works with pi, Goose, and other agents that read ~/.agents/skills/");
+    eprintln!("   Make sure mesh-llm is running with --blackboard.");
+    Ok(())
+}
+
 async fn check_for_update() {
     if let Some(latest) = latest_release_version().await {
         if version_newer(&latest, VERSION) {
-            eprintln!("💡 Update available: v{VERSION} → v{latest}  https://github.com/michaelneale/decentralized-inference/releases");
-            eprintln!("   curl -fsSL https://github.com/michaelneale/decentralized-inference/releases/latest/download/mesh-llm-aarch64-apple-darwin.tar.gz | tar xz && sudo mv mesh-bundle/* /usr/local/bin/");
+            eprintln!("💡 Update available: v{VERSION} → v{latest}  https://github.com/michaelneale/mesh-llm/releases");
+            eprintln!("   curl -fsSL https://github.com/michaelneale/mesh-llm/releases/latest/download/mesh-bundle.tar.gz | tar xz && mv mesh-bundle/* ~/.local/bin/");
         }
     }
 }
 
 pub(crate) async fn latest_release_version() -> Option<String> {
-    let url = "https://api.github.com/repos/michaelneale/decentralized-inference/releases/latest";
+    let url = "https://api.github.com/repos/michaelneale/mesh-llm/releases/latest";
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()

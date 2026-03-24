@@ -563,6 +563,103 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
             }
         }
 
+        // ── Blackboard ──
+        ("GET", "/api/blackboard/feed") => {
+            let node = state.inner.lock().await.node.clone();
+            if !node.blackboard.is_enabled() {
+                respond_error(&mut stream, 404, "Blackboard not enabled (start with --blackboard)").await?;
+            } else {
+                let query_str = path.split('?').nth(1).unwrap_or("");
+                let params: Vec<(&str, &str)> = query_str.split('&')
+                    .filter_map(|p| p.split_once('='))
+                    .collect();
+                let from = params.iter().find(|(k, _)| *k == "from").map(|(_, v)| *v);
+                let limit: usize = params.iter().find(|(k, _)| *k == "limit")
+                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(20);
+                let since: u64 = params.iter().find(|(k, _)| *k == "since")
+                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+                let items = {
+                    let mut items = node.blackboard.feed(since, from, limit).await;
+                    items.truncate(limit);
+                    items
+                };
+                let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(), json
+                );
+                stream.write_all(resp.as_bytes()).await?;
+            }
+        }
+
+        ("GET", "/api/blackboard/search") => {
+            let node = state.inner.lock().await.node.clone();
+            if !node.blackboard.is_enabled() {
+                respond_error(&mut stream, 404, "Blackboard not enabled (start with --blackboard)").await?;
+            } else {
+                let query_str = path.split('?').nth(1).unwrap_or("");
+                let params: Vec<(&str, &str)> = query_str.split('&')
+                    .filter_map(|p| p.split_once('='))
+                    .collect();
+                let q = params.iter().find(|(k, _)| *k == "q").map(|(_, v)| *v).unwrap_or("");
+                let limit: usize = params.iter().find(|(k, _)| *k == "limit")
+                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(20);
+                let since: u64 = params.iter().find(|(k, _)| *k == "since")
+                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
+                let decoded_q = q.replace('+', " ").replace("%20", " ");
+                let mut items = node.blackboard.search(&decoded_q, since).await;
+                items.truncate(limit);
+                let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    json.len(), json
+                );
+                stream.write_all(resp.as_bytes()).await?;
+            }
+        }
+
+        ("POST", "/api/blackboard/post") => {
+            let node = state.inner.lock().await.node.clone();
+            if !node.blackboard.is_enabled() {
+                respond_error(&mut stream, 404, "Blackboard not enabled (start with --blackboard)").await?;
+            } else {
+                // Parse JSON body
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
+                let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
+                match parsed {
+                    Ok(val) => {
+                        let text = val["text"].as_str().unwrap_or("").to_string();
+                        if text.is_empty() {
+                            respond_error(&mut stream, 400, "Missing 'text' field").await?;
+                        } else {
+                            let peer_name = node.peer_name().await;
+                            let peer_id_hex = format!("{}", node.id().fmt_short());
+                            let item = crate::blackboard::BlackboardItem::new(
+                                peer_name, peer_id_hex, text,
+                            );
+                            match node.blackboard.post(item).await {
+                                Ok(posted) => {
+                                    node.broadcast_blackboard(&posted).await;
+                                    let json = serde_json::to_string(&posted).unwrap_or_else(|_| "{}".into());
+                                    let resp = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                        json.len(), json
+                                    );
+                                    stream.write_all(resp.as_bytes()).await?;
+                                }
+                                Err(reason) => {
+                                    respond_error(&mut stream, 429, &reason).await?;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        respond_error(&mut stream, 400, "Invalid JSON body").await?;
+                    }
+                }
+            }
+        }
+
         // ── Chat proxy (routes through inference API port) ──
         (m, p) if m != "POST" && p.starts_with("/api/chat") => {
             respond_error(&mut stream, 405, "Method Not Allowed").await?;

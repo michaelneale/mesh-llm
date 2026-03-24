@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Background,
@@ -44,6 +44,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
 
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from './components/ui/accordion';
 import { Alert, AlertDescription, AlertTitle } from './components/ui/alert';
@@ -71,7 +72,8 @@ import { cn } from './lib/utils';
 import githubBlackLogo from './assets/icons/github-invertocat-black.svg';
 import githubWhiteLogo from './assets/icons/github-invertocat-white.svg';
 
-const DOCS_URL = 'https://michaelneale.github.io/decentralized-inference';
+const DOCS_URL = 'https://docs.anarchai.org';
+const FLY_DOMAINS = ['mesh-llm-console.fly.dev', 'www.mesh-llm.com', 'www.anarchai.org'];
 
 type MeshModel = {
   name: string;
@@ -479,6 +481,7 @@ export function App() {
     return token ? `mesh-llm --client --join ${token}` : '';
   }, [status?.token]);
   const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+  const isFlyHosted = typeof window !== 'undefined' && FLY_DOMAINS.includes(window.location.hostname);
   const apiDirectUrl = useMemo(() => {
     if (!isLocalhost) return '';
     const port = status?.api_port ?? 9337;
@@ -687,27 +690,38 @@ export function App() {
     currentAbortRef.current = controller;
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model,
-          messages: historyForRequest.map((m) => ({
-            role: m.role,
-            content: m.image
-              ? [
-                  { type: 'text' as const, text: m.content },
-                  { type: 'image_url' as const, image_url: { url: m.image } },
-                ]
-              : m.content,
-          })),
-          stream: true,
-          stream_options: { include_usage: true },
-        }),
-      });
+      const MAX_RETRIES = 3;
+      const RETRY_DELAYS = [1000, 2000, 4000];
+      const RETRYABLE = new Set([500, 502, 503]);
+      let response: Response | null = null;
 
-      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: historyForRequest.map((m) => ({
+              role: m.role,
+              content: m.image
+                ? [
+                    { type: 'text' as const, text: m.content },
+                    { type: 'image_url' as const, image_url: { url: m.image } },
+                  ]
+                : m.content,
+            })),
+            stream: true,
+            stream_options: { include_usage: true },
+            chat_template_kwargs: { enable_thinking: false },
+          }),
+        });
+        if (response.ok && response.body) break;
+        if (!RETRYABLE.has(response.status) || attempt === MAX_RETRIES - 1) break;
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+      }
+
+      if (!response?.ok || !response?.body) throw new Error(`HTTP ${response?.status ?? 'unknown'}`);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1029,6 +1043,8 @@ export function App() {
               <ChatPage
                 inviteToken={status?.token ?? ''}
                 isPublicMesh={status?.nostr_discovery ?? false}
+                isFlyHosted={isFlyHosted}
+                inflightRequests={status?.inflight_requests ?? 0}
                 warmModels={warmModels}
                 modelStatsByName={modelStatsByName}
                 selectedModel={selectedModel}
@@ -1085,7 +1101,7 @@ export function App() {
               <>
                 <span>·</span>
                 <a
-                  href="https://github.com/michaelneale/decentralized-inference/releases"
+                  href="https://github.com/michaelneale/mesh-llm/releases"
                   target="_blank"
                   rel="noreferrer"
                   className="underline-offset-2 hover:text-foreground hover:underline"
@@ -1099,7 +1115,7 @@ export function App() {
             ) : null}
             <span>·</span>
             <a
-              href="https://github.com/michaelneale/decentralized-inference"
+              href="https://github.com/michaelneale/mesh-llm"
               target="_blank"
               rel="noreferrer"
               className="inline-flex h-5 w-5 items-center justify-center hover:text-foreground"
@@ -1338,6 +1354,12 @@ function AppHeader({
                   Install mesh-llm →
                 </a>
               </div>
+              <div className="text-xs text-muted-foreground pt-1">
+                Agents can gossip too — <code className="text-[0.9em]">mesh-llm blackboard install-skill</code>{' '}
+                <a href={`${DOCS_URL}/#blackboard`} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
+                  →
+                </a>
+              </div>
               </PopoverContent>
             </Popover>
             <Popover>
@@ -1529,6 +1551,8 @@ function AppHeader({
 function ChatPage(props: {
   inviteToken: string;
   isPublicMesh: boolean;
+  isFlyHosted: boolean;
+  inflightRequests: number;
   warmModels: string[];
   modelStatsByName: Record<string, ModelServingStat>;
   selectedModel: string;
@@ -1856,6 +1880,30 @@ function ChatPage(props: {
         </div>
       </CardHeader>
       <Separator />
+      {props.isFlyHosted ? (
+        <div className={cn(
+          'border-b px-4 py-2 text-xs',
+          props.inflightRequests > 2
+            ? 'bg-orange-500/10 text-orange-700 dark:text-orange-400'
+            : 'bg-muted/40 text-muted-foreground',
+        )}>
+          {props.inflightRequests > 2 ? (
+            <>
+              <span className="font-medium">⏳ Busy</span> — {props.inflightRequests} requests in flight, responses may be slow.{' '}
+              For direct access run <code className="rounded bg-muted px-1 py-0.5 font-mono">mesh-llm --auto</code>{' '}
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">Learn more →</a>
+            </>
+          ) : (
+            <>
+              <span className="font-medium">Community demo</span> — best-effort public instance.
+              For direct, faster access run{' '}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono">mesh-llm --auto</code>{' '}
+              to join the mesh or start your own.{' '}
+              <a href={DOCS_URL} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">Learn more →</a>
+            </>
+          )}
+        </div>
+      ) : null}
       {/* Mobile conversation sheet */}
       <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
         <SheetContent side="left" className="w-72 p-0">
@@ -1889,12 +1937,13 @@ function ChatPage(props: {
                 </div>
               ) : (
                 <>
-                  {messages.map((message) => (
+                  {messages.map((message, i) => (
                     <ChatBubble
                       key={message.id}
                       message={message}
                       reasoningOpen={!!reasoningOpen[message.id]}
                       onReasoningToggle={(open) => setReasoningOpen((prev) => ({ ...prev, [message.id]: open }))}
+                      streaming={isSending && i === messages.length - 1}
                     />
                   ))}
 
@@ -2064,6 +2113,16 @@ function InviteFriendEmptyState({ inviteToken, selectedModel, isPublicMesh }: { 
                 </a>
               </div>
             </div>
+            <Separator />
+            <div className="space-y-2">
+              <div className="text-xs font-medium">Agent gossip</div>
+              <div className="text-xs text-muted-foreground">
+                Let your agents coordinate across machines — share status, findings, and questions. Works with any LLM setup.{' '}
+                <a href={`${DOCS_URL}/#blackboard`} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
+                  Blackboard docs →
+                </a>
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
@@ -2115,6 +2174,12 @@ function InviteFriendEmptyState({ inviteToken, selectedModel, isPublicMesh }: { 
             Don't have it yet?{' '}
             <a href={`${DOCS_URL}/#install`} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
               Install mesh-llm →
+            </a>
+          </div>
+          <div className="text-xs text-muted-foreground pt-1">
+            Agents can gossip too —{' '}
+            <a href={`${DOCS_URL}/#blackboard`} target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground">
+              Blackboard docs →
             </a>
           </div>
         </div>
@@ -2215,7 +2280,7 @@ function DashboardPage({
             Learn more →
           </a>
           {' · '}
-          <a href="https://github.com/michaelneale/decentralized-inference" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 underline hover:text-foreground">
+          <a href="https://github.com/michaelneale/mesh-llm" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 underline hover:text-foreground">
             GitHub
           </a>
         </AlertDescription>
@@ -2260,7 +2325,7 @@ function DashboardPage({
         </div>
       </TooltipProvider>
 
-      <div className="grid gap-4 lg:grid-cols-7">
+      <div className="grid items-start gap-4 lg:grid-cols-7">
         <div className="lg:col-span-5">
           <Card>
             <CardHeader className="pb-2">
@@ -2316,9 +2381,9 @@ function DashboardPage({
               </div>
             </div>
           </CardHeader>
-          <CardContent className="min-h-0 pt-0">
+          <CardContent className="pt-0">
             {filteredModels.length > 0 ? (
-              <ScrollArea className="h-[18rem] md:h-[20rem]">
+              <div className="h-[360px] overflow-y-auto pr-2 md:h-[420px] lg:h-[460px] xl:h-[520px]">
                 <div className="space-y-2">
                   {filteredModels.map((model) => (
                     <div key={model.name} className="rounded-md border p-3">
@@ -2351,13 +2416,15 @@ function DashboardPage({
                     </div>
                   ))}
                 </div>
-              </ScrollArea>
+              </div>
             ) : (
-              <DashboardPanelEmpty
-                icon={<Sparkles className="h-4 w-4" />}
-                title={(status?.mesh_models.length ?? 0) > 0 ? `No ${modelFilter} models` : 'No model catalog data'}
-                description={(status?.mesh_models.length ?? 0) > 0 ? 'Try changing the model filter.' : 'Model metadata will appear once the mesh reports available models.'}
-              />
+              <div className="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]">
+                <DashboardPanelEmpty
+                  icon={<Sparkles className="h-4 w-4" />}
+                  title={(status?.mesh_models.length ?? 0) > 0 ? `No ${modelFilter} models` : 'No model catalog data'}
+                  description={(status?.mesh_models.length ?? 0) > 0 ? 'Try changing the model filter.' : 'Model metadata will appear once the mesh reports available models.'}
+                />
+              </div>
             )}
           </CardContent>
         </Card>
@@ -2994,7 +3061,74 @@ function layoutTopologyNodes(
   return positioned;
 }
 
-function MarkdownMessage({ content }: { content: string }) {
+// KaTeX math renderer — loads from CDN on first use
+let katexCssLoaded = false;
+const katexPromise = import('https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.mjs' as string).then(m => {
+  if (!katexCssLoaded) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css';
+    document.head.appendChild(link);
+    katexCssLoaded = true;
+  }
+  return m.default;
+}).catch(() => null);
+
+function KaTeXBlock({ math, display }: { math: string; display: boolean }) {
+  const [html, setHtml] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    katexPromise.then((katex) => {
+      if (cancelled || !katex) return;
+      try {
+        const rendered = katex.renderToString(math, { displayMode: display, throwOnError: false });
+        if (!cancelled) setHtml(rendered);
+      } catch {
+        if (!cancelled) setHtml(null);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [math, display]);
+
+  if (html === null) return display ? <div className="my-2 overflow-x-auto text-sm"><code>{math}</code></div> : <code>{math}</code>;
+  return display
+    ? <div className="my-2 overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />
+    : <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+// Mermaid diagram renderer — loads mermaid from CDN on first use
+const mermaidPromise = import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs' as string).then(m => {
+  m.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+  return m.default;
+}).catch(() => null);
+
+function MermaidBlock({ code }: { code: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    mermaidPromise.then(async (mermaid) => {
+      if (cancelled || !mermaid) { setError('Mermaid failed to load'); return; }
+      try {
+        const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const { svg: rendered } = await mermaid.render(id, code);
+        if (!cancelled) setSvg(rendered);
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Render failed');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [code]);
+
+  if (error) return <pre className="my-2 rounded-lg border border-border/70 bg-background/80 p-3 text-xs text-muted-foreground"><code>{code}</code></pre>;
+  if (!svg) return <div className="my-2 flex items-center gap-2 rounded-lg border border-border/70 bg-background/80 p-3 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" />Rendering diagram…</div>;
+  return <div ref={containerRef} className="my-2 overflow-x-auto rounded-lg border border-border/70 bg-background/80 p-3 [&_svg]:max-w-full" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+function MarkdownMessage({ content, streaming }: { content: string; streaming?: boolean }) {
   return (
     <div
       className={cn(
@@ -3016,7 +3150,20 @@ function MarkdownMessage({ content }: { content: string }) {
         '[&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5',
       )}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeHighlight]}
+        components={{
+          code({ className, children, ...props }) {
+            const text = String(children).replace(/\n$/, '');
+            if (!streaming) {
+              if (/language-mermaid/.test(className || '')) return <MermaidBlock code={text} />;
+              if (/language-math/.test(className || '')) return <KaTeXBlock math={text} display={/math-display/.test(className || '')} />;
+            }
+            return <code className={className} {...props}>{children}</code>;
+          },
+        }}
+      >
         {content}
       </ReactMarkdown>
     </div>
@@ -3027,10 +3174,12 @@ function ChatBubble({
   message,
   reasoningOpen,
   onReasoningToggle,
+  streaming,
 }: {
   message: ChatMessage;
   reasoningOpen: boolean;
   onReasoningToggle: (open: boolean) => void;
+  streaming?: boolean;
 }) {
   const isUser = message.role === 'user';
   const isThinking = !isUser && message.reasoning && !message.content;
@@ -3109,7 +3258,7 @@ function ChatBubble({
                   : 'bg-background',
             )}
           >
-            {message.content ? <MarkdownMessage content={message.content} /> : !isUser ? '...' : ''}
+            {message.content ? <MarkdownMessage content={message.content} streaming={streaming} /> : !isUser ? '...' : ''}
           </div>
         ) : null}
 
@@ -3174,7 +3323,7 @@ function DashboardPanelEmpty({
   description: string;
 }) {
   return (
-    <div className="flex h-[18rem] flex-col items-center justify-center rounded-md border border-dashed bg-muted/20 px-4 text-center md:h-[20rem]">
+    <div className="flex h-full min-h-[18rem] flex-col items-center justify-center rounded-md border border-dashed bg-muted/20 px-4 text-center md:min-h-[20rem]">
       <div className="mb-2 flex h-8 w-8 items-center justify-center rounded-full border bg-background text-muted-foreground">
         {icon}
       </div>

@@ -81,6 +81,10 @@ Today mesh-llm has two MoE modes: **solo** (model fits in memory, run it whole) 
 
 Only supports Qwen3.5-397B for now (hardcoded architecture). That's fine — it's the model we want to run.
 
+## Blackboard ✅
+
+Implemented. Shared ephemeral text messages across the mesh — agents post status, findings, questions, and answers. Multi-term OR search, convention prefixes (STATUS/QUESTION/FINDING/TIP/DONE), PII auto-scrub, flood-fill propagation with digest sync. Works on any node with or without models. MCP server (`mesh-llm blackboard --mcp`) exposes tools for agent integration. Agent skill installable via `mesh-llm blackboard install-skill`.
+
 ## Demand-based rebalancing
 
 Partially done. Unified demand map via gossip, standby nodes promote to serve. Next: large-VRAM hosts auto-upgrade models when demand warrants it.
