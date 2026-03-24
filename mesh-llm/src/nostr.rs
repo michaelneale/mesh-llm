@@ -960,7 +960,6 @@ mod auto_pack_tests {
     }
 
     #[test]
-    #[test]
     fn pack_52gb_generalist_plus_coder() {
         // 52GB isn't enough for triple pack (needs 55+), gets dual instead
         let pack = auto_model_pack(52.0);
