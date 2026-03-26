@@ -320,9 +320,65 @@ pub fn detect_vram_bytes() -> u64 {
         if system_ram > 0 {
             return (system_ram as f64 * 0.75) as u64;
         }
+
+        // Fallback: try NVIDIA Tegra/Jetson (tegrastats — unified memory, no nvidia-smi)
+        if let Some(total_mb) = tegrastats_ram_total_mb() {
+            if total_mb > 0 {
+                // Jetson uses unified memory; return full total so the caller can cap via --max-vram
+                return total_mb * 1024 * 1024;
+            }
+        }
     }
 
     0
+}
+
+/// Spawn `tegrastats --interval 1`, read the first output line, then kill the process.
+/// Returns the total unified RAM in MB parsed from the line, or `None` on any failure.
+///
+/// tegrastats output example:
+///   `03-25-2026 18:27:55 RAM 10400/62838MB (lfb 729x4MB) CPU [...] GR3D_FREQ 0% ...`
+#[cfg(target_os = "linux")]
+fn tegrastats_ram_total_mb() -> Option<u64> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("tegrastats")
+        .args(["--interval", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let stdout = child.stdout.take()?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    parse_tegrastats_ram_mb(&line)
+}
+
+/// Extract total RAM in MB from a tegrastats output line.
+///
+/// Looks for the `RAM used/totalMB` token, e.g. `RAM 10400/62838MB`.
+#[cfg(target_os = "linux")]
+fn parse_tegrastats_ram_mb(line: &str) -> Option<u64> {
+    // Locate the "RAM " token
+    let after_ram = line.split_once("RAM ")?.1;
+    // Expect "used/totalMB" — skip the used portion
+    let after_slash = after_ram.split_once('/')?.1;
+    // Strip the "MB" suffix
+    let total_str = after_slash.split_once("MB")?.0;
+    total_str.trim().parse::<u64>().ok()
+}
+
+/// Return `true` if this line was produced by tegrastats on a Tegra/Jetson device.
+/// Presence of `GR3D_FREQ` confirms an on-chip GPU.
+#[cfg(target_os = "linux")]
+fn tegrastats_line_has_gpu(line: &str) -> bool {
+    line.contains("GR3D_FREQ")
 }
 
 /// Lightweight routing table for passive nodes (clients + standby GPU).

@@ -323,6 +323,19 @@ fn detect_device() -> String {
         }
     }
 
+    // Linux: check for NVIDIA Tegra/Jetson (tegrastats — Jetson AGX/NX devices support CUDA)
+    // nvidia-smi is absent on Tegra; tegrastats is the canonical hardware stats tool.
+    if let Ok(mut child) = std::process::Command::new("tegrastats")
+        .args(["--interval", "1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return "CUDA0".to_string();
+    }
+
     // Linux: check for AMD ROCm/HIP
     if std::path::Path::new("/opt/rocm").exists() {
         return "HIP0".to_string();
