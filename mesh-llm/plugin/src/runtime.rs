@@ -10,16 +10,17 @@ use rmcp::model::{
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::{
-    context::PluginContext,
+    context::{PluginContext, PluginHandle},
     error::{PluginError, PluginResult, PluginRpcResult},
     helpers::{
         json_response, parse_get_prompt_request, parse_read_resource_request, parse_rpc_params,
         parse_tool_call_request, CompletionRouter, PromptRouter, ResourceRouter, TaskRouter,
         ToolCallRequest, ToolRouter,
     },
-    io::{connect_from_env, read_envelope, write_envelope, LocalStream},
+    io::{connect_from_env, read_envelope, LocalStream},
     proto, PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
@@ -935,19 +936,21 @@ impl PluginRuntime {
         Self::run_with_stream(plugin, stream).await
     }
 
-    pub async fn run_with_stream<P: Plugin>(mut plugin: P, mut stream: LocalStream) -> Result<()> {
+    pub async fn run_with_stream<P: Plugin>(mut plugin: P, stream: LocalStream) -> Result<()> {
+        let stream = Arc::new(Mutex::new(stream));
         loop {
-            let envelope = read_envelope(&mut stream).await?;
+            let envelope = {
+                let mut guard = stream.lock().await;
+                read_envelope(&mut guard).await?
+            };
             let request_id = envelope.request_id;
             let plugin_id = plugin.plugin_id().to_string();
+            let handle = PluginHandle::new(stream.clone(), Arc::<str>::from(plugin_id.clone()));
 
             match envelope.payload {
                 Some(proto::envelope::Payload::InitializeRequest(request)) => {
                     let init_result = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
+                        let mut context = PluginContext::new(handle.clone());
                         plugin
                             .initialize(PluginInitializeRequest::from(request), &mut context)
                             .await
@@ -961,7 +964,7 @@ impl PluginRuntime {
                                 err.into_error_response(),
                             )),
                         };
-                        write_envelope(&mut stream, &response).await?;
+                        handle.send_envelope(response).await?;
                         break;
                     }
                     let response = proto::Envelope {
@@ -978,19 +981,13 @@ impl PluginRuntime {
                             },
                         )),
                     };
-                    write_envelope(&mut stream, &response).await?;
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    handle.send_envelope(response).await?;
+                    let mut context = PluginContext::new(handle.clone());
                     plugin.on_initialized(&mut context).await?;
                 }
                 Some(proto::envelope::Payload::HealthRequest(_)) => {
                     let detail = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
+                        let mut context = PluginContext::new(handle.clone());
                         plugin.health(&mut context).await?
                     };
                     let response = proto::Envelope {
@@ -1004,7 +1001,7 @@ impl PluginRuntime {
                             },
                         )),
                     };
-                    write_envelope(&mut stream, &response).await?;
+                    handle.send_envelope(response).await?;
                 }
                 Some(proto::envelope::Payload::ShutdownRequest(_)) => {
                     let response = proto::Envelope {
@@ -1015,15 +1012,12 @@ impl PluginRuntime {
                             proto::ShutdownResponse {},
                         )),
                     };
-                    write_envelope(&mut stream, &response).await?;
+                    handle.send_envelope(response).await?;
                     break;
                 }
                 Some(proto::envelope::Payload::RpcRequest(request)) => {
                     let payload = {
-                        let mut context = PluginContext {
-                            stream: &mut stream,
-                            plugin_id: &plugin_id,
-                        };
+                        let mut context = PluginContext::new(handle.clone());
                         match plugin.handle_rpc(request, &mut context).await {
                             Ok(payload) => payload,
                             Err(err) => {
@@ -1031,54 +1025,37 @@ impl PluginRuntime {
                             }
                         }
                     };
-                    write_envelope(
-                        &mut stream,
-                        &proto::Envelope {
+                    handle
+                        .send_envelope(proto::Envelope {
                             protocol_version: PROTOCOL_VERSION,
                             plugin_id: plugin_id.clone(),
                             request_id,
                             payload: Some(payload),
-                        },
-                    )
-                    .await?;
+                        })
+                        .await?;
                 }
                 Some(proto::envelope::Payload::RpcNotification(notification)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    let mut context = PluginContext::new(handle.clone());
                     plugin
                         .on_rpc_notification(notification, &mut context)
                         .await?;
                 }
                 Some(proto::envelope::Payload::ChannelMessage(message)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    let mut context = PluginContext::new(handle.clone());
                     plugin.on_channel_message(message, &mut context).await?;
                 }
                 Some(proto::envelope::Payload::BulkTransferMessage(message)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    let mut context = PluginContext::new(handle.clone());
                     plugin
                         .on_bulk_transfer_message(message, &mut context)
                         .await?;
                 }
                 Some(proto::envelope::Payload::MeshEvent(event)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    let mut context = PluginContext::new(handle.clone());
                     plugin.on_mesh_event(event, &mut context).await?;
                 }
                 Some(proto::envelope::Payload::ErrorResponse(error)) => {
-                    let mut context = PluginContext {
-                        stream: &mut stream,
-                        plugin_id: &plugin_id,
-                    };
+                    let mut context = PluginContext::new(handle.clone());
                     plugin.on_host_error(error, &mut context).await?;
                 }
                 _ => {}

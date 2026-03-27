@@ -12,7 +12,7 @@ mod io;
 mod runtime;
 
 pub use async_trait::async_trait;
-pub use context::PluginContext;
+pub use context::{PluginContext, PluginHandle};
 pub use error::{PluginError, PluginResult, PluginRpcResult, STARTUP_DISABLED_ERROR_CODE};
 pub use helpers::{
     accept_bulk_transfer_message, bulk_transfer_message, bulk_transfer_sequence,
