@@ -2483,15 +2483,12 @@ impl Node {
             existing.requested_models = ann.requested_models.clone();
             existing.last_seen = std::time::Instant::now();
             if ann.version.is_some() { existing.version = ann.version.clone(); }
-<<<<<<< HEAD
             existing.gpu_name = ann.gpu_name.clone();
             existing.hostname = ann.hostname.clone();
             existing.is_soc = ann.is_soc;
             existing.gpu_vram = ann.gpu_vram.clone();
-=======
             let updated_peer = existing.clone();
             let changed = peer_meaningfully_changed(&old_peer, &updated_peer);
->>>>>>> 91de535 (Send richer peer events to plugins)
             if role_changed || serving_changed {
                 let count = state.peers.len();
                 drop(state);
@@ -2532,16 +2529,12 @@ impl Node {
             requested_models: ann.requested_models.clone(),
             last_seen: std::time::Instant::now(),
             version: ann.version.clone(),
-<<<<<<< HEAD
             gpu_name: ann.gpu_name.clone(),
             hostname: ann.hostname.clone(),
             is_soc: ann.is_soc,
             gpu_vram: ann.gpu_vram.clone(),
-        });
-=======
         };
         state.peers.insert(id, peer.clone());
->>>>>>> 91de535 (Send richer peer events to plugins)
         let count = state.peers.len();
         drop(state);
         let _ = self.peer_change_tx.send(count);

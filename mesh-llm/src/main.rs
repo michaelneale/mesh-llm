@@ -957,8 +957,14 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
 
 async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     let resolved_plugins = load_resolved_plugins(cli)?;
-    let (node, _channels) =
-        mesh::Node::start(NodeRole::Client, &cli.relay, cli.bind_port, Some(0.0)).await?;
+    let (node, _channels) = mesh::Node::start(
+        NodeRole::Client,
+        &cli.relay,
+        cli.bind_port,
+        Some(0.0),
+        cli.enumerate_host,
+    )
+    .await?;
     node.start_accepting();
     node.set_blackboard_name(blackboard_display_name(cli, &node))
         .await;
