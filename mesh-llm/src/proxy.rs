@@ -65,7 +65,8 @@ pub fn extract_body_json(buf: &[u8]) -> Option<serde_json::Value> {
 
 pub fn is_models_list_request(buf: &[u8]) -> bool {
     let s = String::from_utf8_lossy(buf);
-    s.starts_with("GET ") && (s.contains("/v1/models") || s.contains("/models"))
+    s.starts_with("GET ")
+        && (s.contains("/v1/models") || s.contains("/models"))
         && !s.contains("/v1/models/")
 }
 
@@ -104,12 +105,16 @@ pub async fn handle_mesh_request(node: mesh::Node, tcp_stream: TcpStream, track_
         if let Some(body_json) = extract_body_json(&buf[..n]) {
             let cl = router::classify(&body_json);
             let served = node.models_being_served().await;
-            let available: Vec<(&str, f64)> = served.iter()
-                .map(|name| (name.as_str(), 0.0))
-                .collect();
+            let available: Vec<(&str, f64)> =
+                served.iter().map(|name| (name.as_str(), 0.0)).collect();
             let picked = router::pick_model_classified(&cl, &available);
             if let Some(name) = picked {
-                tracing::info!("router: {:?}/{:?} tools={} → {name}", cl.category, cl.complexity, cl.needs_tools);
+                tracing::info!(
+                    "router: {:?}/{:?} tools={} → {name}",
+                    cl.category,
+                    cl.complexity,
+                    cl.needs_tools
+                );
                 Some(name.to_string())
             } else {
                 None
@@ -161,12 +166,17 @@ pub async fn handle_mesh_request(node: mesh::Node, tcp_stream: TcpStream, track_
                 return;
             }
             Err(e) => {
-                tracing::warn!("Failed to tunnel to host {}: {e}, trying next", target_host.fmt_short());
+                tracing::warn!(
+                    "Failed to tunnel to host {}: {e}, trying next",
+                    target_host.fmt_short()
+                );
                 last_err = Some(e);
                 // Background refresh on first failure — non-blocking
                 if !refreshed {
                     let refresh_node = node.clone();
-                    tokio::spawn(async move { refresh_node.gossip_one_peer().await; });
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
                     refreshed = true;
                 }
             }
@@ -182,7 +192,11 @@ pub async fn handle_mesh_request(node: mesh::Node, tcp_stream: TcpStream, track_
 /// Route a request to a known inference target (local llama-server or remote host).
 ///
 /// Used by the API proxy after election has determined the target.
-pub async fn route_to_target(node: mesh::Node, tcp_stream: TcpStream, target: election::InferenceTarget) {
+pub async fn route_to_target(
+    node: mesh::Node,
+    tcp_stream: TcpStream,
+    target: election::InferenceTarget,
+) {
     match target {
         election::InferenceTarget::Local(port) | election::InferenceTarget::MoeLocal(port) => {
             match TcpStream::connect(format!("127.0.0.1:{port}")).await {
@@ -199,15 +213,21 @@ pub async fn route_to_target(node: mesh::Node, tcp_stream: TcpStream, target: el
                 }
             }
         }
-        election::InferenceTarget::Remote(host_id) | election::InferenceTarget::MoeRemote(host_id) => {
+        election::InferenceTarget::Remote(host_id)
+        | election::InferenceTarget::MoeRemote(host_id) => {
             match node.open_http_tunnel(host_id).await {
                 Ok((quic_send, quic_recv)) => {
-                    if let Err(e) = tunnel::relay_tcp_via_quic(tcp_stream, quic_send, quic_recv).await {
+                    if let Err(e) =
+                        tunnel::relay_tcp_via_quic(tcp_stream, quic_send, quic_recv).await
+                    {
                         tracing::debug!("API proxy (remote) ended: {e}");
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("API proxy: can't tunnel to host {}: {e}", host_id.fmt_short());
+                    tracing::warn!(
+                        "API proxy: can't tunnel to host {}: {e}",
+                        host_id.fmt_short()
+                    );
                     let _ = send_503(tcp_stream).await;
                 }
             }
@@ -224,13 +244,18 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
     let data: Vec<serde_json::Value> = models
         .iter()
         .map(|m| {
-            let has_vision = crate::download::MODEL_CATALOG.iter()
-                .find(|c| c.name == m.as_str()
-                    || c.file.strip_suffix(".gguf").unwrap_or(c.file) == m.as_str())
+            let has_vision = crate::download::MODEL_CATALOG
+                .iter()
+                .find(|c| {
+                    c.name == m.as_str()
+                        || c.file.strip_suffix(".gguf").unwrap_or(c.file) == m.as_str()
+                })
                 .map(|c| c.mmproj.is_some())
                 .unwrap_or(false);
             let mut caps = vec!["text"];
-            if has_vision { caps.push("vision"); }
+            if has_vision {
+                caps.push("vision");
+            }
             serde_json::json!({
                 "id": m,
                 "object": "model",
@@ -253,7 +278,8 @@ pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> st
     let body = data.to_string();
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-        body.len(), body
+        body.len(),
+        body
     );
     stream.write_all(resp.as_bytes()).await?;
     stream.shutdown().await?;
@@ -309,14 +335,16 @@ pub async fn pipeline_proxy_local(
     };
 
     // Extract whether this is a streaming request
-    let is_streaming = body.get("stream")
+    let is_streaming = body
+        .get("stream")
         .and_then(|s| s.as_bool())
         .unwrap_or(false);
 
     // Pre-plan: ask the small model
     let http_client = reqwest::Client::new();
     let planner_url = format!("http://127.0.0.1:{planner_port}");
-    let messages = body.get("messages")
+    let messages = body
+        .get("messages")
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
@@ -325,7 +353,8 @@ pub async fn pipeline_proxy_local(
         Ok(plan) => {
             tracing::info!(
                 "pipeline: pre-plan by {} in {}ms — {}",
-                plan.model_used, plan.elapsed_ms,
+                plan.model_used,
+                plan.elapsed_ms,
                 plan.plan_text.chars().take(200).collect::<String>()
             );
             crate::pipeline::inject_plan(&mut body, &plan);
@@ -342,14 +371,11 @@ pub async fn pipeline_proxy_local(
 
     if is_streaming {
         // Streaming: forward SSE chunks to client
-        match http_client.post(&strong_url)
-            .json(&body)
-            .send()
-            .await
-        {
+        match http_client.post(&strong_url).json(&body).send().await {
             Ok(resp) => {
                 let status = resp.status();
-                let content_type = resp.headers()
+                let content_type = resp
+                    .headers()
                     .get("content-type")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("text/event-stream")
@@ -371,9 +397,19 @@ pub async fn pipeline_proxy_local(
                         Ok(bytes) => {
                             // HTTP chunked encoding
                             let chunk_header = format!("{:x}\r\n", bytes.len());
-                            if client_stream.write_all(chunk_header.as_bytes()).await.is_err() { break; }
-                            if client_stream.write_all(&bytes).await.is_err() { break; }
-                            if client_stream.write_all(b"\r\n").await.is_err() { break; }
+                            if client_stream
+                                .write_all(chunk_header.as_bytes())
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                            if client_stream.write_all(&bytes).await.is_err() {
+                                break;
+                            }
+                            if client_stream.write_all(b"\r\n").await.is_err() {
+                                break;
+                            }
                         }
                         Err(e) => {
                             tracing::debug!("pipeline: stream error: {e}");
@@ -392,11 +428,7 @@ pub async fn pipeline_proxy_local(
         }
     } else {
         // Non-streaming: simple request/response
-        match http_client.post(&strong_url)
-            .json(&body)
-            .send()
-            .await
-        {
+        match http_client.post(&strong_url).json(&body).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 match resp.bytes().await {

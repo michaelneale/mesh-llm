@@ -59,6 +59,14 @@ See `CONTRIBUTING.md` for full dev workflow.
 - `mesh-llm/src/moe.rs` — MoE detection, expert rankings, split orchestration
 - `mesh-llm/src/launch.rs` — llama-server/rpc-server process management
 
+## Plugin Protocol Compatibility
+
+When iterating on the plugin protocol, always consider protocol compatibility.
+
+- If a protocol change may be breaking, explicitly ask the developer whether the change is intended to be breaking.
+- If the change is not intended to be breaking, the previous version of the plugin protocol must continue to be supported.
+- Do not silently ship plugin protocol changes that strand older plugins or hosts without confirming that outcome is acceptable.
+
 ## UI Notes
 
 For changes in `mesh-llm/ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `ui/src/components/ui/` over ad-hoc markup.

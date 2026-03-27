@@ -1,0 +1,12 @@
+[workspace]
+members = [
+    "mesh-llm",
+    "mesh-llm/plugin",
+    "mesh-llm/src/plugins/example",
+]
+default-members = [
+    "mesh-llm",
+    "mesh-llm/plugin",
+    "mesh-llm/src/plugins/example",
+]
+resolver = "2"

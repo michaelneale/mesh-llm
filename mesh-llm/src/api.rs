@@ -10,7 +10,7 @@
 //! The dashboard is read-only — shows status, topology, models.
 //! All mutations happen via CLI flags (--join, --model, --auto).
 
-use crate::{download, election, mesh, nostr};
+use crate::{download, election, mesh, nostr, plugin};
 use include_dir::{include_dir, Dir};
 use serde::Serialize;
 use std::sync::Arc;
@@ -31,6 +31,7 @@ pub struct MeshApi {
 
 struct ApiInner {
     node: mesh::Node,
+    plugin_manager: plugin::PluginManager,
     is_host: bool,
     is_client: bool,
     llama_ready: bool,
@@ -139,10 +140,17 @@ struct MeshModelPayload {
 }
 
 impl MeshApi {
-    pub fn new(node: mesh::Node, model_name: String, api_port: u16, model_size_bytes: u64) -> Self {
+    pub fn new(
+        node: mesh::Node,
+        model_name: String,
+        api_port: u16,
+        model_size_bytes: u64,
+        plugin_manager: plugin::PluginManager,
+    ) -> Self {
         MeshApi {
             inner: Arc::new(Mutex::new(ApiInner {
                 node,
+                plugin_manager,
                 is_host: false,
                 is_client: false,
                 llama_ready: false,
@@ -200,9 +208,23 @@ impl MeshApi {
         // Snapshot inner fields and drop the lock before any async node queries.
         // This prevents deadlock: if node.peers() etc. block on node.state.lock(),
         // we don't hold inner.lock() hostage, so other handlers can still proceed.
-        let (node, node_id, token, my_vram_gb, inflight_requests,
-             model_name, model_size_bytes, llama_ready, is_host, is_client,
-             api_port, draft_name, mesh_name, latest_version, nostr_discovery) = {
+        let (
+            node,
+            node_id,
+            token,
+            my_vram_gb,
+            inflight_requests,
+            model_name,
+            model_size_bytes,
+            llama_ready,
+            is_host,
+            is_client,
+            api_port,
+            draft_name,
+            mesh_name,
+            latest_version,
+            nostr_discovery,
+        ) = {
             let inner = self.inner.lock().await;
             (
                 inner.node.clone(),
@@ -252,54 +274,72 @@ impl MeshApi {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let mesh_models: Vec<MeshModelPayload> = catalog.iter().map(|name| {
-            let is_warm = served.contains(name);
-            let node_count = if is_warm {
-                let peer_count = all_peers.iter()
-                    .filter(|p| {
-                        p.serving_models.iter().any(|s| s == name)
-                            || p.serving.as_deref() == Some(name.as_str())
+        let mesh_models: Vec<MeshModelPayload> = catalog
+            .iter()
+            .map(|name| {
+                let is_warm = served.contains(name);
+                let node_count = if is_warm {
+                    let peer_count = all_peers
+                        .iter()
+                        .filter(|p| {
+                            p.serving_models.iter().any(|s| s == name)
+                                || p.serving.as_deref() == Some(name.as_str())
+                        })
+                        .count();
+                    // Count self: check all serving models, fall back to primary model_name
+                    let me = if my_serving_models.iter().any(|s| s == name) || *name == model_name {
+                        1
+                    } else {
+                        0
+                    };
+                    peer_count + me
+                } else {
+                    0
+                };
+                let size_gb = if *name == model_name && model_size_bytes > 0 {
+                    model_size_bytes as f64 / 1e9
+                } else {
+                    download::parse_size_gb(
+                        download::MODEL_CATALOG
+                            .iter()
+                            .find(|m| {
+                                m.file.strip_suffix(".gguf").unwrap_or(m.file) == name.as_str()
+                                    || m.name == name.as_str()
+                            })
+                            .map(|m| m.size)
+                            .unwrap_or("0"),
+                    )
+                };
+                let (request_count, last_active_secs_ago) = match active_demand.get(name) {
+                    Some(d) => (
+                        Some(d.request_count),
+                        Some(now_ts.saturating_sub(d.last_active)),
+                    ),
+                    None => (None, None),
+                };
+                let vision = download::MODEL_CATALOG
+                    .iter()
+                    .find(|m| {
+                        m.name == name.as_str()
+                            || m.file.strip_suffix(".gguf").unwrap_or(m.file) == name.as_str()
                     })
-                    .count();
-                // Count self: check all serving models, fall back to primary model_name
-                let me = if my_serving_models.iter().any(|s| s == name) || *name == model_name { 1 } else { 0 };
-                peer_count + me
-            } else {
-                0
-            };
-            let size_gb = if *name == model_name && model_size_bytes > 0 {
-                model_size_bytes as f64 / 1e9
-            } else {
-                download::parse_size_gb(
-                    download::MODEL_CATALOG.iter()
-                        .find(|m| m.file.strip_suffix(".gguf").unwrap_or(m.file) == name.as_str()
-                            || m.name == name.as_str())
-                        .map(|m| m.size)
-                        .unwrap_or("0")
-                )
-            };
-            let (request_count, last_active_secs_ago) = match active_demand.get(name) {
-                Some(d) => (
-                    Some(d.request_count),
-                    Some(now_ts.saturating_sub(d.last_active)),
-                ),
-                None => (None, None),
-            };
-            let vision = download::MODEL_CATALOG.iter()
-                .find(|m| m.name == name.as_str()
-                    || m.file.strip_suffix(".gguf").unwrap_or(m.file) == name.as_str())
-                .map(|m| m.mmproj.is_some())
-                .unwrap_or(false);
-            MeshModelPayload {
-                name: name.clone(),
-                status: if is_warm { "warm".into() } else { "cold".into() },
-                node_count,
-                size_gb,
-                vision,
-                request_count,
-                last_active_secs_ago,
-            }
-        }).collect();
+                    .map(|m| m.mmproj.is_some())
+                    .unwrap_or(false);
+                MeshModelPayload {
+                    name: name.clone(),
+                    status: if is_warm {
+                        "warm".into()
+                    } else {
+                        "cold".into()
+                    },
+                    node_count,
+                    size_gb,
+                    vision,
+                    request_count,
+                    last_active_secs_ago,
+                }
+            })
+            .collect();
 
         let (launch_pi, launch_goose) = if llama_ready {
             (
@@ -316,10 +356,10 @@ impl MeshApi {
         let node_status = if is_client {
             "Client".to_string()
         } else if is_host && llama_ready {
-            let has_split_workers = all_peers.iter().any(|p|
-                matches!(p.role, mesh::NodeRole::Worker) &&
-                p.serving.as_deref() == Some(model_name.as_str())
-            );
+            let has_split_workers = all_peers.iter().any(|p| {
+                matches!(p.role, mesh::NodeRole::Worker)
+                    && p.serving.as_deref() == Some(model_name.as_str())
+            });
             if has_split_workers {
                 "Serving (split)".to_string()
             } else {
@@ -401,8 +441,7 @@ pub async fn start(
                 | election::InferenceTarget::MoeLocal(port) => {
                     state2.set_llama_port(Some(port)).await;
                 }
-                election::InferenceTarget::Remote(_)
-                | election::InferenceTarget::MoeRemote(_) => {
+                election::InferenceTarget::Remote(_) | election::InferenceTarget::MoeRemote(_) => {
                     let mut inner = state2.inner.lock().await;
                     inner.llama_ready = true;
                     inner.llama_port = None;
@@ -488,7 +527,9 @@ pub async fn start(
 
 async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Result<()> {
     let mut buf = vec![0u8; 8192];
-    let n = match tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf)).await {
+    let n = match tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+    {
         Ok(Ok(n)) => n,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => return Ok(()), // read timeout — health check probe, just close
@@ -522,7 +563,11 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
         }
 
         // ── Frontend static assets (bundled UI dist) ──
-        ("GET", p) if p.starts_with("/assets/") || matches!(p.rsplit('.').next(), Some("png" | "ico" | "webmanifest")) || (p.ends_with(".json") && !p.starts_with("/api/")) => {
+        ("GET", p)
+            if p.starts_with("/assets/")
+                || matches!(p.rsplit('.').next(), Some("png" | "ico" | "webmanifest"))
+                || (p.ends_with(".json") && !p.starts_with("/api/")) =>
+        {
             if !respond_console_asset(&mut stream, p).await? {
                 respond_error(&mut stream, 404, "Not found").await?;
             }
@@ -605,67 +650,194 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
             }
         }
 
+        // ── Plugins ──
+        ("GET", "/api/plugins") => {
+            let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+            let plugins = plugin_manager.list().await;
+            let json = serde_json::to_string(&plugins)?;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                json.len(),
+                json
+            );
+            stream.write_all(resp.as_bytes()).await?;
+        }
+
+        ("GET", p) if p.starts_with("/api/plugins/") && p.ends_with("/tools") => {
+            let rest = &p["/api/plugins/".len()..];
+            let plugin_name = rest.trim_end_matches("/tools");
+            let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+            match plugin_manager.tools(plugin_name).await {
+                Ok(tools) => {
+                    let json = serde_json::to_string(&tools)?;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        json.len(),
+                        json
+                    );
+                    stream.write_all(resp.as_bytes()).await?;
+                }
+                Err(e) => {
+                    respond_error(&mut stream, 404, &e.to_string()).await?;
+                }
+            }
+        }
+
+        ("POST", p) if p.starts_with("/api/plugins/") && p.contains("/tools/") => {
+            let rest = &p["/api/plugins/".len()..];
+            if let Some((plugin_name, tool_name)) = rest.split_once("/tools/") {
+                let body = req.split("\r\n\r\n").nth(1).unwrap_or("{}");
+                let payload = if body.trim().is_empty() { "{}" } else { body };
+                let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+                match plugin_manager
+                    .call_tool(plugin_name, tool_name, payload)
+                    .await
+                {
+                    Ok(result) if !result.is_error => {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            result.content_json.len(),
+                            result.content_json
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                    }
+                    Ok(result) => {
+                        respond_error(&mut stream, 502, &result.content_json).await?;
+                    }
+                    Err(e) => {
+                        respond_error(&mut stream, 502, &e.to_string()).await?;
+                    }
+                }
+            } else {
+                respond_error(&mut stream, 404, "Not found").await?;
+            }
+        }
+
         // ── Blackboard ──
         ("GET", "/api/blackboard/feed") => {
-            let node = state.inner.lock().await.node.clone();
-            if !node.blackboard.is_enabled() {
-                respond_error(&mut stream, 404, "Blackboard not enabled. On public meshes (--auto), add --blackboard explicitly").await?;
+            let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+            if !plugin_manager
+                .is_enabled(plugin::BLACKBOARD_PLUGIN_ID)
+                .await
+            {
+                respond_error(&mut stream, 404, "Blackboard is disabled on this node").await?;
             } else {
                 let query_str = path.split('?').nth(1).unwrap_or("");
-                let params: Vec<(&str, &str)> = query_str.split('&')
+                let params: Vec<(&str, &str)> = query_str
+                    .split('&')
                     .filter_map(|p| p.split_once('='))
                     .collect();
-                let from = params.iter().find(|(k, _)| *k == "from").map(|(_, v)| *v);
-                let limit: usize = params.iter().find(|(k, _)| *k == "limit")
-                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(20);
-                let since: u64 = params.iter().find(|(k, _)| *k == "since")
-                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
-                let items = {
-                    let mut items = node.blackboard.feed(since, from, limit).await;
-                    items.truncate(limit);
-                    items
+                let request = crate::blackboard::FeedRequest {
+                    from: params
+                        .iter()
+                        .find(|(k, _)| *k == "from")
+                        .map(|(_, v)| (*v).to_string()),
+                    limit: params
+                        .iter()
+                        .find(|(k, _)| *k == "limit")
+                        .and_then(|(_, v)| v.parse().ok())
+                        .unwrap_or(20),
+                    since: params
+                        .iter()
+                        .find(|(k, _)| *k == "since")
+                        .and_then(|(_, v)| v.parse().ok())
+                        .unwrap_or(0),
                 };
-                let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    json.len(), json
-                );
-                stream.write_all(resp.as_bytes()).await?;
+                match plugin_manager
+                    .call_tool(
+                        plugin::BLACKBOARD_PLUGIN_ID,
+                        "feed",
+                        &serde_json::to_string(&request)?,
+                    )
+                    .await
+                {
+                    Ok(result) if !result.is_error => {
+                        let items: Vec<crate::blackboard::BlackboardItem> =
+                            serde_json::from_str(&result.content_json).unwrap_or_default();
+                        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                    }
+                    Ok(result) => {
+                        respond_error(&mut stream, 502, &result.content_json).await?;
+                    }
+                    Err(e) => respond_error(&mut stream, 502, &e.to_string()).await?,
+                }
             }
         }
 
         ("GET", "/api/blackboard/search") => {
-            let node = state.inner.lock().await.node.clone();
-            if !node.blackboard.is_enabled() {
-                respond_error(&mut stream, 404, "Blackboard not enabled. On public meshes (--auto), add --blackboard explicitly").await?;
+            let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+            if !plugin_manager
+                .is_enabled(plugin::BLACKBOARD_PLUGIN_ID)
+                .await
+            {
+                respond_error(&mut stream, 404, "Blackboard is disabled on this node").await?;
             } else {
                 let query_str = path.split('?').nth(1).unwrap_or("");
-                let params: Vec<(&str, &str)> = query_str.split('&')
+                let params: Vec<(&str, &str)> = query_str
+                    .split('&')
                     .filter_map(|p| p.split_once('='))
                     .collect();
-                let q = params.iter().find(|(k, _)| *k == "q").map(|(_, v)| *v).unwrap_or("");
-                let limit: usize = params.iter().find(|(k, _)| *k == "limit")
-                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(20);
-                let since: u64 = params.iter().find(|(k, _)| *k == "since")
-                    .and_then(|(_, v)| v.parse().ok()).unwrap_or(0);
-                let decoded_q = q.replace('+', " ").replace("%20", " ");
-                let mut items = node.blackboard.search(&decoded_q, since).await;
-                items.truncate(limit);
-                let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    json.len(), json
-                );
-                stream.write_all(resp.as_bytes()).await?;
+                let request = crate::blackboard::SearchRequest {
+                    query: params
+                        .iter()
+                        .find(|(k, _)| *k == "q")
+                        .map(|(_, v)| (*v).replace('+', " ").replace("%20", " "))
+                        .unwrap_or_default(),
+                    limit: params
+                        .iter()
+                        .find(|(k, _)| *k == "limit")
+                        .and_then(|(_, v)| v.parse().ok())
+                        .unwrap_or(20),
+                    since: params
+                        .iter()
+                        .find(|(k, _)| *k == "since")
+                        .and_then(|(_, v)| v.parse().ok())
+                        .unwrap_or(0),
+                };
+                match plugin_manager
+                    .call_tool(
+                        plugin::BLACKBOARD_PLUGIN_ID,
+                        "search",
+                        &serde_json::to_string(&request)?,
+                    )
+                    .await
+                {
+                    Ok(result) if !result.is_error => {
+                        let items: Vec<crate::blackboard::BlackboardItem> =
+                            serde_json::from_str(&result.content_json).unwrap_or_default();
+                        let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        stream.write_all(resp.as_bytes()).await?;
+                    }
+                    Ok(result) => {
+                        respond_error(&mut stream, 502, &result.content_json).await?;
+                    }
+                    Err(e) => respond_error(&mut stream, 502, &e.to_string()).await?,
+                }
             }
         }
 
         ("POST", "/api/blackboard/post") => {
-            let node = state.inner.lock().await.node.clone();
-            if !node.blackboard.is_enabled() {
-                respond_error(&mut stream, 404, "Blackboard not enabled. On public meshes (--auto), add --blackboard explicitly").await?;
+            let (node, plugin_manager) = {
+                let inner = state.inner.lock().await;
+                (inner.node.clone(), inner.plugin_manager.clone())
+            };
+            if !plugin_manager
+                .is_enabled(plugin::BLACKBOARD_PLUGIN_ID)
+                .await
+            {
+                respond_error(&mut stream, 404, "Blackboard is disabled on this node").await?;
             } else {
-                // Parse JSON body
                 let body = req.split("\r\n\r\n").nth(1).unwrap_or("");
                 let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
                 match parsed {
@@ -674,23 +846,45 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
                         if text.is_empty() {
                             respond_error(&mut stream, 400, "Missing 'text' field").await?;
                         } else {
-                            let peer_name = node.peer_name().await;
-                            let peer_id_hex = format!("{}", node.id().fmt_short());
-                            let item = crate::blackboard::BlackboardItem::new(
-                                peer_name, peer_id_hex, text,
-                            );
-                            match node.blackboard.post(item).await {
-                                Ok(posted) => {
-                                    node.broadcast_blackboard(&posted).await;
-                                    let json = serde_json::to_string(&posted).unwrap_or_else(|_| "{}".into());
+                            let request = crate::blackboard::PostRequest {
+                                text,
+                                from: node.peer_name().await,
+                                peer_id: node.id().fmt_short().to_string(),
+                            };
+                            match plugin_manager
+                                .call_tool(
+                                    plugin::BLACKBOARD_PLUGIN_ID,
+                                    "post",
+                                    &serde_json::to_string(&request)?,
+                                )
+                                .await
+                            {
+                                Ok(result) if !result.is_error => {
+                                    let json = result.content_json;
                                     let resp = format!(
                                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                                        json.len(), json
+                                        json.len(),
+                                        json
                                     );
                                     stream.write_all(resp.as_bytes()).await?;
                                 }
-                                Err(reason) => {
-                                    respond_error(&mut stream, 429, &reason).await?;
+                                Ok(result) => {
+                                    let status = if result.content_json.contains("Rate limited") {
+                                        429
+                                    } else {
+                                        400
+                                    };
+                                    respond_error(&mut stream, status, &result.content_json)
+                                        .await?;
+                                }
+                                Err(e) => {
+                                    let msg = e.to_string();
+                                    let status = if msg.contains("Rate limited") {
+                                        429
+                                    } else {
+                                        400
+                                    };
+                                    respond_error(&mut stream, status, &msg).await?;
                                 }
                             }
                         }
@@ -790,7 +984,15 @@ async fn respond_console_asset(stream: &mut TcpStream, path: &str) -> anyhow::Re
     } else {
         "public, max-age=3600"
     };
-    respond_bytes_cached(stream, 200, "OK", content_type, cache_control, file.contents()).await?;
+    respond_bytes_cached(
+        stream,
+        200,
+        "OK",
+        content_type,
+        cache_control,
+        file.contents(),
+    )
+    .await?;
     Ok(true)
 }
 
@@ -868,13 +1070,19 @@ mod tests {
         );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].vram_bytes, 34_359_738_368);
-        assert_eq!(result[1].vram_bytes, 0, "missing VRAM entry should default to 0");
+        assert_eq!(
+            result[1].vram_bytes, 0,
+            "missing VRAM entry should default to 0"
+        );
     }
 
     #[test]
     fn test_build_gpus_vram_no_gpu_name() {
         let result = build_gpus(None, Some("34359738368"));
-        assert!(result.is_empty(), "no gpu_name means no entries even if vram present");
+        assert!(
+            result.is_empty(),
+            "no gpu_name means no entries even if vram present"
+        );
     }
 
     #[test]

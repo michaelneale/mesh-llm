@@ -56,7 +56,7 @@ mesh-llm --port 9337 --console 3131
 If `mesh-llm` is not on your `PATH`:
 
 ```bash
-./mesh-llm/target/release/mesh-llm --port 9337 --console 3131
+./target/release/mesh-llm --port 9337 --console 3131
 ```
 
 Terminal B (run Vite with HMR):

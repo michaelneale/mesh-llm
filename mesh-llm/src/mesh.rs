@@ -5,13 +5,14 @@
 
 use anyhow::Result;
 use base64::Engine;
-use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh::endpoint::Connection;
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+use prost::Message;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{watch, Mutex};
 
 /// Demand signal for a model — tracks interest via API requests and --model declarations.
 /// Gossiped across the mesh and merged via max(). Decays naturally when last_active gets old.
@@ -31,6 +32,56 @@ fn now_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn endpoint_id_hex(id: EndpointId) -> String {
+    hex::encode(id.as_bytes())
+}
+
+fn new_plugin_message_id(source_peer_id: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{source_peer_id}:{nanos}:{}", rand::random::<u64>())
+}
+
+fn node_role_label(role: &NodeRole) -> String {
+    match role {
+        NodeRole::Worker => "worker".into(),
+        NodeRole::Host { .. } => "host".into(),
+        NodeRole::Client => "client".into(),
+    }
+}
+
+fn peer_info_to_mesh_peer(peer: &PeerInfo) -> crate::plugin::proto::MeshPeer {
+    crate::plugin::proto::MeshPeer {
+        peer_id: endpoint_id_hex(peer.id),
+        version: peer.version.clone().unwrap_or_default(),
+        capabilities: Vec::new(),
+        role: node_role_label(&peer.role),
+        vram_bytes: peer.vram_bytes,
+        models: peer.models.clone(),
+        serving_models: peer.serving_models.clone(),
+        available_models: peer.available_models.clone(),
+        requested_models: peer.requested_models.clone(),
+        rtt_ms: peer.rtt_ms,
+        model_source: peer.model_source.clone().unwrap_or_default(),
+    }
+}
+
+fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool {
+    old.addr != new.addr
+        || old.role != new.role
+        || old.models != new.models
+        || old.vram_bytes != new.vram_bytes
+        || old.rtt_ms != new.rtt_ms
+        || old.model_source != new.model_source
+        || old.serving != new.serving
+        || old.serving_models != new.serving_models
+        || old.available_models != new.available_models
+        || old.requested_models != new.requested_models
+        || old.version != new.version
 }
 
 /// Merge two demand maps. For each model, take max of last_active and request_count.
@@ -54,6 +105,8 @@ const STREAM_ROUTE_REQUEST: u8 = 0x05;
 const STREAM_PEER_DOWN: u8 = 0x06;
 const STREAM_PEER_LEAVING: u8 = 0x07;
 const STREAM_BLACKBOARD: u8 = 0x08;
+const STREAM_PLUGIN_CHANNEL: u8 = 0x09;
+const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x0a;
 
 /// Role a node plays in the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -184,11 +237,10 @@ pub fn scan_local_models() -> Vec<String> {
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         // Skip draft models (tiny) and partial downloads
                         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                        if size > 500_000_000 { // > 500MB, skip draft models
+                        if size > 500_000_000 {
+                            // > 500MB, skip draft models
                             // For split GGUFs (name-00001-of-00006.gguf), use base name
-                            let name = split_gguf_base_name(stem)
-                                .unwrap_or(stem)
-                                .to_string();
+                            let name = split_gguf_base_name(stem).unwrap_or(stem).to_string();
                             if !names.contains(&name) {
                                 names.push(name);
                             }
@@ -259,11 +311,12 @@ pub fn detect_vram_bytes_capped(max_vram_gb: Option<f64>) -> u64 {
     let mut detected = crate::hardware::survey().vram_bytes;
     if let Some(cap) = max_vram_gb {
         let cap_bytes = (cap * 1e9) as u64;
-        if cap_bytes < detected { detected = cap_bytes; }
+        if cap_bytes < detected {
+            detected = cap_bytes;
+        }
     }
     detected
 }
-
 
 /// Lightweight routing table for passive nodes (clients + standby GPU).
 /// Contains just enough info to route requests to the right host.
@@ -287,7 +340,7 @@ pub struct RouteEntry {
 /// We can't send STUN from the bound port (iroh owns it), but we only need
 /// the public IP — the port is known from --bind-port + router forwarding.
 async fn stun_public_addr(advertised_port: u16) -> Option<std::net::SocketAddr> {
-    use std::net::{SocketAddr, SocketAddrV4, Ipv4Addr};
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
     let stun_servers = [
         "stun.l.google.com:19302",
@@ -301,9 +354,13 @@ async fn stun_public_addr(advertised_port: u16) -> Option<std::net::SocketAddr> 
     for server in &stun_servers {
         // STUN Binding Request: type=0x0001, len=0, magic=0x2112A442, txn=random
         let mut req = [0u8; 20];
-        req[0] = 0x00; req[1] = 0x01; // Binding Request
-        // length = 0
-        req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42; // Magic Cookie
+        req[0] = 0x00;
+        req[1] = 0x01; // Binding Request
+                       // length = 0
+        req[4] = 0x21;
+        req[5] = 0x12;
+        req[6] = 0xA4;
+        req[7] = 0x42; // Magic Cookie
         rand::fill(&mut req[8..20]);
 
         let dest: SocketAddr = match tokio::net::lookup_host(server).await {
@@ -314,13 +371,14 @@ async fn stun_public_addr(advertised_port: u16) -> Option<std::net::SocketAddr> 
             Err(_) => continue,
         };
 
-        if sock.send_to(&req, dest).await.is_err() { continue; }
+        if sock.send_to(&req, dest).await.is_err() {
+            continue;
+        }
 
         let mut buf = [0u8; 256];
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            sock.recv_from(&mut buf),
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf))
+            .await
+        {
             Ok(Ok((len, _))) if len >= 20 => {
                 // Parse STUN response for XOR-MAPPED-ADDRESS (0x0020)
                 // or MAPPED-ADDRESS (0x0001)
@@ -330,14 +388,18 @@ async fn stun_public_addr(advertised_port: u16) -> Option<std::net::SocketAddr> 
                 while i + 4 <= len {
                     let attr_type = u16::from_be_bytes([buf[i], buf[i + 1]]);
                     let attr_len = u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize;
-                    if i + 4 + attr_len > len { break; }
+                    if i + 4 + attr_len > len {
+                        break;
+                    }
                     let val = &buf[i + 4..i + 4 + attr_len];
 
                     if attr_type == 0x0020 && attr_len >= 8 && val[1] == 0x01 {
                         // XOR-MAPPED-ADDRESS, IPv4 — extract IP only
                         let ip = Ipv4Addr::new(
-                            val[4] ^ magic[0], val[5] ^ magic[1],
-                            val[6] ^ magic[2], val[7] ^ magic[3],
+                            val[4] ^ magic[0],
+                            val[5] ^ magic[1],
+                            val[6] ^ magic[2],
+                            val[7] ^ magic[3],
                         );
                         let addr = SocketAddr::V4(SocketAddrV4::new(ip, advertised_port));
                         tracing::info!("STUN discovered public address: {addr}");
@@ -387,7 +449,9 @@ pub struct Node {
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
-    tunnel_http_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    tunnel_http_tx:
+        tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    plugin_manager: Arc<Mutex<Option<crate::plugin::PluginManager>>>,
     pub blackboard: crate::blackboard::BlackboardStore,
     blackboard_name: Arc<Mutex<Option<String>>>,
     pub enumerate_host: bool,
@@ -405,6 +469,8 @@ struct MeshState {
     /// Peers confirmed dead — don't reconnect from gossip discovery.
     /// Cleared when the peer successfully reconnects via rejoin/join.
     dead_peers: std::collections::HashSet<EndpointId>,
+    seen_plugin_messages: HashSet<String>,
+    seen_plugin_message_order: VecDeque<String>,
 }
 
 /// Channels returned by Node::start for inbound tunnel streams.
@@ -455,10 +521,18 @@ impl Node {
         self.inflight_change_tx.subscribe()
     }
 
-    pub async fn start(role: NodeRole, relay_urls: &[String], bind_port: Option<u16>, max_vram_gb: Option<f64>, enumerate_host: bool) -> Result<(Self, TunnelChannels)> {
+    pub async fn start(
+        role: NodeRole,
+        relay_urls: &[String],
+        bind_port: Option<u16>,
+        max_vram_gb: Option<f64>,
+        enumerate_host: bool,
+    ) -> Result<(Self, TunnelChannels)> {
         // Clients use an ephemeral key so they get a unique identity even
         // when running on the same machine as a GPU node.
-        let secret_key = if matches!(role, NodeRole::Client) || std::env::var("MESH_LLM_EPHEMERAL_KEY").is_ok() {
+        let secret_key = if matches!(role, NodeRole::Client)
+            || std::env::var("MESH_LLM_EPHEMERAL_KEY").is_ok()
+        {
             let key = SecretKey::generate(&mut rand::rng());
             tracing::info!("Using ephemeral key (unique identity)");
             key
@@ -488,9 +562,13 @@ impl Node {
                 relay_urls.to_vec()
             };
             // Two relays: dedicated iroh relay (proper QUIC + STUN) and Fly relay (fallback).
-            let configs: Vec<RelayConfig> = urls.iter().map(|url| {
-                RelayConfig { url: url.parse().expect("invalid relay URL"), quic: None }
-            }).collect();
+            let configs: Vec<RelayConfig> = urls
+                .iter()
+                .map(|url| RelayConfig {
+                    url: url.parse().expect("invalid relay URL"),
+                    quic: None,
+                })
+                .collect();
             let relay_map = RelayMap::from_iter(configs);
             tracing::info!("Relay: {:?}", urls);
             builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(relay_map));
@@ -502,10 +580,7 @@ impl Node {
         let endpoint = builder.bind().await?;
         // Wait briefly for relay connection so the invite token includes the relay URL.
         // On sinkholed networks this times out and we proceed without relay (direct UDP only).
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            endpoint.online(),
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), endpoint.online()).await {
             Ok(()) => tracing::info!("Relay connected"),
             Err(_) => tracing::warn!("Relay connection timed out (5s) — proceeding without relay"),
         }
@@ -524,21 +599,39 @@ impl Node {
 
         let hw = crate::hardware::survey();
         let mut vram = hw.vram_bytes;
-        let gpu_name = if matches!(role, NodeRole::Client) { None } else { hw.gpu_name };
+        let gpu_name = if matches!(role, NodeRole::Client) {
+            None
+        } else {
+            hw.gpu_name
+        };
         let hostname = hw.hostname;
         let is_soc = Some(hw.is_soc);
         let gpu_vram = if hw.gpu_vram.is_empty() {
             None
         } else {
-            Some(hw.gpu_vram.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(","))
+            Some(
+                hw.gpu_vram
+                    .iter()
+                    .map(|b| b.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
         };
         if let Some(max_gb) = max_vram_gb {
             let max_bytes = (max_gb * 1e9) as u64;
             if max_bytes < vram {
-                tracing::info!("Detected VRAM: {:.1} GB, capped to {:.1} GB (--max-vram)", vram as f64 / 1e9, max_gb);
+                tracing::info!(
+                    "Detected VRAM: {:.1} GB, capped to {:.1} GB (--max-vram)",
+                    vram as f64 / 1e9,
+                    max_gb
+                );
                 vram = max_bytes;
             } else {
-                tracing::info!("Detected VRAM: {:.1} GB (--max-vram {:.1} has no effect)", vram as f64 / 1e9, max_gb);
+                tracing::info!(
+                    "Detected VRAM: {:.1} GB (--max-vram {:.1} has no effect)",
+                    vram as f64 / 1e9,
+                    max_gb
+                );
             }
         } else {
             tracing::info!("Detected VRAM: {:.1} GB", vram as f64 / 1e9);
@@ -552,6 +645,8 @@ impl Node {
                 connections: HashMap::new(),
                 remote_tunnel_maps: HashMap::new(),
                 dead_peers: std::collections::HashSet::new(),
+                seen_plugin_messages: HashSet::new(),
+                seen_plugin_message_order: VecDeque::new(),
             })),
             role: Arc::new(Mutex::new(role)),
             models: Arc::new(Mutex::new(Vec::new())),
@@ -563,7 +658,10 @@ impl Node {
             requested_models: Arc::new(Mutex::new(Vec::new())),
             model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mesh_id: Arc::new(Mutex::new(None)),
-            accepting: Arc::new((tokio::sync::Notify::new(), std::sync::atomic::AtomicBool::new(false))),
+            accepting: Arc::new((
+                tokio::sync::Notify::new(),
+                std::sync::atomic::AtomicBool::new(false),
+            )),
             vram_bytes: vram,
             peer_change_tx,
             peer_change_rx,
@@ -571,6 +669,7 @@ impl Node {
             inflight_change_tx,
             tunnel_tx,
             tunnel_http_tx,
+            plugin_manager: Arc::new(Mutex::new(None)),
             blackboard: crate::blackboard::BlackboardStore::new(false),
             blackboard_name: Arc::new(Mutex::new(None)),
             enumerate_host,
@@ -583,9 +682,17 @@ impl Node {
         // Accept loop starts but waits for start_accepting() before processing connections.
         // This lets idle mode create a node (for identity/token) without joining any mesh.
         let node2 = node.clone();
-        tokio::spawn(async move { node2.accept_loop().await; });
+        tokio::spawn(async move {
+            node2.accept_loop().await;
+        });
 
-        Ok((node, TunnelChannels { rpc: tunnel_rx, http: tunnel_http_rx }))
+        Ok((
+            node,
+            TunnelChannels {
+                rpc: tunnel_rx,
+                http: tunnel_http_rx,
+            },
+        ))
     }
 
     pub fn invite_token(&self) -> String {
@@ -594,12 +701,10 @@ impl Node {
         if let Some(pub_addr) = self.public_addr {
             use iroh::TransportAddr;
             let has_public = addr.addrs.iter().any(|a| match a {
-                TransportAddr::Ip(sock) => {
-                    match sock.ip() {
-                        std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
-                        _ => false,
-                    }
-                }
+                TransportAddr::Ip(sock) => match sock.ip() {
+                    std::net::IpAddr::V4(v4) => !v4.is_private() && !v4.is_loopback(),
+                    _ => false,
+                },
                 _ => false,
             });
             if !has_public {
@@ -610,11 +715,44 @@ impl Node {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json)
     }
 
+    async fn build_mesh_event(
+        &self,
+        kind: crate::plugin::proto::mesh_event::Kind,
+        peer: Option<crate::plugin::proto::MeshPeer>,
+        detail_json: String,
+    ) -> crate::plugin::proto::MeshEvent {
+        crate::plugin::proto::MeshEvent {
+            kind: kind as i32,
+            peer,
+            local_peer_id: endpoint_id_hex(self.endpoint.id()),
+            mesh_id: self.mesh_id.lock().await.clone().unwrap_or_default(),
+            detail_json,
+        }
+    }
+
     /// Enable accepting inbound connections. Call before join() or when ready to participate.
     /// Until this is called, the accept loop blocks waiting.
     pub fn start_accepting(&self) {
-        self.accepting.1.store(true, std::sync::atomic::Ordering::Release);
+        self.accepting
+            .1
+            .store(true, std::sync::atomic::Ordering::Release);
         self.accepting.0.notify_waiters();
+        let node = self.clone();
+        tokio::spawn(async move {
+            let plugin_manager = node.plugin_manager.lock().await.clone();
+            if let Some(plugin_manager) = plugin_manager {
+                let _ = plugin_manager
+                    .broadcast_mesh_event(
+                        node.build_mesh_event(
+                            crate::plugin::proto::mesh_event::Kind::LocalAccepting,
+                            None,
+                            String::new(),
+                        )
+                        .await,
+                    )
+                    .await;
+            }
+        });
     }
 
     pub async fn join(&self, invite_token: &str) -> Result<()> {
@@ -626,7 +764,9 @@ impl Node {
     }
 
     /// Connect to a peer without gossip exchange — for passive nodes (clients/standby).
-    pub fn id(&self) -> EndpointId { self.endpoint.id() }
+    pub fn id(&self) -> EndpointId {
+        self.endpoint.id()
+    }
 
     pub async fn role(&self) -> NodeRole {
         self.role.lock().await.clone()
@@ -673,12 +813,122 @@ impl Node {
         }
     }
 
+    pub async fn set_plugin_manager(&self, plugin_manager: crate::plugin::PluginManager) {
+        let peers = {
+            let state = self.state.lock().await;
+            state.peers.values().cloned().collect::<Vec<_>>()
+        };
+        *self.plugin_manager.lock().await = Some(plugin_manager.clone());
+        let local_kind = if self.accepting.1.load(std::sync::atomic::Ordering::Acquire) {
+            crate::plugin::proto::mesh_event::Kind::LocalAccepting
+        } else {
+            crate::plugin::proto::mesh_event::Kind::LocalStandby
+        };
+        let _ = plugin_manager
+            .broadcast_mesh_event(self.build_mesh_event(local_kind, None, String::new()).await)
+            .await;
+        if self.mesh_id.lock().await.is_some() {
+            let _ = plugin_manager
+                .broadcast_mesh_event(
+                    self.build_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::MeshIdUpdated,
+                        None,
+                        String::new(),
+                    )
+                    .await,
+                )
+                .await;
+        }
+        for peer in peers {
+            if let Err(err) = plugin_manager
+                .broadcast_mesh_event(
+                    self.build_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::PeerUp,
+                        Some(peer_info_to_mesh_peer(&peer)),
+                        String::new(),
+                    )
+                    .await,
+                )
+                .await
+            {
+                tracing::debug!(
+                    "Failed to send existing peer snapshot to plugins for {}: {err}",
+                    peer.id.fmt_short()
+                );
+            }
+        }
+    }
+
+    pub fn start_plugin_channel_forwarder(
+        &self,
+        mut rx: tokio::sync::mpsc::Receiver<crate::plugin::PluginMeshEvent>,
+    ) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let Err(err) = node.forward_plugin_event(event).await {
+                    tracing::debug!("Plugin mesh forward failed: {err}");
+                }
+            }
+        });
+    }
+
+    async fn emit_plugin_mesh_event(
+        &self,
+        kind: crate::plugin::proto::mesh_event::Kind,
+        peer: Option<&PeerInfo>,
+        detail_json: String,
+    ) {
+        let plugin_manager = self.plugin_manager.lock().await.clone();
+        if let Some(plugin_manager) = plugin_manager {
+            if let Err(err) = plugin_manager
+                .broadcast_mesh_event(
+                    self.build_mesh_event(kind, peer.map(peer_info_to_mesh_peer), detail_json)
+                        .await,
+                )
+                .await
+            {
+                tracing::debug!(
+                    "Failed to deliver plugin mesh event {:?} for {}: {err}",
+                    kind,
+                    peer.map(|p| p.id.fmt_short().to_string())
+                        .unwrap_or_else(|| self.endpoint.id().fmt_short().to_string())
+                );
+            }
+        }
+    }
+
+    async fn update_peer_rtt(&self, id: EndpointId, rtt_ms: u32) {
+        let updated_peer = {
+            let mut state = self.state.lock().await;
+            if let Some(peer) = state.peers.get_mut(&id) {
+                peer.rtt_ms = Some(rtt_ms);
+                Some(peer.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(peer) = updated_peer {
+            tracing::info!("Peer {} RTT: {}ms", id.fmt_short(), rtt_ms);
+            self.emit_plugin_mesh_event(
+                crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                Some(&peer),
+                String::new(),
+            )
+            .await;
+        }
+    }
+
     /// Re-gossip our state to all connected peers.
     /// Call after changing serving/role/models so peers learn the update.
     pub async fn regossip(&self) {
         let conns: Vec<(EndpointId, Connection)> = {
             let state = self.state.lock().await;
-            state.connections.iter().map(|(id, c)| (*id, c.clone())).collect()
+            state
+                .connections
+                .iter()
+                .map(|(id, c)| (*id, c.clone()))
+                .collect()
         };
         for (peer_id, conn) in conns {
             let node = self.clone();
@@ -696,7 +946,11 @@ impl Node {
     pub async fn gossip_one_peer(&self) {
         let conn = {
             let state = self.state.lock().await;
-            state.connections.iter().next().map(|(id, c)| (*id, c.clone()))
+            state
+                .connections
+                .iter()
+                .next()
+                .map(|(id, c)| (*id, c.clone()))
         };
         if let Some((peer_id, conn)) = conn {
             let _ = self.initiate_gossip_inner(conn, peer_id, false).await;
@@ -725,12 +979,25 @@ impl Node {
         let mut current = self.mesh_id.lock().await;
         if current.is_none() {
             *current = Some(id);
+            drop(current);
+            self.emit_plugin_mesh_event(
+                crate::plugin::proto::mesh_event::Kind::MeshIdUpdated,
+                None,
+                String::new(),
+            )
+            .await;
         }
     }
 
     /// Set mesh ID unconditionally (for originator).
     pub async fn set_mesh_id_force(&self, id: String) {
         *self.mesh_id.lock().await = Some(id);
+        self.emit_plugin_mesh_event(
+            crate::plugin::proto::mesh_event::Kind::MeshIdUpdated,
+            None,
+            String::new(),
+        )
+        .await;
     }
 
     pub async fn set_available_models(&self, models: Vec<String>) {
@@ -782,9 +1049,7 @@ impl Node {
         drop(my_requested);
 
         let mut demand = self.model_demand.lock().unwrap();
-        demand.retain(|model, d| {
-            pinned.contains(model) || (now - d.last_active) < DEMAND_TTL_SECS
-        });
+        demand.retain(|model, d| pinned.contains(model) || (now - d.last_active) < DEMAND_TTL_SECS);
     }
 
     /// Get active demand entries (within TTL or pinned by a live node).
@@ -805,10 +1070,9 @@ impl Node {
         drop(peers);
         drop(my_requested);
 
-        demand.into_iter()
-            .filter(|(model, d)| {
-                pinned.contains(model) || (now - d.last_active) < DEMAND_TTL_SECS
-            })
+        demand
+            .into_iter()
+            .filter(|(model, d)| pinned.contains(model) || (now - d.last_active) < DEMAND_TTL_SECS)
             .collect()
     }
 
@@ -838,17 +1102,22 @@ impl Node {
     pub fn start_heartbeat(&self) {
         let node = self.clone();
         tokio::spawn(async move {
-            let mut fail_counts: std::collections::HashMap<EndpointId, u32> = std::collections::HashMap::new();
+            let mut fail_counts: std::collections::HashMap<EndpointId, u32> =
+                std::collections::HashMap::new();
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
 
                 let mut peers_and_conns: Vec<(EndpointId, Option<Connection>)> = {
                     let state = node.state.lock().await;
-                    state.peers.keys().map(|id| {
-                        let conn = state.connections.get(id).cloned();
-                        (*id, conn)
-                    }).collect()
+                    state
+                        .peers
+                        .keys()
+                        .map(|id| {
+                            let conn = state.connections.get(id).cloned();
+                            (*id, conn)
+                        })
+                        .collect()
                 };
                 tracing::debug!("Heartbeat tick: {} peers to check", peers_and_conns.len());
 
@@ -869,8 +1138,16 @@ impl Node {
                         let result = tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             node.initiate_gossip_inner(conn, peer_id, false),
-                        ).await.map(|r| r.is_ok()).unwrap_or(false);
-                        tracing::debug!("Heartbeat gossip {} = {} ({}ms)", peer_id.fmt_short(), if result { "ok" } else { "fail" }, hb_start.elapsed().as_millis());
+                        )
+                        .await
+                        .map(|r| r.is_ok())
+                        .unwrap_or(false);
+                        tracing::debug!(
+                            "Heartbeat gossip {} = {} ({}ms)",
+                            peer_id.fmt_short(),
+                            if result { "ok" } else { "fail" },
+                            hb_start.elapsed().as_millis()
+                        );
                         result
                     } else {
                         // No connection — try to reconnect using stored address
@@ -882,19 +1159,33 @@ impl Node {
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(10),
                                 node.endpoint.connect(addr, ALPN),
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(Ok(new_conn)) => {
-                                    eprintln!("💚 Heartbeat: reconnected to {}", peer_id.fmt_short());
-                                    node.state.lock().await.connections.insert(peer_id, new_conn.clone());
+                                    eprintln!(
+                                        "💚 Heartbeat: reconnected to {}",
+                                        peer_id.fmt_short()
+                                    );
+                                    node.state
+                                        .lock()
+                                        .await
+                                        .connections
+                                        .insert(peer_id, new_conn.clone());
                                     // Spawn dispatch_streams for the new connection
                                     let n2 = node.clone();
                                     let nc = new_conn.clone();
-                                    tokio::spawn(async move { n2.dispatch_streams(nc, peer_id).await; });
+                                    tokio::spawn(async move {
+                                        n2.dispatch_streams(nc, peer_id).await;
+                                    });
                                     // Try gossip on the new connection
                                     tokio::time::timeout(
                                         std::time::Duration::from_secs(10),
                                         node.initiate_gossip_inner(new_conn, peer_id, false),
-                                    ).await.map(|r| r.is_ok()).unwrap_or(false)
+                                    )
+                                    .await
+                                    .map(|r| r.is_ok())
+                                    .unwrap_or(false)
                                 }
                                 _ => false,
                             }
@@ -905,7 +1196,11 @@ impl Node {
 
                     if alive {
                         if fail_counts.contains_key(&peer_id) {
-                            eprintln!("💚 Heartbeat: {} recovered (was {}/2)", peer_id.fmt_short(), fail_counts.get(&peer_id).unwrap_or(&0));
+                            eprintln!(
+                                "💚 Heartbeat: {} recovered (was {}/2)",
+                                peer_id.fmt_short(),
+                                fail_counts.get(&peer_id).unwrap_or(&0)
+                            );
                             // Clear dead_peers if peer came back
                             node.state.lock().await.dead_peers.remove(&peer_id);
                         }
@@ -915,7 +1210,9 @@ impl Node {
                         // If so, peer is alive — we just can't reach them outbound (NAT).
                         let recently_seen = {
                             let state = node.state.lock().await;
-                            state.peers.get(&peer_id)
+                            state
+                                .peers
+                                .get(&peer_id)
                                 .map(|p| p.last_seen.elapsed().as_secs() < PEER_STALE_SECS)
                                 .unwrap_or(false)
                         };
@@ -937,7 +1234,11 @@ impl Node {
                                 fail_counts.remove(&peer_id);
                                 node.handle_peer_death(peer_id).await;
                             } else {
-                                eprintln!("💛 Heartbeat: {} unreachable ({}/2), will retry", peer_id.fmt_short(), count);
+                                eprintln!(
+                                    "💛 Heartbeat: {} unreachable ({}/2), will retry",
+                                    peer_id.fmt_short(),
+                                    count
+                                );
                             }
                         }
                     }
@@ -946,16 +1247,23 @@ impl Node {
                 // Prune stale peers: no direct contact in 2× the stale window.
                 // These are ghost records propagated via gossip from other nodes
                 // but never directly verified by us.
-                let prune_cutoff = std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
+                let prune_cutoff =
+                    std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
                 let stale_peers: Vec<EndpointId> = {
                     let state = node.state.lock().await;
-                    state.peers.iter()
+                    state
+                        .peers
+                        .iter()
                         .filter(|(_, p)| p.last_seen < prune_cutoff)
                         .map(|(id, _)| *id)
                         .collect()
                 };
                 for stale_id in stale_peers {
-                    eprintln!("🧹 Pruning stale peer {} (no direct contact in {}s)", stale_id.fmt_short(), PEER_STALE_SECS * 2);
+                    eprintln!(
+                        "🧹 Pruning stale peer {} (no direct contact in {}s)",
+                        stale_id.fmt_short(),
+                        PEER_STALE_SECS * 2
+                    );
                     node.remove_peer(stale_id).await;
                     // Also close any lingering connection
                     node.state.lock().await.connections.remove(&stale_id);
@@ -963,14 +1271,16 @@ impl Node {
 
                 // GC expired demand entries to prevent unbounded map growth
                 node.gc_demand().await;
-
             }
         });
     }
 
     /// Handle a peer death: remove from state, broadcast to all other peers.
     pub async fn handle_peer_death(&self, dead_id: EndpointId) {
-        eprintln!("⚠️  Peer {} died — removing and broadcasting", dead_id.fmt_short());
+        eprintln!(
+            "⚠️  Peer {} died — removing and broadcasting",
+            dead_id.fmt_short()
+        );
         {
             let mut state = self.state.lock().await;
             // Keep the connection alive — if the peer recovers, their inbound
@@ -987,7 +1297,9 @@ impl Node {
     async fn broadcast_peer_down(&self, dead_id: EndpointId) {
         let conns: Vec<(EndpointId, Connection)> = {
             let state = self.state.lock().await;
-            state.connections.iter()
+            state
+                .connections
+                .iter()
                 .filter(|(id, _)| **id != dead_id)
                 .map(|(id, c)| (*id, c.clone()))
                 .collect()
@@ -1002,9 +1314,13 @@ impl Node {
                     send.write_all(&bytes).await?;
                     send.finish()?;
                     Ok::<_, anyhow::Error>(())
-                }.await;
+                }
+                .await;
                 if let Err(e) = res {
-                    tracing::debug!("Failed to broadcast peer_down to {}: {e}", peer_id.fmt_short());
+                    tracing::debug!(
+                        "Failed to broadcast peer_down to {}: {e}",
+                        peer_id.fmt_short()
+                    );
                 }
             });
         }
@@ -1015,7 +1331,9 @@ impl Node {
         let my_id_bytes = self.endpoint.id().as_bytes().to_vec();
         let conns: Vec<(EndpointId, Connection)> = {
             let state = self.state.lock().await;
-            state.connections.iter()
+            state
+                .connections
+                .iter()
                 .map(|(id, c)| (*id, c.clone()))
                 .collect()
         };
@@ -1028,7 +1346,8 @@ impl Node {
                     send.write_all(&bytes).await?;
                     send.finish()?;
                     Ok::<_, anyhow::Error>(())
-                }.await;
+                }
+                .await;
                 if let Err(e) = res {
                     tracing::debug!("Failed to send leaving to {}: {e}", peer_id.fmt_short());
                 }
@@ -1038,9 +1357,245 @@ impl Node {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
+    async fn forward_plugin_event(&self, event: crate::plugin::PluginMeshEvent) -> Result<()> {
+        match event {
+            crate::plugin::PluginMeshEvent::Channel {
+                plugin_id,
+                mut message,
+            } => {
+                if message.source_peer_id.is_empty() {
+                    message.source_peer_id = endpoint_id_hex(self.endpoint.id());
+                }
+                let frame = crate::plugin::proto::MeshChannelFrame {
+                    plugin_id,
+                    message_id: new_plugin_message_id(&message.source_peer_id),
+                    message: Some(message),
+                };
+                if !self.remember_plugin_message(frame.message_id.clone()).await {
+                    return Ok(());
+                }
+                self.broadcast_plugin_channel_frame(&frame, None).await
+            }
+            crate::plugin::PluginMeshEvent::BulkTransfer {
+                plugin_id,
+                mut message,
+            } => {
+                if message.source_peer_id.is_empty() {
+                    message.source_peer_id = endpoint_id_hex(self.endpoint.id());
+                }
+                let frame = crate::plugin::proto::MeshBulkFrame {
+                    plugin_id,
+                    message_id: new_plugin_message_id(&message.source_peer_id),
+                    message: Some(message),
+                };
+                if !self.remember_plugin_message(frame.message_id.clone()).await {
+                    return Ok(());
+                }
+                self.broadcast_plugin_bulk_frame(&frame, None).await
+            }
+        }
+    }
+
+    async fn remember_plugin_message(&self, message_id: String) -> bool {
+        const MAX_SEEN_PLUGIN_MESSAGES: usize = 4096;
+
+        let mut state = self.state.lock().await;
+        if !state.seen_plugin_messages.insert(message_id.clone()) {
+            return false;
+        }
+        state.seen_plugin_message_order.push_back(message_id);
+        while state.seen_plugin_message_order.len() > MAX_SEEN_PLUGIN_MESSAGES {
+            if let Some(oldest) = state.seen_plugin_message_order.pop_front() {
+                state.seen_plugin_messages.remove(&oldest);
+            }
+        }
+        true
+    }
+
+    async fn broadcast_plugin_channel_frame(
+        &self,
+        frame: &crate::plugin::proto::MeshChannelFrame,
+        skip_peer: Option<EndpointId>,
+    ) -> Result<()> {
+        let data = frame.encode_to_vec();
+        let conns: Vec<(EndpointId, Connection)> = {
+            let state = self.state.lock().await;
+            state
+                .connections
+                .iter()
+                .filter(|(peer_id, _)| Some(**peer_id) != skip_peer)
+                .map(|(peer_id, conn)| (*peer_id, conn.clone()))
+                .collect()
+        };
+        for (peer_id, conn) in conns {
+            let bytes = data.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let (mut send, _recv) = conn.open_bi().await?;
+                    send.write_all(&[STREAM_PLUGIN_CHANNEL]).await?;
+                    send.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
+                    send.write_all(&bytes).await?;
+                    send.finish()?;
+                    Ok::<_, anyhow::Error>(())
+                }
+                .await;
+                if let Err(e) = result {
+                    tracing::debug!(
+                        "Failed to broadcast plugin frame to {}: {e}",
+                        peer_id.fmt_short()
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+
+    async fn broadcast_plugin_bulk_frame(
+        &self,
+        frame: &crate::plugin::proto::MeshBulkFrame,
+        skip_peer: Option<EndpointId>,
+    ) -> Result<()> {
+        let data = frame.encode_to_vec();
+        let conns: Vec<(EndpointId, Connection)> = {
+            let state = self.state.lock().await;
+            state
+                .connections
+                .iter()
+                .filter(|(peer_id, _)| Some(**peer_id) != skip_peer)
+                .map(|(peer_id, conn)| (*peer_id, conn.clone()))
+                .collect()
+        };
+        for (peer_id, conn) in conns {
+            let bytes = data.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let (mut send, _recv) = conn.open_bi().await?;
+                    send.write_all(&[STREAM_PLUGIN_BULK_TRANSFER]).await?;
+                    send.write_all(&(bytes.len() as u32).to_le_bytes()).await?;
+                    send.write_all(&bytes).await?;
+                    send.finish()?;
+                    Ok::<_, anyhow::Error>(())
+                }
+                .await;
+                if let Err(e) = result {
+                    tracing::debug!(
+                        "Failed to broadcast plugin bulk frame to {}: {e}",
+                        peer_id.fmt_short()
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+
+    async fn handle_plugin_channel_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await?;
+        let len = u32::from_le_bytes(len_buf) as usize;
+        if len > 10_000_000 {
+            anyhow::bail!("Plugin channel frame too large");
+        }
+        let mut buf = vec![0u8; len];
+        recv.read_exact(&mut buf).await?;
+        send.finish()?;
+
+        let frame = crate::plugin::proto::MeshChannelFrame::decode(buf.as_slice())?;
+        if frame.plugin_id.is_empty() || frame.message_id.is_empty() {
+            return Ok(());
+        }
+        if !self.remember_plugin_message(frame.message_id.clone()).await {
+            return Ok(());
+        }
+
+        let Some(message) = frame.message.clone() else {
+            return Ok(());
+        };
+        let local_peer_id = endpoint_id_hex(self.endpoint.id());
+        let deliver_local =
+            message.target_peer_id.is_empty() || message.target_peer_id == local_peer_id;
+
+        if deliver_local {
+            let plugin_manager = self.plugin_manager.lock().await.clone();
+            if let Some(plugin_manager) = plugin_manager {
+                plugin_manager
+                    .dispatch_channel_message(crate::plugin::PluginMeshEvent::Channel {
+                        plugin_id: frame.plugin_id.clone(),
+                        message: message.clone(),
+                    })
+                    .await?;
+            }
+        }
+
+        if message.target_peer_id != local_peer_id {
+            self.broadcast_plugin_channel_frame(&frame, Some(remote))
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_plugin_bulk_stream(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> Result<()> {
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await?;
+        let len = u32::from_le_bytes(len_buf) as usize;
+        if len > 64_000_000 {
+            anyhow::bail!("Plugin bulk frame too large");
+        }
+        let mut buf = vec![0u8; len];
+        recv.read_exact(&mut buf).await?;
+        send.finish()?;
+
+        let frame = crate::plugin::proto::MeshBulkFrame::decode(buf.as_slice())?;
+        if frame.plugin_id.is_empty() || frame.message_id.is_empty() {
+            return Ok(());
+        }
+        if !self.remember_plugin_message(frame.message_id.clone()).await {
+            return Ok(());
+        }
+
+        let Some(message) = frame.message.clone() else {
+            return Ok(());
+        };
+        let local_peer_id = endpoint_id_hex(self.endpoint.id());
+        let deliver_local =
+            message.target_peer_id.is_empty() || message.target_peer_id == local_peer_id;
+
+        if deliver_local {
+            let plugin_manager = self.plugin_manager.lock().await.clone();
+            if let Some(plugin_manager) = plugin_manager {
+                plugin_manager
+                    .dispatch_bulk_transfer_message(crate::plugin::PluginMeshEvent::BulkTransfer {
+                        plugin_id: frame.plugin_id.clone(),
+                        message: message.clone(),
+                    })
+                    .await?;
+            }
+        }
+
+        if message.target_peer_id != local_peer_id {
+            self.broadcast_plugin_bulk_frame(&frame, Some(remote))
+                .await?;
+        }
+
+        Ok(())
+    }
+
     /// Broadcast a blackboard item to all connected peers (flood-fill).
+    #[allow(dead_code)]
     pub async fn broadcast_blackboard(&self, item: &crate::blackboard::BlackboardItem) {
-        if !self.blackboard.is_enabled() { return; }
+        if !self.blackboard.is_enabled() {
+            return;
+        }
         let msg = crate::blackboard::BlackboardMessage::Post(item.clone());
         let data = match serde_json::to_vec(&msg) {
             Ok(d) => d,
@@ -1048,7 +1603,11 @@ impl Node {
         };
         let conns: Vec<(EndpointId, Connection)> = {
             let state = self.state.lock().await;
-            state.connections.iter().map(|(id, c)| (*id, c.clone())).collect()
+            state
+                .connections
+                .iter()
+                .map(|(id, c)| (*id, c.clone()))
+                .collect()
         };
         for (peer_id, conn) in conns {
             let bytes = data.clone();
@@ -1060,9 +1619,13 @@ impl Node {
                     send.write_all(&bytes).await?;
                     send.finish()?;
                     Ok::<_, anyhow::Error>(())
-                }.await;
+                }
+                .await;
                 if let Err(e) = res {
-                    tracing::debug!("Failed to broadcast blackboard to {}: {e}", peer_id.fmt_short());
+                    tracing::debug!(
+                        "Failed to broadcast blackboard to {}: {e}",
+                        peer_id.fmt_short()
+                    );
                 }
             });
         }
@@ -1070,7 +1633,9 @@ impl Node {
 
     /// Sync blackboard with a peer: exchange digests, fetch missing items.
     pub async fn sync_blackboard(&self, conn: Connection, remote: EndpointId) {
-        if !self.blackboard.is_enabled() { return; }
+        if !self.blackboard.is_enabled() {
+            return;
+        }
         let res = async {
             let (mut send, mut recv) = conn.open_bi().await?;
             send.write_all(&[STREAM_BLACKBOARD]).await?;
@@ -1078,14 +1643,17 @@ impl Node {
             // Send SyncRequest
             let req = crate::blackboard::BlackboardMessage::SyncRequest;
             let req_data = serde_json::to_vec(&req)?;
-            send.write_all(&(req_data.len() as u32).to_le_bytes()).await?;
+            send.write_all(&(req_data.len() as u32).to_le_bytes())
+                .await?;
             send.write_all(&req_data).await?;
 
             // Read their digest
             let mut len_buf = [0u8; 4];
             recv.read_exact(&mut len_buf).await?;
             let len = u32::from_le_bytes(len_buf) as usize;
-            if len > 1_000_000 { anyhow::bail!("Blackboard sync response too large"); }
+            if len > 1_000_000 {
+                anyhow::bail!("Blackboard sync response too large");
+            }
             let mut buf = vec![0u8; len];
             recv.read_exact(&mut buf).await?;
             let their_msg: crate::blackboard::BlackboardMessage = serde_json::from_slice(&buf)?;
@@ -1093,7 +1661,8 @@ impl Node {
             if let crate::blackboard::BlackboardMessage::SyncDigest(their_ids) = their_msg {
                 // Figure out what we're missing
                 let our_ids = self.blackboard.ids().await;
-                let missing: Vec<u64> = their_ids.iter()
+                let missing: Vec<u64> = their_ids
+                    .iter()
                     .filter(|id| !our_ids.contains(id))
                     .cloned()
                     .collect();
@@ -1102,17 +1671,21 @@ impl Node {
                     // Request missing items
                     let fetch = crate::blackboard::BlackboardMessage::FetchRequest(missing);
                     let fetch_data = serde_json::to_vec(&fetch)?;
-                    send.write_all(&(fetch_data.len() as u32).to_le_bytes()).await?;
+                    send.write_all(&(fetch_data.len() as u32).to_le_bytes())
+                        .await?;
                     send.write_all(&fetch_data).await?;
 
                     // Read their response
                     let mut len_buf2 = [0u8; 4];
                     recv.read_exact(&mut len_buf2).await?;
                     let len2 = u32::from_le_bytes(len_buf2) as usize;
-                    if len2 > 10_000_000 { anyhow::bail!("Knowledge fetch response too large"); }
+                    if len2 > 10_000_000 {
+                        anyhow::bail!("Knowledge fetch response too large");
+                    }
                     let mut buf2 = vec![0u8; len2];
                     recv.read_exact(&mut buf2).await?;
-                    let items_msg: crate::blackboard::BlackboardMessage = serde_json::from_slice(&buf2)?;
+                    let items_msg: crate::blackboard::BlackboardMessage =
+                        serde_json::from_slice(&buf2)?;
 
                     if let crate::blackboard::BlackboardMessage::FetchResponse(items) = items_msg {
                         let count = items.len();
@@ -1120,7 +1693,11 @@ impl Node {
                             self.blackboard.insert(item).await;
                         }
                         if count > 0 {
-                            tracing::info!("Blackboard sync: got {} items from {}", count, remote.fmt_short());
+                            tracing::info!(
+                                "Blackboard sync: got {} items from {}",
+                                count,
+                                remote.fmt_short()
+                            );
                         }
                     }
                 }
@@ -1128,7 +1705,8 @@ impl Node {
 
             send.finish()?;
             Ok::<_, anyhow::Error>(())
-        }.await;
+        }
+        .await;
         if let Err(e) = res {
             tracing::debug!("Blackboard sync with {} failed: {e}", remote.fmt_short());
         }
@@ -1145,7 +1723,9 @@ impl Node {
         let mut len_buf = [0u8; 4];
         recv.read_exact(&mut len_buf).await?;
         let len = u32::from_le_bytes(len_buf) as usize;
-        if len > 10_000_000 { anyhow::bail!("Knowledge message too large"); }
+        if len > 10_000_000 {
+            anyhow::bail!("Knowledge message too large");
+        }
         let mut buf = vec![0u8; len];
         recv.read_exact(&mut buf).await?;
         let msg: crate::blackboard::BlackboardMessage = serde_json::from_slice(&buf)?;
@@ -1155,13 +1735,23 @@ impl Node {
                 // Insert and re-broadcast if new
                 let peer_name = item.from.clone();
                 if self.blackboard.insert(item.clone()).await {
-                    eprintln!("📝 Blackboard from {}: {}", peer_name,
-                        if item.text.len() > 80 { format!("{}...", &item.text[..80]) } else { item.text.clone() });
+                    eprintln!(
+                        "📝 Blackboard from {}: {}",
+                        peer_name,
+                        if item.text.len() > 80 {
+                            format!("{}...", &item.text[..80])
+                        } else {
+                            item.text.clone()
+                        }
+                    );
                     // Forward to other peers (flood-fill)
-                    let data = serde_json::to_vec(&crate::blackboard::BlackboardMessage::Post(item))?;
+                    let data =
+                        serde_json::to_vec(&crate::blackboard::BlackboardMessage::Post(item))?;
                     let conns: Vec<(EndpointId, Connection)> = {
                         let state = self.state.lock().await;
-                        state.connections.iter()
+                        state
+                            .connections
+                            .iter()
                             .filter(|(id, _)| **id != remote)
                             .map(|(id, c)| (*id, c.clone()))
                             .collect()
@@ -1176,9 +1766,13 @@ impl Node {
                                 send.write_all(&bytes).await?;
                                 send.finish()?;
                                 Ok::<_, anyhow::Error>(())
-                            }.await;
+                            }
+                            .await;
                             if let Err(e) = res {
-                                tracing::debug!("Failed to forward blackboard to {}: {e}", peer_id.fmt_short());
+                                tracing::debug!(
+                                    "Failed to forward blackboard to {}: {e}",
+                                    peer_id.fmt_short()
+                                );
                             }
                         });
                     }
@@ -1197,18 +1791,26 @@ impl Node {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     recv.read_exact(&mut len_buf2),
-                ).await {
+                )
+                .await
+                {
                     Ok(Ok(())) => {
                         let len2 = u32::from_le_bytes(len_buf2) as usize;
-                        if len2 > 1_000_000 { anyhow::bail!("Fetch request too large"); }
+                        if len2 > 1_000_000 {
+                            anyhow::bail!("Fetch request too large");
+                        }
                         let mut buf2 = vec![0u8; len2];
                         recv.read_exact(&mut buf2).await?;
-                        let fetch_msg: crate::blackboard::BlackboardMessage = serde_json::from_slice(&buf2)?;
-                        if let crate::blackboard::BlackboardMessage::FetchRequest(wanted_ids) = fetch_msg {
+                        let fetch_msg: crate::blackboard::BlackboardMessage =
+                            serde_json::from_slice(&buf2)?;
+                        if let crate::blackboard::BlackboardMessage::FetchRequest(wanted_ids) =
+                            fetch_msg
+                        {
                             let items = self.blackboard.get_by_ids(&wanted_ids).await;
                             let resp = crate::blackboard::BlackboardMessage::FetchResponse(items);
                             let resp_data = serde_json::to_vec(&resp)?;
-                            send.write_all(&(resp_data.len() as u32).to_le_bytes()).await?;
+                            send.write_all(&(resp_data.len() as u32).to_le_bytes())
+                                .await?;
                             send.write_all(&resp_data).await?;
                         }
                     }
@@ -1231,7 +1833,17 @@ impl Node {
         let my_serving = self.serving.lock().await.clone();
         let peer_data: Vec<_> = {
             let state = self.state.lock().await;
-            state.peers.values().map(|p| (p.available_models.clone(), p.requested_models.clone(), p.serving.clone())).collect()
+            state
+                .peers
+                .values()
+                .map(|p| {
+                    (
+                        p.available_models.clone(),
+                        p.requested_models.clone(),
+                        p.serving.clone(),
+                    )
+                })
+                .collect()
         };
         let mut all = std::collections::HashSet::new();
         for m in &my_available {
@@ -1265,7 +1877,11 @@ impl Node {
         let my_serving = self.serving.lock().await.clone();
         let peer_data: Vec<_> = {
             let state = self.state.lock().await;
-            state.peers.values().map(|p| (p.serving_models.clone(), p.serving.clone())).collect()
+            state
+                .peers
+                .values()
+                .map(|p| (p.serving_models.clone(), p.serving.clone()))
+                .collect()
         };
         let mut served = std::collections::HashSet::new();
         for s in &my_serving_models {
@@ -1297,8 +1913,12 @@ impl Node {
     /// Used for retry: if the first host fails, try the next.
     pub async fn hosts_for_model(&self, model: &str) -> Vec<EndpointId> {
         let state = self.state.lock().await;
-        let mut hosts: Vec<EndpointId> = state.peers.values()
-            .filter(|p| matches!(p.role, NodeRole::Host { .. }) && p.serving.as_deref() == Some(model))
+        let mut hosts: Vec<EndpointId> = state
+            .peers
+            .values()
+            .filter(|p| {
+                matches!(p.role, NodeRole::Host { .. }) && p.serving.as_deref() == Some(model)
+            })
             .map(|p| p.id)
             .collect();
         hosts.sort();
@@ -1306,7 +1926,9 @@ impl Node {
         if !hosts.is_empty() {
             let my_id = self.endpoint.id();
             let id_bytes = my_id.as_bytes();
-            let hash = id_bytes.iter().fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let hash = id_bytes
+                .iter()
+                .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
             let idx = (hash as usize) % hosts.len();
             hosts.rotate_left(idx);
         }
@@ -1316,7 +1938,9 @@ impl Node {
     /// Find ANY host in the mesh (fallback when no model match).
     pub async fn any_host(&self) -> Option<PeerInfo> {
         let state = self.state.lock().await;
-        state.peers.values()
+        state
+            .peers
+            .values()
             .find(|p| matches!(p.role, NodeRole::Host { .. }))
             .cloned()
     }
@@ -1327,7 +1951,11 @@ impl Node {
         let my_role = self.role.lock().await.clone();
         let peer_data: Vec<_> = {
             let state = self.state.lock().await;
-            state.peers.values().map(|p| (p.id, p.role.clone(), p.serving.clone(), p.vram_bytes)).collect()
+            state
+                .peers
+                .values()
+                .map(|p| (p.id, p.role.clone(), p.serving.clone(), p.vram_bytes))
+                .collect()
         };
         let mut hosts = Vec::new();
 
@@ -1374,7 +2002,10 @@ impl Node {
     /// Open an HTTP tunnel bi-stream to a peer (tagged STREAM_TUNNEL_HTTP).
     /// If no connection exists, tries to connect on-demand (for passive nodes
     /// that learned about hosts from routing table but aren't directly connected).
-    pub async fn open_http_tunnel(&self, peer_id: EndpointId) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+    pub async fn open_http_tunnel(
+        &self,
+        peer_id: EndpointId,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
         let conn = {
             let state = self.state.lock().await;
             match state.connections.get(&peer_id).cloned() {
@@ -1387,10 +2018,19 @@ impl Node {
                         let c = tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             self.endpoint.connect(addr, ALPN),
-                        ).await
-                            .map_err(|_| anyhow::anyhow!("Timeout connecting to {}", peer_id.fmt_short()))?
-                            .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {e}", peer_id.fmt_short()))?;
-                        self.state.lock().await.connections.insert(peer_id, c.clone());
+                        )
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!("Timeout connecting to {}", peer_id.fmt_short())
+                        })?
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to connect to {}: {e}", peer_id.fmt_short())
+                        })?;
+                        self.state
+                            .lock()
+                            .await
+                            .connections
+                            .insert(peer_id, c.clone());
                         c
                     } else {
                         anyhow::bail!("No connection or address for {}", peer_id.fmt_short());
@@ -1402,12 +2042,16 @@ impl Node {
             let (mut send, recv) = conn.open_bi().await?;
             send.write_all(&[STREAM_TUNNEL_HTTP]).await?;
             Ok::<_, anyhow::Error>((send, recv))
-        }).await
-            .map_err(|_| anyhow::anyhow!("Timeout opening tunnel to {}", peer_id.fmt_short()))?;
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Timeout opening tunnel to {}", peer_id.fmt_short()))?;
 
         if result.is_err() {
             // Connection failed — peer is likely dead, broadcast it
-            tracing::info!("Tunnel to {} failed, broadcasting death", peer_id.fmt_short());
+            tracing::info!(
+                "Tunnel to {} failed, broadcasting death",
+                peer_id.fmt_short()
+            );
             self.handle_peer_death(peer_id).await;
         }
 
@@ -1422,7 +2066,10 @@ impl Node {
 
     /// Push our tunnel port map to all connected peers.
     /// Called after tunnel ports are established.
-    pub async fn broadcast_tunnel_map(&self, my_tunnel_map: HashMap<EndpointId, u16>) -> Result<()> {
+    pub async fn broadcast_tunnel_map(
+        &self,
+        my_tunnel_map: HashMap<EndpointId, u16>,
+    ) -> Result<()> {
         // Serialize: { endpoint_id_hex_string → port }
         let serializable: HashMap<String, u16> = my_tunnel_map
             .iter()
@@ -1432,7 +2079,11 @@ impl Node {
 
         let conns: Vec<(EndpointId, Connection)> = {
             let state = self.state.lock().await;
-            state.connections.iter().map(|(id, c)| (*id, c.clone())).collect()
+            state
+                .connections
+                .iter()
+                .map(|(id, c)| (*id, c.clone()))
+                .collect()
         };
 
         for (peer_id, conn) in conns {
@@ -1491,9 +2142,17 @@ impl Node {
     }
 
     /// Open a tunnel bi-stream to a peer using the stored connection.
-    pub async fn open_tunnel_stream(&self, peer_id: EndpointId) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+    pub async fn open_tunnel_stream(
+        &self,
+        peer_id: EndpointId,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
         let conn = {
-            self.state.lock().await.connections.get(&peer_id).cloned()
+            self.state
+                .lock()
+                .await
+                .connections
+                .get(&peer_id)
+                .cloned()
                 .ok_or_else(|| anyhow::anyhow!("No connection to {}", peer_id.fmt_short()))?
         };
         let (mut send, recv) = conn.open_bi().await?;
@@ -1562,7 +2221,11 @@ impl Node {
     }
 
     /// Dispatch bi-streams on a connection by type byte
-    fn dispatch_streams(&self, conn: Connection, remote: EndpointId) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+    fn dispatch_streams(
+        &self,
+        conn: Connection,
+        remote: EndpointId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(self._dispatch_streams(conn, remote))
     }
 
@@ -1587,7 +2250,9 @@ impl Node {
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(10),
                             self.endpoint.connect(addr, ALPN),
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(Ok(new_conn)) => {
                                 tracing::info!("Reconnected to {}", remote.fmt_short());
                                 {
@@ -1609,7 +2274,10 @@ impl Node {
                                 });
                             }
                             _ => {
-                                tracing::info!("Reconnect to {} failed — removing peer", remote.fmt_short());
+                                tracing::info!(
+                                    "Reconnect to {} failed — removing peer",
+                                    remote.fmt_short()
+                                );
                                 self.remove_peer(remote).await;
                             }
                         }
@@ -1645,7 +2313,10 @@ impl Node {
                     let node = self.clone();
                     tokio::spawn(async move {
                         if let Err(e) = node.handle_tunnel_map_stream(remote, recv).await {
-                            tracing::warn!("Tunnel map stream error from {}: {e}", remote.fmt_short());
+                            tracing::warn!(
+                                "Tunnel map stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
                         }
                     });
                 }
@@ -1684,13 +2355,18 @@ impl Node {
                                         tokio::time::timeout(
                                             std::time::Duration::from_secs(3),
                                             conn.open_bi(),
-                                        ).await.is_err()
+                                        )
+                                        .await
+                                        .is_err()
                                     } else {
                                         true // no connection = already gone
                                     };
                                     if should_remove {
-                                        eprintln!("⚠️  Peer {} reported dead by {}, confirmed, removing",
-                                            dead_id.fmt_short(), remote.fmt_short());
+                                        eprintln!(
+                                            "⚠️  Peer {} reported dead by {}, confirmed, removing",
+                                            dead_id.fmt_short(),
+                                            remote.fmt_short()
+                                        );
                                         let mut state = node.state.lock().await;
                                         state.connections.remove(&dead_id);
                                         drop(state);
@@ -1711,7 +2387,10 @@ impl Node {
                         if recv.read_exact(&mut id_bytes).await.is_ok() {
                             if let Ok(pk) = iroh::PublicKey::from_bytes(&id_bytes) {
                                 let leaving_id = EndpointId::from(pk);
-                                eprintln!("👋 Peer {} announced clean shutdown", leaving_id.fmt_short());
+                                eprintln!(
+                                    "👋 Peer {} announced clean shutdown",
+                                    leaving_id.fmt_short()
+                                );
                                 let mut state = node.state.lock().await;
                                 state.connections.remove(&leaving_id);
                                 drop(state);
@@ -1724,11 +2403,38 @@ impl Node {
                     if self.blackboard.is_enabled() {
                         let node = self.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = node.handle_blackboard_stream(remote, send, recv).await {
-                                tracing::debug!("Blackboard stream error from {}: {e}", remote.fmt_short());
+                            if let Err(e) = node.handle_blackboard_stream(remote, send, recv).await
+                            {
+                                tracing::debug!(
+                                    "Blackboard stream error from {}: {e}",
+                                    remote.fmt_short()
+                                );
                             }
                         });
                     }
+                }
+                STREAM_PLUGIN_CHANNEL => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_plugin_channel_stream(remote, send, recv).await
+                        {
+                            tracing::debug!(
+                                "Plugin channel stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
+                STREAM_PLUGIN_BULK_TRANSFER => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_plugin_bulk_stream(remote, send, recv).await {
+                            tracing::debug!(
+                                "Plugin bulk stream error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
                 }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
@@ -1741,11 +2447,15 @@ impl Node {
 
     async fn connect_to_peer(&self, addr: EndpointAddr) -> Result<()> {
         let peer_id = addr.id;
-        if peer_id == self.endpoint.id() { return Ok(()); }
+        if peer_id == self.endpoint.id() {
+            return Ok(());
+        }
 
         {
             let state = self.state.lock().await;
-            if state.peers.contains_key(&peer_id) { return Ok(()); }
+            if state.peers.contains_key(&peer_id) {
+                return Ok(());
+            }
             if state.dead_peers.contains(&peer_id) {
                 tracing::debug!("Skipping connection to dead peer {}", peer_id.fmt_short());
                 return Ok(());
@@ -1756,7 +2466,9 @@ impl Node {
         let conn = match tokio::time::timeout(
             std::time::Duration::from_secs(15),
             self.endpoint.connect(addr.clone(), ALPN),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
                 anyhow::bail!("Failed to connect to {}: {e}", peer_id.fmt_short());
@@ -1774,7 +2486,9 @@ impl Node {
         let node_for_dispatch = self.clone();
         let conn_for_dispatch = conn.clone();
         tokio::spawn(async move {
-            node_for_dispatch.dispatch_streams(conn_for_dispatch, peer_id).await;
+            node_for_dispatch
+                .dispatch_streams(conn_for_dispatch, peer_id)
+                .await;
         });
 
         // Gossip exchange to learn peer's role/VRAM and announce ourselves
@@ -1787,7 +2501,12 @@ impl Node {
         self.initiate_gossip_inner(conn, remote, true).await
     }
 
-    async fn initiate_gossip_inner(&self, conn: Connection, remote: EndpointId, discover_peers: bool) -> Result<()> {
+    async fn initiate_gossip_inner(
+        &self,
+        conn: Connection,
+        remote: EndpointId,
+        discover_peers: bool,
+    ) -> Result<()> {
         let t0 = std::time::Instant::now();
         let (mut send, mut recv) = conn.open_bi().await?;
         send.write_all(&[STREAM_GOSSIP]).await?;
@@ -1818,20 +2537,19 @@ impl Node {
         // no last_seen refresh) so their models appear in mesh_models but they still
         // get pruned if they actually die.
         for ann in &their_announcements {
-            if ann.addr.id == self.endpoint.id() { continue; }
+            if ann.addr.id == self.endpoint.id() {
+                continue;
+            }
             if ann.addr.id == remote {
                 if let Some(ref their_id) = ann.mesh_id {
                     self.set_mesh_id(their_id.clone()).await;
                 }
                 self.merge_remote_demand(&ann.model_demand);
                 self.add_peer(remote, ann.addr.clone(), ann).await;
-                let mut state = self.state.lock().await;
-                if let Some(peer) = state.peers.get_mut(&remote) {
-                    peer.rtt_ms = Some(rtt_ms);
-                    tracing::info!("Peer {} RTT: {}ms", remote.fmt_short(), rtt_ms);
-                }
+                self.update_peer_rtt(remote, rtt_ms).await;
             } else {
-                self.update_transitive_peer(ann.addr.id, &ann.addr, ann).await;
+                self.update_transitive_peer(ann.addr.id, &ann.addr, ann)
+                    .await;
             }
         }
 
@@ -1839,10 +2557,18 @@ impl Node {
         if discover_peers {
             for ann in &their_announcements {
                 if ann.addr.id != self.endpoint.id() {
-                    let has_conn = self.state.lock().await.connections.contains_key(&ann.addr.id);
+                    let has_conn = self
+                        .state
+                        .lock()
+                        .await
+                        .connections
+                        .contains_key(&ann.addr.id);
                     if !has_conn {
                         if let Err(e) = Box::pin(self.connect_to_peer(ann.addr.clone())).await {
-                            tracing::debug!("Could not connect to discovered peer {}: {e}", ann.addr.id.fmt_short());
+                            tracing::debug!(
+                                "Could not connect to discovered peer {}: {e}",
+                                ann.addr.id.fmt_short()
+                            );
                         }
                     }
                 }
@@ -1873,7 +2599,10 @@ impl Node {
         {
             let mut state = self.state.lock().await;
             if state.dead_peers.remove(&remote) {
-                eprintln!("🔄 Dead peer {} is gossiping — clearing dead status", remote.fmt_short());
+                eprintln!(
+                    "🔄 Dead peer {} is gossiping — clearing dead status",
+                    remote.fmt_short()
+                );
             }
         }
 
@@ -1898,7 +2627,9 @@ impl Node {
         // Process all announcements: direct peer gets full add_peer,
         // others get transitive update (serving info without last_seen refresh).
         for ann in &their_announcements {
-            if ann.addr.id == self.endpoint.id() { continue; }
+            if ann.addr.id == self.endpoint.id() {
+                continue;
+            }
             if ann.addr.id == remote {
                 if let Some(ref their_id) = ann.mesh_id {
                     self.set_mesh_id(their_id.clone()).await;
@@ -1906,7 +2637,8 @@ impl Node {
                 self.merge_remote_demand(&ann.model_demand);
                 self.add_peer(remote, ann.addr.clone(), ann).await;
             } else {
-                self.update_transitive_peer(ann.addr.id, &ann.addr, ann).await;
+                self.update_transitive_peer(ann.addr.id, &ann.addr, ann)
+                    .await;
             }
         }
 
@@ -1922,11 +2654,13 @@ impl Node {
                         let rtt_ms = rtt.as_millis() as u32;
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
-                            eprintln!("📡 Peer {} RTT: {}ms ({})", remote.fmt_short(), rtt_ms, path_type);
-                            let mut state = self.state.lock().await;
-                            if let Some(peer) = state.peers.get_mut(&remote) {
-                                peer.rtt_ms = Some(rtt_ms);
-                            }
+                            eprintln!(
+                                "📡 Peer {} RTT: {}ms ({})",
+                                remote.fmt_short(),
+                                rtt_ms,
+                                path_type
+                            );
+                            self.update_peer_rtt(remote, rtt_ms).await;
                         }
                         break;
                     }
@@ -1938,7 +2672,9 @@ impl Node {
         // to peers we don't already know about.
         for ann in their_announcements {
             let peer_id = ann.addr.id;
-            if peer_id == self.endpoint.id() { continue; }
+            if peer_id == self.endpoint.id() {
+                continue;
+            }
             let already_known = self.state.lock().await.peers.contains_key(&peer_id);
             if !already_known {
                 if let Err(e) = Box::pin(self.connect_to_peer(ann.addr)).await {
@@ -1991,27 +2727,48 @@ impl Node {
 
     async fn remove_peer(&self, id: EndpointId) {
         let mut state = self.state.lock().await;
-        if state.peers.remove(&id).is_some() {
-            tracing::info!("Peer removed: {} (total: {})", id.fmt_short(), state.peers.len());
+        if let Some(peer) = state.peers.remove(&id) {
+            tracing::info!(
+                "Peer removed: {} (total: {})",
+                id.fmt_short(),
+                state.peers.len()
+            );
             let count = state.peers.len();
             drop(state);
             let _ = self.peer_change_tx.send(count);
+            self.emit_plugin_mesh_event(
+                crate::plugin::proto::mesh_event::Kind::PeerDown,
+                Some(&peer),
+                String::new(),
+            )
+            .await;
         }
     }
 
     async fn add_peer(&self, id: EndpointId, addr: EndpointAddr, ann: &PeerAnnouncement) {
         let mut state = self.state.lock().await;
-        if id == self.endpoint.id() { return; }
+        if id == self.endpoint.id() {
+            return;
+        }
         // If this peer was previously dead, clear it — add_peer is only called
         // after a successful gossip exchange, which is proof of life.
         if state.dead_peers.remove(&id) {
-            eprintln!("🔄 Peer {} back from the dead (successful gossip)", id.fmt_short());
+            eprintln!(
+                "🔄 Peer {} back from the dead (successful gossip)",
+                id.fmt_short()
+            );
         }
         if let Some(existing) = state.peers.get_mut(&id) {
+            let old_peer = existing.clone();
             let role_changed = existing.role != ann.role;
             let serving_changed = existing.serving != ann.serving;
             if role_changed {
-                tracing::info!("Peer {} role updated: {:?} → {:?}", id.fmt_short(), existing.role, ann.role);
+                tracing::info!(
+                    "Peer {} role updated: {:?} → {:?}",
+                    id.fmt_short(),
+                    existing.role,
+                    ann.role
+                );
                 existing.role = ann.role.clone();
             }
             // Update addr if the new one has more info
@@ -2028,22 +2785,53 @@ impl Node {
             existing.available_models = ann.available_models.clone();
             existing.requested_models = ann.requested_models.clone();
             existing.last_seen = std::time::Instant::now();
-            if ann.version.is_some() { existing.version = ann.version.clone(); }
+            if ann.version.is_some() {
+                existing.version = ann.version.clone();
+            }
             existing.gpu_name = ann.gpu_name.clone();
             existing.hostname = ann.hostname.clone();
             existing.is_soc = ann.is_soc;
             existing.gpu_vram = ann.gpu_vram.clone();
+            let updated_peer = existing.clone();
+            let changed = peer_meaningfully_changed(&old_peer, &updated_peer);
             if role_changed || serving_changed {
                 let count = state.peers.len();
                 drop(state);
                 let _ = self.peer_change_tx.send(count);
+                if changed {
+                    self.emit_plugin_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                        Some(&updated_peer),
+                        String::new(),
+                    )
+                    .await;
+                }
+            } else {
+                drop(state);
+                if changed {
+                    self.emit_plugin_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                        Some(&updated_peer),
+                        String::new(),
+                    )
+                    .await;
+                }
             }
             return;
         }
-        tracing::info!("Peer added: {} role={:?} vram={:.1}GB serving={:?} available={:?} (total: {})",
-            id.fmt_short(), ann.role, ann.vram_bytes as f64 / 1e9, ann.serving, ann.available_models, state.peers.len() + 1);
-        state.peers.insert(id, PeerInfo {
-            id, addr, tunnel_port: None,
+        tracing::info!(
+            "Peer added: {} role={:?} vram={:.1}GB serving={:?} available={:?} (total: {})",
+            id.fmt_short(),
+            ann.role,
+            ann.vram_bytes as f64 / 1e9,
+            ann.serving,
+            ann.available_models,
+            state.peers.len() + 1
+        );
+        let peer = PeerInfo {
+            id,
+            addr,
+            tunnel_port: None,
             role: ann.role.clone(),
             models: ann.models.clone(),
             vram_bytes: ann.vram_bytes,
@@ -2059,10 +2847,17 @@ impl Node {
             hostname: ann.hostname.clone(),
             is_soc: ann.is_soc,
             gpu_vram: ann.gpu_vram.clone(),
-        });
+        };
+        state.peers.insert(id, peer.clone());
         let count = state.peers.len();
         drop(state);
         let _ = self.peer_change_tx.send(count);
+        self.emit_plugin_mesh_event(
+            crate::plugin::proto::mesh_event::Kind::PeerUp,
+            Some(&peer),
+            String::new(),
+        )
+        .await;
     }
 
     /// Update a peer learned transitively through gossip (not directly connected).
@@ -2070,34 +2865,78 @@ impl Node {
     /// but does NOT refresh last_seen — transitive peers still get pruned if the
     /// bridge node stops mentioning them. Does NOT trigger peer_change events
     /// for new transitive peers (avoids re-election storms at scale).
-    async fn update_transitive_peer(&self, id: EndpointId, addr: &EndpointAddr, ann: &PeerAnnouncement) {
+    async fn update_transitive_peer(
+        &self,
+        id: EndpointId,
+        addr: &EndpointAddr,
+        ann: &PeerAnnouncement,
+    ) {
         let mut state = self.state.lock().await;
-        if id == self.endpoint.id() { return; }
-        if state.dead_peers.contains(&id) { return; }
+        if id == self.endpoint.id() {
+            return;
+        }
+        if state.dead_peers.contains(&id) {
+            return;
+        }
         if let Some(existing) = state.peers.get_mut(&id) {
+            let old_peer = existing.clone();
             // Update serving info only — don't touch last_seen
-            let serving_changed = existing.serving != ann.serving
-                || existing.serving_models != ann.serving_models;
+            let serving_changed =
+                existing.serving != ann.serving || existing.serving_models != ann.serving_models;
             existing.serving = ann.serving.clone();
             existing.serving_models = ann.serving_models.clone();
             existing.role = ann.role.clone();
             existing.vram_bytes = ann.vram_bytes;
-            if !addr.addrs.is_empty() { existing.addr = addr.clone(); }
-            if ann.version.is_some() { existing.version = ann.version.clone(); }
-            if ann.gpu_name.is_some() { existing.gpu_name = ann.gpu_name.clone(); }
-            if ann.hostname.is_some() { existing.hostname = ann.hostname.clone(); }
-            if ann.is_soc.is_some() { existing.is_soc = ann.is_soc; }
-            if ann.gpu_vram.is_some() { existing.gpu_vram = ann.gpu_vram.clone(); }
+            if !addr.addrs.is_empty() {
+                existing.addr = addr.clone();
+            }
+            if ann.version.is_some() {
+                existing.version = ann.version.clone();
+            }
+            if ann.gpu_name.is_some() {
+                existing.gpu_name = ann.gpu_name.clone();
+            }
+            if ann.hostname.is_some() {
+                existing.hostname = ann.hostname.clone();
+            }
+            if ann.is_soc.is_some() {
+                existing.is_soc = ann.is_soc;
+            }
+            if ann.gpu_vram.is_some() {
+                existing.gpu_vram = ann.gpu_vram.clone();
+            }
+            let updated_peer = existing.clone();
+            let changed = peer_meaningfully_changed(&old_peer, &updated_peer);
             if serving_changed {
                 let count = state.peers.len();
                 drop(state);
                 let _ = self.peer_change_tx.send(count);
+                if changed {
+                    self.emit_plugin_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                        Some(&updated_peer),
+                        String::new(),
+                    )
+                    .await;
+                }
+            } else {
+                drop(state);
+                if changed {
+                    self.emit_plugin_mesh_event(
+                        crate::plugin::proto::mesh_event::Kind::PeerUpdated,
+                        Some(&updated_peer),
+                        String::new(),
+                    )
+                    .await;
+                }
             }
         } else {
             // New transitive peer — add with last_seen = now but no peer_change event.
             // It will get pruned after PEER_STALE_SECS*2 if never directly contacted.
-            state.peers.insert(id, PeerInfo {
-                id, addr: addr.clone(), tunnel_port: None,
+            let peer = PeerInfo {
+                id,
+                addr: addr.clone(),
+                tunnel_port: None,
                 role: ann.role.clone(),
                 models: ann.models.clone(),
                 vram_bytes: ann.vram_bytes,
@@ -2113,7 +2952,15 @@ impl Node {
                 hostname: ann.hostname.clone(),
                 is_soc: ann.is_soc,
                 gpu_vram: ann.gpu_vram.clone(),
-            });
+            };
+            state.peers.insert(id, peer.clone());
+            drop(state);
+            self.emit_plugin_mesh_event(
+                crate::plugin::proto::mesh_event::Kind::PeerUp,
+                Some(&peer),
+                String::new(),
+            )
+            .await;
         }
     }
 
@@ -2128,10 +2975,13 @@ impl Node {
         let my_requested = self.requested_models.lock().await.clone();
         let my_mesh_id = self.mesh_id.lock().await.clone();
         let my_demand = self.get_demand();
-        let stale_cutoff = std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS);
+        let stale_cutoff =
+            std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS);
         let mut announcements: Vec<PeerAnnouncement> = {
             let state = self.state.lock().await;
-            state.peers.values()
+            state
+                .peers
+                .values()
                 .filter(|p| p.last_seen >= stale_cutoff)
                 .map(|p| PeerAnnouncement {
                     addr: p.addr.clone(),
@@ -2167,10 +3017,22 @@ impl Node {
             version: Some(crate::VERSION.to_string()),
             model_demand: my_demand,
             mesh_id: my_mesh_id,
-            gpu_name: if self.enumerate_host { self.gpu_name.clone() } else { None },
-            hostname: if self.enumerate_host { self.hostname.clone() } else { None },
+            gpu_name: if self.enumerate_host {
+                self.gpu_name.clone()
+            } else {
+                None
+            },
+            hostname: if self.enumerate_host {
+                self.hostname.clone()
+            } else {
+                None
+            },
             is_soc: self.is_soc,
-            gpu_vram: if self.enumerate_host { self.gpu_vram.clone() } else { None },
+            gpu_vram: if self.enumerate_host {
+                self.gpu_vram.clone()
+            } else {
+                None
+            },
         });
         announcements
     }
@@ -2183,12 +3045,36 @@ mod tests {
     #[test]
     fn test_merge_demand_takes_max() {
         let mut ours = HashMap::new();
-        ours.insert("GLM".into(), ModelDemand { last_active: 100, request_count: 50 });
-        ours.insert("Hermes".into(), ModelDemand { last_active: 200, request_count: 10 });
+        ours.insert(
+            "GLM".into(),
+            ModelDemand {
+                last_active: 100,
+                request_count: 50,
+            },
+        );
+        ours.insert(
+            "Hermes".into(),
+            ModelDemand {
+                last_active: 200,
+                request_count: 10,
+            },
+        );
 
         let mut theirs = HashMap::new();
-        theirs.insert("GLM".into(), ModelDemand { last_active: 150, request_count: 30 });
-        theirs.insert("Qwen".into(), ModelDemand { last_active: 300, request_count: 5 });
+        theirs.insert(
+            "GLM".into(),
+            ModelDemand {
+                last_active: 150,
+                request_count: 30,
+            },
+        );
+        theirs.insert(
+            "Qwen".into(),
+            ModelDemand {
+                last_active: 300,
+                request_count: 5,
+            },
+        );
 
         merge_demand(&mut ours, &theirs);
 
@@ -2211,7 +3097,13 @@ mod tests {
         assert!(ours.is_empty());
 
         let mut theirs2 = HashMap::new();
-        theirs2.insert("GLM".into(), ModelDemand { last_active: 100, request_count: 1 });
+        theirs2.insert(
+            "GLM".into(),
+            ModelDemand {
+                last_active: 100,
+                request_count: 1,
+            },
+        );
         merge_demand(&mut ours, &theirs2);
         assert_eq!(ours.len(), 1);
         assert_eq!(ours["GLM"].request_count, 1);
@@ -2220,7 +3112,13 @@ mod tests {
     #[test]
     fn test_merge_demand_idempotent() {
         let mut ours = HashMap::new();
-        ours.insert("GLM".into(), ModelDemand { last_active: 100, request_count: 50 });
+        ours.insert(
+            "GLM".into(),
+            ModelDemand {
+                last_active: 100,
+                request_count: 50,
+            },
+        );
 
         let theirs = ours.clone();
         merge_demand(&mut ours, &theirs);
@@ -2235,17 +3133,24 @@ mod tests {
         let mut demand = HashMap::new();
 
         // Recent — should survive
-        demand.insert("Recent".into(), ModelDemand {
-            last_active: now - 60, // 1 min ago
-            request_count: 10,
-        });
+        demand.insert(
+            "Recent".into(),
+            ModelDemand {
+                last_active: now - 60, // 1 min ago
+                request_count: 10,
+            },
+        );
         // Stale — should be filtered
-        demand.insert("Stale".into(), ModelDemand {
-            last_active: now - DEMAND_TTL_SECS - 100, // past TTL
-            request_count: 100,
-        });
+        demand.insert(
+            "Stale".into(),
+            ModelDemand {
+                last_active: now - DEMAND_TTL_SECS - 100, // past TTL
+                request_count: 100,
+            },
+        );
 
-        let filtered: HashMap<String, ModelDemand> = demand.into_iter()
+        let filtered: HashMap<String, ModelDemand> = demand
+            .into_iter()
             .filter(|(_, d)| (now - d.last_active) < DEMAND_TTL_SECS)
             .collect();
 
@@ -2257,7 +3162,13 @@ mod tests {
     #[test]
     fn test_demand_serialization_roundtrip() {
         let mut demand: HashMap<String, ModelDemand> = HashMap::new();
-        demand.insert("GLM".into(), ModelDemand { last_active: 1772309000, request_count: 42 });
+        demand.insert(
+            "GLM".into(),
+            ModelDemand {
+                last_active: 1772309000,
+                request_count: 42,
+            },
+        );
 
         let json = serde_json::to_string(&demand).unwrap();
         let decoded: HashMap<String, ModelDemand> = serde_json::from_str(&json).unwrap();
@@ -2293,8 +3204,14 @@ mod tests {
 
     #[test]
     fn test_split_gguf_base_name() {
-        assert_eq!(split_gguf_base_name("GLM-5-UD-IQ2_XXS-00001-of-00006"), Some("GLM-5-UD-IQ2_XXS"));
-        assert_eq!(split_gguf_base_name("GLM-5-UD-IQ2_XXS-00006-of-00006"), Some("GLM-5-UD-IQ2_XXS"));
+        assert_eq!(
+            split_gguf_base_name("GLM-5-UD-IQ2_XXS-00001-of-00006"),
+            Some("GLM-5-UD-IQ2_XXS")
+        );
+        assert_eq!(
+            split_gguf_base_name("GLM-5-UD-IQ2_XXS-00006-of-00006"),
+            Some("GLM-5-UD-IQ2_XXS")
+        );
         assert_eq!(split_gguf_base_name("Qwen3-8B-Q4_K_M"), None);
         assert_eq!(split_gguf_base_name("model-001-of-003"), None); // wrong digit count
         assert_eq!(split_gguf_base_name("model-00001-of-00003"), Some("model"));
@@ -2412,9 +3329,21 @@ mod tests {
         let hostname: Option<String> = Some("carrack".to_string());
         let gpu_vram: Option<String> = Some("34359738368".to_string());
 
-        let gossip_gpu_name = if enumerate_host { gpu_name.clone() } else { None };
-        let gossip_hostname = if enumerate_host { hostname.clone() } else { None };
-        let gossip_gpu_vram = if enumerate_host { gpu_vram.clone() } else { None };
+        let gossip_gpu_name = if enumerate_host {
+            gpu_name.clone()
+        } else {
+            None
+        };
+        let gossip_hostname = if enumerate_host {
+            hostname.clone()
+        } else {
+            None
+        };
+        let gossip_gpu_vram = if enumerate_host {
+            gpu_vram.clone()
+        } else {
+            None
+        };
 
         assert_eq!(gossip_gpu_name, None);
         assert_eq!(gossip_hostname, None);
@@ -2428,9 +3357,21 @@ mod tests {
         let hostname: Option<String> = Some("carrack".to_string());
         let gpu_vram: Option<String> = Some("34359738368".to_string());
 
-        let gossip_gpu_name = if enumerate_host { gpu_name.clone() } else { None };
-        let gossip_hostname = if enumerate_host { hostname.clone() } else { None };
-        let gossip_gpu_vram = if enumerate_host { gpu_vram.clone() } else { None };
+        let gossip_gpu_name = if enumerate_host {
+            gpu_name.clone()
+        } else {
+            None
+        };
+        let gossip_hostname = if enumerate_host {
+            hostname.clone()
+        } else {
+            None
+        };
+        let gossip_gpu_vram = if enumerate_host {
+            gpu_vram.clone()
+        } else {
+            None
+        };
 
         assert_eq!(gossip_gpu_name, Some("NVIDIA RTX 5090".to_string()));
         assert_eq!(gossip_hostname, Some("carrack".to_string()));
@@ -2443,7 +3384,11 @@ mod tests {
             let is_soc: Option<bool> = Some(true);
             let gpu_name: Option<String> = Some("Tegra AGX Orin".to_string());
 
-            let gossip_gpu_name = if enumerate_host { gpu_name.clone() } else { None };
+            let gossip_gpu_name = if enumerate_host {
+                gpu_name.clone()
+            } else {
+                None
+            };
 
             assert_eq!(is_soc, Some(true), "is_soc must always be sent");
             if enumerate_host {
@@ -2466,8 +3411,14 @@ mod tests {
 
         let json = r#"{"other_field": "value"}"#;
         let decoded: TestAnnouncement = serde_json::from_str(json).unwrap();
-        assert_eq!(decoded.is_soc, None, "old nodes without is_soc should default to None");
-        assert_eq!(decoded.gpu_vram, None, "old nodes without gpu_vram should default to None");
+        assert_eq!(
+            decoded.is_soc, None,
+            "old nodes without is_soc should default to None"
+        );
+        assert_eq!(
+            decoded.gpu_vram, None,
+            "old nodes without gpu_vram should default to None"
+        );
     }
 }
 
@@ -2494,7 +3445,11 @@ pub fn generate_mesh_id(name: Option<&str>, nostr_pubkey: Option<&str>) -> Strin
             }
         }
         // Generate new random ID and persist
-        let id = format!("{:016x}{:016x}", rand::random::<u64>(), rand::random::<u64>());
+        let id = format!(
+            "{:016x}{:016x}",
+            rand::random::<u64>(),
+            rand::random::<u64>()
+        );
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -2528,14 +3483,17 @@ pub fn load_last_mesh_id() -> Option<String> {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".mesh-llm")
         .join("last-mesh");
-    std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Load secret key from ~/.mesh-llm/key, or create a new one and save it.
 /// Migrates from ~/.mesh-inference/key if it exists.
 async fn load_or_create_key() -> Result<SecretKey> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     let dir = home.join(".mesh-llm");
     let key_path = dir.join("key");
 

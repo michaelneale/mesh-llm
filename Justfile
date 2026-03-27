@@ -43,8 +43,8 @@ build-mac:
             echo "Building mesh-llm UI..."
             (cd "{{ui_dir}}" && npm ci && npm run build)
         fi
-        (cd "{{mesh_dir}}" && cargo build --release)
-        echo "Mesh binary: {{mesh_dir}}/target/release/mesh-llm"
+        cargo build --release
+        echo "Mesh binary: target/release/mesh-llm"
     fi
 
 # Build on Linux with CUDA — delegates to scripts/build-linux.sh
@@ -106,7 +106,7 @@ local: build download-model
 
 # ── QUIC Mesh ──────────────────────────────────────────────────
 
-mesh_bin := mesh_dir / "target/release/mesh-llm"
+mesh_bin := "target/release/mesh-llm"
 
 # Start a mesh worker (no llama-server, just rpc-server + mesh)
 # Prints an invite token for other nodes to join.

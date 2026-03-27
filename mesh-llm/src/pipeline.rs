@@ -34,33 +34,37 @@ pub async fn pre_plan(
     user_messages: &[Value],
 ) -> Result<PlanResult, String> {
     // Extract the last user message as the task
-    let last_user = user_messages.iter()
+    let last_user = user_messages
+        .iter()
         .rev()
         .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
 
-    let task = last_user.and_then(|m| {
-        let content = m.get("content")?;
-        // Handle string content
-        if let Some(s) = content.as_str() {
-            return Some(s.to_string());
-        }
-        // Handle array content (multi-part: [{"type":"text","text":"..."}])
-        if let Some(parts) = content.as_array() {
-            let texts: Vec<&str> = parts.iter()
-                .filter_map(|p| {
-                    if p.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        p.get("text").and_then(|t| t.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !texts.is_empty() {
-                return Some(texts.join("\n"));
+    let task = last_user
+        .and_then(|m| {
+            let content = m.get("content")?;
+            // Handle string content
+            if let Some(s) = content.as_str() {
+                return Some(s.to_string());
             }
-        }
-        None
-    }).unwrap_or_default();
+            // Handle array content (multi-part: [{"type":"text","text":"..."}])
+            if let Some(parts) = content.as_array() {
+                let texts: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|p| {
+                        if p.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            p.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !texts.is_empty() {
+                    return Some(texts.join("\n"));
+                }
+            }
+            None
+        })
+        .unwrap_or_default();
 
     if task.is_empty() {
         return Err("no user message found".into());
@@ -84,22 +88,26 @@ pub async fn pre_plan(
     });
 
     let start = Instant::now();
-    let resp = client.post(format!("{planner_url}/v1/chat/completions"))
+    let resp = client
+        .post(format!("{planner_url}/v1/chat/completions"))
         .json(&plan_request)
         .send()
         .await
         .map_err(|e| format!("planner request failed: {e}"))?;
 
-    let body: Value = resp.json()
+    let body: Value = resp
+        .json()
         .await
         .map_err(|e| format!("planner response parse failed: {e}"))?;
 
-    let plan_text = body.pointer("/choices/0/message/content")
+    let plan_text = body
+        .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string();
 
-    let model_used = body.get("model")
+    let model_used = body
+        .get("model")
         .and_then(|m| m.as_str())
         .unwrap_or(planner_model)
         .to_string();
@@ -110,7 +118,11 @@ pub async fn pre_plan(
         return Err("planner returned empty response".into());
     }
 
-    Ok(PlanResult { plan_text, model_used, elapsed_ms })
+    Ok(PlanResult {
+        plan_text,
+        model_used,
+        elapsed_ms,
+    })
 }
 
 /// Inject a plan into a chat completion request body.
@@ -124,7 +136,8 @@ pub fn inject_plan(body: &mut Value, plan: &PlanResult) {
     };
 
     // Find the position of the last user message
-    let last_user_idx = messages.iter()
+    let last_user_idx = messages
+        .iter()
         .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
 
     let plan_message = json!({
@@ -148,7 +161,7 @@ pub fn inject_plan(body: &mut Value, plan: &PlanResult) {
 /// - Deep complexity
 /// - Skip for simple chat, quick lookups, etc.
 pub fn should_pipeline(classification: &crate::router::Classification) -> bool {
-    use crate::router::{Complexity, Category};
+    use crate::router::{Category, Complexity};
 
     // Only pipeline for complex tasks that need tools
     if !classification.needs_tools {
@@ -159,7 +172,10 @@ pub fn should_pipeline(classification: &crate::router::Classification) -> bool {
         Complexity::Deep => true,
         Complexity::Moderate => {
             // Moderate + tool use — pipeline if it's code or reasoning
-            matches!(classification.category, Category::Code | Category::Reasoning | Category::ToolCall)
+            matches!(
+                classification.category,
+                Category::Code | Category::Reasoning | Category::ToolCall
+            )
         }
         Complexity::Quick => false,
     }
@@ -182,7 +198,8 @@ pub async fn route_with_pipeline(
         return (body, strong_model.to_string(), None);
     }
 
-    let messages = body.get("messages")
+    let messages = body
+        .get("messages")
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
@@ -191,7 +208,9 @@ pub async fn route_with_pipeline(
         Ok(plan) => {
             tracing::info!(
                 "pipeline: pre-plan by {} in {}ms ({} chars)",
-                plan.model_used, plan.elapsed_ms, plan.plan_text.len()
+                plan.model_used,
+                plan.elapsed_ms,
+                plan.plan_text.len()
             );
             inject_plan(&mut body, &plan);
             (body, strong_model.to_string(), Some(plan))
@@ -255,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_should_pipeline_complex_code() {
-        use crate::router::{Classification, Category, Complexity};
+        use crate::router::{Category, Classification, Complexity};
         let cl = Classification {
             category: Category::Code,
             complexity: Complexity::Deep,
@@ -266,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_should_not_pipeline_simple_chat() {
-        use crate::router::{Classification, Category, Complexity};
+        use crate::router::{Category, Classification, Complexity};
         let cl = Classification {
             category: Category::Chat,
             complexity: Complexity::Quick,
@@ -277,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_should_not_pipeline_quick_tool_use() {
-        use crate::router::{Classification, Category, Complexity};
+        use crate::router::{Category, Classification, Complexity};
         let cl = Classification {
             category: Category::ToolCall,
             complexity: Complexity::Quick,
@@ -288,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_should_pipeline_moderate_code_with_tools() {
-        use crate::router::{Classification, Category, Complexity};
+        use crate::router::{Category, Classification, Complexity};
         let cl = Classification {
             category: Category::Code,
             complexity: Complexity::Moderate,
@@ -299,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_should_not_pipeline_moderate_chat() {
-        use crate::router::{Classification, Category, Complexity};
+        use crate::router::{Category, Classification, Complexity};
         let cl = Classification {
             category: Category::Chat,
             complexity: Complexity::Moderate,

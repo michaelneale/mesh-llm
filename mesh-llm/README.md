@@ -15,8 +15,11 @@ src/
 ├── download.rs    Model catalog and HuggingFace download (reqwest, resume support)
 ├── nostr.rs       Nostr publish/discover: mesh listings, smart auto-join, publish watchdog
 ├── hardware.rs    GPU/host hardware detection: Collector trait, DefaultCollector, TegraCollector
-├── blackboard.rs      Shared ephemeral messages across the mesh (in-memory, gossip, PII filter)
-├── blackboard_mcp.rs  MCP server (stdio) for blackboard — agents post, search, read feed
+├── plugins/
+│   ├── mod.rs                 Plugin module registry
+│   ├── blackboard/mod.rs      Shared ephemeral messages across the mesh (plugin runtime/state)
+│   ├── blackboard/mcp.rs      Standalone MCP server for blackboard
+│   └── example/               Standalone example plugin crate for tools, channel, bulk, and mesh events
 ```
 
 ## Design

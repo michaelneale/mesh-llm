@@ -23,7 +23,7 @@ This clones/updates the llama.cpp fork if needed, builds with `-DGGML_METAL=ON -
 ```bash
 otool -L llama.cpp/build/bin/llama-server | grep -v /System | grep -v /usr/lib
 otool -L llama.cpp/build/bin/rpc-server | grep -v /System | grep -v /usr/lib
-otool -L mesh-llm/target/release/mesh-llm | grep -v /System | grep -v /usr/lib
+otool -L target/release/mesh-llm | grep -v /System | grep -v /usr/lib
 ```
 
 Each should only show the binary name — no `/opt/homebrew/` paths.

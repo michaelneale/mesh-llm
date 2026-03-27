@@ -42,7 +42,6 @@ pub struct MoeConfig {
     /// Expert IDs sorted by gate mass descending (hottest first).
     /// This is the content of the ranking CSV, embedded directly.
     pub ranking: &'static [u32],
-
 }
 
 // Pre-computed expert rankings by gate mass (hottest first).
@@ -698,7 +697,10 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
     let mut total_size: u64 = 0;
     for (file, _) in &files {
         let path = dir.join(file);
-        let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+        let size = tokio::fs::metadata(&path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         if size < 1_000_000 {
             all_present = false;
             break;
@@ -724,7 +726,10 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
     for (file, url) in &files {
         let path = dir.join(file);
         if path.exists() {
-            let size = tokio::fs::metadata(&path).await.map(|m| m.len()).unwrap_or(0);
+            let size = tokio::fs::metadata(&path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
             if size > 1_000_000 {
                 eprintln!("  ✅ {file} already exists ({:.1}GB)", size as f64 / 1e9);
                 continue;

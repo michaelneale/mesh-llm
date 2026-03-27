@@ -92,5 +92,5 @@ if [[ -d "$MESH_DIR" ]]; then
     fi
     echo "Building mesh-llm..."
     (cd "$MESH_DIR" && cargo build --release)
-    echo "Mesh binary: $MESH_DIR/target/release/mesh-llm"
+    echo "Mesh binary: target/release/mesh-llm"
 fi

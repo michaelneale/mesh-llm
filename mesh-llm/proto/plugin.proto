@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package meshllm.plugin.v1;
+
+message Envelope {
+  uint32 protocol_version = 1;
+  string plugin_id = 2;
+  uint64 request_id = 3;
+
+  oneof payload {
+    InitializeRequest initialize_request = 10;
+    InitializeResponse initialize_response = 11;
+    HealthRequest health_request = 12;
+    HealthResponse health_response = 13;
+    ShutdownRequest shutdown_request = 14;
+    ShutdownResponse shutdown_response = 15;
+    MeshEvent mesh_event = 16;
+    RpcRequest rpc_request = 17;
+    RpcResponse rpc_response = 18;
+    RpcNotification rpc_notification = 19;
+    ErrorResponse error_response = 20;
+    ChannelMessage channel_message = 21;
+    BulkTransferMessage bulk_transfer_message = 22;
+  }
+}
+
+message Empty {}
+
+enum MeshVisibility {
+  MESH_VISIBILITY_UNSPECIFIED = 0;
+  PRIVATE = 1;
+  PUBLIC = 2;
+}
+
+message InitializeRequest {
+  uint32 host_protocol_version = 1;
+  string host_version = 2;
+  string host_info_json = 3;
+  MeshVisibility mesh_visibility = 4;
+}
+
+message InitializeResponse {
+  string plugin_id = 1;
+  uint32 plugin_protocol_version = 2;
+  string plugin_version = 3;
+  string server_info_json = 4;
+  repeated string capabilities = 5;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_DEGRADED = 2;
+    STATUS_UNHEALTHY = 3;
+  }
+
+  Status status = 1;
+  string detail = 2;
+}
+
+message ShutdownRequest {
+  string reason = 1;
+}
+
+message ShutdownResponse {}
+
+message MeshPeer {
+  string peer_id = 1;
+  string version = 2;
+  repeated string capabilities = 3;
+  string role = 4;
+  uint64 vram_bytes = 5;
+  repeated string models = 6;
+  repeated string serving_models = 7;
+  repeated string available_models = 8;
+  repeated string requested_models = 9;
+  optional uint32 rtt_ms = 10;
+  string model_source = 11;
+}
+
+message MeshEvent {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    PEER_UP = 1;
+    PEER_DOWN = 2;
+    PEER_UPDATED = 3;
+    LOCAL_ACCEPTING = 4;
+    LOCAL_STANDBY = 5;
+    MESH_ID_UPDATED = 6;
+  }
+
+  Kind kind = 1;
+  MeshPeer peer = 2;
+  string local_peer_id = 3;
+  string mesh_id = 4;
+  string detail_json = 5;
+}
+
+message RpcRequest {
+  string method = 1;
+  string params_json = 2;
+}
+
+message RpcResponse {
+  string result_json = 1;
+}
+
+message RpcNotification {
+  string method = 1;
+  string params_json = 2;
+}
+
+message ChannelMessage {
+  string channel = 1;
+  string source_peer_id = 2;
+  string target_peer_id = 3;
+  string content_type = 4;
+  bytes body = 5;
+  string message_kind = 6;
+  string correlation_id = 7;
+  string metadata_json = 8;
+}
+
+message MeshChannelFrame {
+  string plugin_id = 1;
+  string message_id = 2;
+  ChannelMessage message = 3;
+}
+
+message BulkTransferMessage {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    OFFER = 1;
+    ACCEPT = 2;
+    REJECT = 3;
+    CHUNK = 4;
+    COMPLETE = 5;
+    CANCEL = 6;
+    ERROR = 7;
+  }
+
+  Kind kind = 1;
+  string transfer_id = 2;
+  string channel = 3;
+  string source_peer_id = 4;
+  string target_peer_id = 5;
+  string content_type = 6;
+  string correlation_id = 7;
+  string metadata_json = 8;
+  uint64 total_bytes = 9;
+  uint64 offset = 10;
+  bytes body = 11;
+  bool final_chunk = 12;
+}
+
+message MeshBulkFrame {
+  string plugin_id = 1;
+  string message_id = 2;
+  BulkTransferMessage message = 3;
+}
+
+message ErrorResponse {
+  int32 code = 1;
+  string message = 2;
+  string data_json = 3;
+}

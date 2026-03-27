@@ -5,13 +5,17 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use tokio::process::Command;
 use tokio::net::TcpListener;
+use tokio::process::Command;
 
 /// Start a local rpc-server and return the port it's listening on.
 /// Picks an available port automatically.
 /// If `gguf_path` is provided, passes `--gguf` so the server loads weights from the local file.
-pub async fn start_rpc_server(bin_dir: &Path, device: Option<&str>, gguf_path: Option<&Path>) -> Result<u16> {
+pub async fn start_rpc_server(
+    bin_dir: &Path,
+    device: Option<&str>,
+    gguf_path: Option<&Path>,
+) -> Result<u16> {
     let rpc_server = bin_dir.join("rpc-server");
     anyhow::ensure!(
         rpc_server.exists(),
@@ -31,11 +35,19 @@ pub async fn start_rpc_server(bin_dir: &Path, device: Option<&str>, gguf_path: O
         .with_context(|| format!("Failed to create rpc-server log file {rpc_log}"))?;
     let rpc_log_file2 = rpc_log_file.try_clone()?;
 
-    let mut args = vec!["-d".to_string(), device.clone(), "-p".to_string(), port.to_string()];
+    let mut args = vec![
+        "-d".to_string(),
+        device.clone(),
+        "-p".to_string(),
+        port.to_string(),
+    ];
     if let Some(path) = gguf_path {
         args.push("--gguf".to_string());
         args.push(path.to_string_lossy().to_string());
-        tracing::info!("rpc-server will load weights from local GGUF: {}", path.display());
+        tracing::info!(
+            "rpc-server will load weights from local GGUF: {}",
+            path.display()
+        );
     }
 
     let mut child = Command::new(&rpc_server)
@@ -72,10 +84,7 @@ pub async fn kill_orphan_rpc_servers() {
         let mut killed = 0;
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3
-                && parts[2].contains("rpc-server")
-                && parts[1] == "1"
-            {
+            if parts.len() >= 3 && parts[2].contains("rpc-server") && parts[1] == "1" {
                 if let Ok(pid) = parts[0].parse::<u32>() {
                     let _ = std::process::Command::new("kill")
                         .arg(pid.to_string())
@@ -93,20 +102,28 @@ pub async fn kill_orphan_rpc_servers() {
 
 /// Kill all running llama-server processes.
 pub async fn kill_llama_server() {
-    let _ = std::process::Command::new("pkill").args(["-f", "llama-server"]).status();
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "llama-server"])
+        .status();
     // Wait for the process to actually exit and release the port
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         // Check if any llama-server is still running
-        let output = std::process::Command::new("pgrep").args(["-f", "llama-server"]).output();
+        let output = std::process::Command::new("pgrep")
+            .args(["-f", "llama-server"])
+            .output();
         if let Ok(o) = output {
-            if o.stdout.is_empty() { return; }
+            if o.stdout.is_empty() {
+                return;
+            }
         } else {
             return;
         }
     }
     // Force kill if still alive after 5s
-    let _ = std::process::Command::new("pkill").args(["-9", "-f", "llama-server"]).status();
+    let _ = std::process::Command::new("pkill")
+        .args(["-9", "-f", "llama-server"])
+        .status();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
@@ -137,11 +154,7 @@ pub async fn start_llama_server(
         llama_server.display()
     );
 
-    anyhow::ensure!(
-        model.exists(),
-        "Model not found at {}",
-        model.display()
-    );
+    anyhow::ensure!(model.exists(), "Model not found at {}", model.display());
 
     // Build --rpc argument: all tunnel ports as localhost endpoints
     let rpc_endpoints: Vec<String> = tunnel_ports
@@ -184,46 +197,60 @@ pub async fn start_llama_server(
     let ctx_size: u32 = if let Some(override_ctx) = ctx_size_override {
         override_ctx
     } else if vram_after_model >= 30 * GB {
-        65536  // 30GB+ free: full 64K context
+        65536 // 30GB+ free: full 64K context
     } else if vram_after_model >= 12 * GB {
-        32768  // 12-30GB free: 32K
+        32768 // 12-30GB free: 32K
     } else if vram_after_model >= 6 * GB {
-        16384  // 6-12GB free: 16K
+        16384 // 6-12GB free: 16K
     } else if vram_after_model >= 3 * GB {
-        8192   // 3-6GB free: 8K
+        8192 // 3-6GB free: 8K
     } else {
-        4096   // <3GB free: minimal
+        4096 // <3GB free: minimal
     };
-    tracing::info!("Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB VRAM, {:.1}GB free{})",
-        model_bytes as f64 / GB as f64, host_model_bytes as f64 / GB as f64,
-        my_vram as f64 / GB as f64, vram_after_model as f64 / GB as f64,
-        if total_group_vram.is_some() { " [split]" } else { "" });
+    tracing::info!(
+        "Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB VRAM, {:.1}GB free{})",
+        model_bytes as f64 / GB as f64,
+        host_model_bytes as f64 / GB as f64,
+        my_vram as f64 / GB as f64,
+        vram_after_model as f64 / GB as f64,
+        if total_group_vram.is_some() {
+            " [split]"
+        } else {
+            ""
+        }
+    );
 
-    let mut args = vec![
-        "-m".to_string(), model.to_string_lossy().to_string(),
-    ];
+    let mut args = vec!["-m".to_string(), model.to_string_lossy().to_string()];
     if !tunnel_ports.is_empty() {
         args.push("--rpc".to_string());
         args.push(rpc_arg);
     }
     args.extend_from_slice(&[
-        "-ngl".to_string(), "99".to_string(),
-        "-fa".to_string(), "on".to_string(),  // Flash attention: reduces KV memory, enables longer contexts
-        "-fit".to_string(), "off".to_string(),
+        "-ngl".to_string(),
+        "99".to_string(),
+        "-fa".to_string(),
+        "on".to_string(),
+        "-fit".to_string(),
+        "off".to_string(),
         "--no-mmap".to_string(),
-        "--host".to_string(), "0.0.0.0".to_string(),
-        "--port".to_string(), http_port.to_string(),
-        "-c".to_string(), ctx_size.to_string(),
+        "--host".to_string(),
+        "0.0.0.0".to_string(),
+        "--port".to_string(),
+        http_port.to_string(),
+        "-c".to_string(),
+        ctx_size.to_string(),
         // Use deepseek format: thinking goes into reasoning_content field.
         // Goose/OpenAI clients parse this correctly. "none" leaks raw <think>
         // tags into content which is worse.
-        "--reasoning-format".to_string(), "deepseek".to_string(),
+        "--reasoning-format".to_string(),
+        "deepseek".to_string(),
         // Disable thinking by default. Thinking models (Qwen3, MiniMax) burn
         // 15-80s on hidden reasoning for no quality gain on most tasks, and
         // Qwen3.5-9B is completely broken (reasoning consumes all max_tokens).
         // API users can opt-in per-request with:
         //   "chat_template_kwargs": {"enable_thinking": true}
-        "--reasoning-budget".to_string(), "0".to_string(),
+        "--reasoning-budget".to_string(),
+        "0".to_string(),
     ]);
     // KV cache quantization based on model size:
     //   < 5GB: leave default (FP16) — small models, KV cache is negligible
@@ -231,14 +258,18 @@ pub async fn start_llama_server(
     //   > 50GB: Q4_0 — slight long-context quality trade, but critical memory savings
     if model_bytes >= 50 * GB {
         args.extend_from_slice(&[
-            "--cache-type-k".to_string(), "q4_0".to_string(),
-            "--cache-type-v".to_string(), "q4_0".to_string(),
+            "--cache-type-k".to_string(),
+            "q4_0".to_string(),
+            "--cache-type-v".to_string(),
+            "q4_0".to_string(),
         ]);
         tracing::info!("KV cache: Q4_0 (model > 50GB)");
     } else if model_bytes >= 5 * GB {
         args.extend_from_slice(&[
-            "--cache-type-k".to_string(), "q8_0".to_string(),
-            "--cache-type-v".to_string(), "q8_0".to_string(),
+            "--cache-type-k".to_string(),
+            "q8_0".to_string(),
+            "--cache-type-v".to_string(),
+            "q8_0".to_string(),
         ]);
         tracing::info!("KV cache: Q8_0 (model 5-50GB)");
     }
@@ -256,9 +287,16 @@ pub async fn start_llama_server(
             args.push("MTL0".to_string());
             args.push("--draft-max".to_string());
             args.push(draft_max.to_string());
-            tracing::info!("Speculative decoding: draft={}, draft-max={}", draft_path.display(), draft_max);
+            tracing::info!(
+                "Speculative decoding: draft={}, draft-max={}",
+                draft_path.display(),
+                draft_max
+            );
         } else {
-            tracing::warn!("Draft model not found at {}, skipping speculative decoding", draft_path.display());
+            tracing::warn!(
+                "Draft model not found at {}, skipping speculative decoding",
+                draft_path.display()
+            );
         }
     }
     if let Some(proj) = mmproj {
@@ -295,7 +333,9 @@ pub async fn start_llama_server(
             } else {
                 format!("{kb:.0} KB")
             };
-            tracing::info!("Still waiting for llama-server to load model... ({i}s, {transferred} transferred)");
+            tracing::info!(
+                "Still waiting for llama-server to load model... ({i}s, {transferred} transferred)"
+            );
         }
         if reqwest_health_check(&url).await {
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
@@ -340,7 +380,9 @@ fn detect_device() -> String {
     {
         if output.status.success() {
             let gpu_count = String::from_utf8_lossy(&output.stdout)
-                .lines().filter(|l| !l.trim().is_empty()).count();
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count();
             if gpu_count > 0 {
                 return "CUDA0".to_string();
             }

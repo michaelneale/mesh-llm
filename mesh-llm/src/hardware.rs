@@ -46,7 +46,11 @@ pub fn parse_nvidia_gpu_names(output: &str) -> Vec<String> {
 #[cfg(any(target_os = "macos", test))]
 pub fn parse_macos_cpu_brand(output: &str) -> Option<String> {
     let s = output.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 /// Parse `rocm-smi --showproductname` output → GPU name from "Card series:" line.
@@ -91,7 +95,9 @@ pub fn is_tegra(compatible: &str) -> bool {
 #[cfg(any(target_os = "linux", test))]
 pub fn parse_tegra_model_name(model: &str) -> Option<String> {
     let s = model.trim_matches('\0').trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let s = s.strip_prefix("NVIDIA ").unwrap_or(s);
     let s = s.strip_suffix(" Developer Kit").unwrap_or(s);
     Some(s.to_string())
@@ -113,12 +119,18 @@ pub fn parse_tegrastats_ram(output: &str) -> Option<u64> {
 /// Parse `hostname` command output → trimmed hostname string.
 pub fn parse_hostname(output: &str) -> Option<String> {
     let s = output.trim();
-    if s.is_empty() { None } else { Some(s.to_string()) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
 }
 
 fn detect_hostname() -> Option<String> {
     let out = std::process::Command::new("hostname").output().ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        return None;
+    }
     parse_hostname(&String::from_utf8(out.stdout).ok()?)
 }
 
@@ -202,7 +214,9 @@ impl Collector for DefaultCollector {
                         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
                         .output()
                         .ok()?;
-                    if !out.status.success() { return None; }
+                    if !out.status.success() {
+                        return None;
+                    }
                     let s = String::from_utf8(out.stdout).ok()?;
                     let per_gpu: Vec<u64> = s
                         .lines()
@@ -212,7 +226,11 @@ impl Collector for DefaultCollector {
                         })
                         .collect();
                     let total: u64 = per_gpu.iter().sum();
-                    if total > 0 { Some((total, per_gpu)) } else { None }
+                    if total > 0 {
+                        Some((total, per_gpu))
+                    } else {
+                        None
+                    }
                 })();
 
                 if let Some((vram, per_gpu)) = nvidia_vram {
@@ -226,7 +244,9 @@ impl Collector for DefaultCollector {
                             .args(["--showmeminfo", "vram", "--csv"])
                             .output()
                             .ok()?;
-                        if !out.status.success() { return None; }
+                        if !out.status.success() {
+                            return None;
+                        }
                         let s = String::from_utf8(out.stdout).ok()?;
                         for line in s.lines().skip(1) {
                             if let Some(total) = line.split(',').nth(1) {
@@ -255,10 +275,16 @@ impl Collector for DefaultCollector {
                         .args(["--query-gpu=name", "--format=csv,noheader"])
                         .output()
                         .ok()?;
-                    if !out.status.success() { return None; }
+                    if !out.status.success() {
+                        return None;
+                    }
                     let s = String::from_utf8(out.stdout).ok()?;
                     let names = parse_nvidia_gpu_names(&s);
-                    if names.is_empty() { None } else { Some(names) }
+                    if names.is_empty() {
+                        None
+                    } else {
+                        Some(names)
+                    }
                 })();
 
                 if let Some(ref names) = nvidia_names {
@@ -284,8 +310,7 @@ impl Collector for DefaultCollector {
                                         .lines()
                                         .filter(|l| l.trim_start().starts_with("GPU["))
                                         .count();
-                                    survey.gpu_count =
-                                        u8::try_from(count).unwrap_or(u8::MAX);
+                                    survey.gpu_count = u8::try_from(count).unwrap_or(u8::MAX);
                                 }
                             }
                         }
@@ -308,9 +333,7 @@ impl Collector for TegraCollector {
         }
 
         if metrics.contains(&Metric::GpuName) {
-            if let Ok(model) =
-                std::fs::read_to_string("/sys/firmware/devicetree/base/model")
-            {
+            if let Ok(model) = std::fs::read_to_string("/sys/firmware/devicetree/base/model") {
                 survey.gpu_name = parse_tegra_model_name(&model);
             }
         }
@@ -554,8 +577,7 @@ GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
 
     #[test]
     fn test_parse_tegrastats_ram() {
-        let line =
-            "RAM 14640/62838MB (lfb 11x4MB) CPU [0%@729,off,off,off,0%@729,off,off,off]";
+        let line = "RAM 14640/62838MB (lfb 11x4MB) CPU [0%@729,off,off,off,0%@729,off,off,off]";
         assert_eq!(parse_tegrastats_ram(line), Some(62838u64 * 1024 * 1024));
     }
 
@@ -572,10 +594,7 @@ GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
 
     #[test]
     fn test_parse_hostname() {
-        assert_eq!(
-            parse_hostname("lemony-28\n"),
-            Some("lemony-28".to_string())
-        );
+        assert_eq!(parse_hostname("lemony-28\n"), Some("lemony-28".to_string()));
     }
 
     #[test]
@@ -585,10 +604,7 @@ GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
 
     #[test]
     fn test_parse_hostname_whitespace() {
-        assert_eq!(
-            parse_hostname("  carrack  \n"),
-            Some("carrack".to_string())
-        );
+        assert_eq!(parse_hostname("  carrack  \n"), Some("carrack".to_string()));
     }
 
     #[test]
@@ -625,7 +641,10 @@ GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
     #[test]
     fn test_macos_is_soc_true() {
         let result = DefaultCollector.collect(&[Metric::IsSoc]);
-        assert!(result.is_soc, "macOS DefaultCollector must report is_soc=true");
+        assert!(
+            result.is_soc,
+            "macOS DefaultCollector must report is_soc=true"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -639,7 +658,10 @@ GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
     #[test]
     fn test_linux_discrete_is_soc_false() {
         let result = DefaultCollector.collect(&[Metric::IsSoc]);
-        assert!(!result.is_soc, "Linux DefaultCollector must report is_soc=false");
+        assert!(
+            !result.is_soc,
+            "Linux DefaultCollector must report is_soc=false"
+        );
     }
 
     #[test]

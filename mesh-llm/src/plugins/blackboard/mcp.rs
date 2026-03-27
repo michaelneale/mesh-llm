@@ -5,11 +5,11 @@
 //! read the mesh blackboard.
 
 use rmcp::{
-    ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
     transport::io::stdio,
+    ServerHandler, ServiceExt,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,11 @@ impl BlackboardServer {
         if !issues.is_empty() {
             return format!(
                 "Blocked — PII/secret issues detected:\n{}",
-                issues.iter().map(|i| format!("• {i}")).collect::<Vec<_>>().join("\n")
+                issues
+                    .iter()
+                    .map(|i| format!("• {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             );
         }
 
@@ -126,10 +130,7 @@ impl BlackboardServer {
         let limit = params.limit.unwrap_or(20);
         match client
             .get(format!("{}/api/blackboard/search", base_url(self.port)))
-            .query(&[
-                ("q", params.query.as_str()),
-                ("limit", &limit.to_string()),
-            ])
+            .query(&[("q", params.query.as_str()), ("limit", &limit.to_string())])
             .send()
             .await
         {
@@ -189,7 +190,8 @@ impl BlackboardServer {
                 }
             }
             Ok(resp) if resp.status().as_u16() == 404 => {
-                "Blackboard not enabled. Restart mesh-llm with --blackboard.".into()
+                "Blackboard is disabled on this node. Re-enable the blackboard plugin in config."
+                    .into()
             }
             Ok(resp) => {
                 let status = resp.status();
@@ -269,7 +271,8 @@ mod tests {
 
     #[test]
     fn test_format_items_single() {
-        let mut item = BlackboardItem::new("alice".into(), "abc".into(), "FINDING: CUDA OOM fix".into());
+        let mut item =
+            BlackboardItem::new("alice".into(), "abc".into(), "FINDING: CUDA OOM fix".into());
         // Pin timestamp to now so the "ago" string is predictable
         item.timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -349,7 +352,10 @@ mod tests {
             text: "clean message no secrets here".into(),
         };
         let result = server.post(Parameters(params)).await;
-        assert!(result.contains("Cannot reach mesh-llm"), "Should report connection error: {result}");
+        assert!(
+            result.contains("Cannot reach mesh-llm"),
+            "Should report connection error: {result}"
+        );
     }
 
     /// Search with nothing listening should get a connection error.
@@ -361,7 +367,10 @@ mod tests {
             limit: None,
         };
         let result = server.search(Parameters(params)).await;
-        assert!(result.contains("Cannot reach mesh-llm"), "Should report connection error: {result}");
+        assert!(
+            result.contains("Cannot reach mesh-llm"),
+            "Should report connection error: {result}"
+        );
     }
 
     /// Feed with nothing listening should get a connection error.
@@ -374,6 +383,9 @@ mod tests {
             limit: None,
         };
         let result = server.feed(Parameters(params)).await;
-        assert!(result.contains("Cannot reach mesh-llm"), "Should report connection error: {result}");
+        assert!(
+            result.contains("Cannot reach mesh-llm"),
+            "Should report connection error: {result}"
+        );
     }
 }

@@ -289,7 +289,8 @@ pub async fn publish_loop(
         // Then try merging with any other mesh (different mesh, unnamed only).
         // Only merge into meshes strictly larger than us to avoid two solo nodes
         // endlessly unpublishing and trying to join each other.
-        let gpu_peers = peers.iter()
+        let gpu_peers = peers
+            .iter()
             .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
             .count();
         let my_node_count = gpu_peers + 1; // peers + self
@@ -323,10 +324,12 @@ pub async fn publish_loop(
                 };
 
                 if let Some(target) = split_target.or(merge_target) {
-                    eprintln!("📡 Found larger mesh '{}' ({} nodes vs our {}) — rejoining",
+                    eprintln!(
+                        "📡 Found larger mesh '{}' ({} nodes vs our {}) — rejoining",
                         target.listing.name.as_deref().unwrap_or("unnamed"),
                         target.listing.node_count,
-                        my_node_count);
+                        my_node_count
+                    );
                     if let Err(e) = publisher.unpublish().await {
                         tracing::warn!("Failed to unpublish solo listing: {e}");
                     }
@@ -732,7 +735,9 @@ pub fn score_mesh(mesh: &DiscoveredMesh, _now_secs: u64, last_mesh_id: Option<&s
 #[derive(Debug)]
 pub enum AutoDecision {
     /// Ranked list of meshes to try joining (best first)
-    Join { candidates: Vec<(String, DiscoveredMesh)> },
+    Join {
+        candidates: Vec<(String, DiscoveredMesh)>,
+    },
     /// No suitable mesh found — start a new one with these models
     StartNew { models: Vec<String> },
 }
@@ -782,7 +787,8 @@ pub fn smart_auto(
     // If the user specified --mesh-name, take all candidates (they already
     // filtered by name above — the user explicitly asked for this mesh).
     // Otherwise, require positive score to filter out stale/private meshes.
-    let viable: Vec<(String, DiscoveredMesh)> = scored.iter()
+    let viable: Vec<(String, DiscoveredMesh)> = scored
+        .iter()
         .filter(|(_, score)| target_name.is_some() || *score > 0)
         .map(|(m, _)| (m.listing.invite_token.clone(), (*m).clone()))
         .collect();
@@ -810,6 +816,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
 
     let local_models = crate::mesh::scan_local_models();
     let on_disk = |name: &str| local_models.contains(&name.to_string());
+
 
     // Collect non-draft, non-vision models with their sizes (×1.1 headroom)
     let mut candidates: Vec<(&str, f64, u8, u8)> = MODEL_CATALOG
@@ -839,6 +846,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         selected.push(primary.0.to_string());
         remaining -= primary.1;
     }
+
 
     // 2. Try to add highest tool_rank model that fits and isn't already selected
     let mut tool_candidates: Vec<_> = candidates.iter()
