@@ -50,6 +50,7 @@ rm -rf /tmp/test-bundle
 ### 5. Commit, tag, push
 
 ```bash
+just release-version v0.X.0
 git add -A && git commit -m "v0.X.0: <summary>"
 git tag v0.X.0
 git push origin main --tags

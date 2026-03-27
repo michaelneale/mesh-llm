@@ -59,6 +59,10 @@ build-linux cuda_arch="":
 release-build:
     @scripts/build-release.sh
 
+# Bump release version consistently across source and Cargo manifests.
+release-version version:
+    @scripts/release-version.sh "{{ version }}"
+
 # Download the default model (GLM-4.7-Flash Q4_K_M, 17GB)
 download-model:
     #!/usr/bin/env bash

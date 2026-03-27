@@ -116,7 +116,30 @@ pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
 
 ## Releasing
 
-See `RELEASE.md` for the full process (build, verify no homebrew deps, bundle, tag, `gh release create`).
+See `RELEASE.md` for the full process.
+
+Current release flow:
+
+1. Bump the version everywhere with:
+   ```bash
+   just release-version v0.X.Y
+   ```
+   This updates `mesh-llm/src/main.rs` and the relevant `Cargo.toml` files together.
+2. Build and verify locally:
+   ```bash
+   just build
+   just bundle
+   ```
+3. Commit the release:
+   ```bash
+   git add -A && git commit -m "v0.X.Y: <summary>"
+   ```
+4. Tag and push:
+   ```bash
+   git tag v0.X.Y
+   git push origin main --tags
+   ```
+5. Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds the release artifacts on Linux, macOS, and Windows and creates the GitHub release automatically.
 
 ## Credentials
 
