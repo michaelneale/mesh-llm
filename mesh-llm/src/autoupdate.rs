@@ -530,7 +530,7 @@ mod tests {
         let cli = Cli::parse_from(["mesh-llm", "--auto"]);
         assert!(should_attempt_self_update(&cli));
 
-        let cli = Cli::parse_from(["mesh-llm", "download"]);
+        let cli = Cli::parse_from(["mesh-llm", "models"]);
         assert!(!should_attempt_self_update(&cli));
     }
 
