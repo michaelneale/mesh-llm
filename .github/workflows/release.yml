@@ -56,6 +56,7 @@ jobs:
 
   build_linux_cuda:
     name: Build Linux CUDA
+    if: false # Temporarily disabled while release-tag validation focuses on CPU/macOS/ROCm artifacts.
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
@@ -163,7 +164,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
-      - build_linux_cuda
       - build_linux_amd
 
     steps:
