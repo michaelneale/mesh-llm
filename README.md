@@ -326,7 +326,7 @@ Cross-network (Sydney ↔ Queensland, ~20ms RTT): 10-25 tok/s. Overhead dominate
 
 Stock llama.cpp RPC transfers 16.88GB on connect. This fork: **0 bytes, ~9 seconds**.
 
-## Model catalog
+## Model discovery
 
 ```bash
 mesh-llm models                     # list curated mesh-llm models
@@ -350,16 +350,16 @@ Draft pairings for speculative decoding:
 `--model` accepts several formats. Models are auto-downloaded to your configured model directory on first use (defaults to `~/.models/`).
 
 ```bash
-# Catalog name (fuzzy match — finds Qwen3-8B-Q4_K_M)
+# Curated name (fuzzy match — finds Qwen3-8B-Q4_K_M)
 mesh-llm --model Qwen3-8B
 
-# Full catalog name
+# Full curated model id
 mesh-llm --model Qwen3-8B-Q4_K_M
 
-# HuggingFace URL (any GGUF)
+# Hugging Face URL (any GGUF)
 mesh-llm --model https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
 
-# HuggingFace shorthand (org/repo/file.gguf)
+# Hugging Face shorthand (org/repo/file.gguf)
 mesh-llm --model bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruct-Q4_K_M.gguf
 
 # Local file path

@@ -13,6 +13,8 @@ pub struct CuratedModel {
     pub id: &'static str,
     pub file: &'static str,
     pub url: &'static str,
+    pub source_repo: Option<&'static str>,
+    pub source_file: &'static str,
     pub size: &'static str,
     pub description: &'static str,
     pub draft: Option<&'static str>,
@@ -377,7 +379,11 @@ pub fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
     );
 }
 
-pub fn matching_curated_model_for_ref(repo_file: &str) -> Option<&'static CuratedModel> {
+fn normalize_gguf_name(name: &str) -> String {
+    name.trim_end_matches(".gguf").to_lowercase()
+}
+
+fn matching_curated_model_by_basename(repo_file: &str) -> Option<&'static CuratedModel> {
     let basename = Path::new(repo_file)
         .file_name()
         .and_then(|value| value.to_str())
@@ -385,9 +391,30 @@ pub fn matching_curated_model_for_ref(repo_file: &str) -> Option<&'static Curate
         .to_lowercase();
     CURATED_MODELS.iter().find(|model| {
         model.file.to_lowercase() == basename
-            || model.file.trim_end_matches(".gguf").to_lowercase()
-                == basename.trim_end_matches(".gguf")
+            || normalize_gguf_name(model.file) == normalize_gguf_name(&basename)
     })
+}
+
+pub fn matching_curated_model_for_huggingface(
+    repo: &str,
+    file: &str,
+) -> Option<&'static CuratedModel> {
+    let repo = repo.to_lowercase();
+    let file = file.to_lowercase();
+    CURATED_MODELS
+        .iter()
+        .find(|model| {
+            model.source_repo.map(str::to_lowercase) == Some(repo.clone())
+                && model.source_file.to_lowercase() == file
+        })
+        .or_else(|| matching_curated_model_by_basename(file.as_str()))
+}
+
+pub fn matching_curated_model_for_url(url: &str) -> Option<&'static CuratedModel> {
+    CURATED_MODELS
+        .iter()
+        .find(|model| model.url.eq_ignore_ascii_case(url))
+        .or_else(|| matching_curated_model_by_basename(url))
 }
 
 pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
@@ -405,7 +432,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
         }),
         ExactModelRef::HuggingFace { repo, file } => {
             let exact_ref = format!("{repo}/{file}");
-            let curated = matching_curated_model_for_ref(&file);
+            let curated = matching_curated_model_for_huggingface(&repo, &file);
             Ok(ModelDetails {
                 display_name: Path::new(&file)
                     .file_name()
@@ -423,7 +450,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
             })
         }
         ExactModelRef::Url { url, filename } => {
-            let curated = matching_curated_model_for_ref(&filename);
+            let curated = matching_curated_model_for_url(&url);
             Ok(ModelDetails {
                 display_name: filename.clone(),
                 exact_ref: url.clone(),
@@ -488,7 +515,7 @@ pub async fn search_huggingface(query: &str, limit: usize) -> Result<Vec<SearchH
                 .then_with(|| left.cmp(right))
         });
         for file in files.into_iter().take(3) {
-            let curated = matching_curated_model_for_ref(&file);
+            let curated = matching_curated_model_for_huggingface(&repo_id, &file);
             hits.push(SearchHit {
                 exact_ref: format!("{repo_id}/{file}"),
                 downloads: repo.downloads,
@@ -907,6 +934,25 @@ mod tests {
     fn expands_home_in_model_dirs() {
         let expanded = expand_path(Path::new("~/models"));
         assert!(expanded.ends_with("models"));
+    }
+
+    #[test]
+    fn matches_split_huggingface_refs_using_repo_and_remote_path() {
+        let matched = matching_curated_model_for_huggingface(
+            "Qwen/Qwen3-Coder-Next-GGUF",
+            "Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf",
+        )
+        .unwrap();
+        assert_eq!(matched.id, "Qwen3-Coder-Next-Q4_K_M");
+    }
+
+    #[test]
+    fn matches_curated_url_exactly() {
+        let matched = matching_curated_model_for_url(
+            "https://registry.ollama.ai/v2/library/qwen3.5/blobs/sha256:d4b8b4f4c350f5d322dc8235175eeae02d32c6f3fd70bdb9ea481e3abb7d7fc4",
+        )
+        .unwrap();
+        assert_eq!(matched.id, "Qwen3.5-27B-Q4_K_M");
     }
 
     #[test]

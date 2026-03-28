@@ -57,11 +57,20 @@ fn render_catalog(models: &[CatalogEntry]) -> String {
     let mut out = String::new();
     out.push_str("pub static CURATED_MODELS: &[CuratedModel] = &[\n");
     for model in models {
+        let (source_repo, source_file) = parse_huggingface_source(&model.url);
         out.push_str("    CuratedModel {\n");
         out.push_str(&format!("        name: {:?},\n", model.id));
         out.push_str(&format!("        id: {:?},\n", model.id));
         out.push_str(&format!("        file: {:?},\n", model.file));
         out.push_str(&format!("        url: {:?},\n", model.url));
+        out.push_str(&format!(
+            "        source_repo: {},\n",
+            render_option_str(source_repo.as_deref())
+        ));
+        out.push_str(&format!(
+            "        source_file: {:?},\n",
+            source_file.as_deref().unwrap_or(&model.file)
+        ));
         out.push_str(&format!("        size: {:?},\n", model.size));
         out.push_str(&format!("        description: {:?},\n", model.description));
         out.push_str(&format!(
@@ -134,4 +143,18 @@ fn render_optional_asset(asset: Option<&AssetEntry>) -> String {
         ),
         None => "None".to_string(),
     }
+}
+
+fn parse_huggingface_source(url: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = url.strip_prefix("https://huggingface.co/") else {
+        return (None, None);
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts.len() < 5 || parts.get(2) != Some(&"resolve") {
+        return (None, None);
+    }
+
+    let repo = format!("{}/{}", parts[0], parts[1]);
+    let file = parts[4..].join("/");
+    (Some(repo), Some(file))
 }

@@ -10,7 +10,7 @@
 //! The dashboard is read-only — shows status, topology, models.
 //! All mutations happen via CLI flags (--join, --model, --auto).
 
-use crate::{download, election, mesh, nostr, plugin};
+use crate::{election, mesh, nostr, plugin};
 use include_dir::{include_dir, Dir};
 use serde::Serialize;
 use std::sync::Arc;
@@ -300,7 +300,7 @@ impl MeshApi {
                     model_size_bytes as f64 / 1e9
                 } else {
                     crate::models::metadata_for_model_name(name)
-                        .map(|m| download::parse_size_gb(m.size))
+                        .map(|m| crate::models::parse_size_gb(m.size))
                         .unwrap_or(0.0)
                 };
                 let (request_count, last_active_secs_ago) = match active_demand.get(name) {

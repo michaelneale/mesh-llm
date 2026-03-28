@@ -840,7 +840,7 @@ fn model_tiers() -> Vec<(&'static str, f64)> {
 ///   85-165GB: Qwen2.5-72B (47G) + Coder-32B (20G)
 ///   165GB+:  MiniMax-M2.5 (138G)
 pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
-    let local_models = crate::mesh::scan_local_models();
+    let local_models = crate::models::scan_local_models();
     let tiers = model_tiers();
 
     // Helper: check if a model is on disk

@@ -132,13 +132,13 @@ struct PeerAnnouncement {
     addr: EndpointAddr,
     #[serde(default)]
     role: NodeRole,
-    /// GGUF model names on disk (catalog contribution)
+    /// GGUF model names on disk that this node can contribute to the mesh.
     #[serde(default)]
     models: Vec<String>,
     /// Available VRAM in bytes (0 = unknown)
     #[serde(default)]
     vram_bytes: u64,
-    /// How to get the model — catalog name, HF URL, or filename.
+    /// How to get the model — curated id, HF URL/ref, or filename.
     /// Lets joining nodes auto-download without specifying --model.
     #[serde(default)]
     model_source: Option<String>,
@@ -149,7 +149,7 @@ struct PeerAnnouncement {
     /// All models currently loaded in VRAM (multi-model per node).
     #[serde(default)]
     serving_models: Vec<String>,
-    /// All GGUF filenames on disk in ~/.models/ (for mesh catalog)
+    /// All GGUF filenames on disk in the configured model directories.
     #[serde(default)]
     available_models: Vec<String>,
     /// Models this node wants the mesh to serve (from --model flags)
@@ -211,23 +211,6 @@ pub struct PeerInfo {
 /// Peers not directly verified within this window are considered stale
 /// and excluded from gossip propagation. After 2x this duration they're removed entirely.
 const PEER_STALE_SECS: u64 = 180; // 3 minutes
-
-/// Scan model directories for GGUF files and return their stem names.
-pub fn scan_local_models() -> Vec<String> {
-    crate::models::scan_local_models()
-}
-
-#[cfg(test)]
-fn split_gguf_base_name(stem: &str) -> Option<&str> {
-    crate::models::split_gguf_base_name(stem)
-}
-
-/// Find a GGUF model file by stem name, searching all model directories.
-/// Returns the first match found (prefers ~/.models/ over goose dir).
-/// For split GGUFs, finds the first part (name-00001-of-NNNNN.gguf).
-pub fn find_model_path(stem: &str) -> std::path::PathBuf {
-    crate::models::find_model_path(stem)
-}
 
 /// Detect available VRAM. On Apple Silicon, uses ~75% of system RAM
 /// (the rest is reserved for OS/apps on unified memory).
@@ -1751,7 +1734,7 @@ impl Node {
         Ok(())
     }
 
-    /// Get the mesh catalog: all models that any node has on disk or has requested.
+    /// Get the mesh-wide model inventory: models any node has on disk or has requested.
     /// Returns deduplicated list of model names (file stems, no .gguf).
     pub async fn mesh_catalog(&self) -> Vec<String> {
         // Snapshot each lock independently to avoid holding multiple locks.
@@ -3132,16 +3115,22 @@ mod tests {
     #[test]
     fn test_split_gguf_base_name() {
         assert_eq!(
-            split_gguf_base_name("GLM-5-UD-IQ2_XXS-00001-of-00006"),
+            crate::models::split_gguf_base_name("GLM-5-UD-IQ2_XXS-00001-of-00006"),
             Some("GLM-5-UD-IQ2_XXS")
         );
         assert_eq!(
-            split_gguf_base_name("GLM-5-UD-IQ2_XXS-00006-of-00006"),
+            crate::models::split_gguf_base_name("GLM-5-UD-IQ2_XXS-00006-of-00006"),
             Some("GLM-5-UD-IQ2_XXS")
         );
-        assert_eq!(split_gguf_base_name("Qwen3-8B-Q4_K_M"), None);
-        assert_eq!(split_gguf_base_name("model-001-of-003"), None); // wrong digit count
-        assert_eq!(split_gguf_base_name("model-00001-of-00003"), Some("model"));
+        assert_eq!(crate::models::split_gguf_base_name("Qwen3-8B-Q4_K_M"), None);
+        assert_eq!(
+            crate::models::split_gguf_base_name("model-001-of-003"),
+            None
+        ); // wrong digit count
+        assert_eq!(
+            crate::models::split_gguf_base_name("model-00001-of-00003"),
+            Some("model")
+        );
     }
 
     #[test]
