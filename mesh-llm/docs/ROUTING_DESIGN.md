@@ -244,6 +244,46 @@ User sends image + question → lands on Qwen3-Coder-Next (no vision)
 - Host routes to a bigger model to verify/refine
 - Returns the refined response
 
+**Mid-inference model consultation:**
+
+The most powerful pattern: llama-server is generating a response and realizes it
+needs help. Rather than failing or hallucinating, it consults another model in
+the mesh for specific content, then incorporates the result.
+
+This could work at two levels:
+
+*Pre-inference (host intercepts before forwarding):*
+- Analyse the request, identify parts that would benefit from specialist help
+- E.g. a coding question with a math sub-problem: ask a reasoning model to
+  solve the math, inject the solution as context, then let the coder generate
+- E.g. a multi-language request: ask a translation model for the non-English
+  parts, provide translations as context
+
+*Mid-inference (requires llama-server changes or tool-use loop):*
+- llama-server generates a tool call like `{"function": "consult_model", "arguments": {"model": "reasoning", "query": "prove that..."}}`
+- Host intercepts the tool call, routes it through the mesh to a reasoning model
+- Returns the result as a tool response, llama-server continues generating
+- This is essentially **models using other models as tools**
+
+The tool-use loop version is the most natural fit — it uses the existing
+tool-calling protocol. The host just needs to recognize mesh-internal tool calls
+and handle them before they reach the client:
+
+```
+Client sends request → host → llama-server
+  llama-server generates: tool_call("consult_vision", {image: ...})
+  Host intercepts tool_call (not a real client tool)
+  Host routes to vision model in mesh → gets description
+  Host feeds tool_result back to llama-server
+  llama-server continues generating final response
+  Client sees a normal response (no tool calls leaked)
+```
+
+This means any model in the mesh can leverage any other model's strengths —
+a coder can use a reasoning model for complex logic, a chat model can use a
+vision model for images, a small model can escalate hard questions to a bigger
+one — all transparently to the client.
+
 ### Implementation Path
 
 1. Replace the TCP relay in `handle_inbound_http_stream` with request parsing
