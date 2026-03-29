@@ -21,6 +21,12 @@ pub struct BufferedHttpRequest {
     pub session_hint: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineProxyResult {
+    Handled,
+    FallbackToDirect,
+}
+
 // ── Request parsing ──
 
 /// Read and buffer one HTTP request for routing decisions.
@@ -262,6 +268,15 @@ pub fn is_models_list_request(method: &str, path: &str) -> bool {
 pub fn is_drop_request(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     method == "POST" && path == "/mesh/drop"
+}
+
+pub fn pipeline_request_supported(path: &str, body: &serde_json::Value) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    path == "/v1/chat/completions"
+        && body
+            .get("messages")
+            .map(|messages| messages.is_array())
+            .unwrap_or(false)
 }
 
 // ── Model-aware tunnel routing ──
@@ -529,13 +544,19 @@ pub async fn send_503(mut stream: TcpStream) -> std::io::Result<()> {
 /// 4. Forwards to the strong model via HTTP
 /// 5. Streams the response back to the client
 pub async fn pipeline_proxy_local(
-    mut client_stream: TcpStream,
+    client_stream: &mut TcpStream,
+    request_path: &str,
     mut body: serde_json::Value,
     planner_port: u16,
     planner_model: &str,
     strong_port: u16,
     node: &mesh::Node,
-) {
+) -> PipelineProxyResult {
+    if !pipeline_request_supported(request_path, &body) {
+        tracing::debug!("pipeline: request path/body not eligible, falling back to direct proxy");
+        return PipelineProxyResult::FallbackToDirect;
+    }
+
     // Extract whether this is a streaming request
     let is_streaming = body
         .get("stream")
@@ -562,7 +583,8 @@ pub async fn pipeline_proxy_local(
             crate::pipeline::inject_plan(&mut body, &plan);
         }
         Err(e) => {
-            tracing::warn!("pipeline: pre-plan failed ({e}), proceeding without plan");
+            tracing::warn!("pipeline: pre-plan failed ({e}), falling back to direct proxy");
+            return PipelineProxyResult::FallbackToDirect;
         }
     }
 
@@ -588,7 +610,7 @@ pub async fn pipeline_proxy_local(
                     "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\n\r\n",
                 );
                 if client_stream.write_all(header.as_bytes()).await.is_err() {
-                    return;
+                    return PipelineProxyResult::Handled;
                 }
 
                 // Stream body chunks
@@ -622,10 +644,13 @@ pub async fn pipeline_proxy_local(
                 // Terminal chunk
                 let _ = client_stream.write_all(b"0\r\n\r\n").await;
                 let _ = client_stream.shutdown().await;
+                PipelineProxyResult::Handled
             }
             Err(e) => {
-                tracing::warn!("pipeline: strong model request failed: {e}");
-                let _ = send_503(client_stream).await;
+                tracing::warn!(
+                    "pipeline: strong model request failed: {e}, falling back to direct proxy"
+                );
+                PipelineProxyResult::FallbackToDirect
             }
         }
     } else {
@@ -642,16 +667,21 @@ pub async fn pipeline_proxy_local(
                         let _ = client_stream.write_all(header.as_bytes()).await;
                         let _ = client_stream.write_all(&resp_bytes).await;
                         let _ = client_stream.shutdown().await;
+                        PipelineProxyResult::Handled
                     }
                     Err(e) => {
-                        tracing::warn!("pipeline: response read failed: {e}");
-                        let _ = send_503(client_stream).await;
+                        tracing::warn!(
+                            "pipeline: response read failed: {e}, falling back to direct proxy"
+                        );
+                        PipelineProxyResult::FallbackToDirect
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!("pipeline: strong model request failed: {e}");
-                let _ = send_503(client_stream).await;
+                tracing::warn!(
+                    "pipeline: strong model request failed: {e}, falling back to direct proxy"
+                );
+                PipelineProxyResult::FallbackToDirect
             }
         }
     }
@@ -750,6 +780,27 @@ mod tests {
     fn test_extract_model_from_http_basic() {
         let req = b"POST /v1/chat/completions HTTP/1.1\r\n\r\n{\"model\":\"Qwen3-30B\"}";
         assert_eq!(extract_model_from_http(req), Some("Qwen3-30B".to_string()));
+    }
+
+    #[test]
+    fn test_pipeline_request_supported_chat_completions() {
+        let body = serde_json::json!({"messages":[{"role":"user","content":"hi"}]});
+        assert!(pipeline_request_supported(
+            "/v1/chat/completions?stream=1",
+            &body
+        ));
+    }
+
+    #[test]
+    fn test_pipeline_request_supported_rejects_other_endpoint() {
+        let body = serde_json::json!({"messages":[{"role":"user","content":"hi"}]});
+        assert!(!pipeline_request_supported("/v1/responses", &body));
+    }
+
+    #[test]
+    fn test_pipeline_request_supported_rejects_missing_messages() {
+        let body = serde_json::json!({"input":"hi"});
+        assert!(!pipeline_request_supported("/v1/chat/completions", &body));
     }
 
     #[tokio::test]

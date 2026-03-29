@@ -2035,19 +2035,29 @@ async fn api_proxy(
                             if let (Some((planner_name, planner_port)), Some(strong_port)) =
                                 (planner, strong_local_port)
                             {
-                                tracing::info!(
-                                    "pipeline: {planner_name} (plan) → {strong_name} (execute)"
+                                if let Some(body_json) = request.body_json.clone() {
+                                    tracing::info!(
+                                        "pipeline: {planner_name} (plan) → {strong_name} (execute)"
+                                    );
+                                    if matches!(
+                                        proxy::pipeline_proxy_local(
+                                            &mut tcp_stream,
+                                            &request.path,
+                                            body_json,
+                                            planner_port,
+                                            &planner_name,
+                                            strong_port,
+                                            &node,
+                                        )
+                                        .await,
+                                        proxy::PipelineProxyResult::Handled
+                                    ) {
+                                        return;
+                                    }
+                                }
+                                tracing::warn!(
+                                    "pipeline: falling back to direct proxy for {strong_name}"
                                 );
-                                proxy::pipeline_proxy_local(
-                                    tcp_stream,
-                                    request.body_json.clone().unwrap_or_default(),
-                                    planner_port,
-                                    &planner_name,
-                                    strong_port,
-                                    &node,
-                                )
-                                .await;
-                                return;
                             }
                         }
                         // Fall through to normal routing if pipeline setup fails
