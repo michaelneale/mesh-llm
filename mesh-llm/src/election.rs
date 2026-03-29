@@ -9,6 +9,7 @@ use crate::{download, launch, mesh, moe, tunnel};
 use mesh::NodeRole;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Calculate total model size, summing all split files if present.
 /// Split files follow the pattern: name-00001-of-00004.gguf
@@ -91,9 +92,9 @@ pub struct ModelTargets {
     /// MoE state — if set, this model uses MoE expert sharding.
     /// The proxy uses this for session-sticky routing across MoE nodes.
     pub moe: Option<MoeState>,
-    /// Round-robin counter for load balancing (not cloned — each clone starts fresh,
-    /// but that's fine since the proxy clones per-request anyway)
-    counter: u64,
+    /// Round-robin counter for replicated hosts.
+    /// Shared across clones so per-request snapshots still advance the sequence.
+    counter: Arc<AtomicU64>,
 }
 
 impl ModelTargets {
@@ -101,10 +102,7 @@ impl ModelTargets {
     pub fn get(&self, model: &str) -> InferenceTarget {
         match self.targets.get(model) {
             Some(targets) if !targets.is_empty() => {
-                // Simple round-robin using a hash of the model + counter
-                // (counter isn't shared across clones, but combined with
-                // request timing gives reasonable distribution)
-                let idx = (self.counter as usize) % targets.len();
+                let idx = self.counter.fetch_add(1, Ordering::Relaxed) as usize % targets.len();
                 targets[idx].clone()
             }
             _ => InferenceTarget::None,
@@ -904,7 +902,7 @@ async fn update_targets(
     target_tx.send_replace(ModelTargets {
         targets,
         moe: None,
-        counter: 0,
+        counter: Arc::new(AtomicU64::new(0)),
     });
 }
 
@@ -1253,6 +1251,39 @@ mod tests {
             InferenceTarget::MoeLocal(port) => assert_eq!(*port, 9999),
             other => panic!("Expected MoeLocal(9999), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_model_targets_round_robin_multiple_hosts() {
+        let mut targets = ModelTargets::default();
+        targets.targets.insert(
+            "m".to_string(),
+            vec![
+                InferenceTarget::Local(7001),
+                InferenceTarget::Local(7002),
+                InferenceTarget::Local(7003),
+            ],
+        );
+
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(7001)));
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(7002)));
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(7003)));
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(7001)));
+    }
+
+    #[test]
+    fn test_model_targets_round_robin_shared_across_clones() {
+        let mut targets = ModelTargets::default();
+        targets.targets.insert(
+            "m".to_string(),
+            vec![InferenceTarget::Local(8001), InferenceTarget::Local(8002)],
+        );
+
+        let clone = targets.clone();
+
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(8001)));
+        assert!(matches!(clone.get("m"), InferenceTarget::Local(8002)));
+        assert!(matches!(targets.get("m"), InferenceTarget::Local(8001)));
     }
 
     // ── Session hash routing ──
