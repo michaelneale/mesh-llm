@@ -17,12 +17,22 @@ use iroh::EndpointId;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 /// Global byte counter for tunnel traffic
 static BYTES_TRANSFERRED: AtomicU64 = AtomicU64::new(0);
+
+fn quic_response_first_byte_timeout() -> Duration {
+    std::env::var("MESH_LLM_TUNNEL_FIRST_BYTE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(60))
+}
 
 /// Get total bytes transferred through all tunnels
 pub fn bytes_transferred() -> u64 {
@@ -367,13 +377,16 @@ async fn relay_quic_to_tcp(
     let mut total: u64 = 0;
     tracing::debug!("QUIC→TCP: starting relay, about to first read");
 
-    // First-byte timeout: if remote doesn't respond within 10s, it's dead.
+    // First-byte timeout: allow enough time for remote prefill on real prompts.
     // After first byte arrives, no timeout (streaming responses can take minutes).
-    let first_read =
-        tokio::time::timeout(std::time::Duration::from_secs(10), quic_recv.read(&mut buf)).await;
+    let first_byte_timeout = quic_response_first_byte_timeout();
+    let first_read = tokio::time::timeout(first_byte_timeout, quic_recv.read(&mut buf)).await;
     match first_read {
         Err(_) => {
-            anyhow::bail!("QUIC→TCP: no response within 10s — host likely dead");
+            anyhow::bail!(
+                "QUIC→TCP: no response within {}s — host likely dead or still prefill-bound",
+                first_byte_timeout.as_secs()
+            );
         }
         Ok(Ok(Some(n))) => {
             tcp_write.write_all(&buf[..n]).await?;
