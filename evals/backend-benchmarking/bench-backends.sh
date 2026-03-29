@@ -188,6 +188,32 @@ wait_for_backend_ready() {
     done
 }
 
+start_backend_with_retry() {
+    local backend="$1"
+    local model_path="$2"
+    local log_path="$3"
+
+    local attempt
+    for attempt in 1 2 3; do
+        cleanup_processes
+        local start_ms
+        start_ms="$(monotonic_ms)"
+        start_backend "$backend" "$model_path" "$log_path"
+        local backend_pid
+        backend_pid="$(read_backend_pid "$backend")"
+        local ready_info=""
+        if ready_info="$(wait_for_backend_ready "$backend" "$log_path" "$backend_pid" "$start_ms")"; then
+            printf '%s\n' "$ready_info"
+            return 0
+        fi
+        if [[ "$attempt" -lt 3 ]]; then
+            echo "retry: backend '$backend' failed to become ready on attempt $attempt, retrying..." >&2
+            sleep 2
+        fi
+    done
+    return 1
+}
+
 start_backend() {
     local backend="$1"
     local model_path="$2"
@@ -439,13 +465,9 @@ for backend in llama mlx; do
     fi
 
     echo "=== $backend ==="
-    cleanup_processes
 
     log_path="$OUTPUT_DIR/${backend}.log"
-    start_ms="$(monotonic_ms)"
-    start_backend "$backend" "$backend_model" "$log_path"
-    backend_pid="$(read_backend_pid "$backend")"
-    ready_info="$(wait_for_backend_ready "$backend" "$log_path" "$backend_pid" "$start_ms")"
+    ready_info="$(start_backend_with_retry "$backend" "$backend_model" "$log_path")"
     model_id="${ready_info%%|*}"
     startup_ms="${ready_info##*|}"
 
