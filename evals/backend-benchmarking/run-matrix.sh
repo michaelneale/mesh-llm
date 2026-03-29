@@ -42,6 +42,26 @@ print(os.path.expandvars(os.path.expanduser(sys.argv[1])))
 PY
 }
 
+resolve_matrix_relative_path() {
+    local raw="$1"
+    local base_dir="$2"
+    if [[ -z "$raw" ]]; then
+        echo ""
+        return 0
+    fi
+    python3 - "$raw" "$base_dir" <<'PY'
+import os
+import sys
+
+raw = os.path.expandvars(os.path.expanduser(sys.argv[1]))
+base_dir = sys.argv[2]
+if os.path.isabs(raw):
+    print(raw)
+else:
+    print(os.path.normpath(os.path.join(base_dir, raw)))
+PY
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --matrix-file)
@@ -93,6 +113,8 @@ if [[ ! -f "$MATRIX_FILE" ]]; then
     exit 1
 fi
 
+MATRIX_DIR="$(cd "$(dirname "$MATRIX_FILE")" && pwd)"
+
 mkdir -p "$OUTPUT_ROOT"
 
 MATRIX_ROWS=()
@@ -115,13 +137,19 @@ for row in rows:
         continue
     if not include_disabled and not row.get("enabled", False):
         continue
-    print("\t".join([
-        row["id"],
-        str(row.get("enabled", False)).lower(),
-        row.get("notes", ""),
-        row["llama_model"],
-        row["mlx_model"],
-    ]))
+    phases = row.get("phases") or [{}]
+    for phase in phases:
+        print("\t".join([
+            row["id"],
+            str(row.get("enabled", False)).lower(),
+            row.get("notes", ""),
+            row["llama_model"],
+            row["mlx_model"],
+            phase.get("id", "main"),
+            phase.get("notes", ""),
+            phase.get("cases_file", ""),
+            str(phase.get("warmup_runs", "")),
+        ]))
 PY
 )
 
@@ -134,12 +162,17 @@ echo "Output root: $OUTPUT_ROOT"
 echo ""
 
 for row in "${MATRIX_ROWS[@]}"; do
-    IFS=$'\t' read -r entry_id enabled notes llama_model_raw mlx_model_raw <<<"$row"
+    IFS=$'\t' read -r entry_id enabled notes llama_model_raw mlx_model_raw phase_id phase_notes phase_cases_file_raw phase_warmup_runs <<<"$row"
     llama_model="$(expand_path "$llama_model_raw")"
     mlx_model="$(expand_path "$mlx_model_raw")"
+    phase_cases_file="$(resolve_matrix_relative_path "$phase_cases_file_raw" "$MATRIX_DIR")"
 
     echo "=== $entry_id ==="
     echo "notes: $notes"
+    echo "phase: $phase_id"
+    if [[ -n "$phase_notes" ]]; then
+        echo "phase notes: $phase_notes"
+    fi
 
     missing=0
     if [[ ! -e "$llama_model" ]]; then
@@ -159,17 +192,23 @@ for row in "${MATRIX_ROWS[@]}"; do
         continue
     fi
 
-    pair_output="$OUTPUT_ROOT/$entry_id"
+    pair_output="$OUTPUT_ROOT/$entry_id/$phase_id"
+    selected_warmup_runs="$WARMUP_RUNS"
+    if [[ -n "$phase_warmup_runs" ]]; then
+        selected_warmup_runs="$phase_warmup_runs"
+    fi
     cmd=(
         "$BENCH_SCRIPT"
         --llama-model "$llama_model"
         --mlx-model "$mlx_model"
         --runs "$RUNS"
-        --warmup-runs "$WARMUP_RUNS"
+        --warmup-runs "$selected_warmup_runs"
         --output-dir "$pair_output"
     )
     if [[ -n "$CASES_FILE" ]]; then
         cmd+=(--cases-file "$CASES_FILE")
+    elif [[ -n "$phase_cases_file" ]]; then
+        cmd+=(--cases-file "$phase_cases_file")
     fi
 
     "${cmd[@]}"

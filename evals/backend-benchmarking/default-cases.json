@@ -24,34 +24,6 @@
     ]
   },
   {
-    "label": "cache-base",
-    "max_tokens": 96,
-    "messages": [
-      {
-        "role": "system",
-        "content": "You are a concise operations assistant. Answer with three short bullet points."
-      },
-      {
-        "role": "user",
-        "content": "Context:\\nMesh-LLM is being evaluated for deployment on a small set of Apple Silicon Macs in a lab. The operators care about startup speed, time-to-first-token, generation throughput, and whether the backend can behave consistently across different prompt styles. They also care about whether the backend is easy to package, whether logs are understandable when a node fails to come up, and whether a model family behaves differently between quantized and bf16 checkpoints.\\n\\nRecent observations:\\n- The llama backend is already stable and widely used.\\n- The native MLX path now supports streaming, but some families behave inconsistently.\\n- Qwen3 bf16 tends to stop very early under greedy decoding.\\n- Some 4-bit MLX checkpoints still fail with shape mismatches during generation.\\n- A Llama bf16 MLX checkpoint appears to behave normally.\\n\\nTask: summarize the operational implications of these observations."
-      }
-    ]
-  },
-  {
-    "label": "cache-extend",
-    "max_tokens": 96,
-    "messages": [
-      {
-        "role": "system",
-        "content": "You are a concise operations assistant. Answer with three short bullet points."
-      },
-      {
-        "role": "user",
-        "content": "Context:\\nMesh-LLM is being evaluated for deployment on a small set of Apple Silicon Macs in a lab. The operators care about startup speed, time-to-first-token, generation throughput, and whether the backend can behave consistently across different prompt styles. They also care about whether the backend is easy to package, whether logs are understandable when a node fails to come up, and whether a model family behaves differently between quantized and bf16 checkpoints.\\n\\nRecent observations:\\n- The llama backend is already stable and widely used.\\n- The native MLX path now supports streaming, but some families behave inconsistently.\\n- Qwen3 bf16 tends to stop very early under greedy decoding.\\n- Some 4-bit MLX checkpoints still fail with shape mismatches during generation.\\n- A Llama bf16 MLX checkpoint appears to behave normally.\\n\\nTask: summarize the operational implications of these observations. Then add one final bullet naming the highest-priority next experiment."
-      }
-    ]
-  },
-  {
     "label": "context-extraction",
     "max_tokens": 128,
     "messages": [

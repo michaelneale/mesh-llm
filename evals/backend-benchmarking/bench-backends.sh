@@ -220,11 +220,24 @@ run_measure() {
     local model_id="$1"
     local messages_json="$2"
     local max_tokens="$3"
-    python3 "$MEASURE_PY" \
-        --url "http://127.0.0.1:${PORT}/v1/chat/completions" \
-        --model "$model_id" \
-        --messages-json "$messages_json" \
-        --max-tokens "$max_tokens"
+    local attempt
+    local output=""
+    for attempt in 1 2 3 4 5; do
+        if output="$(
+            python3 "$MEASURE_PY" \
+                --url "http://127.0.0.1:${PORT}/v1/chat/completions" \
+                --model "$model_id" \
+                --messages-json "$messages_json" \
+                --max-tokens "$max_tokens"
+        )"; then
+            printf '%s\n' "$output"
+            return 0
+        fi
+        if [[ "$attempt" -lt 5 ]]; then
+            sleep 2
+        fi
+    done
+    return 1
 }
 
 append_result() {
