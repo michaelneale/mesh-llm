@@ -7,7 +7,7 @@ This file covers local build and development workflows for this repository.
 - `just`
 - `cmake`
 - Rust toolchain (`cargo`)
-- Node.js + npm (for UI development)
+- Node.js 24 + npm (for UI development)
 
 **macOS**: Apple Silicon. Metal is used automatically.
 

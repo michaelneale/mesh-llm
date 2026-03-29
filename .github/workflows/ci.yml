@@ -15,12 +15,12 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── UI ──
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -66,7 +66,7 @@ jobs:
       # ── Download model ──
       - name: Cache model
         id: cache-model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
           key: model-${{ env.MODEL_FILE }}
@@ -94,12 +94,12 @@ jobs:
   macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # ── UI ──
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -144,7 +144,7 @@ jobs:
       # ── Download model ──
       - name: Cache model
         id: cache-model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
           key: model-${{ env.MODEL_FILE }}
@@ -173,12 +173,12 @@ jobs:
   # windows:
   #   runs-on: windows-latest
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v5
   #
   #     # ── UI ──
-  #     - uses: actions/setup-node@v4
+  #     - uses: actions/setup-node@v5
   #       with:
-  #         node-version: 20
+  #         node-version: 24
   #         cache: npm
   #         cache-dependency-path: mesh-llm/ui/package-lock.json
   #

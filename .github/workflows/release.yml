@@ -24,13 +24,13 @@ jobs:
             artifact_name: release-macos
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: taiki-e/install-action@just
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -48,7 +48,7 @@ jobs:
           just --shell bash --shell-arg -lc release-bundle "${GITHUB_REF_NAME}" dist
 
       - name: Upload release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/*
@@ -76,11 +76,11 @@ jobs:
             python3
           rm -rf /var/lib/apt/lists/*
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -100,7 +100,7 @@ jobs:
           just --shell bash --shell-arg -lc release-bundle-cuda "${GITHUB_REF_NAME}" dist
 
       - name: Upload CUDA release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-linux-cuda
           path: dist/*
@@ -128,11 +128,11 @@ jobs:
             python3
           rm -rf /var/lib/apt/lists/*
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -152,7 +152,7 @@ jobs:
           just --shell bash --shell-arg -lc release-bundle-amd "${GITHUB_REF_NAME}" dist
 
       - name: Upload AMD ROCm release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-linux-rocm
           path: dist/*
@@ -180,11 +180,11 @@ jobs:
             python3
           sudo rm -rf /var/lib/apt/lists/*
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -204,7 +204,7 @@ jobs:
           just --shell bash --shell-arg -lc release-bundle-vulkan "${GITHUB_REF_NAME}" dist
 
       - name: Upload Vulkan release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-linux-vulkan
           path: dist/*
@@ -221,7 +221,7 @@ jobs:
 
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-*
           path: dist

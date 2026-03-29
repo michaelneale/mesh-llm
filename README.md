@@ -44,7 +44,7 @@ cd mesh-llm
 just build
 ```
 
-Requires: `just`, `cmake`, Rust toolchain, Node.js + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). AMD GPU builds need ROCm/HIP. Vulkan GPU builds need the Vulkan development files plus `glslc`. CPU-only and Jetson/Tegra also work. For source builds, `just build` auto-detects CUDA vs ROCm vs Vulkan on Linux, or you can force `backend=rocm` or `backend=vulkan`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Requires: `just`, `cmake`, Rust toolchain, Node.js 24 + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). AMD GPU builds need ROCm/HIP. Vulkan GPU builds need the Vulkan development files plus `glslc`. CPU-only and Jetson/Tegra also work. For source builds, `just build` auto-detects CUDA vs ROCm vs Vulkan on Linux, or you can force `backend=rocm` or `backend=vulkan`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Run
 Once installed, you can run:
