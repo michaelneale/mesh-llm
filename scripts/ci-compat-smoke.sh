@@ -177,6 +177,42 @@ wait_for_client_mesh() {
     fail_with_logs "client never saw both mesh nodes and models"
 }
 
+wait_for_split_mesh() {
+    for i in $(seq 1 "$MAX_WAIT"); do
+        assert_pid_alive "$HOST_PID" "host"
+        assert_pid_alive "$WORKER_PID" "worker"
+        local host_is_host
+        local host_ready
+        local host_peers
+        local worker_is_host
+        local worker_ready
+        local worker_peers
+
+        host_is_host="$(json_field "http://127.0.0.1:${HOST_CONSOLE_PORT}/api/status" "is_host" 2>/dev/null || true)"
+        host_ready="$(json_field "http://127.0.0.1:${HOST_CONSOLE_PORT}/api/status" "llama_ready" 2>/dev/null || true)"
+        host_peers="$(json_len "http://127.0.0.1:${HOST_CONSOLE_PORT}/api/status" "peers" 2>/dev/null || echo 0)"
+
+        worker_is_host="$(json_field "http://127.0.0.1:${WORKER_CONSOLE_PORT}/api/status" "is_host" 2>/dev/null || true)"
+        worker_ready="$(json_field "http://127.0.0.1:${WORKER_CONSOLE_PORT}/api/status" "llama_ready" 2>/dev/null || true)"
+        worker_peers="$(json_len "http://127.0.0.1:${WORKER_CONSOLE_PORT}/api/status" "peers" 2>/dev/null || echo 0)"
+
+        if [ "$host_is_host" = "True" ] && [ "$host_ready" = "True" ] && [ "$host_peers" -ge 1 ]; then
+            echo "✅ Split mesh formed with host on :$HOST_CONSOLE_PORT after ${i}s"
+            return 0
+        fi
+        if [ "$worker_is_host" = "True" ] && [ "$worker_ready" = "True" ] && [ "$worker_peers" -ge 1 ]; then
+            echo "✅ Split mesh formed with host on :$WORKER_CONSOLE_PORT after ${i}s"
+            return 0
+        fi
+
+        if [ $((i % 15)) -eq 0 ]; then
+            echo "  Waiting for split mesh to elect a ready host... (${i}s)"
+        fi
+        sleep 1
+    done
+    fail_with_logs "split mesh never formed a ready host"
+}
+
 wait_for_routed_inference() {
     local model="$1"
     for i in $(seq 1 "$MAX_WAIT"); do
@@ -241,8 +277,9 @@ print(data[0]["id"])
 }
 
 echo "Starting host..."
-"$MESH_LLM" \
+MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
     --model "$MODEL" \
+    --split \
     --no-draft \
     --bin-dir "$BIN_DIR" \
     --device CPU \
@@ -262,6 +299,7 @@ wait_for_llama_ready "$HOST_CONSOLE_PORT" "host" "$HOST_PID"
 echo "Starting worker..."
 MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
     --model "$MODEL" \
+    --split \
     --no-draft \
     --bin-dir "$BIN_DIR" \
     --device CPU \
@@ -273,11 +311,12 @@ MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
 WORKER_PID=$!
 
 wait_for_status "$WORKER_CONSOLE_PORT" "$WORKER_PID" "worker"
-wait_for_llama_ready "$WORKER_CONSOLE_PORT" "worker" "$WORKER_PID"
+wait_for_split_mesh
 
 echo "Starting lite client..."
-"$MESH_LLM" \
+MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
     --client \
+    --no-draft \
     --port "$CLIENT_API_PORT" \
     --console "$CLIENT_CONSOLE_PORT" \
     --bind-port "$CLIENT_BIND_PORT" \
