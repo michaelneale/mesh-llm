@@ -109,7 +109,7 @@ pub enum ProvenanceRepairSource {
     HuggingFace,
 }
 
-const PROVENANCE_SIDECAR_SUFFIX: &str = ".mesh.json";
+const PROVENANCE_SIDECAR_SUFFIX: &str = ".manifest.json";
 const PROVENANCE_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize)]
@@ -297,7 +297,7 @@ fn write_model_provenance(path: &Path, provenance: &ModelProvenance) -> Result<(
         sidecar
             .file_name()
             .and_then(|value| value.to_str())
-            .unwrap_or("model.mesh.json"),
+            .unwrap_or("model.manifest.json"),
         std::process::id()
     ));
     let json = serde_json::to_string_pretty(provenance).context("Serialize model provenance")?;

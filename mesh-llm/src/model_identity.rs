@@ -11,6 +11,7 @@ pub struct ModelIdentity {
 
 #[derive(Debug, Deserialize)]
 struct ProvenanceSidecar {
+    version: u32,
     identity: ProvenanceSidecarIdentity,
     source: ProvenanceSidecarSource,
 }
@@ -58,6 +59,9 @@ fn resolve_sidecar_identity(path: &Path) -> Option<ModelIdentity> {
     let sidecar_path = model_sidecar_path(path);
     let text = std::fs::read_to_string(sidecar_path).ok()?;
     let sidecar: ProvenanceSidecar = serde_json::from_str(&text).ok()?;
+    if sidecar.version != 1 {
+        return None;
+    }
     let mesh_name = match (&sidecar.source.repo, &sidecar.source.revision) {
         (Some(repo), Some(revision)) => format!("{repo}@{revision}"),
         (Some(repo), None) => repo.clone(),
@@ -77,7 +81,7 @@ fn model_sidecar_path(path: &Path) -> std::path::PathBuf {
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "model".to_string());
-    path.with_file_name(format!("{filename}.mesh.json"))
+    path.with_file_name(format!("{filename}.manifest.json"))
 }
 
 fn resolve_directory_identity(path: &Path) -> ModelIdentity {
@@ -248,8 +252,9 @@ mod tests {
         let model = dir.join("Qwen3-8B-Q4_K_M.gguf");
         std::fs::write(&model, b"gguf").unwrap();
         std::fs::write(
-            dir.join("Qwen3-8B-Q4_K_M.gguf.mesh.json"),
+            dir.join("Qwen3-8B-Q4_K_M.gguf.manifest.json"),
             br#"{
+                "version": 1,
                 "identity": {
                     "canonical_id": "huggingface:Qwen/Qwen3-8B-GGUF@abc123/Qwen3-8B-Q4_K_M.gguf",
                     "display_name": "Qwen3-8B-Q4_K_M.gguf"
