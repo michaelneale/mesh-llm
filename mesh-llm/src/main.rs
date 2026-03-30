@@ -2325,7 +2325,50 @@ fn normalize_hf_repo(raw: &str) -> Option<String> {
     None
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ProvenanceSidecar {
+    identity: ProvenanceSidecarIdentity,
+    source: ProvenanceSidecarSource,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProvenanceSidecarIdentity {
+    canonical_id: String,
+    display_name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProvenanceSidecarSource {
+    repo: Option<String>,
+    revision: Option<String>,
+}
+
+fn model_sidecar_path(path: &Path) -> PathBuf {
+    let filename = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "model".to_string());
+    path.with_file_name(format!("{filename}.mesh.json"))
+}
+
+fn sidecar_model_name(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(model_sidecar_path(path)).ok()?;
+    let sidecar: ProvenanceSidecar = serde_json::from_str(&text).ok()?;
+    match (&sidecar.source.repo, &sidecar.source.revision) {
+        (Some(repo), Some(revision)) => Some(format!("{repo}@{revision}")),
+        (Some(repo), None) => Some(repo.clone()),
+        (None, _) if !sidecar.identity.canonical_id.is_empty() => {
+            Some(sidecar.identity.canonical_id)
+        }
+        (None, _) => Some(sidecar.identity.display_name),
+    }
+}
+
 fn model_path_name(path: &Path) -> Option<String> {
+    if let Some(name) = sidecar_model_name(path) {
+        return Some(name);
+    }
+
     if let Some((repo_id, revision)) = huggingface_source_identity(path) {
         return Some(match revision {
             Some(revision) => format!("{repo_id}@{revision}"),
@@ -3263,6 +3306,36 @@ mod tests {
         assert_eq!(
             model_path_name(&dir).as_deref(),
             Some("mlx-community/Qwen2.5-0.5B-Instruct-4bit")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_model_path_name_prefers_sidecar_provenance() {
+        let dir = std::env::temp_dir().join("mesh-llm-pr79-sidecar-name");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("Qwen3-8B-Q4_K_M.gguf");
+        std::fs::write(&model, b"gguf").unwrap();
+        std::fs::write(
+            dir.join("Qwen3-8B-Q4_K_M.gguf.mesh.json"),
+            br#"{
+                "identity": {
+                    "canonical_id": "huggingface:Qwen/Qwen3-8B-GGUF@abc123/Qwen3-8B-Q4_K_M.gguf",
+                    "display_name": "Qwen3-8B-Q4_K_M.gguf"
+                },
+                "source": {
+                    "repo": "Qwen/Qwen3-8B-GGUF",
+                    "revision": "abc123"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model_path_name(&model).as_deref(),
+            Some("Qwen/Qwen3-8B-GGUF@abc123")
         );
 
         let _ = std::fs::remove_dir_all(&dir);

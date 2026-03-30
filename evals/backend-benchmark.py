@@ -278,10 +278,32 @@ def expand_path(raw: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(raw)))
 
 
+def sidecar_comparison_key(model_path: Path) -> str | None:
+    sidecar = model_path.with_name(f"{model_path.name}.mesh.json")
+    if not sidecar.exists():
+        return None
+    try:
+        payload = json.loads(sidecar.read_text())
+    except Exception:
+        return None
+
+    source = payload.get("source") or {}
+    repo = source.get("repo")
+    revision = source.get("revision")
+    if repo and revision:
+        return f"{repo}@{revision}"
+    if repo:
+        return str(repo)
+
+    identity = payload.get("identity") or {}
+    canonical_id = identity.get("canonical_id")
+    if canonical_id:
+        return str(canonical_id)
+    return None
+
+
 def normalize_model_identity(name: str) -> str:
     value = Path(name).name.lower()
-    if "@" in value:
-        value = value.split("@", 1)[0]
     if value.endswith(".gguf"):
         value = value[: -len(".gguf")]
     value = re.sub(r"[-_](split|part)-\d+of\d+$", "", value)
@@ -617,7 +639,8 @@ def benchmark_backend(
             "backend": spec.name,
             "launcher": spec.launcher,
             "model_id": model_id,
-            "normalized_model_id": normalize_model_identity(model_id),
+            "normalized_model_id": sidecar_comparison_key(spec.model)
+            or normalize_model_identity(model_id),
             "model_path": str(spec.model),
             "startup_s": startup_s,
             "iterations": args.iterations,
