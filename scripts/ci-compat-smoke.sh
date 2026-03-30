@@ -177,6 +177,46 @@ wait_for_client_mesh() {
     fail_with_logs "client never saw both mesh nodes and models"
 }
 
+wait_for_routed_inference() {
+    local model="$1"
+    for i in $(seq 1 "$MAX_WAIT"); do
+        assert_pid_alive "$CLIENT_PID" "client"
+        assert_pid_alive "$HOST_PID" "host"
+        assert_pid_alive "$WORKER_PID" "worker"
+
+        local response
+        local http_code
+        local body
+        response="$(curl -s --max-time 20 -w '\n%{http_code}' \
+            "http://127.0.0.1:${CLIENT_API_PORT}/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"model\": \"${model}\",
+                \"messages\": [{\"role\": \"user\", \"content\": \"Reply with the single word ready.\"}],
+                \"max_tokens\": 8,
+                \"temperature\": 0
+            }" 2>/dev/null || true)"
+        http_code="$(printf '%s\n' "$response" | tail -n 1)"
+        body="$(printf '%s\n' "$response" | sed '$d')"
+
+        if [ "$http_code" = "200" ]; then
+            echo "✅ Routed inference ready after ${i}s"
+            return 0
+        fi
+
+        if [ "$http_code" != "503" ] && [ "$http_code" != "000" ] && [ -n "$http_code" ]; then
+            echo "Unexpected readiness probe response ($http_code): $body"
+            fail_with_logs "routed inference probe failed unexpectedly"
+        fi
+
+        if [ $((i % 10)) -eq 0 ]; then
+            echo "  Waiting for routed inference readiness... (${i}s, last status=${http_code:-none})"
+        fi
+        sleep 1
+    done
+    fail_with_logs "routed inference never became ready"
+}
+
 ensure_openai_node_sdk() {
     if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
         fail_with_logs "node is not installed"
@@ -250,6 +290,7 @@ wait_for_client_mesh
 ROUTED_MODEL="$(model_id)"
 
 echo "Using routed model: $ROUTED_MODEL"
+wait_for_routed_inference "$ROUTED_MODEL"
 
 echo "Running official openai-python smoke..."
 "$PYTHON_BIN" "$REPO_ROOT/scripts/ci-openai-python-smoke.py" \
