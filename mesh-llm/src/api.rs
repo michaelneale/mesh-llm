@@ -1488,7 +1488,7 @@ mod tests {
         let payload = build_runtime_status_payload(
             "Qwen",
             Some("llama".into()),
-            None,
+            Some("metal".into()),
             true,
             true,
             Some(9337),
@@ -1497,7 +1497,7 @@ mod tests {
                     name: "Qwen".into(),
                     kind: "primary".into(),
                     backend: "llama".into(),
-                    backend_runtime: None,
+                    backend_runtime: Some("metal".into()),
                     status: "ready".into(),
                     port: 9337,
                     pid: 100,
@@ -1519,6 +1519,7 @@ mod tests {
         assert_eq!(payload.primary_model.as_deref(), Some("Qwen"));
         assert_eq!(payload.models.len(), 2);
         assert_eq!(payload.models[0].name, "Qwen");
+        assert_eq!(payload.models[0].backend_runtime.as_deref(), Some("metal"));
         assert_eq!(payload.models[0].port, Some(9337));
         assert_eq!(payload.models[1].name, "Llama");
         assert!(!payload.models[1].startup_managed);
@@ -1529,7 +1530,7 @@ mod tests {
         let payload = build_runtime_status_payload(
             "Qwen",
             Some("llama".into()),
-            None,
+            Some("metal".into()),
             true,
             false,
             Some(9337),
@@ -1538,6 +1539,7 @@ mod tests {
 
         assert_eq!(payload.primary_model.as_deref(), Some("Qwen"));
         assert_eq!(payload.models.len(), 1);
+        assert_eq!(payload.models[0].backend_runtime.as_deref(), Some("metal"));
         assert_eq!(payload.models[0].status, "starting");
         assert_eq!(payload.models[0].port, Some(9337));
     }

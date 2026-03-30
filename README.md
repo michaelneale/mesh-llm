@@ -216,6 +216,46 @@ For built-in launcher integrations (`goose`, `claude`):
 - If `--model` is omitted, the launcher picks the strongest tool-capable model available on the mesh.
 - When the harness exits (e.g. `claude` quits), the auto-started node is cleaned up automatically.
 
+## Backend selection
+
+`mesh-llm` now picks the local inference backend from the model path:
+
+- GGUF files use the `llama` backend
+- HuggingFace-style model directories with `config.json` plus weight files use the `vllm` backend
+
+For local HuggingFace directories, the served model id comes from `_name_or_path` in `config.json` when available, otherwise from the directory name. For GGUF files, the served model id comes from the file stem with split suffixes removed.
+
+`vllm` is currently local-fit only. Dense split models and MoE sharding still use llama.cpp paths.
+
+### vLLM controls
+
+The `vllm` backend can be pointed at either standard `vllm` or `vllm-metal`.
+
+Hidden advanced flags:
+
+```bash
+mesh-llm --model /path/to/hf-model-dir \
+  --vllm-bin /path/to/vllm \
+  --vllm-dtype bfloat16 \
+  --vllm-trust-remote-code \
+  --vllm-gpu-memory-utilization 0.85 \
+  --vllm-max-num-batched-tokens 4096 \
+  --vllm-arg=--enforce-eager
+```
+
+Equivalent environment variables:
+
+```bash
+MESH_LLM_VLLM_BIN
+MESH_LLM_VLLM_DTYPE
+MESH_LLM_VLLM_TRUST_REMOTE_CODE
+MESH_LLM_VLLM_GPU_MEMORY_UTILIZATION
+MESH_LLM_VLLM_MAX_NUM_BATCHED_TOKENS
+MESH_LLM_VLLM_ARGS
+```
+
+`MESH_LLM_VLLM_ARGS` accepts either shell-style argument text or one argument per line.
+
 ### goose
 
 [Goose](https://github.com/block/goose) is available as both CLI (`goose session`) and desktop app (Goose.app).
