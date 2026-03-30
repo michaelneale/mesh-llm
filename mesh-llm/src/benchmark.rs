@@ -4,10 +4,6 @@ use std::time::{Duration, Instant};
 
 use crate::hardware::HardwareSurvey;
 
-pub enum BenchmarkKind {
-    MemoryBandwidth,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BenchmarkOutput {
     pub device: String,
