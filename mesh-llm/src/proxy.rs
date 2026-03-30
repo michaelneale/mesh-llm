@@ -547,10 +547,11 @@ pub async fn route_to_target(
                         let _ = send_503(tcp_stream).await;
                         return false;
                     }
-                    // Don't call quic_send.finish() here — the remote's
+                    // Don't call quic_send.finish() here. Pre-fix remotes'
                     // relay_bidirectional interprets the send-side EOF as
                     // "request direction done" and aborts the response relay
-                    // before llama-server has responded. Keep the send stream
+                    // before llama-server has responded. For backward
+                    // compatibility with those nodes, keep the send stream
                     // alive (held by _quic_send) until the response is fully
                     // relayed, then it drops naturally.
                     let _quic_send = quic_send;
