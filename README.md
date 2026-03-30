@@ -427,6 +427,66 @@ mesh-llm --model ~/my-models/custom-model.gguf
 
 Downloads have resume support, so interrupted transfers pick up where they left off.
 
+## Manifest sidecars
+
+Downloaded models get a sibling manifest file with the suffix `.manifest.json`.
+
+- `Qwen3-8B-Q4_K_M.gguf` writes `Qwen3-8B-Q4_K_M.gguf.manifest.json`
+- `Qwen3-30B-A3B-UD-Q4_K_XL-00001-of-00002.gguf` writes `Qwen3-30B-A3B-UD-Q4_K_XL-00001-of-00002.gguf.manifest.json`
+- directory-style model bundles write a sibling manifest next to the directory, for example `MyModel/` writes `MyModel.manifest.json`
+
+Current manifest schema:
+
+```json
+{
+  "version": 1,
+  "source": {
+    "provider": "huggingface",
+    "repo": "Qwen/Qwen3-8B-GGUF",
+    "revision": "abc123",
+    "file": "Qwen3-8B-Q4_K_M.gguf",
+    "resolved_url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/abc123/Qwen3-8B-Q4_K_M.gguf"
+  },
+  "identity": {
+    "canonical_id": "huggingface:Qwen/Qwen3-8B-GGUF@abc123/Qwen3-8B-Q4_K_M.gguf",
+    "display_name": "Qwen3-8B-Q4_K_M.gguf",
+    "family": "qwen3",
+    "architecture": null,
+    "format": "gguf",
+    "quantization": "Q4_K_M"
+  },
+  "compatibility": {
+    "tokenizer_hash": null,
+    "chat_template_hash": null,
+    "base_model": null
+  },
+  "local": {
+    "downloaded_at": "1743321600",
+    "sha256": null,
+    "size_bytes": 4921161728
+  }
+}
+```
+
+Field notes:
+
+- `version` is the manifest schema version. Bump it if the on-disk format changes.
+- `source` is the authoritative origin record. Current writers emit `provider` values `huggingface` and `direct_url`.
+- `source.revision` is the resolved Hugging Face revision when known. If the user did not pin a revision, mesh-llm resolves the current repo SHA when it can.
+- `identity.canonical_id` is the stable mesh-llm identity key used for cross-format and cross-location comparisons.
+- `identity.family` and `identity.quantization` are best-effort hints inferred from the filename.
+- `identity.format` comes from the file extension, or `directory` for model directories.
+- `compatibility` is reserved for stronger tokenizer and chat-template matching. These fields are present now but usually null.
+- `local.downloaded_at` is currently stored as Unix epoch seconds in a string.
+- `local.sha256` is reserved for future hashing and is currently null.
+- `local.size_bytes` is the local file size when mesh-llm writes the manifest.
+
+If older downloads are missing manifests, rebuild them with:
+
+```bash
+mesh-llm provenance repair --source huggingface
+```
+
 ## Config
 
 Create `~/.mesh-llm/config.toml` to customize storage and Hugging Face auth:
