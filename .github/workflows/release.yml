@@ -1,0 +1,262 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux CPU
+            os: ubuntu-latest
+            artifact_name: release-linux-cpu
+          - name: macOS
+            os: macos-14
+            artifact_name: release-macos
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build release bundle
+        shell: bash
+        run: |
+          just --shell bash --shell-arg -lc release-build
+          just --shell bash --shell-arg -lc release-bundle "${GITHUB_REF_NAME}" dist
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  build_linux_cuda:
+    name: Build Linux CUDA
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build CUDA release bundle
+        shell: bash
+        run: |
+          just --shell bash --shell-arg -lc release-build-cuda
+          just --shell bash --shell-arg -lc release-bundle-cuda "${GITHUB_REF_NAME}" dist
+
+      - name: Upload CUDA release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-cuda
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  build_linux_amd:
+    name: Build Linux AMD ROCm
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.0-complete
+
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build AMD ROCm release bundle
+        shell: bash
+        run: |
+          just --shell bash --shell-arg -lc release-build-amd
+          just --shell bash --shell-arg -lc release-bundle-amd "${GITHUB_REF_NAME}" dist
+
+      - name: Upload AMD ROCm release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-rocm
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  build_linux_vulkan:
+    name: Build Linux Vulkan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Vulkan build packages
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libvulkan-dev \
+            glslc \
+            python3
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build Vulkan release bundle
+        shell: bash
+        run: |
+          just --shell bash --shell-arg -lc release-build-vulkan
+          just --shell bash --shell-arg -lc release-bundle-vulkan "${GITHUB_REF_NAME}" dist
+
+      - name: Upload Vulkan release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-vulkan
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - build_linux_cuda
+      - build_linux_amd
+      - build_linux_vulkan
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

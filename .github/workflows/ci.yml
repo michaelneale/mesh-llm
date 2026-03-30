@@ -6,15 +6,26 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Tiny model for integration tests (~138MB Q8_0, has chat template)
+  MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf
+  MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
+  SCCACHE_GHA_ENABLED: "true"
+
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      # ── UI ──
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: mesh-llm/ui/package-lock.json
 
@@ -22,24 +33,20 @@ jobs:
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
 
+      # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: mesh-llm
 
+      - name: Unit tests
+        run: cargo test --release
+
       - name: Build mesh-llm
-        working-directory: mesh-llm
-        run: cargo build --release
-
-      - name: Test mesh-llm
-        working-directory: mesh-llm
-        run: cargo test
-
-      - name: Smoke test CLI
-        run: |
-          target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
+        run: cargo build --release -p mesh-llm --bin mesh-llm
 
       - name: Check formatting
         working-directory: mesh-llm
@@ -48,3 +55,176 @@ jobs:
       - name: Clippy
         working-directory: mesh-llm
         run: cargo clippy -- -D warnings || true
+
+      # ── llama.cpp (CPU-only for CI) ──
+      - name: Clone llama.cpp fork
+        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+
+      - name: Build llama.cpp (CPU + RPC)
+        run: |
+          CACHE_FLAGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CACHE_FLAGS+=(
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            )
+          fi
+          cmake -B llama.cpp/build -S llama.cpp \
+            -DGGML_METAL=OFF \
+            -DGGML_CUDA=OFF \
+            -DGGML_RPC=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            "${CACHE_FLAGS[@]}"
+          cmake --build llama.cpp/build --config Release -j$(nproc) --target rpc-server llama-server
+
+      # ── Download model ──
+      - name: Cache model
+        id: cache-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: model-${{ env.MODEL_FILE }}
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
+          ls -lh ~/.models/$MODEL_FILE
+
+      # ── Integration smoke test ──
+      - name: Smoke test (real inference)
+        run: |
+          scripts/ci-smoke-test.sh \
+            target/release/mesh-llm \
+            llama.cpp/build/bin \
+            ~/.models/$MODEL_FILE
+
+      - name: CLI smoke test
+        run: |
+          target/release/mesh-llm --version
+          target/release/mesh-llm --help | head -5
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # ── UI ──
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mesh-llm/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: mesh-llm/ui
+        run: npm ci && npm run build
+
+      # ── Rust ──
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mesh-llm
+
+      - name: Unit tests
+        run: cargo test --release
+
+      - name: Build mesh-llm
+        run: cargo build --release -p mesh-llm --bin mesh-llm
+
+      # ── llama.cpp (Metal + RPC) ──
+      - name: Clone llama.cpp fork
+        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+
+      - name: Build llama.cpp (CPU + RPC)
+        run: |
+          CACHE_FLAGS=()
+          if command -v sccache >/dev/null 2>&1; then
+            CACHE_FLAGS+=(
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+            )
+          fi
+          cmake -B llama.cpp/build -S llama.cpp \
+            -DGGML_METAL=OFF \
+            -DGGML_RPC=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            "${CACHE_FLAGS[@]}"
+          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server
+
+      # ── Download model ──
+      - name: Cache model
+        id: cache-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: model-${{ env.MODEL_FILE }}
+
+      - name: Download model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
+          ls -lh ~/.models/$MODEL_FILE
+
+      # ── Integration smoke test ──
+      - name: Smoke test (real inference)
+        run: |
+          scripts/ci-smoke-test.sh \
+            target/release/mesh-llm \
+            llama.cpp/build/bin \
+            ~/.models/$MODEL_FILE
+
+      - name: CLI smoke test
+        run: |
+          target/release/mesh-llm --version
+          target/release/mesh-llm --help | head -5
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+  # TODO: re-enable once Windows CI is fully baked
+  # windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v5
+  #
+  #     # ── UI ──
+  #     - uses: actions/setup-node@v5
+  #       with:
+  #         node-version: 24
+  #         cache: npm
+  #         cache-dependency-path: mesh-llm/ui/package-lock.json
+  #
+  #     - name: Build UI
+  #       working-directory: mesh-llm/ui
+  #       run: npm ci && npm run build
+  #
+  #     # ── Rust ──
+  #     - uses: dtolnay/rust-toolchain@stable
+  #
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: mesh-llm
+  #
+  #     - name: Build mesh-llm
+  #       run: cargo build --release
+  #
+  #     - name: Unit tests
+  #       run: cargo test
+  #
+  #     - name: CLI smoke test
+  #       run: |
+  #         target/release/mesh-llm.exe --version
+  #         target/release/mesh-llm.exe --help

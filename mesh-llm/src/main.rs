@@ -1,4 +1,7 @@
+mod affinity;
 mod api;
+mod autoupdate;
+mod benchmark;
 mod download;
 mod election;
 mod hardware;
@@ -15,15 +18,16 @@ mod rewrite;
 mod router;
 mod tunnel;
 
+pub(crate) use autoupdate::{latest_release_version, version_newer};
 pub use plugins::blackboard;
 pub use plugins::blackboard::mcp as blackboard_mcp;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use mesh::NodeRole;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-pub const VERSION: &str = "0.48.0";
+pub const VERSION: &str = "0.51.0";
 
 #[derive(Parser, Debug)]
 #[command(name = "mesh-llm", version = VERSION,
@@ -89,6 +93,10 @@ struct Cli {
     #[arg(long, hide = true)]
     plugin: Option<String>,
 
+    /// Disable startup self-update for this process.
+    #[arg(long, hide = true)]
+    no_self_update: bool,
+
     // ── Advanced options (hidden from default --help) ─────────────
     /// Draft model for speculative decoding.
     #[arg(long, hide = true)]
@@ -118,11 +126,15 @@ struct Cli {
     #[arg(long, hide = true)]
     enumerate_host: bool,
 
-    /// Path to rpc-server and llama-server binaries.
+    /// Path to rpc-server, llama-server, and llama-moe-split binaries.
     #[arg(long, hide = true)]
     bin_dir: Option<PathBuf>,
 
-    /// Device for rpc-server (e.g. MTL0, CPU).
+    /// Override which bundled llama.cpp flavor to use.
+    #[arg(long, value_enum)]
+    llama_flavor: Option<launch::BinaryFlavor>,
+
+    /// Device for rpc-server (e.g. MTL0, CUDA0, HIP0, Vulkan0, CPU).
     #[arg(long, hide = true)]
     device: Option<String>,
 
@@ -321,16 +333,22 @@ async fn main() -> Result<()> {
         return plugin::run_plugin_process(name).await;
     }
 
+    let checked_updates = if autoupdate::startup_self_update_enabled(&cli) {
+        autoupdate::maybe_self_update(&cli).await?
+    } else {
+        false
+    };
+
     // Clean up orphan processes from previous runs (skip for client — never runs llama-server)
     if !cli.client {
         launch::kill_llama_server().await;
         launch::kill_orphan_rpc_servers().await;
     }
 
-    // Background version check (non-blocking)
-    tokio::spawn(async {
-        check_for_update().await;
-    });
+    // Finish the release check before startup continues.
+    if !checked_updates {
+        autoupdate::check_for_update().await;
+    }
 
     // Subcommand dispatch
     if let Some(cmd) = &cli.command {
@@ -641,27 +659,13 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
         );
     }
 
-    // HuggingFace URL
+    // HuggingFace URL (auto-detects split GGUFs like -00001-of-00004.gguf)
     if s.starts_with("https://huggingface.co/") || s.starts_with("http://huggingface.co/") {
         let filename = s
             .rsplit('/')
             .next()
             .ok_or_else(|| anyhow::anyhow!("Can't extract filename from URL: {}", s))?;
-        let dest = download::models_dir().join(filename);
-        if dest.exists() {
-            let size = tokio::fs::metadata(&dest).await?.len();
-            if size > 1_000_000 {
-                eprintln!(
-                    "✅ {} already exists ({:.1}GB)",
-                    filename,
-                    size as f64 / 1e9
-                );
-                return Ok(dest);
-            }
-        }
-        eprintln!("📥 Downloading {}...", filename);
-        download::download_url(&s, &dest).await?;
-        return Ok(dest);
+        return download::download_hf_split_gguf(&s, filename).await;
     }
 
     // HF shorthand: org/repo/file.gguf
@@ -680,21 +684,7 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
             }
         };
         let filename = s.rsplit('/').next().unwrap();
-        let dest = download::models_dir().join(filename);
-        if dest.exists() {
-            let size = tokio::fs::metadata(&dest).await?.len();
-            if size > 1_000_000 {
-                eprintln!(
-                    "✅ {} already exists ({:.1}GB)",
-                    filename,
-                    size as f64 / 1e9
-                );
-                return Ok(dest);
-            }
-        }
-        eprintln!("📥 Downloading {}...", filename);
-        download::download_url(&url, &dest).await?;
-        return Ok(dest);
+        return download::download_hf_split_gguf(&url, filename).await;
     }
 
     anyhow::bail!("Model not found: {}", s);
@@ -1195,6 +1185,41 @@ async fn run_auto(
     // Start periodic health check to detect dead peers
     node.start_heartbeat();
 
+    // Launch memory bandwidth benchmark in background (non-blocking)
+    // Skip for client nodes — they have no GPU to benchmark
+    if !is_client {
+        let bw_arc = node.gpu_bandwidth_gbps.clone();
+        let bin_dir_clone = bin_dir.clone();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                tokio::task::spawn_blocking(move || {
+                    let hw = hardware::survey();
+                    if hw.gpu_count == 0 {
+                        tracing::debug!("no GPUs detected — skipping memory bandwidth benchmark");
+                        return None;
+                    }
+                    benchmark::run_or_load(&hw, &bin_dir_clone, std::time::Duration::from_secs(25))
+                })
+            ).await
+            .map_err(|_| tracing::warn!("benchmark timed out after 30s — bandwidth will not be gossiped"))
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten();
+
+            if let Some(ref per_gpu) = result {
+                let total: f64 = per_gpu.iter().sum();
+                tracing::info!("Memory bandwidth fingerprint: {} GPUs, {:.1} GB/s total", per_gpu.len(), total);
+                for (i, gbps) in per_gpu.iter().enumerate() {
+                    tracing::debug!("  GPU {}: {:.1} GB/s", i, gbps);
+                }
+            }
+            *bw_arc.lock().await = result;
+        });
+    } else {
+        tracing::debug!("client node — skipping memory bandwidth benchmark");
+    }
+
     // Join mesh if --join was given
     if !cli.join.is_empty() {
         let mut joined = false;
@@ -1296,6 +1321,8 @@ async fn run_auto(
         }
     }
 
+    let affinity_router = affinity::AffinityRouter::new();
+
     // Start bootstrap proxy if joining an existing mesh.
     // This gives instant API access via tunnel while our GPU loads.
     let mut bootstrap_listener_tx = if !cli.join.is_empty() {
@@ -1303,8 +1330,9 @@ async fn run_auto(
             tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<tokio::net::TcpListener>>(1);
         let boot_node = node.clone();
         let boot_port = api_port;
+        let boot_affinity = affinity_router.clone();
         tokio::spawn(async move {
-            bootstrap_proxy(boot_node, boot_port, stop_rx, cli.listen_all).await;
+            bootstrap_proxy(boot_node, boot_port, stop_rx, cli.listen_all, boot_affinity).await;
         });
         Some(stop_tx)
     } else {
@@ -1432,7 +1460,13 @@ async fn run_auto(
     launch::kill_orphan_rpc_servers().await;
 
     // Start rpc-server
-    let rpc_port = launch::start_rpc_server(&bin_dir, cli.device.as_deref(), Some(&model)).await?;
+    let rpc_port = launch::start_rpc_server(
+        &bin_dir,
+        cli.llama_flavor,
+        cli.device.as_deref(),
+        Some(&model),
+    )
+    .await?;
     tracing::info!("rpc-server on 127.0.0.1:{rpc_port} serving {model_name}");
 
     let tunnel_mgr =
@@ -1458,6 +1492,7 @@ async fn run_auto(
     // API proxy: model-aware routing
     let proxy_node = node.clone();
     let proxy_rx = target_rx.clone();
+    let proxy_affinity = affinity_router.clone();
     tokio::spawn(async move {
         api_proxy(
             proxy_node,
@@ -1466,6 +1501,7 @@ async fn run_auto(
             drop_tx,
             existing_listener,
             cli.listen_all,
+            proxy_affinity,
         )
         .await;
     });
@@ -1480,6 +1516,7 @@ async fn run_auto(
             api_port,
             model_size_bytes,
             plugin_manager.clone(),
+            affinity_router.clone(),
         );
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
         cs.set_nostr_discovery(cli.nostr_discovery).await;
@@ -1528,6 +1565,7 @@ async fn run_auto(
     let draft2 = cli.draft.clone();
     let draft_max = cli.draft_max;
     let force_split = cli.split;
+    let llama_flavor = cli.llama_flavor;
     let cb_console_port = console_port;
     let model_name_for_cb = model_name.clone();
     let model_name_for_election = model_name.clone();
@@ -1536,7 +1574,7 @@ async fn run_auto(
     tokio::spawn(async move {
         election::election_loop(
             node2, tunnel_mgr2, rpc_port, bin_dir2, model2, model_name_for_election,
-            draft2, draft_max, force_split, cli.ctx_size, primary_target_tx,
+            draft2, draft_max, force_split, llama_flavor, cli.ctx_size, primary_target_tx,
             move |is_host, llama_ready| {
                 if llama_ready {
                     let n = node_for_cb.clone();
@@ -1604,11 +1642,12 @@ async fn run_auto(
             let extra_target_tx = target_tx.clone();
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
+            let extra_llama_flavor = cli.llama_flavor;
             eprintln!("  + {extra_name}");
             tokio::spawn(async move {
                 election::election_loop(
                     extra_node, extra_tunnel, 0, extra_bin, extra_path, extra_model_name.clone(),
-                    None, 8, false, cli.ctx_size, extra_target_tx,
+                    None, 8, false, extra_llama_flavor, cli.ctx_size, extra_target_tx,
                     move |is_host, llama_ready| {
                         if is_host && llama_ready {
                             eprintln!("✅ [{extra_model_name}] ready (multi-model)");
@@ -1739,7 +1778,14 @@ async fn run_idle(cli: Cli, _bin_dir: PathBuf) -> Result<()> {
     node.set_plugin_manager(plugin_manager.clone()).await;
     node.start_plugin_channel_forwarder(plugin_mesh_rx);
 
-    let cs = api::MeshApi::new(node.clone(), "(idle)".into(), cli.port, 0, plugin_manager);
+    let cs = api::MeshApi::new(
+        node.clone(),
+        "(idle)".into(),
+        cli.port,
+        0,
+        plugin_manager,
+        affinity::AffinityRouter::new(),
+    );
     cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
     cs.update(false, false).await;
     let cs2 = cs.clone();
@@ -1765,6 +1811,7 @@ async fn run_passive(
     plugin_manager: plugin::PluginManager,
 ) -> Result<Option<String>> {
     let local_port = cli.port;
+    let affinity_router = affinity::AffinityRouter::new();
     node.set_blackboard_name(blackboard_display_name(cli, &node))
         .await;
 
@@ -1828,7 +1875,14 @@ async fn run_passive(
         } else {
             "(standby)".to_string()
         };
-        let cs = api::MeshApi::new(node.clone(), label, local_port, 0, plugin_manager);
+        let cs = api::MeshApi::new(
+            node.clone(),
+            label,
+            local_port,
+            0,
+            plugin_manager,
+            affinity_router.clone(),
+        );
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
         cs.set_nostr_discovery(cli.nostr_discovery).await;
         if is_client {
@@ -1892,7 +1946,8 @@ async fn run_passive(
                 tcp_stream.set_nodelay(true)?;
                 tracing::info!("Connection from {addr}");
                 let node = node.clone();
-                tokio::spawn(proxy::handle_mesh_request(node, tcp_stream, true));
+                let affinity = affinity_router.clone();
+                tokio::spawn(proxy::handle_mesh_request(node, tcp_stream, true, affinity));
             }
             Some(model_name) = promote_rx.recv() => {
                 eprintln!("⬆️  Standby promoting to serve: {model_name}");
@@ -1917,6 +1972,7 @@ async fn api_proxy(
     drop_tx: tokio::sync::mpsc::UnboundedSender<String>,
     existing_listener: Option<tokio::net::TcpListener>,
     listen_all: bool,
+    affinity: affinity::AffinityRouter,
 ) {
     let listener = match existing_listener {
         Some(l) => l,
@@ -1941,6 +1997,7 @@ async fn api_proxy(
 
         let targets = target_rx.borrow().clone();
         let node = node.clone();
+        let affinity = affinity.clone();
 
         let drop_tx = drop_tx.clone();
         tokio::spawn(async move {
@@ -1948,6 +2005,7 @@ async fn api_proxy(
             let mut buf = vec![0u8; 32768];
             match proxy::peek_request(&tcp_stream, &mut buf).await {
                 Ok((n, model_name)) => {
+                    let body_json = proxy::extract_body_json(&buf[..n]);
                     if proxy::is_models_list_request(&buf[..n]) {
                         let models: Vec<String> = targets.targets.keys().cloned().collect();
                         let _ = proxy::send_models_list(tcp_stream, &models).await;
@@ -1971,7 +2029,7 @@ async fn api_proxy(
                     // Smart routing: if no model specified (or model="auto"), classify and pick
                     let (effective_model, classification) =
                         if model_name.is_none() || model_name.as_deref() == Some("auto") {
-                            if let Some(body_json) = proxy::extract_body_json(&buf[..n]) {
+                            if let Some(body_json) = body_json.as_ref() {
                                 let cl = router::classify(&body_json);
                                 let available: Vec<(&str, f64)> = targets
                                     .targets
@@ -2066,18 +2124,38 @@ async fn api_proxy(
                             .get_moe_target(&session_hint)
                             .unwrap_or(first_available_target(&targets))
                     } else if let Some(ref name) = effective_model {
-                        let t = targets.get(name);
+                        let selection = affinity::select_model_target_for_request(
+                            &targets,
+                            name,
+                            body_json.as_ref(),
+                            &affinity,
+                        );
+                        let t = selection.target.clone();
                         if matches!(t, election::InferenceTarget::None) {
                             tracing::debug!("Model '{}' not found, trying first available", name);
                             first_available_target(&targets)
                         } else {
-                            t
+                            let routed =
+                                proxy::route_to_target(node.clone(), tcp_stream, t.clone()).await;
+                            if routed {
+                                if let Some(prefix_hash) = selection.learn_prefix_hash {
+                                    affinity.learn_target(name, prefix_hash, &t);
+                                }
+                            } else if let (Some(prefix_hash), Some(cached_target)) = (
+                                selection.learn_prefix_hash,
+                                selection.cached_target.as_ref(),
+                            ) {
+                                if cached_target == &t {
+                                    affinity.forget_target(name, prefix_hash, &t);
+                                }
+                            }
+                            return;
                         }
                     } else {
                         first_available_target(&targets)
                     };
 
-                    proxy::route_to_target(node, tcp_stream, target).await;
+                    let _ = proxy::route_to_target(node, tcp_stream, target).await;
                 }
                 Err(_) => return,
             };
@@ -2092,6 +2170,7 @@ async fn bootstrap_proxy(
     port: u16,
     mut stop_rx: tokio::sync::mpsc::Receiver<tokio::sync::oneshot::Sender<tokio::net::TcpListener>>,
     listen_all: bool,
+    affinity: affinity::AffinityRouter,
 ) {
     let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
     let listener = match tokio::net::TcpListener::bind(format!("{addr}:{port}")).await {
@@ -2113,7 +2192,8 @@ async fn bootstrap_proxy(
                 };
                 let _ = tcp_stream.set_nodelay(true);
                 let node = node.clone();
-                tokio::spawn(proxy::handle_mesh_request(node, tcp_stream, true));
+                let affinity = affinity.clone();
+                tokio::spawn(proxy::handle_mesh_request(node, tcp_stream, true, affinity));
             }
             resp_tx = stop_rx.recv() => {
                 // Hand over listener to api_proxy
@@ -2138,20 +2218,43 @@ fn first_available_target(targets: &election::ModelTargets) -> election::Inferen
     election::InferenceTarget::None
 }
 
+fn bundled_bin_names(name: &str) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    names.extend(
+        launch::BinaryFlavor::ALL
+            .into_iter()
+            .map(|flavor| format!("{name}-{}", flavor.suffix())),
+    );
+    names
+}
+
+fn has_bundled_llama_bins(dir: &Path) -> bool {
+    bundled_bin_names("rpc-server")
+        .iter()
+        .any(|name| dir.join(name).exists())
+        && bundled_bin_names("llama-server")
+            .iter()
+            .any(|name| dir.join(name).exists())
+}
+
 fn detect_bin_dir() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("Failed to determine own binary path")?;
     let dir = exe.parent().context("Binary has no parent directory")?;
 
-    if dir.join("rpc-server").exists() && dir.join("llama-server").exists() {
+    if has_bundled_llama_bins(dir) {
         return Ok(dir.to_path_buf());
     }
     let dev = dir.join("../llama.cpp/build/bin");
-    if dev.join("rpc-server").exists() && dev.join("llama-server").exists() {
+    if has_bundled_llama_bins(&dev) {
         return Ok(dev.canonicalize()?);
     }
-    let cargo = dir.join("../../../llama.cpp/build/bin");
-    if cargo.join("rpc-server").exists() && cargo.join("llama-server").exists() {
+    let cargo = dir.join("../../llama.cpp/build/bin");
+    if has_bundled_llama_bins(&cargo) {
         return Ok(cargo.canonicalize()?);
+    }
+    let cargo_alt = dir.join("../../../llama.cpp/build/bin");
+    if has_bundled_llama_bins(&cargo_alt) {
+        return Ok(cargo_alt.canonicalize()?);
     }
 
     Ok(dir.to_path_buf())
@@ -2953,42 +3056,6 @@ fn install_skill() -> Result<()> {
     Ok(())
 }
 
-async fn check_for_update() {
-    if let Some(latest) = latest_release_version().await {
-        if version_newer(&latest, VERSION) {
-            eprintln!("💡 Update available: v{VERSION} → v{latest}  https://github.com/michaelneale/mesh-llm/releases");
-            eprintln!("   curl -fsSL https://github.com/michaelneale/mesh-llm/releases/latest/download/mesh-bundle.tar.gz | tar xz && mv mesh-bundle/* ~/.local/bin/");
-        }
-    }
-}
-
-pub(crate) async fn latest_release_version() -> Option<String> {
-    let url = "https://api.github.com/repos/michaelneale/mesh-llm/releases/latest";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let resp = client
-        .get(url)
-        .header("User-Agent", "mesh-llm")
-        .send()
-        .await
-        .ok()?;
-    let body: serde_json::Value = resp.json().await.ok()?;
-    let tag = body["tag_name"].as_str()?;
-    let latest = tag.trim_start_matches('v').trim();
-    if latest.is_empty() {
-        None
-    } else {
-        Some(latest.to_string())
-    }
-}
-
-pub(crate) fn version_newer(a: &str, b: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
-    parse(a) > parse(b)
-}
-
 /// Build the list of models this node is serving for gossip announcement.
 /// `resolved_models` comes from explicit `--model` args (may be empty for `--auto`).
 /// `model_name` is the actual model we're about to serve (always set).
@@ -3071,12 +3138,5 @@ mod tests {
         let result = build_serving_list(&resolved, "MiniMax-M2.5-Q4_K_M-00001-of-00004");
         assert_eq!(result, vec!["MiniMax-M2.5-Q4_K_M"]);
         assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn test_version_newer() {
-        assert!(version_newer("0.33.1", "0.33.0"));
-        assert!(!version_newer("0.33.0", "0.33.0"));
-        assert!(!version_newer("0.32.0", "0.33.0"));
     }
 }

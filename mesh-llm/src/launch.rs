@@ -4,35 +4,280 @@
 //! wired up to the mesh tunnel ports.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use clap::ValueEnum;
+use std::path::{Path, PathBuf};
 use tokio::net::TcpListener;
 use tokio::process::Command;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum BinaryFlavor {
+    Cpu,
+    Cuda,
+    Rocm,
+    Vulkan,
+    Metal,
+}
+
+impl BinaryFlavor {
+    pub const ALL: [BinaryFlavor; 5] = [
+        BinaryFlavor::Cpu,
+        BinaryFlavor::Cuda,
+        BinaryFlavor::Rocm,
+        BinaryFlavor::Vulkan,
+        BinaryFlavor::Metal,
+    ];
+
+    pub fn suffix(self) -> &'static str {
+        match self {
+            BinaryFlavor::Cpu => "cpu",
+            BinaryFlavor::Cuda => "cuda",
+            BinaryFlavor::Rocm => "rocm",
+            BinaryFlavor::Vulkan => "vulkan",
+            BinaryFlavor::Metal => "metal",
+        }
+    }
+
+    fn preferred_devices(self) -> &'static [&'static str] {
+        match self {
+            BinaryFlavor::Cpu => &["CPU"],
+            BinaryFlavor::Cuda => &["CUDA0", "CPU"],
+            BinaryFlavor::Rocm => &["HIP0", "CPU"],
+            BinaryFlavor::Vulkan => &["Vulkan0", "CPU"],
+            BinaryFlavor::Metal => &["MTL0", "CPU"],
+        }
+    }
+
+    fn primary_device(self) -> &'static str {
+        self.preferred_devices()[0]
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedBinary {
+    path: PathBuf,
+    flavor: Option<BinaryFlavor>,
+}
+
+fn flavored_bin_name(name: &str, flavor: BinaryFlavor) -> String {
+    format!("{name}-{}", flavor.suffix())
+}
+
+fn infer_binary_flavor(name: &str, path: &Path) -> Option<BinaryFlavor> {
+    let file_name = path.file_name()?.to_string_lossy();
+    for flavor in BinaryFlavor::ALL {
+        if file_name == flavored_bin_name(name, flavor) {
+            return Some(flavor);
+        }
+    }
+    None
+}
+
+fn resolve_binary_path(
+    bin_dir: &Path,
+    name: &str,
+    requested_flavor: Option<BinaryFlavor>,
+) -> Result<ResolvedBinary> {
+    if let Some(flavor) = requested_flavor {
+        let flavored = bin_dir.join(flavored_bin_name(name, flavor));
+        if flavored.exists() {
+            return Ok(ResolvedBinary {
+                path: flavored,
+                flavor: Some(flavor),
+            });
+        }
+
+        let generic = bin_dir.join(name);
+        if generic.exists() {
+            return Ok(ResolvedBinary {
+                path: generic,
+                flavor: Some(flavor),
+            });
+        }
+
+        anyhow::bail!(
+            "{} not found in {} for requested flavor '{}'",
+            flavored.display(),
+            bin_dir.display(),
+            flavor.suffix()
+        );
+    }
+
+    let generic = bin_dir.join(name);
+    if generic.exists() {
+        let flavor = infer_binary_flavor(name, &generic);
+        return Ok(ResolvedBinary {
+            path: generic,
+            flavor,
+        });
+    }
+
+    let matches: Vec<ResolvedBinary> = BinaryFlavor::ALL
+        .into_iter()
+        .map(|flavor| ResolvedBinary {
+            path: bin_dir.join(flavored_bin_name(name, flavor)),
+            flavor: Some(flavor),
+        })
+        .filter(|candidate| candidate.path.exists())
+        .collect();
+
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => anyhow::bail!(
+            "{} not found in {}",
+            bin_dir.join(name).display(),
+            bin_dir.display()
+        ),
+        _ => {
+            let options = matches
+                .iter()
+                .filter_map(|candidate| candidate.flavor.map(|flavor| flavor.suffix()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "multiple {} flavors found in {} ({options}). Pass --llama-flavor to choose one.",
+                name,
+                bin_dir.display()
+            );
+        }
+    }
+}
+
+fn temp_log_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(name)
+}
+
+fn log_tail(path: &Path, max_lines: usize) -> String {
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+
+    let lines: Vec<&str> = contents.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
+}
+
+fn parse_available_devices(output: &str) -> Vec<String> {
+    let mut devices = Vec::new();
+    let mut in_devices = false;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed == "available devices:" {
+            in_devices = true;
+            continue;
+        }
+        if !in_devices || trimmed.is_empty() {
+            continue;
+        }
+        let Some((name, _rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        if !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+            continue;
+        }
+        devices.push(name.to_string());
+    }
+
+    devices
+}
+
+fn probe_available_devices(binary: &Path) -> Vec<String> {
+    let Ok(output) = std::process::Command::new(binary)
+        .args(["-d", "__mesh_llm_probe_invalid__", "-p", "0"])
+        .output()
+    else {
+        return Vec::new();
+    };
+
+    let mut combined = String::from_utf8_lossy(&output.stdout).to_string();
+    if !combined.is_empty() && !output.stderr.is_empty() {
+        combined.push('\n');
+    }
+    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    parse_available_devices(&combined)
+}
+
+fn preferred_device(available: &[String], flavor: Option<BinaryFlavor>) -> Option<String> {
+    let candidates: &[&str] = if let Some(flavor) = flavor {
+        flavor.preferred_devices()
+    } else {
+        &["MTL0", "CUDA0", "HIP0", "Vulkan0", "CPU"]
+    };
+
+    for candidate in candidates {
+        if available.iter().any(|device| device == candidate) {
+            return Some((*candidate).to_string());
+        }
+    }
+    available.first().cloned()
+}
+
+fn resolve_device_for_binary(
+    binary: &Path,
+    flavor: Option<BinaryFlavor>,
+    requested: Option<&str>,
+) -> Result<String> {
+    let available = probe_available_devices(binary);
+
+    if let Some(device) = requested {
+        if !available.is_empty() && !available.iter().any(|candidate| candidate == device) {
+            anyhow::bail!(
+                "requested device {device} is not supported by {}. Available devices: {}",
+                binary.display(),
+                available.join(", ")
+            );
+        }
+        return Ok(device.to_string());
+    }
+
+    if let Some(selected) = preferred_device(&available, flavor) {
+        return Ok(selected);
+    }
+
+    if let Some(flavor) = flavor {
+        return Ok(flavor.primary_device().to_string());
+    }
+
+    Ok(detect_device())
+}
+
+fn command_has_output(command: &str, args: &[&str]) -> bool {
+    let Ok(output) = std::process::Command::new(command).args(args).output() else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| !line.trim().is_empty())
+}
 
 /// Start a local rpc-server and return the port it's listening on.
 /// Picks an available port automatically.
 /// If `gguf_path` is provided, passes `--gguf` so the server loads weights from the local file.
 pub async fn start_rpc_server(
     bin_dir: &Path,
+    binary_flavor: Option<BinaryFlavor>,
     device: Option<&str>,
     gguf_path: Option<&Path>,
 ) -> Result<u16> {
-    let rpc_server = bin_dir.join("rpc-server");
-    anyhow::ensure!(
-        rpc_server.exists(),
-        "rpc-server not found at {}. Build llama.cpp with -DGGML_RPC=ON first.",
-        rpc_server.display()
-    );
+    let rpc_server = resolve_binary_path(bin_dir, "rpc-server", binary_flavor)?;
 
     // Find a free port
     let port = find_free_port().await?;
 
-    let device = device.map(|s| s.to_string()).unwrap_or_else(detect_device);
+    let device = resolve_device_for_binary(&rpc_server.path, rpc_server.flavor, device)?;
+    let startup_timeout = if device.starts_with("Vulkan") {
+        std::time::Duration::from_secs(90)
+    } else {
+        std::time::Duration::from_secs(15)
+    };
+    let startup_polls = (startup_timeout.as_millis() / 500) as usize;
 
     tracing::info!("Starting rpc-server on :{port} (device: {device})");
 
-    let rpc_log = format!("/tmp/mesh-llm-rpc-{port}.log");
+    let rpc_log = temp_log_path(&format!("mesh-llm-rpc-{port}.log"));
     let rpc_log_file = std::fs::File::create(&rpc_log)
-        .with_context(|| format!("Failed to create rpc-server log file {rpc_log}"))?;
+        .with_context(|| format!("Failed to create rpc-server log file {}", rpc_log.display()))?;
     let rpc_log_file2 = rpc_log_file.try_clone()?;
 
     let mut args = vec![
@@ -50,15 +295,20 @@ pub async fn start_rpc_server(
         );
     }
 
-    let mut child = Command::new(&rpc_server)
+    let mut child = Command::new(&rpc_server.path)
         .args(&args)
         .stdout(std::process::Stdio::from(rpc_log_file))
         .stderr(std::process::Stdio::from(rpc_log_file2))
         .spawn()
-        .with_context(|| format!("Failed to start rpc-server at {}", rpc_server.display()))?;
+        .with_context(|| {
+            format!(
+                "Failed to start rpc-server at {}",
+                rpc_server.path.display()
+            )
+        })?;
 
     // Wait for it to be listening
-    for _ in 0..30 {
+    for _ in 0..startup_polls {
         if is_port_open(port).await {
             // Detach — let it run in the background
             tokio::spawn(async move {
@@ -66,10 +316,35 @@ pub async fn start_rpc_server(
             });
             return Ok(port);
         }
+        if let Some(status) = child.try_wait().with_context(|| {
+            format!(
+                "Failed to poll rpc-server status for {}",
+                rpc_server.path.display()
+            )
+        })? {
+            let tail = log_tail(&rpc_log, 40);
+            let tail_msg = if tail.is_empty() {
+                format!("See {}", rpc_log.display())
+            } else {
+                format!("See {}:\n{}", rpc_log.display(), tail)
+            };
+            anyhow::bail!(
+                "rpc-server exited before listening on port {port} (device: {device}, status: {status}). {tail_msg}"
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    anyhow::bail!("rpc-server failed to start on port {port} within 15s");
+    let tail = log_tail(&rpc_log, 40);
+    let tail_msg = if tail.is_empty() {
+        format!("See {}", rpc_log.display())
+    } else {
+        format!("See {}:\n{}", rpc_log.display(), tail)
+    };
+    anyhow::bail!(
+        "rpc-server failed to start on port {port} within {}s (device: {device}). {tail_msg}",
+        startup_timeout.as_secs()
+    );
 }
 
 /// Kill orphan rpc-server processes from previous mesh-llm runs.
@@ -135,6 +410,7 @@ pub async fn kill_llama_server() {
 /// Start llama-server. Returns a oneshot receiver that fires when the process exits.
 pub async fn start_llama_server(
     bin_dir: &Path,
+    binary_flavor: Option<BinaryFlavor>,
     model: &Path,
     http_port: u16,
     tunnel_ports: &[u16],
@@ -147,12 +423,7 @@ pub async fn start_llama_server(
     ctx_size_override: Option<u32>,
     total_group_vram: Option<u64>,
 ) -> Result<tokio::sync::oneshot::Receiver<()>> {
-    let llama_server = bin_dir.join("llama-server");
-    anyhow::ensure!(
-        llama_server.exists(),
-        "llama-server not found at {}. Build llama.cpp first.",
-        llama_server.display()
-    );
+    let llama_server = resolve_binary_path(bin_dir, "llama-server", binary_flavor)?;
 
     anyhow::ensure!(model.exists(), "Model not found at {}", model.display());
 
@@ -169,8 +440,13 @@ pub async fn start_llama_server(
         rpc_arg
     );
 
-    let log_file = std::fs::File::create("/tmp/mesh-llm-llama-server.log")
-        .context("Failed to create llama-server log file")?;
+    let llama_log = temp_log_path("mesh-llm-llama-server.log");
+    let log_file = std::fs::File::create(&llama_log).with_context(|| {
+        format!(
+            "Failed to create llama-server log file {}",
+            llama_log.display()
+        )
+    })?;
     let log_file2 = log_file.try_clone()?;
 
     // llama-server uses --rpc only for remote workers.
@@ -277,21 +553,30 @@ pub async fn start_llama_server(
         args.push("--tensor-split".to_string());
         args.push(ts.to_string());
     }
+    let local_device = resolve_device_for_binary(&llama_server.path, llama_server.flavor, None)?;
     if let Some(draft_path) = draft {
         if draft_path.exists() {
-            args.push("-md".to_string());
-            args.push(draft_path.to_string_lossy().to_string());
-            args.push("-ngld".to_string());
-            args.push("99".to_string());
-            args.push("--device-draft".to_string());
-            args.push("MTL0".to_string());
-            args.push("--draft-max".to_string());
-            args.push(draft_max.to_string());
-            tracing::info!(
-                "Speculative decoding: draft={}, draft-max={}",
-                draft_path.display(),
-                draft_max
-            );
+            if local_device != "CPU" {
+                args.push("-md".to_string());
+                args.push(draft_path.to_string_lossy().to_string());
+                args.push("-ngld".to_string());
+                args.push("99".to_string());
+                args.push("--device-draft".to_string());
+                args.push(local_device.clone());
+                args.push("--draft-max".to_string());
+                args.push(draft_max.to_string());
+                tracing::info!(
+                    "Speculative decoding: draft={}, draft-max={}, device={}",
+                    draft_path.display(),
+                    draft_max,
+                    local_device
+                );
+            } else {
+                tracing::warn!(
+                    "Draft model present at {} but no GPU backend detected, skipping speculative decoding",
+                    draft_path.display()
+                );
+            }
         } else {
             tracing::warn!(
                 "Draft model not found at {}, skipping speculative decoding",
@@ -311,12 +596,17 @@ pub async fn start_llama_server(
             tracing::warn!("mmproj not found at {}, skipping vision", proj.display());
         }
     }
-    let mut child = Command::new(&llama_server)
+    let mut child = Command::new(&llama_server.path)
         .args(&args)
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_file2))
         .spawn()
-        .with_context(|| format!("Failed to start llama-server at {}", llama_server.display()))?;
+        .with_context(|| {
+            format!(
+                "Failed to start llama-server at {}",
+                llama_server.path.display()
+            )
+        })?;
 
     // Wait for health check
     let url = format!("http://localhost:{http_port}/health");
@@ -374,19 +664,8 @@ fn detect_device() -> String {
     }
 
     // Linux: check for NVIDIA CUDA
-    if let Ok(output) = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-    {
-        if output.status.success() {
-            let gpu_count = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .count();
-            if gpu_count > 0 {
-                return "CUDA0".to_string();
-            }
-        }
+    if command_has_output("nvidia-smi", &["--query-gpu=name", "--format=csv,noheader"]) {
+        return "CUDA0".to_string();
     }
 
     // Linux: check for NVIDIA Tegra/Jetson (tegrastats — Jetson AGX/NX devices support CUDA)
@@ -403,7 +682,8 @@ fn detect_device() -> String {
     }
 
     // Linux: check for AMD ROCm/HIP
-    if std::path::Path::new("/opt/rocm").exists() {
+    if command_has_output("rocm-smi", &["--showproductname"]) || command_has_output("rocminfo", &[])
+    {
         return "HIP0".to_string();
     }
 
@@ -446,3 +726,46 @@ async fn reqwest_health_check(url: &str) -> bool {
 }
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_available_devices, preferred_device, BinaryFlavor};
+    use std::path::Path;
+
+    #[test]
+    fn parse_available_devices_ignores_non_device_lines() {
+        let output = r#"
+error: unknown device: HIP0
+available devices:
+No devices found
+  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 13737 MiB free)
+  CPU: AMD Ryzen 7 7800X3D 8-Core Processor (192857 MiB, 192857 MiB free)
+"#;
+
+        assert_eq!(
+            parse_available_devices(output),
+            vec!["Vulkan0".to_string(), "CPU".to_string()]
+        );
+    }
+
+    #[test]
+    fn preferred_device_picks_vulkan_when_that_is_all_binary_supports() {
+        let available = vec!["Vulkan0".to_string(), "CPU".to_string()];
+        assert_eq!(
+            preferred_device(&available, Some(BinaryFlavor::Vulkan)),
+            Some("Vulkan0".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_binary_flavor_from_filename() {
+        assert_eq!(
+            super::infer_binary_flavor("rpc-server", Path::new("rpc-server-vulkan")),
+            Some(BinaryFlavor::Vulkan)
+        );
+        assert_eq!(
+            super::infer_binary_flavor("rpc-server", Path::new("rpc-server")),
+            None
+        );
+    }
+}

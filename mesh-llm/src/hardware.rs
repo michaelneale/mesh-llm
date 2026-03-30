@@ -53,18 +53,32 @@ pub fn parse_macos_cpu_brand(output: &str) -> Option<String> {
     }
 }
 
-/// Parse `rocm-smi --showproductname` output → GPU name from "Card series:" line.
+/// Parse `rocm-smi --showproductname` output → GPU names from "Card series:" lines.
 #[cfg(any(target_os = "linux", test))]
-pub fn parse_rocm_gpu_name(output: &str) -> Option<String> {
+pub fn parse_rocm_gpu_names(output: &str) -> Vec<String> {
+    let mut names = Vec::new();
     for line in output.lines() {
         if let Some(pos) = line.find("Card series:") {
             let val = line[pos + "Card series:".len()..].trim();
             if !val.is_empty() {
-                return Some(val.to_string());
+                names.push(val.to_string());
             }
         }
     }
-    None
+    names
+}
+
+/// Parse `rocm-smi --showmeminfo vram --csv` output → per-GPU VRAM bytes.
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_rocm_gpu_vrams(output: &str) -> Vec<u64> {
+    output
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let total = line.split(',').nth(1)?;
+            total.trim().parse::<u64>().ok()
+        })
+        .collect()
 }
 
 /// Summarize GPU names: empty→None, 1→name, N identical→"N× name", N mixed→"a, b".
@@ -239,7 +253,7 @@ impl Collector for DefaultCollector {
                     survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
                 } else {
                     // Try AMD ROCm (mesh.rs:295-316)
-                    let rocm_vram: Option<u64> = (|| {
+                    let rocm_vram: Option<Vec<u64>> = (|| {
                         let out = std::process::Command::new("rocm-smi")
                             .args(["--showmeminfo", "vram", "--csv"])
                             .output()
@@ -248,18 +262,17 @@ impl Collector for DefaultCollector {
                             return None;
                         }
                         let s = String::from_utf8(out.stdout).ok()?;
-                        for line in s.lines().skip(1) {
-                            if let Some(total) = line.split(',').nth(1) {
-                                if let Ok(bytes) = total.trim().parse::<u64>() {
-                                    return Some(bytes);
-                                }
-                            }
+                        let vrams = parse_rocm_gpu_vrams(&s);
+                        if vrams.is_empty() {
+                            None
+                        } else {
+                            Some(vrams)
                         }
-                        None
                     })();
 
-                    if let Some(vram) = rocm_vram {
-                        survey.gpu_vram = vec![vram];
+                    if let Some(per_gpu) = rocm_vram {
+                        let vram: u64 = per_gpu.iter().sum();
+                        survey.gpu_vram = per_gpu;
                         let ram_offload = system_ram.saturating_sub(vram);
                         survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
                     } else if system_ram > 0 {
@@ -302,15 +315,12 @@ impl Collector for DefaultCollector {
                     if let Some(out) = out {
                         if out.status.success() {
                             if let Ok(s) = String::from_utf8(out.stdout) {
+                                let names = parse_rocm_gpu_names(&s);
                                 if metrics.contains(&Metric::GpuName) {
-                                    survey.gpu_name = parse_rocm_gpu_name(&s);
+                                    survey.gpu_name = summarize_gpu_name(&names);
                                 }
                                 if metrics.contains(&Metric::GpuCount) {
-                                    let count = s
-                                        .lines()
-                                        .filter(|l| l.trim_start().starts_with("GPU["))
-                                        .count();
-                                    survey.gpu_count = u8::try_from(count).unwrap_or(u8::MAX);
+                                    survey.gpu_count = u8::try_from(names.len()).unwrap_or(u8::MAX);
                                 }
                             }
                         }
@@ -455,16 +465,62 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_rocm_gpu_name() {
+    fn test_parse_rocm_gpu_names_single() {
         let fixture = "\
 ======================= ROCm System Management Interface =======================
 ================================= Product Info =================================
 GPU[0]\t\t: Card series:\t\t\tNavi31 [Radeon RX 7900 XTX]
 ================================================================================";
         assert_eq!(
-            parse_rocm_gpu_name(fixture),
-            Some("Navi31 [Radeon RX 7900 XTX]".to_string())
+            parse_rocm_gpu_names(fixture),
+            vec!["Navi31 [Radeon RX 7900 XTX]".to_string()]
         );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_names_multi() {
+        let fixture = "\
+======================= ROCm System Management Interface =======================
+================================= Product Info =================================
+GPU[0]\t\t: Card series:\t\t\tAMD Instinct MI300X
+GPU[1]\t\t: Card series:\t\t\tAMD Instinct MI300X
+================================================================================";
+        assert_eq!(
+            parse_rocm_gpu_names(fixture),
+            vec![
+                "AMD Instinct MI300X".to_string(),
+                "AMD Instinct MI300X".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_vrams_single() {
+        let fixture = "\
+device,VRAM Total Memory (B),VRAM Total Used Memory (B)
+card0,25753026560,416378880";
+        assert_eq!(parse_rocm_gpu_vrams(fixture), vec![25753026560]);
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_vrams_multi() {
+        let fixture = "\
+device,VRAM Total Memory (B),VRAM Total Used Memory (B)
+card0,25753026560,416378880
+card1,25753026560,512000000";
+        assert_eq!(
+            parse_rocm_gpu_vrams(fixture),
+            vec![25753026560, 25753026560]
+        );
+    }
+
+    #[test]
+    fn test_parse_rocm_gpu_vrams_ignores_invalid_rows() {
+        let fixture = "\
+device,VRAM Total Memory (B),VRAM Total Used Memory (B)
+card0,25753026560,416378880
+card1,not-a-number,512000000";
+        assert_eq!(parse_rocm_gpu_vrams(fixture), vec![25753026560]);
     }
 
     #[test]

@@ -8,15 +8,37 @@
 
 Pool spare GPU capacity to run LLMs at larger scale. Models that don't fit on one machine are automatically distributed — dense models via pipeline parallelism, MoE models via expert sharding with zero cross-node inference traffic. Have your agents gossip across the mesh — share status, findings, and questions without a central server.
 
-## Install (macOS Apple Silicon)
+## Install
 
 ```bash
-curl -fsSL https://github.com/michaelneale/mesh-llm/releases/latest/download/mesh-bundle.tar.gz | tar xz && mkdir -p ~/.local/bin && mv mesh-bundle/* ~/.local/bin/
+curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash
 ```
 
-## Install (Linux)
+The installer probes your machine, recommends a flavor, and asks what you want to install.
 
-No pre-built binaries yet, build from source:
+If you want it to run as a per-user background service, see [Background service](#background-service).
+
+For non-interactive installs, set the flavor explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | MESH_LLM_INSTALL_FLAVOR=vulkan bash
+```
+
+Release bundles install flavor-specific llama.cpp binaries:
+
+- macOS: `rpc-server-metal`, `llama-server-metal`
+- Linux CPU: `rpc-server-cpu`, `llama-server-cpu`
+- Linux CUDA: `rpc-server-cuda`, `llama-server-cuda`
+- Linux ROCm: `rpc-server-rocm`, `llama-server-rocm`
+- Linux Vulkan: `rpc-server-vulkan`, `llama-server-vulkan`
+
+If you keep more than one flavor installed in the same `bin` directory, select the one you want explicitly:
+
+```bash
+mesh-llm --llama-flavor vulkan --model Qwen2.5-32B
+```
+
+If you want a local GPU build from source instead:
 
 ```bash
 git clone https://github.com/michaelneale/mesh-llm
@@ -24,7 +46,7 @@ cd mesh-llm
 just build
 ```
 
-Requires: `just`, `cmake`, Rust toolchain, Node.js + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). CPU-only and Jetson/Tegra also work. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Requires: `just`, `cmake`, Rust toolchain, Node.js 24 + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). AMD GPU builds need ROCm/HIP. Vulkan GPU builds need the Vulkan development files plus `glslc`. CPU-only and Jetson/Tegra also work. For source builds, `just build` auto-detects CUDA vs ROCm vs Vulkan on Linux, or you can force `backend=rocm` or `backend=vulkan`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## Run
 Once installed, you can run:
@@ -126,6 +148,50 @@ Different nodes serve different models. The API proxy routes by the `model` fiel
 mesh-llm                                   # no args — shows instructions + console
 ```
 Opens a read-only console on `:3131`. Use the CLI to start or join a mesh.
+
+## Background service
+
+To install it as a per-user background service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service
+```
+
+To seed the service with a custom startup command on first install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service --service-args '--model Qwen2.5-3B'
+```
+
+Service installs are user-scoped:
+
+- macOS installs a `launchd` agent at `~/Library/LaunchAgents/com.mesh-llm.mesh-llm.plist`
+- Linux installs a `systemd --user` unit at `~/.config/systemd/user/mesh-llm.service`
+- Shared environment config lives in `~/.config/mesh-llm/service.env`
+
+The two platforms handle launch args differently:
+
+- macOS: `launchd` runs `~/.config/mesh-llm/run-service.sh`, which reads `~/.config/mesh-llm/service.args`. `service.args` is one `mesh-llm` CLI argument per line. The installer creates it with `--auto` by default and preserves your edits on reinstall unless you pass `--service-args` again.
+- Linux: the installer writes the `mesh-llm` argv directly into `ExecStart=` in `~/.config/systemd/user/mesh-llm.service`. If you pass `--service-args`, those replace the current unit args; otherwise the installer preserves the existing unit args on reinstall.
+
+`service.env` is optional and shared by both platforms. Use plain `KEY=value` lines, for example:
+
+```text
+MESH_LLM_NO_SELF_UPDATE=1
+```
+
+If you edit the Linux unit manually, reload and restart it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart mesh-llm.service
+```
+
+On Linux this is a user service, so if you want it to keep running after reboot before login, enable lingering once:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
 
 ## Web console
 
