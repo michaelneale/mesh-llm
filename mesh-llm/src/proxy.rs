@@ -519,13 +519,9 @@ pub async fn route_to_target(
                         let _ = send_503(tcp_stream).await;
                         return false;
                     }
-                    if let Err(e) = upstream.shutdown().await {
-                        tracing::warn!(
-                            "API proxy: failed to half-close request stream to local llama-server on {port}: {e}"
-                        );
-                        let _ = send_503(tcp_stream).await;
-                        return false;
-                    }
+                    // Don't half-close the write side — llama-server interprets
+                    // a TCP FIN as a client disconnect and stops streaming.
+                    // The Connection: close header already signals one-shot.
                     if let Err(e) = tokio::io::copy(&mut upstream, &mut tcp_stream).await {
                         tracing::debug!("API proxy (local) ended: {e}");
                     }
