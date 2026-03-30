@@ -307,18 +307,7 @@ def normalize_model_identity(name: str) -> str:
     if value.endswith(".gguf"):
         value = value[: -len(".gguf")]
     value = re.sub(r"[-_](split|part)-\d+of\d+$", "", value)
-    tokens = re.split(r"[-_]+", value)
-    while tokens:
-        matched_suffix = False
-        for suffix_tokens in COMMON_VARIANT_SUFFIX_TOKEN_GROUPS:
-            if len(tokens) >= len(suffix_tokens) and tuple(tokens[-len(suffix_tokens) :]) == suffix_tokens:
-                del tokens[-len(suffix_tokens) :]
-                matched_suffix = True
-                break
-        if not matched_suffix:
-            break
-    normalized = "-".join(token for token in tokens if token)
-    return normalized or value
+    return value
 
 
 def post_stream(url: str, payload: dict[str, Any], timeout: float) -> RunMetrics:
