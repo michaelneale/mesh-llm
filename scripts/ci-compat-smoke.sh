@@ -266,5 +266,10 @@ echo "Running LiteLLM smoke..."
     --base-url "http://127.0.0.1:${CLIENT_API_PORT}/v1" \
     --model "$ROUTED_MODEL"
 
+echo "Running langchain-openai smoke..."
+"$PYTHON_BIN" "$REPO_ROOT/scripts/ci-langchain-openai-smoke.py" \
+    --base-url "http://127.0.0.1:${CLIENT_API_PORT}/v1" \
+    --model "$ROUTED_MODEL"
+
 echo ""
 echo "=== Compat smoke passed ==="

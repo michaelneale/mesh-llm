@@ -40,7 +40,7 @@ jobs:
         run: npm ci && npm run build
 
       - name: Install Python SDKs
-        run: python -m pip install --upgrade pip openai litellm
+        run: python -m pip install --upgrade pip openai litellm langchain-openai
 
       # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
