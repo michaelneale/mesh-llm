@@ -1695,90 +1695,27 @@ mod rotate_key_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Integration tests — publish/discover against real Nostr relays
+// Integration test — publish/discover against real Nostr relays
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod integration_tests {
     use super::*;
 
-    /// Generate a unique test mesh name that won't collide with real meshes.
-    fn test_mesh_name() -> String {
-        format!("mesh-llm-test-{}", rand::random::<u32>())
-    }
-
-    /// Publish a listing from a fresh identity, discover it, verify it shows up.
-    /// Uses real relays — marked #[ignore] so CI skips by default.
-    /// Run with: cargo test -p mesh-llm -- integration_tests --ignored
+    /// End-to-end: two publishers advertise the same mesh, a reusable
+    /// DiscoveryClient finds both listings, and fields round-trip correctly.
+    /// Covers publish, discover, multi-publisher, and client reuse in one test.
     #[tokio::test]
-    #[ignore]
-    async fn publish_then_discover() {
+    async fn publish_discover_round_trip() {
         let relays: Vec<String> = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
-        let mesh_name = test_mesh_name();
+        let mesh_name = format!("mesh-llm-test-{}", rand::random::<u32>());
         let mesh_id = format!("test-id-{}", rand::random::<u32>());
 
-        // Publish
-        let keys = Keys::generate();
-        let publisher = Publisher::new(keys.clone(), &relays)
+        // Publisher A
+        let keys_a = Keys::generate();
+        let pub_a = Publisher::new(keys_a.clone(), &relays)
             .await
-            .expect("publisher");
-        let listing = MeshListing {
-            invite_token: "test-invite-token".into(),
-            serving: vec!["Qwen3-8B-Q4_K_M".into()],
-            wanted: vec![],
-            on_disk: vec![],
-            total_vram_bytes: 8_000_000_000,
-            node_count: 1,
-            client_count: 0,
-            max_clients: 0,
-            name: Some(mesh_name.clone()),
-            region: Some("test-region".into()),
-            mesh_id: Some(mesh_id.clone()),
-        };
-        publisher
-            .publish(&listing, 120)
-            .await
-            .expect("publish should succeed");
-
-        // Give relays a moment to propagate
-        tokio::time::sleep(Duration::from_secs(2)).await;
-
-        // Discover
-        let filter = MeshFilter::default();
-        let meshes = discover(&relays, &filter, None)
-            .await
-            .expect("discover should succeed");
-
-        // Find our test mesh
-        let found: Vec<_> = meshes
-            .iter()
-            .filter(|m| m.listing.mesh_id.as_deref() == Some(mesh_id.as_str()))
-            .collect();
-        assert!(
-            !found.is_empty(),
-            "should find our test mesh {mesh_name} (mesh_id={mesh_id}) among {} results",
-            meshes.len()
-        );
-        let m = &found[0];
-        assert_eq!(m.listing.name.as_deref(), Some(mesh_name.as_str()));
-        assert_eq!(m.listing.serving, vec!["Qwen3-8B-Q4_K_M"]);
-        assert_eq!(m.listing.node_count, 1);
-        assert_eq!(m.listing.total_vram_bytes, 8_000_000_000);
-        assert_eq!(m.listing.region.as_deref(), Some("test-region"));
-
-        // Cleanup
-        publisher.unpublish().await.ok();
-    }
-
-    /// Two publishers (simulating two nodes in the same mesh) publish,
-    /// then a third party discovers both. Verifies multi-publisher meshes work.
-    #[tokio::test]
-    #[ignore]
-    async fn two_publishers_same_mesh_discovered() {
-        let relays: Vec<String> = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
-        let mesh_name = test_mesh_name();
-        let mesh_id = format!("test-id-{}", rand::random::<u32>());
-
-        let listing = MeshListing {
+            .expect("pub_a");
+        let listing_a = MeshListing {
             invite_token: "invite-a".into(),
             serving: vec!["Qwen3-8B-Q4_K_M".into()],
             wanted: vec![],
@@ -1788,32 +1725,28 @@ mod integration_tests {
             client_count: 0,
             max_clients: 0,
             name: Some(mesh_name.clone()),
-            region: None,
+            region: Some("test-region".into()),
             mesh_id: Some(mesh_id.clone()),
         };
-
-        // Publisher A
-        let keys_a = Keys::generate();
-        let pub_a = Publisher::new(keys_a.clone(), &relays)
-            .await
-            .expect("pub_a");
-        pub_a.publish(&listing, 120).await.expect("publish A");
+        pub_a.publish(&listing_a, 120).await.expect("publish A");
 
         // Publisher B — same mesh, different invite token
-        let mut listing_b = listing.clone();
-        listing_b.invite_token = "invite-b".into();
         let keys_b = Keys::generate();
         let pub_b = Publisher::new(keys_b.clone(), &relays)
             .await
             .expect("pub_b");
+        let mut listing_b = listing_a.clone();
+        listing_b.invite_token = "invite-b".into();
         pub_b.publish(&listing_b, 120).await.expect("publish B");
 
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
-        // Discover
-        let meshes = discover(&relays, &MeshFilter::default(), None)
+        // Discover with reusable client (tests DiscoveryClient + discover)
+        let dc = DiscoveryClient::new(&relays).await.expect("dc");
+        let meshes = discover(&relays, &MeshFilter::default(), Some(&dc))
             .await
             .expect("discover");
+
         let found: Vec<_> = meshes
             .iter()
             .filter(|m| m.listing.mesh_id.as_deref() == Some(mesh_id.as_str()))
@@ -1824,7 +1757,14 @@ mod integration_tests {
             found.len()
         );
 
-        // Both invite tokens should be present
+        // Verify fields round-tripped
+        let m = &found[0];
+        assert_eq!(m.listing.name.as_deref(), Some(mesh_name.as_str()));
+        assert_eq!(m.listing.serving, vec!["Qwen3-8B-Q4_K_M"]);
+        assert_eq!(m.listing.node_count, 2);
+        assert_eq!(m.listing.total_vram_bytes, 16_000_000_000);
+
+        // Both invite tokens present
         let tokens: Vec<_> = found
             .iter()
             .map(|m| m.listing.invite_token.as_str())
@@ -1838,87 +1778,18 @@ mod integration_tests {
             "missing invite-b in {tokens:?}"
         );
 
+        // Second discover with same client still works
+        let r2 = discover(&relays, &MeshFilter::default(), Some(&dc))
+            .await
+            .expect("second discover");
+        let found2: Vec<_> = r2
+            .iter()
+            .filter(|m| m.listing.mesh_id.as_deref() == Some(mesh_id.as_str()))
+            .collect();
+        assert!(found2.len() >= 2, "reused client should still find both");
+
         // Cleanup
         pub_a.unpublish().await.ok();
         pub_b.unpublish().await.ok();
-    }
-
-    /// Publish, unpublish, then verify the listing is gone (or expired).
-    #[tokio::test]
-    #[ignore]
-    async fn unpublish_removes_listing() {
-        let relays: Vec<String> = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
-        let mesh_id = format!("test-id-{}", rand::random::<u32>());
-
-        let keys = Keys::generate();
-        let publisher = Publisher::new(keys.clone(), &relays)
-            .await
-            .expect("publisher");
-        let listing = MeshListing {
-            invite_token: "test-invite".into(),
-            serving: vec!["Qwen3-4B-Q4_K_M".into()],
-            wanted: vec![],
-            on_disk: vec![],
-            total_vram_bytes: 4_000_000_000,
-            node_count: 1,
-            client_count: 0,
-            max_clients: 0,
-            name: Some(test_mesh_name()),
-            region: None,
-            mesh_id: Some(mesh_id.clone()),
-        };
-
-        // Publish with 120s TTL (enough time for discover round-trip)
-        publisher.publish(&listing, 120).await.expect("publish");
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        // Verify it exists
-        let dc = DiscoveryClient::new(&relays).await.expect("dc");
-        let meshes = discover(&relays, &MeshFilter::default(), Some(&dc))
-            .await
-            .expect("discover");
-        let before: Vec<_> = meshes
-            .iter()
-            .filter(|m| m.listing.mesh_id.as_deref() == Some(mesh_id.as_str()))
-            .collect();
-        assert!(!before.is_empty(), "should find listing before unpublish");
-
-        // Unpublish
-        publisher.unpublish().await.expect("unpublish");
-        tokio::time::sleep(Duration::from_secs(3)).await;
-
-        // Re-discover — listing should be gone (or at least deleted)
-        // Note: some relays may still return deleted events, so we check
-        // that it's either gone or has an expired timestamp
-        let meshes = discover(&relays, &MeshFilter::default(), Some(&dc))
-            .await
-            .expect("re-discover");
-        let after: Vec<_> = meshes
-            .iter()
-            .filter(|m| m.listing.mesh_id.as_deref() == Some(mesh_id.as_str()))
-            .collect();
-        // Relays may or may not honor deletion, so we just log the result
-        eprintln!(
-            "After unpublish: found {} listings (was {}). Some relays may keep deleted events.",
-            after.len(),
-            before.len()
-        );
-    }
-
-    /// DiscoveryClient can be reused across multiple discover() calls.
-    #[tokio::test]
-    #[ignore]
-    async fn discovery_client_reuse() {
-        let relays: Vec<String> = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
-        let dc = DiscoveryClient::new(&relays).await.expect("client");
-        let filter = MeshFilter::default();
-
-        // Two sequential discover calls with the same client
-        let r1 = discover(&relays, &filter, Some(&dc)).await.expect("first");
-        let r2 = discover(&relays, &filter, Some(&dc)).await.expect("second");
-
-        // Both should return results (the public mesh should be discoverable)
-        // We just check they don't error — actual content depends on what's published
-        eprintln!("discover #1: {} meshes, #2: {} meshes", r1.len(), r2.len());
     }
 }
