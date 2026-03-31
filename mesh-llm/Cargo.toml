@@ -34,3 +34,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 serial_test = "3"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"
