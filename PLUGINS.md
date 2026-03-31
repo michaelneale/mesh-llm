@@ -273,9 +273,8 @@ The host currently requires protocol version equality.
 
 Current state:
 
-- the host speaks `meshllm.plugin.v2`
-- `PROTOCOL_VERSION` is `2`
-- older `meshllm.plugin.v1` plugins are rejected at initialize time
+- the host speaks `meshllm.plugin.v1`
+- `PROTOCOL_VERSION` is `1`
 
 This is currently an explicit breaking change, not a compatibility bridge.
 

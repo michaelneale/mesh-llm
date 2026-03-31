@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package meshllm.plugin.v2;
+package meshllm.plugin.v1;
 
 message Envelope {
   uint32 protocol_version = 1;

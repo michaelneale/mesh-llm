@@ -39,7 +39,7 @@ pub use runtime::{
 
 #[allow(dead_code)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/meshllm.plugin.v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/meshllm.plugin.v1.rs"));
 }
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 1;
