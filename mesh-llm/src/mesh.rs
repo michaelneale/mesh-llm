@@ -1237,17 +1237,32 @@ impl Node {
     }
 
     async fn update_peer_rtt(&self, id: EndpointId, rtt_ms: u32) {
-        let updated_peer = {
+        let (updated_peer, old_rtt) = {
             let mut state = self.state.lock().await;
             if let Some(peer) = state.peers.get_mut(&id) {
+                let prev = peer.rtt_ms;
                 peer.rtt_ms = Some(rtt_ms);
-                Some(peer.clone())
+                (Some(peer.clone()), prev)
             } else {
-                None
+                (None, None)
             }
         };
         if let Some(peer) = updated_peer {
             tracing::info!("Peer {} RTT: {}ms", id.fmt_short(), rtt_ms);
+            // If RTT dropped from above the split threshold (80ms) to below it
+            // (e.g. relay → direct), trigger a re-election so the peer can now
+            // be included in split mode.
+            let was_above = old_rtt.map_or(false, |r| r > 80);
+            if was_above && rtt_ms <= 80 {
+                eprintln!(
+                    "📡 Peer {} RTT improved ({}ms → {}ms) — re-electing for split",
+                    id.fmt_short(),
+                    old_rtt.unwrap_or(0),
+                    rtt_ms
+                );
+                let count = self.state.lock().await.peers.len();
+                let _ = self.peer_change_tx.send(count);
+            }
             self.emit_plugin_mesh_event(
                 crate::plugin::proto::mesh_event::Kind::PeerUpdated,
                 Some(&peer),
@@ -3088,7 +3103,44 @@ impl Node {
         });
 
         // Gossip exchange to learn peer's role/VRAM and announce ourselves
-        self.initiate_gossip(conn, peer_id).await?;
+        self.initiate_gossip(conn.clone(), peer_id).await?;
+
+        // Schedule a delayed RTT recheck: the first gossip often goes via relay
+        // (high RTT) because direct holepunch hasn't completed yet. After a few
+        // seconds the direct path is usually ready, so re-check path info to get
+        // the real RTT and potentially trigger a re-election for split mode.
+        let node_for_recheck = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let conn = node_for_recheck
+                .state
+                .lock()
+                .await
+                .connections
+                .get(&peer_id)
+                .cloned();
+            if let Some(conn) = conn {
+                let mut paths = conn.paths();
+                let path_list = iroh::Watcher::get(&mut paths);
+                for path_info in path_list {
+                    if path_info.is_selected() {
+                        let rtt = path_info.rtt();
+                        let rtt_ms = rtt.as_millis() as u32;
+                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+                        if rtt_ms > 0 {
+                            eprintln!(
+                                "📡 Peer {} RTT recheck: {}ms ({})",
+                                peer_id.fmt_short(),
+                                rtt_ms,
+                                path_type
+                            );
+                            node_for_recheck.update_peer_rtt(peer_id, rtt_ms).await;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
         Ok(())
     }
 
@@ -3133,6 +3185,33 @@ impl Node {
                 self.update_peer_rtt(remote, rtt_ms).await;
             } else {
                 self.update_transitive_peer(peer_id, addr, ann).await;
+            }
+        }
+
+        // Also check the connection's actual path info — the gossip round-trip
+        // time above may reflect relay latency even if a direct path is now active.
+        {
+            let conn = self.state.lock().await.connections.get(&remote).cloned();
+            if let Some(conn) = conn {
+                let mut paths = conn.paths();
+                let path_list = iroh::Watcher::get(&mut paths);
+                for path_info in path_list {
+                    if path_info.is_selected() {
+                        let rtt = path_info.rtt();
+                        let path_rtt_ms = rtt.as_millis() as u32;
+                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+                        if path_rtt_ms > 0 && path_rtt_ms < rtt_ms {
+                            eprintln!(
+                                "📡 Peer {} RTT: {}ms ({}) [path info]",
+                                remote.fmt_short(),
+                                path_rtt_ms,
+                                path_type
+                            );
+                            self.update_peer_rtt(remote, path_rtt_ms).await;
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -6287,6 +6366,118 @@ pub(crate) mod tests {
             connection_protocol(&conn_b),
             ControlProtocol::JsonV0,
             "v0 endpoint connecting to a v1 node must use JsonV0 protocol"
+        );
+
+        Ok(())
+    }
+
+    fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo {
+        PeerInfo {
+            id,
+            addr: EndpointAddr {
+                id,
+                addrs: Default::default(),
+            },
+            role: super::NodeRole::Worker,
+            models: vec![],
+            vram_bytes: vram_gb * 1024 * 1024 * 1024,
+            rtt_ms,
+            model_source: None,
+            serving: None,
+            serving_models: vec![],
+            available_models: vec![],
+            requested_models: vec![],
+            last_seen: std::time::Instant::now(),
+            version: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_bandwidth_gbps: None,
+            available_model_metadata: vec![],
+            experts_summary: None,
+            tunnel_port: None,
+            available_model_sizes: HashMap::new(),
+        }
+    }
+
+    /// RTT re-election: when a peer's RTT drops from above the 80ms split
+    /// threshold to below it (e.g. relay → direct), update_peer_rtt must
+    /// trigger a peer_change event so the election loop re-runs and can
+    /// now include the peer in split mode.
+    #[tokio::test]
+    async fn test_rtt_drop_triggers_reelection() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        // Add a fake peer with high relay RTT
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(2600), 16));
+        }
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT to still-high value — should NOT trigger
+        node.update_peer_rtt(peer_id, 500).await;
+        assert!(
+            !rx.has_changed().unwrap_or(false),
+            "RTT 2600→500 (both above threshold) should not trigger re-election"
+        );
+
+        // Update RTT to below threshold — SHOULD trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            rx.has_changed().unwrap_or(false),
+            "RTT 500→15 (crossing threshold) must trigger re-election"
+        );
+
+        Ok(())
+    }
+
+    /// RTT re-election should NOT trigger when RTT was already below threshold.
+    #[tokio::test]
+    async fn test_rtt_below_threshold_no_reelection() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(20), 16));
+        }
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT to another low value — should NOT trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            !rx.has_changed().unwrap_or(false),
+            "RTT 20→15 (both below threshold) should not trigger re-election"
+        );
+
+        Ok(())
+    }
+
+    /// RTT re-election should NOT trigger for unknown peers.
+    #[tokio::test]
+    async fn test_rtt_update_unknown_peer_no_panic() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT for a peer that doesn't exist — should not panic or trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            !rx.has_changed().unwrap_or(false),
+            "RTT update for unknown peer should not trigger re-election"
         );
 
         Ok(())
