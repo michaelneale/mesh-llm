@@ -897,22 +897,18 @@ fn model_tiers() -> Vec<(&'static str, f64)> {
     tiers
 }
 
-/// Pick models to SERVE for `--auto` based on VRAM and what's on disk.
-/// Returns models this node should actually load into llama-servers.
+/// Pick the model to SERVE for `--auto` based on VRAM.
+/// Returns a single-element vec (the model this node should load).
 ///
-/// Strategy: one strong generalist + one code specialist when VRAM allows.
-/// MoE models preferred (faster tok/s per VRAM GB). Prefers on-disk models
-/// to avoid download wait. Leaves ~15% VRAM headroom for KV cache.
+/// One model per node. Biggest model that fits with 15% KV cache headroom.
 ///
-/// Packs by VRAM tier:
-///   <8GB:     Qwen3-4B (2.5G) — starter
-///   8-13GB:   Qwen3-8B (5G)
-///   13-24GB:  Qwen3-8B (5G) + Coder-7B (4.4G)
-///   24-50GB:  Qwen3.5-27B (17G) — vision + text
-///   50-63GB:  Qwen3-32B (19.8G) + Qwen3-Coder-30B-A3B (18.6G)
-///   63-85GB:  Qwen3-Coder-Next (48G) — frontier coder
-///   85-179GB: Qwen3-Coder-Next (48G) + Qwen3.5-27B (17G)
-///   179GB+:   MiniMax-M2.5 (138G)
+/// Tiers:
+///   <8GB:    Qwen3-4B (2.5G)
+///   8-24GB:  Qwen3-8B (5G)
+///   24-50GB: Qwen3.5-27B (17G) — vision + text
+///   50-63GB: GLM-4.7-Flash (18G) — 30B MoE, fast, tool calling
+///   63-179GB: Qwen3-Coder-Next (48G) — frontier coder ~85B
+///   179GB+:  MiniMax-M2.5 (138G) — 456B MoE flagship
 pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
     let local_models = crate::mesh::scan_local_models();
     let tiers = model_tiers();
@@ -927,8 +923,6 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
             .map(|(_, s)| *s)
             .unwrap_or(f64::MAX)
     };
-    let fits = |name: &str, budget: f64| -> bool { size_of(name) <= budget };
-
     let usable = vram_gb * 0.85; // 15% headroom for KV cache
 
     // Opinionated packs — each is (generalist, optional specialist(s))
@@ -938,16 +932,10 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         models: &'static [&'static str],
     }
     let packs: &[Pack] = &[
-        // Sizes (file): MiniMax=138G, Coder-Next=48G, 3-32B=19.8G, Coder-30B=18.6G,
-        //               GLM-Flash=18G, 3.5-27B=17G, Qwen3-8B=5G, Coder-7B=4.4G, Qwen3-4B=2.5G
-        // min_vram = total_file_size * 1.1 / 0.85 (accounts for both multipliers).
+        // One model per tier. Node serves one model at a time.
         Pack {
             min_vram: 179.0,
             models: &["MiniMax-M2.5-Q4_K_M"],
-        },
-        Pack {
-            min_vram: 85.0,
-            models: &["Qwen3-Coder-Next-Q4_K_M", "Qwen3.5-27B-Q4_K_M"],
         },
         Pack {
             min_vram: 63.0,
@@ -955,15 +943,11 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         },
         Pack {
             min_vram: 50.0,
-            models: &["Qwen3-32B-Q4_K_M", "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M"],
+            models: &["GLM-4.7-Flash-Q4_K_M"],
         },
         Pack {
             min_vram: 24.0,
             models: &["Qwen3.5-27B-Q4_K_M"],
-        },
-        Pack {
-            min_vram: 13.0,
-            models: &["Qwen3-8B-Q4_K_M", "Qwen2.5-Coder-7B-Instruct-Q4_K_M"],
         },
         Pack {
             min_vram: 8.0,
@@ -987,7 +971,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         }
     }
 
-    // Fallback: find the largest single model that fits, prefer on-disk
+    // Fallback: largest single model that fits, prefer on-disk
     let on_disk_fit = tiers
         .iter()
         .find(|(name, min_vram)| *min_vram <= usable && on_disk(name));
@@ -997,20 +981,6 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         .or(any_fit)
         .map(|(name, _)| name.to_string())
         .unwrap_or_else(|| "Qwen3-4B-Q4_K_M".into());
-
-    // Try to add a code specialist if there's room
-    let remaining = usable - size_of(&primary);
-    let coders = [
-        "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M",
-        "Qwen2.5-Coder-32B-Instruct-Q4_K_M",
-        "Qwen2.5-Coder-14B-Instruct-Q4_K_M",
-        "Qwen2.5-Coder-7B-Instruct-Q4_K_M",
-    ];
-    for coder in coders {
-        if coder != primary && fits(coder, remaining) {
-            return vec![primary, coder.to_string()];
-        }
-    }
 
     vec![primary]
 }
@@ -1058,11 +1028,9 @@ mod auto_pack_tests {
     }
 
     #[test]
-    fn pack_16gb_dual_model() {
+    fn pack_16gb_single() {
         let pack = auto_model_pack(16.0);
-        assert_eq!(pack.len(), 2);
-        assert_eq!(pack[0], "Qwen3-8B-Q4_K_M");
-        assert_eq!(pack[1], "Qwen2.5-Coder-7B-Instruct-Q4_K_M");
+        assert_eq!(pack, vec!["Qwen3-8B-Q4_K_M"]);
     }
 
     #[test]
@@ -1072,11 +1040,9 @@ mod auto_pack_tests {
     }
 
     #[test]
-    fn pack_50gb_dual_large() {
+    fn pack_50gb_glm_flash() {
         let pack = auto_model_pack(50.0);
-        assert_eq!(pack.len(), 2);
-        assert_eq!(pack[0], "Qwen3-32B-Q4_K_M");
-        assert_eq!(pack[1], "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M");
+        assert_eq!(pack, vec!["GLM-4.7-Flash-Q4_K_M"]);
     }
 
     #[test]
@@ -1086,11 +1052,9 @@ mod auto_pack_tests {
     }
 
     #[test]
-    fn pack_85gb_frontier_plus_vision() {
+    fn pack_85gb_frontier_coder() {
         let pack = auto_model_pack(85.0);
-        assert_eq!(pack.len(), 2);
-        assert_eq!(pack[0], "Qwen3-Coder-Next-Q4_K_M");
-        assert_eq!(pack[1], "Qwen3.5-27B-Q4_K_M");
+        assert_eq!(pack, vec!["Qwen3-Coder-Next-Q4_K_M"]);
     }
 
     #[test]
@@ -1101,8 +1065,7 @@ mod auto_pack_tests {
 
     #[test]
     fn pack_between_tiers_falls_through() {
-        // 40GB: not enough for 50GB tier (Qwen3-32B + Coder-30B),
-        // falls to 24GB tier (Qwen3.5-27B)
+        // 40GB: below 50GB tier, falls to 24GB tier (Qwen3.5-27B)
         let pack = auto_model_pack(40.0);
         assert_eq!(pack, vec!["Qwen3.5-27B-Q4_K_M"]);
     }
