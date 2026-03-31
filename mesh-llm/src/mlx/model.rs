@@ -25,6 +25,25 @@ pub struct ModelConfig {
     #[serde(default)]
     pub tie_word_embeddings: bool,
     pub quantization: Option<QuantConfig>,
+    /// EOS token ID(s) — can be a single int or array in config.json.
+    #[serde(default, deserialize_with = "deserialize_eos_token_id")]
+    pub eos_token_id: Vec<u32>,
+}
+
+fn deserialize_eos_token_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<u32>, D::Error> {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EosId {
+        Single(u32),
+        Multiple(Vec<u32>),
+    }
+    Ok(match EosId::deserialize(deserializer)? {
+        EosId::Single(id) => vec![id],
+        EosId::Multiple(ids) => ids,
+    })
 }
 
 fn default_rope_theta() -> f32 {
@@ -198,6 +217,18 @@ impl KVCache {
             values: None,
             offset: 0,
         }
+    }
+
+    /// Return references to cached arrays (for eval/materialization).
+    pub fn arrays(&self) -> Vec<&Array> {
+        let mut out = Vec::new();
+        if let Some(ref k) = self.keys {
+            out.push(k);
+        }
+        if let Some(ref v) = self.values {
+            out.push(v);
+        }
+        out
     }
 
     pub fn update(&mut self, k: Array, v: Array) -> Result<(Array, Array)> {

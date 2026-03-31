@@ -355,6 +355,13 @@ async fn generate_streaming(
     Ok(())
 }
 
+/// Prefill all prompt tokens in one forward pass.
+fn prefill(model: &MlxModel, prompt_tokens: &[u32], caches: &mut [model::KVCache]) -> Result<u32> {
+    let input = Array::from_slice(prompt_tokens, &[1, prompt_tokens.len() as i32]);
+    let logits = model.forward(&input, caches)?;
+    model::argmax_last(&logits)
+}
+
 /// Run inference synchronously (called from blocking thread).
 fn run_inference(
     state: &mut InferState,
@@ -369,12 +376,10 @@ fn run_inference(
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
 
-    let input = Array::from_slice(&prompt_tokens, &[1, prompt_len as i32]);
     let mut caches = state.model.new_caches();
 
-    // Prefill
-    let logits = state.model.forward(&input, &mut caches)?;
-    let mut next_token = model::argmax_last(&logits)?;
+    // Chunked prefill
+    let mut next_token = prefill(&state.model, &prompt_tokens, &mut caches)?;
 
     let mut generated: Vec<u32> = vec![next_token];
 
@@ -419,12 +424,10 @@ fn run_inference_streaming(
         .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
 
-    let input = Array::from_slice(&prompt_tokens, &[1, prompt_tokens.len() as i32]);
     let mut caches = state.model.new_caches();
 
-    // Prefill
-    let logits = state.model.forward(&input, &mut caches)?;
-    let mut next_token = model::argmax_last(&logits)?;
+    // Chunked prefill
+    let mut next_token = prefill(&state.model, &prompt_tokens, &mut caches)?;
 
     // Decode + stream
     for _ in 0..max_tokens {
@@ -452,14 +455,8 @@ fn run_inference_streaming(
     Ok(())
 }
 
-fn is_eos(token: u32, _config: &model::ModelConfig) -> bool {
-    // Common EOS tokens — Qwen uses 151643/151645, Llama uses 2/128001
-    // Check the config's vocab_size boundary and known EOS IDs
-    token == 151645  // <|im_end|> (Qwen)
-        || token == 151643  // <|endoftext|> (Qwen)
-        || token == 128001  // <|end_of_text|> (Llama 3)
-        || token == 128009  // <|eot_id|> (Llama 3)
-        || token == 2 // </s> (Llama 2, Mistral)
+fn is_eos(token: u32, config: &model::ModelConfig) -> bool {
+    config.eos_token_id.contains(&token)
 }
 
 fn build_chat_prompt(messages: &[serde_json::Value]) -> String {
