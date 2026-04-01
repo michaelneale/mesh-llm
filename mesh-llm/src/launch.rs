@@ -507,13 +507,13 @@ async fn terminate_process(pid: u32) {
 }
 
 /// Start llama-server with the given model, HTTP port, and RPC tunnel ports.
+/// Returns a oneshot receiver that fires when the process exits.
 /// `model_bytes` is the total GGUF file size, used to select KV cache quantization:
 ///   - < 5GB: FP16 (default) — small models, KV cache is tiny
 ///   - 5-50GB: Q8_0 K + Q4_0 V — keeps attention routing precise (K dominates
 ///     quality via softmax), compresses values aggressively (~25% less KV memory
 ///     than Q8_0/Q8_0 with minimal quality impact)
 ///   - > 50GB: Q4_0 — maximum compression, these models need every byte
-/// Start llama-server. Returns a oneshot receiver that fires when the process exits.
 pub async fn start_llama_server(
     bin_dir: &Path,
     binary_flavor: Option<BinaryFlavor>,
