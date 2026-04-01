@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 mesh-llm-plugin = { path = "plugin" }
-iroh = "0.96"
+iroh = "0.97"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

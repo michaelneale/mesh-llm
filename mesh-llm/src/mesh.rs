@@ -29,6 +29,11 @@ pub struct ModelDemand {
 /// How long a demand entry stays relevant without being refreshed.
 pub const DEMAND_TTL_SECS: u64 = 86400; // 24 hours
 
+/// Maximum RTT (ms) for a peer to be included in split mode.
+/// Peers above this threshold are skipped during election.
+/// Used by both the election RTT gate and the RTT-improvement re-election trigger.
+pub const MAX_SPLIT_RTT_MS: u32 = 80;
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -758,7 +763,7 @@ impl Node {
         let transport_config = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(1024u32.into())
             .build();
-        let mut builder = Endpoint::builder()
+        let mut builder = Endpoint::empty_builder()
             .secret_key(secret_key)
             .alpns(vec![ALPN_V1.to_vec(), ALPN_V0.to_vec()])
             .transport_config(transport_config);
@@ -915,7 +920,7 @@ impl Node {
         let transport_config = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(1024u32.into())
             .build();
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::endpoint::RelayMode::Disabled)
@@ -1181,17 +1186,41 @@ impl Node {
     }
 
     async fn update_peer_rtt(&self, id: EndpointId, rtt_ms: u32) {
-        let updated_peer = {
+        let (updated_peer, old_rtt) = {
             let mut state = self.state.lock().await;
             if let Some(peer) = state.peers.get_mut(&id) {
+                let prev = peer.rtt_ms;
+                // Only accept equal-or-lower RTT. Gossip round-trip timing
+                // can inflate the value when routed via relay, overwriting a
+                // good direct-path measurement. The RTT gate only cares about
+                // "fast enough for split", so keeping the best-seen value is
+                // correct — if the path truly degrades the peer will be
+                // unreachable and removed via the normal liveness path.
+                if prev.is_some_and(|p| rtt_ms > p) {
+                    return;
+                }
                 peer.rtt_ms = Some(rtt_ms);
-                Some(peer.clone())
+                (Some(peer.clone()), prev)
             } else {
-                None
+                (None, None)
             }
         };
         if let Some(peer) = updated_peer {
             tracing::info!("Peer {} RTT: {}ms", id.fmt_short(), rtt_ms);
+            // If RTT dropped from above the split threshold (80ms) to below it
+            // (e.g. relay → direct), trigger a re-election so the peer can now
+            // be included in split mode.
+            let was_above = old_rtt.map_or(false, |r| r > MAX_SPLIT_RTT_MS);
+            if was_above && rtt_ms <= MAX_SPLIT_RTT_MS {
+                eprintln!(
+                    "📡 Peer {} RTT improved ({}ms → {}ms) — re-electing for split",
+                    id.fmt_short(),
+                    old_rtt.unwrap_or(0),
+                    rtt_ms
+                );
+                let count = self.state.lock().await.peers.len();
+                let _ = self.peer_change_tx.send(count);
+            }
             self.emit_plugin_mesh_event(
                 crate::plugin::proto::mesh_event::Kind::PeerUpdated,
                 Some(&peer),
@@ -3032,7 +3061,46 @@ impl Node {
         });
 
         // Gossip exchange to learn peer's role/VRAM and announce ourselves
-        self.initiate_gossip(conn, peer_id).await?;
+        self.initiate_gossip(conn.clone(), peer_id).await?;
+
+        // Schedule a delayed RTT recheck: the first gossip often goes via relay
+        // (high RTT) because direct holepunch hasn't completed yet. After a few
+        // seconds the direct path is usually ready, so re-check path info to get
+        // the real RTT and potentially trigger a re-election for split mode.
+        let node_for_recheck = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let conn = node_for_recheck
+                .state
+                .lock()
+                .await
+                .connections
+                .get(&peer_id)
+                .cloned();
+            if let Some(conn) = conn {
+                let mut paths = conn.paths();
+                let path_list = iroh::Watcher::get(&mut paths);
+                for path_info in path_list {
+                    if path_info.is_selected() {
+                        let rtt_ms = match path_info.rtt() {
+                            Some(rtt) => rtt.as_millis() as u32,
+                            None => continue,
+                        };
+                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+                        if rtt_ms > 0 {
+                            eprintln!(
+                                "📡 Peer {} RTT recheck: {}ms ({})",
+                                peer_id.fmt_short(),
+                                rtt_ms,
+                                path_type
+                            );
+                            node_for_recheck.update_peer_rtt(peer_id, rtt_ms).await;
+                        }
+                        break;
+                    }
+                }
+            }
+        });
         Ok(())
     }
 
@@ -3077,6 +3145,35 @@ impl Node {
                 self.update_peer_rtt(remote, rtt_ms).await;
             } else {
                 self.update_transitive_peer(peer_id, addr, ann).await;
+            }
+        }
+
+        // Also check the connection's actual path info — the gossip round-trip
+        // time above may reflect relay latency even if a direct path is now active.
+        {
+            let conn = self.state.lock().await.connections.get(&remote).cloned();
+            if let Some(conn) = conn {
+                let mut paths = conn.paths();
+                let path_list = iroh::Watcher::get(&mut paths);
+                for path_info in path_list {
+                    if path_info.is_selected() {
+                        let path_rtt_ms = match path_info.rtt() {
+                            Some(rtt) => rtt.as_millis() as u32,
+                            None => continue,
+                        };
+                        let path_type = if path_info.is_ip() { "direct" } else { "relay" };
+                        if path_rtt_ms > 0 && path_rtt_ms < rtt_ms {
+                            eprintln!(
+                                "📡 Peer {} RTT: {}ms ({}) [path info]",
+                                remote.fmt_short(),
+                                path_rtt_ms,
+                                path_type
+                            );
+                            self.update_peer_rtt(remote, path_rtt_ms).await;
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -3158,8 +3255,10 @@ impl Node {
                 let path_list = iroh::Watcher::get(&mut paths);
                 for path_info in path_list {
                     if path_info.is_selected() {
-                        let rtt = path_info.rtt();
-                        let rtt_ms = rtt.as_millis() as u32;
+                        let rtt_ms = match path_info.rtt() {
+                            Some(rtt) => rtt.as_millis() as u32,
+                            None => continue,
+                        };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
                             eprintln!(
@@ -3569,7 +3668,7 @@ pub(crate) mod tests {
         let transport_config = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(128u32.into())
             .build();
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V1.to_vec(), ALPN_V0.to_vec()])
             .transport_config(transport_config)
@@ -4055,7 +4154,7 @@ pub(crate) mod tests {
             .await;
         post_node.start_accepting();
 
-        let legacy_endpoint = Endpoint::builder()
+        let legacy_endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -5598,7 +5697,7 @@ pub(crate) mod tests {
             .await;
         post_node.start_accepting();
 
-        let legacy_endpoint = Endpoint::builder()
+        let legacy_endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -5784,7 +5883,7 @@ pub(crate) mod tests {
             .await;
         post_node.start_accepting();
 
-        let legacy_endpoint = Endpoint::builder()
+        let legacy_endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -5967,7 +6066,7 @@ pub(crate) mod tests {
         node_b.set_mesh_id("three-node-mesh-001".to_string()).await;
         let node_b_id = node_b.id();
 
-        let legacy_endpoint = Endpoint::builder()
+        let legacy_endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -6123,7 +6222,7 @@ pub(crate) mod tests {
         );
 
         // Sub-test A: v1 node connecting to a v0-only endpoint negotiates ALPN_V0
-        let v0_endpoint = Endpoint::builder()
+        let v0_endpoint = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -6185,7 +6284,7 @@ pub(crate) mod tests {
         node_b.start_accepting();
         let node_b_addr = node_b.endpoint.addr();
 
-        let v0_ep2 = Endpoint::builder()
+        let v0_ep2 = Endpoint::empty_builder()
             .secret_key(SecretKey::generate(&mut rand::rng()))
             .alpns(vec![ALPN_V0.to_vec()])
             .transport_config(
@@ -6217,6 +6316,156 @@ pub(crate) mod tests {
             ControlProtocol::JsonV0,
             "v0 endpoint connecting to a v1 node must use JsonV0 protocol"
         );
+
+        Ok(())
+    }
+
+    fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo {
+        PeerInfo {
+            id,
+            addr: EndpointAddr {
+                id,
+                addrs: Default::default(),
+            },
+            role: super::NodeRole::Worker,
+            models: vec![],
+            vram_bytes: vram_gb * 1024 * 1024 * 1024,
+            rtt_ms,
+            model_source: None,
+            serving: None,
+            serving_models: vec![],
+            available_models: vec![],
+            requested_models: vec![],
+            last_seen: std::time::Instant::now(),
+            version: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_bandwidth_gbps: None,
+            available_model_metadata: vec![],
+            experts_summary: None,
+            tunnel_port: None,
+            available_model_sizes: HashMap::new(),
+        }
+    }
+
+    /// RTT re-election: when a peer's RTT drops from above the 80ms split
+    /// threshold to below it (e.g. relay → direct), update_peer_rtt must
+    /// trigger a peer_change event so the election loop re-runs and can
+    /// now include the peer in split mode.
+    #[tokio::test]
+    async fn test_rtt_drop_triggers_reelection() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        // Add a fake peer with high relay RTT
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(2600), 16));
+        }
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT to still-high value — should NOT trigger
+        node.update_peer_rtt(peer_id, 500).await;
+        assert!(
+            !rx.has_changed()
+                .expect("peer_change_rx closed unexpectedly"),
+            "RTT 2600→500 (both above threshold) should not trigger re-election"
+        );
+
+        // Update RTT to below threshold — SHOULD trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            rx.has_changed()
+                .expect("peer_change_rx closed unexpectedly"),
+            "RTT 500→15 (crossing threshold) must trigger re-election"
+        );
+
+        Ok(())
+    }
+
+    /// RTT re-election should NOT trigger when RTT was already below threshold.
+    #[tokio::test]
+    async fn test_rtt_below_threshold_no_reelection() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(20), 16));
+        }
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT to another low value — should NOT trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            !rx.has_changed()
+                .expect("peer_change_rx closed unexpectedly"),
+            "RTT 20→15 (both below threshold) should not trigger re-election"
+        );
+
+        Ok(())
+    }
+
+    /// RTT re-election should NOT trigger for unknown peers.
+    #[tokio::test]
+    async fn test_rtt_update_unknown_peer_no_panic() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        let rx = node.peer_change_rx.clone();
+
+        // Update RTT for a peer that doesn't exist — should not panic or trigger
+        node.update_peer_rtt(peer_id, 15).await;
+        assert!(
+            !rx.has_changed()
+                .expect("peer_change_rx closed unexpectedly"),
+            "RTT update for unknown peer should not trigger re-election"
+        );
+
+        Ok(())
+    }
+
+    /// RTT should never increase — relay gossip RTT must not overwrite
+    /// a known-good direct path measurement.
+    #[tokio::test]
+    async fn test_rtt_cannot_regress() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Worker).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(20), 16));
+        }
+
+        // Try to raise RTT — should be rejected
+        node.update_peer_rtt(peer_id, 2600).await;
+        {
+            let state = node.state.lock().await;
+            let rtt = state.peers.get(&peer_id).unwrap().rtt_ms;
+            assert_eq!(rtt, Some(20), "RTT must not increase from 20 to 2600");
+        }
+
+        // Lower RTT — should be accepted
+        node.update_peer_rtt(peer_id, 10).await;
+        {
+            let state = node.state.lock().await;
+            let rtt = state.peers.get(&peer_id).unwrap().rtt_ms;
+            assert_eq!(rtt, Some(10), "RTT must decrease from 20 to 10");
+        }
 
         Ok(())
     }
@@ -6289,6 +6538,60 @@ pub fn load_last_mesh_id() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+// ---------------------------------------------------------------------------
+// Public-to-private identity transition
+// ---------------------------------------------------------------------------
+
+fn was_public_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".mesh-llm")
+        .join("was-public")
+}
+
+/// Record that this node was started in public mode (--auto / --publish / --mesh-name).
+/// Called at startup so we can detect a public→private transition next time.
+pub fn mark_was_public() {
+    let path = was_public_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, "1");
+}
+
+/// Returns true if the previous run was public (marker file exists).
+pub fn was_previously_public() -> bool {
+    was_public_path().exists()
+}
+
+/// Clear identity files (key, nostr.nsec, mesh-id, last-mesh, was-public) so the
+/// next start gets a completely fresh identity. Called when transitioning from
+/// public → private to avoid reusing a publicly-known identity in a private mesh.
+pub fn clear_public_identity() {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let dir = home.join(".mesh-llm");
+    let mut ok = true;
+    for name in &["key", "nostr.nsec", "mesh-id", "last-mesh"] {
+        let p = dir.join(name);
+        if p.exists() {
+            if std::fs::remove_file(&p).is_ok() {
+                tracing::info!("Cleared {}", p.display());
+            } else {
+                tracing::warn!("Failed to clear {}", p.display());
+                ok = false;
+            }
+        }
+    }
+    // Only remove the marker after identity files are gone, so a failed
+    // cleanup is retried on the next private start.
+    let marker = dir.join("was-public");
+    if ok {
+        let _ = std::fs::remove_file(&marker);
+    } else {
+        tracing::warn!("Keeping was-public marker — will retry cleanup next start");
+    }
+}
+
 /// Load secret key from ~/.mesh-llm/key, or create a new one and save it.
 async fn load_or_create_key() -> Result<SecretKey> {
     let home =
@@ -6312,4 +6615,77 @@ async fn load_or_create_key() -> Result<SecretKey> {
     tokio::fs::write(&key_path, hex::encode(key.to_bytes())).await?;
     tracing::info!("Generated new key, saved to {}", key_path.display());
     Ok(key)
+}
+
+#[cfg(test)]
+mod public_identity_tests {
+    use super::*;
+    use std::fs;
+
+    /// Test that mark_was_public / was_previously_public / clear_public_identity
+    /// work correctly.  Uses the real ~/.mesh-llm/ directory (same approach as
+    /// the rotate_keys tests) and restores originals afterward.
+    #[test]
+    fn public_to_private_transition_clears_identity() {
+        let dir = dirs::home_dir().unwrap().join(".mesh-llm");
+        fs::create_dir_all(&dir).ok();
+
+        // Files we may touch:
+        let paths: Vec<std::path::PathBuf> =
+            ["key", "nostr.nsec", "mesh-id", "last-mesh", "was-public"]
+                .iter()
+                .map(|n| dir.join(n))
+                .collect();
+
+        // Save originals so we can restore after the test.
+        let originals: Vec<Option<Vec<u8>>> = paths
+            .iter()
+            .map(|p| {
+                if p.exists() {
+                    Some(fs::read(p).unwrap())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // --- Scenario 1: no marker → was_previously_public is false ---
+        let _ = fs::remove_file(dir.join("was-public"));
+        assert!(!was_previously_public(), "should be false when no marker");
+
+        // --- Scenario 2: mark as public → marker exists ---
+        mark_was_public();
+        assert!(was_previously_public(), "should be true after marking");
+
+        // Plant some identity files to verify clear removes them.
+        fs::write(dir.join("key"), b"test-key").unwrap();
+        fs::write(dir.join("nostr.nsec"), b"test-nsec").unwrap();
+        fs::write(dir.join("mesh-id"), b"test-mesh-id").unwrap();
+        fs::write(dir.join("last-mesh"), b"test-last-mesh").unwrap();
+
+        // --- Scenario 3: clear_public_identity removes everything ---
+        clear_public_identity();
+        for name in &["key", "nostr.nsec", "mesh-id", "last-mesh", "was-public"] {
+            assert!(
+                !dir.join(name).exists(),
+                "{name} should be deleted after clear"
+            );
+        }
+        assert!(
+            !was_previously_public(),
+            "marker should be gone after clear"
+        );
+
+        // --- Scenario 4: clear on already-clean directory is fine ---
+        clear_public_identity(); // should not panic
+
+        // Restore originals.
+        for (path, orig) in paths.iter().zip(originals.iter()) {
+            if let Some(data) = orig {
+                fs::write(path, data).ok();
+            } else {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }
