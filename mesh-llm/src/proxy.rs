@@ -332,11 +332,6 @@ pub fn pipeline_request_supported(path: &str, body: &serde_json::Value) -> bool 
             .unwrap_or(false)
 }
 
-pub fn is_load_request(buf: &[u8]) -> bool {
-    let s = String::from_utf8_lossy(buf);
-    s.starts_with("POST ") && s.contains("/mesh/load")
-}
-
 // ── Model-aware tunnel routing ──
 
 /// The common request-handling path used by idle proxy, passive proxy, and bootstrap proxy.
@@ -636,6 +631,23 @@ pub async fn send_400(mut stream: TcpStream, msg: &str) -> std::io::Result<()> {
     let body = format!("{{\"error\":\"{msg}\"}}");
     let resp = format!(
         "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(), body
+    );
+    stream.write_all(resp.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+pub async fn send_error(mut stream: TcpStream, code: u16, msg: &str) -> std::io::Result<()> {
+    let status = match code {
+        404 => "Not Found",
+        409 => "Conflict",
+        422 => "Unprocessable Content",
+        _ => "Bad Request",
+    };
+    let body = serde_json::json!({"error": msg}).to_string();
+    let resp = format!(
+        "HTTP/1.1 {code} {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(), body
     );
     stream.write_all(resp.as_bytes()).await?;

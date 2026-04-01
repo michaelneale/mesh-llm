@@ -130,10 +130,27 @@ async fn run_control_request(path: &str, model_name: &str, port: u16, verb: &str
         eprintln!("❌ Failed to {action} runtime model");
         eprintln!();
         eprintln!("Model: {model_name}");
-        eprintln!("Reason: {}", resp.lines().last().unwrap_or("unknown error"));
+        let reason = extract_error_reason(&resp);
+        eprintln!("Reason: {reason}");
     }
 
     Ok(())
+}
+
+fn extract_error_reason(resp: &str) -> String {
+    // Response body is after the blank line separating headers from body
+    let body = resp.split("\r\n\r\n").nth(1).unwrap_or("");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = val["error"].as_str() {
+            return msg.to_string();
+        }
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        "unknown error".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn display_runtime_role(value: &str) -> &'static str {

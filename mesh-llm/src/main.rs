@@ -2246,7 +2246,9 @@ async fn api_proxy(
                                     .await;
                                 }
                                 Ok(Err(e)) => {
-                                    let _ = proxy::send_400(tcp_stream, &e.to_string()).await;
+                                    let msg = e.to_string();
+                                    let code = api::classify_runtime_error(&msg);
+                                    let _ = proxy::send_error(tcp_stream, code, &msg).await;
                                 }
                                 Err(_) => {
                                     let _ = proxy::send_503(tcp_stream).await;
@@ -2275,7 +2277,9 @@ async fn api_proxy(
                                     let _ = proxy::send_json_ok(tcp_stream, &body).await;
                                 }
                                 Ok(Err(e)) => {
-                                    let _ = proxy::send_400(tcp_stream, &e.to_string()).await;
+                                    let msg = e.to_string();
+                                    let code = api::classify_runtime_error(&msg);
+                                    let _ = proxy::send_error(tcp_stream, code, &msg).await;
                                 }
                                 Err(_) => {
                                     let _ = proxy::send_503(tcp_stream).await;

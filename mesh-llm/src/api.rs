@@ -1315,7 +1315,7 @@ fn build_runtime_processes_payload(
     }
 }
 
-fn classify_runtime_error(msg: &str) -> u16 {
+pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
     if msg.contains("not loaded") {
         404
     } else if msg.contains("already loaded")
@@ -1341,7 +1341,7 @@ fn decode_runtime_model_path(path: &str) -> Option<String> {
     }
 
     let bytes = raw.as_bytes();
-    let mut out = String::with_capacity(raw.len());
+    let mut decoded: Vec<u8> = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
@@ -1350,19 +1350,19 @@ fn decode_runtime_model_path(path: &str) -> Option<String> {
                 let lo = bytes[i + 2] as char;
                 let hex = [hi, lo].iter().collect::<String>();
                 if let Ok(value) = u8::from_str_radix(&hex, 16) {
-                    out.push(value as char);
+                    decoded.push(value);
                     i += 3;
                     continue;
                 } else {
                     return None;
                 }
             }
-            b'+' => out.push(' '),
-            b => out.push(b as char),
+            b'+' => decoded.push(b' '),
+            b => decoded.push(b),
         }
         i += 1;
     }
-    Some(out)
+    String::from_utf8(decoded).ok()
 }
 
 async fn respond_console_index(stream: &mut TcpStream) -> anyhow::Result<bool> {
@@ -1664,6 +1664,17 @@ mod tests {
             decode_runtime_model_path("/api/runtime/models/Llama%203.2+1B"),
             Some("Llama 3.2 1B".into())
         );
+    }
+
+    #[test]
+    fn test_decode_runtime_model_path_decodes_utf8_multibyte() {
+        // é is U+00E9, encoded in UTF-8 as 0xC3 0xA9
+        assert_eq!(
+            decode_runtime_model_path("/api/runtime/models/mod%C3%A9le"),
+            Some("modéle".into())
+        );
+        // invalid UTF-8 sequence should return None
+        assert_eq!(decode_runtime_model_path("/api/runtime/models/%80"), None);
     }
 
     async fn build_test_mesh_api() -> MeshApi {
