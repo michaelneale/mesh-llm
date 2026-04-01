@@ -676,7 +676,7 @@ impl MeshApi {
                     ),
                     None => (None, None),
                 };
-                let capabilities = descriptor
+                let mut capabilities = descriptor
                     .map(|descriptor| descriptor.capabilities)
                     .unwrap_or_else(|| {
                         if local_known {
@@ -685,6 +685,15 @@ impl MeshApi {
                             crate::models::ModelCapabilities::default()
                         }
                     });
+                // Apply the name/description heuristic before deriving any capability
+                // fields so that `reasoning` and `reasoning_status` stay consistent.
+                if local_known
+                    && likely_reasoning_model(name, catalog_entry.map(|m| m.description.as_str()))
+                {
+                    capabilities.reasoning = capabilities
+                        .reasoning
+                        .max(crate::models::capabilities::CapabilityLevel::Likely);
+                }
                 let vision = capabilities.supports_vision_runtime();
                 let vision_status = if vision || capabilities.vision_label().is_some() {
                     Some(capabilities.vision_status())
@@ -694,6 +703,7 @@ impl MeshApi {
                 let reasoning = matches!(
                     capabilities.reasoning,
                     crate::models::capabilities::CapabilityLevel::Supported
+                        | crate::models::capabilities::CapabilityLevel::Likely
                 );
                 let reasoning_status = if reasoning || capabilities.reasoning_label().is_some() {
                     Some(capabilities.reasoning_status())
@@ -724,12 +734,6 @@ impl MeshApi {
                                 .map(str::to_string)
                         })
                     });
-                let reasoning = reasoning
-                    || (local_known
-                        && likely_reasoning_model(
-                            name,
-                            catalog_entry.map(|m| m.description.as_str()),
-                        ));
                 let topology_moe = descriptor
                     .and_then(|descriptor| descriptor.topology.as_ref())
                     .and_then(|topology| topology.moe.as_ref());
