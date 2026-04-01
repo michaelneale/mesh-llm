@@ -28,9 +28,7 @@ pub use local::{
     huggingface_identity_for_path, legacy_models_dir, legacy_models_present, model_dirs,
     path_is_in_legacy_models_dir, scan_installed_models, scan_local_models,
 };
-pub use topology::{
-    infer_catalog_topology, infer_local_model_topology, ModelMoeInfo, ModelTopology,
-};
+pub use topology::{infer_local_model_topology, ModelMoeInfo, ModelTopology};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MigrationStatus {
