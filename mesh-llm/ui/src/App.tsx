@@ -1428,7 +1428,6 @@ export function App() {
                 warmModels={warmModels}
                 meshModelByName={meshModelByName}
                 modelStatsByName={modelStatsByName}
-                meshModelByName={meshModelByName}
                 selectedModel={selectedModel}
                 setSelectedModel={setSelectedModel}
                 selectedModelNodeCount={selectedModelNodeCount}
@@ -2051,7 +2050,6 @@ function ChatPage(props: {
   warmModels: string[];
   meshModelByName: Record<string, MeshModel>;
   modelStatsByName: Record<string, ModelServingStat>;
-  meshModelByName: Record<string, MeshModel>;
   selectedModel: string;
   setSelectedModel: (v: string) => void;
   selectedModelNodeCount: number | null;
@@ -2088,7 +2086,6 @@ function ChatPage(props: {
     warmModels,
     meshModelByName,
     modelStatsByName,
-    meshModelByName,
     selectedModel,
     setSelectedModel,
     selectedModelNodeCount,
