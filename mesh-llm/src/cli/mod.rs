@@ -180,7 +180,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: Option<RuntimeCommand>,
     },
-    /// Load a local-only model into a running mesh-llm instance.
+    /// Load a local model into a running mesh-llm instance.
     Load {
         /// Model name/path/url to load
         name: String,
@@ -188,7 +188,7 @@ pub(crate) enum Command {
         #[arg(long, default_value = "9337")]
         port: u16,
     },
-    /// Unload a local runtime-loaded model from a running mesh-llm instance.
+    /// Unload a local model from a running mesh-llm instance.
     #[command(alias = "drop")]
     Unload {
         /// Model name to unload
@@ -197,7 +197,7 @@ pub(crate) enum Command {
         #[arg(long, default_value = "9337")]
         port: u16,
     },
-    /// Show local runtime status on a running mesh-llm instance.
+    /// Show local model status on a running mesh-llm instance.
     Status {
         /// Console/API port of the running mesh-llm instance (default: 3131)
         #[arg(long, default_value = "3131")]

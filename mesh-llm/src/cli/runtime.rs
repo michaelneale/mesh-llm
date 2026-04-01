@@ -4,13 +4,13 @@ use serde_json::Value;
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum RuntimeCommand {
-    /// Show locally served runtime status on a running mesh-llm instance.
+    /// Show local model status on a running mesh-llm instance.
     Status {
         /// Console/API port of the running mesh-llm instance (default: 3131)
         #[arg(long, default_value = "3131")]
         port: u16,
     },
-    /// Load a local-only model into a running mesh-llm instance.
+    /// Load a local model into a running mesh-llm instance.
     Load {
         /// Model name/path/url to load
         name: String,
@@ -18,7 +18,7 @@ pub(crate) enum RuntimeCommand {
         #[arg(long, default_value = "3131")]
         port: u16,
     },
-    /// Unload a local runtime-loaded model from a running mesh-llm instance.
+    /// Unload a local model from a running mesh-llm instance.
     #[command(alias = "drop")]
     Unload {
         /// Model name to unload
@@ -128,9 +128,6 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
     println!("⚙️  Runtime");
     println!();
 
-    let primary_model = runtime_body["primary_model"].as_str().unwrap_or("none");
-    println!("🧠 Primary: {primary_model}");
-
     if models.is_empty() {
         println!("📦 Models served locally: 0");
         println!();
@@ -142,12 +139,11 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
     println!();
 
     println!(
-        "{:<42} {:<8} {:<8} {:<10} {:<8} {:<6} {:<8}",
-        "Model", "Role", "Backend", "State", "Pid", "Port", "Source"
+        "{:<42} {:<8} {:<10} {:<8} {:<6}",
+        "Model", "Backend", "State", "Pid", "Port"
     );
     for model in models {
         let name = model["name"].as_str().unwrap_or("unknown");
-        let kind = display_runtime_role(model["kind"].as_str().unwrap_or("unknown"));
         let backend = display_backend_label(model["backend"].as_str().unwrap_or("unknown"));
         let status = display_runtime_state(model["status"].as_str().unwrap_or("unknown"));
         let pid = find_pid(processes, model)
@@ -157,28 +153,14 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
             .as_u64()
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".into());
-        let source = if model["startup_managed"].as_bool().unwrap_or(false) {
-            "Startup"
-        } else {
-            "Runtime"
-        };
         println!(
-            "{:<42} {:<8} {:<8} {:<10} {:<8} {:<6} {:<8}",
-            name, kind, backend, status, pid, port, source
+            "{:<42} {:<8} {:<10} {:<8} {:<6}",
+            name, backend, status, pid, port
         );
     }
 
     Ok(())
 }
-
-fn display_runtime_role(value: &str) -> &'static str {
-    match value {
-        "primary" => "Primary",
-        "runtime" => "Runtime",
-        _ => "Unknown",
-    }
-}
-
 fn display_runtime_state(value: &str) -> &'static str {
     match value {
         "ready" => "Ready",
@@ -212,11 +194,8 @@ async fn fetch_runtime_payload(client: &reqwest::Client, port: u16, path: &str) 
 
 fn find_pid(processes: &[Value], model: &Value) -> Option<u64> {
     let name = model["name"].as_str()?;
-    let kind = model["kind"].as_str()?;
     processes
         .iter()
-        .find(|process| {
-            process["name"].as_str() == Some(name) && process["kind"].as_str() == Some(kind)
-        })
+        .find(|process| process["name"].as_str() == Some(name))
         .and_then(|process| process["pid"].as_u64())
 }

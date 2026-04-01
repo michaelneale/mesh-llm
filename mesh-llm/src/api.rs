@@ -2,17 +2,17 @@
 //!
 //! Endpoints:
 //!   GET  /api/status    — live mesh state (JSON)
-//!   GET  /api/runtime   — local runtime model state (JSON)
+//!   GET  /api/runtime   — local model state (JSON)
 //!   GET  /api/runtime/processes — local inference process state (JSON)
-//!   POST /api/runtime/models — load a local runtime model
-//!   DELETE /api/runtime/models/{model} — unload a local runtime model
+//!   POST /api/runtime/models — load a local model
+//!   DELETE /api/runtime/models/{model} — unload a local model
 //!   GET  /api/events    — SSE stream of status updates
 //!   GET  /api/discover  — browse Nostr-published meshes
 //!   POST /api/chat      — proxy to inference API
 //!   GET  /              — embedded web dashboard
 //!
 //! The dashboard is mostly read-only — shows status, topology, and models.
-//! Local runtime model load/unload is exposed for operator control.
+//! Local model load/unload is exposed for operator control.
 
 use crate::{affinity, election, mesh, nostr, plugin, proxy};
 use include_dir::{include_dir, Dir};
@@ -34,35 +34,30 @@ pub enum RuntimeControlRequest {
     },
     Unload {
         model: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<bool>>,
+        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
     },
 }
 
 #[derive(Clone, Serialize)]
 pub struct RuntimeModelPayload {
     pub name: String,
-    pub kind: String,
     pub backend: String,
     pub status: String,
     pub port: Option<u16>,
-    pub startup_managed: bool,
 }
 
 #[derive(Serialize)]
 struct RuntimeStatusPayload {
-    primary_model: Option<String>,
     models: Vec<RuntimeModelPayload>,
 }
 
 #[derive(Clone, Serialize)]
 pub struct RuntimeProcessPayload {
     pub name: String,
-    pub kind: String,
     pub backend: String,
     pub status: String,
     pub port: u16,
     pub pid: u32,
-    pub startup_managed: bool,
 }
 
 #[derive(Serialize)]
@@ -359,6 +354,7 @@ impl MeshApi {
             mesh_name,
             latest_version,
             nostr_discovery,
+            local_processes,
         ) = {
             let inner = self.inner.lock().await;
             (
@@ -378,6 +374,7 @@ impl MeshApi {
                 inner.mesh_name.clone(),
                 inner.latest_version.clone(),
                 inner.nostr_discovery,
+                inner.local_processes.clone(),
             )
         }; // inner lock dropped here
 
@@ -417,6 +414,15 @@ impl MeshApi {
         let active_demand = node.active_demand().await;
         let my_serving_models = node.serving_models().await;
         let my_hosted_models = node.hosted_models().await;
+        let has_local_processes = !local_processes.is_empty();
+        let effective_llama_ready = llama_ready || has_local_processes;
+        let effective_is_host = is_host || has_local_processes;
+        let display_model_name = local_processes
+            .first()
+            .map(|process| process.name.clone())
+            .or_else(|| my_hosted_models.first().cloned())
+            .or_else(|| my_serving_models.first().cloned())
+            .unwrap_or_else(|| model_name.clone());
         let now_ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -494,10 +500,10 @@ impl MeshApi {
             })
             .collect();
 
-        let (launch_pi, launch_goose) = if llama_ready {
+        let (launch_pi, launch_goose) = if effective_llama_ready {
             (
-                Some(format!("pi --provider mesh --model {model_name}")),
-                Some(format!("GOOSE_PROVIDER=openai OPENAI_HOST=http://localhost:{api_port} OPENAI_API_KEY=mesh GOOSE_MODEL={model_name} goose session")),
+                Some(format!("pi --provider mesh --model {display_model_name}")),
+                Some(format!("GOOSE_PROVIDER=openai OPENAI_HOST=http://localhost:{api_port} OPENAI_API_KEY=mesh GOOSE_MODEL={display_model_name} goose session")),
             )
         } else {
             (None, None)
@@ -508,18 +514,19 @@ impl MeshApi {
         // Derive node status for display
         let node_status = if is_client {
             "Client".to_string()
-        } else if is_host && llama_ready {
+        } else if effective_is_host && effective_llama_ready {
             let has_split_workers = all_peers.iter().any(|p| {
-                matches!(p.role, mesh::NodeRole::Worker) && p.is_assigned_model(model_name.as_str())
+                matches!(p.role, mesh::NodeRole::Worker)
+                    && p.is_assigned_model(display_model_name.as_str())
             });
             if has_split_workers {
                 "Serving (split)".to_string()
             } else {
                 "Serving".to_string()
             }
-        } else if !is_host && !model_name.is_empty() {
+        } else if !effective_is_host && !display_model_name.is_empty() {
             "Worker (split)".to_string()
-        } else if model_name.is_empty() {
+        } else if display_model_name.is_empty() {
             if all_peers.is_empty() {
                 "Idle".to_string()
             } else {
@@ -535,10 +542,10 @@ impl MeshApi {
             node_id,
             token,
             node_status,
-            is_host,
+            is_host: effective_is_host,
             is_client,
-            llama_ready,
-            model_name,
+            llama_ready: effective_llama_ready,
+            model_name: display_model_name,
             models: my_models,
             available_models: my_available_models,
             requested_models: my_requested_models,
@@ -867,14 +874,11 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
                 resp: resp_tx,
             });
             match resp_rx.await {
-                Ok(Ok(primary_shutdown)) => {
+                Ok(Ok(())) => {
                     respond_json(
                         &mut stream,
                         200,
-                        &serde_json::json!({
-                            "dropped": model_name,
-                            "shutdown": primary_shutdown
-                        }),
+                        &serde_json::json!({ "dropped": model_name }),
                     )
                     .await?;
                 }
@@ -1256,56 +1260,38 @@ fn build_runtime_status_payload(
     llama_port: Option<u16>,
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeStatusPayload {
-    local_processes.sort_by(|a, b| {
-        a.kind
-            .cmp(&b.kind)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    local_processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     let mut models: Vec<RuntimeModelPayload> = local_processes
         .into_iter()
         .map(|process| RuntimeModelPayload {
             name: process.name,
-            kind: process.kind,
             backend: process.backend,
             status: process.status,
             port: Some(process.port),
-            startup_managed: process.startup_managed,
         })
         .collect();
 
-    let has_primary_process = models.iter().any(|model| model.kind == "primary");
-    if is_host && !llama_ready && !has_primary_process && !model_name.is_empty() {
+    let has_model_process = models.iter().any(|model| model.name == model_name);
+    if is_host && !llama_ready && !has_model_process && !model_name.is_empty() {
         models.insert(
             0,
             RuntimeModelPayload {
                 name: model_name.to_string(),
-                kind: "primary".into(),
                 backend: primary_backend.unwrap_or_else(|| "unknown".into()),
                 status: "starting".into(),
                 port: llama_port,
-                startup_managed: true,
             },
         );
     }
 
-    RuntimeStatusPayload {
-        primary_model: models
-            .iter()
-            .find(|m| m.kind == "primary")
-            .map(|m| m.name.clone()),
-        models,
-    }
+    RuntimeStatusPayload { models }
 }
 
 fn build_runtime_processes_payload(
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeProcessesPayload {
-    local_processes.sort_by(|a, b| {
-        a.kind
-            .cmp(&b.kind)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    local_processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     RuntimeProcessesPayload {
         processes: local_processes,
     }
@@ -1314,10 +1300,7 @@ fn build_runtime_processes_payload(
 pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
     if msg.contains("not loaded") {
         404
-    } else if msg.contains("already loaded")
-        || msg.contains("startup-managed")
-        || msg.contains("supports models loaded after startup")
-    {
+    } else if msg.contains("already loaded") {
         409
     } else if msg.contains("fit locally") || msg.contains("runtime load only supports") {
         422
@@ -1574,28 +1557,24 @@ mod tests {
             vec![
                 RuntimeProcessPayload {
                     name: "Qwen".into(),
-                    kind: "primary".into(),
                     backend: "llama".into(),
                     status: "ready".into(),
                     port: 9337,
                     pid: 100,
-                    startup_managed: true,
                 },
                 RuntimeProcessPayload {
                     name: "Llama".into(),
-                    kind: "runtime".into(),
                     backend: "llama".into(),
                     status: "ready".into(),
                     port: 9444,
                     pid: 101,
-                    startup_managed: false,
                 },
             ],
         );
         assert_eq!(result.models.len(), 2);
-        assert_eq!(result.models[0].name, "Qwen");
-        assert_eq!(result.models[0].port, Some(9337));
-        assert_eq!(result.models[1].name, "Llama");
+        assert_eq!(result.models[0].name, "Llama");
+        assert_eq!(result.models[0].port, Some(9444));
+        assert_eq!(result.models[1].name, "Qwen");
     }
 
     #[test]
@@ -1609,7 +1588,6 @@ mod tests {
             vec![],
         );
 
-        assert_eq!(payload.primary_model.as_deref(), Some("Qwen"));
         assert_eq!(payload.models.len(), 1);
         assert_eq!(payload.models[0].status, "starting");
         assert_eq!(payload.models[0].port, Some(9337));
@@ -1620,21 +1598,17 @@ mod tests {
         let payload = build_runtime_processes_payload(vec![
             RuntimeProcessPayload {
                 name: "Zulu".into(),
-                kind: "runtime".into(),
                 backend: "llama".into(),
                 status: "ready".into(),
                 port: 9444,
                 pid: 11,
-                startup_managed: false,
             },
             RuntimeProcessPayload {
                 name: "Alpha".into(),
-                kind: "primary".into(),
                 backend: "llama".into(),
                 status: "ready".into(),
                 port: 9337,
                 pid: 10,
-                startup_managed: true,
             },
         ]);
 

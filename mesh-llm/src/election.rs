@@ -103,6 +103,10 @@ pub struct LocalProcessInfo {
     pub port: u16,
 }
 
+fn stop_requested(stop_rx: &watch::Receiver<bool>) -> bool {
+    *stop_rx.borrow()
+}
+
 impl ModelTargets {
     /// Get target for a specific model. Round-robins across multiple hosts.
     pub fn get(&self, model: &str) -> InferenceTarget {
@@ -267,6 +271,7 @@ pub async fn election_loop(
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
     target_tx: Arc<watch::Sender<ModelTargets>>,
+    mut stop_rx: watch::Receiver<bool>,
     mut on_change: impl FnMut(bool, bool) + Send,
     mut on_process: impl FnMut(Option<LocalProcessInfo>) + Send,
 ) {
@@ -315,6 +320,7 @@ pub async fn election_loop(
                 binary_flavor,
                 ctx_size_override,
                 target_tx,
+                stop_rx,
                 &mut on_change,
                 &mut on_process,
             )
@@ -332,6 +338,9 @@ pub async fn election_loop(
     }
 
     loop {
+        if stop_requested(&stop_rx) {
+            break;
+        }
         // Collect our model group (peers also serving this model)
         let peers = node.peers().await;
         let model_peers: Vec<mesh::PeerInfo> = peers
@@ -444,6 +453,11 @@ pub async fn election_loop(
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     // Fall through to restart
                 }
+                res = stop_rx.changed() => {
+                    if res.is_err() || stop_requested(&stop_rx) {
+                        break;
+                    }
+                }
             }
         }
 
@@ -459,6 +473,10 @@ pub async fn election_loop(
             on_process(None);
             on_change(false, false);
             currently_host = false;
+        }
+
+        if stop_requested(&stop_rx) {
+            break;
         }
 
         if i_am_host {
@@ -617,8 +635,27 @@ pub async fn election_loop(
                 update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                 on_change(false, false);
             }
+            res = stop_rx.changed() => {
+                if res.is_err() || stop_requested(&stop_rx) {
+                    break;
+                }
+            }
+        }
+        if stop_requested(&stop_rx) {
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    if currently_host {
+        if let Some(process) = llama_process.take() {
+            process.handle.shutdown().await;
+        }
+        tunnel_mgr.set_http_port(0);
+        node.set_role(NodeRole::Worker).await;
+        update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
+        on_process(None);
+        on_change(false, false);
     }
 }
 
@@ -642,6 +679,7 @@ async fn moe_election_loop(
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
     target_tx: Arc<watch::Sender<ModelTargets>>,
+    mut stop_rx: watch::Receiver<bool>,
     on_change: &mut impl FnMut(bool, bool),
     on_process: &mut impl FnMut(Option<LocalProcessInfo>),
 ) {
@@ -651,6 +689,9 @@ async fn moe_election_loop(
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
 
     loop {
+        if stop_requested(&stop_rx) {
+            break;
+        }
         // Count how many nodes (including us) are serving this model
         let peers = node.peers().await;
         let model_peers: Vec<mesh::PeerInfo> = peers
@@ -668,7 +709,17 @@ async fn moe_election_loop(
 
         // If nothing changed, skip
         if currently_running && n_nodes == last_n_nodes {
-            if peer_rx.changed().await.is_err() {
+            tokio::select! {
+                res = peer_rx.changed() => {
+                    if res.is_err() { break; }
+                }
+                res = stop_rx.changed() => {
+                    if res.is_err() || stop_requested(&stop_rx) {
+                        break;
+                    }
+                }
+            }
+            if stop_requested(&stop_rx) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -886,7 +937,17 @@ async fn moe_election_loop(
         }
 
         // Wait for next peer change
-        if peer_rx.changed().await.is_err() {
+        tokio::select! {
+            res = peer_rx.changed() => {
+                if res.is_err() { break; }
+            }
+            res = stop_rx.changed() => {
+                if res.is_err() || stop_requested(&stop_rx) {
+                    break;
+                }
+            }
+        }
+        if stop_requested(&stop_rx) {
             break;
         }
         eprintln!(
@@ -894,6 +955,17 @@ async fn moe_election_loop(
             model_name
         );
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    if currently_running {
+        if let Some(process) = llama_process.take() {
+            process.handle.shutdown().await;
+        }
+        tunnel_mgr.set_http_port(0);
+        node.set_role(NodeRole::Worker).await;
+        update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
+        on_process(None);
+        on_change(false, false);
     }
 }
 

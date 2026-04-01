@@ -127,7 +127,7 @@ curl -X DELETE localhost:3131/api/runtime/models/Llama-3.2-1B-Instruct-Q4_K_M
 - `mesh-llm status` shows the local models currently backed by running inference processes, including PID when present
 - `GET /api/runtime` and `GET /api/runtime/processes` agree with the CLI output
 - Loading a small local model adds it to `/v1/models` without restarting the node
-- Dropping the runtime-loaded model removes it cleanly while the primary model stays available
+- Unloading any local model removes it cleanly without terminating the mesh-llm process
 
 ### 10. Console model picker
 

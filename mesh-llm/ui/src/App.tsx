@@ -275,8 +275,18 @@ function peerAssignedModels(peer: Peer): string[] {
 
 function peerRoutableModels(peer: Peer): string[] {
   const hosted = peer.hosted_models?.filter(Boolean) ?? [];
-  if (peer.hosted_models_known === false) return hosted.length ? hosted : peerAssignedModels(peer);
+  if (peer.hosted_models_known === false)
+    return hosted.length ? hosted : peerAssignedModels(peer);
   return hosted;
+}
+
+function localRoutableModels(status: StatusPayload | null): string[] {
+  if (!status || status.is_client) return [];
+  const hosted = status.hosted_models?.filter(Boolean) ?? [];
+  if (hosted.length > 0) return hosted;
+  const serving = status.serving_models?.filter(Boolean) ?? [];
+  if (serving.length > 0) return serving;
+  return status.model_name ? [status.model_name] : [];
 }
 
 function peerPrimaryModel(peer: Peer): string {
@@ -640,11 +650,12 @@ export function App() {
       stats[modelName].vramGb += Math.max(0, vramGb || 0);
     };
 
-    if (!status.is_client && status.model_name)
-      addServingNode(status.model_name, status.my_vram_gb);
+    for (const model of new Set(localRoutableModels(status))) {
+      if (model && model !== "(idle)") addServingNode(model, status.my_vram_gb);
+    }
     for (const peer of status.peers ?? []) {
       if (peer.role === 'Client') continue;
-      for (const model of peerRoutableModels(peer)) {
+      for (const model of new Set(peerRoutableModels(peer))) {
         if (model && model !== '(idle)') addServingNode(model, peer.vram_gb);
       }
     }
@@ -1407,12 +1418,14 @@ export function App() {
           {section === "chat" ? (
             <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-7xl flex-1 flex-col overflow-hidden p-2 md:p-4">
               <ChatPage
+                status={status}
                 inviteToken={status?.token ?? ""}
                 isPublicMesh={status?.nostr_discovery ?? false}
                 isFlyHosted={isFlyHosted}
                 inflightRequests={status?.inflight_requests ?? 0}
                 warmModels={warmModels}
                 modelStatsByName={modelStatsByName}
+                meshModelByName={meshModelByName}
                 selectedModel={selectedModel}
                 setSelectedModel={setSelectedModel}
                 selectedModelNodeCount={selectedModelNodeCount}
@@ -2027,12 +2040,14 @@ function AppHeader({
 }
 
 function ChatPage(props: {
+  status: StatusPayload | null;
   inviteToken: string;
   isPublicMesh: boolean;
   isFlyHosted: boolean;
   inflightRequests: number;
   warmModels: string[];
   modelStatsByName: Record<string, ModelServingStat>;
+  meshModelByName: Record<string, MeshModel>;
   selectedModel: string;
   setSelectedModel: (v: string) => void;
   selectedModelNodeCount: number | null;
@@ -2064,9 +2079,11 @@ function ChatPage(props: {
   onSubmit: () => void;
 }) {
   const {
+    status,
     inviteToken,
     warmModels,
     modelStatsByName,
+    meshModelByName,
     selectedModel,
     setSelectedModel,
     selectedModelNodeCount,

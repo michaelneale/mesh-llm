@@ -54,6 +54,11 @@ struct LocalRuntimeModelHandle {
     process: launch::InferenceServerHandle,
 }
 
+struct ManagedModelController {
+    stop_tx: tokio::sync::watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
 fn resolved_model_name(path: &Path) -> String {
     let stem = path
         .file_stem()
@@ -217,20 +222,16 @@ async fn start_runtime_local_model(
 
 fn local_process_payload(
     model_name: &str,
-    kind: &str,
     backend: &str,
     port: u16,
     pid: u32,
-    startup_managed: bool,
 ) -> api::RuntimeProcessPayload {
     api::RuntimeProcessPayload {
         name: model_name.to_string(),
-        kind: kind.into(),
         backend: backend.into(),
         status: "ready".into(),
         port,
         pid,
-        startup_managed,
     }
 }
 
@@ -1429,7 +1430,6 @@ async fn run_auto(
     node.set_serving_models(all_declared.clone()).await;
     node.set_hosted_models(Vec::new()).await;
     node.set_models(all_declared.clone()).await;
-    let static_model_names = all_declared.clone();
     // Re-gossip so peers learn our catalog/requested state without prematurely
     // routing requests to not-yet-ready local processes.
     node.regossip().await;
@@ -1468,6 +1468,7 @@ async fn run_auto(
     let (runtime_event_tx, mut runtime_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
     let mut runtime_models: HashMap<String, LocalRuntimeModelHandle> = HashMap::new();
+    let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
 
     // Take over listener from bootstrap proxy (if running), or bind a new one
     let existing_listener = if let Some(tx) = bootstrap_listener_tx {
@@ -1568,10 +1569,12 @@ async fn run_auto(
     let console_state_for_primary_process = console_state.clone();
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
-    tokio::spawn(async move {
+    let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
+    let primary_task = tokio::spawn(async move {
         election::election_loop(
             node2, tunnel_mgr2, api_port, rpc_port, bin_dir2, model2, model_name_for_election,
             draft2, draft_max, force_split, llama_flavor, cli.ctx_size, primary_target_tx,
+            primary_stop_rx,
             move |is_host, llama_ready| {
                 let advertise_node = node_for_cb.clone();
                 let advertise_model = primary_model_name_for_advertise.clone();
@@ -1618,11 +1621,9 @@ async fn run_auto(
                             Some(process) => {
                                 cs.upsert_local_process(local_process_payload(
                                     &model_name,
-                                    "primary",
                                     &process.backend,
                                     process.port,
                                     process.pid,
-                                    true,
                                 ))
                                 .await;
                             }
@@ -1635,6 +1636,13 @@ async fn run_auto(
             },
         ).await;
     });
+    managed_models.insert(
+        model_name.clone(),
+        ManagedModelController {
+            stop_tx: primary_stop_tx,
+            task: primary_task,
+        },
+    );
 
     // Additional model election loops (multi-model per node)
     // Each additional model gets its own solo election loop — no rpc, no draft, no split.
@@ -1680,11 +1688,14 @@ async fn run_auto(
             let extra_model_name_for_advertise = extra_model_name.clone();
             let extra_node_for_advertise = node.clone();
             let primary_model_name_for_extra = model_name.clone();
+            let managed_model_name = extra_name.clone();
             eprintln!("  + {extra_name}");
-            tokio::spawn(async move {
+            let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
+            let extra_task = tokio::spawn(async move {
                 election::election_loop(
                     extra_node, extra_tunnel, api_port_extra, 0, extra_bin, extra_path, extra_model_name.clone(),
                     None, 8, false, extra_llama_flavor, cli.ctx_size, extra_target_tx,
+                    extra_stop_rx,
                     move |is_host, llama_ready| {
                         let advertise_node = extra_node_for_advertise.clone();
                         let model_name = extra_model_name_for_advertise.clone();
@@ -1711,11 +1722,9 @@ async fn run_auto(
                                     Some(process) => {
                                         cs.upsert_local_process(local_process_payload(
                                             &model_name,
-                                            "startup",
                                             &process.backend,
                                             process.port,
                                             process.pid,
-                                            true,
                                         ))
                                         .await;
                                     }
@@ -1728,6 +1737,13 @@ async fn run_auto(
                     },
                 ).await;
             });
+            managed_models.insert(
+                managed_model_name,
+                ManagedModelController {
+                    stop_tx: extra_stop_tx,
+                    task: extra_task,
+                },
+            );
         }
     }
 
@@ -1766,7 +1782,6 @@ async fn run_auto(
 
     // Wait for ctrl-c or runtime model control commands.
     let primary_model_name = model_name.clone();
-    let mut shutdown_primary = false;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -1780,12 +1795,10 @@ async fn run_auto(
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
                             let runtime_model_name = resolved_model_name(&model_path);
+                            let already_loaded = managed_models.contains_key(&runtime_model_name)
+                                || runtime_models.contains_key(&runtime_model_name);
                             anyhow::ensure!(
-                                !static_model_names.iter().any(|name| name == &runtime_model_name),
-                                "model '{runtime_model_name}' is startup-managed; restart the node to change it"
-                            );
-                            anyhow::ensure!(
-                                !runtime_models.contains_key(&runtime_model_name),
+                                !already_loaded,
                                 "model '{runtime_model_name}' is already loaded"
                             );
 
@@ -1807,11 +1820,9 @@ async fn run_auto(
                             if let Some(ref cs) = console_state {
                                 cs.upsert_local_process(local_process_payload(
                                     &loaded_name,
-                                    "runtime",
                                     &handle.backend,
                                     handle.port,
                                     handle.process.pid(),
-                                    false,
                                 ))
                                 .await;
                             }
@@ -1855,26 +1866,22 @@ async fn run_auto(
                             if let Some(ref cs) = console_state {
                                 cs.remove_local_process(&model).await;
                             }
-                            eprintln!("🗑 Unloaded runtime model '{}' from :{}", model, handle.port);
-                            Ok(false)
-                        } else if model == primary_model_name {
-                            eprintln!("\n🗑 Model '{}' dropped from mesh — shutting down", model);
-                            node.set_serving_models(Vec::new()).await;
-                            node.set_hosted_models(Vec::new()).await;
-                            shutdown_primary = true;
-                            Ok(true)
-                        } else if static_model_names.iter().any(|name| name == &model) {
-                            Err(anyhow::anyhow!(
-                                "runtime unload only supports models loaded after startup"
-                            ))
+                            eprintln!("🗑 Unloaded local model '{}' from :{}", model, handle.port);
+                            Ok(())
+                        } else if let Some(controller) = managed_models.remove(&model) {
+                            let _ = controller.stop_tx.send(true);
+                            let _ = controller.task.await;
+                            withdraw_advertised_model(&node, &model).await;
+                            remove_serving_assignment(&node, &model).await;
+                            if let Some(ref cs) = console_state {
+                                cs.remove_local_process(&model).await;
+                            }
+                            eprintln!("🗑 Unloaded managed model '{}'", model);
+                            Ok(())
                         } else {
                             Err(anyhow::anyhow!("model '{model}' is not loaded"))
                         };
-                        let should_stop = result.as_ref().ok().copied().unwrap_or(false);
                         let _ = resp.send(result);
-                        if should_stop {
-                            break;
-                        }
                     }
                 }
             }
@@ -1928,11 +1935,13 @@ async fn run_auto(
         handle.process.shutdown().await;
     }
 
-    if !shutdown_primary {
-        node.set_serving_models(Vec::new()).await;
-        node.set_hosted_models(Vec::new()).await;
+    for (_, controller) in managed_models.drain() {
+        let _ = controller.stop_tx.send(true);
+        controller.task.abort();
     }
 
+    node.set_serving_models(Vec::new()).await;
+    node.set_hosted_models(Vec::new()).await;
     launch::kill_llama_server().await;
     launch::kill_orphan_rpc_servers().await;
     Ok(())
@@ -2189,13 +2198,12 @@ async fn api_proxy(
                                 resp: resp_tx,
                             });
                             match resp_rx.await {
-                                Ok(Ok(primary_shutdown)) => {
-                                    let body = if primary_shutdown {
-                                        serde_json::json!({"dropped": name, "shutdown": true})
-                                    } else {
-                                        serde_json::json!({"dropped": name})
-                                    };
-                                    let _ = proxy::send_json_ok(tcp_stream, &body).await;
+                                Ok(Ok(())) => {
+                                    let _ = proxy::send_json_ok(
+                                        tcp_stream,
+                                        &serde_json::json!({"dropped": name}),
+                                    )
+                                    .await;
                                 }
                                 Ok(Err(e)) => {
                                     let msg = e.to_string();
