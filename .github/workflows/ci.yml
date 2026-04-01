@@ -17,7 +17,41 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'mesh-llm/src/**'
+              - 'mesh-llm/build.rs'
+              - 'mesh-llm/plugin/**'
+              - 'mesh-llm/tests/**'
+              - 'mesh-llm/proto/**'
+              - 'mesh-llm/Cargo.toml'
+              - 'mesh-llm/Cargo.lock'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Justfile'
+              - 'scripts/**'
+              - '.github/workflows/ci.yml'
+            ui:
+              - 'mesh-llm/ui/**'
+
   linux:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -134,6 +168,8 @@ jobs:
         run: sccache --show-stats || true
 
   macos:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -225,6 +261,8 @@ jobs:
         run: sccache --show-stats || true
 
   linux_cuda:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
     name: Linux CUDA
     runs-on: ubuntu-latest
     container:
@@ -288,6 +326,8 @@ jobs:
         run: sccache --show-stats || true
 
   linux_rocm:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
     name: Linux ROCm
     runs-on: ubuntu-latest
     container:
@@ -351,6 +391,8 @@ jobs:
         run: sccache --show-stats || true
 
   linux_vulkan:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
     name: Linux Vulkan
     runs-on: ubuntu-latest
 
@@ -414,6 +456,8 @@ jobs:
         run: sccache --show-stats || true
 
   windows:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
     name: Windows ${{ matrix.name }}
     runs-on: windows-2022
     env:

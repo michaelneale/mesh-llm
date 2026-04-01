@@ -144,6 +144,29 @@ just compat-smoke ~/.models/<model>.gguf   # optional 2-node + 1-client Python/N
 just --list           # list all recipes
 ```
 
+## CI / GitHub Actions
+
+CI uses [`dorny/paths-filter`](https://github.com/dorny/paths-filter) to skip jobs when unchanged areas of the repo are modified. A `changes` detection job runs first on every push and PR, then each build job gates on its output.
+
+### What triggers what
+
+| Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
+| ------------------------------------------------------------------------------------------------------- | ----------------- | -------------------------------------------------------- |
+| `mesh-llm/src/**`, `Cargo.*`, `Justfile`, `scripts/**`, `mesh-llm/build.rs`, `mesh-llm/plugin/**`, `mesh-llm/tests/**`, `mesh-llm/proto/**` | ✅ runs           | ✅ runs                                                  |
+| `mesh-llm/ui/**`                                                                                        | ✅ runs           | ⏭ skipped                                               |
+| `**/*.md`, `docs/**`, anything else                                                                     | ⏭ skipped        | ⏭ skipped                                               |
+| Manual `workflow_dispatch`                                                                              | ✅ runs           | ✅ runs                                                  |
+
+### Verifying path filtering works
+
+To confirm builds are skipped on a docs-only change, open a PR and push a commit that touches only a `.md` file (e.g. add a blank line to `README.md`). All build jobs should appear as **Skipped** in the Actions tab — only the `changes` job runs.
+
+To confirm UI-only changes skip the GPU backend jobs, push a commit touching only `mesh-llm/ui/**`. The `linux` and `macos` jobs run; `linux_cuda`, `linux_rocm`, `linux_vulkan`, and `windows` are skipped.
+
+### Adding new paths
+
+If you add a new Rust crate, build script, or test directory, add its path to the `rust` filter in `.github/workflows/ci.yml` under the `changes` job so it correctly triggers the build matrix.
+
 ## Benchmark Binaries
 
 Memory bandwidth benchmark source files live in `benchmarks/`. These are optional — they are **not** compiled by `just build`. Each target platform requires its own toolchain.
