@@ -18,6 +18,7 @@ import {
   type Edge,
   type Node,
   type NodeProps,
+  type NodeTypes,
   type ReactFlowInstance,
 } from "@xyflow/react";
 import {
@@ -423,13 +424,14 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
       typeof content !== "string"
     )
       return [];
+    const safeRole: ChatMessage["role"] = role;
     return [
       {
         id:
           typeof (item as { id?: unknown }).id === "string"
             ? (item as { id: string }).id
             : randomId(),
-        role,
+        role: safeRole,
         content: clampText(content, CHAT_MAX_TEXT_CHARS) ?? "",
         reasoning: clampText(
           typeof (item as { reasoning?: unknown }).reasoning === "string"
@@ -1424,6 +1426,7 @@ export function App() {
                 isFlyHosted={isFlyHosted}
                 inflightRequests={status?.inflight_requests ?? 0}
                 warmModels={warmModels}
+                meshModelByName={meshModelByName}
                 modelStatsByName={modelStatsByName}
                 meshModelByName={meshModelByName}
                 selectedModel={selectedModel}
@@ -2046,6 +2049,7 @@ function ChatPage(props: {
   isFlyHosted: boolean;
   inflightRequests: number;
   warmModels: string[];
+  meshModelByName: Record<string, MeshModel>;
   modelStatsByName: Record<string, ModelServingStat>;
   meshModelByName: Record<string, MeshModel>;
   selectedModel: string;
@@ -2082,6 +2086,7 @@ function ChatPage(props: {
     status,
     inviteToken,
     warmModels,
+    meshModelByName,
     modelStatsByName,
     meshModelByName,
     selectedModel,
@@ -2410,9 +2415,8 @@ function ChatPage(props: {
                     ? "✨ Auto (router picks best)"
                     : selectedModelValue
                       ? shortName(
-                          modelDisplayName(
-                            meshModelByName[selectedModelValue],
-                          ) || selectedModelValue,
+                          modelDisplayName(meshModelByName[selectedModelValue]) ||
+                            selectedModelValue,
                         )
                       : undefined}
                 </SelectValue>
@@ -2434,9 +2438,7 @@ function ChatPage(props: {
                 ) : null}
                 {warmModels.map((model) => {
                   const modelStats = modelStatsByName[model];
-                  const selectedMeshModel = (status?.mesh_models ?? []).find(
-                    (m) => m.name === model,
-                  );
+                  const selectedMeshModel = meshModelByName[model];
                   const displayName =
                     modelDisplayName(selectedMeshModel) || model;
                   const visionInfo = visionBadge(selectedMeshModel);
@@ -3486,7 +3488,9 @@ type TopologyFlowNodeData = {
   sameModelAsCurrent: boolean;
 };
 
-function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
+type TopologyFlowDiagramNode = Node<TopologyFlowNodeData, "topologyNode">;
+
+function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
   const isCenter = data.node.bucket === "center";
   const dotClass = isCenter
     ? "bg-primary border-primary"
@@ -3514,7 +3518,6 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
         <span className="break-all">{data.node.id}</span>
         {data.node.self ? (
           <Badge
-            variant="outline"
             className="h-4 rounded-full border-sky-500/45 bg-sky-500/10 px-1.5 text-[9px] font-medium text-sky-700 dark:border-sky-400/55 dark:bg-sky-400/15 dark:text-sky-200"
           >
             You
@@ -3659,7 +3662,7 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowNodeData>) {
   );
 }
 
-const topologyNodeTypes = { topologyNode: TopologyFlowNode };
+const topologyNodeTypes = { topologyNode: TopologyFlowNode } as NodeTypes;
 
 function MeshTopologyDiagram({
   status,
@@ -3835,7 +3838,9 @@ function MeshTopologyFlow({
     [fullscreen, positioned],
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const flowInstanceRef = useRef<
+    ReactFlowInstance<TopologyFlowDiagramNode, Edge> | null
+  >(null);
   const [containerReady, setContainerReady] = useState(false);
   const fitViewOptions = useMemo(() => ({ padding: 0.12, maxZoom: 1.45 }), []);
   const fitDuration = fullscreen ? 220 : 0;
@@ -3875,7 +3880,7 @@ function MeshTopologyFlow({
     return () => observer.disconnect();
   }, [fitViewOptions, flowLayoutKey, containerStyle, heightClass]);
 
-  const flowNodes = useMemo<Node<TopologyFlowNodeData>[]>(() => {
+  const flowNodes = useMemo<TopologyFlowDiagramNode[]>(() => {
     return positioned.map((p) => ({
       id: p.id,
       type: "topologyNode",
@@ -3950,7 +3955,7 @@ function MeshTopologyFlow({
       style={containerStyle}
     >
       {containerReady ? (
-        <ReactFlow
+        <ReactFlow<TopologyFlowDiagramNode, Edge>
           key={flowLayoutKey}
           className="h-full w-full"
           style={{ width: "100%", height: "100%" }}
