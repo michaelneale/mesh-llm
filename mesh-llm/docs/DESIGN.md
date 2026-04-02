@@ -301,9 +301,9 @@ Config persistence is implemented. Runtime application (restarting inference wit
 
 ## GPU Placement
 
-### Schema v3
+### Schema v1
 
-The authored config schema is versioned. The current version is `3`. Version 2 configs load without error and default to `placement_mode = "pooled"` with no `gpu_index` — no migration step is required.
+The authored config schema is versioned. The current version is `1`. Configs that predate the `placement_mode` field load without error and default to `placement_mode = "pooled"` with no `gpu_index` — no migration step is required.
 
 ### `placement_mode`
 
@@ -322,14 +322,14 @@ At launch, `resolve_gpu_ordinal(ordinal, probed_devices)` maps the authored `gpu
 
 `gpu_index` is only meaningful in separate mode. In pooled mode it is ignored.
 
-### v2 to v3 migration
+### Pre-v1 config migration
 
-When a v2 config is loaded:
+When a config without `placement_mode` is loaded:
 - Each node defaults to `placement_mode = "pooled"`
 - No `gpu_index` is set on any model assignment
 - The config is otherwise loaded as-is
 
-No user action is required. The next save from the UI or API will write a v3 config.
+No user action is required. The next save from the UI or API will write a v1 config.
 
 ### Mixed-GPU nodes
 

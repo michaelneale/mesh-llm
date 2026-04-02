@@ -59,16 +59,19 @@ pub fn parse_nvidia_gpu_memory(output: &str) -> Vec<u64> {
         .collect()
 }
 
-/// Parse `nvidia-smi --query-gpu=memory.reserved --format=csv,noheader,nounits` → per-GPU reserved bytes.
+/// Parse `nvidia-smi --query-gpu=memory.total,memory.reserved --format=csv,noheader,nounits`
+/// output → `(per_gpu_total_bytes, per_gpu_reserved_bytes)`.
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
-pub fn parse_nvidia_gpu_reserved(output: &str) -> Vec<u64> {
+pub fn parse_nvidia_gpu_memory_and_reserved(output: &str) -> (Vec<u64>, Vec<u64>) {
     output
         .lines()
         .filter_map(|line| {
-            let mib = line.trim().parse::<u64>().ok()?;
-            Some(mib * 1024 * 1024)
+            let mut parts = line.splitn(2, ',');
+            let total_mib = parts.next()?.trim().parse::<u64>().ok()?;
+            let reserved_mib = parts.next()?.trim().parse::<u64>().ok()?;
+            Some((total_mib * 1024 * 1024, reserved_mib * 1024 * 1024))
         })
-        .collect()
+        .unzip()
 }
 
 /// Parse `sysctl -n machdep.cpu.brand_string` output → CPU brand string.
@@ -320,56 +323,37 @@ impl Collector for DefaultCollector {
 
             if metrics.contains(&Metric::VramBytes) {
                 // Try NVIDIA (mesh.rs:284-316)
-                let nvidia_vram: Option<(u64, Vec<u64>)> = (|| {
+                let nvidia_vram: Option<(u64, Vec<u64>, Vec<u64>)> = (|| {
                     let out = std::process::Command::new("nvidia-smi")
-                        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+                        .args([
+                            "--query-gpu=memory.total,memory.reserved",
+                            "--format=csv,noheader,nounits",
+                        ])
                         .output()
                         .ok()?;
                     if !out.status.success() {
                         return None;
                     }
                     let s = String::from_utf8(out.stdout).ok()?;
-                    let per_gpu: Vec<u64> = s
-                        .lines()
-                        .filter_map(|line| {
-                            let mib = line.trim().parse::<u64>().ok()?;
-                            Some(mib * 1024 * 1024)
-                        })
-                        .collect();
+                    let (per_gpu, reserved) = parse_nvidia_gpu_memory_and_reserved(&s);
                     let total: u64 = per_gpu.iter().sum();
                     if total > 0 {
-                        Some((total, per_gpu))
+                        Some((total, per_gpu, reserved))
                     } else {
                         None
                     }
                 })();
 
-                if let Some((vram, per_gpu)) = nvidia_vram {
+                if let Some((vram, per_gpu, reserved)) = nvidia_vram {
                     let gpu_count = per_gpu.len();
                     survey.gpu_vram = per_gpu;
                     let ram_offload = system_ram.saturating_sub(vram);
                     survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
-                    let nvidia_reserved = std::process::Command::new("nvidia-smi")
-                        .args([
-                            "--query-gpu=memory.reserved",
-                            "--format=csv,noheader,nounits",
-                        ])
-                        .output()
-                        .ok()
-                        .and_then(|out| {
-                            if !out.status.success() {
-                                return None;
-                            }
-                            let s = String::from_utf8(out.stdout).ok()?;
-                            let v = parse_nvidia_gpu_reserved(&s);
-                            if v.len() == gpu_count {
-                                Some(v)
-                            } else {
-                                None
-                            }
-                        });
-                    survey.gpu_reserved =
-                        nvidia_reserved.unwrap_or_else(|| vec![512 * 1024 * 1024; gpu_count]);
+                    survey.gpu_reserved = if reserved.len() == gpu_count {
+                        reserved
+                    } else {
+                        vec![512 * 1024 * 1024; gpu_count]
+                    };
                 } else {
                     // Try AMD ROCm (mesh.rs:295-316)
                     let rocm_vram: Option<Vec<u64>> = (|| {
@@ -480,7 +464,10 @@ impl Collector for DefaultCollector {
 
             let nvidia_vram = if want_vram {
                 std::process::Command::new("nvidia-smi")
-                    .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+                    .args([
+                        "--query-gpu=memory.total,memory.reserved",
+                        "--format=csv,noheader,nounits",
+                    ])
                     .output()
                     .ok()
                     .and_then(|out| {
@@ -488,11 +475,11 @@ impl Collector for DefaultCollector {
                             return None;
                         }
                         let s = String::from_utf8(out.stdout).ok()?;
-                        let per_gpu = parse_nvidia_gpu_memory(&s);
+                        let (per_gpu, reserved) = parse_nvidia_gpu_memory_and_reserved(&s);
                         if per_gpu.is_empty() {
                             None
                         } else {
-                            Some(per_gpu)
+                            Some((per_gpu, reserved))
                         }
                     })
             } else {
@@ -506,34 +493,18 @@ impl Collector for DefaultCollector {
             };
 
             if want_vram {
-                if let Some(per_gpu) = nvidia_vram {
+                if let Some((per_gpu, reserved)) = nvidia_vram {
                     let gpu_count = per_gpu.len();
                     let total: u64 = per_gpu.iter().sum();
                     if total > 0 {
                         survey.gpu_vram = per_gpu;
                         let ram_offload = system_ram.saturating_sub(total);
                         survey.vram_bytes = total + (ram_offload as f64 * 0.75) as u64;
-                        let nvidia_reserved = std::process::Command::new("nvidia-smi")
-                            .args([
-                                "--query-gpu=memory.reserved",
-                                "--format=csv,noheader,nounits",
-                            ])
-                            .output()
-                            .ok()
-                            .and_then(|out| {
-                                if !out.status.success() {
-                                    return None;
-                                }
-                                let s = String::from_utf8(out.stdout).ok()?;
-                                let v = parse_nvidia_gpu_reserved(&s);
-                                if v.len() == gpu_count {
-                                    Some(v)
-                                } else {
-                                    None
-                                }
-                            });
-                        survey.gpu_reserved =
-                            nvidia_reserved.unwrap_or_else(|| vec![512 * 1024 * 1024; gpu_count]);
+                        survey.gpu_reserved = if reserved.len() == gpu_count {
+                            reserved
+                        } else {
+                            vec![512 * 1024 * 1024; gpu_count]
+                        };
                     }
                 } else {
                     let per_gpu: Vec<u64> = windows_gpus
@@ -704,6 +675,30 @@ mod tests {
             parse_nvidia_gpu_memory("81920\n24576\n"),
             vec![81_920u64 * 1024 * 1024, 24_576u64 * 1024 * 1024]
         );
+    }
+
+    #[test]
+    fn test_parse_nvidia_gpu_memory_and_reserved() {
+        let (total, reserved) = parse_nvidia_gpu_memory_and_reserved("81920, 512\n24576, 256\n");
+        assert_eq!(
+            total,
+            vec![81_920u64 * 1024 * 1024, 24_576u64 * 1024 * 1024]
+        );
+        assert_eq!(reserved, vec![512u64 * 1024 * 1024, 256u64 * 1024 * 1024]);
+    }
+
+    #[test]
+    fn test_parse_nvidia_gpu_memory_and_reserved_single() {
+        let (total, reserved) = parse_nvidia_gpu_memory_and_reserved("81920, 512\n");
+        assert_eq!(total, vec![81_920u64 * 1024 * 1024]);
+        assert_eq!(reserved, vec![512u64 * 1024 * 1024]);
+    }
+
+    #[test]
+    fn test_parse_nvidia_gpu_memory_and_reserved_empty() {
+        let (total, reserved) = parse_nvidia_gpu_memory_and_reserved("");
+        assert!(total.is_empty());
+        assert!(reserved.is_empty());
     }
 
     #[test]

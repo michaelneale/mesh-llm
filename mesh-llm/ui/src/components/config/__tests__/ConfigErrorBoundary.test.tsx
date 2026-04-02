@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConfigErrorBoundary, useAsyncError } from '../ConfigErrorBoundary';
@@ -69,6 +69,35 @@ describe('ConfigErrorBoundary', () => {
 
     expect(screen.getByTestId('happy-child')).toBeVisible();
     expect(screen.queryByTestId('error-boundary-message')).toBeNull();
+  });
+
+  it('catches unhandledrejection event with a non-Error reason', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <ConfigErrorBoundary>
+        <div data-testid="happy-child">All good</div>
+      </ConfigErrorBoundary>,
+    );
+
+    const event = new PromiseRejectionEvent('unhandledrejection', {
+      promise: Promise.resolve(),
+      reason: 'raw string rejection',
+    });
+    await act(async () => {
+      window.dispatchEvent(event);
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('error-boundary-message')).toBeVisible();
+      },
+      { timeout: 3000 },
+    );
+
+    expect(screen.getByText('Something went wrong')).toBeVisible();
+
+    consoleSpy.mockRestore();
   });
 
   it('catches async Promise rejection via useAsyncError hook', async () => {

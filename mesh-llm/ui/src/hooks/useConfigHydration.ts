@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { OwnedNode } from "./useOwnedNodes";
-import type { MeshConfig, ModelAssignment } from "../types/config";
+import type { MeshConfig, ModelAssignment, PlacementMode } from "../types/config";
 import type { ConfigAction } from "../pages/config/configReducer";
 
 const STATUS_ONLY_MODEL_NAMES = new Set(["(idle)", "(client)", "(standby)"]);
@@ -24,7 +24,7 @@ function mergeRuntimeIntoConfig(
     if (runtimeModels.length === 0) {
       // Node is idle / standby — keep saved config intact (user may have
       // assignments queued that haven't started yet).
-      return savedNode ?? { node_id: node.id, models: [] };
+      return savedNode ?? { node_id: node.id, hostname: undefined, placement_mode: 'pooled' as PlacementMode, models: [] };
     }
 
     const runtimeNameSet = new Set(runtimeModels);

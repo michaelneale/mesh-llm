@@ -15,17 +15,21 @@ type State = {
 
 /**
  * Hook to catch unhandled Promise rejections and throw them into React's error boundary.
- * Registers a window unhandledrejection listener that uses setState to throw the error.
+ * Stores the error in state and throws during render so the class error boundary catches it.
  */
 export function useAsyncError() {
-  const [, setError] = useState();
+  const [error, setError] = useState<Error | null>(null);
+
+  // Throw during render — this is where React error boundaries catch errors.
+  if (error) throw error;
 
   useEffect(() => {
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
-      // Throw the error via setState so React's error boundary catches it
-      setError(() => {
-        throw event.reason;
-      });
+      const err =
+        event.reason instanceof Error
+          ? event.reason
+          : new Error(String(event.reason));
+      setError(err);
     };
 
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
@@ -35,10 +39,8 @@ export function useAsyncError() {
     };
   }, []);
 
-  return (error: Error) => {
-    setError(() => {
-      throw error;
-    });
+  return (err: Error) => {
+    setError(err);
   };
 }
 
@@ -100,11 +102,20 @@ class ConfigErrorBoundaryImpl extends Component<Props, State> {
   }
 }
 
+function AsyncErrorCatcher() {
+  useAsyncError();
+  return null;
+}
+
 /**
  * Wrapper component that combines the class error boundary with async error handling.
  * The hook catches unhandled Promise rejections, and the class component catches sync errors.
  */
 export function ConfigErrorBoundary({ children }: Props) {
-  useAsyncError();
-  return <ConfigErrorBoundaryImpl>{children}</ConfigErrorBoundaryImpl>;
+  return (
+    <ConfigErrorBoundaryImpl>
+      <AsyncErrorCatcher />
+      {children}
+    </ConfigErrorBoundaryImpl>
+  );
 }

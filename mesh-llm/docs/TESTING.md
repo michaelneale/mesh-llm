@@ -402,8 +402,6 @@ cd mesh-llm/ui && npm test -- \
   src/components/config/__tests__/SaveConfig.test.tsx
 ```
 
-**Known pre-existing failure**: `vram.test.ts` has one failing test (`estimateAssignmentBreakdownBytes > falls back to the legacy estimate when metadata is unavailable`) that predates this feature. It is not caused by GPU placement changes and can be ignored.
-
 ### E2E smoke test
 
 ```bash

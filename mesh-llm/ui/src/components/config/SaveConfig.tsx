@@ -283,7 +283,10 @@ export function SaveConfig({
             <DialogPrimitive.Description asChild>
               <div className="mb-4 space-y-3 text-sm text-muted-foreground">
                 {diffEntries.length === 0 ? (
-                  <p>No model assignment changes detected.</p>
+                  <p>
+                    No model assignment changes were detected in this review. Other configuration
+                    updates may still be included when you save.
+                  </p>
                 ) : (
                   <ul className="space-y-2">
                     {diffEntries.map(({ nodeId, added, removed }) => (
