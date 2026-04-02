@@ -367,16 +367,19 @@ pub struct MlxModel {
     lm_head: Option<QuantizedLinear>,
     pub config: ModelConfig,
     pub tokenizer: tokenizers::Tokenizer,
+    pub prompt_template: crate::mlx::template::PromptTemplate,
 }
 
 impl MlxModel {
     /// Load a quantized MLX model from a directory containing config.json,
     /// tokenizer.json, and model.safetensors.
     pub fn load(dir: &Path) -> Result<Self> {
-        let config: ModelConfig = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("config.json")).context("reading config.json")?,
-        )
-        .context("parsing config.json")?;
+        let config_text =
+            std::fs::read_to_string(dir.join("config.json")).context("reading config.json")?;
+        let config_json: Value =
+            serde_json::from_str(&config_text).context("parsing config.json")?;
+        let config: ModelConfig =
+            serde_json::from_str(&config_text).context("parsing config.json")?;
 
         let qcfg = config
             .quantization
@@ -498,6 +501,7 @@ impl MlxModel {
 
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("loading tokenizer: {e}"))?;
+        let prompt_template = crate::mlx::template::PromptTemplate::detect(dir, &config_json);
 
         Ok(MlxModel {
             embed_tokens,
@@ -506,6 +510,7 @@ impl MlxModel {
             lm_head,
             config,
             tokenizer,
+            prompt_template,
         })
     }
 

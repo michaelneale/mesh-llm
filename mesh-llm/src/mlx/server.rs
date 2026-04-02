@@ -4,6 +4,7 @@
 //! HTTP API on a local port so the existing proxy routes to it unchanged.
 
 use super::model::{self, MlxModel};
+use super::sampling::{Sampler, SamplingParams, StopBuffer};
 use crate::inference::launch::{InferenceServerHandle, InferenceServerProcess};
 use anyhow::{Context, Result};
 use mlx_rs::Array;
@@ -26,6 +27,25 @@ struct InferState {
 struct PromptCache {
     tokens: Vec<u32>,
     caches: Vec<model::KVCache>,
+}
+
+#[derive(Clone)]
+struct GenerationConfig {
+    max_tokens: usize,
+    sampling: SamplingParams,
+    stop_sequences: Vec<String>,
+}
+
+struct GenerationOutcome {
+    text: String,
+    prompt_tokens: usize,
+    completion_tokens: usize,
+    finish_reason: &'static str,
+}
+
+enum StreamEvent {
+    Text(String),
+    Done(&'static str),
 }
 
 /// Start the MLX inference server on the given port.
@@ -223,16 +243,18 @@ async fn handle_chat_completions(
         .as_array()
         .context("missing messages array")?;
     let stream_mode = req["stream"].as_bool().unwrap_or(false);
-    let max_tokens = req["max_tokens"].as_u64().unwrap_or(2048) as usize;
+    let generation = parse_generation_config(&req);
     let model_field = req["model"].as_str().unwrap_or("");
 
-    // Build prompt from messages using a simple chat template
-    let prompt = build_chat_prompt(messages);
+    let prompt = {
+        let state = state.lock().await;
+        state.model.prompt_template.render_messages(messages)
+    };
 
     if stream_mode {
-        generate_streaming(stream, &prompt, max_tokens, model_field, state).await
+        generate_streaming(stream, &prompt, generation, model_field, state).await
     } else {
-        generate_blocking(stream, &prompt, max_tokens, model_field, state).await
+        generate_blocking(stream, &prompt, generation, model_field, state).await
     }
 }
 
@@ -247,13 +269,13 @@ async fn handle_completions(
 
     let prompt = req["prompt"].as_str().unwrap_or("").to_string();
     let stream_mode = req["stream"].as_bool().unwrap_or(false);
-    let max_tokens = req["max_tokens"].as_u64().unwrap_or(2048) as usize;
+    let generation = parse_generation_config(&req);
     let model_field = req["model"].as_str().unwrap_or("");
 
     if stream_mode {
-        generate_streaming(stream, &prompt, max_tokens, model_field, state).await
+        generate_streaming(stream, &prompt, generation, model_field, state).await
     } else {
-        generate_blocking(stream, &prompt, max_tokens, model_field, state).await
+        generate_blocking(stream, &prompt, generation, model_field, state).await
     }
 }
 
@@ -261,18 +283,17 @@ async fn handle_completions(
 async fn generate_blocking(
     stream: &mut tokio::net::TcpStream,
     prompt: &str,
-    max_tokens: usize,
+    generation: GenerationConfig,
     model_field: &str,
     state: Arc<Mutex<InferState>>,
 ) -> Result<()> {
     let prompt = prompt.to_string();
     let model_field = model_field.to_string();
-    let (text, prompt_tokens, completion_tokens) =
-        tokio::task::spawn_blocking(move || -> Result<(String, usize, usize)> {
-            let mut state = state.blocking_lock();
-            run_inference(&mut state, &prompt, max_tokens)
-        })
-        .await??;
+    let outcome = tokio::task::spawn_blocking(move || -> Result<GenerationOutcome> {
+        let mut state = state.blocking_lock();
+        run_inference(&mut state, &prompt, &generation)
+    })
+    .await??;
 
     let resp = serde_json::json!({
         "id": format!("chatcmpl-mlx-{}", std::time::SystemTime::now()
@@ -283,14 +304,14 @@ async fn generate_blocking(
             "index": 0,
             "message": {
                 "role": "assistant",
-                "content": text,
+                "content": outcome.text,
             },
-            "finish_reason": "stop",
+            "finish_reason": outcome.finish_reason,
         }],
         "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens": outcome.prompt_tokens,
+            "completion_tokens": outcome.completion_tokens,
+            "total_tokens": outcome.prompt_tokens + outcome.completion_tokens,
         }
     });
     send_response(stream, 200, &resp.to_string()).await
@@ -300,18 +321,19 @@ async fn generate_blocking(
 async fn generate_streaming(
     stream: &mut tokio::net::TcpStream,
     prompt: &str,
-    max_tokens: usize,
+    generation: GenerationConfig,
     model_field: &str,
     state: Arc<Mutex<InferState>>,
 ) -> Result<()> {
     // Channel for token-by-token streaming
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Option<String>>(64);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
 
     let prompt = prompt.to_string();
     tokio::task::spawn_blocking(move || {
         let mut state = state.blocking_lock();
-        let _ = run_inference_streaming(&mut state, &prompt, max_tokens, &tx);
-        let _ = tx.blocking_send(None); // signal done
+        let finish_reason =
+            run_inference_streaming(&mut state, &prompt, &generation, &tx).unwrap_or("stop");
+        let _ = tx.blocking_send(StreamEvent::Done(finish_reason));
     });
 
     // Send SSE headers
@@ -330,7 +352,7 @@ async fn generate_streaming(
 
     while let Some(maybe_token) = rx.recv().await {
         match maybe_token {
-            Some(text) => {
+            StreamEvent::Text(text) => {
                 let chunk = serde_json::json!({
                     "id": &id,
                     "object": "chat.completion.chunk",
@@ -346,7 +368,7 @@ async fn generate_streaming(
                     break;
                 }
             }
-            None => {
+            StreamEvent::Done(finish_reason) => {
                 // Final chunk with finish_reason
                 let chunk = serde_json::json!({
                     "id": &id,
@@ -355,7 +377,7 @@ async fn generate_streaming(
                     "choices": [{
                         "index": 0,
                         "delta": {},
-                        "finish_reason": "stop",
+                        "finish_reason": finish_reason,
                     }]
                 });
                 let sse = format!("data: {}\n\ndata: [DONE]\n\n", chunk);
@@ -375,14 +397,17 @@ async fn generate_streaming(
 /// ≤2048 tokens, there is only one chunk so no overhead.
 const PREFILL_STEP_SIZE: usize = 2048;
 
-fn prefill(model: &MlxModel, prompt_tokens: &[u32], caches: &mut [model::KVCache]) -> Result<u32> {
+fn prefill_logits(
+    model: &MlxModel,
+    prompt_tokens: &[u32],
+    caches: &mut [model::KVCache],
+) -> Result<Array> {
     let total = prompt_tokens.len();
 
     if total <= PREFILL_STEP_SIZE {
         // Small prompt — single forward pass, no eval barriers
         let input = Array::from_slice(prompt_tokens, &[1, total as i32]);
-        let logits = model.forward(&input, caches)?;
-        return model::argmax_last(&logits);
+        return model.forward(&input, caches);
     }
 
     // Large prompt — chunk to avoid huge computation graphs
@@ -398,8 +423,7 @@ fn prefill(model: &MlxModel, prompt_tokens: &[u32], caches: &mut [model::KVCache
     // Final chunk — get logits for the first generated token
     let last_chunk = &prompt_tokens[pos..];
     let input = Array::from_slice(last_chunk, &[1, last_chunk.len() as i32]);
-    let logits = model.forward(&input, caches)?;
-    model::argmax_last(&logits)
+    model.forward(&input, caches)
 }
 
 /// Find the longest common prefix between cached tokens and new tokens.
@@ -447,8 +471,8 @@ fn save_prompt_cache(state: &mut InferState, tokens: Vec<u32>, caches: Vec<model
 fn run_inference(
     state: &mut InferState,
     prompt: &str,
-    max_tokens: usize,
-) -> Result<(String, usize, usize)> {
+    generation: &GenerationConfig,
+) -> Result<GenerationOutcome> {
     let encoding = state
         .model
         .tokenizer
@@ -458,6 +482,21 @@ fn run_inference(
     let prompt_len = prompt_tokens.len();
 
     let (mut caches, suffix) = setup_caches_with_reuse(state, &prompt_tokens);
+    let mut sampler = Sampler::new(generation.sampling.clone());
+    let mut stop_buffer = StopBuffer::new(generation.stop_sequences.clone());
+
+    if generation.max_tokens == 0 {
+        if !suffix.is_empty() {
+            let _ = prefill_logits(&state.model, suffix, &mut caches)?;
+        }
+        save_prompt_cache(state, prompt_tokens, caches);
+        return Ok(GenerationOutcome {
+            text: String::new(),
+            prompt_tokens: prompt_len,
+            completion_tokens: 0,
+            finish_reason: "length",
+        });
+    }
 
     // Prefill only the new suffix
     let mut next_token = if suffix.is_empty() {
@@ -470,50 +509,59 @@ fn run_inference(
         }
         let input = Array::from_slice(&[last], &[1, 1]);
         let logits = state.model.forward(&input, &mut caches)?;
-        model::argmax_last(&logits)?
+        sampler.sample_next_token(&logits)?
     } else {
-        prefill(&state.model, suffix, &mut caches)?
+        let logits = prefill_logits(&state.model, suffix, &mut caches)?;
+        sampler.sample_next_token(&logits)?
     };
 
-    let mut generated: Vec<u32> = vec![next_token];
+    let mut text = String::new();
+    let mut completion_tokens = 0usize;
+    let mut finish_reason = "length";
 
     // Decode
-    for _ in 1..max_tokens {
+    for _ in 0..generation.max_tokens {
         if is_eos(next_token, &state.model.config) {
+            finish_reason = "stop";
+            break;
+        }
+        completion_tokens += 1;
+        let piece = state
+            .model
+            .tokenizer
+            .decode(&[next_token], true)
+            .map_err(|e| anyhow::anyhow!("tokenizer decode: {e}"))?;
+        let chunk = stop_buffer.push(&piece);
+        text.push_str(&chunk.emit);
+        if chunk.matched {
+            finish_reason = "stop";
             break;
         }
         let input = Array::from_slice(&[next_token], &[1, 1]);
         let logits = state.model.forward(&input, &mut caches)?;
-        next_token = model::argmax_last(&logits)?;
-        generated.push(next_token);
+        next_token = sampler.sample_next_token(&logits)?;
     }
 
-    // Remove trailing EOS
-    if let Some(&last) = generated.last() {
-        if is_eos(last, &state.model.config) {
-            generated.pop();
-        }
-    }
-
-    let text = state
-        .model
-        .tokenizer
-        .decode(&generated, true)
-        .map_err(|e| anyhow::anyhow!("tokenizer decode: {e}"))?;
+    text.push_str(&stop_buffer.finish());
 
     // Save prompt cache for next request (prompt only, not generated tokens)
     save_prompt_cache(state, prompt_tokens, caches);
 
-    Ok((text, prompt_len, generated.len()))
+    Ok(GenerationOutcome {
+        text,
+        prompt_tokens: prompt_len,
+        completion_tokens,
+        finish_reason,
+    })
 }
 
 /// Run inference with per-token callback for streaming.
 fn run_inference_streaming(
     state: &mut InferState,
     prompt: &str,
-    max_tokens: usize,
-    tx: &tokio::sync::mpsc::Sender<Option<String>>,
-) -> Result<()> {
+    generation: &GenerationConfig,
+    tx: &tokio::sync::mpsc::Sender<StreamEvent>,
+) -> Result<&'static str> {
     let encoding = state
         .model
         .tokenizer
@@ -522,6 +570,16 @@ fn run_inference_streaming(
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
 
     let (mut caches, suffix) = setup_caches_with_reuse(state, &prompt_tokens);
+    let mut sampler = Sampler::new(generation.sampling.clone());
+    let mut stop_buffer = StopBuffer::new(generation.stop_sequences.clone());
+
+    if generation.max_tokens == 0 {
+        if !suffix.is_empty() {
+            let _ = prefill_logits(&state.model, suffix, &mut caches)?;
+        }
+        save_prompt_cache(state, prompt_tokens, caches);
+        return Ok("length");
+    }
 
     // Prefill only the new suffix
     let mut next_token = if suffix.is_empty() {
@@ -532,54 +590,84 @@ fn run_inference_streaming(
         let last = prompt_tokens[prompt_tokens.len() - 1];
         let input = Array::from_slice(&[last], &[1, 1]);
         let logits = state.model.forward(&input, &mut caches)?;
-        model::argmax_last(&logits)?
+        sampler.sample_next_token(&logits)?
     } else {
-        prefill(&state.model, suffix, &mut caches)?
+        let logits = prefill_logits(&state.model, suffix, &mut caches)?;
+        sampler.sample_next_token(&logits)?
     };
 
+    let mut finish_reason = "length";
+
     // Decode + stream
-    for _ in 0..max_tokens {
+    for _ in 0..generation.max_tokens {
         if is_eos(next_token, &state.model.config) {
+            finish_reason = "stop";
             break;
         }
 
-        let text = state
+        let piece = state
             .model
             .tokenizer
             .decode(&[next_token], true)
             .map_err(|e| anyhow::anyhow!("tokenizer decode: {e}"))?;
-
-        if !text.is_empty() {
-            if tx.blocking_send(Some(text)).is_err() {
+        let chunk = stop_buffer.push(&piece);
+        if !chunk.emit.is_empty() {
+            if tx.blocking_send(StreamEvent::Text(chunk.emit)).is_err() {
                 break; // client disconnected
             }
+        }
+        if chunk.matched {
+            finish_reason = "stop";
+            break;
         }
 
         let input = Array::from_slice(&[next_token], &[1, 1]);
         let logits = state.model.forward(&input, &mut caches)?;
-        next_token = model::argmax_last(&logits)?;
+        next_token = sampler.sample_next_token(&logits)?;
+    }
+
+    let tail = stop_buffer.finish();
+    if !tail.is_empty() {
+        let _ = tx.blocking_send(StreamEvent::Text(tail));
     }
 
     // Save prompt cache for next request
     save_prompt_cache(state, prompt_tokens, caches);
 
-    Ok(())
+    Ok(finish_reason)
 }
 
 fn is_eos(token: u32, config: &model::ModelConfig) -> bool {
     config.eos_token_id.contains(&token)
 }
 
-fn build_chat_prompt(messages: &[serde_json::Value]) -> String {
-    // Qwen/ChatML format — works for Qwen2, Qwen2.5, Qwen3, etc.
-    let mut prompt = String::new();
-    for msg in messages {
-        let role = msg["role"].as_str().unwrap_or("user");
-        let content = msg["content"].as_str().unwrap_or("");
-        prompt.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
+fn parse_generation_config(req: &serde_json::Value) -> GenerationConfig {
+    GenerationConfig {
+        max_tokens: req["max_tokens"].as_u64().unwrap_or(2048) as usize,
+        sampling: SamplingParams {
+            temperature: req["temperature"].as_f64().unwrap_or(0.0) as f32,
+            top_p: req["top_p"].as_f64().unwrap_or(1.0) as f32,
+            top_k: req["top_k"]
+                .as_u64()
+                .map(|value| value as usize)
+                .filter(|value| *value > 0),
+            seed: req["seed"].as_u64(),
+        },
+        stop_sequences: parse_stop_sequences(req.get("stop")),
     }
-    prompt.push_str("<|im_start|>assistant\n");
-    prompt
+}
+
+fn parse_stop_sequences(stop: Option<&serde_json::Value>) -> Vec<String> {
+    match stop {
+        Some(serde_json::Value::String(text)) if !text.is_empty() => vec![text.clone()],
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 async fn send_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) -> Result<()> {

@@ -8,7 +8,9 @@
 //! so the proxy and election machinery work unchanged.
 
 pub mod model;
+pub mod sampling;
 pub mod server;
+pub mod template;
 
 pub use model::{is_mlx_model_dir, mlx_model_dir};
 pub use server::start_mlx_server;
