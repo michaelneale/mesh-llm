@@ -1,18 +1,14 @@
 pub mod capabilities;
 pub mod catalog;
-pub mod cli;
 pub mod local;
 mod maintenance;
 mod resolve;
+mod warnings;
 
 use anyhow::{Context, Result};
 use hf_hub::api::sync::{Api, ApiBuilder};
 
 pub use capabilities::ModelCapabilities;
-pub use cli::{
-    run_model_download, run_model_installed, run_model_recommended, run_model_search,
-    run_model_show, warn_about_legacy_model_usage,
-};
 pub use local::{
     find_model_path, huggingface_hub_cache, huggingface_hub_cache_dir, legacy_models_dir,
     legacy_models_present, model_dirs, path_is_in_legacy_models_dir, scan_installed_models,
@@ -23,6 +19,7 @@ pub use resolve::{
     download_exact_ref, find_catalog_model_exact, installed_model_capabilities,
     installed_model_display_name, search_catalog_models, search_huggingface, show_exact_model,
 };
+pub use warnings::warn_about_legacy_model_usage;
 
 fn build_hf_api(progress: bool) -> Result<Api> {
     let mut builder = ApiBuilder::from_cache(huggingface_hub_cache()).with_progress(progress);

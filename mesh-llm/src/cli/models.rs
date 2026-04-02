@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::Subcommand;
 
 #[derive(Subcommand, Debug)]
@@ -56,25 +55,4 @@ pub enum ModelsCommand {
         #[arg(long)]
         check: bool,
     },
-}
-
-pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
-    match command {
-        ModelsCommand::Recommended | ModelsCommand::List => crate::models::run_model_recommended(),
-        ModelsCommand::Installed => crate::models::run_model_installed(),
-        ModelsCommand::Search {
-            query,
-            catalog,
-            limit,
-        } => crate::models::run_model_search(query, *catalog, *limit).await?,
-        ModelsCommand::Show { model } => crate::models::run_model_show(model).await?,
-        ModelsCommand::Download { model, draft } => {
-            crate::models::run_model_download(model, *draft).await?
-        }
-        ModelsCommand::Migrate { apply, prune } => crate::models::run_migrate(*apply, *prune)?,
-        ModelsCommand::Updates { repo, all, check } => {
-            crate::models::run_update(repo.as_deref(), *all, *check)?
-        }
-    }
-    Ok(())
 }

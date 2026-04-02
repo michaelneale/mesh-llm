@@ -1,35 +1,12 @@
-use super::{
+use crate::cli::models::ModelsCommand;
+use crate::hardware;
+use crate::models::{
     capabilities, catalog, download_exact_ref, find_catalog_model_exact, huggingface_hub_cache_dir,
     installed_model_capabilities, legacy_models_dir, legacy_models_present,
     path_is_in_legacy_models_dir, scan_installed_models, search_catalog_models, search_huggingface,
     show_exact_model,
 };
-use crate::hardware;
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
-
-pub fn print_legacy_storage_warning() {
-    eprintln!("WARNING: ~/.models storage is deprecated and will be removed in a future release.");
-    eprintln!(
-        "Use Hugging Face repository snapshots in {} instead.",
-        huggingface_hub_cache_dir().display()
-    );
-    eprintln!("Migration steps:");
-    eprintln!("1. Run: mesh-llm models migrate");
-    eprintln!("2. Migrate recognized Hugging Face-backed models: mesh-llm models migrate --apply");
-    eprintln!("3. Optionally remove migrated legacy files: mesh-llm models migrate --prune");
-    eprintln!("4. For custom local GGUF files, use: mesh-llm --gguf /path/to/model.gguf");
-}
-
-pub fn warn_about_legacy_model_usage(paths: &[PathBuf]) {
-    if paths
-        .iter()
-        .any(|path| path_is_in_legacy_models_dir(path.as_path()))
-    {
-        print_legacy_storage_warning();
-        eprintln!("No update information is available for models loaded from legacy storage.");
-    }
-}
 
 pub async fn run_model_search(query: &[String], catalog_only: bool, limit: usize) -> Result<()> {
     let query = query.join(" ");
@@ -151,7 +128,7 @@ pub fn run_model_installed() {
     }
     println!();
     for name in installed {
-        let path = super::find_model_path(&name);
+        let path = crate::models::find_model_path(&name);
         let size = std::fs::metadata(&path).map(|meta| meta.len()).ok();
         let source = if path_is_in_legacy_models_dir(path.as_path()) {
             "⚠️ legacy"
@@ -314,4 +291,23 @@ fn fit_hint_for_size_label(size_label: &str) -> Option<String> {
         "⛔ likely too large for local serve"
     };
     Some(hint.to_string())
+}
+
+pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
+    match command {
+        ModelsCommand::Recommended | ModelsCommand::List => run_model_recommended(),
+        ModelsCommand::Installed => run_model_installed(),
+        ModelsCommand::Search {
+            query,
+            catalog,
+            limit,
+        } => run_model_search(query, *catalog, *limit).await?,
+        ModelsCommand::Show { model } => run_model_show(model).await?,
+        ModelsCommand::Download { model, draft } => run_model_download(model, *draft).await?,
+        ModelsCommand::Migrate { apply, prune } => crate::models::run_migrate(*apply, *prune)?,
+        ModelsCommand::Updates { repo, all, check } => {
+            crate::models::run_update(repo.as_deref(), *all, *check)?
+        }
+    }
+    Ok(())
 }

@@ -1,6 +1,7 @@
 mod blackboard;
 mod discover;
 mod integrations;
+mod models;
 mod plugin;
 
 use anyhow::Result;
@@ -8,11 +9,11 @@ use anyhow::Result;
 use crate::cli::commands::blackboard::{install_skill, run_blackboard};
 use crate::cli::commands::discover::{run_discover, run_stop};
 use crate::cli::commands::integrations::{run_claude, run_goose};
+use crate::cli::commands::models::dispatch_models_command;
 use crate::cli::commands::plugin::run_plugin_command;
-use crate::cli::models::dispatch_models_command;
 use crate::cli::runtime::{run_drop, run_load, run_status, RuntimeCommand};
 use crate::cli::{Cli, Command};
-use crate::{models, nostr, runtime};
+use crate::{nostr, runtime};
 
 pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
     let Some(cmd) = cli.command.as_ref() else {
@@ -26,29 +27,29 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::Download { name, draft } => {
             match name {
                 Some(query) => {
-                    let model = models::catalog::find_model(query).ok_or_else(|| {
+                    let model = crate::models::catalog::find_model(query).ok_or_else(|| {
                         anyhow::anyhow!(
                             "No model matching '{}' in catalog. Run `mesh-llm download` to list.",
                             query
                         )
                     })?;
-                    models::catalog::download_model(model).await?;
+                    crate::models::catalog::download_model(model).await?;
                     if *draft {
                         if let Some(draft_name) = model.draft.as_deref() {
-                            let draft_model =
-                                models::catalog::find_model(draft_name).ok_or_else(|| {
+                            let draft_model = crate::models::catalog::find_model(draft_name)
+                                .ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "Draft model '{}' not found in catalog",
                                         draft_name
                                     )
                                 })?;
-                            models::catalog::download_model(draft_model).await?;
+                            crate::models::catalog::download_model(draft_model).await?;
                         } else {
                             eprintln!("⚠ No draft model available for {}", model.name);
                         }
                     }
                 }
-                None => models::catalog::list_models(),
+                None => crate::models::catalog::list_models(),
             }
             Ok(())
         }
