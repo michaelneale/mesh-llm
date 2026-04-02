@@ -14,6 +14,18 @@
 //! The dashboard is mostly read-only — shows status, topology, and models.
 //! Local model load/unload is exposed for operator control.
 
+mod state;
+mod status;
+
+pub use self::state::{MeshApi, RuntimeControlRequest, RuntimeModelPayload, RuntimeProcessPayload};
+pub(crate) use self::status::classify_runtime_error;
+
+use self::state::ApiInner;
+use self::status::{
+    build_gpus, build_runtime_processes_payload, build_runtime_status_payload,
+    decode_runtime_model_path, MeshModelPayload, PeerPayload, RuntimeProcessesPayload,
+    RuntimeStatusPayload, StatusPayload,
+};
 use crate::{affinity, election, mesh, nostr, plugin, proxy};
 use include_dir::{include_dir, Dir};
 use serde::Serialize;
@@ -24,189 +36,6 @@ use tokio::sync::{watch, Mutex};
 
 static CONSOLE_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/ui/dist");
 const MESH_LLM_VERSION: &str = crate::VERSION;
-
-// ── Shared state ──
-
-pub enum RuntimeControlRequest {
-    Load {
-        spec: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<String>>,
-    },
-    Unload {
-        model: String,
-        resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
-    },
-}
-
-#[derive(Clone, Serialize)]
-pub struct RuntimeModelPayload {
-    pub name: String,
-    pub backend: String,
-    pub status: String,
-    pub port: Option<u16>,
-}
-
-#[derive(Serialize)]
-struct RuntimeStatusPayload {
-    models: Vec<RuntimeModelPayload>,
-}
-
-#[derive(Clone, Serialize)]
-pub struct RuntimeProcessPayload {
-    pub name: String,
-    pub backend: String,
-    pub status: String,
-    pub port: u16,
-    pub pid: u32,
-}
-
-#[derive(Serialize)]
-struct RuntimeProcessesPayload {
-    processes: Vec<RuntimeProcessPayload>,
-}
-
-/// Shared live state — written by the main process, read by API handlers.
-#[derive(Clone)]
-pub struct MeshApi {
-    inner: Arc<Mutex<ApiInner>>,
-}
-
-struct ApiInner {
-    node: mesh::Node,
-    plugin_manager: plugin::PluginManager,
-    affinity_router: affinity::AffinityRouter,
-    is_host: bool,
-    is_client: bool,
-    llama_ready: bool,
-    llama_port: Option<u16>,
-    model_name: String,
-    primary_backend: Option<String>,
-    draft_name: Option<String>,
-    api_port: u16,
-    model_size_bytes: u64,
-    mesh_name: Option<String>,
-    latest_version: Option<String>,
-    nostr_relays: Vec<String>,
-    nostr_discovery: bool,
-    runtime_control: Option<tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>>,
-    local_processes: Vec<RuntimeProcessPayload>,
-    sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,
-}
-
-#[derive(Serialize)]
-struct GpuEntry {
-    name: String,
-    vram_bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    bandwidth_gbps: Option<f64>,
-}
-
-fn build_gpus(
-    gpu_name: Option<&str>,
-    gpu_vram: Option<&str>,
-    gpu_bandwidth: Option<&str>,
-) -> Vec<GpuEntry> {
-    let names: Vec<&str> = gpu_name
-        .map(|s| s.split(", ").collect())
-        .unwrap_or_default();
-    if names.is_empty() {
-        return vec![];
-    }
-    let vrams: Vec<Option<u64>> = gpu_vram
-        .map(|s| s.split(',').map(|v| v.trim().parse::<u64>().ok()).collect())
-        .unwrap_or_default();
-    let bandwidths: Vec<Option<f64>> = gpu_bandwidth
-        .map(|s| s.split(',').map(|v| v.trim().parse::<f64>().ok()).collect())
-        .unwrap_or_default();
-    names
-        .into_iter()
-        .enumerate()
-        .map(|(i, name)| GpuEntry {
-            name: name.to_string(),
-            vram_bytes: vrams.get(i).copied().flatten().unwrap_or(0),
-            bandwidth_gbps: bandwidths.get(i).copied().flatten(),
-        })
-        .collect()
-}
-
-#[derive(Serialize)]
-struct StatusPayload {
-    version: String,
-    latest_version: Option<String>,
-    node_id: String,
-    token: String,
-    node_status: String,
-    is_host: bool,
-    is_client: bool,
-    llama_ready: bool,
-    model_name: String,
-    models: Vec<String>,
-    available_models: Vec<String>,
-    requested_models: Vec<String>,
-    serving_models: Vec<String>,
-    hosted_models: Vec<String>,
-    draft_name: Option<String>,
-    api_port: u16,
-    my_vram_gb: f64,
-    model_size_gb: f64,
-    peers: Vec<PeerPayload>,
-    launch_pi: Option<String>,
-    launch_goose: Option<String>,
-    mesh_models: Vec<MeshModelPayload>,
-    inflight_requests: u64,
-    /// Mesh identity (for matching against discovered meshes)
-    mesh_id: Option<String>,
-    /// Human-readable mesh name (from Nostr publishing)
-    mesh_name: Option<String>,
-    /// true when this node found the mesh via Nostr discovery (community/public mesh)
-    nostr_discovery: bool,
-    my_hostname: Option<String>,
-    my_is_soc: Option<bool>,
-    gpus: Vec<GpuEntry>,
-    routing_affinity: affinity::AffinityStatsSnapshot,
-}
-
-#[derive(Serialize)]
-struct PeerPayload {
-    id: String,
-    role: String,
-    models: Vec<String>,
-    available_models: Vec<String>,
-    requested_models: Vec<String>,
-    vram_gb: f64,
-    serving_models: Vec<String>,
-    hosted_models: Vec<String>,
-    hosted_models_known: bool,
-    rtt_ms: Option<u32>,
-    hostname: Option<String>,
-    is_soc: Option<bool>,
-    gpus: Vec<GpuEntry>,
-}
-
-#[derive(Serialize)]
-struct MeshModelPayload {
-    name: String,
-    display_name: String,
-    status: String,
-    node_count: usize,
-    size_gb: f64,
-    /// Whether this model supports vision/image input
-    vision: bool,
-    /// Display-oriented vision metadata status.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    vision_status: Option<&'static str>,
-    /// Whether this model appears reasoning-oriented.
-    reasoning: bool,
-    /// Display-oriented reasoning metadata status.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_status: Option<&'static str>,
-    /// Total requests seen across the mesh (from demand map)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request_count: Option<u64>,
-    /// Seconds since last request or declaration (None if no demand data)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_active_secs_ago: Option<u64>,
-}
 
 impl MeshApi {
     pub fn new(
@@ -1252,96 +1081,8 @@ async fn respond_json<T: Serialize>(
     Ok(())
 }
 
-fn build_runtime_status_payload(
-    model_name: &str,
-    primary_backend: Option<String>,
-    is_host: bool,
-    llama_ready: bool,
-    llama_port: Option<u16>,
-    mut local_processes: Vec<RuntimeProcessPayload>,
-) -> RuntimeStatusPayload {
-    local_processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-    let mut models: Vec<RuntimeModelPayload> = local_processes
-        .into_iter()
-        .map(|process| RuntimeModelPayload {
-            name: process.name,
-            backend: process.backend,
-            status: process.status,
-            port: Some(process.port),
-        })
-        .collect();
-
-    let has_model_process = models.iter().any(|model| model.name == model_name);
-    if is_host && !llama_ready && !has_model_process && !model_name.is_empty() {
-        models.insert(
-            0,
-            RuntimeModelPayload {
-                name: model_name.to_string(),
-                backend: primary_backend.unwrap_or_else(|| "unknown".into()),
-                status: "starting".into(),
-                port: llama_port,
-            },
-        );
-    }
-
-    RuntimeStatusPayload { models }
-}
-
-fn build_runtime_processes_payload(
-    mut local_processes: Vec<RuntimeProcessPayload>,
-) -> RuntimeProcessesPayload {
-    local_processes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    RuntimeProcessesPayload {
-        processes: local_processes,
-    }
-}
-
-pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
-    if msg.contains("not loaded") {
-        404
-    } else if msg.contains("already loaded") {
-        409
-    } else if msg.contains("fit locally") || msg.contains("runtime load only supports") {
-        422
-    } else {
-        400
-    }
-}
-
 async fn respond_runtime_error(stream: &mut TcpStream, msg: &str) -> anyhow::Result<()> {
     respond_error(stream, classify_runtime_error(msg), msg).await
-}
-
-fn decode_runtime_model_path(path: &str) -> Option<String> {
-    let raw = path.strip_prefix("/api/runtime/models/")?;
-    if raw.is_empty() {
-        return None;
-    }
-
-    let bytes = raw.as_bytes();
-    let mut decoded: Vec<u8> = Vec::with_capacity(raw.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hi = bytes[i + 1] as char;
-                let lo = bytes[i + 2] as char;
-                let hex = [hi, lo].iter().collect::<String>();
-                if let Ok(value) = u8::from_str_radix(&hex, 16) {
-                    decoded.push(value);
-                    i += 3;
-                    continue;
-                } else {
-                    return None;
-                }
-            }
-            b'+' => decoded.push(b'+'),
-            b => decoded.push(b),
-        }
-        i += 1;
-    }
-    String::from_utf8(decoded).ok()
 }
 
 async fn respond_console_index(stream: &mut TcpStream) -> anyhow::Result<bool> {
