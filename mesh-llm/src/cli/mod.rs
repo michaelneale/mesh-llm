@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::cli::runtime::RuntimeCommand;
 
+pub(crate) mod commands;
 pub mod models;
 pub(crate) mod runtime;
 

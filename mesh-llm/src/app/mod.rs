@@ -1,6 +1,5 @@
-use crate::cli::models::dispatch_models_command;
-use crate::cli::runtime::{run_drop, run_load, run_status, RuntimeCommand};
-use crate::cli::{Cli, Command, PluginCommand};
+use crate::cli::Cli;
+use crate::cli::PluginCommand;
 use crate::mesh::NodeRole;
 use crate::models::catalog;
 use crate::{
@@ -260,118 +259,8 @@ pub(crate) async fn run() -> Result<()> {
         autoupdate::check_for_update().await;
     }
 
-    // Subcommand dispatch
-    if let Some(cmd) = &cli.command {
-        match cmd {
-            Command::Models { command } => {
-                dispatch_models_command(command).await?;
-                return Ok(());
-            }
-            Command::Download { name, draft } => {
-                match name {
-                    Some(query) => {
-                        let model = catalog::find_model(query)
-                            .ok_or_else(|| anyhow::anyhow!("No model matching '{}' in catalog. Run `mesh-llm download` to list.", query))?;
-                        catalog::download_model(model).await?;
-                        if *draft {
-                            if let Some(draft_name) = model.draft.as_deref() {
-                                let draft_model =
-                                    catalog::find_model(draft_name).ok_or_else(|| {
-                                        anyhow::anyhow!(
-                                            "Draft model '{}' not found in catalog",
-                                            draft_name
-                                        )
-                                    })?;
-                                catalog::download_model(draft_model).await?;
-                            } else {
-                                eprintln!("⚠ No draft model available for {}", model.name);
-                            }
-                        }
-                    }
-                    None => catalog::list_models(),
-                }
-                return Ok(());
-            }
-            Command::Runtime { command } => match command {
-                Some(RuntimeCommand::Status { port }) => {
-                    return run_status(*port).await;
-                }
-                Some(RuntimeCommand::Load { name, port }) => {
-                    return run_load(name, *port).await;
-                }
-                Some(RuntimeCommand::Unload { name, port }) => {
-                    return run_drop(name, *port).await;
-                }
-                None => {
-                    return run_status(3131).await;
-                }
-            },
-            Command::Load { name, port } => {
-                return run_load(name, *port).await;
-            }
-            Command::Unload { name, port } => {
-                return run_drop(name, *port).await;
-            }
-            Command::Status { port } => {
-                return run_status(*port).await;
-            }
-            Command::Stop => {
-                return run_stop();
-            }
-            Command::Discover {
-                model,
-                min_vram,
-                region,
-                auto,
-                relay,
-            } => {
-                return run_discover(
-                    model.clone(),
-                    *min_vram,
-                    region.clone(),
-                    *auto,
-                    relay.clone(),
-                )
-                .await;
-            }
-            Command::RotateKey => {
-                return nostr::rotate_keys().map_err(Into::into);
-            }
-            Command::Goose { model, port } => {
-                return run_goose(model.clone(), *port).await;
-            }
-            Command::Claude { model, port } => {
-                return run_claude(model.clone(), *port).await;
-            }
-            Command::Blackboard {
-                text,
-                search,
-                from,
-                since,
-                limit,
-                port,
-                mcp,
-            } => {
-                if *mcp {
-                    return run_plugin_mcp(&cli).await;
-                }
-                if text.as_deref() == Some("install-skill") {
-                    return install_skill();
-                }
-                return run_blackboard(
-                    text.clone(),
-                    search.clone(),
-                    from.clone(),
-                    *since,
-                    *limit,
-                    *port,
-                )
-                .await;
-            }
-            Command::Plugin { command } => {
-                return run_plugin_command(command, &cli).await;
-            }
-        }
+    if crate::cli::commands::dispatch(&cli).await? {
+        return Ok(());
     }
 
     // Clean up orphan processes from previous runs (skip for client — never runs llama-server).
@@ -1058,7 +947,7 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
     Ok(())
 }
 
-async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
+pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     let resolved_plugins = load_resolved_plugins(cli)?;
     let (node, _channels) = mesh::Node::start(
         NodeRole::Client,
@@ -2668,7 +2557,7 @@ fn nostr_relays(cli_relays: &[String]) -> Vec<String> {
 }
 
 /// Discover meshes on Nostr and optionally join one.
-async fn run_discover(
+pub(crate) async fn run_discover(
     model: Option<String>,
     min_vram: Option<f64>,
     region: Option<String>,
@@ -2757,7 +2646,7 @@ async fn run_discover(
 }
 
 /// Drop a model from the mesh by sending a control request to the running instance.
-fn run_stop() -> Result<()> {
+pub(crate) fn run_stop() -> Result<()> {
     let mut killed = 0u32;
     for name in &["llama-server", "rpc-server", "mesh-llm"] {
         if crate::launch::terminate_process_by_name(name) {
@@ -2864,7 +2753,7 @@ async fn check_mesh(
     Ok((models, chosen, child))
 }
 
-async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
+pub(crate) async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
@@ -2942,7 +2831,7 @@ async fn run_goose(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
+pub(crate) async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
@@ -3007,7 +2896,7 @@ async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn run_blackboard(
+pub(crate) async fn run_blackboard(
     text: Option<String>,
     search: Option<String>,
     from: Option<String>,
@@ -3144,7 +3033,7 @@ fn print_blackboard_items(items: &[blackboard::BlackboardItem]) {
     }
 }
 
-async fn run_plugin_command(command: &PluginCommand, cli: &Cli) -> Result<()> {
+pub(crate) async fn run_plugin_command(command: &PluginCommand, cli: &Cli) -> Result<()> {
     match command {
         PluginCommand::Install { name } if name == plugin::BLACKBOARD_PLUGIN_ID => {
             eprintln!("Blackboard is auto-registered by mesh-llm. Nothing to install.");
@@ -3191,7 +3080,7 @@ fn chrono_format(ts: u64) -> String {
     }
 }
 
-fn install_skill() -> Result<()> {
+pub(crate) fn install_skill() -> Result<()> {
     let skill_content = include_str!("../../skills/blackboard/SKILL.md");
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
