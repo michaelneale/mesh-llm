@@ -3131,7 +3131,7 @@ impl Node {
 
         {
             let state = self.state.lock().await;
-            if state.connections.contains_key(&peer_id) {
+            if state.peers.contains_key(&peer_id) {
                 return Ok(());
             }
             if state.dead_peers.contains(&peer_id) {
@@ -6925,6 +6925,52 @@ mod tests {
             let rtt = state.peers.get(&peer_id).unwrap().rtt_ms;
             assert_eq!(rtt, Some(10), "RTT must decrease from 20 to 10");
         }
+
+        Ok(())
+    }
+
+    /// Regression test: connect_to_peer must skip peers already in state.peers,
+    /// even if there's no QUIC connection yet (transitive peers from gossip).
+    /// If this check uses state.connections instead, every transitive peer
+    /// triggers a 15s dial timeout and --client --auto hangs.
+    /// See: d631c8d (broke it), 6ece4d1 (first revert).
+    #[tokio::test]
+    async fn test_connect_to_peer_skips_known_peer_without_connection() -> Result<()> {
+        let node = make_test_node(super::NodeRole::Client).await?;
+        let peer_key = SecretKey::generate(&mut rand::rng());
+        let peer_id = EndpointId::from(peer_key.public());
+
+        // Simulate a transitive peer: in state.peers but NOT in state.connections
+        {
+            let mut state = node.state.lock().await;
+            state
+                .peers
+                .insert(peer_id, make_test_peer(peer_id, Some(50), 8));
+            assert!(
+                !state.connections.contains_key(&peer_id),
+                "setup: peer must not have a connection"
+            );
+        }
+
+        // connect_to_peer must return Ok immediately (peer already known).
+        // If it tries to dial, it will either timeout (15s) or fail — both wrong.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            node.connect_to_peer(super::EndpointAddr {
+                id: peer_id,
+                addrs: Default::default(),
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "connect_to_peer must not attempt to dial a peer already in state.peers"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "connect_to_peer must return Ok for known peers"
+        );
 
         Ok(())
     }
