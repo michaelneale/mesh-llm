@@ -379,7 +379,7 @@ describe('ConfigPage canonical authored config state', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         text: vi.fn().mockResolvedValue(
-          'version = 1\n\n[[nodes]]\nnode_id = "node-a"\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nsplit = { start = 0, end = 23, total = 48 }\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nsplit = { start = 24, end = 47, total = 48 }\n',
+          'version = 1\n\n[[nodes]]\nnode_id = "node-a"\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nsplit = { start = 0, end = 24, total = 48 }\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nsplit = { start = 24, end = 48, total = 48 }\n',
         ),
       }),
     );
@@ -417,7 +417,7 @@ describe('ConfigPage canonical authored config state', () => {
     fireEvent.click(screen.getByTestId('mock-resize-boundary'));
 
     expect(screen.getByTestId('save-is-dirty')).toHaveTextContent('dirty');
-    expect(screen.getByTestId('toml-config')).toHaveTextContent('"end":27');
+    expect(screen.getByTestId('toml-config')).toHaveTextContent('"end":28');
     expect(screen.getByTestId('toml-config')).toHaveTextContent('"start":28');
   });
 
@@ -531,7 +531,7 @@ describe('ConfigPage canonical authored config state', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         text: vi.fn().mockResolvedValue(
-          'version = 1\n\n[[nodes]]\nnode_id = "node-a"\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nctx_size = 4096\nsplit = { start = 0, end = 23, total = 48 }\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nctx_size = 4096\nsplit = { start = 24, end = 47, total = 48 }\n',
+          'version = 1\n\n[[nodes]]\nnode_id = "node-a"\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nctx_size = 4096\nsplit = { start = 0, end = 24, total = 48 }\n\n[[nodes.models]]\nname = "Qwen3"\nmodel_key = "abc123"\nctx_size = 4096\nsplit = { start = 24, end = 48, total = 48 }\n',
         ),
       }),
     );
@@ -562,9 +562,9 @@ describe('ConfigPage split normalization helpers', () => {
         {
           node_id: 'node-a',
           models: [
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 15, total: 48 } },
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 16, end: 31, total: 48 } },
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 32, end: 47, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 16, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 16, end: 32, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 32, end: 48, total: 48 } },
           ],
         },
       ],
@@ -572,8 +572,8 @@ describe('ConfigPage split normalization helpers', () => {
 
     const result = resizeSplitBoundaryInConfig(config, {
       nodeId: 'node-a',
-      leftAssignmentId: 'Qwen3::abc123::0-15-48::pooled',
-      rightAssignmentId: 'Qwen3::abc123::16-31-48::pooled',
+      leftAssignmentId: 'Qwen3::abc123::0-16-48::pooled',
+      rightAssignmentId: 'Qwen3::abc123::16-32-48::pooled',
       boundaryStart: 20,
     });
 
@@ -582,9 +582,9 @@ describe('ConfigPage split normalization helpers', () => {
       throw new Error('Expected split resize to succeed');
     }
     expect(result.config.nodes[0]?.models).toEqual([
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 19, total: 48 } },
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 20, end: 31, total: 48 } },
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 32, end: 47, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 20, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 20, end: 32, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 32, end: 48, total: 48 } },
     ]);
   });
 
@@ -595,8 +595,8 @@ describe('ConfigPage split normalization helpers', () => {
         {
           node_id: 'node-a',
           models: [
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 23, total: 48 } },
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 47, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 24, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 48, total: 48 } },
           ],
         },
       ],
@@ -604,8 +604,8 @@ describe('ConfigPage split normalization helpers', () => {
 
     const result = resizeSplitBoundaryInConfig(config, {
       nodeId: 'node-a',
-      leftAssignmentId: 'Qwen3::abc123::0-23-48::pooled',
-      rightAssignmentId: 'Qwen3::abc123::24-47-48::pooled',
+      leftAssignmentId: 'Qwen3::abc123::0-24-48::pooled',
+      rightAssignmentId: 'Qwen3::abc123::24-48-48::pooled',
       boundaryStart: 1,
     });
 
@@ -615,8 +615,8 @@ describe('ConfigPage split normalization helpers', () => {
     }
 
     expect(result.config.nodes[0]?.models).toEqual([
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 1, total: 48 } },
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 2, end: 47, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 2, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 2, end: 48, total: 48 } },
     ]);
   });
 
@@ -627,8 +627,8 @@ describe('ConfigPage split normalization helpers', () => {
         {
           node_id: 'node-a',
           models: [
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 23, total: 48 } },
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 47, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 24, total: 48 } },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 48, total: 48 } },
           ],
         },
       ],
@@ -636,8 +636,8 @@ describe('ConfigPage split normalization helpers', () => {
 
     const result = resizeSplitBoundaryInConfig(config, {
       nodeId: 'node-a',
-      leftAssignmentId: 'Qwen3::abc123::0-23-48::pooled',
-      rightAssignmentId: 'Qwen3::abc123::24-47-48::pooled',
+      leftAssignmentId: 'Qwen3::abc123::0-24-48::pooled',
+      rightAssignmentId: 'Qwen3::abc123::24-48-48::pooled',
       boundaryStart: 47,
     });
 
@@ -647,8 +647,8 @@ describe('ConfigPage split normalization helpers', () => {
     }
 
     expect(result.config.nodes[0]?.models).toEqual([
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 45, total: 48 } },
-      { name: 'Qwen3', model_key: 'abc123', split: { start: 46, end: 47, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 46, total: 48 } },
+      { name: 'Qwen3', model_key: 'abc123', split: { start: 46, end: 48, total: 48 } },
     ]);
   });
 
@@ -740,8 +740,8 @@ describe('ConfigPage split normalization helpers', () => {
         {
           node_id: 'node-a',
           models: [
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 23, total: 48 }, ctx_size: 8192 },
-            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 47, total: 48 }, ctx_size: 8192 },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 0, end: 24, total: 48 }, ctx_size: 8192 },
+            { name: 'Qwen3', model_key: 'abc123', split: { start: 24, end: 48, total: 48 }, ctx_size: 8192 },
           ],
         },
       ],

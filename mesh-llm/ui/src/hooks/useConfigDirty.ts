@@ -18,6 +18,7 @@ export function useConfigDirty({ config, savedConfig }: UseConfigDirtyParams): b
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       if (isDirty) {
         e.preventDefault();
+        e.returnValue = '';
       }
     };
 

@@ -1291,7 +1291,7 @@ async fn start_llama(
         let total_layers = manual_total_layers as f64;
         let host_layers: u32 = manual_splits_for_node
             .iter()
-            .map(|s| s.end.saturating_sub(s.start).saturating_add(1))
+            .map(|s| s.end.saturating_sub(s.start))
             .sum();
         let host_frac = if total_layers > 0.0 {
             host_layers as f64 / total_layers

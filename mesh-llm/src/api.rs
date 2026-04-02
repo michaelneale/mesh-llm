@@ -2519,11 +2519,11 @@ fn validate_mesh_config(
                 continue;
             }
 
-            if split.start >= split.total || split.end >= split.total {
+            if split.start >= split.total || split.end > split.total {
                 errors.push(ConfigValidationError {
                     code: "split_out_of_range".into(),
                     path: format!("{model_path}.split"),
-                    message: "split.start and split.end must be within split.total".into(),
+                    message: "split.start must be less than split.total and split.end must not exceed split.total".into(),
                 });
                 continue;
             }
@@ -2607,7 +2607,7 @@ fn validate_mesh_config(
                 });
             }
 
-            expected_start = segment.end.saturating_add(1);
+            expected_start = segment.end;
         }
 
         if expected_start != expected_total {
@@ -2616,8 +2616,8 @@ fn validate_mesh_config(
                 path: format!("model_key:{model_key}"),
                 message: format!(
                     "split coverage ends at {}, expected contiguous coverage through {} for model_key {}",
-                    expected_start.saturating_sub(1),
-                    expected_total.saturating_sub(1),
+                    expected_start,
+                    expected_total,
                     model_key
                 ),
             });
@@ -4076,7 +4076,7 @@ node_id = "abc123"
 [[nodes.models]]
 name = "llama-3.3-70b"
 model_key = "mk-llama-70b"
-split = { start = 0, end = 32, total = 33 }
+split = { start = 0, end = 33, total = 33 }
 ctx_size = 4096
 "#;
 
@@ -4261,7 +4261,7 @@ ctx_size = 4096
                         model_key: Some("mk-model-a".into()),
                         split: Some(ModelSplit {
                             start: 0,
-                            end: 10,
+                            end: 12,
                             total: 33,
                         }),
                         path: None,

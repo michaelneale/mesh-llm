@@ -41,8 +41,8 @@ test.describe('Smoke Tests @smoke', () => {
     await page.route('**/api/config', (route) =>
       route.fulfill({
         status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ ok: true, config: '' }),
+        contentType: 'text/plain',
+        body: '',
       }),
     );
   });
@@ -118,8 +118,8 @@ test.describe('Smoke Tests @smoke', () => {
       }),
     );
 
-    const v3SeparateToml = [
-      'version = 3',
+    const separateToml = [
+      'version = 1',
       '',
       '[[nodes]]',
       'node_id = "test-node-1"',
@@ -134,7 +134,7 @@ test.describe('Smoke Tests @smoke', () => {
       route.fulfill({
         status: 200,
         contentType: 'text/plain',
-        body: v3SeparateToml,
+        body: separateToml,
       }),
     );
 
@@ -145,37 +145,4 @@ test.describe('Smoke Tests @smoke', () => {
     await expect(page.getByTestId('node-test-node-1-gpu-1-dropzone')).toBeVisible();
   });
 
-  test('v2 legacy config rehydrates as pooled mode by default', async ({ page }) => {
-    await page.route('**/api/status', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ ...mockStatus, owner_id: 'owner-1' }),
-      }),
-    );
-
-    const v2Toml = [
-      'version = 2',
-      '',
-      '[[nodes]]',
-      'node_id = "test-node-1"',
-      '',
-      '[[nodes.models]]',
-      'name = "Qwen3"',
-    ].join('\n');
-
-    await page.route('**/api/config', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'text/plain',
-        body: v2Toml,
-      }),
-    );
-
-    await page.goto('/config');
-
-    await expect(page.getByRole('heading', { name: 'Configuration' })).toBeVisible();
-    await expect(page.getByTestId('node-test-node-1-mode-pooled')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByTestId('node-test-node-1-pool-dropzone')).toBeVisible();
-  });
 });

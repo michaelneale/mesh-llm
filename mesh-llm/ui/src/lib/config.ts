@@ -45,7 +45,8 @@ function normalizeSplit(value: unknown): ModelSplit | null {
     end === undefined ||
     total === undefined ||
     total === 0 ||
-    start >= end
+    start >= end ||
+    end > total
   ) {
     return null;
   }

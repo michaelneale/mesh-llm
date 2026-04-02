@@ -287,7 +287,7 @@ mod tests {
                         model_key: Some("mk-qwen3-30b".into()),
                         split: Some(ModelSplit {
                             start: 0,
-                            end: 20,
+                            end: 21,
                             total: 33,
                         }),
                         path: Some("/Users/test/.models/Qwen3-30B-A3B-Q4_K_M.gguf".into()),
@@ -300,7 +300,7 @@ mod tests {
                         model_key: Some("mk-qwen3-30b".into()),
                         split: Some(ModelSplit {
                             start: 21,
-                            end: 32,
+                            end: 33,
                             total: 33,
                         }),
                         path: None,
@@ -347,7 +347,7 @@ mod tests {
                     model_key: Some("mk-qwen3-8b".into()),
                     split: Some(ModelSplit {
                         start: 0,
-                        end: 32,
+                        end: 33,
                         total: 33,
                     }),
                     path: Some("/models/Qwen3-8B-Q4_K_M.gguf".into()),
@@ -378,13 +378,13 @@ mod tests {
             [[nodes.models]]
             name = "Qwen3-30B-A3B-Q4_K_M"
             model_key = "mk-qwen3-30b"
-            split = { start = 0, end = 20, total = 33 }
+            split = { start = 0, end = 21, total = 33 }
             gpu_index = 0
 
             [[nodes.models]]
             name = "Qwen3-30B-A3B-Q4_K_M"
             model_key = "mk-qwen3-30b"
-            split = { start = 21, end = 32, total = 33 }
+            split = { start = 21, end = 33, total = 33 }
             gpu_index = 1
         "#;
 

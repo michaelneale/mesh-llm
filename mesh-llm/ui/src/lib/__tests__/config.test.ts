@@ -16,7 +16,7 @@ describe('mesh config parse/serialize', () => {
             {
               name: 'Qwen3-30B-A3B-Q4_K_M',
               model_key: 'mk-qwen3-30b',
-              split: { start: 0, end: 20, total: 33 },
+              split: { start: 0, end: 21, total: 33 },
               path: '/Users/test/.models/Qwen3-30B-A3B-Q4_K_M.gguf',
               ctx_size: 8192,
               moe_experts: 24,
@@ -25,7 +25,7 @@ describe('mesh config parse/serialize', () => {
             {
               name: 'Qwen2.5-Coder-7B-Q4_K_M',
               model_key: 'mk-qwen2.5-coder-7b',
-              split: { start: 21, end: 32, total: 33 },
+              split: { start: 21, end: 33, total: 33 },
               ctx_size: 4096,
               gpu_index: 1,
             },
@@ -123,7 +123,6 @@ split = { start = 10, end = 5, total = 33 }
   });
 
   it('accepts valid single-node full-model split', () => {
-    // Single node serving all layers: start=0, end=total-1
     const fullModel = `
 version = 1
 
@@ -133,13 +132,13 @@ node_id = "node-a"
 [[nodes.models]]
 name = "Qwen3-30B-A3B-Q4_K_M"
 model_key = "mk-qwen3-30b"
-split = { start = 0, end = 32, total = 33 }
+split = { start = 0, end = 33, total = 33 }
 `;
 
     const parsed = parseConfig(fullModel);
     expect(parsed).not.toBeNull();
     expect(parsed?.version).toBe(1);
-    expect(parsed?.nodes[0].models[0].split).toEqual({ start: 0, end: 32, total: 33 });
+    expect(parsed?.nodes[0].models[0].split).toEqual({ start: 0, end: 33, total: 33 });
     expect(parsed?.nodes[0].placement_mode).toBe('pooled');
   });
 

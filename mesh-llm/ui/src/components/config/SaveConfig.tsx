@@ -4,7 +4,7 @@ import { Check, Redo2, TriangleAlert, Undo2, X } from 'lucide-react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 
 import { broadcastConfig, type ConfigValidationError } from '../../lib/api';
-import { parseConfig, serializeConfig } from '../../lib/config';
+import { AUTHORED_CONFIG_VERSION, parseConfig, serializeConfig } from '../../lib/config';
 import { cn } from '../../lib/utils';
 import type { MeshConfig } from '../../types/config';
 import { Button } from '../ui/button';
@@ -25,14 +25,18 @@ type NodeDiff = {
 
 function computeConfigDiff(currentConfig: MeshConfig, baseConfig: MeshConfig): NodeDiff[] {
   const result: NodeDiff[] = [];
-  const allNodeIds = new Set([
-    ...currentConfig.nodes.map((n) => n.node_id),
-    ...baseConfig.nodes.map((n) => n.node_id),
-  ]);
+  const currentNodesById = new Map(currentConfig.nodes.map((node) => [node.node_id, node]));
+  const baseNodesById = new Map(baseConfig.nodes.map((node) => [node.node_id, node]));
+  const allNodeIds = Array.from(
+    new Set([
+      ...currentConfig.nodes.map((n) => n.node_id),
+      ...baseConfig.nodes.map((n) => n.node_id),
+    ]),
+  ).sort((a, b) => a.localeCompare(b));
 
   for (const nodeId of allNodeIds) {
-    const currentNode = currentConfig.nodes.find((n) => n.node_id === nodeId);
-    const baseNode = baseConfig.nodes.find((n) => n.node_id === nodeId);
+    const currentNode = currentNodesById.get(nodeId);
+    const baseNode = baseNodesById.get(nodeId);
 
     const currentModels = new Set((currentNode?.models ?? []).map((m) => m.name));
     const baseModels = new Set((baseNode?.models ?? []).map((m) => m.name));
@@ -139,7 +143,7 @@ export function SaveConfig({
   }, []);
 
   const diffEntries = useMemo(
-    () => computeConfigDiff(config, savedConfig ?? { version: 3, nodes: [] }),
+    () => computeConfigDiff(config, savedConfig ?? { version: AUTHORED_CONFIG_VERSION, nodes: [] }),
     [config, savedConfig],
   );
 

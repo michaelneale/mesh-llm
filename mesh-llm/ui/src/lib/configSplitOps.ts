@@ -43,7 +43,7 @@ export type RemoveAssignmentResult = {
 };
 
 export function splitLayerCount(split: ModelSplit) {
-  return split.end - split.start + 1;
+  return split.end - split.start;
 }
 
 export function findAssignmentNodeId(
@@ -119,8 +119,8 @@ function validateSplitGroupCoverage(
   for (const segment of segments) {
     if (segment.total !== total) return false;
     if (segment.start !== expectedStart) return false;
-    if (segment.end < segment.start) return false;
-    expectedStart = segment.end + 1;
+    if (segment.end <= segment.start) return false;
+    expectedStart = segment.end;
   }
 
   return expectedStart === total;
@@ -199,7 +199,7 @@ export function resizeSplitBoundaryInConfig(
 
   const updatedLeft: ModelAssignment = {
     ...left,
-    split: { ...left.split, end: boundaryStart - 1 },
+    split: { ...left.split, end: boundaryStart },
   };
   const updatedRight: ModelAssignment = {
     ...right,

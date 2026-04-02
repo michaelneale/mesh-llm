@@ -56,6 +56,7 @@ const GPU_4090: GpuTarget = {
   index: 0,
   name: 'RTX 4090',
   vramBytes: 24_000_000_000,
+  reservedBytes: 0,
   label: 'GPU 0 · RTX 4090 · 24.0 GB',
 };
 
@@ -63,6 +64,7 @@ const GPU_3090: GpuTarget = {
   index: 1,
   name: 'RTX 3090',
   vramBytes: 24_000_000_000,
+  reservedBytes: 0,
   label: 'GPU 1 · RTX 3090 · 24.0 GB',
 };
 
@@ -531,6 +533,7 @@ describe('ConfigNodeSection', () => {
         index: 1,
         name: 'RTX 3060',
         vramBytes: 12_000_000_000,
+        reservedBytes: 0,
         label: 'GPU 1 · RTX 3060 · 12.0 GB',
       };
 
