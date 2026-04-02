@@ -1199,17 +1199,8 @@ async fn handle_request(mut stream: TcpStream, state: &MeshApi) -> anyhow::Resul
         }
 
         ("GET", "/api/models") => {
-            match tokio::time::timeout(std::time::Duration::from_secs(60), state.mesh_models())
-                .await
-            {
-                Ok(mesh_models) => {
-                    respond_json(&mut stream, 200, &ModelsPayload { mesh_models }).await?;
-                }
-                Err(_) => {
-                    respond_error(&mut stream, 503, "Model catalog temporarily unavailable")
-                        .await?;
-                }
-            }
+            let mesh_models = state.mesh_models().await;
+            respond_json(&mut stream, 200, &ModelsPayload { mesh_models }).await?;
         }
 
         ("GET", "/api/runtime") => {
