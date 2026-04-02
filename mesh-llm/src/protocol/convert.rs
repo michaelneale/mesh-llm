@@ -191,6 +191,7 @@ pub(crate) fn local_ann_to_proto_ann(
                             min_experts_per_node: moe.min_experts_per_node,
                             source: moe.source.clone(),
                         }),
+                    context_length: topology.context_length,
                 }
             }),
         })
@@ -317,6 +318,7 @@ pub(crate) fn proto_ann_to_local(
                         .unwrap_or_default(),
                     topology: descriptor.topology.as_ref().map(|topology| {
                         crate::models::ModelTopology {
+                            context_length: topology.context_length,
                             moe: topology
                                 .moe
                                 .as_ref()

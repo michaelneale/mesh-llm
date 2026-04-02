@@ -212,6 +212,7 @@ impl InferenceServerHandle {
 pub struct InferenceServerProcess {
     pub handle: InferenceServerHandle,
     pub death_rx: tokio::sync::oneshot::Receiver<()>,
+    pub context_length: u32,
 }
 
 pub struct ModelLaunchSpec<'a> {
@@ -226,6 +227,39 @@ pub struct ModelLaunchSpec<'a> {
     pub mmproj: Option<&'a Path>,
     pub ctx_size_override: Option<u32>,
     pub total_group_vram: Option<u64>,
+}
+
+fn compute_context_size(
+    ctx_size_override: Option<u32>,
+    model_bytes: u64,
+    my_vram: u64,
+    total_group_vram: Option<u64>,
+) -> u32 {
+    const GB: u64 = 1_000_000_000;
+    let host_model_bytes = if let Some(group_vram) = total_group_vram {
+        if group_vram > 0 {
+            let host_fraction = my_vram as f64 / group_vram as f64;
+            (model_bytes as f64 * host_fraction) as u64
+        } else {
+            model_bytes
+        }
+    } else {
+        model_bytes
+    };
+    let vram_after_model = my_vram.saturating_sub(host_model_bytes);
+    if let Some(override_ctx) = ctx_size_override {
+        override_ctx
+    } else if vram_after_model >= 30 * GB {
+        65536
+    } else if vram_after_model >= 12 * GB {
+        32768
+    } else if vram_after_model >= 6 * GB {
+        16384
+    } else if vram_after_model >= 3 * GB {
+        8192
+    } else {
+        4096
+    }
 }
 
 fn log_tail(path: &Path, max_lines: usize) -> String {
@@ -611,19 +645,7 @@ pub async fn start_llama_server(
         model_bytes
     };
     let vram_after_model = my_vram.saturating_sub(host_model_bytes);
-    let ctx_size: u32 = if let Some(override_ctx) = ctx_size_override {
-        override_ctx
-    } else if vram_after_model >= 30 * GB {
-        65536 // 30GB+ free: full 64K context
-    } else if vram_after_model >= 12 * GB {
-        32768 // 12-30GB free: 32K
-    } else if vram_after_model >= 6 * GB {
-        16384 // 6-12GB free: 16K
-    } else if vram_after_model >= 3 * GB {
-        8192 // 3-6GB free: 8K
-    } else {
-        4096 // <3GB free: minimal
-    };
+    let ctx_size = compute_context_size(ctx_size_override, model_bytes, my_vram, total_group_vram);
     tracing::info!(
         "Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB VRAM, {:.1}GB free{})",
         model_bytes as f64 / GB as f64,
@@ -793,7 +815,11 @@ pub async fn start_llama_server(
                 }
                 let _ = death_tx.send(());
             });
-            return Ok(InferenceServerProcess { handle, death_rx });
+            return Ok(InferenceServerProcess {
+                handle,
+                death_rx,
+                context_length: ctx_size,
+            });
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
@@ -969,7 +995,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_available_devices, preferred_device, BinaryFlavor};
+    use super::{compute_context_size, parse_available_devices, preferred_device, BinaryFlavor};
     use std::path::Path;
 
     #[test]
@@ -1018,5 +1044,37 @@ No devices found
     #[test]
     fn platform_bin_name_preserves_existing_exe_suffix_case_insensitively() {
         assert_eq!(super::platform_bin_name("rpc-server.EXE"), "rpc-server.EXE");
+    }
+
+    #[test]
+    fn compute_context_size_prefers_explicit_override() {
+        assert_eq!(
+            compute_context_size(Some(24576), 8_000_000_000, 48_000_000_000, None),
+            24576
+        );
+    }
+
+    #[test]
+    fn compute_context_size_uses_full_model_bytes_in_local_mode() {
+        assert_eq!(
+            compute_context_size(None, 10_000_000_000, 22_000_000_000, None),
+            32768
+        );
+        assert_eq!(
+            compute_context_size(None, 10_000_000_000, 13_000_000_000, None),
+            8192
+        );
+    }
+
+    #[test]
+    fn compute_context_size_accounts_for_split_host_weight_share() {
+        let model_bytes = 40_000_000_000;
+        let my_vram = 20_000_000_000;
+        let total_group_vram = Some(80_000_000_000);
+
+        assert_eq!(
+            compute_context_size(None, model_bytes, my_vram, total_group_vram),
+            16384
+        );
     }
 }

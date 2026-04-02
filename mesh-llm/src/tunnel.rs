@@ -304,35 +304,6 @@ async fn handle_inbound_http_stream(
     relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
 }
 
-pub async fn relay_tcp_via_quic(
-    tcp_stream: TcpStream,
-    quic_send: iroh::endpoint::SendStream,
-    quic_recv: iroh::endpoint::RecvStream,
-) -> Result<()> {
-    let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
-    relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
-}
-
-/// Relay only the QUIC response side back to a TCP client.
-///
-/// Used by the HTTP proxy after it has already buffered and forwarded exactly
-/// one request upstream. Any further bytes from the client connection are
-/// intentionally ignored so pipelined follow-up requests are not replayed to
-/// the selected upstream without a fresh routing decision.
-pub async fn relay_quic_response_to_tcp(
-    mut tcp_stream: TcpStream,
-    mut quic_recv: iroh::endpoint::RecvStream,
-) -> Result<()> {
-    let result = relay_response_with_first_byte_timeout(
-        &mut quic_recv,
-        &mut tcp_stream,
-        quic_response_first_byte_timeout(),
-    )
-    .await;
-    let _ = tcp_stream.shutdown().await;
-    result
-}
-
 /// Bidirectional relay between a TCP stream and a QUIC bi-stream.
 ///
 /// Two directions run concurrently:

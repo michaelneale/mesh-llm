@@ -5,16 +5,19 @@
 
 use crate::{
     affinity::{prepare_remote_targets_for_request, AffinityRouter, PreparedTargets},
-    election, mesh, router, tunnel,
+    election, mesh, router,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHUNKED_WIRE_BYTES: usize = MAX_BODY_BYTES * 6 + 64 * 1024;
 const MAX_HEADERS: usize = 64;
+const MAX_RESPONSE_BODY_PREVIEW_BYTES: usize = 4 * 1024;
+const REQUEST_TOKEN_MARGIN: u32 = 256;
 
 #[derive(Debug, Clone, Copy)]
 struct HttpReadLimits {
@@ -53,6 +56,25 @@ pub struct BufferedHttpRequest {
 pub enum PipelineProxyResult {
     Handled,
     FallbackToDirect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteAttemptResult {
+    Delivered { status_code: u16 },
+    RetryableUnavailable,
+    RetryableContextOverflow,
+}
+
+struct ParsedResponseHeaders {
+    header_end: usize,
+    status_code: u16,
+    content_length: Option<usize>,
+}
+
+struct ResponseProbe {
+    buffered: Vec<u8>,
+    status_code: u16,
+    retryable_context_overflow: bool,
 }
 
 // ── Request parsing ──
@@ -313,6 +335,165 @@ fn extract_session_hint_from_json(body: &serde_json::Value) -> Option<String> {
     })
 }
 
+fn response_first_byte_timeout() -> Duration {
+    std::env::var("MESH_LLM_TUNNEL_FIRST_BYTE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(60))
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.try_into().unwrap_or(u32::MAX)
+}
+
+fn ceil_div_u32(value: u32, divisor: u32) -> u32 {
+    value.saturating_add(divisor - 1) / divisor
+}
+
+fn request_budget_tokens(body: &serde_json::Value) -> Option<u32> {
+    let serialized = serde_json::to_vec(body).ok()?;
+    let prompt_tokens = ceil_div_u32(saturating_u32(serialized.len()), 4);
+    let completion_tokens = [
+        "max_completion_tokens",
+        "max_tokens",
+        "max_output_tokens",
+        "n_predict",
+    ]
+    .into_iter()
+    .find_map(|key| body.get(key).and_then(|value| value.as_u64()))
+    .map(|value| value.min(u32::MAX as u64) as u32)
+    .unwrap_or(0);
+    Some(
+        prompt_tokens
+            .saturating_add(completion_tokens)
+            .saturating_add(REQUEST_TOKEN_MARGIN),
+    )
+}
+
+fn reorder_candidates_by_context<T: Clone>(
+    candidates: &[(T, Option<u32>)],
+    required_tokens: Option<u32>,
+) -> Vec<T> {
+    let Some(required_tokens) = required_tokens else {
+        return candidates
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect();
+    };
+
+    let mut adequate = Vec::new();
+    let mut unknown = Vec::new();
+    for (candidate, context_length) in candidates {
+        match context_length {
+            Some(value) if *value >= required_tokens => adequate.push(candidate.clone()),
+            Some(_) => {}
+            None => unknown.push(candidate.clone()),
+        }
+    }
+
+    if adequate.is_empty() && unknown.is_empty() {
+        candidates
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect()
+    } else {
+        adequate.extend(unknown);
+        adequate
+    }
+}
+
+async fn order_remote_hosts_by_context(
+    node: &mesh::Node,
+    model: &str,
+    body_json: Option<&serde_json::Value>,
+    hosts: &[iroh::EndpointId],
+) -> Vec<iroh::EndpointId> {
+    let required_tokens = body_json.and_then(request_budget_tokens);
+    let mut candidates = Vec::with_capacity(hosts.len());
+    for host in hosts {
+        candidates.push((*host, node.peer_model_context_length(*host, model).await));
+    }
+    reorder_candidates_by_context(&candidates, required_tokens)
+}
+
+async fn order_targets_by_context(
+    node: &mesh::Node,
+    model: &str,
+    body_json: Option<&serde_json::Value>,
+    targets: &[election::InferenceTarget],
+) -> Vec<election::InferenceTarget> {
+    let required_tokens = body_json.and_then(request_budget_tokens);
+    let mut candidates = Vec::with_capacity(targets.len());
+    for target in targets {
+        let context_length = match target {
+            election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
+                node.local_model_context_length(model).await
+            }
+            election::InferenceTarget::Remote(peer_id)
+            | election::InferenceTarget::MoeRemote(peer_id) => {
+                node.peer_model_context_length(*peer_id, model).await
+            }
+            election::InferenceTarget::None => None,
+        };
+        candidates.push((target.clone(), context_length));
+    }
+    reorder_candidates_by_context(&candidates, required_tokens)
+}
+
+fn move_target_first<T: PartialEq>(targets: &mut [T], target: &T) -> bool {
+    if let Some(pos) = targets.iter().position(|candidate| candidate == target) {
+        targets[..=pos].rotate_right(1);
+        true
+    } else {
+        false
+    }
+}
+
+fn response_message_text(json: &serde_json::Value) -> Option<String> {
+    fn value_to_text(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::String(text) => Some(text.clone()),
+            serde_json::Value::Object(map) => map
+                .get("message")
+                .and_then(value_to_text)
+                .or_else(|| map.get("error").and_then(value_to_text)),
+            _ => None,
+        }
+    }
+
+    value_to_text(json)
+}
+
+fn is_retryable_context_overflow_response(body: &[u8]) -> bool {
+    let text = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| response_message_text(&json))
+        .unwrap_or_else(|| String::from_utf8_lossy(body).to_string())
+        .to_ascii_lowercase();
+
+    let mentions_context = [
+        "context", "n_ctx", "ctx", "prompt", "token", "slot", "window",
+    ]
+    .into_iter()
+    .any(|needle| text.contains(needle));
+    let mentions_limit = [
+        "exceed",
+        "overflow",
+        "too long",
+        "too many",
+        "greater than",
+        "longer than",
+        "limit",
+        "maximum",
+    ]
+    .into_iter()
+    .any(|needle| text.contains(needle));
+
+    mentions_context && mentions_limit
+}
+
 pub fn is_models_list_request(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     method == "GET" && (path == "/v1/models" || path == "/models")
@@ -330,6 +511,223 @@ pub fn pipeline_request_supported(path: &str, body: &serde_json::Value) -> bool 
             .get("messages")
             .map(|messages| messages.is_array())
             .unwrap_or(false)
+}
+
+fn try_parse_response_headers(buf: &[u8]) -> Result<Option<ParsedResponseHeaders>> {
+    let mut headers_buf = [httparse::EMPTY_HEADER; MAX_HEADERS];
+    let mut response = httparse::Response::new(&mut headers_buf);
+    match response.parse(buf) {
+        Ok(httparse::Status::Complete(header_end)) => {
+            let mut content_length = None;
+            for header in response.headers.iter() {
+                if header.name.eq_ignore_ascii_case("content-length") {
+                    let value = std::str::from_utf8(header.value)
+                        .context("invalid response Content-Length encoding")?;
+                    content_length =
+                        Some(value.trim().parse::<usize>().with_context(|| {
+                            format!("invalid response Content-Length: {value}")
+                        })?);
+                }
+            }
+            Ok(Some(ParsedResponseHeaders {
+                header_end,
+                status_code: response.code.unwrap_or(0),
+                content_length,
+            }))
+        }
+        Ok(httparse::Status::Partial) => Ok(None),
+        Err(err) => Err(anyhow!("HTTP response parse error: {err}")),
+    }
+}
+
+async fn read_response_chunk<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+    with_timeout: bool,
+) -> Result<usize> {
+    let mut chunk = [0u8; 8192];
+    let read_result = if with_timeout {
+        tokio::time::timeout(response_first_byte_timeout(), reader.read(&mut chunk))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "upstream sent no response within {:.3}s",
+                    response_first_byte_timeout().as_secs_f64()
+                )
+            })?
+    } else {
+        reader.read(&mut chunk).await
+    }?;
+    if read_result == 0 {
+        bail!("unexpected EOF while reading HTTP response");
+    }
+    buf.extend_from_slice(&chunk[..read_result]);
+    Ok(read_result)
+}
+
+async fn probe_http_response<R: AsyncRead + Unpin>(reader: &mut R) -> Result<ResponseProbe> {
+    let mut buffered = Vec::with_capacity(8192);
+    let parsed = loop {
+        if let Some(parsed) = try_parse_response_headers(&buffered)? {
+            break parsed;
+        }
+        let first_read = buffered.is_empty();
+        read_response_chunk(reader, &mut buffered, first_read).await?;
+        if buffered.len() > MAX_HEADER_BYTES {
+            bail!("HTTP response headers exceed {MAX_HEADER_BYTES} bytes");
+        }
+    };
+
+    let preview_len = if parsed.status_code == 400 {
+        parsed
+            .content_length
+            .map(|value| value.min(MAX_RESPONSE_BODY_PREVIEW_BYTES))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    while buffered.len() < parsed.header_end + preview_len {
+        read_response_chunk(reader, &mut buffered, false).await?;
+    }
+
+    let retryable_context_overflow = parsed.status_code == 400
+        && preview_len > 0
+        && is_retryable_context_overflow_response(
+            &buffered[parsed.header_end..parsed.header_end + preview_len],
+        );
+
+    Ok(ResponseProbe {
+        buffered,
+        status_code: parsed.status_code,
+        retryable_context_overflow,
+    })
+}
+
+async fn relay_probed_response<R: AsyncRead + Unpin>(
+    mut tcp_stream: &mut TcpStream,
+    reader: &mut R,
+    probe: ResponseProbe,
+    retry_context_overflow: bool,
+) -> Result<RouteAttemptResult> {
+    if retry_context_overflow && probe.retryable_context_overflow {
+        return Ok(RouteAttemptResult::RetryableContextOverflow);
+    }
+
+    tcp_stream.write_all(&probe.buffered).await?;
+    if let Err(err) = tokio::io::copy(reader, &mut tcp_stream).await {
+        tracing::debug!("response relay ended after headers were committed: {err}");
+    }
+    let _ = tcp_stream.shutdown().await;
+    Ok(RouteAttemptResult::Delivered {
+        status_code: probe.status_code,
+    })
+}
+
+async fn route_local_attempt(
+    node: &mesh::Node,
+    tcp_stream: &mut TcpStream,
+    port: u16,
+    prefetched: &[u8],
+    retry_context_overflow: bool,
+) -> RouteAttemptResult {
+    match TcpStream::connect(format!("127.0.0.1:{port}")).await {
+        Ok(mut upstream) => {
+            let _inflight = node.begin_inflight_request();
+            let _ = upstream.set_nodelay(true);
+            if let Err(err) = upstream.write_all(prefetched).await {
+                tracing::warn!(
+                    "API proxy: failed to forward buffered request to local llama-server on {port}: {err}"
+                );
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+            match probe_http_response(&mut upstream).await {
+                Ok(probe) => {
+                    let status_code = probe.status_code;
+                    match relay_probed_response(
+                        tcp_stream,
+                        &mut upstream,
+                        probe,
+                        retry_context_overflow,
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::debug!("API proxy (local) ended after commit: {err}");
+                            RouteAttemptResult::Delivered { status_code }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "API proxy: failed to read local response from llama-server on {port}: {err}"
+                    );
+                    RouteAttemptResult::RetryableUnavailable
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!("API proxy: can't reach llama-server on {port}: {err}");
+            RouteAttemptResult::RetryableUnavailable
+        }
+    }
+}
+
+async fn route_remote_attempt(
+    node: &mesh::Node,
+    tcp_stream: &mut TcpStream,
+    host_id: iroh::EndpointId,
+    prefetched: &[u8],
+    retry_context_overflow: bool,
+) -> RouteAttemptResult {
+    match node.open_http_tunnel(host_id).await {
+        Ok((mut quic_send, mut quic_recv)) => {
+            if let Err(err) = quic_send.write_all(prefetched).await {
+                tracing::warn!(
+                    "API proxy: failed to forward buffered request to host {}: {err}",
+                    host_id.fmt_short()
+                );
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+            match probe_http_response(&mut quic_recv).await {
+                Ok(probe) => {
+                    let status_code = probe.status_code;
+                    match relay_probed_response(
+                        tcp_stream,
+                        &mut quic_recv,
+                        probe,
+                        retry_context_overflow,
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(err) => {
+                            tracing::debug!("API proxy (remote) ended after commit: {err}");
+                            RouteAttemptResult::Delivered { status_code }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "API proxy: failed to read response from host {}: {err}",
+                        host_id.fmt_short()
+                    );
+                    RouteAttemptResult::RetryableUnavailable
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "API proxy: can't tunnel to host {}: {err}",
+                host_id.fmt_short()
+            );
+            RouteAttemptResult::RetryableUnavailable
+        }
+    }
+}
+
+fn should_learn_affinity(status_code: u16) -> bool {
+    (200..400).contains(&status_code)
 }
 
 // ── Model-aware tunnel routing ──
@@ -435,35 +833,46 @@ pub async fn handle_mesh_request(
             _ => None,
         })
         .collect();
+    let target_hosts = if let Some(name) = effective_model.as_deref() {
+        let ordered = order_remote_hosts_by_context(&node, name, body_json, &target_hosts).await;
+        if let (Some(prefix_hash), Some(cached_target)) =
+            (prepared.learn_prefix_hash, prepared.cached_target.as_ref())
+        {
+            if let election::InferenceTarget::Remote(cached_host) = cached_target {
+                let required_tokens = body_json.and_then(request_budget_tokens);
+                let cached_context = node.peer_model_context_length(*cached_host, name).await;
+                if matches!(
+                    (required_tokens, cached_context),
+                    (Some(required), Some(context)) if context < required
+                ) {
+                    affinity.forget_target(name, prefix_hash, cached_target);
+                }
+            }
+        }
+        ordered
+    } else {
+        target_hosts
+    };
 
     // Try each host in order — if tunnel fails, retry with next.
     // On first failure, trigger background gossip refresh so future requests
     // have a fresh routing table (doesn't block the retry loop).
-    let mut last_err = None;
+    let mut last_retryable = false;
     let mut refreshed = false;
     for target_host in &target_hosts {
-        match node.open_http_tunnel(*target_host).await {
-            Ok((mut quic_send, quic_recv)) => {
-                if let Err(e) = quic_send.write_all(&request.raw).await {
-                    tracing::warn!(
-                        "Failed to send buffered request to host {}: {e}",
-                        target_host.fmt_short()
-                    );
-                    last_err = Some(e.into());
-                    continue;
-                }
-                if let (Some(name), Some(prefix_hash)) =
-                    (effective_model.as_ref(), prepared.learn_prefix_hash)
-                {
-                    let target = election::InferenceTarget::Remote(*target_host);
-                    affinity.learn_target(name, prefix_hash, &target);
-                }
-                if let Err(e) = tunnel::relay_tcp_via_quic(tcp_stream, quic_send, quic_recv).await {
-                    tracing::debug!("HTTP tunnel relay ended: {e}");
+        match route_remote_attempt(&node, &mut tcp_stream, *target_host, &request.raw, true).await {
+            RouteAttemptResult::Delivered { status_code } => {
+                if should_learn_affinity(status_code) {
+                    if let (Some(name), Some(prefix_hash)) =
+                        (effective_model.as_ref(), prepared.learn_prefix_hash)
+                    {
+                        let target = election::InferenceTarget::Remote(*target_host);
+                        affinity.learn_target(name, prefix_hash, &target);
+                    }
                 }
                 return;
             }
-            Err(e) => {
+            RouteAttemptResult::RetryableContextOverflow => {
                 if let (Some(name), Some(prefix_hash), Some(cached_target)) = (
                     effective_model.as_ref(),
                     prepared.learn_prefix_hash,
@@ -475,10 +884,27 @@ pub async fn handle_mesh_request(
                     }
                 }
                 tracing::warn!(
-                    "Failed to tunnel to host {}: {e}, trying next",
+                    "Host {} rejected request with context overflow-style 400, trying next",
                     target_host.fmt_short()
                 );
-                last_err = Some(e);
+                last_retryable = true;
+            }
+            RouteAttemptResult::RetryableUnavailable => {
+                if let (Some(name), Some(prefix_hash), Some(cached_target)) = (
+                    effective_model.as_ref(),
+                    prepared.learn_prefix_hash,
+                    prepared.cached_target.as_ref(),
+                ) {
+                    let failed = election::InferenceTarget::Remote(*target_host);
+                    if cached_target == &failed {
+                        affinity.forget_target(name, prefix_hash, &failed);
+                    }
+                }
+                tracing::warn!(
+                    "Failed to tunnel to host {}, trying next",
+                    target_host.fmt_short()
+                );
+                last_retryable = true;
                 // Background refresh on first failure — non-blocking
                 if !refreshed {
                     let refresh_node = node.clone();
@@ -491,10 +917,139 @@ pub async fn handle_mesh_request(
         }
     }
     // All hosts failed
-    if let Some(e) = last_err {
-        tracing::warn!("All hosts failed for model {:?}: {e}", effective_model);
+    if last_retryable {
+        tracing::warn!("All hosts failed for model {:?}", effective_model);
     }
     let _ = send_503(tcp_stream).await;
+}
+
+async fn route_attempt_for_target(
+    node: &mesh::Node,
+    tcp_stream: &mut TcpStream,
+    target: &election::InferenceTarget,
+    prefetched: &[u8],
+    retry_context_overflow: bool,
+) -> RouteAttemptResult {
+    match target {
+        election::InferenceTarget::Local(port) | election::InferenceTarget::MoeLocal(port) => {
+            route_local_attempt(node, tcp_stream, *port, prefetched, retry_context_overflow).await
+        }
+        election::InferenceTarget::Remote(host_id)
+        | election::InferenceTarget::MoeRemote(host_id) => {
+            route_remote_attempt(
+                node,
+                tcp_stream,
+                *host_id,
+                prefetched,
+                retry_context_overflow,
+            )
+            .await
+        }
+        election::InferenceTarget::None => RouteAttemptResult::RetryableUnavailable,
+    }
+}
+
+pub async fn route_model_request(
+    node: mesh::Node,
+    tcp_stream: TcpStream,
+    targets: &election::ModelTargets,
+    model: &str,
+    parsed_body: Option<&serde_json::Value>,
+    prefetched: &[u8],
+    affinity: &AffinityRouter,
+) -> bool {
+    let mut tcp_stream = tcp_stream;
+    let ordered_candidates =
+        order_targets_by_context(&node, model, parsed_body, &targets.candidates(model)).await;
+    if ordered_candidates.is_empty() {
+        return false;
+    }
+
+    let mut filtered_targets = targets.clone();
+    filtered_targets
+        .targets
+        .insert(model.to_string(), ordered_candidates.clone());
+    let selection = crate::affinity::select_model_target_for_request(
+        &filtered_targets,
+        model,
+        parsed_body,
+        affinity,
+    );
+    if matches!(selection.target, election::InferenceTarget::None) {
+        let _ = send_503(tcp_stream).await;
+        return true;
+    }
+
+    if let (Some(prefix_hash), Some(cached_target)) = (
+        selection.learn_prefix_hash,
+        selection.cached_target.as_ref(),
+    ) {
+        let required_tokens = parsed_body.and_then(request_budget_tokens);
+        let cached_context = match cached_target {
+            election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
+                node.local_model_context_length(model).await
+            }
+            election::InferenceTarget::Remote(peer_id)
+            | election::InferenceTarget::MoeRemote(peer_id) => {
+                node.peer_model_context_length(*peer_id, model).await
+            }
+            election::InferenceTarget::None => None,
+        };
+        if matches!(
+            (required_tokens, cached_context),
+            (Some(required), Some(context)) if context < required
+        ) {
+            affinity.forget_target(model, prefix_hash, cached_target);
+        }
+    }
+
+    let mut ordered = ordered_candidates;
+    move_target_first(&mut ordered, &selection.target);
+    let mut refreshed = false;
+    for target in ordered {
+        match route_attempt_for_target(&node, &mut tcp_stream, &target, prefetched, true).await {
+            RouteAttemptResult::Delivered { status_code } => {
+                if should_learn_affinity(status_code) {
+                    if let Some(prefix_hash) = selection.learn_prefix_hash {
+                        affinity.learn_target(model, prefix_hash, &target);
+                    }
+                }
+                return true;
+            }
+            RouteAttemptResult::RetryableContextOverflow => {
+                if let (Some(prefix_hash), Some(cached_target)) = (
+                    selection.learn_prefix_hash,
+                    selection.cached_target.as_ref(),
+                ) {
+                    if cached_target == &target {
+                        affinity.forget_target(model, prefix_hash, &target);
+                    }
+                }
+                tracing::warn!("Target {target:?} rejected request with context overflow-style 400, trying next");
+            }
+            RouteAttemptResult::RetryableUnavailable => {
+                if let (Some(prefix_hash), Some(cached_target)) = (
+                    selection.learn_prefix_hash,
+                    selection.cached_target.as_ref(),
+                ) {
+                    if cached_target == &target {
+                        affinity.forget_target(model, prefix_hash, &target);
+                    }
+                }
+                if !refreshed {
+                    let refresh_node = node.clone();
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
+                    refreshed = true;
+                }
+                tracing::warn!("Target {target:?} unavailable, trying next");
+            }
+        }
+    }
+
+    let _ = send_503(tcp_stream).await;
+    true
 }
 
 /// Route a request to a known inference target (local llama-server or remote host).
@@ -508,70 +1063,9 @@ pub async fn route_to_target(
 ) -> bool {
     let mut tcp_stream = tcp_stream;
     tracing::info!("API proxy: routing to target {target:?}");
-    match target {
-        election::InferenceTarget::Local(port) | election::InferenceTarget::MoeLocal(port) => {
-            match TcpStream::connect(format!("127.0.0.1:{port}")).await {
-                Ok(mut upstream) => {
-                    let _inflight = node.begin_inflight_request();
-                    let _ = upstream.set_nodelay(true);
-                    if let Err(e) = upstream.write_all(prefetched).await {
-                        tracing::warn!("API proxy: failed to forward buffered request to local llama-server on {port}: {e}");
-                        let _ = send_503(tcp_stream).await;
-                        return false;
-                    }
-                    // Don't half-close the write side — llama-server interprets
-                    // a TCP FIN as a client disconnect and stops streaming.
-                    // The Connection: close header already signals one-shot.
-                    if let Err(e) = tokio::io::copy(&mut upstream, &mut tcp_stream).await {
-                        tracing::debug!("API proxy (local) ended: {e}");
-                    }
-                    let _ = tcp_stream.shutdown().await;
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!("API proxy: can't reach llama-server on {port}: {e}");
-                    let _ = send_503(tcp_stream).await;
-                    false
-                }
-            }
-        }
-        election::InferenceTarget::Remote(host_id)
-        | election::InferenceTarget::MoeRemote(host_id) => {
-            match node.open_http_tunnel(host_id).await {
-                Ok((mut quic_send, quic_recv)) => {
-                    if let Err(e) = quic_send.write_all(prefetched).await {
-                        tracing::warn!(
-                            "API proxy: failed to forward buffered request to host {}: {e}",
-                            host_id.fmt_short()
-                        );
-                        let _ = send_503(tcp_stream).await;
-                        return false;
-                    }
-                    // Don't call quic_send.finish() here. Pre-fix remotes'
-                    // relay_bidirectional interprets the send-side EOF as
-                    // "request direction done" and aborts the response relay
-                    // before llama-server has responded. For backward
-                    // compatibility with those nodes, keep the send stream
-                    // alive (held by _quic_send) until the response is fully
-                    // relayed, then it drops naturally.
-                    let _quic_send = quic_send;
-                    if let Err(e) = tunnel::relay_quic_response_to_tcp(tcp_stream, quic_recv).await
-                    {
-                        tracing::debug!("API proxy (remote) ended: {e}");
-                    }
-                    true
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "API proxy: can't tunnel to host {}: {e}",
-                        host_id.fmt_short()
-                    );
-                    let _ = send_503(tcp_stream).await;
-                    false
-                }
-            }
-        }
-        election::InferenceTarget::None => {
+    match route_attempt_for_target(&node, &mut tcp_stream, &target, prefetched, false).await {
+        RouteAttemptResult::Delivered { .. } => true,
+        RouteAttemptResult::RetryableContextOverflow | RouteAttemptResult::RetryableUnavailable => {
             let _ = send_503(tcp_stream).await;
             false
         }
@@ -902,6 +1396,45 @@ mod tests {
     fn test_pipeline_request_supported_rejects_missing_messages() {
         let body = serde_json::json!({"input":"hi"});
         assert!(!pipeline_request_supported("/v1/chat/completions", &body));
+    }
+
+    #[test]
+    fn test_request_budget_tokens_includes_output_budget_and_margin() {
+        let body = serde_json::json!({
+            "model": "qwen",
+            "max_tokens": 512,
+            "messages": [{"role": "user", "content": "hello world"}],
+        });
+
+        let budget = request_budget_tokens(&body).unwrap();
+        assert!(budget >= 512 + REQUEST_TOKEN_MARGIN);
+    }
+
+    #[test]
+    fn test_reorder_candidates_by_context_prefers_known_fit_then_unknown() {
+        let ordered = reorder_candidates_by_context(
+            &[(1u8, Some(4096)), (2u8, None), (3u8, Some(16384))],
+            Some(8192),
+        );
+
+        assert_eq!(ordered, vec![3, 2]);
+    }
+
+    #[test]
+    fn test_reorder_candidates_by_context_falls_back_when_all_known_too_small() {
+        let ordered =
+            reorder_candidates_by_context(&[(1u8, Some(4096)), (2u8, Some(6144))], Some(8192));
+
+        assert_eq!(ordered, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_is_retryable_context_overflow_response_detects_llama_style_message() {
+        let body = br#"{"error":{"message":"prompt tokens exceed context window (n_ctx=4096)"}}"#;
+        assert!(is_retryable_context_overflow_response(body));
+        assert!(!is_retryable_context_overflow_response(
+            br#"{"error":{"message":"missing required field: messages"}}"#
+        ));
     }
 
     #[tokio::test]

@@ -71,6 +71,7 @@ enum CapabilityLevel {
 
 message ModelTopology {
   optional ModelMoeInfo moe = 1;
+  optional uint32 context_length = 2;
 }
 
 message ModelMoeInfo {

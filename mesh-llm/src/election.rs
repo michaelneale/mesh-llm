@@ -101,6 +101,7 @@ pub struct LocalProcessInfo {
     pub backend: String,
     pub pid: u32,
     pub port: u16,
+    pub context_length: u32,
 }
 
 fn stop_requested(stop_rx: &watch::Receiver<bool>) -> bool {
@@ -575,6 +576,7 @@ pub async fn election_loop(
                     backend: "llama".into(),
                     pid: process.handle.pid(),
                     port: llama_port,
+                    context_length: process.context_length,
                 }));
             }
             on_change(true, true);
@@ -796,6 +798,7 @@ async fn moe_election_loop(
                                 backend: "llama".into(),
                                 pid: process.handle.pid(),
                                 port: llama_port,
+                                context_length: process.context_length,
                             }));
                         }
                         update_targets(
@@ -914,6 +917,7 @@ async fn moe_election_loop(
                             backend: "llama".into(),
                             pid: process.handle.pid(),
                             port: llama_port,
+                            context_length: process.context_length,
                         }));
                     }
                     node.regossip().await;

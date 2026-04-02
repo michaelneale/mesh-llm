@@ -83,6 +83,27 @@ pub struct ServedModelDescriptor {
     pub topology: Option<crate::models::ModelTopology>,
 }
 
+impl ServedModelDescriptor {
+    pub fn context_length(&self) -> Option<u32> {
+        self.topology
+            .as_ref()
+            .and_then(|topology| topology.context_length)
+    }
+
+    pub fn set_context_length(&mut self, context_length: Option<u32>) {
+        match (self.topology.as_mut(), context_length) {
+            (Some(topology), value) => topology.context_length = value,
+            (None, Some(value)) => {
+                self.topology = Some(crate::models::ModelTopology {
+                    context_length: Some(value),
+                    ..Default::default()
+                });
+            }
+            (None, None) => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelSourceKind {
@@ -153,6 +174,17 @@ pub fn infer_available_model_descriptors(
             descriptor_from_model_path(model_name, &path, false)
         })
         .collect()
+}
+
+pub fn infer_local_served_model_descriptor(
+    model_name: &str,
+    is_primary: bool,
+) -> Option<ServedModelDescriptor> {
+    descriptor_from_model_path(
+        model_name,
+        &crate::models::find_model_path(model_name),
+        is_primary,
+    )
 }
 
 pub fn backfill_legacy_descriptors(ann: &mut PeerAnnouncement) {
@@ -798,6 +830,13 @@ impl PeerInfo {
         } else {
             self.is_assigned_model(model)
         }
+    }
+
+    pub fn advertised_context_length(&self, model: &str) -> Option<u32> {
+        self.served_model_descriptors
+            .iter()
+            .find(|descriptor| descriptor.identity.model_name == model)
+            .and_then(ServedModelDescriptor::context_length)
     }
 }
 
@@ -1497,6 +1536,63 @@ impl Node {
 
     pub async fn set_served_model_descriptors(&self, descriptors: Vec<ServedModelDescriptor>) {
         *self.served_model_descriptors.lock().await = descriptors;
+    }
+
+    pub async fn upsert_served_model_descriptor(&self, descriptor: ServedModelDescriptor) {
+        let mut descriptors = self.served_model_descriptors.lock().await;
+        if let Some(existing) = descriptors
+            .iter_mut()
+            .find(|existing| existing.identity.model_name == descriptor.identity.model_name)
+        {
+            *existing = descriptor;
+        } else {
+            descriptors.push(descriptor);
+        }
+    }
+
+    pub async fn remove_served_model_descriptor(&self, model_name: &str) {
+        self.served_model_descriptors
+            .lock()
+            .await
+            .retain(|descriptor| descriptor.identity.model_name != model_name);
+    }
+
+    pub async fn set_served_model_context_length(
+        &self,
+        model_name: &str,
+        context_length: Option<u32>,
+    ) {
+        if let Some(descriptor) = self
+            .served_model_descriptors
+            .lock()
+            .await
+            .iter_mut()
+            .find(|descriptor| descriptor.identity.model_name == model_name)
+        {
+            descriptor.set_context_length(context_length);
+        }
+    }
+
+    pub async fn local_model_context_length(&self, model_name: &str) -> Option<u32> {
+        self.served_model_descriptors
+            .lock()
+            .await
+            .iter()
+            .find(|descriptor| descriptor.identity.model_name == model_name)
+            .and_then(ServedModelDescriptor::context_length)
+    }
+
+    pub async fn peer_model_context_length(
+        &self,
+        peer_id: EndpointId,
+        model_name: &str,
+    ) -> Option<u32> {
+        self.state
+            .lock()
+            .await
+            .peers
+            .get(&peer_id)
+            .and_then(|peer| peer.advertised_context_length(model_name))
     }
 
     pub async fn serving_models(&self) -> Vec<String> {
@@ -5181,7 +5277,24 @@ mod tests {
             available_model_metadata: vec![meta.clone()],
             experts_summary: Some(experts.clone()),
             available_model_sizes: model_sizes.clone(),
-            served_model_descriptors: vec![],
+            served_model_descriptors: vec![ServedModelDescriptor {
+                identity: ServedModelIdentity {
+                    model_name: "Qwen3-8B-Q4_K_M".to_string(),
+                    is_primary: true,
+                    source_kind: ModelSourceKind::HuggingFace,
+                    canonical_ref: Some("hf/bartowski/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf".into()),
+                    repository: Some("bartowski/Qwen3-8B-GGUF".into()),
+                    revision: Some("main".into()),
+                    artifact: Some("Qwen3-8B-Q4_K_M.gguf".into()),
+                    local_file_name: Some("Qwen3-8B-Q4_K_M.gguf".into()),
+                    identity_hash: Some("sha256:abc123".into()),
+                },
+                capabilities: crate::models::ModelCapabilities::default(),
+                topology: Some(crate::models::ModelTopology {
+                    context_length: Some(32768),
+                    moe: None,
+                }),
+            }],
         };
 
         let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -5225,6 +5338,14 @@ mod tests {
             "proto_ann_to_local must restore experts_summary"
         );
         assert!(roundtripped.available_model_sizes.is_empty());
+        assert_eq!(
+            roundtripped
+                .served_model_descriptors
+                .first()
+                .and_then(ServedModelDescriptor::context_length),
+            Some(32768),
+            "proto_ann_to_local must preserve served descriptor context length"
+        );
 
         let frame = build_gossip_frame(&[local_ann], peer_id);
         assert_eq!(frame.sender_id, peer_id_bytes);
@@ -5247,11 +5368,27 @@ mod tests {
                 .map(|e| e.top_expert_ids.as_slice()),
             Some([1u32, 5, 10].as_slice())
         );
+        assert_eq!(
+            wire_pa
+                .served_model_descriptors
+                .first()
+                .and_then(|descriptor| descriptor.topology.as_ref())
+                .and_then(|topology| topology.context_length),
+            Some(32768),
+            "build_gossip_frame must preserve served descriptor context length"
+        );
         let (_, final_local) =
             proto_ann_to_local(wire_pa).expect("final proto_ann_to_local must succeed");
         assert!(final_local.available_model_metadata.is_empty());
         assert!(final_local.available_models.is_empty());
         assert!(final_local.available_model_sizes.is_empty());
+        assert_eq!(
+            final_local
+                .served_model_descriptors
+                .first()
+                .and_then(ServedModelDescriptor::context_length),
+            Some(32768)
+        );
     }
 
     #[test]

@@ -8,6 +8,8 @@ use std::path::Path;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelTopology {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub moe: Option<ModelMoeInfo>,
 }
 
@@ -23,6 +25,7 @@ pub struct ModelMoeInfo {
 
 pub fn infer_catalog_topology(model: &catalog::CatalogModel) -> Option<ModelTopology> {
     model.moe.as_ref().map(|moe| ModelTopology {
+        context_length: None,
         moe: Some(ModelMoeInfo {
             expert_count: moe.n_expert as u32,
             used_expert_count: moe.n_expert_used as u32,
@@ -55,6 +58,7 @@ fn infer_hf_metadata_topology(config: &Value) -> Option<ModelTopology> {
         .and_then(|value| value.as_u64())
         .filter(|&v| v > 0)? as u32;
     Some(ModelTopology {
+        context_length: None,
         moe: Some(ModelMoeInfo {
             expert_count,
             used_expert_count,

@@ -52,6 +52,7 @@ struct LocalRuntimeModelHandle {
     port: u16,
     backend: String,
     process: launch::InferenceServerHandle,
+    context_length: u32,
 }
 
 struct ManagedModelController {
@@ -132,6 +133,16 @@ async fn advertise_model_ready(node: &mesh::Node, primary_model_name: &str, mode
     node.regossip().await;
 }
 
+async fn set_advertised_model_context(
+    node: &mesh::Node,
+    model_name: &str,
+    context_length: Option<u32>,
+) {
+    node.set_served_model_context_length(model_name, context_length)
+        .await;
+    node.regossip().await;
+}
+
 async fn withdraw_advertised_model(node: &mesh::Node, model_name: &str) {
     let mut hosted_models = node.hosted_models().await;
     let old_len = hosted_models.len();
@@ -155,6 +166,11 @@ async fn add_serving_assignment(node: &mesh::Node, primary_model_name: &str, mod
         serving_models.insert(0, primary);
     }
     node.set_serving_models(serving_models).await;
+    if let Some(descriptor) =
+        mesh::infer_local_served_model_descriptor(model_name, model_name == primary_model_name)
+    {
+        node.upsert_served_model_descriptor(descriptor).await;
+    }
     node.regossip().await;
 }
 
@@ -166,6 +182,7 @@ async fn remove_serving_assignment(node: &mesh::Node, model_name: &str) {
         return;
     }
     node.set_serving_models(serving_models).await;
+    node.remove_served_model_descriptor(model_name).await;
     node.regossip().await;
 }
 
@@ -215,6 +232,7 @@ async fn start_runtime_local_model(
             port,
             backend: "llama".into(),
             process: process.handle,
+            context_length: process.context_length,
         },
         process.death_rx,
     ))
@@ -1572,6 +1590,7 @@ async fn run_auto(
     let model_name_for_cb = model_name.clone();
     let model_name_for_election = model_name.clone();
     let node_for_cb = node.clone();
+    let node_for_primary_process = node.clone();
     let primary_target_tx = target_tx.clone();
     let console_state_for_election = console_state.clone();
     let console_state_for_primary_process = console_state.clone();
@@ -1621,12 +1640,19 @@ async fn run_auto(
                 }
             },
             move |process| {
-                if let Some(ref cs) = console_state_for_primary_process {
-                    let cs = cs.clone();
-                    let model_name = primary_process_model_name.clone();
-                    tokio::spawn(async move {
-                        match process {
-                            Some(process) => {
+                let context_node = node_for_primary_process.clone();
+                let model_name = primary_process_model_name.clone();
+                let console_state = console_state_for_primary_process.clone();
+                tokio::spawn(async move {
+                    match process {
+                        Some(process) => {
+                            set_advertised_model_context(
+                                &context_node,
+                                &model_name,
+                                Some(process.context_length),
+                            )
+                            .await;
+                            if let Some(cs) = console_state {
                                 cs.upsert_local_process(local_process_payload(
                                     &model_name,
                                     &process.backend,
@@ -1635,12 +1661,15 @@ async fn run_auto(
                                 ))
                                 .await;
                             }
-                            None => {
+                        }
+                        None => {
+                            set_advertised_model_context(&context_node, &model_name, None).await;
+                            if let Some(cs) = console_state {
                                 cs.remove_local_process(&model_name).await;
                             }
                         }
-                    });
-                }
+                    }
+                });
             },
         ).await;
     });
@@ -1695,6 +1724,7 @@ async fn run_auto(
             let extra_model_name_for_process = extra_model_name.clone();
             let extra_model_name_for_advertise = extra_model_name.clone();
             let extra_node_for_advertise = node.clone();
+            let extra_node_for_process = node.clone();
             let primary_model_name_for_extra = model_name.clone();
             let managed_model_name = extra_name.clone();
             eprintln!("  + {extra_name}");
@@ -1722,12 +1752,19 @@ async fn run_auto(
                         }
                     },
                     move |process| {
-                        if let Some(ref cs) = extra_console_state {
-                            let cs = cs.clone();
-                            let model_name = extra_model_name_for_process.clone();
-                            tokio::spawn(async move {
-                                match process {
-                                    Some(process) => {
+                        let context_node = extra_node_for_process.clone();
+                        let model_name = extra_model_name_for_process.clone();
+                        let console_state = extra_console_state.clone();
+                        tokio::spawn(async move {
+                            match process {
+                                Some(process) => {
+                                    set_advertised_model_context(
+                                        &context_node,
+                                        &model_name,
+                                        Some(process.context_length),
+                                    )
+                                    .await;
+                                    if let Some(cs) = console_state {
                                         cs.upsert_local_process(local_process_payload(
                                             &model_name,
                                             &process.backend,
@@ -1736,12 +1773,16 @@ async fn run_auto(
                                         ))
                                         .await;
                                     }
-                                    None => {
+                                }
+                                None => {
+                                    set_advertised_model_context(&context_node, &model_name, None)
+                                        .await;
+                                    if let Some(cs) = console_state {
                                         cs.remove_local_process(&model_name).await;
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     },
                 ).await;
             });
@@ -1823,6 +1864,12 @@ async fn run_auto(
                             .await?;
 
                             add_runtime_local_target(&target_tx, &loaded_name, handle.port);
+                            set_advertised_model_context(
+                                &node,
+                                &loaded_name,
+                                Some(handle.context_length),
+                            )
+                            .await;
                             advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
                             node.set_available_models(models::scan_local_models()).await;
                             if let Some(ref cs) = console_state {
@@ -2338,33 +2385,20 @@ async fn api_proxy(
                             .get_moe_target(&session_hint)
                             .unwrap_or(first_available_target(&targets))
                     } else if let Some(ref name) = effective_model {
-                        let selection = affinity::select_model_target_for_request(
-                            &targets, name, body_json, &affinity,
-                        );
-                        let t = selection.target.clone();
-                        if matches!(t, election::InferenceTarget::None) {
+                        if targets.candidates(name).is_empty() {
                             tracing::debug!("Model '{}' not found, trying first available", name);
                             first_available_target(&targets)
                         } else {
-                            let routed = proxy::route_to_target(
+                            let _ = proxy::route_model_request(
                                 node.clone(),
                                 tcp_stream,
-                                t.clone(),
+                                &targets,
+                                name,
+                                body_json,
                                 &request.raw,
+                                &affinity,
                             )
                             .await;
-                            if routed {
-                                if let Some(prefix_hash) = selection.learn_prefix_hash {
-                                    affinity.learn_target(name, prefix_hash, &t);
-                                }
-                            } else if let (Some(prefix_hash), Some(cached_target)) = (
-                                selection.learn_prefix_hash,
-                                selection.cached_target.as_ref(),
-                            ) {
-                                if cached_target == &t {
-                                    affinity.forget_target(name, prefix_hash, &t);
-                                }
-                            }
                             return;
                         }
                     } else {
@@ -3310,8 +3344,16 @@ mod tests {
     async fn spawn_capturing_upstream(
         response_body: &str,
     ) -> (u16, oneshot::Receiver<Vec<u8>>, tokio::task::JoinHandle<()>) {
+        spawn_status_upstream("200 OK", response_body).await
+    }
+
+    async fn spawn_status_upstream(
+        status: &str,
+        response_body: &str,
+    ) -> (u16, oneshot::Receiver<Vec<u8>>, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        let status = status.to_string();
         let response = response_body.to_string();
         let (request_tx, request_rx) = oneshot::channel();
         let handle = tokio::spawn(async move {
@@ -3320,9 +3362,8 @@ mod tests {
             let _ = request_tx.send(raw);
 
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response.len(),
-                response
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
             );
             stream.write_all(resp.as_bytes()).await.unwrap();
             let _ = stream.shutdown().await;
@@ -3551,6 +3592,19 @@ mod tests {
                 )
             })
             .collect::<HashMap<_, _>>();
+        targets
+    }
+
+    fn single_model_targets(model: &str, ports: &[u16]) -> election::ModelTargets {
+        let mut targets = election::ModelTargets::default();
+        targets.targets.insert(
+            model.to_string(),
+            ports
+                .iter()
+                .copied()
+                .map(election::InferenceTarget::Local)
+                .collect(),
+        );
         targets
     }
 
@@ -4076,6 +4130,138 @@ mod tests {
             .unwrap();
 
         proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_proxy_retries_context_overflow_bad_request_to_next_target() {
+        let overflow_body =
+            r#"{"error":{"message":"prompt tokens exceed context window (n_ctx=4096)"}}"#;
+        let (small_port, small_rx, small_handle) =
+            spawn_status_upstream("400 Bad Request", overflow_body).await;
+        let (large_port, large_rx, large_handle) = spawn_capturing_upstream(r#"{"ok":true}"#).await;
+        let (proxy_addr, proxy_handle) =
+            spawn_api_proxy_test_harness(single_model_targets("test", &[small_port, large_port]))
+                .await;
+
+        let body = json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "overflow then retry"}],
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = send_request_and_read_response(proxy_addr, vec![request.into_bytes()]).await;
+        let first_raw = String::from_utf8(small_rx.await.unwrap()).unwrap();
+        let second_raw = String::from_utf8(large_rx.await.unwrap()).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#"{"ok":true}"#));
+        assert!(first_raw.contains("overflow then retry"));
+        assert!(second_raw.contains("overflow then retry"));
+
+        proxy_handle.abort();
+        let _ = small_handle.await;
+        let _ = large_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_api_proxy_does_not_retry_generic_bad_request() {
+        let bad_request_body = r#"{"error":{"message":"missing required field: messages"}}"#;
+        let (bad_port, bad_rx, bad_handle) =
+            spawn_status_upstream("400 Bad Request", bad_request_body).await;
+        let (unused_port, unused_rx, unused_handle) =
+            spawn_capturing_upstream(r#"{"ok":true}"#).await;
+        let (proxy_addr, proxy_handle) =
+            spawn_api_proxy_test_harness(single_model_targets("test", &[bad_port, unused_port]))
+                .await;
+
+        let body = json!({
+            "model": "test",
+            "messages": [{"role": "user", "content": "bad request should stop"}],
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let response = send_request_and_read_response(proxy_addr, vec![request.into_bytes()]).await;
+        let first_raw = String::from_utf8(bad_rx.await.unwrap()).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("missing required field"));
+        assert!(first_raw.contains("bad request should stop"));
+        assert!(tokio::time::timeout(Duration::from_millis(250), unused_rx)
+            .await
+            .is_err());
+
+        proxy_handle.abort();
+        let _ = bad_handle.await;
+        unused_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_proxy_does_not_retry_after_successful_stream_starts() {
+        let (stream_port, stream_rx, stream_handle) = spawn_streaming_upstream(
+            "text/event-stream",
+            vec![
+                (Duration::ZERO, br#"data: {"delta":"first"}\n\n"#.to_vec()),
+                (
+                    Duration::from_millis(50),
+                    br#"data: {"delta":"second"}\n\n"#.to_vec(),
+                ),
+            ],
+        )
+        .await;
+        let (unused_port, unused_rx, unused_handle) =
+            spawn_capturing_upstream(r#"{"ok":true}"#).await;
+        let (proxy_addr, proxy_handle) =
+            spawn_api_proxy_test_harness(single_model_targets("test", &[stream_port, unused_port]))
+                .await;
+
+        let body = json!({
+            "model": "test",
+            "stream": true,
+            "messages": [{"role": "user", "content": "stream wins immediately"}],
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+        let first = read_until_contains(
+            &mut stream,
+            br#"data: {"delta":"first"}\n\n"#,
+            Duration::from_secs(2),
+        )
+        .await;
+        let mut rest = Vec::new();
+        stream.read_to_end(&mut rest).await.unwrap();
+
+        let first_text = String::from_utf8_lossy(&first);
+        let full_text = format!("{}{}", first_text, String::from_utf8_lossy(&rest));
+        let raw = String::from_utf8(stream_rx.await.unwrap()).unwrap();
+
+        assert!(first_text.contains("HTTP/1.1 200 OK"));
+        assert!(full_text.contains(r#"data: {"delta":"second"}\n\n"#));
+        assert!(raw.contains("stream wins immediately"));
+        assert!(tokio::time::timeout(Duration::from_millis(250), unused_rx)
+            .await
+            .is_err());
+
+        proxy_handle.abort();
+        let _ = stream_handle.await;
+        unused_handle.abort();
     }
 
     #[tokio::test]

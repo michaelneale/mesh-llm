@@ -698,7 +698,13 @@ impl MeshApi {
                     .map(str::to_string);
                 let context_length = metadata
                     .map(|m| m.context_length)
-                    .filter(|value| *value > 0);
+                    .filter(|value| *value > 0)
+                    .or_else(|| {
+                        descriptor
+                            .and_then(|descriptor| descriptor.topology.as_ref())
+                            .and_then(|topology| topology.context_length)
+                            .filter(|value| *value > 0)
+                    });
                 let quantization = metadata
                     .map(|m| m.quantization_type.trim())
                     .filter(|s| !s.is_empty())
