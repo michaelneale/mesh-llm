@@ -1,6 +1,5 @@
 import ELK from "elkjs/lib/elk.bundled.js";
 
-import { TOPOLOGY_NODE_WIDTH } from "./constants";
 import type {
   BucketedTopologyNode,
   PositionedTopologyNode,
@@ -71,12 +70,13 @@ export function buildFallbackTopologyLayout(
 
     for (const node of col) {
       const { width: _width, height, ...topologyNode } = node;
+      y += height / 2;
       positioned.push({
         ...topologyNode,
         x,
-        y: y + height / 2,
+        y,
       });
-      y += height + TOPOLOGY_ROW_GAP;
+      y += height / 2 + TOPOLOGY_ROW_GAP;
     }
 
     x += maxWidth + TOPOLOGY_LAYER_GAP;
@@ -151,9 +151,13 @@ async function layoutTopologyNodesWithElk(
     });
   }
 
+  if (!nodes.every((node) => positions.has(node.id))) {
+    return [];
+  }
+
   const centerPosition = positions.get(center.id) ?? { x: 0, y: 0 };
   return nodes.map((node) => {
-    const nodePosition = positions.get(node.id) ?? centerPosition;
+    const nodePosition = positions.get(node.id)!;
     const { width: _width, height: _height, ...topologyNode } = node;
 
     return {

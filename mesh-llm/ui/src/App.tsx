@@ -3721,38 +3721,31 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
     ? "bg-primary border-primary"
     : "bg-muted border-border";
   const dotCenterY = 22;
-  const edgeHandleStyle = isHorizontal
-    ? {
-        opacity: 0,
-        width: 1,
-        height: 1,
-        border: 0,
-        pointerEvents: "none" as const,
-        top: dotCenterY,
-        transform: "translateY(-50%)",
-      }
-    : {
-        opacity: 0,
-        width: 1,
-        height: 1,
-        border: 0,
-        pointerEvents: "none" as const,
-        left: "50%",
-        top: dotCenterY,
-        transform: "translate(-50%, -50%)",
-      };
+  const baseHandleStyle = {
+    opacity: 0,
+    width: 1,
+    height: 1,
+    border: 0,
+    pointerEvents: "none" as const,
+  };
+  const targetHandleStyle = isHorizontal
+    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
+    : { ...baseHandleStyle, left: "50%", top: dotCenterY, transform: "translate(-50%, -50%)" };
+  const sourceHandleStyle = isHorizontal
+    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
+    : { ...baseHandleStyle, left: "50%", bottom: dotCenterY, top: "auto", transform: "translate(-50%, 50%)" };
 
   return (
     <div className="relative w-[246px] pt-2">
       <Handle
         type="target"
         position={isHorizontal ? Position.Left : Position.Top}
-        style={edgeHandleStyle}
+        style={targetHandleStyle}
       />
       <Handle
         type="source"
         position={isHorizontal ? Position.Right : Position.Bottom}
-        style={edgeHandleStyle}
+        style={sourceHandleStyle}
       />
 
       <div className={cn("mx-auto h-7 w-7 rounded-full border-2", dotClass)} />
@@ -4450,9 +4443,11 @@ function KaTeXBlock({ math, display }: { math: string; display: boolean }) {
 
   useEffect(() => {
     let cancelled = false;
+    setRendered(false);
     katexPromise.then((katex) => {
       const container = display ? blockRef.current : inlineRef.current;
       if (cancelled || !katex || !container) return;
+      container.innerHTML = "";
       try {
         katex.render(math, container, {
           displayMode: display,
@@ -4512,9 +4507,11 @@ function MermaidBlock({ code }: { code: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
+    setSvg(null);
     mermaidPromise.then(async (mermaid) => {
       if (cancelled || !mermaid) {
-        setError("Mermaid failed to load");
+        if (!cancelled) setError("Mermaid failed to load");
         return;
       }
       try {
