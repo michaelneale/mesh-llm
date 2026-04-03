@@ -172,7 +172,7 @@ jobs:
 
   macos:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -268,7 +268,7 @@ jobs:
 
   macos_mlx:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     name: macOS MLX (${{ matrix.name }})
     runs-on: macos-latest
     strategy:
@@ -384,7 +384,7 @@ jobs:
 
   macos_gguf:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     name: macOS GGUF (${{ matrix.name }})
     runs-on: macos-latest
     strategy:
