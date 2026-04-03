@@ -28,13 +28,6 @@ pub enum MoeRankingStrategy {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub enum MoeGroupingStrategy {
-    #[default]
-    SharedCore,
-    SnakeDraft,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum MoeMicroLayerScope {
     First,
     #[default]
@@ -98,9 +91,6 @@ pub struct SharedRankingArtifact {
 #[derive(Clone, Debug)]
 pub struct MoeRuntimeOptions {
     pub ranking_strategy: MoeRankingStrategy,
-    pub grouping_strategy: MoeGroupingStrategy,
-    pub overlap: usize,
-    pub replicate: Option<u32>,
     pub micro_prompt_count: usize,
     pub micro_tokens: u32,
     pub micro_layer_scope: MoeMicroLayerScope,
@@ -110,9 +100,6 @@ impl Default for MoeRuntimeOptions {
     fn default() -> Self {
         Self {
             ranking_strategy: MoeRankingStrategy::Auto,
-            grouping_strategy: MoeGroupingStrategy::SharedCore,
-            overlap: 1,
-            replicate: None,
             micro_prompt_count: 1,
             micro_tokens: 8,
             micro_layer_scope: MoeMicroLayerScope::All,

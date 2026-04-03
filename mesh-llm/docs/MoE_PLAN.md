@@ -40,11 +40,9 @@ All core phases are complete and integrated into mesh-llm.
 - Qwen3-30B-A3B: local quality validation, 87/128 experts per node = excellent.
 - GLM-4.7-Flash-Q4_K_M: MoE auto-detected (64 experts, top-4), fits locally → solo mode, no split. If split, mesh-llm now prefers cached or freshly computed analysis over the sequential fallback.
 
-## Planned Next Step: Leader-Planned Auto MoE
+## Leader-Planned Auto MoE
 
-The next MoE iteration should remove user-facing split-planning knobs and make placement fully automatic.
-
-Planned behavior:
+Current behavior:
 
 - **Leader computes one plan per exact model identity.**
   - participating nodes
@@ -77,7 +75,7 @@ The deployment objective is to keep serving as much as possible while avoiding t
 - **Use extra capacity for resilience when available.**
   If the cluster has spare memory, the leader may choose extra overlap, replicated hot experts, or a full-coverage fallback replica instead of maximizing packing efficiency.
 
-### Planned Result
+### Current Result
 
 This should give mesh-llm the following MoE behavior:
 
@@ -92,8 +90,12 @@ This should give mesh-llm the following MoE behavior:
 ### No probe-based session placement (planned)
 The current design uses hash routing — sessions are assigned to nodes deterministically. The original plan proposed fan-out probes where each node scores "how well does my shard match this prompt" and the best node gets the session. This was unnecessary for the 2-node case with sufficient overlap (68%+) — both nodes produce equivalent quality. Probing becomes important with more nodes, less overlap, or sharper expert specialization. With scale testing on larger models coming soon, this is next on the list.
 
-### No leader-planned redundancy yet
-Current split planning is still more static than the intended design above. The leader does not yet compute an automatic redundancy plan from cluster resources, and the request path does not yet prefer a full-coverage fallback target when one exists.
+### Remaining limits
+- The leader currently prefers a conservative automatic plan:
+  - keep the existing active shard set when it is still healthy
+  - reserve a dedicated full-coverage fallback when spare nodes exist
+  - otherwise use overlap-based redundancy in the active split
+- This is intentionally simpler than a full global packing solver. It does not yet optimize across all possible redundancy layouts or cost models.
 
 ### No scale testing on large models
 Phase 5 in TODO. Mixtral 8×22B (~80GB) and Qwen3-235B-A22B (~130GB) are the real targets where expert sharding provides value (models that don't fit on one machine). Not tested yet.

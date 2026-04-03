@@ -16,7 +16,7 @@ The system detects MoE from the GGUF header, computes expert assignments, splits
 
 ## Planned Deployment Policy
 
-The intended end state is **leader-planned automatic MoE deployment**.
+The current runtime uses **leader-planned automatic MoE deployment**.
 
 That means:
 
@@ -33,7 +33,7 @@ The deployment plan should choose:
 - overlap / redundancy level
 - whether a full-coverage fallback replica is feasible
 
-## Planned Failure Handling
+## Failure Handling
 
 The goal is graceful degradation, not perfect steadiness on a broken topology.
 
@@ -46,7 +46,7 @@ The goal is graceful degradation, not perfect steadiness on a broken topology.
 - **Retry directly only to a full-coverage target.**
   If a node can serve the full expert set for the same exact model identity, it is a safe failover target.
 
-## Planned Recovery Handling
+## Recovery Handling
 
 - **Recover up cautiously.**
   When a lost node comes back, it should rejoin the mesh first but remain out of active MoE placement until it has stayed healthy for a short probation window.
@@ -55,7 +55,7 @@ The goal is graceful degradation, not perfect steadiness on a broken topology.
 - **Recompute when membership changes.**
   As nodes join or leave, the leader should re-plan the deployment based on the current healthy set and the available resource budget.
 
-## Planned Redundancy Handling
+## Redundancy Handling
 
 If the cluster has spare capacity, the leader should use it to improve resilience automatically rather than exposing manual runtime knobs.
 
@@ -97,7 +97,7 @@ else:
 - Remaining experts distributed round-robin across nodes
 - Returns `Vec<NodeAssignment>` — each has `experts`, `n_shared`, `n_unique`
 
-This remains the current placement algorithm. The planned next step is for the leader to choose a placement and redundancy plan automatically from cluster resources instead of exposing strategy knobs at runtime.
+The leader now chooses placement automatically from cluster resources instead of exposing MoE split-planning knobs at runtime. The current planner keeps a healthy active shard set stable, uses overlap-based redundancy in the active split, and reserves a full-coverage fallback replica when there is enough spare capacity.
 
 ### Step 4: Split GGUF (`moe.rs` → `llama-moe-split`)
 
@@ -119,9 +119,8 @@ Each node runs `llama-server` with its split GGUF. No `--rpc`, no tensor splitti
 
 - **Shard distribution over QUIC** — the design proposed pushing shards from host to workers. Instead, every node splits locally from its own copy of the full GGUF. Simpler, but requires every node to have the full model on disk.
 - **Probe-based placement** — hash routing is used instead. Both nodes are equivalent with sufficient overlap.
-- **Leader-planned failover and redundancy** — the mesh does not yet automatically choose extra redundancy or full-coverage fallback targets when spare capacity exists.
-- **Request-path fail-down** — the request path does not yet directly trigger MoE reconfiguration when an active shard becomes unusable.
-- **Recovery probation** — recovered peers are not yet held in a short “healthy again” window before being eligible for MoE scale-up.
+- **Global redundancy optimization** — the current leader plan is intentionally conservative and deterministic. It does not yet search all possible shard/fallback layouts.
+- **Probe-based placement** — hash routing plus full-coverage failover is still used instead of prompt probing.
 
 ## Open Questions (from original design, still open)
 

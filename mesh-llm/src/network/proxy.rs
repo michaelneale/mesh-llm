@@ -1115,6 +1115,68 @@ pub async fn route_model_request(
     true
 }
 
+pub async fn route_moe_request(
+    node: mesh::Node,
+    tcp_stream: TcpStream,
+    targets: &election::ModelTargets,
+    model: &str,
+    session_hint: &str,
+    parsed_body: Option<&serde_json::Value>,
+    prefetched: &[u8],
+) -> bool {
+    let mut tcp_stream = tcp_stream;
+    let Some(primary_target) = targets.get_moe_target(session_hint) else {
+        return false;
+    };
+    let mut ordered = order_targets_by_context(
+        &node,
+        model,
+        parsed_body,
+        &targets.get_moe_failover_targets(session_hint),
+    )
+    .await;
+    if ordered.is_empty() {
+        return false;
+    }
+    move_target_first(&mut ordered, &primary_target);
+
+    let total_targets = ordered.len();
+    let mut refreshed = false;
+    for (idx, target) in ordered.into_iter().enumerate() {
+        let retry_context_overflow = idx + 1 < total_targets;
+        match route_attempt_for_target(
+            &node,
+            &mut tcp_stream,
+            &target,
+            prefetched,
+            retry_context_overflow,
+        )
+        .await
+        {
+            RouteAttemptResult::Delivered { .. } => return true,
+            RouteAttemptResult::RetryableContextOverflow => {
+                tracing::warn!("MoE target {target:?} rejected request with context overflow-style 400, trying next");
+            }
+            RouteAttemptResult::RetryableUnavailable => {
+                if let election::InferenceTarget::MoeRemote(peer_id) = &target {
+                    node.handle_peer_death(*peer_id).await;
+                }
+                if !refreshed {
+                    let refresh_node = node.clone();
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
+                    refreshed = true;
+                }
+                tracing::warn!("MoE target {target:?} unavailable, trying next");
+            }
+        }
+    }
+
+    let _ = send_503(tcp_stream).await;
+    true
+}
+
 /// Route a request to a known inference target (local llama-server or remote host).
 ///
 /// Used by the API proxy after election has determined the target.

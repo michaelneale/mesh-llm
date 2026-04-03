@@ -597,7 +597,7 @@ fn moe_recovery_ready_at(
         .unwrap_or(true)
 }
 
-fn descriptors_share_exact_moe_identity_for_model(
+pub(crate) fn descriptors_share_exact_moe_identity_for_model(
     local: &[ServedModelDescriptor],
     remote: &[ServedModelDescriptor],
     model_name: &str,

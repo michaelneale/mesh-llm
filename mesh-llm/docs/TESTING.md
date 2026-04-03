@@ -298,14 +298,14 @@ mesh-llm --model Qwen3-Coder-Next-Q4_K_M --auto --no-self-update --split --join 
 - Restart the dead node.
 - Verify the node reappears in mesh membership.
 - Verify the deployment does **not** immediately expand back up on the first healthy signal.
-- Verify expansion only happens after the configured recovery stability window.
+- Verify the leader keeps the existing healthy shard set unless the larger topology is explicitly needed.
 
 ### 11d. Full-coverage fallback replica
 
 - Start a split deployment where one additional node can serve the full expert set for the same exact model identity.
 - Kill an active shard.
 - Verify request routing can fail over to the full-coverage target instead of blindly retrying a different partial shard.
-- Verify the cluster still re-plans the split afterward if that remains the best topology.
+- Verify the surviving cluster keeps serving while the leader recomputes the split on the remaining active shard set.
 
 ### 11e. Flaky network does not churn the MoE topology
 

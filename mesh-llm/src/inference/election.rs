@@ -10,7 +10,7 @@ use crate::mesh;
 use crate::models;
 use crate::network::tunnel;
 use mesh::NodeRole;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -87,6 +87,8 @@ pub enum InferenceTarget {
 pub struct MoeState {
     /// All MoE node targets (local + remote), in stable order.
     pub nodes: Vec<InferenceTarget>,
+    /// Full-coverage targets that can serve the whole model if the active shard set fails.
+    pub fallbacks: Vec<InferenceTarget>,
 }
 
 /// Per-model routing table. The API proxy uses this to route by model name.
@@ -216,11 +218,27 @@ impl ModelTargets {
         let idx = (hash as usize) % moe.nodes.len();
         Some(moe.nodes[idx].clone())
     }
+
+    pub fn get_moe_failover_targets(&self, session_hint: &str) -> Vec<InferenceTarget> {
+        let Some(primary) = self.get_moe_target(session_hint) else {
+            return Vec::new();
+        };
+        let mut ordered = vec![primary.clone()];
+        if let Some(moe) = self.moe.as_ref() {
+            for fallback in &moe.fallbacks {
+                if fallback != &primary {
+                    ordered.push(fallback.clone());
+                }
+            }
+        }
+        ordered
+    }
 }
 
 /// Compute shard index for a node given all node IDs in the MoE group.
 /// Nodes are sorted by ID to ensure all nodes agree on the ordering.
 /// Returns (sorted_ids, my_index).
+#[cfg(test)]
 pub fn moe_shard_index(
     my_id: iroh::EndpointId,
     peer_ids: &[iroh::EndpointId],
@@ -238,23 +256,44 @@ pub fn moe_shard_index(
 /// The caller's own node gets MoeLocal(port), others get MoeRemote(id).
 pub fn build_moe_targets(
     sorted_ids: &[iroh::EndpointId],
+    fallback_ids: &[iroh::EndpointId],
     my_id: iroh::EndpointId,
-    my_port: u16,
+    active_local_port: Option<u16>,
+    fallback_local_port: Option<u16>,
     model_name: &str,
 ) -> ModelTargets {
     let mut moe_state = MoeState::default();
     for &id in sorted_ids {
         if id == my_id {
-            moe_state.nodes.push(InferenceTarget::MoeLocal(my_port));
+            if let Some(port) = active_local_port {
+                moe_state.nodes.push(InferenceTarget::MoeLocal(port));
+            }
         } else {
             moe_state.nodes.push(InferenceTarget::MoeRemote(id));
         }
     }
+    for &id in fallback_ids {
+        if id == my_id {
+            if let Some(port) = fallback_local_port {
+                moe_state.fallbacks.push(InferenceTarget::Local(port));
+            }
+        } else {
+            moe_state.fallbacks.push(InferenceTarget::Remote(id));
+        }
+    }
     let mut targets = ModelTargets::default();
-    targets.targets.insert(
-        model_name.to_string(),
-        vec![InferenceTarget::MoeLocal(my_port)],
-    );
+    let primary_targets = if let Some(port) = active_local_port {
+        vec![InferenceTarget::MoeLocal(port)]
+    } else if let Some(port) = fallback_local_port {
+        vec![InferenceTarget::Local(port)]
+    } else {
+        Vec::new()
+    };
+    if !primary_targets.is_empty() {
+        targets
+            .targets
+            .insert(model_name.to_string(), primary_targets);
+    }
     targets.moe = Some(moe_state);
     targets
 }
@@ -265,9 +304,112 @@ struct ResolvedMoeConfig {
     ranking_strategy: moe::MoeRankingStrategy,
     ranking_source: String,
     ranking_origin: String,
-    grouping_strategy: moe::MoeGroupingStrategy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MoePlacementRole {
+    SplitShard,
+    FullFallback,
+    Standby,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MoePlacementPlan {
+    leader_id: iroh::EndpointId,
+    active_ids: Vec<iroh::EndpointId>,
+    fallback_ids: Vec<iroh::EndpointId>,
     overlap: usize,
-    replicate: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MoePlacementCandidate {
+    id: iroh::EndpointId,
+    vram_bytes: u64,
+    full_coverage: bool,
+}
+
+impl MoePlacementPlan {
+    fn role_for(&self, my_id: iroh::EndpointId) -> MoePlacementRole {
+        if self.active_ids.contains(&my_id) {
+            MoePlacementRole::SplitShard
+        } else if self.fallback_ids.contains(&my_id) {
+            MoePlacementRole::FullFallback
+        } else {
+            MoePlacementRole::Standby
+        }
+    }
+
+    fn shard_index_for(&self, my_id: iroh::EndpointId) -> Option<usize> {
+        self.active_ids.iter().position(|id| *id == my_id)
+    }
+}
+
+fn plan_moe_placement(
+    mut candidates: Vec<MoePlacementCandidate>,
+    current_active_ids: &[iroh::EndpointId],
+    current_fallback_ids: &[iroh::EndpointId],
+) -> Option<MoePlacementPlan> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by(|a, b| {
+        b.vram_bytes
+            .cmp(&a.vram_bytes)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let leader_id = candidates[0].id;
+    let candidate_ids: HashSet<_> = candidates.iter().map(|candidate| candidate.id).collect();
+
+    let keep_current_active = !current_active_ids.is_empty()
+        && current_active_ids
+            .iter()
+            .all(|id| candidate_ids.contains(id));
+
+    let mut active_ids: Vec<iroh::EndpointId> = if keep_current_active {
+        current_active_ids.to_vec()
+    } else {
+        candidates.iter().map(|candidate| candidate.id).collect()
+    };
+    active_ids.sort();
+    active_ids.dedup();
+
+    let mut fallback_ids = Vec::new();
+    if keep_current_active {
+        for id in current_fallback_ids {
+            if candidate_ids.contains(id) && !active_ids.contains(id) {
+                fallback_ids.push(*id);
+            }
+        }
+        if fallback_ids.is_empty() && active_ids.len() >= 3 {
+            if let Some(fallback_candidate) = candidates
+                .iter()
+                .find(|candidate| candidate.full_coverage && !active_ids.contains(&candidate.id))
+            {
+                fallback_ids.push(fallback_candidate.id);
+            }
+        }
+    } else if candidates.len() >= 4 && active_ids.len().saturating_sub(1) >= 3 {
+        if let Some(fallback_candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.full_coverage && !active_ids.is_empty())
+        {
+            active_ids.retain(|id| *id != fallback_candidate.id);
+            fallback_ids.push(fallback_candidate.id);
+        }
+    }
+
+    fallback_ids.sort();
+    fallback_ids.dedup();
+
+    let overlap = if active_ids.len() >= 3 { 2 } else { 1 };
+
+    Some(MoePlacementPlan {
+        leader_id,
+        active_ids,
+        fallback_ids,
+        overlap,
+    })
 }
 
 /// Look up base MoE config for a model.
@@ -443,13 +585,9 @@ fn resolve_runtime_moe_config(
     };
 
     eprintln!(
-        "🧩 [{}] MoE ranking={} grouping={} resolved in {:.1}s",
+        "🧩 [{}] MoE ranking={} resolved in {:.1}s",
         model_name,
         format!("{ranking_source} origin={ranking_origin}"),
-        match options.grouping_strategy {
-            moe::MoeGroupingStrategy::SharedCore => "shared-core",
-            moe::MoeGroupingStrategy::SnakeDraft => "snake-draft",
-        },
         started.elapsed().as_secs_f64()
     );
 
@@ -458,9 +596,6 @@ fn resolve_runtime_moe_config(
         ranking_strategy: options.ranking_strategy,
         ranking_source,
         ranking_origin,
-        grouping_strategy: options.grouping_strategy,
-        overlap: options.overlap.max(1),
-        replicate: options.replicate.unwrap_or(base.min_experts_per_node),
     }))
 }
 
@@ -1442,8 +1577,9 @@ async fn moe_election_loop(
 ) {
     let mut peer_rx = node.peer_change_rx.clone();
     let mut currently_running = false;
-    let mut last_n_nodes: usize = 0;
+    let mut last_plan: Option<MoePlacementPlan> = None;
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
+    let mut current_local_port: Option<u16> = None;
 
     loop {
         if stop_requested(&stop_rx) {
@@ -1454,19 +1590,15 @@ async fn moe_election_loop(
             let _ = refresh_auto_moe_config_from_cache(&model_name, &model, &mut moe_cfg);
         }
 
-        // Count how many healthy nodes (including us) are eligible for this exact MoE deployment.
         let peers = node.peers().await;
         let local_descriptors = node.served_model_descriptors().await;
-        let all_model_peers: Vec<mesh::PeerInfo> = peers
+        let eligible_model_peers: Vec<mesh::PeerInfo> = peers
             .iter()
             .filter(|p| p.is_assigned_model(&model_name))
             .filter(|p| !matches!(p.role, NodeRole::Client))
-            .cloned()
-            .collect();
-        let model_peers: Vec<mesh::PeerInfo> = all_model_peers
-            .into_iter()
-            .filter(|peer| {
+            .filter_map(|peer| {
                 mesh::peer_is_eligible_for_active_moe(&local_descriptors, peer, &model_name)
+                    .then_some(peer.clone())
             })
             .collect();
         let recovering_peer_count = peers
@@ -1475,8 +1607,6 @@ async fn moe_election_loop(
             .filter(|p| !matches!(p.role, NodeRole::Client))
             .filter(|peer| !peer.moe_recovery_ready())
             .count();
-        let n_nodes = model_peers.len() + 1; // +1 for us
-
         if recovering_peer_count > 0 {
             eprintln!(
                 "🧩 [{model_name}] Holding {} recovered peer(s) out of active MoE placement until stable",
@@ -1484,13 +1614,59 @@ async fn moe_election_loop(
             );
         }
 
-        // Determine our shard index: sort all node IDs, find our position
         let my_id = node.id();
-        let peer_ids: Vec<iroh::EndpointId> = model_peers.iter().map(|p| p.id).collect();
-        let (all_ids, my_shard_index) = moe_shard_index(my_id, &peer_ids);
+        let model_fits = my_vram >= (model_bytes as f64 * 1.1) as u64;
+        let mut candidates = vec![MoePlacementCandidate {
+            id: my_id,
+            vram_bytes: my_vram,
+            full_coverage: model_fits,
+        }];
+        candidates.extend(
+            eligible_model_peers
+                .iter()
+                .map(|peer| MoePlacementCandidate {
+                    id: peer.id,
+                    vram_bytes: peer.vram_bytes,
+                    full_coverage: peer.vram_bytes >= (model_bytes as f64 * 1.1) as u64,
+                }),
+        );
+        let current_active_ids = last_plan
+            .as_ref()
+            .map(|plan| plan.active_ids.as_slice())
+            .unwrap_or(&[]);
+        let current_fallback_ids = last_plan
+            .as_ref()
+            .map(|plan| plan.fallback_ids.as_slice())
+            .unwrap_or(&[]);
+        let Some(plan) = plan_moe_placement(candidates, current_active_ids, current_fallback_ids)
+        else {
+            tokio::select! {
+                res = peer_rx.changed() => {
+                    if res.is_err() { break; }
+                }
+                res = stop_rx.changed() => {
+                    if res.is_err() || stop_requested(&stop_rx) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        };
+        let role = plan.role_for(my_id);
+        let healthy_reserve_count = eligible_model_peers
+            .iter()
+            .filter(|peer| {
+                !plan.active_ids.contains(&peer.id) && !plan.fallback_ids.contains(&peer.id)
+            })
+            .count();
+        if healthy_reserve_count > 0 && currently_running {
+            eprintln!(
+                "🧩 [{model_name}] Keeping {} healthy peer(s) in reserve until the current MoE plan needs expansion",
+                healthy_reserve_count
+            );
+        }
 
-        // If nothing changed, skip
-        if currently_running && n_nodes == last_n_nodes {
+        if currently_running && last_plan.as_ref() == Some(&plan) {
             tokio::select! {
                 res = peer_rx.changed() => {
                     if res.is_err() { break; }
@@ -1508,6 +1684,33 @@ async fn moe_election_loop(
             continue;
         }
 
+        if currently_running {
+            if let Some(previous_plan) = last_plan.as_ref() {
+                let previous_role = previous_plan.role_for(my_id);
+                let same_local_deployment = previous_role == role
+                    && previous_plan.active_ids == plan.active_ids
+                    && previous_plan.overlap == plan.overlap;
+                if same_local_deployment && previous_plan.fallback_ids != plan.fallback_ids {
+                    let targets = build_moe_targets(
+                        &plan.active_ids,
+                        &plan.fallback_ids,
+                        my_id,
+                        matches!(role, MoePlacementRole::SplitShard).then_some(
+                            current_local_port.expect("running MoE shard should have a local port"),
+                        ),
+                        matches!(role, MoePlacementRole::FullFallback).then_some(
+                            current_local_port
+                                .expect("running MoE fallback should have a local port"),
+                        ),
+                        &model_name,
+                    );
+                    target_tx.send_replace(targets);
+                    last_plan = Some(plan);
+                    continue;
+                }
+            }
+        }
+
         // Something changed — kill existing llama-server
         if currently_running {
             if let Some(process) = llama_process.take() {
@@ -1515,15 +1718,103 @@ async fn moe_election_loop(
             }
             tunnel_mgr.set_http_port(0);
             currently_running = false;
+            current_local_port = None;
             on_process(None);
             on_change(false, false);
         }
 
-        last_n_nodes = n_nodes;
+        last_plan = Some(plan.clone());
 
-        if n_nodes == 1 {
-            // Solo: check if the full model fits in VRAM
-            let model_fits = my_vram >= (model_bytes as f64 * 1.1) as u64;
+        if matches!(role, MoePlacementRole::Standby) {
+            eprintln!(
+                "🧩 [{}] Standing by outside active MoE placement (leader={} active={} fallback={})",
+                model_name,
+                plan.leader_id.fmt_short(),
+                plan.active_ids.len(),
+                plan.fallback_ids.len()
+            );
+            node.set_role(NodeRole::Worker).await;
+            update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
+            on_change(false, false);
+        } else if matches!(role, MoePlacementRole::FullFallback) {
+            eprintln!(
+                "🧩 [{}] MoE full-coverage fallback — leader={} active-shards={} fallback-nodes={}",
+                model_name,
+                plan.leader_id.fmt_short(),
+                plan.active_ids.len(),
+                plan.fallback_ids.len()
+            );
+            on_change(true, false);
+
+            let llama_port = match find_free_port().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("  Failed to find free port: {e}");
+                    if peer_rx.changed().await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+
+            match launch::start_llama_server(
+                &bin_dir,
+                binary_flavor,
+                launch::ModelLaunchSpec {
+                    model: &model,
+                    http_port: llama_port,
+                    tunnel_ports: &[],
+                    tensor_split: None,
+                    draft: None,
+                    draft_max: 0,
+                    model_bytes,
+                    my_vram,
+                    mmproj: None,
+                    ctx_size_override,
+                    total_group_vram: None,
+                },
+            )
+            .await
+            {
+                Ok(process) => {
+                    node.set_role(NodeRole::Host {
+                        http_port: ingress_http_port,
+                    })
+                    .await;
+                    tunnel_mgr.set_http_port(ingress_http_port);
+                    currently_running = true;
+                    current_local_port = Some(llama_port);
+                    llama_process = Some(process);
+                    if let Some(ref process) = llama_process {
+                        on_process(Some(LocalProcessInfo {
+                            backend: "llama".into(),
+                            pid: process.handle.pid(),
+                            port: llama_port,
+                            context_length: process.context_length,
+                        }));
+                    }
+                    node.regossip().await;
+                    let targets = build_moe_targets(
+                        &plan.active_ids,
+                        &plan.fallback_ids,
+                        my_id,
+                        None,
+                        Some(llama_port),
+                        &model_name,
+                    );
+                    target_tx.send_replace(targets);
+                    on_change(true, true);
+                    eprintln!(
+                        "✅ [{}] MoE fallback replica ready on port {llama_port}",
+                        model_name
+                    );
+                }
+                Err(e) => {
+                    eprintln!("  Failed to start fallback llama-server: {e}");
+                }
+            }
+        } else if plan.active_ids.len() == 1 {
             if model_fits {
                 eprintln!(
                     "🧩 [{}] MoE model — serving entirely ({:.1}GB fits in {:.1}GB VRAM)",
@@ -1572,6 +1863,7 @@ async fn moe_election_loop(
                         .await;
                         tunnel_mgr.set_http_port(ingress_http_port);
                         currently_running = true;
+                        current_local_port = Some(llama_port);
                         llama_process = Some(process);
                         if let Some(ref process) = llama_process {
                             on_process(Some(LocalProcessInfo {
@@ -1599,42 +1891,32 @@ async fn moe_election_loop(
                     }
                 }
             } else {
-                // Model too large even for solo — wait for peers to join so we can split
                 eprintln!("⚠️  [{}] MoE model too large to serve entirely ({:.1}GB model, {:.1}GB VRAM) — waiting for peers",
                     model_name, model_bytes as f64 / 1e9, my_vram as f64 / 1e9);
                 on_change(false, false);
             }
         } else {
-            // Multi-node MoE: split and load our shard
+            let my_shard_index = plan.shard_index_for(my_id).unwrap_or(0);
             eprintln!(
-                "🧩 [{}] MoE split mode — {} nodes, I am shard {}/{} (ranking={} origin={}, {})",
+                "🧩 [{}] MoE split mode — leader={} active={} fallback={} I am shard {}/{} (ranking={} origin={}, overlap={})",
                 model_name,
-                n_nodes,
+                plan.leader_id.fmt_short(),
+                plan.active_ids.len(),
+                plan.fallback_ids.len(),
                 my_shard_index,
-                n_nodes,
+                plan.active_ids.len(),
                 moe_cfg.ranking_source,
                 moe_cfg.ranking_origin,
-                match moe_cfg.grouping_strategy {
-                    moe::MoeGroupingStrategy::SharedCore => "shared-core",
-                    moe::MoeGroupingStrategy::SnakeDraft => "snake-draft",
-                }
+                plan.overlap
             );
             on_change(true, false);
 
-            // Compute assignments and get our shard
-            let assignments = match moe_cfg.grouping_strategy {
-                moe::MoeGroupingStrategy::SharedCore => moe::compute_assignments_with_overlap(
-                    &moe_cfg.config.ranking,
-                    n_nodes,
-                    moe_cfg.config.min_experts_per_node,
-                    moe_cfg.overlap,
-                ),
-                moe::MoeGroupingStrategy::SnakeDraft => moe::compute_snake_draft_assignments(
-                    &moe_cfg.config.ranking,
-                    n_nodes,
-                    moe_cfg.replicate as usize,
-                ),
-            };
+            let assignments = moe::compute_assignments_with_overlap(
+                &moe_cfg.config.ranking,
+                plan.active_ids.len(),
+                moe_cfg.config.min_experts_per_node,
+                plan.overlap,
+            );
             let my_assignment = &assignments[my_shard_index];
             eprintln!(
                 "  My experts: {} ({} shared + {} unique)",
@@ -1643,8 +1925,7 @@ async fn moe_election_loop(
                 my_assignment.n_unique
             );
 
-            // Get or create the shard GGUF via local split
-            let shard_path = moe::split_path(&model, n_nodes, my_shard_index);
+            let shard_path = moe::split_path(&model, plan.active_ids.len(), my_shard_index);
 
             if !shard_path.exists() {
                 eprintln!("  Splitting GGUF → {} ...", shard_path.display());
@@ -1711,6 +1992,7 @@ async fn moe_election_loop(
                     .await;
                     tunnel_mgr.set_http_port(ingress_http_port);
                     currently_running = true;
+                    current_local_port = Some(llama_port);
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         on_process(Some(LocalProcessInfo {
@@ -1722,8 +2004,14 @@ async fn moe_election_loop(
                     }
                     node.regossip().await;
 
-                    // Build and publish MoE target map
-                    let targets = build_moe_targets(&all_ids, my_id, llama_port, &model_name);
+                    let targets = build_moe_targets(
+                        &plan.active_ids,
+                        &plan.fallback_ids,
+                        my_id,
+                        Some(llama_port),
+                        None,
+                        &model_name,
+                    );
                     target_tx.send_replace(targets);
 
                     on_change(true, true);
@@ -2167,7 +2455,7 @@ mod tests {
         let id_b = make_id(2);
         let (sorted, _) = moe_shard_index(id_a, &[id_b]);
 
-        let targets = build_moe_targets(&sorted, id_a, 8080, "test-model");
+        let targets = build_moe_targets(&sorted, &[], id_a, Some(8080), None, "test-model");
 
         // Should have MoE state
         let moe = targets.moe.as_ref().unwrap();
@@ -2200,7 +2488,7 @@ mod tests {
         let id_b = make_id(2);
         let (sorted, idx_a) = moe_shard_index(id_a, &[id_b]);
 
-        let targets = build_moe_targets(&sorted, id_a, 9999, "m");
+        let targets = build_moe_targets(&sorted, &[], id_a, Some(9999), None, "m");
         let moe = targets.moe.as_ref().unwrap();
 
         // Our index in the MoE state should have our port
@@ -2217,7 +2505,7 @@ mod tests {
         let id_c = make_id(3);
 
         let (sorted_three, _) = moe_shard_index(id_a, &[id_b, id_c]);
-        let targets_three = build_moe_targets(&sorted_three, id_a, 8080, "m");
+        let targets_three = build_moe_targets(&sorted_three, &[], id_a, Some(8080), None, "m");
         let moe_three = targets_three.moe.as_ref().unwrap();
         assert_eq!(moe_three.nodes.len(), 3);
         assert!(moe_three
@@ -2226,7 +2514,7 @@ mod tests {
             .any(|target| matches!(target, InferenceTarget::MoeRemote(id) if *id == id_c)));
 
         let (sorted_two, _) = moe_shard_index(id_a, &[id_b]);
-        let targets_two = build_moe_targets(&sorted_two, id_a, 8080, "m");
+        let targets_two = build_moe_targets(&sorted_two, &[], id_a, Some(8080), None, "m");
         let moe_two = targets_two.moe.as_ref().unwrap();
         assert_eq!(moe_two.nodes.len(), 2);
         assert!(!moe_two
@@ -2247,11 +2535,11 @@ mod tests {
         let id_b = make_id(2);
 
         let (sorted_two, _) = moe_shard_index(id_a, &[id_b]);
-        let targets_two = build_moe_targets(&sorted_two, id_a, 8080, "m");
+        let targets_two = build_moe_targets(&sorted_two, &[], id_a, Some(8080), None, "m");
         let moe_two = targets_two.moe.as_ref().unwrap();
         assert_eq!(moe_two.nodes.len(), 2);
 
-        let targets_one = build_moe_targets(&[id_a], id_a, 8080, "m");
+        let targets_one = build_moe_targets(&[id_a], &[], id_a, Some(8080), None, "m");
         let moe_one = targets_one.moe.as_ref().unwrap();
         assert_eq!(moe_one.nodes.len(), 1);
         assert!(matches!(moe_one.nodes[0], InferenceTarget::MoeLocal(8080)));
@@ -2262,6 +2550,97 @@ mod tests {
                 other => panic!("Expected MoeLocal(8080) after collapse, got {:?}", other),
             }
         }
+    }
+
+    #[test]
+    fn test_build_moe_targets_include_full_fallback_candidates() {
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let targets = build_moe_targets(&[id_a, id_b], &[id_c], id_a, Some(8080), None, "m");
+        let moe = targets.moe.as_ref().unwrap();
+        assert_eq!(moe.nodes.len(), 2);
+        assert_eq!(moe.fallbacks.len(), 1);
+        assert!(matches!(moe.fallbacks[0], InferenceTarget::Remote(id) if id == id_c));
+
+        let candidates = targets.get_moe_failover_targets("session");
+        assert_eq!(candidates.len(), 2);
+        assert!(matches!(candidates[1], InferenceTarget::Remote(id) if id == id_c));
+    }
+
+    #[test]
+    fn test_plan_moe_placement_reserves_full_fallback_when_spare_node_exists() {
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let id_d = make_id(4);
+
+        let plan = plan_moe_placement(
+            vec![
+                MoePlacementCandidate {
+                    id: id_a,
+                    vram_bytes: 40,
+                    full_coverage: true,
+                },
+                MoePlacementCandidate {
+                    id: id_b,
+                    vram_bytes: 24,
+                    full_coverage: false,
+                },
+                MoePlacementCandidate {
+                    id: id_c,
+                    vram_bytes: 24,
+                    full_coverage: false,
+                },
+                MoePlacementCandidate {
+                    id: id_d,
+                    vram_bytes: 24,
+                    full_coverage: false,
+                },
+            ],
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(plan.leader_id, id_a);
+        assert_eq!(plan.active_ids.len(), 3);
+        assert_eq!(plan.fallback_ids, vec![id_a]);
+        assert_eq!(plan.overlap, 2);
+    }
+
+    #[test]
+    fn test_plan_moe_placement_keeps_current_active_set_during_recovery() {
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+
+        let plan = plan_moe_placement(
+            vec![
+                MoePlacementCandidate {
+                    id: id_a,
+                    vram_bytes: 48,
+                    full_coverage: true,
+                },
+                MoePlacementCandidate {
+                    id: id_b,
+                    vram_bytes: 24,
+                    full_coverage: false,
+                },
+                MoePlacementCandidate {
+                    id: id_c,
+                    vram_bytes: 24,
+                    full_coverage: false,
+                },
+            ],
+            &[id_b, id_c],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(plan.active_ids, vec![id_b, id_c]);
+        assert_eq!(plan.fallback_ids, Vec::<iroh::EndpointId>::new());
+        assert_eq!(plan.overlap, 1);
     }
 
     #[test]
@@ -2361,7 +2740,7 @@ mod tests {
         let id_a = make_id(1);
         let id_b = make_id(2);
         let (sorted, _) = moe_shard_index(id_a, &[id_b]);
-        let targets = build_moe_targets(&sorted, id_a, 8080, "m");
+        let targets = build_moe_targets(&sorted, &[], id_a, Some(8080), None, "m");
 
         // Same session hint should always route to same node
         let t1 = targets.get_moe_target("user-123");
@@ -2374,7 +2753,7 @@ mod tests {
         let id_a = make_id(1);
         let id_b = make_id(2);
         let (sorted, _) = moe_shard_index(id_a, &[id_b]);
-        let targets = build_moe_targets(&sorted, id_a, 8080, "m");
+        let targets = build_moe_targets(&sorted, &[], id_a, Some(8080), None, "m");
 
         // With enough different sessions, both nodes should get traffic
         let mut hit_local = false;
@@ -2400,7 +2779,7 @@ mod tests {
     #[test]
     fn test_session_routing_single_node() {
         let id_a = make_id(1);
-        let targets = build_moe_targets(&[id_a], id_a, 8080, "m");
+        let targets = build_moe_targets(&[id_a], &[], id_a, Some(8080), None, "m");
 
         // All sessions should go to the single node
         for i in 0..20 {

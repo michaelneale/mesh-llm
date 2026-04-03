@@ -209,13 +209,25 @@ pub(super) async fn api_proxy(
                     }
 
                     let target = if targets.moe.is_some() {
-                        let session_hint = request
-                            .session_hint
-                            .clone()
-                            .unwrap_or_else(|| format!("{addr}"));
-                        targets
-                            .get_moe_target(&session_hint)
-                            .unwrap_or(first_available_target(&targets))
+                        if let Some(ref name) = effective_model {
+                            let session_hint = request
+                                .session_hint
+                                .clone()
+                                .unwrap_or_else(|| format!("{addr}"));
+                            let routed = proxy::route_moe_request(
+                                node.clone(),
+                                tcp_stream,
+                                &targets,
+                                name,
+                                &session_hint,
+                                body_json,
+                                &request.raw,
+                            )
+                            .await;
+                            debug_assert!(routed);
+                            return;
+                        }
+                        first_available_target(&targets)
                     } else if let Some(ref name) = effective_model {
                         if targets.candidates(name).is_empty() {
                             tracing::debug!("Model '{}' not found, trying first available", name);
