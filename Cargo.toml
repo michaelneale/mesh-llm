@@ -3,6 +3,7 @@ members = [
     "mesh-llm",
     "mesh-llm/plugin",
     "mesh-llm/src/plugins/example",
+    "commitllm-plugin",
 ]
 default-members = [
     "mesh-llm",

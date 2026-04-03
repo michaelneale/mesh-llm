@@ -1,0 +1,21 @@
+[package]
+name = "commitllm-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CommitLLM verified inference plugin for mesh-llm"
+
+[dependencies]
+mesh-llm-plugin = { path = "../mesh-llm/plugin" }
+verilm-core = { git = "https://github.com/lambdaclass/commitllm.git", package = "verilm-core" }
+verilm-verify = { git = "https://github.com/lambdaclass/commitllm.git", package = "verilm-verify" }
+anyhow = "1"
+base64 = "0.22"
+bincode = "1"
+rmcp = { version = "1.2", features = ["server"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
