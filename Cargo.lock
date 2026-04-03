@@ -2514,6 +2514,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "biip",
+ "chrono",
  "clap",
  "dirs",
  "hex",

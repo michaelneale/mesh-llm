@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use minijinja::{context, Environment, ErrorKind, UndefinedBehavior};
+use chrono::Local;
+use minijinja::{Environment, ErrorKind, UndefinedBehavior};
 use serde_json::Value;
 use std::path::Path;
 
@@ -190,24 +191,58 @@ fn render_hf_template(
         .get("messages")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    let tools = req
-        .get("tools")
-        .cloned()
-        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let tools = req.get("tools").cloned();
+    let custom_tools = req.get("custom_tools").cloned();
     let add_generation_prompt = req
         .get("add_generation_prompt")
         .and_then(|value| value.as_bool())
         .unwrap_or(true);
+    let mut ctx = serde_json::Map::new();
+    ctx.insert("messages".to_string(), messages);
+    ctx.insert("tools".to_string(), tools.unwrap_or(Value::Null));
+    ctx.insert(
+        "documents".to_string(),
+        req.get("documents").cloned().unwrap_or(Value::Null),
+    );
+    ctx.insert(
+        "builtin_tools".to_string(),
+        req.get("builtin_tools").cloned().unwrap_or(Value::Null),
+    );
+    ctx.insert(
+        "add_generation_prompt".to_string(),
+        Value::Bool(add_generation_prompt),
+    );
+    if let Some(custom_tools) = custom_tools {
+        ctx.insert("custom_tools".to_string(), custom_tools);
+    }
+    for (key, value) in [
+        (
+            "tools_in_user_message",
+            req.get("tools_in_user_message").cloned(),
+        ),
+        ("keep_past_thinking", req.get("keep_past_thinking").cloned()),
+        ("date_string", req.get("date_string").cloned()),
+        ("reasoning_effort", req.get("reasoning_effort").cloned()),
+        ("enable_thinking", req.get("enable_thinking").cloned()),
+    ] {
+        if let Some(value) = value {
+            ctx.insert(key.to_string(), value);
+        }
+    }
+    if let Some(token) = &special_tokens.bos_token {
+        ctx.insert("bos_token".to_string(), Value::String(token.clone()));
+    }
+    if let Some(token) = &special_tokens.eos_token {
+        ctx.insert("eos_token".to_string(), Value::String(token.clone()));
+    }
+    if let Some(token) = &special_tokens.pad_token {
+        ctx.insert("pad_token".to_string(), Value::String(token.clone()));
+    }
+    if let Some(token) = &special_tokens.unk_token {
+        ctx.insert("unk_token".to_string(), Value::String(token.clone()));
+    }
 
-    let rendered = tmpl.render(context! {
-        messages => messages,
-        tools => tools,
-        add_generation_prompt => add_generation_prompt,
-        bos_token => special_tokens.bos_token.clone(),
-        eos_token => special_tokens.eos_token.clone(),
-        pad_token => special_tokens.pad_token.clone(),
-        unk_token => special_tokens.unk_token.clone(),
-    })?;
+    let rendered = tmpl.render(Value::Object(ctx))?;
 
     Ok(rendered)
 }
@@ -219,6 +254,12 @@ fn build_hf_environment<'a>() -> Environment<'a> {
         "raise_exception",
         |message: String| -> std::result::Result<String, minijinja::Error> {
             Err(minijinja::Error::new(ErrorKind::InvalidOperation, message))
+        },
+    );
+    env.add_function(
+        "strftime_now",
+        |format: String| -> std::result::Result<String, minijinja::Error> {
+            Ok(Local::now().format(&format).to_string())
         },
     );
     env
@@ -404,6 +445,157 @@ fn gemma_message_content_text(message: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    struct HfTemplateFixture {
+        repo: String,
+        source_file: String,
+        expect_hf_render: bool,
+        family: String,
+        bos_token: Option<String>,
+        eos_token: Option<String>,
+        pad_token: Option<String>,
+        unk_token: Option<String>,
+        template: String,
+    }
+
+    fn hf_template_corpus() -> Vec<HfTemplateFixture> {
+        serde_json::from_str(include_str!("testdata/hf_template_corpus.json"))
+            .expect("valid HF template corpus")
+    }
+
+    fn fixture_config(family: &str) -> Value {
+        match family {
+            "llama" => json!({"model_type":"llama","architectures":["LlamaForCausalLM"]}),
+            "qwen" | "qwen3" | "qwen3_coder_next" | "deepseek_qwen3" => {
+                json!({"model_type":"qwen2","architectures":["Qwen2ForCausalLM"]})
+            }
+            "gemma3" => {
+                json!({"model_type":"gemma3","architectures":["Gemma3ForConditionalGeneration"]})
+            }
+            "mistral" => {
+                json!({"model_type":"mistral","architectures":["MistralForCausalLM"]})
+            }
+            "lfm2" => json!({"model_type":"lfm2","architectures":["LlamaForCausalLM"]}),
+            other => panic!("unknown fixture family: {other}"),
+        }
+    }
+
+    fn fixture_request(family: &str) -> Value {
+        match family {
+            "llama" => json!({
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "hello"}
+                ],
+                "add_generation_prompt": true
+            }),
+            "qwen" => json!({
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [{"type": "function", "function": {"name": "run", "description": "Run a command"}}],
+                "add_generation_prompt": true
+            }),
+            "gemma3" => json!({
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "look "},
+                        {"type": "image"},
+                        {"type": "text", "text": "here"}
+                    ]}
+                ],
+                "add_generation_prompt": true
+            }),
+            "mistral" => json!({
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "user", "content": "again"}
+                ],
+                "add_generation_prompt": true
+            }),
+            "lfm2" => json!({
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "<think>\ninternal\n</think>\nhi"},
+                    {"role": "user", "content": [{"type": "text", "text": "look"}, {"type": "image"}]}
+                ],
+                "keep_past_thinking": false,
+                "add_generation_prompt": true
+            }),
+            "deepseek_qwen3" => json!({
+                "messages": [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "hello"}
+                ],
+                "add_generation_prompt": true
+            }),
+            "qwen3" | "qwen3_coder_next" => json!({
+                "messages": [{"role": "user", "content": "hello"}],
+                "add_generation_prompt": true
+            }),
+            other => panic!("unknown fixture family: {other}"),
+        }
+    }
+
+    fn write_hf_fixture_dir(fixture: &HfTemplateFixture) -> std::path::PathBuf {
+        let slug = fixture
+            .repo
+            .replace('/', "-")
+            .replace('.', "-")
+            .replace('_', "-");
+        let root = std::env::temp_dir().join(format!(
+            "mesh-llm-hf-template-corpus-{}-{}",
+            slug,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        match fixture.source_file.as_str() {
+            "chat_template.json" => {
+                std::fs::write(
+                    root.join("chat_template.json"),
+                    serde_json::to_string(&fixture.template).unwrap(),
+                )
+                .unwrap();
+            }
+            "tokenizer_config.json" => {
+                std::fs::write(
+                    root.join("tokenizer_config.json"),
+                    serde_json::json!({
+                        "chat_template": fixture.template,
+                        "bos_token": fixture.bos_token,
+                        "eos_token": fixture.eos_token,
+                        "pad_token": fixture.pad_token,
+                        "unk_token": fixture.unk_token,
+                    })
+                    .to_string(),
+                )
+                .unwrap();
+                return root;
+            }
+            other => panic!("unknown template source: {other}"),
+        }
+
+        std::fs::write(
+            root.join("tokenizer_config.json"),
+            serde_json::json!({
+                "bos_token": fixture.bos_token,
+                "eos_token": fixture.eos_token,
+                "pad_token": fixture.pad_token,
+                "unk_token": fixture.unk_token,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        root
+    }
 
     #[test]
     fn detects_chatml_from_tokenizer_config() {
@@ -607,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_when_template_uses_unsupported_features() {
+    fn renders_when_template_uses_strftime_now() {
         let root =
             std::env::temp_dir().join(format!("mesh-llm-template-fallback-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -628,7 +820,46 @@ mod tests {
             }))
             .unwrap();
 
-        assert!(prompt.contains("<|im_start|>system"));
-        assert!(prompt.contains("hello world"));
+        assert_eq!(prompt.len(), 10);
+        assert_eq!(prompt.chars().filter(|c| *c == '-').count(), 2);
+    }
+
+    #[test]
+    fn real_hf_template_corpus_behaves_as_expected() {
+        for fixture in hf_template_corpus() {
+            let root = write_hf_fixture_dir(&fixture);
+            let config = fixture_config(&fixture.family);
+            let req = fixture_request(&fixture.family);
+            let special_tokens = read_special_tokens(&root);
+
+            validate_hf_template(&fixture.template)
+                .unwrap_or_else(|err| panic!("{} should compile: {err}", fixture.repo));
+
+            if fixture.expect_hf_render {
+                let prompt = render_hf_template(&fixture.template, &special_tokens, &req)
+                    .unwrap_or_else(|err| {
+                        panic!("{} should render via HF path: {err}", fixture.repo)
+                    });
+                assert!(
+                    !prompt.trim().is_empty(),
+                    "{} rendered an empty prompt",
+                    fixture.repo
+                );
+            } else {
+                render_hf_template(&fixture.template, &special_tokens, &req)
+                    .expect_err("fixture should still require fallback");
+
+                let prompt = PromptTemplate::detect(&root, &config)
+                    .render_request(&req)
+                    .unwrap_or_else(|render_err| {
+                        panic!("{} should render via fallback: {render_err}", fixture.repo)
+                    });
+                assert!(
+                    !prompt.trim().is_empty(),
+                    "{} fallback rendered an empty prompt",
+                    fixture.repo
+                );
+            }
+        }
     }
 }
