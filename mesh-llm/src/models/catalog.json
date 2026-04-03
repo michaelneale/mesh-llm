@@ -579,6 +579,17 @@
     "mmproj": null
   },
   {
+    "name": "Gemma-2-2B-it-MLX",
+    "file": "model.safetensors.index.json",
+    "url": "https://huggingface.co/mlx-community/gemma-2-2b-it-4bit/resolve/main/model.safetensors.index.json",
+    "size": "1.4GB",
+    "description": "Gemma 2 2B instruct in native MLX format",
+    "draft": null,
+    "moe": null,
+    "extra_files": [],
+    "mmproj": null
+  },
+  {
     "name": "Gemma-4-E4B-it-MLX",
     "file": "model.safetensors.index.json",
     "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-UD-MLX-4bit/resolve/main/model.safetensors.index.json",

@@ -51,7 +51,15 @@ pub struct ModelConfig {
     #[serde(default, deserialize_with = "deserialize_rope_parameters")]
     pub rope_parameters: Option<HashMap<String, RopeParameters>>,
     #[serde(default)]
+    pub attn_logit_softcapping: Option<f32>,
+    #[serde(default)]
     pub final_logit_softcapping: Option<f32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub sliding_window: Option<i32>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub cache_implementation: Option<String>,
     pub quantization: Option<QuantConfig>,
     /// EOS token ID(s) — can be a single int or array in config.json.
     #[serde(default, deserialize_with = "deserialize_eos_token_id")]
@@ -207,7 +215,8 @@ pub struct RMSNorm {
 impl RMSNorm {
     pub fn forward(&self, x: &Array) -> Result<Array> {
         if self.add_unit_offset {
-            let weight = self.weight.add(&array!(1.0f32))?;
+            let one = array!(1.0f32).as_dtype(self.weight.dtype())?;
+            let weight = self.weight.add(&one)?;
             Ok(mlx_rs::fast::rms_norm(x, &weight, self.eps)?)
         } else {
             Ok(mlx_rs::fast::rms_norm(x, &self.weight, self.eps)?)
@@ -229,12 +238,62 @@ pub struct Attention {
     num_kv_heads: i32,
     head_dim: i32,
     scale: f32,
+    attn_logit_softcapping: Option<f32>,
     rope_dim: i32,
     rope_theta: f32,
     kv_shared_source: Option<usize>,
 }
 
 impl Attention {
+    pub fn forward_no_cache(&self, x: &Array) -> Result<Array> {
+        let shape = x.shape();
+        let (b, l) = (shape[0], shape[1]);
+
+        let q = self.q_proj.forward(x)?;
+        let q = q.reshape(&[b, l, self.num_heads, self.head_dim])?;
+        let q = if let Some(norm) = &self.q_norm {
+            norm.forward(&q)?
+        } else {
+            q
+        }
+        .transpose_axes(&[0, 2, 1, 3])?;
+        let q = apply_rope(&q, self.rope_dim, self.head_dim, self.rope_theta, 0)?;
+
+        let k = self.k_proj.forward(x)?;
+        let v = self.v_proj.forward(x)?;
+        let k = k.reshape(&[b, l, self.num_kv_heads, self.head_dim])?;
+        let k = if let Some(norm) = &self.k_norm {
+            norm.forward(&k)?
+        } else {
+            k
+        }
+        .transpose_axes(&[0, 2, 1, 3])?;
+        let v = v.reshape(&[b, l, self.num_kv_heads, self.head_dim])?;
+        let v = if let Some(norm) = &self.v_norm {
+            norm.forward(&v)?
+        } else {
+            v
+        }
+        .transpose_axes(&[0, 2, 1, 3])?;
+        let k = apply_rope(&k, self.rope_dim, self.head_dim, self.rope_theta, 0)?;
+
+        let attn = if let Some(softcap) = self.attn_logit_softcapping {
+            manual_scaled_dot_product_attention(&q, &k, &v, self.scale, softcap, l > 1)?
+        } else {
+            let mask = if l > 1 {
+                Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
+            } else {
+                None
+            };
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
+        };
+
+        let attn =
+            attn.transpose_axes(&[0, 2, 1, 3])?
+                .reshape(&[b, l, self.num_heads * self.head_dim])?;
+        self.o_proj.forward(&attn)
+    }
+
     pub fn forward(
         &self,
         x: &Array,
@@ -281,13 +340,16 @@ impl Attention {
         };
 
         // Causal mask for prefill (multi-token). Decode (l=1) needs no mask.
-        let mask = if l > 1 {
-            Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
+        let attn = if let Some(softcap) = self.attn_logit_softcapping {
+            manual_scaled_dot_product_attention(&q, &k, &v, self.scale, softcap, l > 1)?
         } else {
-            None
+            let mask = if l > 1 {
+                Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
+            } else {
+                None
+            };
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
         };
-
-        let attn = mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?;
 
         let attn =
             attn.transpose_axes(&[0, 2, 1, 3])?
@@ -295,6 +357,80 @@ impl Attention {
 
         self.o_proj.forward(&attn)
     }
+}
+
+fn causal_mask(query_len: i32, key_len: i32) -> Result<Array> {
+    let key_positions = mlx_rs::ops::arange::<_, i32>(0, key_len, 1)?;
+    let query_positions = if key_len > query_len {
+        mlx_rs::ops::arange::<_, i32>(key_len - query_len, key_len, 1)?
+    } else {
+        mlx_rs::ops::arange::<_, i32>(0, query_len, 1)?
+    };
+    let left = query_positions.expand_dims(1)?;
+    let right = key_positions.expand_dims(0)?;
+    Ok(left.ge(&right)?)
+}
+
+fn manual_scaled_dot_product_attention(
+    q: &Array,
+    k: &Array,
+    v: &Array,
+    scale: f32,
+    softcap: f32,
+    causal: bool,
+) -> Result<Array> {
+    let num_heads = q.shape()[1];
+    let num_kv_heads = k.shape()[1];
+    anyhow::ensure!(
+        num_heads % num_kv_heads == 0,
+        "cannot align attention heads: q_heads={}, kv_heads={}",
+        num_heads,
+        num_kv_heads
+    );
+    let repeats = num_heads / num_kv_heads;
+    let batch = q.shape()[0];
+    let query_len = q.shape()[2];
+    let head_dim = q.shape()[3];
+    let key_len = k.shape()[2];
+    let mask = if causal {
+        Some(causal_mask(query_len, key_len)?)
+    } else {
+        None
+    };
+
+    let mut queries = q.clone();
+    if scale != 1.0 {
+        queries = queries.multiply(&array!(scale))?;
+    }
+
+    let (queries, keys, values) = if repeats > 1 {
+        (
+            queries.reshape(&[batch, num_kv_heads, repeats, query_len, head_dim])?,
+            k.expand_dims(2)?,
+            v.expand_dims(2)?,
+        )
+    } else {
+        (queries, k.clone(), v.clone())
+    };
+
+    let key_t = if repeats > 1 {
+        keys.transpose_axes(&[0, 1, 2, 4, 3])?
+    } else {
+        keys.transpose_axes(&[0, 1, 3, 2])?
+    };
+    let mut scores = mlx_rs::ops::matmul(&queries, &key_t)?;
+    scores = scores.divide(&array!(softcap))?;
+    scores = mlx_rs::ops::tanh(&scores)?.multiply(&array!(softcap))?;
+    if let Some(mask) = &mask {
+        let fill = array!(scores.dtype().finfo_min()? as f32).as_dtype(scores.dtype())?;
+        scores = mlx_rs::ops::r#where(mask, &scores, &fill)?;
+    }
+    let probs = mlx_rs::ops::softmax_axis(&scores, -1, true)?;
+    let mut output = mlx_rs::ops::matmul(&probs, &values)?;
+    if repeats > 1 {
+        output = output.reshape(&[batch, num_heads, query_len, head_dim])?;
+    }
+    Ok(output)
 }
 
 fn apply_rope(
@@ -381,6 +517,42 @@ pub struct Layer {
 }
 
 impl Layer {
+    pub fn forward_no_cache(&self, x: &Array, per_layer_input: Option<&Array>) -> Result<Array> {
+        let attn = self.attn.forward_no_cache(&self.attn_in_norm.forward(x)?)?;
+        let attn = if let Some(norm) = &self.attn_out_norm {
+            norm.forward(&attn)?
+        } else {
+            attn
+        };
+        let h = &attn + x;
+        let mlp = self.mlp.forward(&self.mlp_in_norm.forward(&h)?)?;
+        let mlp = if let Some(norm) = &self.mlp_out_norm {
+            norm.forward(&mlp)?
+        } else {
+            mlp
+        };
+        let mut out = &mlp + &h;
+
+        if let (Some(block), Some(per_layer_input)) = (&self.per_layer_input, per_layer_input) {
+            let residual = out.clone();
+            let mut gated = block.input_gate.forward(&out)?;
+            gated = match block.activation {
+                Activation::Silu => &mlx_rs::ops::sigmoid(&gated)? * &gated,
+                Activation::GeluApproximate => mlx_rs::nn::gelu_approximate(&gated)?,
+            };
+            gated = gated.multiply(per_layer_input)?;
+            gated = block.projection.forward(&gated)?;
+            gated = block.post_norm.forward(&gated)?;
+            out = &gated + &residual;
+        }
+
+        if let Some(layer_scalar) = &self.layer_scalar {
+            out = out.multiply(layer_scalar)?;
+        }
+
+        Ok(out)
+    }
+
     pub fn forward(
         &self,
         x: &Array,
@@ -574,10 +746,15 @@ pub struct QuantizedEmbedding {
     biases: Array,
     group_size: i32,
     bits: i32,
+    dense_weight: Option<Array>,
+    dense_weight_t: Option<Array>,
 }
 
 impl QuantizedEmbedding {
     pub fn forward(&self, indices: &Array) -> Result<Array> {
+        if let Some(dense_weight) = &self.dense_weight {
+            return Ok(dense_weight.take_axis(indices, 0)?);
+        }
         let w = self.weight.take_axis(indices, 0)?;
         let s = self.scales.take_axis(indices, 0)?;
         let b = self.biases.take_axis(indices, 0)?;
@@ -598,7 +775,7 @@ impl QuantizedEmbedding {
             bias: None,
             group_size: self.group_size,
             bits: self.bits,
-            dense_weight_t: None,
+            dense_weight_t: self.dense_weight_t.clone(),
         }
     }
 }
@@ -647,12 +824,14 @@ pub struct MlxModel {
     pub tokenizer: tokenizers::Tokenizer,
     pub prompt_template: crate::mlx::template::PromptTemplate,
     tokenwise_prefill: bool,
+    cacheless_generation: bool,
 }
 
 impl MlxModel {
     /// Load a quantized MLX model from a directory containing config.json,
     /// tokenizer.json, and model.safetensors.
     pub fn load(dir: &Path) -> Result<Self> {
+        tracing::info!("MLX: loading model directory {}", dir.display());
         let config_text =
             std::fs::read_to_string(dir.join("config.json")).context("reading config.json")?;
         let config_json: Value =
@@ -729,23 +908,30 @@ impl MlxModel {
             group_size,
             bits,
         );
+        let embed_weight = tensors
+            .get(&format!("{}.embed_tokens.weight", prefixes.model))
+            .cloned()
+            .with_context(|| format!("missing {}.embed_tokens.weight", prefixes.model))?;
+        let embed_scales = tensors
+            .get(&format!("{}.embed_tokens.scales", prefixes.model))
+            .cloned()
+            .with_context(|| format!("missing {}.embed_tokens.scales", prefixes.model))?;
+        let embed_biases = tensors
+            .get(&format!("{}.embed_tokens.biases", prefixes.model))
+            .cloned()
+            .with_context(|| format!("missing {}.embed_tokens.biases", prefixes.model))?;
+        let embed_dense_weight = None;
+        let embed_dense_weight_t = None;
         let embed_tokens = QuantizedEmbedding {
-            weight: tensors
-                .get(&format!("{}.embed_tokens.weight", prefixes.model))
-                .cloned()
-                .with_context(|| format!("missing {}.embed_tokens.weight", prefixes.model))?,
-            scales: tensors
-                .get(&format!("{}.embed_tokens.scales", prefixes.model))
-                .cloned()
-                .with_context(|| format!("missing {}.embed_tokens.scales", prefixes.model))?,
-            biases: tensors
-                .get(&format!("{}.embed_tokens.biases", prefixes.model))
-                .cloned()
-                .with_context(|| format!("missing {}.embed_tokens.biases", prefixes.model))?,
+            weight: embed_weight,
+            scales: embed_scales,
+            biases: embed_biases,
             group_size: embed_group_size,
             bits: embed_bits,
+            dense_weight: embed_dense_weight,
+            dense_weight_t: embed_dense_weight_t,
         };
-        let embed_scale = if arch.is_gemma3() || arch.is_gemma4() {
+        let embed_scale = if arch.uses_gemma_scaled_embeddings() {
             (config.hidden_size as f32).sqrt()
         } else {
             1.0
@@ -778,6 +964,8 @@ impl MlxModel {
                     })?,
                 group_size,
                 bits,
+                dense_weight: None,
+                dense_weight_t: None,
             })
         } else {
             None
@@ -817,7 +1005,7 @@ impl MlxModel {
                 .cloned()
                 .with_context(|| format!("missing {}.norm.weight", prefixes.model))?,
             eps: config.rms_norm_eps,
-            add_unit_offset: arch.is_gemma3(),
+            add_unit_offset: arch.uses_gemma_norm_offset(),
         };
 
         // Qwen3-class configs can declare an explicit head_dim that differs
@@ -891,7 +1079,7 @@ impl MlxModel {
             } else {
                 1.0 / (layer_head_dim as f32).sqrt()
             };
-            let mlp_in_norm_key = if arch.is_gemma3() || arch.is_gemma4() {
+            let mlp_in_norm_key = if arch.is_gemma2() || arch.is_gemma3() || arch.is_gemma4() {
                 format!("{p}.pre_feedforward_layernorm.weight")
             } else {
                 format!("{p}.post_attention_layernorm.weight")
@@ -908,7 +1096,7 @@ impl MlxModel {
                         .map(|weight| RMSNorm {
                             weight,
                             eps: config.rms_norm_eps,
-                            add_unit_offset: arch.is_gemma3(),
+                            add_unit_offset: arch.uses_gemma_norm_offset(),
                         }),
                     k_norm: tensors
                         .get(&format!("{p}.self_attn.k_norm.weight"))
@@ -916,7 +1104,7 @@ impl MlxModel {
                         .map(|weight| RMSNorm {
                             weight,
                             eps: config.rms_norm_eps,
-                            add_unit_offset: arch.is_gemma3(),
+                            add_unit_offset: arch.uses_gemma_norm_offset(),
                         }),
                     v_norm: arch.is_gemma4().then(|| RMSNorm {
                         weight: mlx_rs::ops::ones::<f32>(&[layer_head_dim])
@@ -928,6 +1116,9 @@ impl MlxModel {
                     num_kv_heads: config.num_key_value_heads,
                     head_dim: layer_head_dim,
                     scale,
+                    attn_logit_softcapping: arch
+                        .is_gemma2()
+                        .then_some(config.attn_logit_softcapping.unwrap_or(50.0)),
                     rope_dim,
                     rope_theta,
                     kv_shared_source,
@@ -944,9 +1135,9 @@ impl MlxModel {
                         .cloned()
                         .with_context(|| format!("missing {p}.input_layernorm.weight"))?,
                     eps: config.rms_norm_eps,
-                    add_unit_offset: arch.is_gemma3(),
+                    add_unit_offset: arch.uses_gemma_norm_offset(),
                 },
-                attn_out_norm: (arch.is_gemma3() || arch.is_gemma4())
+                attn_out_norm: (arch.is_gemma2() || arch.is_gemma3() || arch.is_gemma4())
                     .then(|| -> Result<RMSNorm> {
                         Ok(RMSNorm {
                             weight: tensors
@@ -956,22 +1147,22 @@ impl MlxModel {
                                     format!("missing {p}.post_attention_layernorm.weight")
                                 })?,
                             eps: config.rms_norm_eps,
-                            add_unit_offset: arch.is_gemma3(),
+                            add_unit_offset: arch.uses_gemma_norm_offset(),
                         })
                     })
                     .transpose()?,
                 mlp_in_norm: RMSNorm {
                     weight: tensors.get(&mlp_in_norm_key).cloned().with_context(|| {
-                        if arch.is_gemma3() {
+                        if arch.is_gemma2() || arch.is_gemma3() {
                             format!("missing {p}.pre_feedforward_layernorm.weight")
                         } else {
                             format!("missing {p}.post_attention_layernorm.weight")
                         }
                     })?,
                     eps: config.rms_norm_eps,
-                    add_unit_offset: arch.is_gemma3(),
+                    add_unit_offset: arch.uses_gemma_norm_offset(),
                 },
-                mlp_out_norm: (arch.is_gemma3() || arch.is_gemma4())
+                mlp_out_norm: (arch.is_gemma2() || arch.is_gemma3() || arch.is_gemma4())
                     .then(|| -> Result<RMSNorm> {
                         Ok(RMSNorm {
                             weight: tensors
@@ -981,7 +1172,7 @@ impl MlxModel {
                                     format!("missing {p}.post_feedforward_layernorm.weight")
                                 })?,
                             eps: config.rms_norm_eps,
-                            add_unit_offset: arch.is_gemma3(),
+                            add_unit_offset: arch.uses_gemma_norm_offset(),
                         })
                     })
                     .transpose()?,
@@ -1051,7 +1242,8 @@ impl MlxModel {
             config,
             tokenizer,
             prompt_template,
-            tokenwise_prefill: arch.is_gemma4(),
+            tokenwise_prefill: arch.is_gemma2() || arch.is_gemma4(),
+            cacheless_generation: arch.is_gemma2(),
         })
     }
 
@@ -1137,6 +1329,80 @@ impl MlxModel {
         }
     }
 
+    pub fn forward_no_cache(&self, tokens: &Array) -> Result<Array> {
+        let mut h = self.embed_tokens.forward(tokens)?;
+        if self.embed_scale != 1.0 {
+            h = h.multiply(&array!(self.embed_scale))?;
+        }
+        let per_layer_inputs = if let (
+            Some(embed_tokens_per_layer),
+            Some(embed_tokens_per_layer_scale),
+            Some(per_layer_projection_norm),
+            Some(per_layer_model_projection),
+            Some(per_layer_model_projection_scale),
+            Some(per_layer_input_scale),
+            Some(hidden_size_per_layer_input),
+        ) = (
+            &self.embed_tokens_per_layer,
+            self.embed_tokens_per_layer_scale,
+            &self.per_layer_projection_norm,
+            &self.per_layer_model_projection,
+            self.per_layer_model_projection_scale,
+            self.per_layer_input_scale,
+            self.config.hidden_size_per_layer_input,
+        ) {
+            let per_layer_inputs = embed_tokens_per_layer
+                .forward(tokens)?
+                .multiply(&array!(embed_tokens_per_layer_scale))?
+                .reshape(&[
+                    tokens.shape()[0],
+                    tokens.shape()[1],
+                    self.config.num_hidden_layers,
+                    hidden_size_per_layer_input,
+                ])?;
+            let per_layer_projection = per_layer_model_projection
+                .forward(&h)?
+                .multiply(&array!(per_layer_model_projection_scale))?
+                .reshape(&[
+                    h.shape()[0],
+                    h.shape()[1],
+                    self.config.num_hidden_layers,
+                    hidden_size_per_layer_input,
+                ])?;
+            let per_layer_projection = per_layer_projection_norm.forward(&per_layer_projection)?;
+            Some(
+                (&per_layer_projection + &per_layer_inputs)
+                    .multiply(&array!(per_layer_input_scale))?,
+            )
+        } else {
+            None
+        };
+        for (i, layer) in self.layers.iter().enumerate() {
+            let layer_input = per_layer_inputs.as_ref().map(|inputs| {
+                inputs.index((
+                    std::ops::RangeFull,
+                    std::ops::RangeFull,
+                    i as i32,
+                    std::ops::RangeFull,
+                ))
+            });
+            h = layer.forward_no_cache(&h, layer_input.as_ref())?;
+        }
+        let h = self.norm.forward(&h)?;
+
+        let logits = if let Some(ref lm_head) = self.lm_head {
+            lm_head.forward(&h)?
+        } else {
+            self.embed_tokens.as_linear().forward(&h)?
+        };
+        if let Some(softcap) = self.final_logit_softcapping {
+            let scaled = logits.divide(&array!(softcap))?;
+            Ok(mlx_rs::ops::tanh(&scaled)?.multiply(&array!(softcap))?)
+        } else {
+            Ok(logits)
+        }
+    }
+
     pub fn new_caches(&self) -> Vec<KVCache> {
         (0..self.config.num_hidden_layers)
             .map(|_| KVCache::new())
@@ -1146,22 +1412,39 @@ impl MlxModel {
     pub fn tokenwise_prefill(&self) -> bool {
         self.tokenwise_prefill
     }
+
+    pub fn cacheless_generation(&self) -> bool {
+        self.cacheless_generation
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelArchitecture {
     LlamaLike,
+    Gemma2,
     Gemma3,
     Gemma4,
 }
 
 impl ModelArchitecture {
+    fn is_gemma2(self) -> bool {
+        matches!(self, Self::Gemma2)
+    }
+
     fn is_gemma3(self) -> bool {
         matches!(self, Self::Gemma3)
     }
 
     fn is_gemma4(self) -> bool {
         matches!(self, Self::Gemma4)
+    }
+
+    fn uses_gemma_norm_offset(self) -> bool {
+        self.is_gemma2() || self.is_gemma3()
+    }
+
+    fn uses_gemma_scaled_embeddings(self) -> bool {
+        self.is_gemma2() || self.is_gemma3() || self.is_gemma4()
     }
 }
 
@@ -1185,6 +1468,8 @@ fn model_architecture(config: &Value) -> ModelArchitecture {
 
     if model_type.starts_with("gemma4") {
         ModelArchitecture::Gemma4
+    } else if model_type.starts_with("gemma2") {
+        ModelArchitecture::Gemma2
     } else if model_type.starts_with("gemma3") {
         ModelArchitecture::Gemma3
     } else {
@@ -1221,7 +1506,10 @@ fn effective_text_config_json(config: &Value) -> Value {
         "num_kv_shared_layers",
         "layer_types",
         "rope_parameters",
+        "attn_logit_softcapping",
         "final_logit_softcapping",
+        "sliding_window",
+        "cache_implementation",
     ] {
         if !merged.contains_key(key) || merged.get(key).is_some_and(Value::is_null) {
             if let Some(value) = config.get(key) {
@@ -1337,6 +1625,7 @@ fn config_supports_mlx(config: &Value) -> bool {
             "llama"
                 | "qwen2"
                 | "qwen3"
+                | "gemma2"
                 | "gemma3"
                 | "gemma3_text"
                 | "gemma4"
@@ -1344,6 +1633,7 @@ fn config_supports_mlx(config: &Value) -> bool {
                 | "llamaforcausallm"
                 | "qwen2forcausallm"
                 | "qwen3forcausallm"
+                | "gemma2forcausallm"
                 | "gemma3forcausallm"
                 | "gemma3forconditionalgeneration"
                 | "gemma4forcausallm"
@@ -1386,7 +1676,7 @@ fn ensure_supported_mlx_model(dir: &Path, config: &Value) -> Result<()> {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "none".to_string());
     bail!(
-        "unsupported MLX model architecture in {} (model_type={}, architectures={}); supported MLX models currently cover Llama/Qwen/Gemma3/Gemma4-style safetensors checkpoints",
+        "unsupported MLX model architecture in {} (model_type={}, architectures={}); supported MLX models currently cover Llama/Qwen/Gemma2/Gemma3/Gemma4-style safetensors checkpoints",
         dir.display(),
         model_type,
         architectures,
@@ -1500,6 +1790,10 @@ mod tests {
             "model_type": "llama",
             "architectures": ["LlamaForCausalLM"]
         });
+        let gemma2: Value = serde_json::json!({
+            "model_type": "gemma2",
+            "architectures": ["Gemma2ForCausalLM"]
+        });
         let gemma3: Value = serde_json::json!({
             "model_type": "gemma3",
             "architectures": ["Gemma3ForConditionalGeneration"]
@@ -1512,6 +1806,7 @@ mod tests {
 
         assert!(config_supports_mlx(&qwen));
         assert!(config_supports_mlx(&llama));
+        assert!(config_supports_mlx(&gemma2));
         assert!(config_supports_mlx(&gemma3));
         assert!(config_supports_mlx(&gemma4));
     }
@@ -1580,16 +1875,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let config = serde_json::json!({
-            "model_type": "gemma2",
-            "architectures": ["Gemma2ForCausalLM"]
+            "model_type": "mistral",
+            "architectures": ["MistralForCausalLM"]
         });
 
         let err = ensure_supported_mlx_model(&root, &config)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unsupported MLX model architecture"));
-        assert!(err.contains("model_type=gemma2"));
-        assert!(err.contains("Gemma2ForCausalLM"));
+        assert!(err.contains("model_type=mistral"));
+        assert!(err.contains("MistralForCausalLM"));
     }
 
     #[test]
@@ -1675,6 +1970,49 @@ mod tests {
         });
 
         assert_eq!(model_architecture(&config), ModelArchitecture::Gemma3);
+    }
+
+    #[test]
+    fn model_architecture_detects_gemma2() {
+        let config = serde_json::json!({
+            "model_type": "gemma2",
+            "architectures": ["Gemma2ForCausalLM"]
+        });
+
+        assert_eq!(model_architecture(&config), ModelArchitecture::Gemma2);
+    }
+
+    #[test]
+    fn gemma2_config_parses_attention_softcaps() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 2304,
+            "num_hidden_layers": 26,
+            "intermediate_size": 9216,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "query_pre_attn_scalar": 256,
+            "vocab_size": 256000,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 8192,
+            "tie_word_embeddings": false,
+            "hidden_activation": "gelu_pytorch_tanh",
+            "attn_logit_softcapping": 50.0,
+            "final_logit_softcapping": 30.0,
+            "sliding_window": 4096,
+            "cache_implementation": "hybrid",
+            "quantization": {
+                "group_size": 64,
+                "bits": 4
+            },
+            "eos_token_id": 1
+        }))
+        .unwrap();
+
+        assert_eq!(config.attn_logit_softcapping, Some(50.0));
+        assert_eq!(config.final_logit_softcapping, Some(30.0));
+        assert_eq!(config.sliding_window, Some(4096));
+        assert_eq!(config.cache_implementation.as_deref(), Some("hybrid"));
     }
 
     #[test]

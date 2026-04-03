@@ -38,6 +38,7 @@ These families are now in the supported native MLX runtime set:
 - Llama
 - Qwen2
 - Qwen3
+- Gemma 2 text
 - Gemma 3 text
 - Gemma 4 text
 
@@ -49,7 +50,6 @@ Notes:
 ## Families Still Missing Runtime Support
 
 These families have template-level support or partial investigation, but not full runtime support yet:
-- Gemma 2
 - GLM
 - Kimi
 - gpt-oss
@@ -58,14 +58,6 @@ These families have template-level support or partial investigation, but not ful
 These need explicit loader/runtime work, not just template changes.
 
 ## Remaining Family Work
-
-### Gemma 2
-
-Remaining work:
-- add dense or BF16 loader path where needed
-- implement Gemma 2-specific attention/cache behavior
-- validate real public MLX repos end-to-end
-- add at least one live macOS smoke
 
 ### Gemma 4
 
@@ -160,7 +152,6 @@ Remaining work:
 - stabilize the sequential smoke experience across the supported matrix
 - debug and eliminate startup/load flakes such as the intermittent `JOSIE-IT1-Qwen3-0.6B-4bit` startup hang
 - keep prompts family-aware so the smoke tests validate useful behavior without becoming brittle
-- add Gemma 4 into the stable CI matrix once the current branch changes land
 - avoid adding live smokes for unsupported runtime families
 
 ## Catalog Work
@@ -173,12 +164,11 @@ Remaining work:
 - keep adding supported MLX entries for Llama, Qwen, Gemma
 - add MLX vision catalog entries only after MLX vision runtime support is real
 - do not add unsupported families just because templates render
-- revisit Gemma-family catalog breadth after Gemma 2 is working
+- revisit broader Gemma-family catalog breadth now that Gemma 2/3/4 text are working
 
 ## MLX Runtime Engineering Tasks
 
 These are the main technical tasks still on the table:
-- family-specific loader/runtime support for Gemma 2
 - family-specific loader/runtime support for GLM
 - family-specific loader/runtime support for Kimi
 - family-specific loader/runtime support for gpt-oss
@@ -204,8 +194,8 @@ Issues already raised for MLX follow-up:
 
 - [#142](https://github.com/michaelneale/mesh-llm/issues/142) Support Gemma MLX models in native MLX runtime
   - Originally opened for Gemma-family runtime support
-  - Now partially addressed by Gemma 3 and Gemma 4 text support
-  - Still relevant for remaining Gemma-family work, especially Gemma 2 and broader Gemma 4 coverage
+  - Now partially addressed by Gemma 2, Gemma 3, and Gemma 4 text support
+  - Still relevant for broader Gemma 4 coverage and future Gemma-family expansion
 
 - [#146](https://github.com/michaelneale/mesh-llm/issues/146) Support distributed or split MLX serving
   - Tracks the current local-only limitation
@@ -214,12 +204,11 @@ Issues already raised for MLX follow-up:
 
 Recommended order:
 
-1. Land and stabilize Gemma 4 text support in CI.
+1. Land and stabilize Gemma 2 and Gemma 4 text support in CI.
 2. Fix the current MLX smoke flake around JOSIE sequential startup.
-3. Narrow issue `#142` to the remaining Gemma-family work now that Gemma 3 and Gemma 4 text support exist.
-4. Implement Gemma 2 runtime support.
-5. Start scoping MLX vision support, since vision is already supported on the llama-backed path.
-6. Decide whether the next major priority is:
+3. Narrow issue `#142` to the remaining Gemma-family work now that Gemma 2, Gemma 3, and Gemma 4 text support exist.
+4. Start scoping MLX vision support, since vision is already supported on the llama-backed path.
+5. Decide whether the next major priority is:
    - broader family coverage, or
    - distributed MLX serving from `#146`
 

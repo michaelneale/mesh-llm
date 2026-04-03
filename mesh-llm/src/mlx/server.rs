@@ -489,6 +489,9 @@ fn run_inference(
     prompt: &str,
     generation: &GenerationConfig,
 ) -> Result<GenerationOutcome> {
+    if state.model.cacheless_generation() {
+        return run_inference_cacheless(state, prompt, generation);
+    }
     let encoding = state
         .model
         .tokenizer
@@ -496,6 +499,8 @@ fn run_inference(
         .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
+    tracing::info!("MLX prompt text: {:?}", prompt);
+    tracing::info!("MLX prompt tokens: {:?}", prompt_tokens);
 
     let (mut caches, suffix) = setup_caches_with_reuse(state, &prompt_tokens);
     let mut sampler = Sampler::new(generation.sampling.clone());
@@ -530,6 +535,12 @@ fn run_inference(
         let logits = prefill_logits(&state.model, suffix, &mut caches)?;
         sampler.sample_next_token(&logits)?
     };
+    tracing::info!(
+        "MLX first sampled token: id={} eos={} prompt_tokens={}",
+        next_token,
+        is_eos(next_token, &state.model.config),
+        prompt_len
+    );
 
     let mut text = String::new();
     let mut completion_tokens = 0usize;
@@ -578,6 +589,9 @@ fn run_inference_streaming(
     generation: &GenerationConfig,
     tx: &tokio::sync::mpsc::Sender<StreamEvent>,
 ) -> Result<&'static str> {
+    if state.model.cacheless_generation() {
+        return run_inference_streaming_cacheless(state, prompt, generation, tx);
+    }
     let encoding = state
         .model
         .tokenizer
@@ -649,6 +663,129 @@ fn run_inference_streaming(
 
     // Save prompt cache for next request
     save_prompt_cache(state, prompt_tokens, caches);
+
+    Ok(finish_reason)
+}
+
+fn run_inference_cacheless(
+    state: &mut InferState,
+    prompt: &str,
+    generation: &GenerationConfig,
+) -> Result<GenerationOutcome> {
+    let encoding = state
+        .model
+        .tokenizer
+        .encode(prompt, false)
+        .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
+    let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
+    let prompt_len = tokens.len();
+    let mut sampler = Sampler::new(generation.sampling.clone());
+    let mut stop_buffer = StopBuffer::new(generation.stop_sequences.clone());
+
+    if generation.max_tokens == 0 {
+        if !tokens.is_empty() {
+            let input = Array::from_slice(&tokens, &[1, tokens.len() as i32]);
+            let _ = state.model.forward_no_cache(&input)?;
+        }
+        return Ok(GenerationOutcome {
+            text: String::new(),
+            prompt_tokens: prompt_len,
+            completion_tokens: 0,
+            finish_reason: "length",
+        });
+    }
+
+    let mut text = String::new();
+    let mut completion_tokens = 0usize;
+    let mut finish_reason = "length";
+
+    for _ in 0..generation.max_tokens {
+        let input = Array::from_slice(&tokens, &[1, tokens.len() as i32]);
+        let logits = state.model.forward_no_cache(&input)?;
+        let next_token = sampler.sample_next_token(&logits)?;
+        if is_eos(next_token, &state.model.config) {
+            finish_reason = "stop";
+            break;
+        }
+        completion_tokens += 1;
+        tokens.push(next_token);
+        let piece = state
+            .model
+            .tokenizer
+            .decode(&[next_token], true)
+            .map_err(|e| anyhow::anyhow!("tokenizer decode: {e}"))?;
+        let chunk = stop_buffer.push(&piece);
+        text.push_str(&chunk.emit);
+        if chunk.matched {
+            finish_reason = "stop";
+            break;
+        }
+    }
+
+    text.push_str(&stop_buffer.finish());
+
+    Ok(GenerationOutcome {
+        text,
+        prompt_tokens: prompt_len,
+        completion_tokens,
+        finish_reason,
+    })
+}
+
+fn run_inference_streaming_cacheless(
+    state: &mut InferState,
+    prompt: &str,
+    generation: &GenerationConfig,
+    tx: &tokio::sync::mpsc::Sender<StreamEvent>,
+) -> Result<&'static str> {
+    let encoding = state
+        .model
+        .tokenizer
+        .encode(prompt, false)
+        .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
+    let mut tokens: Vec<u32> = encoding.get_ids().to_vec();
+    let mut sampler = Sampler::new(generation.sampling.clone());
+    let mut stop_buffer = StopBuffer::new(generation.stop_sequences.clone());
+
+    if generation.max_tokens == 0 {
+        if !tokens.is_empty() {
+            let input = Array::from_slice(&tokens, &[1, tokens.len() as i32]);
+            let _ = state.model.forward_no_cache(&input)?;
+        }
+        return Ok("length");
+    }
+
+    let mut finish_reason = "length";
+
+    for _ in 0..generation.max_tokens {
+        let input = Array::from_slice(&tokens, &[1, tokens.len() as i32]);
+        let logits = state.model.forward_no_cache(&input)?;
+        let next_token = sampler.sample_next_token(&logits)?;
+        if is_eos(next_token, &state.model.config) {
+            finish_reason = "stop";
+            break;
+        }
+
+        tokens.push(next_token);
+        let piece = state
+            .model
+            .tokenizer
+            .decode(&[next_token], true)
+            .map_err(|e| anyhow::anyhow!("tokenizer decode: {e}"))?;
+        let chunk = stop_buffer.push(&piece);
+        if !chunk.emit.is_empty() && tx.blocking_send(StreamEvent::Text(chunk.emit)).is_err() {
+            break;
+        }
+        if chunk.matched {
+            finish_reason = "stop";
+            break;
+        }
+    }
+
+    let tail = stop_buffer.finish();
+    if !tail.is_empty() {
+        let _ = tx.blocking_send(StreamEvent::Text(tail));
+    }
 
     Ok(finish_reason)
 }
