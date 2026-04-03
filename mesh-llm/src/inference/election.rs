@@ -315,6 +315,21 @@ fn lookup_moe_config(
     })
 }
 
+fn should_attempt_local_micro_analyze(model_path: &Path, model_name: &str) -> bool {
+    let model_bytes = total_model_bytes(model_path);
+    let my_vram = mesh::detect_vram_bytes_capped(None);
+    // Require roughly the same headroom we already use for "fits locally" checks.
+    let fits_with_headroom = my_vram >= (model_bytes as f64 * 1.1) as u64;
+    if !fits_with_headroom {
+        eprintln!(
+            "🧩 [{model_name}] Skipping local micro-analyze: model needs about {:.1}GB with headroom, local VRAM is {:.1}GB",
+            model_bytes as f64 * 1.1 / 1e9,
+            my_vram as f64 / 1e9
+        );
+    }
+    fits_with_headroom
+}
+
 fn resolve_runtime_moe_config(
     model_name: &str,
     model_path: &Path,
@@ -343,22 +358,33 @@ fn resolve_runtime_moe_config(
                     artifact.origin.label().to_string(),
                 )
             } else {
-                match ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options) {
-                    Ok(artifact) => (
-                        artifact.ranking,
-                        artifact.kind.label().to_string(),
-                        artifact.origin.label().to_string(),
-                    ),
-                    Err(err) => {
-                        eprintln!(
-                            "⚠ [{model_name}] micro-analyze failed ({err}); falling back to sequential expert order"
-                        );
-                        (
-                            (0..base.n_expert).collect(),
-                            "sequential-fallback".to_string(),
-                            "fallback".to_string(),
-                        )
+                if should_attempt_local_micro_analyze(model_path, model_name) {
+                    match ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options) {
+                        Ok(artifact) => (
+                            artifact.ranking,
+                            artifact.kind.label().to_string(),
+                            artifact.origin.label().to_string(),
+                        ),
+                        Err(err) => {
+                            eprintln!(
+                                "⚠ [{model_name}] micro-analyze failed ({err}); falling back to sequential expert order"
+                            );
+                            (
+                                (0..base.n_expert).collect(),
+                                "sequential-fallback".to_string(),
+                                "fallback".to_string(),
+                            )
+                        }
                     }
+                } else {
+                    eprintln!(
+                        "🧩 [{model_name}] Waiting for peer MoE ranking or using sequential fallback on this node"
+                    );
+                    (
+                        (0..base.n_expert).collect(),
+                        "sequential-fallback".to_string(),
+                        "fallback".to_string(),
+                    )
                 }
             }
         }
