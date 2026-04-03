@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::LazyLock;
+
+static CHAT_TEMPLATE_RE: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r#""chat_template"\s*:\s*"((?:\\.|[^"\\])*)""#)
+        .expect("Failed to compile CHAT_TEMPLATE_RE regex pattern")
+});
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelPromptBehavior {
@@ -30,7 +36,16 @@ fn read_config_json(dir: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-fn read_template_text(dir: &Path) -> Option<String> {
+/// Scans a model directory for a chat template and returns `(source_filename, template_text)`.
+///
+/// Checks files in priority order:
+/// 1. `chat_template.jinja`
+/// 2. `chat_template.json`
+/// 3. `tokenizer_config.json`
+///
+/// This shared helper is the single source of truth used by both
+/// `infer_prompt_behavior_for_dir` and the MLX template loader.
+pub fn find_template_with_source(dir: &Path) -> Option<(String, String)> {
     for filename in [
         "chat_template.jinja",
         "chat_template.json",
@@ -40,19 +55,23 @@ fn read_template_text(dir: &Path) -> Option<String> {
             continue;
         };
         if filename.ends_with(".jinja") {
-            return Some(text);
+            return Some((filename.to_string(), text));
         }
         if let Some(template) = extract_template_text_from_json_text(&text) {
-            return Some(template);
+            return Some((filename.to_string(), template));
         }
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
         if let Some(template) = extract_template_text(&value) {
-            return Some(template);
+            return Some((filename.to_string(), template));
         }
     }
     None
+}
+
+fn read_template_text(dir: &Path) -> Option<String> {
+    find_template_with_source(dir).map(|(_source, text)| text)
 }
 
 fn extract_template_text(value: &Value) -> Option<String> {
@@ -67,9 +86,7 @@ fn extract_template_text(value: &Value) -> Option<String> {
 }
 
 fn extract_template_text_from_json_text(text: &str) -> Option<String> {
-    let captures = regex_lite::Regex::new(r#""chat_template"\s*:\s*"((?:\\.|[^"\\])*)""#)
-        .ok()?
-        .captures(text)?;
+    let captures = CHAT_TEMPLATE_RE.captures(text)?;
     serde_json::from_str::<String>(&format!("\"{}\"", &captures[1])).ok()
 }
 

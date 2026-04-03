@@ -254,7 +254,7 @@ async fn handle_connection(
             break;
         }
         if filled >= buf.len() {
-            send_response(&mut stream, 413, "Request too large").await?;
+            send_response(&mut stream, 413, r#"{"error":"request header too large"}"#).await?;
             return Ok(());
         }
     }
@@ -1410,9 +1410,12 @@ mod tests {
 async fn send_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) -> Result<()> {
     let status_text = match status {
         200 => "OK",
+        400 => "Bad Request",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         413 => "Payload Too Large",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
         _ => "Unknown",
     };
     let response = format!(

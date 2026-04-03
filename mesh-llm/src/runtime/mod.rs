@@ -291,6 +291,10 @@ pub(crate) async fn run() -> Result<()> {
     if !cli.mlx_file.is_empty() {
         anyhow::bail!("--mlx-file is only supported on macOS");
     }
+    #[cfg(not(target_os = "macos"))]
+    if cli.mlx {
+        anyhow::bail!("--mlx is only supported on macOS");
+    }
     let model_format_preference = if cli.gguf {
         ResolveFormatPreference::Gguf
     } else if cli.mlx {

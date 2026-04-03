@@ -582,29 +582,7 @@ fn strip_tojson_kwargs(template: &str) -> String {
 }
 
 fn read_template_text(dir: &Path) -> Option<(String, String)> {
-    for filename in [
-        "chat_template.jinja",
-        "chat_template.json",
-        "tokenizer_config.json",
-    ] {
-        let path = dir.join(filename);
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        if filename.ends_with(".jinja") {
-            return Some((filename.to_string(), text));
-        }
-        if let Some(template) = extract_template_text_from_json_text(&text) {
-            return Some((filename.to_string(), template));
-        }
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        if let Some(template) = extract_template_text(&value) {
-            return Some((filename.to_string(), template));
-        }
-    }
-    None
+    crate::models::prompt::find_template_with_source(dir)
 }
 
 fn read_special_tokens(dir: &Path) -> SpecialTokens {
@@ -633,24 +611,6 @@ fn extract_token_string(value: Option<&Value>) -> Option<String> {
             .map(ToOwned::to_owned),
         _ => None,
     }
-}
-
-fn extract_template_text(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.clone()),
-        Value::Object(map) => map
-            .get("chat_template")
-            .and_then(|template| template.as_str())
-            .map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
-fn extract_template_text_from_json_text(text: &str) -> Option<String> {
-    let captures = regex_lite::Regex::new(r#""chat_template"\s*:\s*"((?:\\.|[^"\\])*)""#)
-        .ok()?
-        .captures(text)?;
-    serde_json::from_str::<String>(&format!("\"{}\"", &captures[1])).ok()
 }
 
 fn render_chatml(messages: &[Value], default_system_prompt: Option<&str>) -> String {

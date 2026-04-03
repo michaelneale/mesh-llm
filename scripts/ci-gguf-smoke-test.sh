@@ -61,13 +61,22 @@ echo "  PID: $MESH_PID"
 
 cleanup() {
     echo "Shutting down mesh-llm (PID $MESH_PID)..."
-    kill "$MESH_PID" 2>/dev/null || true
-    pkill -P "$MESH_PID" 2>/dev/null || true
-    sleep 2
-    kill -9 "$MESH_PID" 2>/dev/null || true
-    pkill -9 -f rpc-server 2>/dev/null || true
-    pkill -9 -f llama-server 2>/dev/null || true
-    wait "$MESH_PID" 2>/dev/null || true
+    if kill -0 "$MESH_PID" 2>/dev/null; then
+        # Collect child/grandchild PIDs before killing the parent so we can
+        # clean up rpc-server and llama-server without touching unrelated processes.
+        CHILD_PIDS=()
+        while IFS= read -r cpid; do
+            CHILD_PIDS+=("$cpid")
+        done < <(pgrep -P "$MESH_PID" 2>/dev/null || true)
+
+        kill "$MESH_PID" 2>/dev/null || true
+        sleep 2
+        kill -9 "$MESH_PID" 2>/dev/null || true
+        for cpid in "${CHILD_PIDS[@]}"; do
+            kill -9 "$cpid" 2>/dev/null || true
+        done
+        wait "$MESH_PID" 2>/dev/null || true
+    fi
     echo "Cleanup done."
 }
 trap cleanup EXIT
