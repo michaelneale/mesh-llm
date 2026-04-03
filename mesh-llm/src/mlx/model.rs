@@ -20,6 +20,8 @@ pub struct ModelConfig {
     pub intermediate_size: i32,
     pub num_attention_heads: i32,
     pub num_key_value_heads: i32,
+    #[serde(default)]
+    pub head_dim: Option<i32>,
     pub vocab_size: i32,
     pub rms_norm_eps: f32,
     #[serde(default = "default_rope_theta")]
@@ -108,6 +110,8 @@ pub struct Attention {
     k_proj: QuantizedLinear,
     v_proj: QuantizedLinear,
     o_proj: QuantizedLinear,
+    q_norm: Option<RMSNorm>,
+    k_norm: Option<RMSNorm>,
     num_heads: i32,
     num_kv_heads: i32,
     head_dim: i32,
@@ -124,12 +128,20 @@ impl Attention {
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
 
-        let q = q
-            .reshape(&[b, l, self.num_heads, self.head_dim])?
-            .transpose_axes(&[0, 2, 1, 3])?;
-        let k = k
-            .reshape(&[b, l, self.num_kv_heads, self.head_dim])?
-            .transpose_axes(&[0, 2, 1, 3])?;
+        let q = q.reshape(&[b, l, self.num_heads, self.head_dim])?;
+        let q = if let Some(norm) = &self.q_norm {
+            norm.forward(&q)?
+        } else {
+            q
+        }
+        .transpose_axes(&[0, 2, 1, 3])?;
+        let k = k.reshape(&[b, l, self.num_kv_heads, self.head_dim])?;
+        let k = if let Some(norm) = &self.k_norm {
+            norm.forward(&k)?
+        } else {
+            k
+        }
+        .transpose_axes(&[0, 2, 1, 3])?;
         let v = v
             .reshape(&[b, l, self.num_kv_heads, self.head_dim])?
             .transpose_axes(&[0, 2, 1, 3])?;
@@ -452,7 +464,11 @@ impl MlxModel {
             eps: config.rms_norm_eps,
         };
 
-        let head_dim = config.hidden_size / config.num_attention_heads;
+        // Qwen3-class configs can declare an explicit head_dim that differs
+        // from hidden_size / num_attention_heads.
+        let head_dim = config
+            .head_dim
+            .unwrap_or_else(|| config.hidden_size / config.num_attention_heads);
         let scale = 1.0 / (head_dim as f32).sqrt();
 
         let mut layers = Vec::new();
@@ -464,6 +480,20 @@ impl MlxModel {
                     k_proj: load_qlinear(&format!("{p}.self_attn.k_proj"))?,
                     v_proj: load_qlinear(&format!("{p}.self_attn.v_proj"))?,
                     o_proj: load_qlinear(&format!("{p}.self_attn.o_proj"))?,
+                    q_norm: tensors
+                        .get(&format!("{p}.self_attn.q_norm.weight"))
+                        .cloned()
+                        .map(|weight| RMSNorm {
+                            weight,
+                            eps: config.rms_norm_eps,
+                        }),
+                    k_norm: tensors
+                        .get(&format!("{p}.self_attn.k_norm.weight"))
+                        .cloned()
+                        .map(|weight| RMSNorm {
+                            weight,
+                            eps: config.rms_norm_eps,
+                        }),
                     num_heads: config.num_attention_heads,
                     num_kv_heads: config.num_key_value_heads,
                     head_dim,
@@ -784,6 +814,38 @@ mod tests {
         assert!(config_supports_mlx(&qwen));
         assert!(config_supports_mlx(&llama));
         assert!(!config_supports_mlx(&unsupported));
+    }
+
+    #[test]
+    fn model_config_honors_explicit_head_dim() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 1024,
+            "num_hidden_layers": 28,
+            "intermediate_size": 3072,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "vocab_size": 151936,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 40960,
+            "tie_word_embeddings": false,
+            "quantization": {
+                "group_size": 64,
+                "bits": 4
+            },
+            "eos_token_id": 151645
+        }))
+        .unwrap();
+
+        let derived = config.hidden_size / config.num_attention_heads;
+        assert_eq!(derived, 64);
+        assert_eq!(config.head_dim, Some(128));
+        assert_eq!(
+            config
+                .head_dim
+                .unwrap_or_else(|| config.hidden_size / config.num_attention_heads),
+            128
+        );
     }
 
     #[test]
