@@ -127,6 +127,20 @@ import {
   validateAttachmentFile,
 } from "./lib/attachments";
 import { cn } from "./lib/utils";
+import {
+  TOPOLOGY_LAYOUT_OPTIONS,
+  TOPOLOGY_LAYOUTS,
+  isTopologyLayoutMode,
+} from "./topology/layouts";
+import { TOPOLOGY_NODE_WIDTH } from "./topology/layouts/constants";
+import { estimateTopologyNodeHeight } from "./topology/layouts/elk";
+import type {
+  BucketedTopologyNode,
+  PositionedTopologyNode,
+  TopologyLayoutMode,
+  TopologyNode,
+  TopologyNodeInfo,
+} from "./topology/layouts/types";
 import githubBlackLogo from "./assets/icons/github-invertocat-black.svg";
 import githubWhiteLogo from "./assets/icons/github-invertocat-white.svg";
 
@@ -333,21 +347,6 @@ type TopSection = "dashboard" | "chat";
 type AppRoute = {
   section: TopSection;
   chatId: string | null;
-};
-
-type TopologyNode = {
-  id: string;
-  vram: number;
-  self: boolean;
-  host: boolean;
-  client: boolean;
-  serving: string;
-  servingModels: string[];
-  statusLabel: string;
-  latencyMs?: number | null;
-  hostname?: string;
-  isSoc?: boolean;
-  gpus?: { name: string; vram_bytes: number; bandwidth_gbps?: number }[];
 };
 
 type ThemeMode = "auto" | "light" | "dark";
@@ -853,6 +852,7 @@ export function App() {
     [conversations, activeConversationId],
   );
   const messages = activeConversation?.messages ?? [];
+  const lastMessageId = messages[messages.length - 1]?.id ?? "";
   const meshModels = modelsPayload?.mesh_models ?? [];
 
   const warmModels = useMemo(() => {
@@ -1247,8 +1247,9 @@ export function App() {
   useEffect(() => {
     const el = chatScrollRef.current;
     if (!el) return;
+    if (!activeConversationId && !lastMessageId && !isSending) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, isSending, activeConversationId]);
+  }, [activeConversationId, isSending, lastMessageId]);
 
   useEffect(() => () => currentAbortRef.current?.abort(), []);
 
@@ -2658,6 +2659,7 @@ export function ChatPage(props: {
   const [editingTitle, setEditingTitle] = useState("");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const editingTitleInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2806,9 +2808,17 @@ export function ChatPage(props: {
   }
 
   useEffect(() => {
-    if (!canChat || isSending) return;
+    if (!activeConversationId || !canChat || isSending) return;
     chatInputRef.current?.focus();
   }, [activeConversationId, canChat, isSending]);
+
+  useEffect(() => {
+    if (!editingConversationId) return;
+    const frame = window.requestAnimationFrame(() => {
+      editingTitleInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editingConversationId]);
 
   function startInlineRename(conversation: ChatConversation) {
     setEditingConversationId(conversation.id);
@@ -2884,6 +2894,7 @@ export function ChatPage(props: {
                 {isEditing ? (
                   <div className="min-w-0 flex-1 space-y-1">
                     <input
+                      ref={editingTitleInputRef}
                       value={editingTitle}
                       onChange={(e) => setEditingTitle(e.target.value)}
                       onKeyDown={(e) => {
@@ -2896,7 +2907,6 @@ export function ChatPage(props: {
                         }
                       }}
                       className="h-7 w-full rounded-md border bg-background px-2 text-sm outline-none ring-offset-background focus:ring-2 focus:ring-ring"
-                      autoFocus
                     />
                     <div className="text-xs text-muted-foreground">
                       {conversation.messages.length} message
@@ -3737,6 +3747,8 @@ function DashboardPage({
   );
   const [isMeshOverviewFullscreen, setIsMeshOverviewFullscreen] =
     useState(false);
+  const [meshTopologyLayoutMode, setMeshTopologyLayoutMode] =
+    useState<TopologyLayoutMode>("elk");
   const [selectedCatalogModel, setSelectedCatalogModel] =
     useState<MeshModel | null>(null);
   const topologyDiagramNodes = useMemo(
@@ -3852,6 +3864,34 @@ function DashboardPage({
     setIsMeshOverviewFullscreen((prev) => !prev);
   }
 
+  const meshTopologyLayoutControl = (
+    <Select
+      value={meshTopologyLayoutMode}
+      onValueChange={(value) => {
+        if (isTopologyLayoutMode(value)) setMeshTopologyLayoutMode(value);
+      }}
+    >
+      <SelectTrigger
+        className="h-8 w-[118px] gap-1.5 px-2 text-xs"
+        aria-label="Select topology layout"
+        title="Select topology layout"
+      >
+        <FolderTree className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <SelectValue placeholder="Layout" />
+      </SelectTrigger>
+      <SelectContent
+        align="end"
+        className={isMeshOverviewFullscreen ? "z-[130]" : undefined}
+      >
+        {TOPOLOGY_LAYOUT_OPTIONS.map((option) => (
+          <SelectItem key={option.value} value={option.value} className="text-xs">
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+
   return (
     <div className="space-y-4">
       <Alert className="border-primary/20 bg-primary/5">
@@ -3941,16 +3981,19 @@ function DashboardPage({
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-sm">Mesh Overview</CardTitle>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 gap-1.5"
-                  onClick={() => void toggleMeshOverviewFullscreen()}
-                >
-                  <Maximize2 className="h-3.5 w-3.5" />
-                  Fullscreen
-                </Button>
+                <div className="flex items-center gap-2">
+                  {meshTopologyLayoutControl}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 gap-1.5"
+                    onClick={() => void toggleMeshOverviewFullscreen()}
+                  >
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    Fullscreen
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="pt-0">
@@ -3963,6 +4006,7 @@ function DashboardPage({
                   status={status}
                   nodes={topologyDiagramNodes}
                   selectedModel={selectedModel}
+                  layoutMode={meshTopologyLayoutMode}
                   themeMode={themeMode}
                   fullscreen={false}
                   heightClass="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]"
@@ -4169,16 +4213,19 @@ function DashboardPage({
                   <CardHeader className="shrink-0 pb-2">
                     <div className="flex items-center justify-between gap-2">
                       <CardTitle className="text-sm">Mesh Overview</CardTitle>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 gap-1.5"
-                        onClick={() => void toggleMeshOverviewFullscreen()}
-                      >
-                        <Minimize2 className="h-3.5 w-3.5" />
-                        Exit Fullscreen
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        {meshTopologyLayoutControl}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 gap-1.5"
+                          onClick={() => void toggleMeshOverviewFullscreen()}
+                        >
+                          <Minimize2 className="h-3.5 w-3.5" />
+                          Exit Fullscreen
+                        </Button>
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent className="flex min-h-0 flex-1 p-0">
@@ -4186,6 +4233,7 @@ function DashboardPage({
                       status={status}
                       nodes={topologyDiagramNodes}
                       selectedModel={selectedModel}
+                      layoutMode={meshTopologyLayoutMode}
                       themeMode={themeMode}
                       fullscreen
                       heightClass="min-h-[420px]"
@@ -4329,55 +4377,49 @@ function DashboardPage({
   );
 }
 
-type PositionedTopologyNode = TopologyNode & {
-  x: number;
-  y: number;
-  bucket: "center" | "serving" | "worker" | "client";
-};
-
-type TopologyNodeInfo = {
-  role: string;
-  statusLabel: string;
-  latencyMs?: number | null;
-  loadedModel: string;
-  loadedModels: string[];
-  vramGb: number;
-  vramSharePct: number;
-  hostname?: string;
-  isSoc?: boolean;
-  gpus?: { name: string; vram_bytes: number }[];
-};
-
 type TopologyFlowNodeData = {
   node: PositionedTopologyNode;
   info: TopologyNodeInfo;
   selected: boolean;
   sameModelAsCurrent: boolean;
+  layoutDirection: "horizontal" | "vertical";
 };
 
 type TopologyFlowDiagramNode = Node<TopologyFlowNodeData, "topologyNode">;
 
 function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
   const isCenter = data.node.bucket === "center";
+  const isHorizontal = data.layoutDirection === "horizontal";
   const dotClass = isCenter
     ? "bg-primary border-primary"
     : "bg-muted border-border";
   const dotCenterY = 22;
-  const edgeHandleStyle = {
+  const baseHandleStyle = {
     opacity: 0,
     width: 1,
     height: 1,
     border: 0,
     pointerEvents: "none" as const,
-    left: "50%",
-    top: dotCenterY,
-    transform: "translate(-50%, -50%)",
   };
+  const targetHandleStyle = isHorizontal
+    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
+    : { ...baseHandleStyle, left: "50%", top: dotCenterY, transform: "translate(-50%, -50%)" };
+  const sourceHandleStyle = isHorizontal
+    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
+    : { ...baseHandleStyle, left: "50%", bottom: dotCenterY, top: "auto", transform: "translate(-50%, 50%)" };
 
   return (
     <div className="relative w-[246px] pt-2">
-      <Handle type="target" position={Position.Top} style={edgeHandleStyle} />
-      <Handle type="source" position={Position.Top} style={edgeHandleStyle} />
+      <Handle
+        type="target"
+        position={isHorizontal ? Position.Left : Position.Top}
+        style={targetHandleStyle}
+      />
+      <Handle
+        type="source"
+        position={isHorizontal ? Position.Right : Position.Bottom}
+        style={sourceHandleStyle}
+      />
 
       <div className={cn("mx-auto h-7 w-7 rounded-full border-2", dotClass)} />
       <div className="mt-1 flex items-center justify-center gap-1 text-[10px] leading-3 text-foreground">
@@ -4436,7 +4478,7 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
           />
         </div>
 
-        <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] leading-3">
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] leading-3">
           {data.info.hostname && (
             <div className="inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1">
               <Server className="h-3 w-3 text-muted-foreground" />
@@ -4473,6 +4515,13 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
             </span>
           </div>
           {data.info.gpus?.map((gpu, i) => {
+            const duplicateCount = data.info.gpus
+              ?.slice(0, i)
+              .filter(
+                (candidate) =>
+                  candidate.name === gpu.name &&
+                  candidate.vram_bytes === gpu.vram_bytes,
+              ).length ?? 0;
             const lower = gpu.name.toLowerCase();
             const isNvidia =
               lower.includes("nvidia") || lower.includes("jetson");
@@ -4499,7 +4548,7 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
             const GpuIcon = data.info.isSoc ? Cpu : Gpu;
             return (
               <div
-                key={`${gpu.name}-${i}`}
+                key={`${data.node.id}-${gpu.name}-${gpu.vram_bytes}-${duplicateCount}`}
                 className="group/gpu inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2 py-1"
               >
                 <GpuIcon
@@ -4526,10 +4575,52 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
 
 const topologyNodeTypes = { topologyNode: TopologyFlowNode } as NodeTypes;
 
+function positionedTopologyLayoutsEqual(
+  left: PositionedTopologyNode[],
+  right: PositionedTopologyNode[],
+) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (
+      a.id !== b.id ||
+      a.bucket !== b.bucket ||
+      Math.abs(a.x - b.x) > 0.5 ||
+      Math.abs(a.y - b.y) > 0.5
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function topologyLayoutSignature(
+  nodes: Pick<BucketedTopologyNode, "id" | "bucket" | "width" | "height">[],
+  nodeRadius: number,
+) {
+  return `${nodeRadius}:${nodes
+    .map((node) => `${node.id}:${node.bucket}:${node.width}:${node.height}`)
+    .join(",")}`;
+}
+
+function positionedTopologySignature(nodes: PositionedTopologyNode[]) {
+  return nodes
+    .map(
+      (node) =>
+        `${node.id}:${node.bucket}:${Math.round(node.x)}:${Math.round(node.y)}`,
+    )
+    .join(",");
+}
+
 function MeshTopologyDiagram({
   status,
   nodes,
   selectedModel,
+  layoutMode,
   themeMode,
   fullscreen = false,
   heightClass,
@@ -4538,6 +4629,7 @@ function MeshTopologyDiagram({
   status: StatusPayload | null;
   nodes: TopologyNode[];
   selectedModel: string;
+  layoutMode: TopologyLayoutMode;
   themeMode: ThemeMode;
   fullscreen?: boolean;
   heightClass?: string;
@@ -4555,6 +4647,7 @@ function MeshTopologyDiagram({
       status={status}
       nodes={nodes}
       selectedModel={selectedModel}
+      layoutMode={layoutMode}
       themeMode={themeMode}
       fullscreen={fullscreen}
       heightClass={heightClass}
@@ -4567,6 +4660,7 @@ function MeshTopologyFlow({
   status,
   nodes,
   selectedModel,
+  layoutMode,
   themeMode,
   fullscreen,
   heightClass,
@@ -4575,28 +4669,66 @@ function MeshTopologyFlow({
   status: StatusPayload;
   nodes: TopologyNode[];
   selectedModel: string;
+  layoutMode: TopologyLayoutMode;
   themeMode: ThemeMode;
   fullscreen: boolean;
   heightClass?: string;
   containerStyle?: CSSProperties;
 }) {
-  const center =
-    nodes.find((n) => n.host) || nodes.find((n) => n.self) || nodes[0];
-  const others = nodes
-    .filter((n) => n.id !== center.id)
-    .sort((a, b) => b.vram - a.vram || a.id.localeCompare(b.id));
-  const focusModel = selectedModel || status.model_name || "";
-  const serving = others.filter(
-    (n) =>
-      !n.client && !!n.serving && (!focusModel || n.serving === focusModel),
-  );
-  const servingIds = new Set(serving.map((n) => n.id));
-  const workers = others.filter((n) => !n.client && !servingIds.has(n.id));
+  const {
+    center,
+    serving,
+    workers,
+    clients,
+    nodeRadius,
+    clientEdgeStride,
+    meshVramGb,
+  } = useMemo(() => {
+    const center =
+      nodes.find((n) => n.host) || nodes.find((n) => n.self) || nodes[0];
+    const others = nodes
+      .filter((n) => n.id !== center.id)
+      .sort((a, b) => b.vram - a.vram || a.id.localeCompare(b.id));
+    const focusModel = selectedModel || status.model_name || "";
+    const serving = others.filter(
+      (n) =>
+        !n.client && !!n.serving && (!focusModel || n.serving === focusModel),
+    );
+    const servingIds = new Set(serving.map((n) => n.id));
+    const clients = others.filter((n) => n.client);
+    const workers = others.filter(
+      (n) => !n.client && !servingIds.has(n.id),
+    );
 
-  const positioned = layoutTopologyNodes(center, serving, workers);
-  const meshVramGb = nodes
-    .filter((n) => !n.client)
-    .reduce((sum, n) => sum + Math.max(0, n.vram), 0);
+    const total = nodes.length;
+    const nodeRadius =
+      total >= 500
+        ? 3.6
+        : total >= 280
+          ? 4.8
+          : total >= 160
+            ? 6.2
+            : total >= 90
+              ? 7.4
+              : total >= 50
+                ? 8.8
+                : 10.4;
+    const clientEdgeStride =
+      total > 320 ? 6 : total > 220 ? 4 : total > 120 ? 2 : 1;
+    const meshVramGb = nodes
+      .filter((n) => !n.client)
+      .reduce((sum, n) => sum + Math.max(0, n.vram), 0);
+
+    return {
+      center,
+      serving,
+      workers,
+      clients,
+      nodeRadius,
+      clientEdgeStride,
+      meshVramGb,
+    };
+  }, [nodes, selectedModel, status.model_name]);
   const currentNodeServingModel = useMemo(() => {
     const current = nodes.find((n) => n.self);
     if (
@@ -4665,6 +4797,98 @@ function MeshTopologyFlow({
     }
     return out;
   }, [nodes, meshVramGb]);
+  const activeLayout = TOPOLOGY_LAYOUTS[layoutMode];
+  const topologyLayoutNodes = useMemo<BucketedTopologyNode[]>(() => {
+    const toBucketedNode = (
+      node: TopologyNode,
+      bucket: BucketedTopologyNode["bucket"],
+    ): BucketedTopologyNode => ({
+      ...node,
+      bucket,
+      width: TOPOLOGY_NODE_WIDTH,
+      height: estimateTopologyNodeHeight(node, nodeInfoById.get(node.id)),
+    });
+
+    return [
+      toBucketedNode(center, "center"),
+      ...serving.map((node) => toBucketedNode(node, "serving")),
+      ...workers.map((node) => toBucketedNode(node, "worker")),
+      ...clients.map((node) => toBucketedNode(node, "client")),
+    ];
+  }, [center, clients, nodeInfoById, serving, workers]);
+  const layoutContext = useMemo(
+    () => ({
+      center,
+      serving,
+      workers,
+      clients,
+      nodeRadius,
+      nodes: topologyLayoutNodes,
+    }),
+    [center, clients, nodeRadius, serving, topologyLayoutNodes, workers],
+  );
+  const layoutInputSignature = useMemo(
+    () => topologyLayoutSignature(topologyLayoutNodes, nodeRadius),
+    [nodeRadius, topologyLayoutNodes],
+  );
+  const layoutInputSignatureRef = useRef(layoutInputSignature);
+  layoutInputSignatureRef.current = layoutInputSignature;
+  const layoutContextRef = useRef(layoutContext);
+  layoutContextRef.current = layoutContext;
+  const [positioned, setPositioned] = useState<PositionedTopologyNode[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const runSignature = layoutInputSignature;
+    const nextLayoutContext = layoutContextRef.current;
+
+    const immediateLayout = activeLayout.getImmediateLayout(nextLayoutContext);
+    setPositioned((previous) =>
+      positionedTopologyLayoutsEqual(previous, immediateLayout)
+        ? previous
+        : immediateLayout,
+    );
+
+    void activeLayout
+      .getLayout(nextLayoutContext)
+      .then((next) => {
+        if (
+          !cancelled &&
+          layoutInputSignatureRef.current === runSignature
+        ) {
+          setPositioned((previous) =>
+            positionedTopologyLayoutsEqual(previous, next) ? previous : next,
+          );
+        }
+      })
+      .catch(() => {
+        if (
+          !cancelled &&
+          layoutInputSignatureRef.current === runSignature
+        ) {
+          setPositioned((previous) =>
+            positionedTopologyLayoutsEqual(previous, immediateLayout)
+              ? previous
+              : immediateLayout,
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeLayout, layoutInputSignature]);
+
+  const positionedIdsKey = useMemo(
+    () => positioned.map((node) => node.id).sort().join(","),
+    [positioned],
+  );
+  const expectedPositionIdsKey = useMemo(
+    () => topologyLayoutNodes.map((node) => node.id).sort().join(","),
+    [topologyLayoutNodes],
+  );
+  const layoutReady =
+    positioned.length > 0 && positionedIdsKey === expectedPositionIdsKey;
   const flowColorMode =
     themeMode === "auto"
       ? typeof document !== "undefined" &&
@@ -4672,38 +4896,52 @@ function MeshTopologyFlow({
         ? "dark"
         : "light"
       : themeMode;
-  const flowLayoutKey = useMemo(
+  const layoutFitSignature = useMemo(
     () =>
-      `${fullscreen ? "fs" : "std"}:${positioned
-        .map((p) => p.id)
-        .sort()
-        .join(",")}`,
-    [fullscreen, positioned],
+      `${fullscreen ? "fs" : "std"}:${layoutMode}:${positionedTopologySignature(positioned)}`,
+    [fullscreen, layoutMode, positioned],
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const flowInstanceRef = useRef<ReactFlowInstance<
-    TopologyFlowDiagramNode,
-    Edge
-  > | null>(null);
+  const flowInstanceRef = useRef<
+    ReactFlowInstance<TopologyFlowDiagramNode, Edge> | null
+  >(null);
+  const [flowReady, setFlowReady] = useState(false);
   const [containerReady, setContainerReady] = useState(false);
+  const [containerSizeSignature, setContainerSizeSignature] = useState("");
   const fitViewOptions = useMemo(() => ({ padding: 0.12, maxZoom: 1.45 }), []);
   const fitDuration = fullscreen ? 220 : 0;
 
   useEffect(() => {
-    if (!flowInstanceRef.current) return;
-    const fit = () => {
+    if (
+      !flowInstanceRef.current ||
+      !flowReady ||
+      !layoutReady ||
+      !containerReady ||
+      !layoutFitSignature ||
+      !containerSizeSignature
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
       flowInstanceRef.current?.fitView({
         ...fitViewOptions,
         duration: fitDuration,
       });
-    };
-    const frame = window.requestAnimationFrame(fit);
-    const timeout = window.setTimeout(fit, 180);
+    });
+
     return () => {
       window.cancelAnimationFrame(frame);
-      window.clearTimeout(timeout);
     };
-  }, [fitDuration, fitViewOptions, flowLayoutKey]);
+  }, [
+    containerReady,
+    containerSizeSignature,
+    fitDuration,
+    fitViewOptions,
+    flowReady,
+    layoutFitSignature,
+    layoutReady,
+  ]);
 
   useEffect(() => {
     const container = flowContainerRef.current;
@@ -4712,26 +4950,40 @@ function MeshTopologyFlow({
     const update = () => {
       const rect = container.getBoundingClientRect();
       const ready = rect.width > 8 && rect.height > 8;
-      setContainerReady(ready);
-      if (ready) {
-        flowInstanceRef.current?.fitView({ ...fitViewOptions, duration: 0 });
-      }
+      const size = ready
+        ? `${Math.round(rect.width)}x${Math.round(rect.height)}`
+        : "";
+
+      setContainerReady((previous) => (previous === ready ? previous : ready));
+      setContainerSizeSignature((previous) =>
+        previous === size ? previous : size,
+      );
     };
 
     update();
     const observer = new ResizeObserver(update);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [fitViewOptions, flowLayoutKey, containerStyle, heightClass]);
+  }, []);
+
+  useEffect(() => {
+    if (containerReady && layoutReady) return;
+    flowInstanceRef.current = null;
+    setFlowReady(false);
+  }, [containerReady, layoutReady]);
 
   const flowNodes = useMemo<TopologyFlowDiagramNode[]>(() => {
+    const isHorizontal = activeLayout.direction === "horizontal";
     return positioned.map((p) => ({
       id: p.id,
       type: "topologyNode",
       position: { x: p.x, y: p.y },
       origin: [0.5, 0],
+      sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
+      targetPosition: isHorizontal ? Position.Left : Position.Top,
       data: {
         node: p,
+        layoutDirection: activeLayout.direction,
         info: nodeInfoById.get(p.id) ?? {
           role: "Node",
           statusLabel: "n/a",
@@ -4753,6 +5005,7 @@ function MeshTopologyFlow({
       zIndex: p.id === center.id ? 10 : 1,
     }));
   }, [
+    activeLayout.direction,
     positioned,
     nodeInfoById,
     selectedNodeId,
@@ -4772,9 +5025,13 @@ function MeshTopologyFlow({
           id: `edge-${center.id}-${p.id}`,
           source: center.id,
           target: p.id,
-          type: "straight",
+          type: activeLayout.edgeType,
           className: `mesh-edge mesh-edge--${p.bucket}`,
           animated: false,
+          pathOptions:
+            activeLayout.edgeType === "smoothstep"
+              ? { borderRadius: 18, offset: 24 }
+              : undefined,
           style: {
             stroke,
             strokeWidth: 2.4,
@@ -4782,7 +5039,7 @@ function MeshTopologyFlow({
           },
         };
       });
-  }, [positioned, center.id]);
+  }, [activeLayout.edgeType, positioned, center.id]);
 
   return (
     <div
@@ -4793,17 +5050,14 @@ function MeshTopologyFlow({
       ref={flowContainerRef}
       style={containerStyle}
     >
-      {containerReady ? (
+      {containerReady && layoutReady ? (
         <ReactFlow<TopologyFlowDiagramNode, Edge>
-          key={flowLayoutKey}
           className="h-full w-full"
           style={{ width: "100%", height: "100%" }}
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={topologyNodeTypes}
           colorMode={flowColorMode}
-          fitView
-          fitViewOptions={fitViewOptions}
           minZoom={0.2}
           maxZoom={1.6}
           zoomOnScroll={false}
@@ -4815,9 +5069,7 @@ function MeshTopologyFlow({
           elementsSelectable={false}
           onInit={(instance) => {
             flowInstanceRef.current = instance;
-            window.requestAnimationFrame(() => {
-              instance.fitView({ ...fitViewOptions, duration: fitDuration });
-            });
+            setFlowReady(true);
           }}
           onNodeClick={(_, node) => setSelectedNodeId(node.id)}
           proOptions={{ hideAttribution: true }}
@@ -4839,111 +5091,6 @@ function MeshTopologyFlow({
   );
 }
 
-type TopologyRowBucket = "serving" | "worker";
-
-type TopologyRow = {
-  nodes: TopologyNode[];
-  bucket: TopologyRowBucket;
-};
-
-function layoutTopologyNodes(
-  center: TopologyNode,
-  serving: TopologyNode[],
-  workers: TopologyNode[],
-): PositionedTopologyNode[] {
-  const chunkRows = (
-    rowNodes: TopologyNode[],
-    bucket: TopologyRowBucket,
-    maxPerRow: number,
-  ): TopologyRow[] => {
-    if (!rowNodes.length) return [];
-    const rowCount = Math.ceil(rowNodes.length / maxPerRow);
-    const baseRowSize = Math.floor(rowNodes.length / rowCount);
-    const remainder = rowNodes.length % rowCount;
-    const rows: TopologyRow[] = [];
-    let offset = 0;
-    for (let i = 0; i < rowCount; i += 1) {
-      const rowSize = baseRowSize + (i < remainder ? 1 : 0);
-      rows.push({
-        nodes: rowNodes.slice(offset, offset + rowSize),
-        bucket,
-      });
-      offset += rowSize;
-    }
-    return rows;
-  };
-
-  const placeRow = (
-    row: TopologyRow,
-    y: number,
-    horizontalSpacing: number,
-    positioned: PositionedTopologyNode[],
-  ) => {
-    const startX = -((row.nodes.length - 1) * horizontalSpacing) / 2;
-    row.nodes.forEach((node, index) => {
-      positioned.push({
-        ...node,
-        bucket: row.bucket,
-        x: startX + index * horizontalSpacing,
-        y,
-      });
-    });
-  };
-
-  const positioned: PositionedTopologyNode[] = [
-    { ...center, x: 0, y: 0, bucket: "center" },
-  ];
-  const peerCount = serving.length + workers.length;
-  if (peerCount === 0) return positioned;
-
-  // Grow maxPerRow with ~sqrt(peerCount) so the layout stays roughly square
-  // (wider rows, fewer rows) rather than stacking many rows that force extreme
-  // zoom-out to see the full topology.
-  const maxPerRow = Math.max(2, Math.min(8, Math.ceil(Math.sqrt(peerCount))));
-  const topRows = chunkRows(serving, "serving", maxPerRow);
-  const bottomRows = chunkRows(workers, "worker", maxPerRow);
-
-  if (topRows.length === 0) {
-    const redistributedTop: TopologyRow[] = [];
-    const redistributedBottom: TopologyRow[] = [];
-    bottomRows.forEach((row, index) => {
-      (index % 2 === 0 ? redistributedTop : redistributedBottom).push(row);
-    });
-    topRows.push(...redistributedTop);
-    bottomRows.splice(0, bottomRows.length, ...redistributedBottom);
-  } else {
-    while (bottomRows.length > topRows.length + 1) {
-      const row = bottomRows.pop();
-      if (!row) break;
-      topRows.push(row);
-    }
-    while (topRows.length > bottomRows.length + 1) {
-      const row = topRows.pop();
-      if (!row) break;
-      bottomRows.push(row);
-    }
-  }
-
-  const horizontalSpacing =
-    peerCount <= 3 ? 324 : peerCount <= 8 ? 292 : peerCount <= 14 ? 274 : 262;
-  const bandOffset = peerCount <= 3 ? 232 : 216;
-  const rowStep = 204;
-
-  topRows.forEach((row, index) => {
-    placeRow(
-      row,
-      -(bandOffset + index * rowStep),
-      horizontalSpacing,
-      positioned,
-    );
-  });
-
-  bottomRows.forEach((row, index) => {
-    placeRow(row, bandOffset + index * rowStep, horizontalSpacing, positioned);
-  });
-
-  return positioned;
-}
 
 // KaTeX math renderer — loads from CDN on first use
 let katexCssLoaded = false;
@@ -4963,42 +5110,44 @@ const katexPromise = import(
   .catch(() => null);
 
 function KaTeXBlock({ math, display }: { math: string; display: boolean }) {
-  const [html, setHtml] = useState<string | null>(null);
+  const [rendered, setRendered] = useState(false);
+  const blockRef = useRef<HTMLDivElement | null>(null);
+  const inlineRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setRendered(false);
     katexPromise.then((katex) => {
-      if (cancelled || !katex) return;
+      const container = display ? blockRef.current : inlineRef.current;
+      if (cancelled || !katex || !container) return;
+      container.innerHTML = "";
       try {
-        const rendered = katex.renderToString(math, {
+        katex.render(math, container, {
           displayMode: display,
           throwOnError: false,
         });
-        if (!cancelled) setHtml(rendered);
-      } catch {
-        if (!cancelled) setHtml(null);
-      }
+        if (!cancelled) setRendered(true);
+      } catch {}
     });
     return () => {
       cancelled = true;
     };
   }, [math, display]);
 
-  if (html === null)
-    return display ? (
-      <div className="my-2 overflow-x-auto text-sm">
-        <code>{math}</code>
-      </div>
-    ) : (
-      <code>{math}</code>
-    );
   return display ? (
-    <div
-      className="my-2 overflow-x-auto"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <>
+      <div ref={blockRef} className={rendered ? "my-2 overflow-x-auto" : "hidden"} />
+      {!rendered && (
+        <div className="my-2 overflow-x-auto text-sm">
+          <code>{math}</code>
+        </div>
+      )}
+    </>
   ) : (
-    <span dangerouslySetInnerHTML={{ __html: html }} />
+    <>
+      <span ref={inlineRef} className={rendered ? undefined : "hidden"} />
+      {!rendered && <code>{math}</code>}
+    </>
   );
 }
 
@@ -5010,7 +5159,7 @@ const mermaidPromise = import(
     m.default.initialize({
       startOnLoad: false,
       theme: "dark",
-      securityLevel: "loose",
+      securityLevel: "antiscript",
     });
     return m.default;
   })
@@ -5022,10 +5171,20 @@ function MermaidBlock({ code }: { code: string }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!svg || !containerRef.current) return;
+    containerRef.current.innerHTML = svg;
+    return () => {
+      if (containerRef.current) containerRef.current.innerHTML = "";
+    };
+  }, [svg]);
+
+  useEffect(() => {
     let cancelled = false;
+    setError(null);
+    setSvg(null);
     mermaidPromise.then(async (mermaid) => {
       if (cancelled || !mermaid) {
-        setError("Mermaid failed to load");
+        if (!cancelled) setError("Mermaid failed to load");
         return;
       }
       try {
@@ -5055,11 +5214,11 @@ function MermaidBlock({ code }: { code: string }) {
         Rendering diagram…
       </div>
     );
+
   return (
     <div
       ref={containerRef}
       className="my-2 overflow-x-auto rounded-lg border border-border/70 bg-background/80 p-3 [&_svg]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
 }
@@ -5315,7 +5474,12 @@ function StatCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div tabIndex={0}>{card}</div>
+        <button
+          type="button"
+          className="block w-full rounded-lg bg-transparent text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {card}
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
@@ -5706,9 +5870,12 @@ function CapabilityBadge({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex" tabIndex={0}>
+        <button
+          type="button"
+          className="inline-flex rounded-full bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           {badge}
-        </span>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
@@ -5745,7 +5912,12 @@ function ModelFactCard({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div tabIndex={0}>{card}</div>
+        <button
+          type="button"
+          className="block w-full rounded-lg bg-transparent text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {card}
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
@@ -5873,9 +6045,12 @@ function StatusPill({
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex" tabIndex={0}>
+        <button
+          type="button"
+          className="inline-flex rounded-full bg-transparent p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
           {badge}
-        </span>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="center" sideOffset={8}>
         {tooltip}
