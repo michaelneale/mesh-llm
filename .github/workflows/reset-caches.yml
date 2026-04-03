@@ -1,0 +1,122 @@
+name: Reset GitHub caches
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type DELETE ALL CACHES to continue.
+        required: true
+        type: string
+      restart_ci:
+        description: Run CI after deleting caches to prewarm them again.
+        required: false
+        default: true
+        type: boolean
+      ci_ref:
+        description: Git ref to dispatch CI against after the purge.
+        required: false
+        default: main
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DELETE ALL CACHES" ]; then
+            echo "Refusing to delete caches without the exact confirmation string."
+            exit 1
+          fi
+
+      - name: Delete all repository caches
+        id: delete-caches
+        uses: actions/github-script@v8
+        with:
+          result-encoding: string
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const perPage = 100;
+            let page = 1;
+            const caches = [];
+
+            while (true) {
+              const response = await github.request(
+                "GET /repos/{owner}/{repo}/actions/caches",
+                { owner, repo, per_page: perPage, page },
+              );
+              const pageCaches = response.data.actions_caches ?? [];
+              caches.push(...pageCaches);
+              if (pageCaches.length < perPage) {
+                break;
+              }
+              page += 1;
+            }
+
+            const totalBytes = caches.reduce(
+              (sum, cache) => sum + (cache.size_in_bytes ?? 0),
+              0,
+            );
+            core.notice(
+              `Deleting ${caches.length} caches totaling ${(
+                totalBytes / (1024 * 1024 * 1024)
+              ).toFixed(2)} GiB.`,
+            );
+
+            for (const cache of caches) {
+              core.info(
+                `Deleting cache ${cache.id} (${cache.key}) from ${cache.ref}.`,
+              );
+              await github.request(
+                "DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}",
+                { owner, repo, cache_id: cache.id },
+              );
+            }
+
+            return String(caches.length);
+
+      - name: Trigger CI repopulation run
+        if: ${{ inputs.restart_ci }}
+        uses: actions/github-script@v8
+        env:
+          CI_REF: ${{ inputs.ci_ref }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const ref = process.env.CI_REF;
+
+            core.notice(`Dispatching ci.yml on ${ref} to repopulate caches.`);
+            await github.request(
+              "POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches",
+              {
+                owner,
+                repo,
+                workflow_id: "ci.yml",
+                ref,
+              },
+            );
+
+      - name: Summarize reset
+        env:
+          DELETED_COUNT: ${{ steps.delete-caches.outputs.result }}
+          RESTART_CI: ${{ inputs.restart_ci }}
+          CI_REF: ${{ inputs.ci_ref }}
+        run: |
+          {
+            echo "## Cache reset"
+            echo
+            echo "- Deleted caches: ${DELETED_COUNT}"
+            if [ "${RESTART_CI}" = "true" ]; then
+              echo "- CI dispatched on ref: ${CI_REF}"
+            else
+              echo "- CI dispatched: no"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

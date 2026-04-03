@@ -9,6 +9,7 @@ permissions:
   contents: write
 
 env:
+  CACHE_NAMESPACE: mesh-llm
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -35,7 +36,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: mesh-llm/ui/package-lock.json
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -45,6 +48,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Build release bundle
         shell: bash
@@ -91,7 +95,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: mesh-llm/ui/package-lock.json
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -103,6 +109,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Build CUDA release bundle
         shell: bash
@@ -149,7 +156,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: mesh-llm/ui/package-lock.json
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -161,6 +170,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Build AMD ROCm release bundle
         shell: bash
@@ -207,7 +217,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: mesh-llm/ui/package-lock.json
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -219,6 +231,7 @@ jobs:
         with:
           workspaces: |
             . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Build Vulkan release bundle
         shell: bash
