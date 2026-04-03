@@ -11,7 +11,7 @@ use crate::models;
 use crate::network::tunnel;
 use mesh::NodeRole;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -546,6 +546,35 @@ struct MoeAnalyzeProgressState {
     last_prompt: Option<usize>,
 }
 
+fn render_moe_analysis_progress(
+    model_name: &str,
+    mode: &str,
+    current: usize,
+    total: Option<usize>,
+) {
+    let progress = match total {
+        Some(total) if total > 0 => format!(
+            "{:>5.1}%  {}/{}",
+            (current as f64 / total as f64) * 100.0,
+            current,
+            total
+        ),
+        Some(total) => format!("       0/{}", total),
+        None => format!("       {}", current),
+    };
+    eprint!(
+        "\r🧩 [{}] {:<17} {}",
+        model_name,
+        format!("MoE {mode}"),
+        progress
+    );
+    let _ = std::io::stderr().flush();
+}
+
+fn finish_moe_analysis_progress() {
+    eprintln!();
+}
+
 fn parse_moe_analyze_prompt_total(line: &str) -> Option<usize> {
     let trimmed = line.trim();
     let rest = trimmed.strip_prefix("Running ")?;
@@ -573,7 +602,7 @@ fn spawn_moe_analyze_log_relay<R: std::io::Read + Send + 'static>(
                 if let Ok(mut state) = progress.lock() {
                     state.total_prompts = Some(total);
                 }
-                eprintln!("🧩 [{model_name}] MoE analysis progress 0/{total}");
+                render_moe_analysis_progress(&model_name, "full-analyze", 0, Some(total));
                 continue;
             }
             if let Some((current, total)) = parse_moe_analyze_prompt_progress(&line) {
@@ -587,11 +616,12 @@ fn spawn_moe_analyze_log_relay<R: std::io::Read + Send + 'static>(
                     }
                 }
                 if should_emit {
-                    eprintln!("🧩 [{model_name}] MoE analysis progress {current}/{total}");
+                    render_moe_analysis_progress(&model_name, "full-analyze", current, Some(total));
                 }
                 continue;
             }
             if should_relay_moe_analyze_warning(&line) {
+                eprint!("\r");
                 eprintln!("  [{model_name}] {line}");
             }
         }
@@ -658,6 +688,14 @@ fn ensure_full_analyze_ranking(
     }
     if let Some(handle) = stderr_relay {
         let _ = handle.join();
+    }
+    if progress
+        .lock()
+        .ok()
+        .and_then(|state| state.total_prompts)
+        .is_some()
+    {
+        finish_moe_analysis_progress();
     }
     anyhow::ensure!(status.success(), "llama-moe-analyze exited with {status}");
     let ranking = moe::load_cached_ranking(cached_path).ok_or_else(|| {
@@ -765,14 +803,11 @@ fn run_micro_analyze_ranking(
             moe::MoeMicroLayerScope::First => "first",
         }
     );
+    render_moe_analysis_progress(model_name, "micro-analyze", 0, Some(prompt_count));
 
     for (idx, prompt) in prompts.iter().take(prompt_count).enumerate() {
         let output_path = tmp_dir.join(format!("prompt-{idx}.csv"));
-        eprintln!(
-            "  MoE analysis progress {}/{} (mode=micro-analyze)",
-            idx + 1,
-            prompt_count
-        );
+        render_moe_analysis_progress(model_name, "micro-analyze", idx + 1, Some(prompt_count));
         let mut command = Command::new(&analyze_bin);
         command.args([
             "-m",
@@ -793,6 +828,7 @@ fn run_micro_analyze_ranking(
         }
         let output = command.output()?;
         if !output.status.success() {
+            finish_moe_analysis_progress();
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
             let mut details = stderr
@@ -818,6 +854,7 @@ fn run_micro_analyze_ranking(
             *mass_by_expert.entry(row.expert_id).or_insert(0.0) += row.gate_mass;
         }
     }
+    finish_moe_analysis_progress();
 
     let mut rows = mass_by_expert.into_iter().collect::<Vec<_>>();
     rows.sort_by(|a, b| {
