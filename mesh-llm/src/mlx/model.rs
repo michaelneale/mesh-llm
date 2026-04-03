@@ -78,6 +78,9 @@ pub struct ModelConfig {
     #[serde(default)]
     pub num_experts_per_tok: Option<i32>,
     #[serde(default)]
+    #[allow(dead_code)]
+    pub num_local_experts: Option<i32>,
+    #[serde(default)]
     pub moe_layer_freq: Option<i32>,
     #[serde(default)]
     pub first_k_dense_replace: Option<i32>,
@@ -418,6 +421,7 @@ pub struct Attention {
     attn_logit_softcapping: Option<f32>,
     rope_dim: i32,
     rope_theta: f32,
+    window_size: Option<i32>,
     kv_shared_source: Option<usize>,
 }
 
@@ -454,8 +458,20 @@ impl Attention {
         .transpose_axes(&[0, 2, 1, 3])?;
         let k = apply_rope(&k, self.rope_dim, self.head_dim, self.rope_theta, 0)?;
 
-        let attn = if let Some(softcap) = self.attn_logit_softcapping {
-            manual_scaled_dot_product_attention(&q, &k, &v, self.scale, softcap, l > 1)?
+        let mask = if self.window_size.is_some() {
+            attention_mask(l, l, 0, self.window_size)?
+        } else {
+            None
+        };
+        let attn = if self.attn_logit_softcapping.is_some() || mask.is_some() {
+            manual_scaled_dot_product_attention_with_mask(
+                &q,
+                &k,
+                &v,
+                self.scale,
+                self.attn_logit_softcapping,
+                mask.as_ref(),
+            )?
         } else {
             let mask = if l > 1 {
                 Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
@@ -517,8 +533,20 @@ impl Attention {
         };
 
         // Causal mask for prefill (multi-token). Decode (l=1) needs no mask.
-        let attn = if let Some(softcap) = self.attn_logit_softcapping {
-            manual_scaled_dot_product_attention(&q, &k, &v, self.scale, softcap, l > 1)?
+        let mask = if self.window_size.is_some() {
+            attention_mask(l, k.shape()[2], offset, self.window_size)?
+        } else {
+            None
+        };
+        let attn = if self.attn_logit_softcapping.is_some() || mask.is_some() {
+            manual_scaled_dot_product_attention_with_mask(
+                &q,
+                &k,
+                &v,
+                self.scale,
+                self.attn_logit_softcapping,
+                mask.as_ref(),
+            )?
         } else {
             let mask = if l > 1 {
                 Some(mlx_rs::fast::ScaledDotProductAttentionMask::Causal)
@@ -587,7 +615,8 @@ impl DeepseekV3Attention {
             &k_pe.transpose_axes(&[0, 1, 3, 2])?,
         )?;
         if causal {
-            let mask = causal_mask(q_pe.shape()[2], k_pe.shape()[2])?;
+            let mask = attention_mask(q_pe.shape()[2], k_pe.shape()[2], 0, None)?
+                .context("expected causal mask")?;
             let fill = array!(pe_scores.dtype().finfo_min()? as f32).as_dtype(pe_scores.dtype())?;
             pe_scores = mlx_rs::ops::r#where(&mask, &pe_scores, &fill)?;
         }
@@ -693,25 +722,35 @@ impl DeepseekV3Attention {
     }
 }
 
-fn causal_mask(query_len: i32, key_len: i32) -> Result<Array> {
+fn attention_mask(
+    query_len: i32,
+    key_len: i32,
+    offset: i32,
+    window_size: Option<i32>,
+) -> Result<Option<Array>> {
+    if query_len == 1 && window_size.is_none() {
+        return Ok(None);
+    }
+
     let key_positions = mlx_rs::ops::arange::<_, i32>(0, key_len, 1)?;
-    let query_positions = if key_len > query_len {
-        mlx_rs::ops::arange::<_, i32>(key_len - query_len, key_len, 1)?
-    } else {
-        mlx_rs::ops::arange::<_, i32>(0, query_len, 1)?
-    };
+    let query_positions = mlx_rs::ops::arange::<_, i32>(offset, offset + query_len, 1)?;
     let left = query_positions.expand_dims(1)?;
     let right = key_positions.expand_dims(0)?;
-    Ok(left.ge(&right)?)
+    let mut mask = left.ge(&right)?;
+    if let Some(window_size) = window_size {
+        let upper_bound = right.add(&array!(window_size))?;
+        mask = mask.logical_and(&left.lt(&upper_bound)?)?;
+    }
+    Ok(Some(mask))
 }
 
-fn manual_scaled_dot_product_attention(
+fn manual_scaled_dot_product_attention_with_mask(
     q: &Array,
     k: &Array,
     v: &Array,
     scale: f32,
-    softcap: f32,
-    causal: bool,
+    softcap: Option<f32>,
+    mask: Option<&Array>,
 ) -> Result<Array> {
     let num_heads = q.shape()[1];
     let num_kv_heads = k.shape()[1];
@@ -725,12 +764,6 @@ fn manual_scaled_dot_product_attention(
     let batch = q.shape()[0];
     let query_len = q.shape()[2];
     let head_dim = q.shape()[3];
-    let key_len = k.shape()[2];
-    let mask = if causal {
-        Some(causal_mask(query_len, key_len)?)
-    } else {
-        None
-    };
 
     let mut queries = q.clone();
     if scale != 1.0 {
@@ -753,9 +786,11 @@ fn manual_scaled_dot_product_attention(
         keys.transpose_axes(&[0, 1, 3, 2])?
     };
     let mut scores = mlx_rs::ops::matmul(&queries, &key_t)?;
-    scores = scores.divide(&array!(softcap))?;
-    scores = mlx_rs::ops::tanh(&scores)?.multiply(&array!(softcap))?;
-    if let Some(mask) = &mask {
+    if let Some(softcap) = softcap {
+        scores = scores.divide(&array!(softcap))?;
+        scores = mlx_rs::ops::tanh(&scores)?.multiply(&array!(softcap))?;
+    }
+    if let Some(mask) = mask {
         let fill = array!(scores.dtype().finfo_min()? as f32).as_dtype(scores.dtype())?;
         scores = mlx_rs::ops::r#where(mask, &scores, &fill)?;
     }
@@ -959,6 +994,66 @@ impl DeepseekV3MoE {
     }
 }
 
+pub struct GptOssMoE {
+    switch_gate_proj: QuantizedSwitchLinear,
+    switch_up_proj: QuantizedSwitchLinear,
+    switch_down_proj: QuantizedSwitchLinear,
+    router: QuantizedLinear,
+    top_k: i32,
+}
+
+impl GptOssMoE {
+    fn switch_forward_single(&self, x: &Array, expert: i32) -> Result<Array> {
+        let x_linear = self.switch_up_proj.forward_single(x, expert)?;
+        let x_glu = self.switch_gate_proj.forward_single(x, expert)?;
+        let x_glu = mlx_rs::ops::clip(&x_glu, ((), 7.0f32))?;
+        let x_linear = mlx_rs::ops::clip(&x_linear, (-7.0f32, 7.0f32))?;
+        let out_glu =
+            x_glu.multiply(&mlx_rs::ops::sigmoid(&x_glu.multiply(&array!(1.702f32))?)?)?;
+        let activated = out_glu.multiply(&x_linear.add(&array!(1.0f32))?)?;
+        self.switch_down_proj.forward_single(&activated, expert)
+    }
+
+    pub fn forward(&self, x: &Array) -> Result<Array> {
+        let b = x.shape()[0];
+        let l = x.shape()[1];
+        let hidden = x.shape()[2];
+        let flat = x.reshape(&[b * l, hidden])?;
+        let router_logits = self.router.forward(&flat)?.as_dtype(Dtype::Float32)?;
+        let inds = mlx_rs::ops::argpartition_axis(
+            &router_logits.multiply(&array!(-1.0f32))?,
+            self.top_k - 1,
+            -1,
+        )?
+        .index((std::ops::RangeFull, ..self.top_k));
+        let weights = mlx_rs::ops::indexing::take_along_axis(&router_logits, &inds, -1)?;
+        let weights = mlx_rs::ops::softmax_axis(&weights, -1, true)?;
+        mlx_rs::transforms::eval([&inds, &weights])?;
+        let inds_slice = inds.as_slice::<u32>();
+        let weights_slice = weights.as_slice::<f32>();
+        let mut outputs = Vec::with_capacity((b * l) as usize);
+        for token_idx in 0..(b * l) {
+            let x_tok = flat.index((token_idx..token_idx + 1, std::ops::RangeFull));
+            let mut token_out: Option<Array> = None;
+            for expert_slot in 0..self.top_k {
+                let offset = (token_idx * self.top_k + expert_slot) as usize;
+                let expert = inds_slice[offset] as i32;
+                let weight = weights_slice[offset];
+                let routed = self
+                    .switch_forward_single(&x_tok, expert)?
+                    .multiply(&array!(weight))?;
+                token_out = Some(match token_out {
+                    Some(acc) => acc.add(&routed)?,
+                    None => routed,
+                });
+            }
+            outputs.push(token_out.context("gpt-oss moe produced no experts")?);
+        }
+        let output_refs: Vec<&Array> = outputs.iter().collect();
+        Ok(mlx_rs::ops::concatenate_axis(&output_refs, 0)?.reshape(&[b, l, hidden])?)
+    }
+}
+
 pub struct Lfm2ShortConv {
     conv_weight: Array,
     in_proj: QuantizedLinear,
@@ -1044,6 +1139,7 @@ impl AttentionKind {
 pub enum MlpKind {
     Dense(MLP),
     DeepseekV3MoE(DeepseekV3MoE),
+    GptOssMoE(GptOssMoE),
 }
 
 impl MlpKind {
@@ -1051,6 +1147,7 @@ impl MlpKind {
         match self {
             Self::Dense(mlp) => mlp.forward(x),
             Self::DeepseekV3MoE(moe) => moe.forward(x),
+            Self::GptOssMoE(moe) => moe.forward(x),
         }
     }
 }
@@ -1715,6 +1812,11 @@ impl MlxModel {
         let mut layers = Vec::new();
         for i in 0..config.num_hidden_layers {
             let p = format!("{}.layers.{i}", prefixes.model);
+            let layer_type = config
+                .layer_types
+                .as_ref()
+                .and_then(|types| types.get(i as usize))
+                .map(String::as_str);
             if arch.is_deepseek_v3() {
                 let qk_nope_head_dim = config
                     .qk_nope_head_dim
@@ -1900,6 +2002,7 @@ impl MlxModel {
                         attn_logit_softcapping: None,
                         rope_dim: head_dim,
                         rope_theta: config.rope_theta,
+                        window_size: None,
                         kv_shared_source: None,
                     })
                 } else {
@@ -1944,11 +2047,71 @@ impl MlxModel {
                 });
                 continue;
             }
-            let layer_type = config
-                .layer_types
-                .as_ref()
-                .and_then(|types| types.get(i as usize))
-                .map(String::as_str);
+            if arch.is_gpt_oss() {
+                let window_size = if matches!(layer_type, Some("sliding_attention")) {
+                    Some(
+                        config
+                            .sliding_window
+                            .context("missing sliding_window for gpt-oss sliding layer")?,
+                    )
+                } else {
+                    None
+                };
+                layers.push(Layer {
+                    attn: AttentionKind::Standard(Attention {
+                        q_proj: load_qlinear(&format!("{p}.self_attn.q_proj"))?,
+                        k_proj: load_qlinear(&format!("{p}.self_attn.k_proj"))?,
+                        v_proj: load_qlinear(&format!("{p}.self_attn.v_proj"))?,
+                        o_proj: load_qlinear(&format!("{p}.self_attn.o_proj"))?,
+                        q_norm: None,
+                        k_norm: None,
+                        v_norm: None,
+                        num_heads: config.num_attention_heads,
+                        num_kv_heads: config.num_key_value_heads,
+                        head_dim,
+                        scale: 1.0 / (head_dim as f32).sqrt(),
+                        attn_logit_softcapping: None,
+                        rope_dim: head_dim,
+                        rope_theta: config.rope_theta,
+                        window_size,
+                        kv_shared_source: None,
+                    }),
+                    mlp: MlpKind::GptOssMoE(GptOssMoE {
+                        switch_gate_proj: load_switch_linear(&format!(
+                            "{p}.mlp.experts.gate_proj"
+                        ))?,
+                        switch_up_proj: load_switch_linear(&format!("{p}.mlp.experts.up_proj"))?,
+                        switch_down_proj: load_switch_linear(&format!(
+                            "{p}.mlp.experts.down_proj"
+                        ))?,
+                        router: load_qlinear(&format!("{p}.mlp.router"))?,
+                        top_k: config.num_experts_per_tok.unwrap_or(1),
+                    }),
+                    attn_in_norm: RMSNorm {
+                        weight: tensors
+                            .get(&format!("{p}.input_layernorm.weight"))
+                            .cloned()
+                            .with_context(|| format!("missing {p}.input_layernorm.weight"))?,
+                        eps: config.rms_norm_eps,
+                        add_unit_offset: false,
+                    },
+                    attn_out_norm: None,
+                    mlp_in_norm: RMSNorm {
+                        weight: tensors
+                            .get(&format!("{p}.post_attention_layernorm.weight"))
+                            .cloned()
+                            .with_context(|| {
+                                format!("missing {p}.post_attention_layernorm.weight")
+                            })?,
+                        eps: config.rms_norm_eps,
+                        add_unit_offset: false,
+                    },
+                    mlp_out_norm: None,
+                    per_layer_input: None,
+                    layer_scalar: None,
+                });
+                continue;
+            }
             let is_full_attention =
                 arch.is_gemma4() && matches!(layer_type, Some("full_attention"));
             let layer_head_dim = if is_full_attention {
@@ -2041,6 +2204,7 @@ impl MlxModel {
                         .then_some(config.attn_logit_softcapping.unwrap_or(50.0)),
                     rope_dim,
                     rope_theta,
+                    window_size: None,
                     kv_shared_source,
                 }),
                 mlp: MlpKind::Dense(MLP {
@@ -2187,7 +2351,7 @@ impl MlxModel {
             tokenizer,
             prompt_template,
             tokenwise_prefill: arch.is_gemma2() || arch.is_gemma4(),
-            cacheless_generation: arch.is_gemma2() || arch.is_lfm2(),
+            cacheless_generation: arch.is_gemma2() || arch.is_gpt_oss() || arch.is_lfm2(),
         })
     }
 
@@ -2366,6 +2530,7 @@ impl MlxModel {
 enum ModelArchitecture {
     LlamaLike,
     DeepseekV3,
+    GptOss,
     Lfm2,
     Glm4,
     Gemma2,
@@ -2380,6 +2545,10 @@ impl ModelArchitecture {
 
     fn is_glm4(self) -> bool {
         matches!(self, Self::Glm4)
+    }
+
+    fn is_gpt_oss(self) -> bool {
+        matches!(self, Self::GptOss)
     }
 
     fn is_lfm2(self) -> bool {
@@ -2427,6 +2596,8 @@ fn model_architecture(config: &Value) -> ModelArchitecture {
 
     if model_type.starts_with("glm4") {
         ModelArchitecture::Glm4
+    } else if model_type.starts_with("gpt_oss") {
+        ModelArchitecture::GptOss
     } else if model_type.starts_with("deepseek_v3")
         || model_type.starts_with("kimi_k2")
         || model_type.starts_with("kimi_k25")
@@ -2621,6 +2792,7 @@ fn config_supports_mlx(config: &Value) -> bool {
                 | "lfm2"
                 | "qwen2"
                 | "qwen3"
+                | "gpt_oss"
                 | "gemma2"
                 | "gemma3"
                 | "gemma3_text"
@@ -2632,6 +2804,7 @@ fn config_supports_mlx(config: &Value) -> bool {
                 | "llamaforcausallm"
                 | "qwen2forcausallm"
                 | "qwen3forcausallm"
+                | "gptossforcausallm"
                 | "gemma2forcausallm"
                 | "gemma3forcausallm"
                 | "gemma3forconditionalgeneration"
@@ -2675,7 +2848,7 @@ fn ensure_supported_mlx_model(dir: &Path, config: &Value) -> Result<()> {
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "none".to_string());
     bail!(
-        "unsupported MLX model architecture in {} (model_type={}, architectures={}); supported MLX models currently cover Llama/DeepSeekV3/LFM2/GLM4/Qwen/Gemma2/Gemma3/Gemma4-style safetensors checkpoints",
+        "unsupported MLX model architecture in {} (model_type={}, architectures={}); supported MLX models currently cover Llama/DeepSeekV3/GPT-OSS/LFM2/GLM4/Qwen/Gemma2/Gemma3/Gemma4-style safetensors checkpoints",
         dir.display(),
         model_type,
         architectures,
@@ -2801,6 +2974,10 @@ mod tests {
             "model_type": "qwen2",
             "architectures": ["Qwen2ForCausalLM"]
         });
+        let gpt_oss: Value = serde_json::json!({
+            "model_type": "gpt_oss",
+            "architectures": ["GptOssForCausalLM"]
+        });
         let llama: Value = serde_json::json!({
             "model_type": "llama",
             "architectures": ["LlamaForCausalLM"]
@@ -2824,6 +3001,7 @@ mod tests {
         assert!(config_supports_mlx(&glm4));
         assert!(config_supports_mlx(&lfm2));
         assert!(config_supports_mlx(&qwen));
+        assert!(config_supports_mlx(&gpt_oss));
         assert!(config_supports_mlx(&llama));
         assert!(config_supports_mlx(&gemma2));
         assert!(config_supports_mlx(&gemma3));
@@ -2840,10 +3018,6 @@ mod tests {
             "model_type": "kimi_linear",
             "architectures": ["KimiLinearForCausalLM"]
         });
-        let gpt_oss: Value = serde_json::json!({
-            "model_type": "gpt_oss",
-            "architectures": ["GptOssForCausalLM"]
-        });
         let lfm2: Value = serde_json::json!({
             "model_type": "lfm2_moe",
             "architectures": ["Lfm2MoeForCausalLM"]
@@ -2851,7 +3025,6 @@ mod tests {
 
         assert!(!config_supports_mlx(&glm));
         assert!(!config_supports_mlx(&kimi_linear));
-        assert!(!config_supports_mlx(&gpt_oss));
         assert!(!config_supports_mlx(&lfm2));
     }
 
@@ -2923,10 +3096,6 @@ mod tests {
             serde_json::json!({
                 "model_type": "kimi_linear",
                 "architectures": ["KimiLinearForCausalLM"]
-            }),
-            serde_json::json!({
-                "model_type": "gpt_oss",
-                "architectures": ["GptOssForCausalLM"]
             }),
             serde_json::json!({
                 "model_type": "lfm2_moe",
@@ -3029,6 +3198,16 @@ mod tests {
         });
 
         assert_eq!(model_architecture(&config), ModelArchitecture::DeepseekV3);
+    }
+
+    #[test]
+    fn model_architecture_detects_gpt_oss() {
+        let config = serde_json::json!({
+            "model_type": "gpt_oss",
+            "architectures": ["GptOssForCausalLM"]
+        });
+
+        assert_eq!(model_architecture(&config), ModelArchitecture::GptOss);
     }
 
     #[test]
