@@ -75,7 +75,11 @@ impl PromptTemplate {
         }
         let behavior = fallback.behavior();
         tracing::info!(
-            "MLX prompt template: no HF template found, using {} fallback",
+            "MLX prompt template: no HF template found in {} (chat_template.jinja={}, chat_template.json={}, tokenizer_config.json={}), using {} fallback",
+            dir.display(),
+            dir.join("chat_template.jinja").exists(),
+            dir.join("chat_template.json").exists(),
+            dir.join("tokenizer_config.json").exists(),
             behavior
                 .prompt_template
                 .clone()
@@ -590,7 +594,12 @@ fn read_template_text(dir: &Path) -> Option<(String, String)> {
         if filename.ends_with(".jinja") {
             return Some((filename.to_string(), text));
         }
-        let value: Value = serde_json::from_str(&text).ok()?;
+        if let Some(template) = extract_template_text_from_json_text(&text) {
+            return Some((filename.to_string(), template));
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
         if let Some(template) = extract_template_text(&value) {
             return Some((filename.to_string(), template));
         }
@@ -635,6 +644,13 @@ fn extract_template_text(value: &Value) -> Option<String> {
             .map(ToOwned::to_owned),
         _ => None,
     }
+}
+
+fn extract_template_text_from_json_text(text: &str) -> Option<String> {
+    let captures = regex_lite::Regex::new(r#""chat_template"\s*:\s*"((?:\\.|[^"\\])*)""#)
+        .ok()?
+        .captures(text)?;
+    serde_json::from_str::<String>(&format!("\"{}\"", &captures[1])).ok()
 }
 
 fn render_chatml(messages: &[Value], default_system_prompt: Option<&str>) -> String {

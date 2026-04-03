@@ -42,6 +42,9 @@ fn read_template_text(dir: &Path) -> Option<String> {
         if filename.ends_with(".jinja") {
             return Some(text);
         }
+        if let Some(template) = extract_template_text_from_json_text(&text) {
+            return Some(template);
+        }
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
@@ -61,6 +64,13 @@ fn extract_template_text(value: &Value) -> Option<String> {
             .map(ToOwned::to_owned),
         _ => None,
     }
+}
+
+fn extract_template_text_from_json_text(text: &str) -> Option<String> {
+    let captures = regex_lite::Regex::new(r#""chat_template"\s*:\s*"((?:\\.|[^"\\])*)""#)
+        .ok()?
+        .captures(text)?;
+    serde_json::from_str::<String>(&format!("\"{}\"", &captures[1])).ok()
 }
 
 fn classify_template_behavior(template: &str, config: Option<&Value>) -> ModelPromptBehavior {
