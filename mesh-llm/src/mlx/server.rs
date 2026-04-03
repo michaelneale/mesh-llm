@@ -174,7 +174,7 @@ pub async fn start_mlx_server(
     static WARN_ONCE: Once = Once::new();
     WARN_ONCE.call_once(|| {
         eprintln!(
-            "🧪 MLX backend is experimental. Expect rough edges; prefer GGUF for the most mature path. Please file an issue at https://github.com/michaelneale/mesh-llm/issues if you experience problems."
+            "🧪 MLX support is experimental in mesh-llm. Prefer GGUF for the most mature path, and please file any issues at https://github.com/michaelneale/mesh-llm/issues."
         );
     });
 
