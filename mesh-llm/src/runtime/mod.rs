@@ -364,7 +364,9 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
 /// If not on disk, downloads it (drafts are <1GB).
 pub async fn ensure_draft(model: &std::path::Path) -> Option<PathBuf> {
     let filename = model.file_name()?.to_str()?;
-    let catalog_entry = catalog::MODEL_CATALOG.iter().find(|m| m.file == filename)?;
+    let catalog_entry = catalog::MODEL_CATALOG
+        .iter()
+        .find(|m| m.file == filename || m.file.eq_ignore_ascii_case(filename))?;
     let draft_name = catalog_entry.draft.as_deref()?;
     let draft_entry = catalog::MODEL_CATALOG
         .iter()
@@ -1116,7 +1118,9 @@ async fn run_auto(
     node.regossip().await;
 
     // Ensure draft model is available (downloads if needed, <1GB)
-    if cli.draft.is_none() && !cli.no_draft {
+    if cli.no_draft {
+        cli.draft = None;
+    } else if cli.draft.is_none() {
         if let Some(draft_path) = ensure_draft(&model).await {
             eprintln!("Auto-detected draft model: {}", draft_path.display());
             cli.draft = Some(draft_path);

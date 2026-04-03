@@ -434,12 +434,22 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         .map(hf_asset_from_url)
         .collect();
     if let Some(assets) = hf_assets {
+        // The primary asset filename comes from the URL and may differ in case
+        // from model.file (e.g. Qwen repos use lowercase filenames). Use the
+        // URL-derived filename for the cache lookup so we find the actual file.
+        let url_filename = model
+            .url
+            .rsplit('/')
+            .next()
+            .unwrap_or(&model.file);
         let mut paths = download_hf_assets(&model.name, assets).await?;
         paths.sort();
         return paths
             .into_iter()
             .find(|path| {
-                path.file_name().and_then(|value| value.to_str()) == Some(model.file.as_str())
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name == url_filename || name.eq_ignore_ascii_case(&model.file))
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
