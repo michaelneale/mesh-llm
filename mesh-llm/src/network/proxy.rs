@@ -9,14 +9,18 @@ use crate::network::affinity::{
     prepare_remote_targets_for_request, AffinityRouter, PreparedTargets,
 };
 use crate::network::router;
+use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_OBJECT_UPLOAD_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHUNKED_WIRE_BYTES: usize = MAX_BODY_BYTES * 6 + 64 * 1024;
+const MAX_OBJECT_UPLOAD_CHUNKED_WIRE_BYTES: usize = MAX_OBJECT_UPLOAD_BODY_BYTES * 6 + 64 * 1024;
 const MAX_HEADERS: usize = 64;
 const MAX_RESPONSE_BODY_PREVIEW_BYTES: usize = 4 * 1024;
 const REQUEST_TOKEN_MARGIN: u32 = 256;
@@ -52,6 +56,15 @@ pub struct BufferedHttpRequest {
     pub body_json: Option<serde_json::Value>,
     pub model_name: Option<String>,
     pub session_hint: Option<String>,
+    pub request_object_request_ids: Vec<String>,
+    pub response_adapter: ResponseAdapter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseAdapter {
+    None,
+    OpenAiResponsesJson,
+    OpenAiResponsesStream,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +92,13 @@ struct ResponseProbe {
     retryable_context_overflow: bool,
 }
 
+#[derive(Debug)]
+struct RequestNormalization {
+    changed: bool,
+    rewritten_path: Option<String>,
+    response_adapter: ResponseAdapter,
+}
+
 // ── Request parsing ──
 
 /// Read and buffer one HTTP request for routing decisions.
@@ -87,15 +107,24 @@ struct ResponseProbe {
 /// known via `Content-Length` or `Transfer-Encoding: chunked`. The raw request
 /// bytes are preserved so the chosen upstream sees the original payload.
 pub async fn read_http_request(stream: &mut TcpStream) -> Result<BufferedHttpRequest> {
-    read_http_request_with_limits(stream, HTTP_READ_LIMITS).await
+    read_http_request_with_limits(stream, HTTP_READ_LIMITS, None).await
+}
+
+pub async fn read_http_request_with_plugin_manager(
+    stream: &mut TcpStream,
+    plugin_manager: Option<&plugin::PluginManager>,
+) -> Result<BufferedHttpRequest> {
+    read_http_request_with_limits(stream, HTTP_READ_LIMITS, plugin_manager).await
 }
 
 async fn read_http_request_with_limits(
     stream: &mut TcpStream,
     limits: HttpReadLimits,
+    plugin_manager: Option<&plugin::PluginManager>,
 ) -> Result<BufferedHttpRequest> {
     let mut raw = Vec::with_capacity(8192);
     let parsed = read_until_headers_parsed(stream, &mut raw, limits.max_header_bytes).await?;
+    let body_limits = body_limits_for_path(&parsed.path, limits);
 
     let header_end = parsed.header_end;
 
@@ -103,7 +132,7 @@ async fn read_http_request_with_limits(
         let mut sent_continue = false;
         loop {
             if let Some((consumed, decoded)) =
-                try_decode_chunked_body(&raw[header_end..], limits.max_body_bytes)?
+                try_decode_chunked_body(&raw[header_end..], body_limits.max_body_bytes)?
             {
                 raw.truncate(header_end + consumed);
                 break decoded;
@@ -113,16 +142,16 @@ async fn read_http_request_with_limits(
                 sent_continue = true;
             }
             read_more(stream, &mut raw).await?;
-            if raw.len().saturating_sub(header_end) > limits.max_chunked_wire_bytes {
+            if raw.len().saturating_sub(header_end) > body_limits.max_chunked_wire_bytes {
                 bail!(
                     "HTTP chunked wire body exceeds {} bytes",
-                    limits.max_chunked_wire_bytes
+                    body_limits.max_chunked_wire_bytes
                 );
             }
         }
     } else if let Some(content_length) = parsed.content_length {
-        if content_length > limits.max_body_bytes {
-            bail!("HTTP body exceeds {} bytes", limits.max_body_bytes);
+        if content_length > body_limits.max_body_bytes {
+            bail!("HTTP body exceeds {} bytes", body_limits.max_body_bytes);
         }
         let body_end = header_end + content_length;
         let mut sent_continue = false;
@@ -145,8 +174,25 @@ async fn read_http_request_with_limits(
     } else {
         serde_json::from_slice(&body).ok()
     };
+    let mut request_object_request_ids = Vec::new();
+    let mut request_path = parsed.path.clone();
+    let mut response_adapter = ResponseAdapter::None;
     let rewritten_body = if let Some(body_json) = body_json.as_mut() {
-        if normalize_openai_compat_body(body_json) {
+        let normalization = normalize_openai_compat_request(&parsed.path, body_json)?;
+        let mut changed = normalization.changed;
+        if let Some(rewritten_path) = normalization.rewritten_path {
+            request_path = rewritten_path;
+        }
+        response_adapter = normalization.response_adapter;
+        if let Some(plugin_manager) = plugin_manager {
+            let resolved_request_ids =
+                resolve_request_object_references(&request_path, body_json, plugin_manager).await?;
+            if !resolved_request_ids.is_empty() {
+                request_object_request_ids = resolved_request_ids;
+                changed = true;
+            }
+        }
+        if changed {
             Some(
                 serde_json::to_vec(body_json)
                     .context("serialize normalized OpenAI-compatible request body")?,
@@ -163,23 +209,40 @@ async fn read_http_request_with_limits(
         raw,
         header_end,
         parsed.expects_continue,
+        Some(&request_path),
         rewritten_body.as_deref(),
     )?;
 
     Ok(BufferedHttpRequest {
         raw,
         method: parsed.method,
-        path: parsed.path,
+        path: request_path,
         body_json,
         model_name,
         session_hint,
+        request_object_request_ids,
+        response_adapter,
     })
+}
+
+fn body_limits_for_path(path: &str, default: HttpReadLimits) -> HttpReadLimits {
+    let path_only = path.split('?').next().unwrap_or(path);
+    if path_only == "/api/objects" {
+        HttpReadLimits {
+            max_header_bytes: default.max_header_bytes,
+            max_body_bytes: MAX_OBJECT_UPLOAD_BODY_BYTES,
+            max_chunked_wire_bytes: MAX_OBJECT_UPLOAD_CHUNKED_WIRE_BYTES,
+        }
+    } else {
+        default
+    }
 }
 
 fn finalize_forwarded_request(
     mut raw: Vec<u8>,
     header_end: usize,
     strip_expect: bool,
+    rewritten_path: Option<&str>,
     rewritten_body: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
     let original_body = raw.split_off(header_end);
@@ -189,7 +252,7 @@ fn finalize_forwarded_request(
     let _ = req.parse(&raw).context("re-parse headers for forwarding")?;
 
     let method = req.method.unwrap_or("GET");
-    let path = req.path.unwrap_or("/");
+    let path = rewritten_path.unwrap_or_else(|| req.path.unwrap_or("/"));
     let version = req.version.unwrap_or(1);
 
     let mut rebuilt = format!("{method} {path} HTTP/1.{version}\r\n");
@@ -364,11 +427,18 @@ fn extract_session_hint_from_json(body: &serde_json::Value) -> Option<String> {
     })
 }
 
-fn normalize_openai_compat_body(body: &mut serde_json::Value) -> bool {
-    let Some(object) = body.as_object_mut() else {
-        return false;
-    };
+fn path_only(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
 
+fn rewrite_path_preserving_query(path: &str, new_path: &str) -> String {
+    match path.split_once('?') {
+        Some((_, query)) => format!("{new_path}?{query}"),
+        None => new_path.to_string(),
+    }
+}
+
+fn alias_max_tokens(object: &mut serde_json::Map<String, serde_json::Value>) -> bool {
     let mut changed = false;
     for alias in ["max_completion_tokens", "max_output_tokens"] {
         let Some(value) = object.remove(alias) else {
@@ -377,8 +447,505 @@ fn normalize_openai_compat_body(body: &mut serde_json::Value) -> bool {
         changed = true;
         object.entry("max_tokens".to_string()).or_insert(value);
     }
-
     changed
+}
+
+fn normalize_openai_compat_request(
+    path: &str,
+    body: &mut serde_json::Value,
+) -> Result<RequestNormalization> {
+    let Some(object) = body.as_object_mut() else {
+        return Ok(RequestNormalization {
+            changed: false,
+            rewritten_path: None,
+            response_adapter: ResponseAdapter::None,
+        });
+    };
+
+    let mut changed = alias_max_tokens(object);
+    let mut rewritten_path = None;
+    let mut response_adapter = ResponseAdapter::None;
+
+    if path_only(path) == "/v1/responses" {
+        let is_stream = object
+            .get("stream")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        changed |= translate_openai_responses_input(object)?;
+        rewritten_path = Some(rewrite_path_preserving_query(path, "/v1/chat/completions"));
+        response_adapter = if is_stream {
+            ResponseAdapter::OpenAiResponsesStream
+        } else {
+            ResponseAdapter::OpenAiResponsesJson
+        };
+    }
+
+    Ok(RequestNormalization {
+        changed,
+        rewritten_path,
+        response_adapter,
+    })
+}
+
+fn map_response_role(role: &str) -> String {
+    match role {
+        "developer" => "system".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn object_or_url_container(
+    value: Option<&serde_json::Value>,
+    fallback_url: Option<&str>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match value {
+        Some(serde_json::Value::Object(map)) => Some(map.clone()),
+        Some(serde_json::Value::String(url)) => Some(serde_json::Map::from_iter([(
+            "url".to_string(),
+            serde_json::Value::String(url.clone()),
+        )])),
+        _ => fallback_url.map(|url| {
+            serde_json::Map::from_iter([(
+                "url".to_string(),
+                serde_json::Value::String(url.to_string()),
+            )])
+        }),
+    }
+}
+
+fn translate_responses_content_item(item: &serde_json::Value) -> Result<serde_json::Value> {
+    let Some(object) = item.as_object() else {
+        return Ok(serde_json::json!({
+            "type": "text",
+            "text": item.as_str().unwrap_or_default(),
+        }));
+    };
+    let item_type = object
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("text");
+
+    match item_type {
+        "input_text" | "text" => {
+            let text = object
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            Ok(serde_json::json!({"type": "text", "text": text}))
+        }
+        "input_image" | "image_url" | "image" => {
+            let container = object_or_url_container(
+                object.get("image_url").or_else(|| object.get("image")),
+                object.get("url").and_then(|value| value.as_str()),
+            )
+            .ok_or_else(|| anyhow!("responses input_image block is missing image_url/url"))?;
+            Ok(serde_json::json!({"type": "image_url", "image_url": container}))
+        }
+        "input_audio" | "audio" | "audio_url" => {
+            let mut container = object_or_url_container(
+                object
+                    .get("input_audio")
+                    .or_else(|| object.get("audio_url")),
+                object.get("url").and_then(|value| value.as_str()),
+            )
+            .unwrap_or_default();
+            for key in [
+                "data",
+                "format",
+                "mime_type",
+                "mesh_token",
+                "blob_token",
+                "token",
+            ] {
+                if let Some(value) = object.get(key) {
+                    container
+                        .entry(key.to_string())
+                        .or_insert_with(|| value.clone());
+                }
+            }
+            if container.is_empty() {
+                bail!("responses input_audio block is missing input_audio/audio_url/url");
+            }
+            Ok(serde_json::json!({"type": "input_audio", "input_audio": container}))
+        }
+        "input_file" | "file" => {
+            let mut container = object_or_url_container(
+                object.get("input_file").or_else(|| object.get("file")),
+                object.get("url").and_then(|value| value.as_str()),
+            )
+            .ok_or_else(|| anyhow!("responses input_file block is missing input_file/file/url"))?;
+            for key in [
+                "mime_type",
+                "file_name",
+                "filename",
+                "mesh_token",
+                "blob_token",
+                "token",
+            ] {
+                if let Some(value) = object.get(key) {
+                    container
+                        .entry(key.to_string())
+                        .or_insert_with(|| value.clone());
+                }
+            }
+            Ok(serde_json::json!({"type": "input_file", "input_file": container}))
+        }
+        other => bail!("unsupported /v1/responses content block type '{other}'"),
+    }
+}
+
+fn collapse_blocks_if_text_only(blocks: Vec<serde_json::Value>) -> serde_json::Value {
+    if blocks.len() == 1 {
+        if let Some(text) = blocks[0].get("text").and_then(|value| value.as_str()) {
+            return serde_json::Value::String(text.to_string());
+        }
+    }
+    serde_json::Value::Array(blocks)
+}
+
+fn translate_responses_message_content(content: &serde_json::Value) -> Result<serde_json::Value> {
+    match content {
+        serde_json::Value::String(text) => Ok(serde_json::Value::String(text.clone())),
+        serde_json::Value::Array(items) => {
+            let blocks = items
+                .iter()
+                .map(translate_responses_content_item)
+                .collect::<Result<Vec<_>>>()?;
+            Ok(collapse_blocks_if_text_only(blocks))
+        }
+        serde_json::Value::Object(_) => Ok(collapse_blocks_if_text_only(vec![
+            translate_responses_content_item(content)?,
+        ])),
+        _ => bail!("unsupported /v1/responses input content shape"),
+    }
+}
+
+fn translate_responses_input_message(
+    message: &serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let Some(object) = message.as_object() else {
+        bail!("unsupported /v1/responses message shape");
+    };
+
+    let role = map_response_role(
+        object
+            .get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or("user"),
+    );
+    let content_value = object
+        .get("content")
+        .map(translate_responses_message_content)
+        .transpose()?
+        .unwrap_or_else(|| serde_json::Value::String(String::new()));
+
+    Ok(serde_json::Map::from_iter([
+        ("role".to_string(), serde_json::Value::String(role)),
+        ("content".to_string(), content_value),
+    ]))
+}
+
+fn translate_responses_input_to_messages(
+    input: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>> {
+    match input {
+        serde_json::Value::String(text) => Ok(vec![serde_json::json!({
+            "role": "user",
+            "content": text,
+        })]),
+        serde_json::Value::Array(items) => {
+            let looks_like_messages = items.iter().all(|item| {
+                item.as_object()
+                    .map(|object| object.contains_key("role") || object.contains_key("content"))
+                    .unwrap_or(false)
+            });
+            if looks_like_messages {
+                items
+                    .iter()
+                    .map(translate_responses_input_message)
+                    .map(|result| result.map(serde_json::Value::Object))
+                    .collect()
+            } else {
+                let content = translate_responses_message_content(input)?;
+                Ok(vec![serde_json::json!({
+                    "role": "user",
+                    "content": content,
+                })])
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.contains_key("role") || object.contains_key("content") {
+                Ok(vec![serde_json::Value::Object(
+                    translate_responses_input_message(input)?,
+                )])
+            } else {
+                let content = translate_responses_message_content(input)?;
+                Ok(vec![serde_json::json!({
+                    "role": "user",
+                    "content": content,
+                })])
+            }
+        }
+        _ => bail!("unsupported /v1/responses input shape"),
+    }
+}
+
+fn translate_openai_responses_input(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<bool> {
+    let mut changed = false;
+    let mut messages = Vec::new();
+
+    if let Some(instructions_value) = object.remove("instructions") {
+        if let Some(instructions) = instructions_value.as_str().map(str::trim) {
+            if !instructions.is_empty() {
+                messages.push(serde_json::json!({
+                    "role": "system",
+                    "content": instructions,
+                }));
+            }
+        }
+        changed = true;
+    }
+
+    if let Some(input) = object.remove("input") {
+        messages.extend(translate_responses_input_to_messages(&input)?);
+        changed = true;
+    } else if let Some(existing_messages) = object.remove("messages") {
+        messages.extend(translate_responses_input_to_messages(&existing_messages)?);
+        changed = true;
+    }
+
+    if !messages.is_empty() {
+        object.insert("messages".to_string(), serde_json::Value::Array(messages));
+    }
+
+    for key in [
+        "include",
+        "output",
+        "output_text",
+        "parallel_tool_calls",
+        "previous_response_id",
+        "reasoning",
+        "store",
+        "text",
+        "truncation",
+    ] {
+        if object.remove(key).is_some() {
+            changed = true;
+        }
+    }
+
+    Ok(changed)
+}
+
+fn request_id_from_body(body: &serde_json::Value) -> Option<String> {
+    body.get("request_id")
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn mesh_blob_token_from_url(url: &str) -> Option<String> {
+    let path = url.strip_prefix("mesh://blob/")?;
+    let mut parts = path.split('/').filter(|part| !part.trim().is_empty());
+    let _client_id = parts.next()?;
+    let token = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn blob_token_from_container(container: &serde_json::Value) -> Option<String> {
+    container
+        .get("url")
+        .and_then(|value| value.as_str())
+        .and_then(mesh_blob_token_from_url)
+        .or_else(|| {
+            ["mesh_token", "blob_token", "token"]
+                .into_iter()
+                .find_map(|key| {
+                    container
+                        .get(key)
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToString::to_string)
+                })
+        })
+}
+
+fn data_url(mime_type: &str, bytes_base64: &str) -> String {
+    format!("data:{mime_type};base64,{bytes_base64}")
+}
+
+fn audio_format_from_mime_type(mime_type: &str) -> Option<&'static str> {
+    match mime_type {
+        "audio/wav" | "audio/x-wav" => Some("wav"),
+        "audio/mpeg" | "audio/mp3" => Some("mp3"),
+        "audio/flac" => Some("flac"),
+        "audio/ogg" | "audio/opus" => Some("ogg"),
+        "audio/webm" => Some("webm"),
+        _ => None,
+    }
+}
+
+enum MediaRefAction {
+    DataUrlContainer { container_key: &'static str },
+    InputAudio,
+}
+
+fn block_media_ref_action(block: &serde_json::Value) -> Option<(MediaRefAction, String)> {
+    for key in [
+        "image_url",
+        "audio_url",
+        "image",
+        "audio",
+        "input_image",
+        "file",
+        "input_file",
+    ] {
+        let Some(container) = block.get(key) else {
+            continue;
+        };
+        let Some(token) = blob_token_from_container(container) else {
+            continue;
+        };
+        return Some((
+            MediaRefAction::DataUrlContainer { container_key: key },
+            token,
+        ));
+    }
+
+    let input_audio = block.get("input_audio")?;
+    let token = blob_token_from_container(input_audio)?;
+    Some((MediaRefAction::InputAudio, token))
+}
+
+async fn resolve_request_object_references(
+    path: &str,
+    body: &mut serde_json::Value,
+    plugin_manager: &plugin::PluginManager,
+) -> Result<Vec<String>> {
+    let path_only = path.split('?').next().unwrap_or(path);
+    if path_only != "/v1/chat/completions" {
+        return Ok(Vec::new());
+    }
+    let request_id = request_id_from_body(body);
+    let Some(messages) = body
+        .get_mut("messages")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut request_ids = Vec::new();
+    let mut blob_cache: HashMap<String, plugin::blobstore::GetRequestObjectResponse> =
+        HashMap::new();
+    for message in messages.iter_mut() {
+        let Some(blocks) = message
+            .get_mut("content")
+            .and_then(|value| value.as_array_mut())
+        else {
+            continue;
+        };
+        for block in blocks.iter_mut() {
+            let Some((action, token)) = block_media_ref_action(block) else {
+                continue;
+            };
+            let blob = if let Some(cached) = blob_cache.get(&token) {
+                cached.clone()
+            } else {
+                let fetched = plugin::blobstore::get_request_object(
+                    plugin_manager,
+                    plugin::blobstore::GetRequestObjectRequest {
+                        token: token.clone(),
+                        request_id: request_id.clone(),
+                    },
+                )
+                .await?;
+                blob_cache.insert(token.clone(), fetched.clone());
+                fetched
+            };
+            if !request_ids
+                .iter()
+                .any(|existing| existing == &blob.request_id)
+            {
+                request_ids.push(blob.request_id.clone());
+            }
+            match action {
+                MediaRefAction::DataUrlContainer { container_key } => {
+                    if let Some(container) = block
+                        .get_mut(container_key)
+                        .and_then(|value| value.as_object_mut())
+                    {
+                        container.insert(
+                            "url".into(),
+                            serde_json::Value::String(data_url(
+                                &blob.mime_type,
+                                &blob.bytes_base64,
+                            )),
+                        );
+                        container.remove("mesh_token");
+                        container.remove("blob_token");
+                        container.remove("token");
+                    }
+                }
+                MediaRefAction::InputAudio => {
+                    if let Some(container) = block
+                        .get_mut("input_audio")
+                        .and_then(|value| value.as_object_mut())
+                    {
+                        container.insert(
+                            "data".into(),
+                            serde_json::Value::String(blob.bytes_base64.clone()),
+                        );
+                        if let Some(format) = audio_format_from_mime_type(&blob.mime_type) {
+                            container
+                                .entry("format")
+                                .or_insert_with(|| serde_json::Value::String(format.to_string()));
+                        }
+                        container.insert(
+                            "mime_type".into(),
+                            serde_json::Value::String(blob.mime_type.clone()),
+                        );
+                        container.remove("url");
+                        container.remove("mesh_token");
+                        container.remove("blob_token");
+                        container.remove("token");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(request_ids)
+}
+
+pub async fn release_request_objects(node: &mesh::Node, request_ids: &[String]) {
+    if request_ids.is_empty() {
+        return;
+    }
+    let Some(plugin_manager) = node.plugin_manager().await else {
+        return;
+    };
+    for request_id in request_ids {
+        if let Err(err) = plugin::blobstore::complete_request(
+            &plugin_manager,
+            plugin::blobstore::FinishRequestRequest {
+                request_id: request_id.clone(),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                request_id,
+                error = %err,
+                "blobstore: failed to release request-scoped objects"
+            );
+        }
+    }
 }
 
 fn response_first_byte_timeout() -> Duration {
@@ -540,6 +1107,367 @@ fn is_retryable_context_overflow_response(body: &[u8]) -> bool {
     mentions_context && mentions_limit
 }
 
+fn chat_completion_message_text(message: &serde_json::Value) -> String {
+    match message.get("content") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                item.get("text")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string)
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+fn translate_chat_completion_to_responses(body: &[u8]) -> Result<Vec<u8>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).context("parse chat completion response body")?;
+    let id = value
+        .get("id")
+        .and_then(|field| field.as_str())
+        .unwrap_or("resp_mesh_llm")
+        .to_string();
+    let created_at = value
+        .get("created")
+        .and_then(|field| field.as_i64())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(0)
+        });
+    let model = value
+        .get("model")
+        .and_then(|field| field.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let assistant_message = value
+        .get("choices")
+        .and_then(|field| field.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"role": "assistant", "content": ""}));
+    let output_text = chat_completion_message_text(&assistant_message);
+
+    let usage = value.get("usage").map(|usage| {
+        serde_json::json!({
+            "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or(serde_json::Value::Null),
+            "output_tokens": usage.get("completion_tokens").cloned().unwrap_or(serde_json::Value::Null),
+            "total_tokens": usage.get("total_tokens").cloned().unwrap_or(serde_json::Value::Null),
+        })
+    });
+
+    let response = serde_json::json!({
+        "id": id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "completed",
+        "error": serde_json::Value::Null,
+        "incomplete_details": serde_json::Value::Null,
+        "model": model,
+        "output": [{
+            "id": format!("msg_{created_at}"),
+            "type": "message",
+            "status": "completed",
+            "role": assistant_message
+                .get("role")
+                .and_then(|field| field.as_str())
+                .unwrap_or("assistant"),
+            "content": [{
+                "type": "output_text",
+                "text": output_text.clone(),
+                "annotations": [],
+            }],
+        }],
+        "output_text": output_text,
+        "usage": usage.unwrap_or(serde_json::Value::Null),
+    });
+    serde_json::to_vec(&response).context("serialize translated /v1/responses body")
+}
+
+fn sse_frame(event: Option<&str>, data: &str) -> Vec<u8> {
+    let mut frame = Vec::new();
+    if let Some(event_name) = event {
+        frame.extend_from_slice(format!("event: {event_name}\n").as_bytes());
+    }
+    for line in data.lines() {
+        frame.extend_from_slice(b"data: ");
+        frame.extend_from_slice(line.as_bytes());
+        frame.extend_from_slice(b"\n");
+    }
+    if data.is_empty() {
+        frame.extend_from_slice(b"data: \n");
+    }
+    frame.extend_from_slice(b"\n");
+    frame
+}
+
+async fn write_chunked_bytes(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
+    let header = format!("{:x}\r\n", bytes.len());
+    stream.write_all(header.as_bytes()).await?;
+    stream.write_all(bytes).await?;
+    stream.write_all(b"\r\n").await
+}
+
+async fn write_chunked_sse_event(
+    stream: &mut TcpStream,
+    event: Option<&str>,
+    data: &str,
+) -> std::io::Result<()> {
+    let frame = sse_frame(event, data);
+    write_chunked_bytes(stream, &frame).await
+}
+
+fn responses_stream_created_event(model: &str, created_at: i64) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.created",
+        "response": {
+            "id": format!("resp_{created_at}"),
+            "object": "response",
+            "created_at": created_at,
+            "status": "in_progress",
+            "model": model,
+            "output": [],
+        }
+    })
+}
+
+fn responses_stream_delta_event(item_id: &str, delta: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.output_text.delta",
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "delta": delta,
+    })
+}
+
+fn responses_stream_text_done_event(item_id: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.output_text.done",
+        "item_id": item_id,
+        "output_index": 0,
+        "content_index": 0,
+        "text": text,
+    })
+}
+
+fn responses_stream_completed_event(
+    response_id: &str,
+    created_at: i64,
+    model: &str,
+    item_id: &str,
+    text: &str,
+    usage: Option<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "response.completed",
+        "response": {
+            "id": response_id,
+            "object": "response",
+            "created_at": created_at,
+            "status": "completed",
+            "error": serde_json::Value::Null,
+            "incomplete_details": serde_json::Value::Null,
+            "model": model,
+            "output": [{
+                "id": item_id,
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [],
+                }],
+            }],
+            "output_text": text,
+            "usage": usage.unwrap_or(serde_json::Value::Null),
+        }
+    })
+}
+
+fn upstream_usage_to_responses_usage(chunk: &serde_json::Value) -> Option<serde_json::Value> {
+    let usage = chunk.get("usage")?;
+    Some(serde_json::json!({
+        "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or(serde_json::Value::Null),
+        "output_tokens": usage.get("completion_tokens").cloned().unwrap_or(serde_json::Value::Null),
+        "total_tokens": usage.get("total_tokens").cloned().unwrap_or(serde_json::Value::Null),
+    }))
+}
+
+async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
+    tcp_stream: &mut TcpStream,
+    reader: &mut R,
+    probe: ResponseProbe,
+    retry_context_overflow: bool,
+) -> Result<RouteAttemptResult> {
+    if retry_context_overflow && probe.retryable_context_overflow {
+        return Ok(RouteAttemptResult::RetryableContextOverflow);
+    }
+
+    if !(200..300).contains(&probe.status_code) {
+        tcp_stream.write_all(&probe.buffered).await?;
+        let _ = tcp_stream.shutdown().await;
+        return Ok(RouteAttemptResult::Delivered {
+            status_code: probe.status_code,
+        });
+    }
+
+    let parsed = try_parse_response_headers(&probe.buffered)?
+        .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
+    let mut carry = String::from_utf8_lossy(&probe.buffered[parsed.header_end..]).to_string();
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let response_id = format!("resp_{created_at}");
+    let item_id = format!("msg_{created_at}");
+    let mut model = String::new();
+    let mut output_text = String::new();
+    let mut usage = None;
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+    tcp_stream.write_all(header.as_bytes()).await?;
+
+    let mut created_emitted = false;
+    let mut done_seen = false;
+    loop {
+        while let Some(frame_end) = carry.find("\n\n") {
+            let frame = carry[..frame_end].to_string();
+            carry = carry[frame_end + 2..].to_string();
+            let data_lines = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(str::trim_start)
+                .collect::<Vec<_>>();
+            if data_lines.is_empty() {
+                continue;
+            }
+            let data = data_lines.join("\n");
+            if data == "[DONE]" {
+                done_seen = true;
+                break;
+            }
+            let chunk: serde_json::Value =
+                serde_json::from_str(&data).context("parse upstream chat stream chunk")?;
+            if let Some(chunk_model) = chunk.get("model").and_then(|value| value.as_str()) {
+                if model.is_empty() {
+                    model = chunk_model.to_string();
+                }
+            }
+            // Emit response.created once we have the model from the first chunk.
+            if !created_emitted && !model.is_empty() {
+                let created =
+                    serde_json::to_string(&responses_stream_created_event(&model, created_at))
+                        .context("serialize response.created stream event")?;
+                write_chunked_sse_event(tcp_stream, Some("response.created"), &created).await?;
+                created_emitted = true;
+            }
+            if let Some(delta) = chunk
+                .get("choices")
+                .and_then(|value| value.as_array())
+                .and_then(|choices| choices.first())
+                .and_then(|choice| choice.get("delta"))
+                .and_then(|delta| delta.get("content"))
+                .and_then(|value| value.as_str())
+            {
+                output_text.push_str(delta);
+                let event = serde_json::to_string(&responses_stream_delta_event(&item_id, delta))
+                    .context("serialize response.output_text.delta event")?;
+                write_chunked_sse_event(tcp_stream, Some("response.output_text.delta"), &event)
+                    .await?;
+            }
+            if usage.is_none() {
+                usage = upstream_usage_to_responses_usage(&chunk);
+            }
+        }
+
+        if done_seen {
+            break;
+        }
+
+        let mut chunk = [0u8; 8192];
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        let new_data = String::from_utf8_lossy(&chunk[..n]);
+        carry.push_str(&new_data);
+        // Normalize CRLF so frame parsing works for both LF and CRLF upstreams
+        if carry.contains('\r') {
+            carry = carry.replace("\r\n", "\n");
+        }
+    }
+
+    // If upstream sent no model field at all (e.g. empty stream), still emit response.created.
+    if !created_emitted {
+        let created = serde_json::to_string(&responses_stream_created_event(&model, created_at))
+            .context("serialize response.created stream event")?;
+        write_chunked_sse_event(tcp_stream, Some("response.created"), &created).await?;
+    }
+
+    let text_done =
+        serde_json::to_string(&responses_stream_text_done_event(&item_id, &output_text))
+            .context("serialize response.output_text.done event")?;
+    write_chunked_sse_event(tcp_stream, Some("response.output_text.done"), &text_done).await?;
+    let completed = serde_json::to_string(&responses_stream_completed_event(
+        &response_id,
+        created_at,
+        &model,
+        &item_id,
+        &output_text,
+        usage,
+    ))
+    .context("serialize response.completed event")?;
+    write_chunked_sse_event(tcp_stream, Some("response.completed"), &completed).await?;
+    write_chunked_sse_event(tcp_stream, Some("done"), "[DONE]").await?;
+    let _ = tcp_stream.write_all(b"0\r\n\r\n").await;
+    let _ = tcp_stream.shutdown().await;
+    Ok(RouteAttemptResult::Delivered {
+        status_code: probe.status_code,
+    })
+}
+
+async fn relay_translated_responses_json<R: AsyncRead + Unpin>(
+    tcp_stream: &mut TcpStream,
+    reader: &mut R,
+    probe: ResponseProbe,
+    retry_context_overflow: bool,
+) -> Result<RouteAttemptResult> {
+    if retry_context_overflow && probe.retryable_context_overflow {
+        return Ok(RouteAttemptResult::RetryableContextOverflow);
+    }
+
+    let mut buffered = probe.buffered;
+    reader.read_to_end(&mut buffered).await?;
+    if !(200..300).contains(&probe.status_code) {
+        tcp_stream.write_all(&buffered).await?;
+        let _ = tcp_stream.shutdown().await;
+        return Ok(RouteAttemptResult::Delivered {
+            status_code: probe.status_code,
+        });
+    }
+
+    let parsed = try_parse_response_headers(&buffered)?
+        .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
+    let translated_body = translate_chat_completion_to_responses(&buffered[parsed.header_end..])?;
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        translated_body.len()
+    );
+    tcp_stream.write_all(header.as_bytes()).await?;
+    tcp_stream.write_all(&translated_body).await?;
+    let _ = tcp_stream.shutdown().await;
+    Ok(RouteAttemptResult::Delivered {
+        status_code: probe.status_code,
+    })
+}
+
 pub fn is_models_list_request(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     method == "GET" && (path == "/v1/models" || path == "/models")
@@ -654,7 +1582,22 @@ async fn relay_probed_response<R: AsyncRead + Unpin>(
     reader: &mut R,
     probe: ResponseProbe,
     retry_context_overflow: bool,
+    response_adapter: ResponseAdapter,
 ) -> Result<RouteAttemptResult> {
+    if response_adapter == ResponseAdapter::OpenAiResponsesJson {
+        return relay_translated_responses_json(tcp_stream, reader, probe, retry_context_overflow)
+            .await;
+    }
+    if response_adapter == ResponseAdapter::OpenAiResponsesStream {
+        return relay_translated_responses_stream(
+            tcp_stream,
+            reader,
+            probe,
+            retry_context_overflow,
+        )
+        .await;
+    }
+
     if retry_context_overflow && probe.retryable_context_overflow {
         return Ok(RouteAttemptResult::RetryableContextOverflow);
     }
@@ -675,6 +1618,7 @@ async fn route_local_attempt(
     port: u16,
     prefetched: &[u8],
     retry_context_overflow: bool,
+    response_adapter: ResponseAdapter,
 ) -> RouteAttemptResult {
     match TcpStream::connect(format!("127.0.0.1:{port}")).await {
         Ok(mut upstream) => {
@@ -694,6 +1638,7 @@ async fn route_local_attempt(
                         &mut upstream,
                         probe,
                         retry_context_overflow,
+                        response_adapter,
                     )
                     .await
                     {
@@ -725,6 +1670,7 @@ async fn route_remote_attempt(
     host_id: iroh::EndpointId,
     prefetched: &[u8],
     retry_context_overflow: bool,
+    response_adapter: ResponseAdapter,
 ) -> RouteAttemptResult {
     match node.open_http_tunnel(host_id).await {
         Ok((mut quic_send, mut quic_recv)) => {
@@ -743,6 +1689,7 @@ async fn route_remote_attempt(
                         &mut quic_recv,
                         probe,
                         retry_context_overflow,
+                        response_adapter,
                     )
                     .await
                     {
@@ -791,10 +1738,16 @@ pub async fn handle_mesh_request(
     affinity: AffinityRouter,
 ) {
     let mut tcp_stream = tcp_stream;
-    let request = match read_http_request(&mut tcp_stream).await {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let plugin_manager = node.plugin_manager().await;
+    let request =
+        match read_http_request_with_plugin_manager(&mut tcp_stream, plugin_manager.as_ref()).await
+        {
+            Ok(v) => v,
+            Err(err) => {
+                let _ = send_400(tcp_stream, &err.to_string()).await;
+                return;
+            }
+        };
     let body_json = request.body_json.as_ref();
 
     // Handle /v1/models
@@ -813,15 +1766,29 @@ pub async fn handle_mesh_request(
             if let Some(body_json) = request.body_json.as_ref() {
                 let cl = router::classify(&body_json);
                 let served = node.models_being_served().await;
-                let available: Vec<(&str, f64)> =
-                    served.iter().map(|name| (name.as_str(), 0.0)).collect();
+                let media = router::media_requirements(body_json);
+                let available: Vec<(&str, f64)> = served
+                    .iter()
+                    .filter(|name| {
+                        let caps = crate::models::installed_model_capabilities(name);
+                        (!media.needs_vision || caps.vision_label().is_some())
+                            && (!media.needs_audio || caps.audio_label().is_some())
+                    })
+                    .map(|name| (name.as_str(), 0.0))
+                    .collect();
+                let available: Vec<(&str, f64)> = if available.is_empty() {
+                    served.iter().map(|name| (name.as_str(), 0.0)).collect()
+                } else {
+                    available
+                };
                 let picked = router::pick_model_classified(&cl, &available);
                 if let Some(name) = picked {
                     tracing::info!(
-                        "router: {:?}/{:?} tools={} → {name}",
+                        "router: {:?}/{:?} tools={} media={} → {name}",
                         cl.category,
                         cl.complexity,
-                        cl.needs_tools
+                        cl.needs_tools,
+                        cl.has_media_inputs
                     );
                     Some(name.to_string())
                 } else {
@@ -853,6 +1820,7 @@ pub async fn handle_mesh_request(
             Some(p) => vec![p.id],
             None => {
                 let _ = send_503(tcp_stream).await;
+                release_request_objects(&node, &request.request_object_request_ids).await;
                 return;
             }
         }
@@ -914,6 +1882,7 @@ pub async fn handle_mesh_request(
             *target_host,
             &request.raw,
             retry_context_overflow,
+            request.response_adapter,
         )
         .await
         {
@@ -926,6 +1895,7 @@ pub async fn handle_mesh_request(
                         affinity.learn_target(name, prefix_hash, &target);
                     }
                 }
+                release_request_objects(&node, &request.request_object_request_ids).await;
                 return;
             }
             RouteAttemptResult::RetryableContextOverflow => {
@@ -977,6 +1947,7 @@ pub async fn handle_mesh_request(
         tracing::warn!("All hosts failed for model {:?}", effective_model);
     }
     let _ = send_503(tcp_stream).await;
+    release_request_objects(&node, &request.request_object_request_ids).await;
 }
 
 async fn route_attempt_for_target(
@@ -985,10 +1956,19 @@ async fn route_attempt_for_target(
     target: &election::InferenceTarget,
     prefetched: &[u8],
     retry_context_overflow: bool,
+    response_adapter: ResponseAdapter,
 ) -> RouteAttemptResult {
     match target {
         election::InferenceTarget::Local(port) | election::InferenceTarget::MoeLocal(port) => {
-            route_local_attempt(node, tcp_stream, *port, prefetched, retry_context_overflow).await
+            route_local_attempt(
+                node,
+                tcp_stream,
+                *port,
+                prefetched,
+                retry_context_overflow,
+                response_adapter,
+            )
+            .await
         }
         election::InferenceTarget::Remote(host_id)
         | election::InferenceTarget::MoeRemote(host_id) => {
@@ -998,6 +1978,7 @@ async fn route_attempt_for_target(
                 *host_id,
                 prefetched,
                 retry_context_overflow,
+                response_adapter,
             )
             .await
         }
@@ -1012,6 +1993,7 @@ pub async fn route_model_request(
     model: &str,
     parsed_body: Option<&serde_json::Value>,
     prefetched: &[u8],
+    response_adapter: ResponseAdapter,
     affinity: &AffinityRouter,
 ) -> bool {
     let mut tcp_stream = tcp_stream;
@@ -1068,6 +2050,7 @@ pub async fn route_model_request(
             &target,
             prefetched,
             retry_context_overflow,
+            response_adapter,
         )
         .await
         {
@@ -1123,10 +2106,20 @@ pub async fn route_to_target(
     tcp_stream: TcpStream,
     target: election::InferenceTarget,
     prefetched: &[u8],
+    response_adapter: ResponseAdapter,
 ) -> bool {
     let mut tcp_stream = tcp_stream;
     tracing::info!("API proxy: routing to target {target:?}");
-    match route_attempt_for_target(&node, &mut tcp_stream, &target, prefetched, false).await {
+    match route_attempt_for_target(
+        &node,
+        &mut tcp_stream,
+        &target,
+        prefetched,
+        false,
+        response_adapter,
+    )
+    .await
+    {
         RouteAttemptResult::Delivered { .. } => true,
         RouteAttemptResult::RetryableContextOverflow | RouteAttemptResult::RetryableUnavailable => {
             let _ = send_503(tcp_stream).await;
@@ -1142,10 +2135,18 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
         .iter()
         .map(|m| {
             let capabilities = crate::models::installed_model_capabilities(m);
+            let has_multimodal = capabilities.supports_multimodal_runtime();
             let has_vision = capabilities.supports_vision_runtime();
+            let has_audio = capabilities.supports_audio_runtime();
             let mut caps = vec!["text"];
+            if has_multimodal {
+                caps.push("multimodal");
+            }
             if has_vision {
                 caps.push("vision");
+            }
+            if has_audio {
+                caps.push("audio");
             }
             if capabilities.reasoning_label().is_some() {
                 caps.push("reasoning");
@@ -1157,7 +2158,9 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
                 "object": "model",
                 "owned_by": "mesh-llm",
                 "capabilities": caps,
+                "multimodal_status": capabilities.multimodal_status(),
                 "vision_status": capabilities.vision_status(),
+                "audio_status": capabilities.audio_status(),
                 "reasoning_status": capabilities.reasoning_status(),
             })
         })
@@ -1391,7 +2394,7 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            read_http_request_with_limits(&mut stream, limits)
+            read_http_request_with_limits(&mut stream, limits, None)
                 .await
                 .unwrap()
         });
@@ -1458,6 +2461,104 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_openai_compat_request_translates_responses_input() {
+        let mut body = serde_json::json!({
+            "model": "test",
+            "instructions": "be concise",
+            "max_output_tokens": 256,
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this"},
+                    {"type": "input_image", "image_url": "mesh://blob/client-1/token-1"},
+                    {"type": "input_audio", "audio_url": "mesh://blob/client-1/token-2"}
+                ]
+            }]
+        });
+
+        let normalization = normalize_openai_compat_request("/v1/responses", &mut body).unwrap();
+
+        assert!(normalization.changed);
+        assert_eq!(
+            normalization.rewritten_path.as_deref(),
+            Some("/v1/chat/completions")
+        );
+        assert_eq!(
+            normalization.response_adapter,
+            ResponseAdapter::OpenAiResponsesJson
+        );
+        assert_eq!(body["max_tokens"], 256);
+        assert!(body.get("max_output_tokens").is_none());
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "be concise");
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "text");
+        assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
+        assert_eq!(
+            body["messages"][1]["content"][1]["image_url"]["url"],
+            "mesh://blob/client-1/token-1"
+        );
+        assert_eq!(body["messages"][1]["content"][2]["type"], "input_audio");
+        assert_eq!(
+            body["messages"][1]["content"][2]["input_audio"]["url"],
+            "mesh://blob/client-1/token-2"
+        );
+    }
+
+    #[test]
+    fn test_normalize_openai_compat_request_marks_streaming_responses_adapter() {
+        let mut body = serde_json::json!({
+            "model": "test",
+            "stream": true,
+            "input": "hello",
+        });
+        let normalization = normalize_openai_compat_request("/v1/responses", &mut body).unwrap();
+        assert_eq!(
+            normalization.response_adapter,
+            ResponseAdapter::OpenAiResponsesStream
+        );
+        assert_eq!(
+            normalization.rewritten_path.as_deref(),
+            Some("/v1/chat/completions")
+        );
+        assert_eq!(body["messages"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn test_translate_chat_completion_to_responses_json() {
+        let translated = translate_chat_completion_to_responses(
+            serde_json::json!({
+                "id": "chatcmpl_123",
+                "object": "chat.completion",
+                "created": 1234,
+                "model": "test-model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hello from mesh"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8
+                }
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&translated).unwrap();
+
+        assert_eq!(response["object"], "response");
+        assert_eq!(response["model"], "test-model");
+        assert_eq!(response["output_text"], "hello from mesh");
+        assert_eq!(response["output"][0]["content"][0]["type"], "output_text");
+        assert_eq!(response["usage"]["input_tokens"], 5);
+        assert_eq!(response["usage"]["output_tokens"], 3);
+        assert_eq!(response["usage"]["total_tokens"], 8);
+    }
+
+    #[test]
     fn test_pipeline_request_supported_rejects_missing_messages() {
         let body = serde_json::json!({"input":"hi"});
         assert!(!pipeline_request_supported("/v1/chat/completions", &body));
@@ -1473,6 +2574,19 @@ mod tests {
 
         let budget = request_budget_tokens(&body).unwrap();
         assert!(budget >= 512 + REQUEST_TOKEN_MARGIN);
+    }
+
+    #[test]
+    fn test_mesh_blob_token_from_url_requires_client_id_segment() {
+        assert_eq!(
+            mesh_blob_token_from_url("mesh://blob/client-1/token-123"),
+            Some("token-123".to_string())
+        );
+        assert_eq!(mesh_blob_token_from_url("mesh://blob/token-123"), None);
+        assert_eq!(
+            mesh_blob_token_from_url("mesh://blob/client-1/token-123/extra"),
+            None
+        );
     }
 
     #[test]
@@ -1585,6 +2699,23 @@ mod tests {
         let body_json = request.body_json.unwrap();
         let content = body_json["messages"][0]["content"].as_str().unwrap();
         assert_eq!(content.len(), 48);
+    }
+
+    #[tokio::test]
+    async fn test_read_http_request_allows_large_object_upload_body() {
+        let body = vec![b'x'; MAX_BODY_BYTES + 1];
+        let headers = format!(
+            "POST /api/objects HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+
+        let request = read_request_from_parts(vec![headers, body.clone()]).await;
+
+        assert_eq!(request.path, "/api/objects");
+        assert!(request.raw.ends_with(&body));
+        assert!(request.body_json.is_none());
+        assert!(request.request_object_request_ids.is_empty());
     }
 
     #[tokio::test]

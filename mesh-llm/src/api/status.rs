@@ -117,9 +117,15 @@ pub(super) struct MeshModelPayload {
     pub(super) quantization: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) description: Option<String>,
+    pub(super) multimodal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) multimodal_status: Option<&'static str>,
     pub(super) vision: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) vision_status: Option<&'static str>,
+    pub(super) audio: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) audio_status: Option<&'static str>,
     pub(super) reasoning: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) reasoning_status: Option<&'static str>,

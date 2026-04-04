@@ -42,7 +42,13 @@ pub(super) async fn api_proxy(
         let control_tx = control_tx.clone();
         tokio::spawn(async move {
             let mut tcp_stream = tcp_stream;
-            match proxy::read_http_request(&mut tcp_stream).await {
+            let plugin_manager = node.plugin_manager().await;
+            match proxy::read_http_request_with_plugin_manager(
+                &mut tcp_stream,
+                plugin_manager.as_ref(),
+            )
+            .await
+            {
                 Ok(request) => {
                     let body_json = request.body_json.as_ref();
                     if proxy::is_models_list_request(&request.method, &request.path) {
@@ -148,7 +154,8 @@ pub(super) async fn api_proxy(
                     let use_pipeline = classification
                         .as_ref()
                         .map(|cl| pipeline::should_pipeline(cl))
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        && request.response_adapter == proxy::ResponseAdapter::None;
 
                     if use_pipeline {
                         if let Some(ref strong_name) = effective_model {
@@ -198,6 +205,11 @@ pub(super) async fn api_proxy(
                                         .await,
                                         proxy::PipelineProxyResult::Handled
                                     ) {
+                                        proxy::release_request_objects(
+                                            &node,
+                                            &request.request_object_request_ids,
+                                        )
+                                        .await;
                                         return;
                                     }
                                 }
@@ -228,7 +240,13 @@ pub(super) async fn api_proxy(
                                 name,
                                 body_json,
                                 &request.raw,
+                                request.response_adapter,
                                 &affinity,
+                            )
+                            .await;
+                            proxy::release_request_objects(
+                                &node,
+                                &request.request_object_request_ids,
                             )
                             .await;
                             debug_assert!(routed);
@@ -238,9 +256,21 @@ pub(super) async fn api_proxy(
                         first_available_target(&targets)
                     };
 
-                    let _ = proxy::route_to_target(node, tcp_stream, target, &request.raw).await;
+                    let _ = proxy::route_to_target(
+                        node.clone(),
+                        tcp_stream,
+                        target,
+                        &request.raw,
+                        request.response_adapter,
+                    )
+                    .await;
+                    proxy::release_request_objects(&node, &request.request_object_request_ids)
+                        .await;
                 }
-                Err(_) => return,
+                Err(err) => {
+                    let _ = proxy::send_400(tcp_stream, &err.to_string()).await;
+                    return;
+                }
             };
         });
     }

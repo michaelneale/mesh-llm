@@ -235,6 +235,7 @@ pub(crate) async fn check_mesh(
             category: router::Category::Code,
             complexity: router::Complexity::Deep,
             needs_tools: true,
+            has_media_inputs: false,
         };
         router::pick_model_classified(&agentic, &available)
             .map(|s| s.to_string())

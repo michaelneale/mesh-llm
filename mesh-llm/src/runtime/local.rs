@@ -1,7 +1,7 @@
 use crate::api;
 use crate::inference::{election, launch};
 use crate::mesh;
-use crate::models::catalog;
+use crate::models;
 use crate::network::router;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -34,14 +34,8 @@ pub(super) fn resolved_model_name(path: &Path) -> String {
 }
 
 fn mmproj_path_for_model(model_name: &str) -> Option<PathBuf> {
-    catalog::MODEL_CATALOG
-        .iter()
-        .find(|m| {
-            m.name == model_name || m.file.strip_suffix(".gguf").unwrap_or(&m.file) == model_name
-        })
-        .and_then(|m| m.mmproj.as_ref())
-        .map(|asset| catalog::models_dir().join(&asset.file))
-        .filter(|p| p.exists())
+    let model_path = models::find_model_path(model_name);
+    models::find_mmproj_path(model_name, &model_path)
 }
 
 async fn alloc_local_port() -> Result<u16> {

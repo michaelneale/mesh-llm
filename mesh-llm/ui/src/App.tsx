@@ -29,7 +29,9 @@ import {
   Check,
   Copy,
   Cpu,
+  File,
   FolderTree,
+  FileAudio,
   Gauge,
   Gpu,
   Hash,
@@ -45,6 +47,7 @@ import {
   Network,
   ExternalLink,
   Pencil,
+  Paperclip,
   RotateCcw,
   Send,
   Server,
@@ -120,6 +123,10 @@ import {
 } from "./components/ui/sheet";
 import { BrandIcon } from "./components/brand-icon";
 import { MeshLlmWordmark } from "./components/mesh-llm-wordmark";
+import {
+  getAttachmentSendIssue,
+  validateAttachmentFile,
+} from "./lib/attachments";
 import { cn } from "./lib/utils";
 import {
   TOPOLOGY_LAYOUT_OPTIONS,
@@ -156,8 +163,12 @@ type MeshModel = {
   context_length?: number;
   quantization?: string;
   description?: string;
+  multimodal?: boolean;
+  multimodal_status?: "supported" | "none" | string;
   vision?: boolean;
   vision_status?: "supported" | "likely" | "none" | string;
+  audio?: boolean;
+  audio_status?: "supported" | "likely" | "none" | string;
   reasoning?: boolean;
   reasoning_status?: "supported" | "likely" | "none" | string;
   tool_use?: boolean;
@@ -233,6 +244,25 @@ function visionBadge(model?: MeshModel | null) {
   return null;
 }
 
+function multimodalBadge(model?: MeshModel | null) {
+  if (!model) return null;
+  if (model.multimodal)
+    return { icon: "🎛️", title: "Multimodal — supports media inputs" };
+  return null;
+}
+
+function audioBadge(model?: MeshModel | null) {
+  if (!model) return null;
+  if (model.audio) return { icon: "🔊", title: "Audio — understands audio input" };
+  if (model.audio_status === "likely") {
+    return {
+      icon: "🔊?",
+      title: "Audio likely — inferred from model metadata",
+    };
+  }
+  return null;
+}
+
 function reasoningBadge(model?: MeshModel | null) {
   if (!model) return null;
   if (model.reasoning) return { icon: "🧠", title: "Reasoning-oriented model" };
@@ -294,6 +324,19 @@ type ModelsPayload = {
   mesh_models: MeshModel[];
 };
 
+type ChatAttachmentKind = "image" | "audio" | "file";
+type ChatAttachmentStatus = "pending" | "uploading" | "failed";
+
+type ChatAttachment = {
+  id: string;
+  kind: ChatAttachmentKind;
+  dataUrl: string;
+  mimeType: string;
+  fileName?: string;
+  status?: ChatAttachmentStatus;
+  error?: string;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -302,8 +345,14 @@ type ChatMessage = {
   model?: string;
   stats?: string;
   error?: boolean;
-  /** Base64 data URL for attached image (vision) */
+  /** Legacy attachment fields retained for persisted chat compatibility */
   image?: string;
+  audio?: {
+    dataUrl: string;
+    mimeType: string;
+    fileName?: string;
+  };
+  attachments?: ChatAttachment[];
 };
 
 type ChatConversation = {
@@ -333,6 +382,7 @@ type AppRoute = {
 type ThemeMode = "auto" | "light" | "dark";
 
 const THEME_STORAGE_KEY = "mesh-llm-theme";
+const CHAT_CLIENT_ID_STORAGE_KEY = "mesh-llm-chat-client-id";
 const DEFAULT_CHAT_TITLE = "New chat";
 const CHAT_DB_NAME = "mesh-llm-chat-db";
 const CHAT_DB_STORE = "state";
@@ -492,6 +542,15 @@ function randomId(): string {
   return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function readOrCreateChatClientId(): string {
+  if (typeof window === "undefined") return randomId();
+  const stored = window.localStorage.getItem(CHAT_CLIENT_ID_STORAGE_KEY);
+  if (stored && stored.trim()) return stored;
+  const created = randomId();
+  window.localStorage.setItem(CHAT_CLIENT_ID_STORAGE_KEY, created);
+  return created;
+}
+
 function deriveConversationTitle(input: string): string {
   const compact = input.replace(/\s+/g, " ").trim();
   if (!compact) return DEFAULT_CHAT_TITLE;
@@ -526,6 +585,67 @@ function clampText(
     : text;
 }
 
+function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
+  if (!match) return null;
+  return { mimeType: match[1], base64: match[2] };
+}
+
+function sanitizeAttachment(raw: unknown): ChatAttachment | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const kind = item.kind;
+  const dataUrl = item.dataUrl;
+  const mimeType = item.mimeType;
+  if (
+    (kind !== "image" && kind !== "audio" && kind !== "file") ||
+    typeof dataUrl !== "string" ||
+    typeof mimeType !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : randomId(),
+    kind,
+    dataUrl,
+    mimeType,
+    fileName: typeof item.fileName === "string" ? item.fileName : undefined,
+    status:
+      item.status === "pending" ||
+      item.status === "uploading" ||
+      item.status === "failed"
+        ? item.status
+        : undefined,
+    error: typeof item.error === "string" ? item.error : undefined,
+  };
+}
+
+function messageAttachments(message: ChatMessage): ChatAttachment[] {
+  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+    return message.attachments;
+  }
+  const attachments: ChatAttachment[] = [];
+  if (message.image) {
+    attachments.push({
+      id: `${message.id}-image`,
+      kind: "image",
+      dataUrl: message.image,
+      mimeType: parseDataUrl(message.image)?.mimeType || "image/jpeg",
+      fileName: "image.jpg",
+    });
+  }
+  if (message.audio) {
+    attachments.push({
+      id: `${message.id}-audio`,
+      kind: "audio",
+      dataUrl: message.audio.dataUrl,
+      mimeType: message.audio.mimeType,
+      fileName: message.audio.fileName,
+    });
+  }
+  return attachments;
+}
+
 function sanitizeMessages(raw: unknown): ChatMessage[] {
   if (!Array.isArray(raw)) return [];
   const sanitized = raw.flatMap((item) => {
@@ -538,6 +658,52 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
     )
       return [];
     const safeRole: ChatMessage["role"] = role;
+    const attachments = Array.isArray((item as { attachments?: unknown }).attachments)
+      ? ((item as { attachments: unknown[] }).attachments
+          .map(sanitizeAttachment)
+          .filter(Boolean) as ChatAttachment[])
+      : [];
+    const legacyImage =
+      typeof (item as { image?: unknown }).image === "string"
+        ? (item as { image: string }).image
+        : undefined;
+    const legacyAudio =
+      typeof (item as { audio?: unknown }).audio === "object" &&
+      (item as { audio?: unknown }).audio &&
+      typeof ((item as { audio: { dataUrl?: unknown } }).audio.dataUrl) ===
+        "string" &&
+      typeof ((item as { audio: { mimeType?: unknown } }).audio.mimeType) ===
+        "string"
+        ? {
+            dataUrl: (item as { audio: { dataUrl: string } }).audio.dataUrl,
+            mimeType: (item as { audio: { mimeType: string } }).audio.mimeType,
+            fileName:
+              typeof ((item as { audio: { fileName?: unknown } }).audio.fileName) ===
+              "string"
+                ? (item as { audio: { fileName: string } }).audio.fileName
+                : undefined,
+          }
+        : undefined;
+    if (attachments.length === 0) {
+      if (legacyImage) {
+        attachments.push({
+          id: randomId(),
+          kind: "image",
+          dataUrl: legacyImage,
+          mimeType: parseDataUrl(legacyImage)?.mimeType || "image/jpeg",
+          fileName: "image.jpg",
+        });
+      }
+      if (legacyAudio) {
+        attachments.push({
+          id: randomId(),
+          kind: "audio",
+          dataUrl: legacyAudio.dataUrl,
+          mimeType: legacyAudio.mimeType,
+          fileName: legacyAudio.fileName,
+        });
+      }
+    }
     return [
       {
         id:
@@ -564,6 +730,9 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
           256,
         ),
         error: Boolean((item as { error?: unknown }).error),
+        image: legacyImage,
+        audio: legacyAudio,
+        attachments: attachments.length > 0 ? attachments : undefined,
       },
     ];
   });
@@ -731,13 +900,17 @@ export function App() {
   );
   const [chatStateHydrated, setChatStateHydrated] = useState(false);
   const [input, setInput] = useState("");
-  const [pendingImage, setPendingImage] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>(
+    [],
+  );
   const [selectedModel, setSelectedModel] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [composerError, setComposerError] = useState<string | null>(null);
   const [reasoningOpen, setReasoningOpen] = useState<Record<string, boolean>>(
     {},
   );
+  const chatClientIdRef = useRef<string>(readOrCreateChatClientId());
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const currentAbortRef = useRef<AbortController | null>(null);
   const activeConversationId = chatState.activeConversationId;
@@ -798,10 +971,56 @@ export function App() {
     }
     return set;
   }, [meshModels]);
+  const audioModels = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of meshModels) {
+      if (m.audio) set.add(m.name);
+    }
+    return set;
+  }, [meshModels]);
+  const multimodalModels = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of meshModels) {
+      if (m.multimodal) set.add(m.name);
+    }
+    return set;
+  }, [meshModels]);
   const selectedModelVision = useMemo(() => {
     if (selectedModel) return visionModels.has(selectedModel);
     return meshModels.some((m) => m.status === "warm" && m.vision);
   }, [meshModels, selectedModel, visionModels]);
+  const selectedModelAudio = useMemo(() => {
+    if (selectedModel) return audioModels.has(selectedModel);
+    return meshModels.some((m) => m.status === "warm" && m.audio);
+  }, [audioModels, meshModels, selectedModel]);
+  const selectedModelMultimodal = useMemo(() => {
+    if (selectedModel) return multimodalModels.has(selectedModel);
+    return meshModels.some((m) => m.status === "warm" && m.multimodal);
+  }, [meshModels, multimodalModels, selectedModel]);
+  const pendingKinds = useMemo(
+    () => new Set(pendingAttachments.map((attachment) => attachment.kind)),
+    [pendingAttachments],
+  );
+  const attachmentSendIssue = useMemo(() => {
+    if (!pendingAttachments.length || !status) return null;
+    return getAttachmentSendIssue({
+      pendingKinds,
+      selectedModel,
+      warmModels,
+      visionModels,
+      audioModels,
+      multimodalModels,
+    });
+  }, [
+    audioModels,
+    multimodalModels,
+    pendingAttachments.length,
+    pendingKinds,
+    selectedModel,
+    status,
+    visionModels,
+    warmModels,
+  ]);
   const meshModelByName = useMemo(() => {
     const entries = meshModels.map((model) => [model.name, model] as const);
     return Object.fromEntries(entries) as Record<string, MeshModel>;
@@ -1117,39 +1336,163 @@ export function App() {
     setChatState((prev) => updater(prev));
   }
 
+  function markComposerAttachment(
+    attachmentId: string,
+    patch: Partial<Pick<ChatAttachment, "status" | "error">>,
+  ) {
+    setPendingAttachments((prev) =>
+      prev.map((attachment) =>
+        attachment.id === attachmentId ? { ...attachment, ...patch } : attachment,
+      ),
+    );
+  }
+
+  async function uploadRequestObject(params: {
+    requestId: string;
+    dataUrl: string;
+    fileName?: string;
+  }) {
+    const parsed = parseDataUrl(params.dataUrl);
+    if (!parsed) throw new Error("Attachment is not a valid base64 data URL");
+    const response = await fetch("/api/objects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        request_id: params.requestId,
+        mime_type: parsed.mimeType,
+        file_name: params.fileName,
+        bytes_base64: parsed.base64,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Attachment upload failed (${response.status})`);
+    }
+    return (await response.json()) as { token: string };
+  }
+
+  async function buildAttachmentBlocks(
+    attachments: ChatAttachment[],
+    requestId: string,
+    clientId: string,
+    onStatusChange?: (
+      attachmentId: string,
+      patch: Partial<Pick<ChatAttachment, "status" | "error">>,
+    ) => void,
+  ) {
+    const contentBlocks: Array<Record<string, unknown>> = [];
+    for (const attachment of attachments) {
+      onStatusChange?.(attachment.id, { status: "uploading", error: undefined });
+      try {
+        const upload = await uploadRequestObject({
+          requestId,
+          dataUrl: attachment.dataUrl,
+          fileName: attachment.fileName,
+        });
+        const url = `mesh://blob/${clientId}/${upload.token}`;
+        if (attachment.kind === "image") {
+          contentBlocks.push({
+            type: "input_image",
+            image_url: url,
+          });
+        } else if (attachment.kind === "audio") {
+          contentBlocks.push({
+            type: "input_audio",
+            audio_url: url,
+          });
+        } else {
+          contentBlocks.push({
+            type: "input_file",
+            url,
+            mime_type: attachment.mimeType,
+            file_name: attachment.fileName,
+          });
+        }
+        onStatusChange?.(attachment.id, { status: "pending", error: undefined });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        onStatusChange?.(attachment.id, { status: "failed", error: message });
+        throw error;
+      }
+    }
+    return contentBlocks;
+  }
+
+  async function buildResponsesInput(
+    historyForRequest: ChatMessage[],
+    requestId: string,
+    clientId: string,
+    prebuiltContentByMessageId?: Record<string, Array<Record<string, unknown>>>,
+  ) {
+    return Promise.all(
+      historyForRequest.map(async (message) => {
+        const contentBlocks: Array<Record<string, unknown>> =
+          prebuiltContentByMessageId?.[message.id]?.slice() ?? [];
+        const attachments = messageAttachments(message);
+        if (message.content.trim()) {
+          contentBlocks.push({ type: "input_text", text: message.content });
+        }
+        if (!prebuiltContentByMessageId?.[message.id] && attachments.length > 0) {
+          contentBlocks.push(
+            ...(await buildAttachmentBlocks(attachments, requestId, clientId)),
+          );
+        }
+        return {
+          role: message.role,
+          content:
+            contentBlocks.length === 1 &&
+            attachments.length === 0 &&
+            contentBlocks[0].type === "input_text"
+              ? message.content
+              : contentBlocks,
+        };
+      }),
+    );
+  }
+
   async function streamAssistantReply(params: {
     conversationId: string;
     assistantId: string;
     model: string;
     historyForRequest: ChatMessage[];
+    requestId?: string;
+    prebuiltContentByMessageId?: Record<string, Array<Record<string, unknown>>>;
   }) {
-    const { conversationId, assistantId, model, historyForRequest } = params;
+    const {
+      conversationId,
+      assistantId,
+      model,
+      historyForRequest,
+      requestId: providedRequestId,
+      prebuiltContentByMessageId,
+    } = params;
     const reqStart = performance.now();
     const controller = new AbortController();
     currentAbortRef.current = controller;
 
     try {
+      const requestId = providedRequestId ?? randomId();
+      const clientId = chatClientIdRef.current;
+      const requestInput = await buildResponsesInput(
+        historyForRequest,
+        requestId,
+        clientId,
+        prebuiltContentByMessageId,
+      );
       const MAX_RETRIES = 3;
       const RETRY_DELAYS = [1000, 2000, 4000];
       const RETRYABLE = new Set([500, 502, 503]);
       let response: Response | null = null;
 
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        response = await fetch("/api/chat", {
+        response = await fetch("/api/responses", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
           body: JSON.stringify({
             model,
-            messages: historyForRequest.map((m) => ({
-              role: m.role,
-              content: m.image
-                ? [
-                    { type: "text" as const, text: m.content },
-                    { type: "image_url" as const, image_url: { url: m.image } },
-                  ]
-                : m.content,
-            })),
+            client_id: clientId,
+            request_id: requestId,
+            input: requestInput,
             stream: true,
             stream_options: { include_usage: true },
             chat_template_kwargs: { enable_thinking: false },
@@ -1168,7 +1511,6 @@ export function App() {
       const decoder = new TextDecoder();
       let buf = "";
       let full = "";
-      let reasoning = "";
       let completionTokens: number | null = null;
       let firstTokenAt: number | null = null;
 
@@ -1176,51 +1518,78 @@ export function App() {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6).trim();
-          if (!data || data === "[DONE]") continue;
+        buf = buf.replace(/\r\n/g, "\n");
+        let frameEnd = buf.indexOf("\n\n");
+        while (frameEnd >= 0) {
+          const frame = buf.slice(0, frameEnd);
+          buf = buf.slice(frameEnd + 2);
+          const lines = frame.split("\n");
+          let eventName = "";
+          const dataLines: string[] = [];
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trimStart());
+            }
+          }
+          const data = dataLines.join("\n").trim();
+          if (!data || data === "[DONE]") {
+            frameEnd = buf.indexOf("\n\n");
+            continue;
+          }
           try {
-            const chunk = JSON.parse(data) as {
-              usage?: { completion_tokens?: number };
-              choices?: Array<{
-                delta?: { content?: string; reasoning_content?: string };
-              }>;
-            };
-            const delta = chunk.choices?.[0]?.delta;
-            if (Number.isFinite(chunk.usage?.completion_tokens))
-              completionTokens = chunk.usage!.completion_tokens!;
-            const contentDelta = delta?.content ?? "";
-            const reasoningDelta = delta?.reasoning_content ?? "";
-            if (!contentDelta && !reasoningDelta) continue;
-            if (firstTokenAt == null) firstTokenAt = performance.now();
-            full += contentDelta;
-            reasoning += reasoningDelta;
-            updateChatState((prev) => ({
-              ...prev,
-              conversations: updateConversationList(
-                prev.conversations,
-                conversationId,
-                (conversation) => ({
-                  ...conversation,
-                  messages: conversation.messages.map((m) =>
-                    m.id === assistantId
-                      ? {
-                          ...m,
-                          content: full,
-                          reasoning: reasoning || undefined,
-                        }
-                      : m,
-                  ),
-                  updatedAt: Date.now(),
-                }),
-              ),
-            }));
+            const payload = JSON.parse(data) as Record<string, unknown>;
+            if (eventName === "response.output_text.delta") {
+              const contentDelta =
+                typeof payload.delta === "string" ? payload.delta : "";
+              if (!contentDelta) {
+                frameEnd = buf.indexOf("\n\n");
+                continue;
+              }
+              if (firstTokenAt == null) firstTokenAt = performance.now();
+              full += contentDelta;
+              updateChatState((prev) => ({
+                ...prev,
+                conversations: updateConversationList(
+                  prev.conversations,
+                  conversationId,
+                  (conversation) => ({
+                    ...conversation,
+                    messages: conversation.messages.map((m) =>
+                      m.id === assistantId ? { ...m, content: full } : m,
+                    ),
+                    updatedAt: Date.now(),
+                  }),
+                ),
+              }));
+            } else if (eventName === "response.completed") {
+              const responsePayload =
+                payload.response && typeof payload.response === "object"
+                  ? (payload.response as {
+                      output_text?: unknown;
+                      usage?: { output_tokens?: unknown };
+                    })
+                  : null;
+              if (
+                responsePayload &&
+                typeof responsePayload.output_text === "string" &&
+                !full
+              ) {
+                full = responsePayload.output_text;
+              }
+              if (
+                responsePayload &&
+                responsePayload.usage &&
+                Number.isFinite(responsePayload.usage.output_tokens)
+              ) {
+                completionTokens = Number(responsePayload.usage.output_tokens);
+              }
+            }
           } catch {
             // ignore malformed chunk
           }
+          frameEnd = buf.indexOf("\n\n");
         }
       }
 
@@ -1243,17 +1612,16 @@ export function App() {
           prev.conversations,
           conversationId,
           (conversation) => ({
-            ...conversation,
-            messages: conversation.messages.map((m) =>
-              m.id === assistantId
-                ? {
-                    ...m,
-                    content: m.content || "(empty response)",
-                    reasoning: m.reasoning || undefined,
-                    stats,
-                  }
-                : m,
-            ),
+              ...conversation,
+              messages: conversation.messages.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: m.content || "(empty response)",
+                      stats,
+                    }
+                  : m,
+              ),
             updatedAt: Date.now(),
           }),
         ),
@@ -1304,23 +1672,65 @@ export function App() {
 
   async function sendMessage(text: string) {
     const trimmed = text.trim();
-    if ((!trimmed && !pendingImage) || !status || isSending) return;
-
-    // When sending an image with model=auto, route to a vision-capable model
-    // (the server-side router doesn't sniff for images in the request body)
-    let model = selectedModel || status.model_name;
-    if (pendingImage && (!model || model === "auto")) {
-      const visionModel = warmModels.find((m) => visionModels.has(m));
-      if (visionModel) model = visionModel;
+    if ((!trimmed && pendingAttachments.length === 0) || !status || isSending)
+      return;
+    if (attachmentSendIssue) {
+      setComposerError(attachmentSendIssue);
+      return;
     }
+
+    // Prefer an explicitly compatible model when sending media with model=auto.
+    let model = selectedModel || status.model_name;
+    if (pendingAttachments.length > 0 && (!model || model === "auto")) {
+      const multimodalModel = warmModels.find(
+        (m) =>
+          (!pendingKinds.has("image") || visionModels.has(m)) &&
+          (!pendingKinds.has("audio") || audioModels.has(m)) &&
+          (!pendingKinds.has("file") || multimodalModels.has(m)),
+      );
+      if (multimodalModel) {
+        model = multimodalModel;
+      } else if (pendingKinds.has("image")) {
+        const visionModel = warmModels.find((m) => visionModels.has(m));
+        if (visionModel) model = visionModel;
+      } else if (pendingKinds.has("audio")) {
+        const audioModel = warmModels.find((m) => audioModels.has(m));
+        if (audioModel) model = audioModel;
+      } else if (pendingKinds.has("file")) {
+        const fileModel = warmModels.find((m) => multimodalModels.has(m));
+        if (fileModel) model = fileModel;
+      }
+    }
+    setComposerError(null);
     const conversationId = activeConversation?.id ?? randomId();
     const userMessage: ChatMessage = {
       id: randomId(),
       role: "user",
       content: trimmed,
       model,
-      image: pendingImage ?? undefined,
+      attachments:
+        pendingAttachments.length > 0
+          ? pendingAttachments.map(({ status, error, ...attachment }) => attachment)
+          : undefined,
     };
+    const requestId = randomId();
+    const clientId = chatClientIdRef.current;
+    let prebuiltContentByMessageId: Record<string, Array<Record<string, unknown>>> | undefined;
+    if (pendingAttachments.length > 0) {
+      try {
+        const blocks = await buildAttachmentBlocks(
+          pendingAttachments,
+          requestId,
+          clientId,
+          (attachmentId, patch) => markComposerAttachment(attachmentId, patch),
+        );
+        prebuiltContentByMessageId = { [userMessage.id]: blocks };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setComposerError(`Attachment upload failed: ${message}`);
+        return;
+      }
+    }
     const assistantId = randomId();
     const assistantMessage: ChatMessage = {
       id: assistantId,
@@ -1373,13 +1783,15 @@ export function App() {
     setRoutedChatId(conversationId);
     pushRoute({ section: "chat", chatId: conversationId });
     setInput("");
-    setPendingImage(null);
+    setPendingAttachments([]);
     setIsSending(true);
     await streamAssistantReply({
       conversationId,
       assistantId,
       model,
       historyForRequest,
+      requestId,
+      prebuiltContentByMessageId,
     });
   }
 
@@ -1437,6 +1849,7 @@ export function App() {
     pushRoute({ section: "chat", chatId: conversation.id });
     setReasoningOpen({});
     setInput("");
+    setPendingAttachments([]);
   }
 
   function selectConversation(conversationId: string) {
@@ -1455,6 +1868,7 @@ export function App() {
     pushRoute({ section: "chat", chatId: conversationId });
     setReasoningOpen({});
     setInput("");
+    setPendingAttachments([]);
   }
 
   function renameConversation(conversationId: string, nextTitle: string) {
@@ -1497,6 +1911,7 @@ export function App() {
     replaceRoute({ section: "chat", chatId: nextActiveId });
     setReasoningOpen({});
     setInput("");
+    setPendingAttachments([]);
   }
 
   function clearAllConversations() {
@@ -1506,6 +1921,7 @@ export function App() {
     replaceRoute({ section: "chat", chatId: null });
     setReasoningOpen({});
     setInput("");
+    setPendingAttachments([]);
   }
 
   const topologyNodes = useMemo<TopologyNode[]>(() => {
@@ -1614,9 +2030,13 @@ export function App() {
                   selectedModelNodeCount={selectedModelNodeCount}
                   selectedModelVramGb={selectedModelVramGb}
                   selectedModelVision={selectedModelVision}
-                  visionModels={visionModels}
-                  pendingImage={pendingImage}
-                  setPendingImage={setPendingImage}
+                  selectedModelAudio={selectedModelAudio}
+                  selectedModelMultimodal={selectedModelMultimodal}
+                  composerError={composerError}
+                  setComposerError={setComposerError}
+                  attachmentSendIssue={attachmentSendIssue}
+                  pendingAttachments={pendingAttachments}
+                  setPendingAttachments={setPendingAttachments}
                   conversations={conversations}
                   activeConversationId={activeConversationId}
                   onConversationCreate={createNewConversation}
@@ -2221,7 +2641,7 @@ function AppHeader({
   );
 }
 
-function ChatPage(props: {
+export function ChatPage(props: {
   status: StatusPayload | null;
   inviteToken: string;
   isPublicMesh: boolean;
@@ -2235,9 +2655,13 @@ function ChatPage(props: {
   selectedModelNodeCount: number | null;
   selectedModelVramGb: number | null;
   selectedModelVision: boolean;
-  visionModels: Set<string>;
-  pendingImage: string | null;
-  setPendingImage: (v: string | null) => void;
+  selectedModelAudio: boolean;
+  selectedModelMultimodal: boolean;
+  composerError: string | null;
+  setComposerError: React.Dispatch<React.SetStateAction<string | null>>;
+  attachmentSendIssue: string | null;
+  pendingAttachments: ChatAttachment[];
+  setPendingAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   conversations: ChatConversation[];
   activeConversationId: string;
   onConversationCreate: () => void;
@@ -2271,9 +2695,13 @@ function ChatPage(props: {
     selectedModelNodeCount,
     selectedModelVramGb,
     selectedModelVision,
-    visionModels,
-    pendingImage,
-    setPendingImage,
+    selectedModelAudio,
+    selectedModelMultimodal,
+    composerError,
+    setComposerError,
+    attachmentSendIssue,
+    pendingAttachments,
+    setPendingAttachments,
     conversations,
     activeConversationId,
     onConversationCreate,
@@ -2305,10 +2733,53 @@ function ChatPage(props: {
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const editingTitleInputRef = useRef<HTMLInputElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function markPendingAttachment(
+    attachmentId: string,
+    patch: Partial<Pick<ChatAttachment, "status" | "error">>,
+  ) {
+    setPendingAttachments((prev) =>
+      prev.map((attachment) =>
+        attachment.id === attachmentId ? { ...attachment, ...patch } : attachment,
+      ),
+    );
+  }
+
+  function addPendingAttachment(attachment: Omit<ChatAttachment, "id" | "status" | "error">) {
+    setComposerError(null);
+    setPendingAttachments((prev) => [
+      ...prev,
+      {
+        id: randomId(),
+        status: "pending",
+        ...attachment,
+      },
+    ]);
+  }
+
+  function removePendingAttachment(attachmentId: string) {
+    setComposerError(null);
+    setPendingAttachments((prev) =>
+      prev.filter((attachment) => attachment.id !== attachmentId),
+    );
+  }
+
+  function resetAttachmentStatus(attachmentId: string) {
+    markPendingAttachment(attachmentId, { status: "pending", error: undefined });
+    setComposerError(null);
+  }
 
   function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const validationError = validateAttachmentFile(file, "image");
+    if (validationError) {
+      setComposerError(validationError);
+      e.target.value = "";
+      return;
+    }
     // Read as data URL first (handles HEIC, JPEG, PNG — whatever the browser supports)
     // then resize via canvas to max 512px (vision encoders tile at ~448px internally)
     const reader = new FileReader();
@@ -2328,17 +2799,81 @@ function ChatPage(props: {
         canvas.height = height;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          setPendingImage(src);
+          addPendingAttachment({
+            kind: "image",
+            dataUrl: src,
+            mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
+            fileName: file.name,
+          });
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        setPendingImage(canvas.toDataURL("image/jpeg", 0.85));
+        addPendingAttachment({
+          kind: "image",
+          dataUrl: canvas.toDataURL("image/jpeg", 0.85),
+          mimeType: "image/jpeg",
+          fileName: file.name,
+        });
       };
       img.onerror = () => {
         // Canvas resize failed — send original (may be large but better than nothing)
-        setPendingImage(src);
+        addPendingAttachment({
+          kind: "image",
+          dataUrl: src,
+          mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
+          fileName: file.name,
+        });
       };
       img.src = src;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
+  function handleAudioSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const validationError = validateAttachmentFile(file, "audio");
+    if (validationError) {
+      setComposerError(validationError);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      addPendingAttachment({
+        kind: "audio",
+        dataUrl,
+        mimeType: file.type || parseDataUrl(dataUrl)?.mimeType || "audio/wav",
+        fileName: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const validationError = validateAttachmentFile(file, "file");
+    if (validationError) {
+      setComposerError(validationError);
+      e.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      addPendingAttachment({
+        kind: "file",
+        dataUrl,
+        mimeType:
+          file.type ||
+          parseDataUrl(dataUrl)?.mimeType ||
+          "application/octet-stream",
+        fileName: file.name,
+      });
     };
     reader.readAsDataURL(file);
     e.target.value = "";
@@ -2628,7 +3163,9 @@ function ChatPage(props: {
                   const selectedMeshModel = meshModelByName[model];
                   const displayName =
                     modelDisplayName(selectedMeshModel) || model;
+                  const multimodalInfo = multimodalBadge(selectedMeshModel);
                   const visionInfo = visionBadge(selectedMeshModel);
+                  const audioInfo = audioBadge(selectedMeshModel);
                   const reasoningInfo = reasoningBadge(selectedMeshModel);
                   return (
                     <SelectItem
@@ -2639,9 +3176,19 @@ function ChatPage(props: {
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <span className="truncate leading-5">
                           {shortName(displayName)}
+                          {multimodalInfo && (
+                            <span className="ml-1.5" title={multimodalInfo.title}>
+                              {multimodalInfo.icon}
+                            </span>
+                          )}
                           {visionInfo && (
                             <span className="ml-1.5" title={visionInfo.title}>
                               {visionInfo.icon}
+                            </span>
+                          )}
+                          {audioInfo && (
+                            <span className="ml-1.5" title={audioInfo.title}>
+                              {audioInfo.icon}
                             </span>
                           )}
                           {reasoningInfo && (
@@ -2795,33 +3342,112 @@ function ChatPage(props: {
             </div>
             <Separator />
             <div className="shrink-0 box-border w-full max-w-full space-y-2 overflow-hidden p-3 md:space-y-3 md:p-4">
-              {pendingImage && (
-                <div className="relative inline-block">
-                  <img
-                    src={pendingImage}
-                    alt="Attached"
-                    className="h-20 rounded-md border object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPendingImage(null)}
-                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs hover:bg-destructive/80"
-                    aria-label="Remove image"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+              {pendingAttachments.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {pendingAttachments.map((attachment) =>
+                    attachment.kind === "image" ? (
+                      <div
+                        key={attachment.id}
+                        className="relative inline-block"
+                        data-testid="pending-attachment"
+                      >
+                        <img
+                          src={attachment.dataUrl}
+                          alt={attachment.fileName || "Attached image"}
+                          className="h-20 rounded-md border object-cover"
+                        />
+                        <button
+                          onClick={() => removePendingAttachment(attachment.id)}
+                          className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground text-xs hover:bg-destructive/80"
+                          aria-label="Remove image"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                        {attachment.status === "uploading" ? (
+                          <div className="absolute inset-0 flex items-center justify-center rounded-md bg-background/70 text-xs">
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            Uploading
+                          </div>
+                        ) : attachment.status === "failed" ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-md bg-background/80 text-xs">
+                            <span>Upload failed</span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => resetAttachmentStatus(attachment.id)}
+                            >
+                              Retry
+                            </Button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div
+                        key={attachment.id}
+                        className="relative inline-flex max-w-full items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm"
+                        data-testid="pending-attachment"
+                      >
+                        {attachment.kind === "audio" ? (
+                          <FileAudio className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <File className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        )}
+                        <span className="truncate">
+                          {attachment.fileName ||
+                            (attachment.kind === "audio"
+                              ? "Audio attachment"
+                              : "File attachment")}
+                        </span>
+                        {attachment.status === "uploading" ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                        ) : null}
+                        {attachment.status === "failed" ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => resetAttachmentStatus(attachment.id)}
+                          >
+                            Retry
+                          </Button>
+                        ) : null}
+                        <button
+                          onClick={() => removePendingAttachment(attachment.id)}
+                          className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted"
+                          aria-label={`Remove ${attachment.kind}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ),
+                  )}
                 </div>
-              )}
+              ) : null}
+              {composerError || attachmentSendIssue ? (
+                <Alert variant="destructive" data-testid="composer-error">
+                  <AlertTitle>Attachment Issue</AlertTitle>
+                  <AlertDescription>
+                    {composerError || attachmentSendIssue}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
               <Textarea
                 ref={chatInputRef}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
+                onChange={(e) => {
+                  setComposerError(null);
+                  setInput(e.target.value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
                     onSubmit();
                   }
                 }}
+                data-testid="chat-input"
                 rows={2}
                 placeholder={
                   props.canChat
@@ -2843,6 +3469,7 @@ function ChatPage(props: {
                         type="file"
                         accept="image/*"
                         className="hidden"
+                        data-testid="chat-image-input"
                         onChange={handleImageSelect}
                       />
                       <Button
@@ -2855,6 +3482,51 @@ function ChatPage(props: {
                         aria-label="Attach image"
                       >
                         <ImagePlus className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
+                  {selectedModelAudio && (
+                    <>
+                      <input
+                        ref={audioInputRef}
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        data-testid="chat-audio-input"
+                        onChange={handleAudioSelect}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => audioInputRef.current?.click()}
+                        disabled={!props.canChat || isSending}
+                        title="Attach audio"
+                        aria-label="Attach audio"
+                      >
+                        <FileAudio className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
+                  {selectedModelMultimodal && (
+                    <>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        className="hidden"
+                        data-testid="chat-file-input"
+                        onChange={handleFileSelect}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={!props.canChat || isSending}
+                        title="Attach file"
+                        aria-label="Attach file"
+                      >
+                        <Paperclip className="h-4 w-4" />
                       </Button>
                     </>
                   )}
@@ -2883,9 +3555,10 @@ function ChatPage(props: {
                   <Button
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={onSubmit}
+                    data-testid="chat-send"
                     disabled={
                       !props.canChat ||
-                      (!input.trim() && !pendingImage) ||
+                      (!input.trim() && pendingAttachments.length === 0) ||
                       isSending
                     }
                   >
@@ -4823,9 +5496,13 @@ function ChatBubble({
   const isUser = message.role === "user";
   const isThinking = !isUser && message.reasoning && !message.content;
   const hasFinishedThinking = !isUser && message.reasoning && !!message.content;
+  const attachments = messageAttachments(message);
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div
+      className={cn("flex", isUser ? "justify-end" : "justify-start")}
+      data-testid={isUser ? "chat-bubble-user" : "chat-bubble-assistant"}
+    >
       <div className="w-full min-w-0 max-w-[92%] md:max-w-[82%]">
         <div className="mb-1 flex items-center gap-2 px-1 text-xs text-muted-foreground">
           {isUser ? (
@@ -4894,14 +5571,40 @@ function ChatBubble({
           </Accordion>
         ) : null}
 
-        {/* Attached image */}
-        {isUser && message.image ? (
-          <div className="mb-2">
-            <img
-              src={message.image}
-              alt="Attached"
-              className="max-h-48 rounded-lg border object-contain"
-            />
+        {isUser && attachments.length > 0 ? (
+          <div className="mb-2 space-y-2">
+            {attachments.map((attachment) =>
+              attachment.kind === "image" ? (
+                <div key={attachment.id}>
+                  <img
+                    src={attachment.dataUrl}
+                    alt={attachment.fileName || "Attached image"}
+                    className="max-h-48 rounded-lg border object-contain"
+                  />
+                </div>
+              ) : attachment.kind === "audio" ? (
+                <div
+                  key={attachment.id}
+                  className="rounded-lg border bg-muted/40 p-3"
+                >
+                  <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    <FileAudio className="h-3.5 w-3.5" />
+                    <span>{attachment.fileName || "Audio attachment"}</span>
+                  </div>
+                  <audio controls className="w-full" src={attachment.dataUrl} />
+                </div>
+              ) : (
+                <div
+                  key={attachment.id}
+                  className="rounded-lg border bg-muted/40 p-3 text-sm"
+                >
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <File className="h-3.5 w-3.5" />
+                    <span>{attachment.fileName || "File attachment"}</span>
+                  </div>
+                </div>
+              ),
+            )}
           </div>
         ) : null}
 
@@ -5411,11 +6114,25 @@ function ModelSidebar({
                 icon={<MessageSquarePlus className="h-3.5 w-3.5" />}
                 tooltip="Supports text input and text generation."
               />
+              {model.multimodal ? (
+                <CapabilityBadge
+                  label="Multimodal"
+                  icon={<Sparkles className="h-3.5 w-3.5" />}
+                  tooltip="Supports one or more media input modalities."
+                />
+              ) : null}
               {model.vision ? (
                 <CapabilityBadge
                   label="Vision"
                   icon={<ImagePlus className="h-3.5 w-3.5" />}
                   tooltip="Can understand image input."
+                />
+              ) : null}
+              {model.audio ? (
+                <CapabilityBadge
+                  label="Audio"
+                  icon={<Sparkles className="h-3.5 w-3.5" />}
+                  tooltip="Can understand audio input."
                 />
               ) : null}
               {model.reasoning ? (

@@ -1,14 +1,17 @@
+pub mod blobstore;
 mod config;
 pub(crate) mod mcp;
 mod runtime;
 mod support;
 mod transport;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 pub use mesh_llm_plugin::proto;
 use rmcp::model::ServerInfo;
 use serde::Serialize;
 use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -29,6 +32,7 @@ use self::transport::unix_socket_path;
 use mesh_llm_plugin::MeshVisibility;
 
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
+pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
 pub(crate) const PROTOCOL_VERSION: u32 = mesh_llm_plugin::PROTOCOL_VERSION;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 const REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -111,6 +115,8 @@ struct PluginManagerInner {
     plugins: BTreeMap<String, ExternalPlugin>,
     inactive: BTreeMap<String, PluginSummary>,
     rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
+    #[cfg(test)]
+    bridged_plugins: BTreeSet<String>,
 }
 
 impl PluginManager {
@@ -184,10 +190,27 @@ impl PluginManager {
                     .map(|summary| (summary.name.clone(), summary))
                     .collect(),
                 rpc_bridge,
+                #[cfg(test)]
+                bridged_plugins: BTreeSet::new(),
             }),
         };
         manager.start_supervisor();
         Ok(manager)
+    }
+
+    #[cfg(test)]
+    pub fn for_test_bridge(plugin_names: &[&str], bridge: Arc<dyn PluginRpcBridge>) -> Self {
+        Self {
+            inner: Arc::new(PluginManagerInner {
+                plugins: BTreeMap::new(),
+                inactive: BTreeMap::new(),
+                rpc_bridge: Arc::new(Mutex::new(Some(bridge))),
+                bridged_plugins: plugin_names
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+            }),
+        }
     }
 
     pub async fn list(&self) -> Vec<PluginSummary> {
@@ -204,9 +227,15 @@ impl PluginManager {
     pub async fn is_enabled(&self, name: &str) -> bool {
         if let Some(plugin) = self.inner.plugins.get(name) {
             plugin.is_enabled_running().await
+        } else if cfg!(test) && self.is_test_bridge_enabled(name) {
+            true
         } else {
             false
         }
+    }
+
+    pub fn is_available(&self, name: &str) -> bool {
+        self.inner.plugins.contains_key(name) || self.is_test_bridge_enabled(name)
     }
 
     pub async fn tools(&self, name: &str) -> Result<Vec<ToolSummary>> {
@@ -251,6 +280,23 @@ impl PluginManager {
         T: serde::de::DeserializeOwned,
         P: Serialize,
     {
+        if self.is_test_bridge_enabled(plugin_name) {
+            let bridge = self
+                .inner
+                .rpc_bridge
+                .lock()
+                .await
+                .clone()
+                .with_context(|| format!("No bridge configured for test plugin '{plugin_name}'"))?;
+            let params_json = serde_json::to_string(&params)
+                .with_context(|| format!("Serialize params for test plugin '{plugin_name}'"))?;
+            let result = bridge
+                .handle_request(plugin_name.to_string(), method.to_string(), params_json)
+                .await
+                .map_err(|err| anyhow!("{}", err.message))?;
+            return serde_json::from_str(&result.result_json)
+                .with_context(|| format!("Decode response from test plugin '{plugin_name}'"));
+        }
         if let Some(summary) = self.inner.inactive.get(plugin_name) {
             bail!(
                 "Plugin '{}' is disabled: {}",
@@ -270,6 +316,21 @@ impl PluginManager {
     where
         P: Serialize,
     {
+        if self.is_test_bridge_enabled(plugin_name) {
+            let bridge = self
+                .inner
+                .rpc_bridge
+                .lock()
+                .await
+                .clone()
+                .with_context(|| format!("No bridge configured for test plugin '{plugin_name}'"))?;
+            let params_json = serde_json::to_string(&params)
+                .with_context(|| format!("Serialize params for test plugin '{plugin_name}'"))?;
+            bridge
+                .handle_notification(plugin_name.to_string(), method.to_string(), params_json)
+                .await;
+            return Ok(());
+        }
         if let Some(summary) = self.inner.inactive.get(plugin_name) {
             bail!(
                 "Plugin '{}' is disabled: {}",
@@ -283,6 +344,15 @@ impl PluginManager {
             .get(plugin_name)
             .with_context(|| format!("Unknown plugin '{plugin_name}'"))?;
         plugin.mcp_notify(method, params).await
+    }
+
+    fn is_test_bridge_enabled(&self, _plugin_name: &str) -> bool {
+        #[cfg(test)]
+        {
+            return self.inner.bridged_plugins.contains(_plugin_name);
+        }
+        #[allow(unreachable_code)]
+        false
     }
 
     pub async fn list_server_infos(&self) -> Vec<(String, ServerInfo)> {
@@ -358,6 +428,7 @@ impl PluginManager {
 pub async fn run_plugin_process(name: String) -> Result<()> {
     match name.as_str() {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
+        BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
 }
@@ -376,8 +447,9 @@ mod tests {
     #[test]
     fn resolves_default_blackboard_plugin() {
         let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals.len(), 2);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -390,9 +462,28 @@ mod tests {
                 command: None,
                 args: Vec::new(),
             }],
+            ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert!(resolved.externals.is_empty());
+        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals[0].name, BLOBSTORE_PLUGIN_ID);
+        assert!(resolved.inactive.is_empty());
+    }
+
+    #[test]
+    fn blobstore_can_be_disabled() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: BLOBSTORE_PLUGIN_ID.into(),
+                enabled: Some(false),
+                command: None,
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -405,8 +496,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals.len(), 2);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -419,10 +511,13 @@ mod tests {
                 command: Some("/tmp/demo".into()),
                 args: vec!["--flag".into()],
             }],
+            ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert_eq!(resolved.externals[1].name, "demo");
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 

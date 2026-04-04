@@ -16,7 +16,9 @@ pub enum CapabilityLevel {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCapabilities {
+    pub multimodal: bool,
     pub vision: CapabilityLevel,
+    pub audio: CapabilityLevel,
     pub reasoning: CapabilityLevel,
     pub tool_use: CapabilityLevel,
     pub moe: bool,
@@ -25,7 +27,9 @@ pub struct ModelCapabilities {
 impl Default for ModelCapabilities {
     fn default() -> Self {
         Self {
+            multimodal: false,
             vision: CapabilityLevel::None,
+            audio: CapabilityLevel::None,
             reasoning: CapabilityLevel::None,
             tool_use: CapabilityLevel::None,
             moe: false,
@@ -34,8 +38,32 @@ impl Default for ModelCapabilities {
 }
 
 impl ModelCapabilities {
+    pub fn supports_multimodal_runtime(self) -> bool {
+        self.multimodal || self.supports_vision_runtime() || self.supports_audio_runtime()
+    }
+
     pub fn supports_vision_runtime(self) -> bool {
         matches!(self.vision, CapabilityLevel::Supported)
+    }
+
+    pub fn supports_audio_runtime(self) -> bool {
+        matches!(self.audio, CapabilityLevel::Supported)
+    }
+
+    pub fn multimodal_status(self) -> &'static str {
+        if self.supports_multimodal_runtime() {
+            "supported"
+        } else {
+            "none"
+        }
+    }
+
+    pub fn multimodal_label(self) -> Option<&'static str> {
+        if self.supports_multimodal_runtime() {
+            Some("yes")
+        } else {
+            None
+        }
     }
 
     pub fn vision_status(self) -> &'static str {
@@ -48,6 +76,22 @@ impl ModelCapabilities {
 
     pub fn vision_label(self) -> Option<&'static str> {
         match self.vision {
+            CapabilityLevel::Supported => Some("yes"),
+            CapabilityLevel::Likely => Some("likely"),
+            CapabilityLevel::None => None,
+        }
+    }
+
+    pub fn audio_status(self) -> &'static str {
+        match self.audio {
+            CapabilityLevel::Supported => "supported",
+            CapabilityLevel::Likely => "likely",
+            CapabilityLevel::None => "none",
+        }
+    }
+
+    pub fn audio_label(self) -> Option<&'static str> {
+        match self.audio {
             CapabilityLevel::Supported => Some("yes"),
             CapabilityLevel::Likely => Some("likely"),
             CapabilityLevel::None => None,
@@ -88,6 +132,16 @@ impl ModelCapabilities {
 
     fn upgrade_vision(&mut self, level: CapabilityLevel) {
         self.vision = self.vision.max(level);
+        if self.vision != CapabilityLevel::None {
+            self.multimodal = true;
+        }
+    }
+
+    fn upgrade_audio(&mut self, level: CapabilityLevel) {
+        self.audio = self.audio.max(level);
+        if self.audio != CapabilityLevel::None {
+            self.multimodal = true;
+        }
     }
 
     fn upgrade_reasoning(&mut self, level: CapabilityLevel) {
@@ -96,6 +150,13 @@ impl ModelCapabilities {
 
     fn upgrade_tool_use(&mut self, level: CapabilityLevel) {
         self.tool_use = self.tool_use.max(level);
+    }
+
+    fn normalize(mut self) -> Self {
+        if self.vision != CapabilityLevel::None || self.audio != CapabilityLevel::None {
+            self.multimodal = true;
+        }
+        self
     }
 }
 
@@ -113,7 +174,7 @@ pub fn infer_catalog_capabilities(model: &catalog::CatalogModel) -> ModelCapabil
             model.description.as_str(),
         ],
     );
-    caps
+    caps.normalize()
 }
 
 pub fn infer_local_model_capabilities(
@@ -134,7 +195,7 @@ pub fn infer_local_model_capabilities(
     for config in read_local_metadata_jsons(path) {
         caps = merge_config_signals(caps, &config);
     }
-    caps
+    caps.normalize()
 }
 
 pub async fn infer_remote_hf_capabilities(
@@ -151,7 +212,7 @@ pub async fn infer_remote_hf_capabilities(
     for config in fetch_remote_metadata_jsons(repo, revision).await {
         caps = merge_config_signals(caps, &config);
     }
-    caps
+    caps.normalize()
 }
 
 pub fn merge_name_signals(mut caps: ModelCapabilities, values: &[&str]) -> ModelCapabilities {
@@ -159,6 +220,12 @@ pub fn merge_name_signals(mut caps: ModelCapabilities, values: &[&str]) -> Model
         caps.upgrade_vision(CapabilityLevel::Supported);
     } else if values.iter().any(|value| likely_vision_name_signal(value)) {
         caps.upgrade_vision(CapabilityLevel::Likely);
+    }
+
+    if values.iter().any(|value| strong_audio_name_signal(value)) {
+        caps.upgrade_audio(CapabilityLevel::Supported);
+    } else if values.iter().any(|value| likely_audio_name_signal(value)) {
+        caps.upgrade_audio(CapabilityLevel::Likely);
     }
 
     if values
@@ -185,7 +252,7 @@ pub fn merge_name_signals(mut caps: ModelCapabilities, values: &[&str]) -> Model
         caps.upgrade_tool_use(CapabilityLevel::Likely);
     }
 
-    caps
+    caps.normalize()
 }
 
 pub fn merge_sibling_signals<I, S>(mut caps: ModelCapabilities, siblings: I) -> ModelCapabilities
@@ -200,6 +267,9 @@ where
         let name = sibling.as_ref().to_lowercase();
         if name.contains("mmproj") {
             caps.upgrade_vision(CapabilityLevel::Supported);
+        }
+        if name.contains("audio") || name.contains("whisper") || name.contains("ultravox") {
+            caps.upgrade_audio(CapabilityLevel::Likely);
         }
         if name.ends_with("preprocessor_config.json")
             || name.ends_with("processor_config.json")
@@ -227,12 +297,16 @@ where
     if saw_tool_template {
         caps.upgrade_tool_use(CapabilityLevel::Likely);
     }
-    caps
+    caps.normalize()
 }
 
 pub fn merge_config_signals(mut caps: ModelCapabilities, config: &Value) -> ModelCapabilities {
     if config.get("vision_config").is_some() {
         caps.upgrade_vision(CapabilityLevel::Supported);
+    }
+
+    if config.get("audio_config").is_some() {
+        caps.upgrade_audio(CapabilityLevel::Supported);
     }
 
     for key in [
@@ -244,6 +318,19 @@ pub fn merge_config_signals(mut caps: ModelCapabilities, config: &Value) -> Mode
     ] {
         if config.get(key).is_some() {
             caps.upgrade_vision(CapabilityLevel::Supported);
+        }
+    }
+
+    for key in [
+        "audio_token_id",
+        "audio_start_token_id",
+        "audio_end_token_id",
+        "audio_bos_token_id",
+        "audio_eos_token_id",
+        "audio_chunk_size",
+    ] {
+        if config.get(key).is_some() {
+            caps.upgrade_audio(CapabilityLevel::Supported);
         }
     }
 
@@ -259,12 +346,40 @@ pub fn merge_config_signals(mut caps: ModelCapabilities, config: &Value) -> Mode
     }
 
     if config
+        .get("architectures")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .any(strong_audio_name_signal)
+    {
+        caps.upgrade_audio(CapabilityLevel::Supported);
+    } else if config
+        .get("architectures")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str())
+        .any(likely_audio_name_signal)
+    {
+        caps.upgrade_audio(CapabilityLevel::Likely);
+    }
+
+    if config
         .get("model_type")
         .and_then(|value| value.as_str())
         .map(strong_vision_name_signal)
         .unwrap_or(false)
     {
         caps.upgrade_vision(CapabilityLevel::Supported);
+    }
+
+    if let Some(model_type) = config.get("model_type").and_then(|value| value.as_str()) {
+        if strong_audio_name_signal(model_type) {
+            caps.upgrade_audio(CapabilityLevel::Supported);
+        } else if likely_audio_name_signal(model_type) {
+            caps.upgrade_audio(CapabilityLevel::Likely);
+        }
     }
 
     if json_contains_reasoning_tokens(config) {
@@ -345,13 +460,16 @@ pub fn merge_config_signals(mut caps: ModelCapabilities, config: &Value) -> Mode
         caps.moe = true;
     }
 
-    caps
+    caps.normalize()
 }
 
 fn strong_vision_name_signal(value: &str) -> bool {
     let value = value.to_lowercase();
     [
         "vision",
+        "qwen3-vl",
+        "qwen3_vl",
+        "qwen3vl",
         "qwen2-vl",
         "qwen2_vl",
         "qwen2.5-vl",
@@ -379,6 +497,31 @@ fn likely_vision_name_signal(value: &str) -> bool {
         || value.contains("video")
         || value.contains("multimodal")
         || value.contains("image")
+}
+
+fn strong_audio_name_signal(value: &str) -> bool {
+    let value = value.to_lowercase();
+    [
+        "audio",
+        "qwen2-audio",
+        "qwen2_audio",
+        "seallm-audio",
+        "seallm_audio",
+        "ultravox",
+        "omni",
+        "speech",
+        "whisper",
+    ]
+    .iter()
+    .any(|needle| value.contains(needle))
+}
+
+fn likely_audio_name_signal(value: &str) -> bool {
+    let value = value.to_lowercase();
+    value.contains("audio")
+        || value.contains("speech")
+        || value.contains("voice")
+        || value.contains("omni")
 }
 
 fn strong_reasoning_name_signal(value: &str) -> bool {
@@ -526,4 +669,22 @@ async fn fetch_remote_json(repo: &str, revision: Option<&str>, file: &str) -> Op
     let path = api.repo(repo).get(file).await.ok()?;
     let text = tokio::fs::read_to_string(path).await.ok()?;
     serde_json::from_str(&text).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_name_signals, CapabilityLevel};
+
+    #[test]
+    fn qwen3vl_name_signal_is_supported_vision() {
+        let caps = merge_name_signals(
+            Default::default(),
+            &[
+                "Qwen3VL-2B-Instruct-Q4_K_M",
+                "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+            ],
+        );
+        assert_eq!(caps.vision, CapabilityLevel::Supported);
+        assert!(caps.multimodal);
+    }
 }

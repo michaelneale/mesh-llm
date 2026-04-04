@@ -10,7 +10,9 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.11",
@@ -40,13 +42,17 @@
     "tailwind-merge": "^3.3.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.21",
+    "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.2",
-    "vite": "^5.4.20"
+    "vite": "^5.4.20",
+    "vitest": "^2.1.9"
   }
 }

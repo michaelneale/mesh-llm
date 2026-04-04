@@ -1,4 +1,4 @@
-use super::{PluginSummary, BLACKBOARD_PLUGIN_ID};
+use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID};
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
 use serde::Deserialize;
@@ -66,6 +66,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let inactive = Vec::new();
     let mut names = BTreeMap::<String, ()>::new();
     let mut blackboard_enabled = true;
+    let mut blobstore_enabled = true;
     for entry in &config.plugins {
         if names.insert(entry.name.clone(), ()).is_some() {
             bail!("Duplicate plugin entry '{}'", entry.name);
@@ -79,6 +80,16 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
                 );
             }
             blackboard_enabled = enabled;
+            continue;
+        }
+        if entry.name == BLOBSTORE_PLUGIN_ID {
+            if entry.command.is_some() || !entry.args.is_empty() {
+                bail!(
+                    "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
+                    BLOBSTORE_PLUGIN_ID
+                );
+            }
+            blobstore_enabled = enabled;
             continue;
         }
         if !enabled {
@@ -98,6 +109,9 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     if blackboard_enabled {
         externals.insert(0, blackboard_plugin_spec()?);
     }
+    if blobstore_enabled {
+        externals.push(blobstore_plugin_spec()?);
+    }
 
     Ok(ResolvedPlugins {
         externals,
@@ -114,5 +128,17 @@ pub fn blackboard_plugin_spec() -> Result<ExternalPluginSpec> {
         name: BLACKBOARD_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), BLACKBOARD_PLUGIN_ID.into()],
+    })
+}
+
+pub fn blobstore_plugin_spec() -> Result<ExternalPluginSpec> {
+    let command = std::env::current_exe()
+        .context("Cannot determine mesh-llm executable path")?
+        .display()
+        .to_string();
+    Ok(ExternalPluginSpec {
+        name: BLOBSTORE_PLUGIN_ID.to_string(),
+        command,
+        args: vec!["--plugin".into(), BLOBSTORE_PLUGIN_ID.into()],
     })
 }
