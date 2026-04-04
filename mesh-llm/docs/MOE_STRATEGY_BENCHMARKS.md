@@ -1,27 +1,25 @@
 # MoE Strategy Benchmarks
 
-This document summarizes the offline MoE strategy benchmark suite added in this branch.
+This document summarizes the offline MoE strategy benchmark suite.
 
 Models tested on `studio54.local`:
 
 - `GLM-4.7-Flash-Q4_K_M`
 - `Qwen3-Coder-Next-Q4_K_M`
 
-The suite compares four questions:
+The suite compares three questions:
 
-1. Which ranking source best matches full `llama-moe-analyze`?
-2. How much does ranking quality matter more than grouping shape?
-3. Can a short `micro-analyze` replace a full analyze pass?
-4. Which live CLI knobs should we expose to test these strategies in mesh runs?
+1. How much does ranking quality matter for expert placement?
+2. Can a short `micro-analyze` replace a full analyze pass?
+3. Which grouping shape works best with a good ranking?
 
 ## Bottom Line
 
 - Gold standard: full `llama-moe-analyze`
-- Best practical fallback: `micro-analyze` with `--all-layers`
-- Best weight-only heuristic in this branch: `heuristic-max`
-- Current safe zero-analysis fallback: `sequential`
+- Best practical default: `micro-analyze` with `--all-layers` (the `auto` path)
+- Sequential fallback is acceptable when analysis isn't possible
 
-The strongest result is that `micro-analyze` is dramatically better than any weight-only heuristic on both models, while still costing much less than a full analyze run.
+Weight-only heuristics (gate norm scoring) were evaluated and removed — they produce rankings no better than random. Expert popularity is an emergent property of the full forward pass; static weight analysis cannot recover the signal.
 
 ## Ranking Results
 
@@ -31,10 +29,6 @@ The strongest result is that `micro-analyze` is dramatically better than any wei
 | --- | ---: | ---: | ---: | ---: |
 | `analyze` | `1.00` | `1.00` | `1.00` | `44.27s` |
 | `micro-1p-8t-all-layers` | `1.00` | `1.00` | `1.00` | `17.29s` |
-| `heuristic-max` | `0.06` | `0.46` | `0.27` | startup only |
-| `sequential` | baseline fallback | baseline fallback | baseline fallback | startup only |
-
-All tested heuristics missed expert `0`, which is unacceptable for this model because full analyze shows expert `0` carries `22.94%` of gate mass.
 
 ### Qwen3-Coder-Next-Q4_K_M
 
@@ -43,8 +37,6 @@ All tested heuristics missed expert `0`, which is unacceptable for this model be
 | `analyze` | `1.00` | `1.00` | `1.00` | `106.74s` |
 | `micro-1p-8t-all-layers` | `0.951` | `0.930` | `0.966` | `32.09s` |
 | `micro-4p-32t-all-layers` | `1.00` | `1.00` | `1.00` | `314.95s` |
-| `heuristic-max` | `0.020` | `0.516` | `0.741` | startup only |
-| `sequential` | baseline fallback | baseline fallback | baseline fallback | startup only |
 
 ## Grouping Results
 
@@ -55,7 +47,6 @@ All tested heuristics missed expert `0`, which is unacceptable for this model be
 | `current-analyze` | `analyze` | `52.90%` | `76.45%` | `0.0808%` |
 | `snake-analyze-replicated` | `analyze` | `52.90%` | `76.45%` | `0.0338%` |
 | `current-sequential` | `sequential` | `51.03%` | `75.52%` | lower risk fallback |
-| `snake-heuristic-replicated` | `heuristic-max` | `28.79%` | `64.39%` | `21.27%` |
 
 ### Qwen3-Coder-Next-Q4_K_M
 
@@ -64,7 +55,6 @@ All tested heuristics missed expert `0`, which is unacceptable for this model be
 | `current-analyze` | `analyze` | `71.01%` | `85.50%` | `0.0271%` |
 | `snake-analyze-replicated` | `analyze` | `71.01%` | `85.50%` | `0.00819%` |
 | `current-sequential` | `sequential` | `66.61%` | `83.30%` | lower risk fallback |
-| `snake-heuristic-replicated` | `heuristic-max` | `65.55%` | `82.77%` | `0.926%` |
 
 Practical interpretation:
 
@@ -78,8 +68,6 @@ Startup cost by strategy:
 | Strategy | Work done at startup | Measured cost |
 | --- | --- | ---: |
 | `bundled / cached analyze` | Local config or CSV read only | file read only |
-| `sequential` | GGUF header read only | file read only |
-| `heuristic-*` | GGUF tensor scan for router-weight scoring | startup only |
 | `micro-analyze` | Short `llama-moe-analyze` run | model-dependent |
 | `analyze` | Full `llama-moe-analyze` run | model-dependent |
 
@@ -96,20 +84,15 @@ Timed on `studio54.local` with:
 | `GLM-4.7-Flash-Q4_K_M` | `44.27s` | `17.29s` | micro matched full analyze exactly |
 | `Qwen3-Coder-Next-Q4_K_M` | `106.74s` | `32.09s` | micro was already close; larger micro run reached exact match |
 
-## Recommendations
+## Ranking Strategy
 
-Default behavior should stay conservative for now:
+The `auto` default path:
 
-- Keep `auto` as the current stable behavior.
-- Prefer `micro-analyze` when we explicitly want a better fallback than sequential.
-- Do not make the current weight-only heuristic the default fallback yet.
+1. Use cached or peer-shared ranking if available
+2. Run `micro-analyze` if the model fits locally
+3. Fall back to sequential `[0, 1, 2, ..., N]`
 
-If we change the default later, this benchmark suggests:
-
-1. `bundled / cached analyze`
-2. `micro-analyze --all-layers`
-3. `sequential`
-4. weight-only heuristics
+`analyze` and `micro-analyze` can be requested explicitly via `--moe-ranking`.
 
 ## Benchmark Commands
 
@@ -137,14 +120,11 @@ mesh-llm benchmark moe-model-matrix \
 Run individual slices:
 
 ```bash
-mesh-llm benchmark moe-heuristic --model /path/to/model.gguf
 mesh-llm benchmark moe-grouping --model /path/to/model.gguf --nodes 2
 mesh-llm benchmark moe-micro-analyze --model /path/to/model.gguf --prompts evals/moe/prompts/mt-bench-8.jsonl
 ```
 
 ## Live Runtime Examples
-
-These new flags are meant for live MoE split experiments:
 
 Full analyze before split:
 
@@ -165,20 +145,12 @@ mesh-llm --model /path/to/model.gguf --split \
   --moe-grouping shared-core
 ```
 
-Heuristic max + snake draft:
+## Why Heuristics Were Removed
 
-```bash
-mesh-llm --model /path/to/model.gguf --split \
-  --moe-ranking heuristic-max \
-  --moe-grouping snake-draft \
-  --moe-replicate 256
-```
+Weight-only heuristic ranking (scoring experts by gate weight norms) was extensively benchmarked and removed. Key findings:
 
-Sequential fallback + shared core overlap:
-
-```bash
-mesh-llm --model /path/to/model.gguf --split \
-  --moe-ranking sequential \
-  --moe-grouping shared-core \
-  --moe-overlap 1
-```
+- Best heuristic achieved Spearman correlation of 0.042 and Recall@24 of 0.417 on GLM-4.7-Flash — essentially random
+- Expert 0 carries 35.6% of all gate mass at runtime but has completely average weight norms — the signal is invisible to static analysis
+- Over 10 alternative approaches were tested (centrality, PCA, bias-weighting, entropy, kurtosis, SVD, random-input simulation) — best achievable was Spearman 0.386
+- Expert popularity is determined by the hidden state distribution flowing through the model, not by gate weight properties
+- Since expert outputs at layer N feed into the hidden state at layer N+1's router, there is no shortcut that avoids running the full forward pass
