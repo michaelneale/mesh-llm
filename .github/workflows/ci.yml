@@ -132,6 +132,21 @@ jobs:
             "${CACHE_FLAGS[@]}"
           cmake --build llama.cpp/build --config Release -j$(nproc) --target rpc-server llama-server
 
+      - name: Package Linux GGUF smoke binaries
+        run: |
+          mkdir -p ci-artifacts
+          tar -czf ci-artifacts/linux-gguf-smoke-bins.tgz \
+            target/release/mesh-llm \
+            llama.cpp/build/bin/rpc-server \
+            llama.cpp/build/bin/llama-server
+
+      - name: Upload Linux GGUF smoke binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gguf-smoke-bins
+          path: ci-artifacts/linux-gguf-smoke-bins.tgz
+          if-no-files-found: error
+
       # ── Download model ──
       - name: Cache model
         id: cache-model
@@ -477,11 +492,11 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
-  macos_gguf:
-    needs: changes
-    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    name: macOS GGUF (${{ matrix.name }})
-    runs-on: macos-latest
+  gguf_smokes:
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
+    name: GGUF Smokes (${{ matrix.name }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -537,36 +552,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Download Linux GGUF smoke binaries
+        uses: actions/download-artifact@v4
         with:
-          workspaces: mesh-llm
+          name: linux-gguf-smoke-bins
+          path: ci-artifacts
 
-      - name: Build mesh-llm
-        run: cargo build --release -p mesh-llm --bin mesh-llm
-
-      - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
-
-      - name: Build llama.cpp (CPU + RPC)
-        run: |
-          CACHE_FLAGS=()
-          if command -v sccache >/dev/null 2>&1; then
-            CACHE_FLAGS+=(
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-            )
-          fi
-          cmake -B llama.cpp/build -S llama.cpp \
-            -DGGML_METAL=OFF \
-            -DGGML_RPC=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_OPENSSL=OFF \
-            "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server
+      - name: Extract Linux GGUF smoke binaries
+        run: tar -xzf ci-artifacts/linux-gguf-smoke-bins.tgz
 
       - name: Cache GGUF model
         id: cache-gguf-model
