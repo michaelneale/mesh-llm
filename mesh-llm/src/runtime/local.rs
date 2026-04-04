@@ -182,7 +182,8 @@ pub(super) async fn start_runtime_local_model(
     let request = provider::InferenceEndpointRequest::local(model_path, port, model_bytes, my_vram)
         .with_mmproj_path(mmproj_path.as_deref())
         .with_ctx_size_override(ctx_size_override);
-    let process = provider::BuiltinLlamaProvider
+    let selected_provider = provider::select_local_endpoint_provider(&request);
+    let process = selected_provider
         .start_endpoint(bin_dir, binary_flavor, &request)
         .await?;
 
@@ -190,7 +191,7 @@ pub(super) async fn start_runtime_local_model(
         model_name,
         LocalRuntimeModelHandle {
             port,
-            backend: "llama".into(),
+            backend: selected_provider.backend_label().into(),
             process: process.handle,
             context_length: process.context_length,
         },

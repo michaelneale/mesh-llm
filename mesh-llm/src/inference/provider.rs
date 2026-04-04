@@ -196,3 +196,64 @@ impl BuiltinLlamaProvider {
         crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
     }
 }
+
+/// Named backend selection seam for built-in inference providers.
+///
+/// Today this only resolves to the llama.cpp path on this branch, but the
+/// call sites no longer need to know which concrete provider they are using.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuiltinProviderKind {
+    Llama,
+}
+
+impl BuiltinProviderKind {
+    pub fn backend_label(self) -> &'static str {
+        match self {
+            BuiltinProviderKind::Llama => "llama",
+        }
+    }
+
+    pub async fn start_endpoint(
+        self,
+        bin_dir: &Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &InferenceEndpointRequest,
+    ) -> Result<InferenceServerProcess> {
+        match self {
+            BuiltinProviderKind::Llama => {
+                BuiltinLlamaProvider
+                    .start_endpoint(bin_dir, binary_flavor, request)
+                    .await
+            }
+        }
+    }
+
+    pub async fn start_worker(
+        self,
+        bin_dir: &Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &InferenceWorkerRequest,
+    ) -> Result<u16> {
+        match self {
+            BuiltinProviderKind::Llama => {
+                BuiltinLlamaProvider
+                    .start_worker(bin_dir, binary_flavor, request)
+                    .await
+            }
+        }
+    }
+}
+
+pub fn select_local_endpoint_provider(_request: &InferenceEndpointRequest) -> BuiltinProviderKind {
+    BuiltinProviderKind::Llama
+}
+
+pub fn select_distributed_endpoint_provider(
+    _request: &InferenceEndpointRequest,
+) -> BuiltinProviderKind {
+    BuiltinProviderKind::Llama
+}
+
+pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> BuiltinProviderKind {
+    BuiltinProviderKind::Llama
+}
