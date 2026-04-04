@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::net::TcpListener;
 
 #[cfg(target_os = "macos")]
 fn builtin_mlx_model_path(path: &Path) -> bool {
@@ -335,4 +336,201 @@ pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> &'static dyn
 
 pub fn provider_requires_worker_runtime(model_path: &Path) -> bool {
     !builtin_mlx_model_path(model_path)
+}
+
+/// Start a distributed-host endpoint through the selected inference provider.
+///
+/// This keeps mesh election in control of placement and worker selection,
+/// while moving the backend launch entry point out of `election.rs`.
+pub async fn start_distributed_host(
+    node: &crate::mesh::Node,
+    tunnel_mgr: &crate::network::tunnel::Manager,
+    bin_dir: &Path,
+    model: &Path,
+    model_name: &str,
+    model_peers: &[crate::mesh::PeerInfo],
+    draft: Option<&Path>,
+    draft_max: u16,
+    force_split: bool,
+    binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+    ctx_size_override: Option<u32>,
+) -> Option<(u16, InferenceServerProcess)> {
+    let my_vram = node.vram_bytes();
+    let model_bytes = crate::inference::election::total_model_bytes(model);
+    let min_vram = (model_bytes as f64 * 1.1) as u64;
+
+    let need_split = force_split || my_vram < min_vram;
+
+    let worker_ids: Vec<_> = if need_split {
+        let mut candidates: Vec<_> = model_peers
+            .iter()
+            .filter(|p| {
+                matches!(p.role, crate::mesh::NodeRole::Worker) || p.is_assigned_model(model_name)
+            })
+            .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
+            .filter(|p| match p.rtt_ms {
+                Some(rtt) if rtt > crate::mesh::MAX_SPLIT_RTT_MS => {
+                    eprintln!(
+                        "  ⚠ Skipping {} — RTT {}ms exceeds {}ms limit",
+                        p.id.fmt_short(),
+                        rtt,
+                        crate::mesh::MAX_SPLIT_RTT_MS
+                    );
+                    false
+                }
+                _ => true,
+            })
+            .collect();
+
+        candidates.sort_by_key(|p| p.rtt_ms.unwrap_or(u32::MAX));
+
+        let mut accumulated_vram = my_vram;
+        let mut selected = Vec::new();
+        for p in &candidates {
+            if accumulated_vram >= min_vram && !(force_split && selected.is_empty()) {
+                break;
+            }
+            accumulated_vram += p.vram_bytes;
+            let rtt_str = p
+                .rtt_ms
+                .map(|r| format!("{}ms", r))
+                .unwrap_or("?ms".to_string());
+            eprintln!(
+                "  ✓ Adding {} — {:.1}GB VRAM, RTT {rtt_str}",
+                p.id.fmt_short(),
+                p.vram_bytes as f64 / 1e9
+            );
+            selected.push(p.id);
+        }
+        if accumulated_vram < min_vram {
+            eprintln!(
+                "  ⚠ Total VRAM {:.1}GB still short of {:.1}GB — using all {} candidates",
+                accumulated_vram as f64 / 1e9,
+                min_vram as f64 / 1e9,
+                candidates.len()
+            );
+            selected = candidates.iter().map(|p| p.id).collect();
+        }
+        selected
+    } else {
+        let worker_count = model_peers
+            .iter()
+            .filter(|p| !matches!(p.role, crate::mesh::NodeRole::Client))
+            .count();
+        if worker_count > 0 {
+            eprintln!(
+                "  Model fits on host ({:.1}GB VRAM for {:.1}GB model) — serving entirely",
+                my_vram as f64 / 1e9,
+                model_bytes as f64 / 1e9
+            );
+            eprintln!("  Use --split to force distributed mode");
+        }
+        vec![]
+    };
+
+    if !worker_ids.is_empty() {
+        eprintln!("  Waiting for tunnels to {} worker(s)...", worker_ids.len());
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tunnel_mgr.wait_for_peers(worker_ids.len()),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let my_map = tunnel_mgr.peer_ports_map().await;
+        let _ = node.broadcast_tunnel_map(my_map).await;
+        let _ = node
+            .wait_for_tunnel_maps(worker_ids.len(), std::time::Duration::from_secs(10))
+            .await;
+        let remote_maps = node.all_remote_tunnel_maps().await;
+        tunnel_mgr.update_rewrite_map(&remote_maps).await;
+    }
+
+    let all_ports = tunnel_mgr.peer_ports_map().await;
+    let mut rpc_ports: Vec<u16> = Vec::new();
+    for id in &worker_ids {
+        if let Some(&port) = all_ports.get(id) {
+            rpc_ports.push(port);
+        }
+    }
+
+    let my_vram_f = my_vram as f64;
+    let mut all_vrams: Vec<f64> = Vec::new();
+    for id in &worker_ids {
+        if let Some(peer) = model_peers.iter().find(|p| p.id == *id) {
+            all_vrams.push(if peer.vram_bytes > 0 {
+                peer.vram_bytes as f64
+            } else {
+                my_vram_f
+            });
+        }
+    }
+    all_vrams.push(my_vram_f);
+    let total: f64 = all_vrams.iter().sum();
+    let split = if total > 0.0 && !rpc_ports.is_empty() {
+        let s: Vec<String> = all_vrams
+            .iter()
+            .map(|v| format!("{:.2}", v / total))
+            .collect();
+        let split_str = s.join(",");
+        eprintln!(
+            "  Tensor split: {split_str} ({} node(s), {:.0}GB total)",
+            rpc_ports.len() + 1,
+            total / 1e9
+        );
+        Some(split_str)
+    } else {
+        eprintln!("  Serving entirely ({:.0}GB VRAM)", my_vram_f / 1e9);
+        None
+    };
+
+    let listen_port = match find_free_port().await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("  Failed to find free port: {e}");
+            return None;
+        }
+    };
+
+    let mmproj_path = crate::models::find_mmproj_path(model_name, model);
+    let group_vram = if !rpc_ports.is_empty() {
+        Some(total as u64)
+    } else {
+        None
+    };
+
+    let request = InferenceEndpointRequest::distributed_host(
+        model,
+        listen_port,
+        rpc_ports,
+        model_bytes,
+        my_vram,
+    )
+    .with_tensor_split(split.as_deref())
+    .with_draft_model_path(draft)
+    .with_draft_max(draft_max)
+    .with_mmproj_path(mmproj_path.as_deref())
+    .with_ctx_size_override(ctx_size_override)
+    .with_total_group_vram_bytes(group_vram);
+    let selected_provider = select_distributed_endpoint_provider(&request);
+    match selected_provider
+        .start_endpoint(bin_dir, binary_flavor, &request)
+        .await
+    {
+        Ok(process) => Some((listen_port, process)),
+        Err(e) => {
+            eprintln!(
+                "  Failed to start {} runtime: {e}",
+                selected_provider.backend_label()
+            );
+            None
+        }
+    }
+}
+
+async fn find_free_port() -> anyhow::Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
 }
