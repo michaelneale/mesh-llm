@@ -147,6 +147,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - local and distributed llama endpoint launch sites now build `InferenceEndpointRequest`
 - worker helper launch sites now build `InferenceWorkerRequest`
 - a built-in `BuiltinLlamaProvider` adapter now owns the call from core into llama launch code
+- provider selection now goes through a named built-in provider seam instead of hard-coding llama at the orchestration call sites
 
 ## Sync Branches
 

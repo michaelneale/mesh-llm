@@ -206,9 +206,10 @@ pub(super) async fn start_runtime_local_model(
             provider::InferenceEndpointRequest::local(model_path, port, model_bytes, my_vram)
                 .with_mmproj_path(mmproj_path.as_deref())
                 .with_ctx_size_override(ctx_size_override);
+        let selected_provider = provider::select_local_endpoint_provider(&request);
         (
-            "llama",
-            provider::BuiltinLlamaProvider
+            selected_provider.backend_label(),
+            selected_provider
                 .start_endpoint(bin_dir, binary_flavor, &request)
                 .await?,
         )

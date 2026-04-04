@@ -1171,16 +1171,17 @@ async fn run_auto(
         tracing::info!("MLX model detected — skipping rpc-server");
         None
     } else {
-        let port = crate::inference::provider::BuiltinLlamaProvider
-            .start_worker(
-                &bin_dir,
-                cli.llama_flavor,
-                &crate::inference::provider::InferenceWorkerRequest::default()
-                    .with_device_hint(cli.device.as_deref())
-                    .with_model_path(Some(&model)),
-            )
+        let worker_request = crate::inference::provider::InferenceWorkerRequest::default()
+            .with_device_hint(cli.device.as_deref())
+            .with_model_path(Some(&model));
+        let worker_provider = crate::inference::provider::select_worker_provider(&worker_request);
+        let port = worker_provider
+            .start_worker(&bin_dir, cli.llama_flavor, &worker_request)
             .await?;
-        tracing::info!("rpc-server on 127.0.0.1:{port} serving {model_name}");
+        tracing::info!(
+            "{} worker runtime on 127.0.0.1:{port} serving {model_name}",
+            worker_provider.backend_label()
+        );
         Some(port)
     };
 

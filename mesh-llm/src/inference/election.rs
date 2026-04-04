@@ -782,7 +782,8 @@ async fn moe_election_loop(
                 let request =
                     provider::InferenceEndpointRequest::local(&model, llama_port, mb, my_vram)
                         .with_ctx_size_override(ctx_size_override);
-                match provider::BuiltinLlamaProvider
+                let selected_provider = provider::select_local_endpoint_provider(&request);
+                match selected_provider
                     .start_endpoint(&bin_dir, binary_flavor, &request)
                     .await
                 {
@@ -796,7 +797,7 @@ async fn moe_election_loop(
                         llama_process = Some(process);
                         if let Some(ref process) = llama_process {
                             on_process(Some(LocalProcessInfo {
-                                backend: "llama".into(),
+                                backend: selected_provider.backend_label().into(),
                                 pid: process.handle.pid(),
                                 port: llama_port,
                                 context_length: process.context_length,
@@ -811,12 +812,16 @@ async fn moe_election_loop(
                         .await;
                         on_change(true, true);
                         eprintln!(
-                            "✅ [{}] MoE — llama-server ready on port {llama_port}",
-                            model_name
+                            "✅ [{}] MoE — {} runtime ready on port {llama_port}",
+                            model_name,
+                            selected_provider.backend_label()
                         );
                     }
                     Err(e) => {
-                        eprintln!("  Failed to start llama-server: {e}");
+                        eprintln!(
+                            "  Failed to start {} runtime: {e}",
+                            selected_provider.backend_label()
+                        );
                     }
                 }
             } else {
@@ -893,7 +898,8 @@ async fn moe_election_loop(
                 my_vram,
             )
             .with_ctx_size_override(ctx_size_override);
-            match provider::BuiltinLlamaProvider
+            let selected_provider = provider::select_local_endpoint_provider(&request);
+            match selected_provider
                 .start_endpoint(&bin_dir, binary_flavor, &request)
                 .await
             {
@@ -907,7 +913,7 @@ async fn moe_election_loop(
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         on_process(Some(LocalProcessInfo {
-                            backend: "llama".into(),
+                            backend: selected_provider.backend_label().into(),
                             pid: process.handle.pid(),
                             port: llama_port,
                             context_length: process.context_length,
@@ -921,14 +927,18 @@ async fn moe_election_loop(
 
                     on_change(true, true);
                     eprintln!(
-                        "✅ [{}] MoE shard {} ready on port {llama_port} ({} experts)",
+                        "✅ [{}] MoE shard {} {} runtime ready on port {llama_port} ({} experts)",
                         model_name,
                         my_shard_index,
+                        selected_provider.backend_label(),
                         my_assignment.experts.len()
                     );
                 }
                 Err(e) => {
-                    eprintln!("  ❌ Failed to start llama-server: {e}");
+                    eprintln!(
+                        "  ❌ Failed to start {} runtime: {e}",
+                        selected_provider.backend_label()
+                    );
                 }
             }
         }
@@ -1269,13 +1279,17 @@ async fn start_llama(
     .with_mmproj_path(mmproj_path.as_deref())
     .with_ctx_size_override(ctx_size_override)
     .with_total_group_vram_bytes(group_vram);
-    match provider::BuiltinLlamaProvider
+    let selected_provider = provider::select_distributed_endpoint_provider(&request);
+    match selected_provider
         .start_endpoint(bin_dir, binary_flavor, &request)
         .await
     {
         Ok(process) => Some((llama_port, process)),
         Err(e) => {
-            eprintln!("  Failed to start llama-server: {e}");
+            eprintln!(
+                "  Failed to start {} runtime: {e}",
+                selected_provider.backend_label()
+            );
             None
         }
     }
