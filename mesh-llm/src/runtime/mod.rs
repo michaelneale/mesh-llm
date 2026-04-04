@@ -254,7 +254,7 @@ pub(crate) async fn run() -> Result<()> {
     if cli.client
         && (!cli.model.is_empty() || !cli.gguf_file.is_empty() || !cli.mlx_file.is_empty())
     {
-        anyhow::bail!("--client and --model are mutually exclusive");
+        anyhow::bail!("--client is mutually exclusive with model selection flags: --model, --gguf-file, --mlx-file");
     }
     // --- Resolve models from CLI ---
     // All --model entries get resolved/downloaded. First is primary (gets rpc/tunnel).
@@ -329,8 +329,16 @@ async fn resolve_model(
     // Already a local file
     if input.exists() {
         #[cfg(target_os = "macos")]
-        if preference != ResolveFormatPreference::Mlx {
-            if let Some(dir) = crate::mlx::mlx_model_dir(input) {
+        {
+            if preference == ResolveFormatPreference::Mlx {
+                // When --mlx is explicit, normalize a safetensors file path to its parent model dir
+                // so downstream code consistently receives a directory, not a file path.
+                if let Some(dir) = crate::mlx::mlx_model_dir(input) {
+                    if crate::mlx::is_mlx_model_dir(dir) {
+                        return Ok(dir.to_path_buf());
+                    }
+                }
+            } else if let Some(dir) = crate::mlx::mlx_model_dir(input) {
                 if crate::mlx::is_mlx_model_dir(dir) {
                     anyhow::bail!(
                         "MLX model paths require explicit `--mlx` or `--mlx-file`.\nRetry with:\n  mesh-llm --model {} --mlx",
@@ -1155,9 +1163,9 @@ async fn run_auto(
     #[cfg(not(target_os = "macos"))]
     let is_mlx = false;
 
-    let rpc_port = if is_mlx {
+    let rpc_port: Option<u16> = if is_mlx {
         tracing::info!("MLX model detected — skipping rpc-server");
-        0
+        None
     } else {
         let port = launch::start_rpc_server(
             &bin_dir,
@@ -1167,11 +1175,16 @@ async fn run_auto(
         )
         .await?;
         tracing::info!("rpc-server on 127.0.0.1:{port} serving {model_name}");
-        port
+        Some(port)
     };
 
-    let tunnel_mgr =
-        tunnel::Manager::start(node.clone(), rpc_port, channels.rpc, channels.http).await?;
+    let tunnel_mgr = tunnel::Manager::start(
+        node.clone(),
+        rpc_port.unwrap_or(0),
+        channels.rpc,
+        channels.http,
+    )
+    .await?;
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -1287,7 +1300,7 @@ async fn run_auto(
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_task = tokio::spawn(async move {
         election::election_loop(
-            node2, tunnel_mgr2, api_port, rpc_port, bin_dir2, model2, model_name_for_election,
+            node2, tunnel_mgr2, api_port, rpc_port.unwrap_or(0), bin_dir2, model2, model_name_for_election,
             draft2, draft_max, force_split, llama_flavor, cli.ctx_size, primary_target_tx,
             primary_stop_rx,
             move |is_host, llama_ready| {

@@ -230,7 +230,7 @@ pub async fn start_mlx_server(
                 }
             }
         }
-        drop(death_tx);
+        let _ = death_tx.send(());
     });
 
     Ok(InferenceServerProcess {
@@ -690,8 +690,11 @@ fn run_inference(
         .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
-    tracing::info!("MLX prompt text: {:?}", prompt);
-    tracing::info!("MLX prompt tokens: {:?}", prompt_tokens);
+    if prompt_tokens.is_empty() {
+        anyhow::bail!("prompt encoded to zero tokens — check that the prompt is non-empty");
+    }
+    tracing::debug!("MLX prompt text: {:?}", prompt);
+    tracing::debug!("MLX prompt tokens: {:?}", prompt_tokens);
 
     let (mut caches, suffix) = setup_caches_with_reuse(state, &prompt_tokens);
     let mut sampler = Sampler::new(generation.sampling.clone());
@@ -791,6 +794,9 @@ fn run_inference_streaming(
         .encode(prompt, false)
         .map_err(|e| anyhow::anyhow!("tokenizer encode: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
+    if prompt_tokens.is_empty() {
+        anyhow::bail!("prompt encoded to zero tokens — check that the prompt is non-empty");
+    }
 
     let (mut caches, suffix) = setup_caches_with_reuse(state, &prompt_tokens);
     let mut sampler = Sampler::new(generation.sampling.clone());
