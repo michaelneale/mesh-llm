@@ -3,7 +3,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, RwLock};
 use tokio::net::TcpListener;
 
 /// Backend-neutral runtime handle for a serving instance.
@@ -256,57 +256,87 @@ impl Eq for InferenceProviderSelection {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct InferenceProviderRegistry {
-    providers: &'static [InferenceProviderDescriptor],
+    builtin_providers: &'static [InferenceProviderDescriptor],
 }
 
 impl InferenceProviderRegistry {
-    pub const fn new(providers: &'static [InferenceProviderDescriptor]) -> Self {
-        Self { providers }
+    pub const fn new(builtin_providers: &'static [InferenceProviderDescriptor]) -> Self {
+        Self { builtin_providers }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn register_provider(&self, descriptor: InferenceProviderDescriptor) {
+        let mut providers = registered_provider_descriptors()
+            .write()
+            .expect("registered inference provider lock poisoned");
+        providers.retain(|existing| existing.selection != descriptor.selection);
+        providers.push(descriptor);
+    }
+
+    fn select_provider(
+        &self,
+        capability_filter: impl Fn(InferenceProviderCapabilities) -> bool,
+        dynamic_matches: impl Fn(&InferenceProviderDescriptor) -> bool,
+        builtin_matches: impl Fn(&InferenceProviderDescriptor) -> bool,
+        empty_message: &'static str,
+    ) -> InferenceProviderSelection {
+        if let Some(selection) = registered_provider_descriptors()
+            .read()
+            .expect("registered inference provider lock poisoned")
+            .iter()
+            .find(|descriptor| {
+                capability_filter(descriptor.selection.capabilities())
+                    && dynamic_matches(descriptor)
+            })
+            .map(|descriptor| descriptor.selection)
+        {
+            return selection;
+        }
+
+        self.builtin_providers
+            .iter()
+            .find(|descriptor| {
+                capability_filter(descriptor.selection.capabilities())
+                    && builtin_matches(descriptor)
+            })
+            .map(|descriptor| descriptor.selection)
+            .expect(empty_message)
     }
 
     pub fn select_local_endpoint_provider(
         &self,
         request: &InferenceEndpointRequest,
     ) -> InferenceProviderSelection {
-        self.providers
-            .iter()
-            .find(|descriptor| {
-                descriptor.selection.capabilities().supports_local_runtime
-                    && (descriptor.matches_local_endpoint)(request)
-            })
-            .map(|descriptor| descriptor.selection)
-            .expect("at least one local inference provider must be registered")
+        self.select_provider(
+            |capabilities| capabilities.supports_local_runtime,
+            |descriptor| (descriptor.matches_local_endpoint)(request),
+            |descriptor| (descriptor.matches_local_endpoint)(request),
+            "at least one local inference provider must be registered",
+        )
     }
 
     pub fn select_distributed_endpoint_provider(
         &self,
         request: &InferenceEndpointRequest,
     ) -> InferenceProviderSelection {
-        self.providers
-            .iter()
-            .find(|descriptor| {
-                descriptor
-                    .selection
-                    .capabilities()
-                    .supports_distributed_host_runtime
-                    && (descriptor.matches_distributed_endpoint)(request)
-            })
-            .map(|descriptor| descriptor.selection)
-            .expect("at least one distributed inference provider must be registered")
+        self.select_provider(
+            |capabilities| capabilities.supports_distributed_host_runtime,
+            |descriptor| (descriptor.matches_distributed_endpoint)(request),
+            |descriptor| (descriptor.matches_distributed_endpoint)(request),
+            "at least one distributed inference provider must be registered",
+        )
     }
 
     pub fn select_worker_provider(
         &self,
         request: &InferenceWorkerRequest,
     ) -> InferenceProviderSelection {
-        self.providers
-            .iter()
-            .find(|descriptor| {
-                descriptor.selection.capabilities().requires_worker_runtime
-                    && (descriptor.matches_worker_runtime)(request)
-            })
-            .map(|descriptor| descriptor.selection)
-            .expect("at least one worker inference provider must be registered")
+        self.select_provider(
+            |capabilities| capabilities.requires_worker_runtime,
+            |descriptor| (descriptor.matches_worker_runtime)(request),
+            |descriptor| (descriptor.matches_worker_runtime)(request),
+            "at least one worker inference provider must be registered",
+        )
     }
 }
 
@@ -401,6 +431,25 @@ const fn always_match_worker_runtime(_request: &InferenceWorkerRequest) -> bool 
 
 pub fn provider_registry() -> &'static InferenceProviderRegistry {
     &BUILTIN_PROVIDER_REGISTRY
+}
+
+fn registered_provider_descriptors() -> &'static RwLock<Vec<InferenceProviderDescriptor>> {
+    static REGISTERED_PROVIDER_DESCRIPTORS: OnceLock<RwLock<Vec<InferenceProviderDescriptor>>> =
+        OnceLock::new();
+    REGISTERED_PROVIDER_DESCRIPTORS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn register_provider(descriptor: InferenceProviderDescriptor) {
+    provider_registry().register_provider(descriptor);
+}
+
+#[cfg(test)]
+fn clear_registered_providers_for_tests() {
+    registered_provider_descriptors()
+        .write()
+        .expect("registered inference provider lock poisoned")
+        .clear();
 }
 
 pub fn select_local_endpoint_provider(
@@ -644,4 +693,79 @@ async fn find_free_port() -> anyhow::Result<u16> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct TestLocalProvider;
+
+    impl InferenceProvider for TestLocalProvider {
+        fn backend_label(&self) -> &'static str {
+            "test-local"
+        }
+
+        fn capabilities(&self) -> InferenceProviderCapabilities {
+            InferenceProviderCapabilities {
+                supports_local_runtime: true,
+                supports_distributed_host_runtime: false,
+                requires_worker_runtime: false,
+                supports_moe_shard_runtime: false,
+            }
+        }
+
+        fn start_endpoint<'a>(
+            &'a self,
+            _bin_dir: &'a Path,
+            _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+            _request: &'a InferenceEndpointRequest,
+        ) -> ProviderFuture<'a, InferenceServerProcess> {
+            Box::pin(async { unreachable!("test provider start_endpoint should not run") })
+        }
+
+        fn start_worker<'a>(
+            &'a self,
+            _bin_dir: &'a Path,
+            _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+            _request: &'a InferenceWorkerRequest,
+        ) -> ProviderFuture<'a, u16> {
+            Box::pin(async { unreachable!("test provider start_worker should not run") })
+        }
+    }
+
+    static TEST_LOCAL_PROVIDER: TestLocalProvider = TestLocalProvider;
+    static TEST_LOCAL_SELECTION: InferenceProviderSelection =
+        InferenceProviderSelection::new("test.local", &TEST_LOCAL_PROVIDER);
+    static TEST_LOCAL_DESCRIPTOR: InferenceProviderDescriptor = InferenceProviderDescriptor::new(
+        TEST_LOCAL_SELECTION,
+        always_match_local_endpoint,
+        never_match_distributed_endpoint_for_tests,
+        never_match_worker_runtime_for_tests,
+    );
+
+    const fn never_match_distributed_endpoint_for_tests(
+        _request: &InferenceEndpointRequest,
+    ) -> bool {
+        false
+    }
+
+    const fn never_match_worker_runtime_for_tests(_request: &InferenceWorkerRequest) -> bool {
+        false
+    }
+
+    #[test]
+    fn registered_provider_takes_precedence_over_builtin_for_matching_local_runtime() {
+        clear_registered_providers_for_tests();
+        register_provider(TEST_LOCAL_DESCRIPTOR);
+
+        let request = InferenceEndpointRequest::local("/tmp/model.gguf", 8080, 1, 1);
+        let selection = select_local_endpoint_provider(&request);
+
+        assert_eq!(selection.provider_id(), "test.local");
+        assert_eq!(selection.backend_label(), "test-local");
+
+        clear_registered_providers_for_tests();
+    }
 }
