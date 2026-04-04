@@ -30,7 +30,7 @@ Notable built-ins under `src/plugins/` today:
 ```text
 plugins/
 ├── blackboard/            shared mesh message feed + MCP surface
-└── example/               standalone example plugin crate
+└── lemonade/              external OpenAI-compatible inference endpoint bridge
 ```
 
 ## Runtime model

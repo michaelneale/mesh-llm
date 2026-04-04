@@ -196,6 +196,16 @@ The preferred DSL is surface-first:
 - `mcp`
 - `http`
 - `inference`
+- `mesh`
+- `events`
+
+Lifecycle hooks stay local to the plugin definition rather than becoming manifest items:
+
+- `startup_policy`
+- `health`
+- `on_initialized`
+- `on_channel_message`
+- `on_mesh_event`
 
 Each section is self-contained. If a plugin contributes something to a host surface, it is declared in the section for that surface.
 
@@ -207,6 +217,7 @@ use mesh_llm_plugin::{
     http::{get, post},
     inference::openai_http,
     mcp::{external_stdio, prompt, resource, tool},
+    PluginStartupPolicy,
 };
 
 let plugin = mesh_llm_plugin::plugin! {
@@ -222,9 +233,19 @@ let plugin = mesh_llm_plugin::plugin! {
         ),
     ),
 
+    startup_policy: PluginStartupPolicy::PrivateMeshOnly,
+
     provides: [
         capability("notes.v1"),
         capability("search.v1"),
+    ],
+
+    mesh: [
+        mesh_llm_plugin::mesh::channel("notes.v1"),
+    ],
+
+    events: [
+        mesh_llm_plugin::events::peer_up(),
     ],
 
     mcp: [
@@ -262,6 +283,35 @@ let plugin = mesh_llm_plugin::plugin! {
         openai_http("local-llm", "http://127.0.0.1:8080/v1")
             .managed_by_plugin(false),
     ],
+
+    health: |_context| {
+        Box::pin(async move { Ok("ok".to_string()) })
+    },
+
+    on_initialized: |context| {
+        Box::pin(async move {
+            context
+                .send_json_channel(
+                    "notes.v1",
+                    String::new(),
+                    "notes",
+                    &NotesMessage::SyncRequest,
+                )
+                .await
+        })
+    },
+
+    on_channel_message: |message, context| {
+        Box::pin(async move {
+            handle_notes_channel(message, context).await
+        })
+    },
+
+    on_mesh_event: |event, context| {
+        Box::pin(async move {
+            handle_notes_mesh_event(event, context).await
+        })
+    },
 };
 ```
 
@@ -271,6 +321,14 @@ In this model:
 - `http` contains local HTTP contributions
 - `inference` contains both attached external inference endpoints and plugin-hosted inference providers
 - `provides` declares stable capability contracts that core product routes can depend on
+- `mesh` declares which mesh channels the plugin is allowed to receive and send
+- `events` declares which mesh events the host may deliver to the plugin
+
+Event delivery is allowlist-based:
+
+- no `mesh` declaration means no channel delivery
+- no `events` declaration means no mesh events
+- plugins only receive the event kinds they explicitly declare
 
 The runtime and `stapler` handle:
 
@@ -289,6 +347,14 @@ Plugin authors should not manually implement:
 - MCP `resources/read`
 - HTTP routing
 - control-plane socket negotiation
+
+## Internal RPC Plugins
+
+Most plugins should use `plugin!`.
+
+Host-private plumbing services that need raw RPC methods rather than surfaced MCP, HTTP, or inference declarations should use `InternalRpcPluginBuilder`.
+
+This is the escape hatch for internal-only services such as blobstore. It keeps raw host RPC separate from the normal manifest-driven plugin surface.
 
 ### Streaming
 

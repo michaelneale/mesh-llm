@@ -132,6 +132,8 @@ pub struct PluginManifestOverview {
     pub completions: usize,
     pub http_bindings: usize,
     pub endpoints: usize,
+    pub mesh_channels: usize,
+    pub mesh_event_subscriptions: usize,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub capabilities: Vec<String>,
 }
@@ -881,6 +883,17 @@ impl PluginManager {
         let PluginMeshEvent::Channel { plugin_id, message } = event else {
             bail!("expected plugin channel event");
         };
+        if !self
+            .plugin_declares_mesh_channel(&plugin_id, &message.channel)
+            .await
+        {
+            tracing::debug!(
+                plugin = %plugin_id,
+                channel = %message.channel,
+                "Dropping channel message for undeclared mesh channel"
+            );
+            return Ok(());
+        }
         let Some(plugin) = self.inner.plugins.get(&plugin_id) else {
             tracing::debug!(
                 "Dropping channel message for unloaded plugin '{}'",
@@ -895,6 +908,17 @@ impl PluginManager {
         let PluginMeshEvent::BulkTransfer { plugin_id, message } = event else {
             bail!("expected plugin bulk transfer event");
         };
+        if !self
+            .plugin_declares_mesh_channel(&plugin_id, &message.channel)
+            .await
+        {
+            tracing::debug!(
+                plugin = %plugin_id,
+                channel = %message.channel,
+                "Dropping bulk transfer for undeclared mesh channel"
+            );
+            return Ok(());
+        }
         let Some(plugin) = self.inner.plugins.get(&plugin_id) else {
             tracing::debug!(
                 "Dropping bulk transfer message for unloaded plugin '{}'",
@@ -906,10 +930,29 @@ impl PluginManager {
     }
 
     pub async fn broadcast_mesh_event(&self, event: proto::MeshEvent) -> Result<()> {
-        for plugin in self.inner.plugins.values() {
+        for (name, plugin) in &self.inner.plugins {
+            if !self.plugin_subscribes_mesh_event(name, event.kind).await {
+                continue;
+            }
             plugin.send_mesh_event(event.clone()).await?;
         }
         Ok(())
+    }
+
+    pub async fn plugin_declares_mesh_channel(&self, plugin_name: &str, channel: &str) -> bool {
+        self.manifest(plugin_name)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|manifest| manifest_declares_mesh_channel(&manifest, channel))
+    }
+
+    pub async fn plugin_subscribes_mesh_event(&self, plugin_name: &str, kind: i32) -> bool {
+        self.manifest(plugin_name)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|manifest| manifest_subscribes_mesh_event(&manifest, kind))
     }
 
     pub async fn open_stream(
@@ -1116,6 +1159,8 @@ pub(crate) fn plugin_manifest_overview(manifest: &proto::PluginManifest) -> Plug
         completions: manifest.completions.len(),
         http_bindings: manifest.http_bindings.len(),
         endpoints: manifest.endpoints.len(),
+        mesh_channels: manifest.mesh_channels.len(),
+        mesh_event_subscriptions: manifest.mesh_event_subscriptions.len(),
         capabilities: manifest.capabilities.clone(),
     }
 }
@@ -1184,8 +1229,32 @@ pub(crate) fn plugin_manifest_to_json(manifest: &proto::PluginManifest) -> Value
                 "managed_by_plugin": endpoint.managed_by_plugin,
             })
         }).collect::<Vec<_>>(),
+        "mesh_channels": manifest.mesh_channels.iter().map(|channel| {
+            json!({
+                "name": channel.name,
+            })
+        }).collect::<Vec<_>>(),
+        "mesh_event_subscriptions": manifest.mesh_event_subscriptions.iter().map(|subscription| {
+            json!({
+                "kind": mesh_event_kind_name(subscription.kind),
+            })
+        }).collect::<Vec<_>>(),
         "capabilities": manifest.capabilities,
     })
+}
+
+fn manifest_declares_mesh_channel(manifest: &proto::PluginManifest, channel: &str) -> bool {
+    manifest
+        .mesh_channels
+        .iter()
+        .any(|entry| entry.name == channel)
+}
+
+fn manifest_subscribes_mesh_event(manifest: &proto::PluginManifest, kind: i32) -> bool {
+    manifest
+        .mesh_event_subscriptions
+        .iter()
+        .any(|entry| entry.kind == kind)
 }
 
 fn http_method_name(value: i32) -> &'static str {
@@ -1204,6 +1273,18 @@ fn http_body_mode_name(value: i32) -> &'static str {
         proto::HttpBodyMode::Buffered => "buffered",
         proto::HttpBodyMode::Streamed => "streamed",
         proto::HttpBodyMode::Unspecified => "unspecified",
+    }
+}
+
+fn mesh_event_kind_name(value: i32) -> &'static str {
+    match proto::mesh_event::Kind::try_from(value).unwrap_or(proto::mesh_event::Kind::Unspecified) {
+        proto::mesh_event::Kind::PeerUp => "peer_up",
+        proto::mesh_event::Kind::PeerDown => "peer_down",
+        proto::mesh_event::Kind::PeerUpdated => "peer_updated",
+        proto::mesh_event::Kind::LocalAccepting => "local_accepting",
+        proto::mesh_event::Kind::LocalStandby => "local_standby",
+        proto::mesh_event::Kind::MeshIdUpdated => "mesh_id_updated",
+        proto::mesh_event::Kind::Unspecified => "unspecified",
     }
 }
 

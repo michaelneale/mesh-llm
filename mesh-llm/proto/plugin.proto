@@ -181,6 +181,16 @@ message PluginManifest {
   repeated HttpBindingManifest http_bindings = 6;
   repeated EndpointManifest endpoints = 7;
   repeated string capabilities = 8;
+  repeated MeshChannelManifest mesh_channels = 9;
+  repeated MeshEventSubscriptionManifest mesh_event_subscriptions = 10;
+}
+
+message MeshChannelManifest {
+  string name = 1;
+}
+
+message MeshEventSubscriptionManifest {
+  MeshEvent.Kind kind = 1;
 }
 
 enum ServiceKind {

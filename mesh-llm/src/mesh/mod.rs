@@ -2278,6 +2278,20 @@ impl Node {
                 plugin_id,
                 mut message,
             } => {
+                let plugin_manager = self.plugin_manager.lock().await.clone();
+                if let Some(plugin_manager) = plugin_manager {
+                    if !plugin_manager
+                        .plugin_declares_mesh_channel(&plugin_id, &message.channel)
+                        .await
+                    {
+                        tracing::debug!(
+                            plugin = %plugin_id,
+                            channel = %message.channel,
+                            "Dropping outbound channel message for undeclared mesh channel"
+                        );
+                        return Ok(());
+                    }
+                }
                 if message.source_peer_id.is_empty() {
                     message.source_peer_id = endpoint_id_hex(self.endpoint.id());
                 }
@@ -2295,6 +2309,20 @@ impl Node {
                 plugin_id,
                 mut message,
             } => {
+                let plugin_manager = self.plugin_manager.lock().await.clone();
+                if let Some(plugin_manager) = plugin_manager {
+                    if !plugin_manager
+                        .plugin_declares_mesh_channel(&plugin_id, &message.channel)
+                        .await
+                    {
+                        tracing::debug!(
+                            plugin = %plugin_id,
+                            channel = %message.channel,
+                            "Dropping outbound bulk transfer for undeclared mesh channel"
+                        );
+                        return Ok(());
+                    }
+                }
                 if message.source_peer_id.is_empty() {
                     message.source_peer_id = endpoint_id_hex(self.endpoint.id());
                 }

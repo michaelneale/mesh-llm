@@ -11,6 +11,8 @@ pub enum ManifestEntry {
     Completion(proto::CompletionManifest),
     HttpBinding(proto::HttpBindingManifest),
     Endpoint(proto::EndpointManifest),
+    MeshChannel(proto::MeshChannelManifest),
+    MeshEventSubscription(proto::MeshEventSubscriptionManifest),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -50,6 +52,10 @@ impl PluginManifestBuilder {
             }
             ManifestEntry::HttpBinding(binding) => self.manifest.http_bindings.push(binding),
             ManifestEntry::Endpoint(endpoint) => self.manifest.endpoints.push(endpoint),
+            ManifestEntry::MeshChannel(channel) => self.manifest.mesh_channels.push(channel),
+            ManifestEntry::MeshEventSubscription(subscription) => {
+                self.manifest.mesh_event_subscriptions.push(subscription);
+            }
         }
     }
 }
@@ -60,6 +66,50 @@ pub fn plugin_manifest() -> PluginManifestBuilder {
 
 pub fn capability(name: impl Into<String>) -> ManifestEntry {
     ManifestEntry::Capability(name.into())
+}
+
+pub fn mesh_channel(name: impl Into<String>) -> ManifestEntry {
+    ManifestEntry::MeshChannel(proto::MeshChannelManifest { name: name.into() })
+}
+
+pub fn mesh_event_subscription(kind: proto::mesh_event::Kind) -> ManifestEntry {
+    ManifestEntry::MeshEventSubscription(proto::MeshEventSubscriptionManifest { kind: kind as i32 })
+}
+
+pub fn mesh_event_peer_up() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::PeerUp)
+}
+
+pub fn mesh_event_peer_down() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::PeerDown)
+}
+
+pub fn mesh_event_peer_updated() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::PeerUpdated)
+}
+
+pub fn mesh_event_local_accepting() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::LocalAccepting)
+}
+
+pub fn mesh_event_local_standby() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::LocalStandby)
+}
+
+pub fn mesh_event_mesh_id_updated() -> ManifestEntry {
+    mesh_event_subscription(proto::mesh_event::Kind::MeshIdUpdated)
+}
+
+impl From<proto::MeshChannelManifest> for ManifestEntry {
+    fn from(value: proto::MeshChannelManifest) -> Self {
+        Self::MeshChannel(value)
+    }
+}
+
+impl From<proto::MeshEventSubscriptionManifest> for ManifestEntry {
+    fn from(value: proto::MeshEventSubscriptionManifest) -> Self {
+        Self::MeshEventSubscription(value)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -521,6 +571,8 @@ mod tests {
     fn macro_builds_manifest_entries() {
         let manifest = crate::plugin_manifest![
             capability("demo.v1"),
+            mesh_channel("demo.v1"),
+            mesh_event_peer_up(),
             operation::<DemoInput>("echo", "Echo input").title("Echo"),
             http_post("/echo", "echo")
                 .request_schema::<DemoInput>()
@@ -532,6 +584,8 @@ mod tests {
         assert_eq!(manifest.operations.len(), 1);
         assert_eq!(manifest.http_bindings.len(), 1);
         assert_eq!(manifest.endpoints.len(), 1);
+        assert_eq!(manifest.mesh_channels.len(), 1);
+        assert_eq!(manifest.mesh_event_subscriptions.len(), 1);
         assert_eq!(manifest.http_bindings[0].binding_id, "echo");
         assert_eq!(manifest.endpoints[0].args, vec!["--serve"]);
     }
@@ -564,6 +618,8 @@ mod tests {
                 plugin_server_info("demo", "1.0.0", "Demo", "Demo plugin", None::<String>),
             ),
             provides: [capability("demo.v1")],
+            mesh: [mesh_channel("demo.v1")],
+            events: [mesh_event_peer_up()],
             mcp: [
                 mcp::tool("echo")
                     .description("Echo input")
@@ -593,6 +649,8 @@ mod tests {
         assert_eq!(manifest.operations.len(), 2);
         assert_eq!(manifest.http_bindings.len(), 1);
         assert_eq!(manifest.endpoints.len(), 2);
+        assert_eq!(manifest.mesh_channels.len(), 1);
+        assert_eq!(manifest.mesh_event_subscriptions.len(), 1);
     }
 
     #[test]

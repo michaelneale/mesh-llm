@@ -55,6 +55,7 @@ pub struct DeclarativePluginBuilder {
     prompt_router: Option<PromptRouter>,
     resource_router: Option<ResourceRouter>,
     completion_router: Option<CompletionRouter>,
+    plugin_customizers: Vec<Box<dyn FnOnce(SimplePlugin) -> SimplePlugin>>,
 }
 
 impl DeclarativePluginBuilder {
@@ -66,6 +67,7 @@ impl DeclarativePluginBuilder {
             prompt_router: None,
             resource_router: None,
             completion_router: None,
+            plugin_customizers: Vec::new(),
         }
     }
 
@@ -94,6 +96,37 @@ impl DeclarativePluginBuilder {
         self
     }
 
+    pub fn mesh_item<T: Into<ManifestEntry>>(mut self, item: T) -> Self {
+        match item.into() {
+            ManifestEntry::MeshChannel(channel) => self.manifest.push_item(channel),
+            _ => panic!("mesh entries must be mesh channels"),
+        }
+        self
+    }
+
+    pub fn event_item<T: Into<ManifestEntry>>(mut self, item: T) -> Self {
+        match item.into() {
+            ManifestEntry::MeshEventSubscription(subscription) => {
+                self.manifest.push_item(subscription);
+            }
+            _ => panic!("event entries must be mesh event subscriptions"),
+        }
+        self
+    }
+
+    pub fn startup_policy(mut self, startup_policy: crate::runtime::PluginStartupPolicy) -> Self {
+        self.metadata = self.metadata.with_startup_policy(startup_policy);
+        self
+    }
+
+    pub fn customize<F>(mut self, customizer: F) -> Self
+    where
+        F: FnOnce(SimplePlugin) -> SimplePlugin + 'static,
+    {
+        self.plugin_customizers.push(Box::new(customizer));
+        self
+    }
+
     fn ensure_operation_router(&mut self) -> &mut OperationRouter {
         self.operation_router
             .get_or_insert_with(OperationRouter::new)
@@ -113,23 +146,35 @@ impl DeclarativePluginBuilder {
     }
 
     pub fn build(self) -> SimplePlugin {
-        let manifest = self.manifest.build();
+        let Self {
+            metadata,
+            manifest,
+            operation_router,
+            prompt_router,
+            resource_router,
+            completion_router,
+            plugin_customizers,
+        } = self;
+        let manifest = manifest.build();
         let mut plugin = SimplePlugin::new(
-            self.metadata
+            metadata
                 .with_capabilities(manifest.capabilities.clone())
                 .with_manifest(manifest),
         );
-        if let Some(router) = self.operation_router {
+        if let Some(router) = operation_router {
             plugin = plugin.with_operation_router(router);
         }
-        if let Some(router) = self.prompt_router {
+        if let Some(router) = prompt_router {
             plugin = plugin.with_prompt_router(router);
         }
-        if let Some(router) = self.resource_router {
+        if let Some(router) = resource_router {
             plugin = plugin.with_resource_router(router);
         }
-        if let Some(router) = self.completion_router {
+        if let Some(router) = completion_router {
             plugin = plugin.with_completion_router(router);
+        }
+        for customizer in plugin_customizers {
+            plugin = customizer(plugin);
         }
         plugin
     }

@@ -1,14 +1,11 @@
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use mesh_llm_plugin::{
-    async_trait, capability, json_response, json_schema_operation, list_tools, parse_rpc_params,
-    structured_tool_result, OperationRequest, Plugin, PluginContext, PluginError, PluginResult,
-    PluginRpcResult, PluginRuntime,
+    capability, json_response, json_schema_operation, parse_rpc_params, InternalRpcPluginBuilder,
+    OperationRouter, PluginError, PluginMetadata, PluginResult, PluginRuntime,
 };
 use rand::Rng;
-use rmcp::model::{
-    CallToolResult, Implementation, ListToolsResult, ServerCapabilities, ServerInfo,
-};
+use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -101,7 +98,7 @@ where
 {
     let arguments_json = serde_json::to_string(request)?;
     let result = plugin_manager
-        .call_tool_by_capability(OBJECT_STORE_CAPABILITY, tool_name, &arguments_json)
+        .invoke_operation_by_capability(OBJECT_STORE_CAPABILITY, tool_name, &arguments_json)
         .await?;
     if result.is_error {
         bail!("{}", result.content_json);
@@ -160,7 +157,7 @@ const MAX_OBJECT_BYTES: usize = 50 * 1024 * 1024;
 fn blobstore_manifest() -> mesh_llm_plugin::proto::PluginManifest {
     mesh_llm_plugin::plugin_manifest![
         capability("internal:blobstore"),
-        capability("object-store.v1"),
+        capability(OBJECT_STORE_CAPABILITY),
     ]
 }
 
@@ -542,157 +539,139 @@ impl BlobStore {
     }
 }
 
-struct BlobstorePlugin {
-    plugin_id: String,
-    plugin_version: String,
-    server_info: ServerInfo,
-    store: BlobStore,
-}
-
-impl BlobstorePlugin {
-    fn new(plugin_id: String) -> Self {
-        Self {
-            plugin_id,
-            plugin_version: crate::VERSION.to_string(),
-            server_info: ServerInfo::new(ServerCapabilities::builder().build())
-                .with_server_info(
-                    Implementation::new("mesh-blobstore", crate::VERSION)
-                        .with_title("Mesh Blobstore Plugin")
-                        .with_description(
-                            "Ingress-local request-scoped media object storage for multimodal requests.",
-                        ),
-                )
-                .with_instructions(
-                    "Provides internal request object storage for the mesh-llm host. Not intended for direct user tools.",
+fn blobstore_server_info() -> ServerInfo {
+    ServerInfo::new(ServerCapabilities::builder().build())
+        .with_server_info(
+            Implementation::new("mesh-blobstore", crate::VERSION)
+                .with_title("Mesh Blobstore Plugin")
+                .with_description(
+                    "Ingress-local request-scoped media object storage for multimodal requests.",
                 ),
-            store: BlobStore::new(default_blobstore_root()),
-        }
-    }
-
-    fn list_blobstore_tools(&self) -> ListToolsResult {
-        list_tools(vec![
-            json_schema_operation::<PutRequestObjectRequest>(
-                PUT_REQUEST_OBJECT_TOOL,
-                "Store a request-scoped object and return a retrieval token.",
-            ),
-            json_schema_operation::<GetRequestObjectRequest>(
-                GET_REQUEST_OBJECT_TOOL,
-                "Fetch a previously stored request-scoped object by token.",
-            ),
-            json_schema_operation::<FinishRequestRequest>(
-                COMPLETE_REQUEST_TOOL,
-                "Remove all request-scoped objects for a completed request.",
-            ),
-            json_schema_operation::<FinishRequestRequest>(
-                ABORT_REQUEST_TOOL,
-                "Remove all request-scoped objects for an aborted request.",
-            ),
-        ])
-    }
-
-    fn call_blobstore_tool(&self, request: OperationRequest) -> PluginResult<CallToolResult> {
-        match request.name.as_str() {
-            PUT_REQUEST_OBJECT_TOOL => {
-                let params: PutRequestObjectRequest = request.arguments()?;
-                structured_tool_result(self.store.put_request_object(params)?)
-            }
-            GET_REQUEST_OBJECT_TOOL => {
-                let params: GetRequestObjectRequest = request.arguments()?;
-                structured_tool_result(self.store.get_request_object(params)?)
-            }
-            COMPLETE_REQUEST_TOOL => {
-                let params: FinishRequestRequest = request.arguments()?;
-                structured_tool_result(self.store.finish_request(&params.request_id)?)
-            }
-            ABORT_REQUEST_TOOL => {
-                let params: FinishRequestRequest = request.arguments()?;
-                structured_tool_result(self.store.finish_request(&params.request_id)?)
-            }
-            _ => Err(PluginError::method_not_found(format!(
-                "Unsupported blobstore tool '{}'",
-                request.name
-            ))),
-        }
-    }
+        )
+        .with_instructions(
+            "Provides internal request object storage for the mesh-llm host. Not intended for direct user tools.",
+        )
 }
 
-#[async_trait]
-impl Plugin for BlobstorePlugin {
-    fn plugin_id(&self) -> &str {
-        &self.plugin_id
-    }
+fn blobstore_operation_router(store: BlobStore) -> OperationRouter {
+    let mut router = OperationRouter::new();
 
-    fn plugin_version(&self) -> String {
-        self.plugin_version.clone()
-    }
+    let put_store = store.clone();
+    router.add_json::<PutRequestObjectRequest, PutRequestObjectResponse, _>(
+        json_schema_operation::<PutRequestObjectRequest>(
+            PUT_REQUEST_OBJECT_TOOL,
+            "Store a request-scoped object and return a retrieval token.",
+        ),
+        move |request, _context| {
+            let store = put_store.clone();
+            Box::pin(async move { Ok(store.put_request_object(request)?) })
+        },
+    );
 
-    fn server_info(&self) -> ServerInfo {
-        self.server_info.clone()
-    }
+    let get_store = store.clone();
+    router.add_json::<GetRequestObjectRequest, GetRequestObjectResponse, _>(
+        json_schema_operation::<GetRequestObjectRequest>(
+            GET_REQUEST_OBJECT_TOOL,
+            "Fetch a previously stored request-scoped object by token.",
+        ),
+        move |request, _context| {
+            let store = get_store.clone();
+            Box::pin(async move { Ok(store.get_request_object(request)?) })
+        },
+    );
 
-    fn capabilities(&self) -> Vec<String> {
-        vec!["internal:blobstore".into(), "object-store.v1".into()]
-    }
+    let complete_store = store.clone();
+    router.add_json::<FinishRequestRequest, FinishRequestResponse, _>(
+        json_schema_operation::<FinishRequestRequest>(
+            COMPLETE_REQUEST_TOOL,
+            "Remove all request-scoped objects for a completed request.",
+        ),
+        move |request, _context| {
+            let store = complete_store.clone();
+            Box::pin(async move { Ok(store.finish_request(&request.request_id)?) })
+        },
+    );
 
-    fn manifest(&self) -> Option<mesh_llm_plugin::proto::PluginManifest> {
-        Some(blobstore_manifest())
-    }
+    router.add_json::<FinishRequestRequest, FinishRequestResponse, _>(
+        json_schema_operation::<FinishRequestRequest>(
+            ABORT_REQUEST_TOOL,
+            "Remove all request-scoped objects for an aborted request.",
+        ),
+        move |request, _context| {
+            let store = store.clone();
+            Box::pin(async move { Ok(store.finish_request(&request.request_id)?) })
+        },
+    );
 
-    async fn health(&mut self, _context: &mut PluginContext<'_>) -> Result<String> {
-        self.store.reap_expired()?;
-        let token_count = std::fs::read_dir(self.store.tokens_dir())
-            .map(|entries| entries.count())
-            .unwrap_or(0);
-        Ok(format!(
-            "root={} tokens={}",
-            self.store.root.display(),
-            token_count
-        ))
-    }
+    router
+}
 
-    async fn list_tools(
-        &mut self,
-        _context: &mut PluginContext<'_>,
-    ) -> PluginResult<Option<ListToolsResult>> {
-        Ok(Some(self.list_blobstore_tools()))
-    }
+fn build_blobstore_plugin(name: String) -> mesh_llm_plugin::InternalRpcPlugin {
+    let store = BlobStore::new(default_blobstore_root());
+    let health_store = store.clone();
+    let put_store = store.clone();
+    let get_store = store.clone();
+    let complete_store = store.clone();
+    let abort_store = store.clone();
 
-    async fn call_tool(
-        &mut self,
-        request: OperationRequest,
-        _context: &mut PluginContext<'_>,
-    ) -> PluginResult<Option<CallToolResult>> {
-        Ok(Some(self.call_blobstore_tool(request)?))
-    }
-
-    async fn handle_rpc(
-        &mut self,
-        request: mesh_llm_plugin::proto::RpcRequest,
-        _context: &mut PluginContext<'_>,
-    ) -> PluginRpcResult {
-        match request.method.as_str() {
-            PUT_REQUEST_OBJECT_METHOD => {
-                let params: PutRequestObjectRequest = parse_rpc_params(&request)?;
-                json_response(&self.store.put_request_object(params)?)
-            }
-            GET_REQUEST_OBJECT_METHOD => {
-                let params: GetRequestObjectRequest = parse_rpc_params(&request)?;
-                json_response(&self.store.get_request_object(params)?)
-            }
-            COMPLETE_REQUEST_METHOD | ABORT_REQUEST_METHOD => {
-                let params: FinishRequestRequest = parse_rpc_params(&request)?;
-                json_response(&self.store.finish_request(&params.request_id)?)
-            }
-            _ => Err(PluginError::method_not_found(format!(
-                "Unsupported blobstore RPC '{}'",
-                request.method
-            ))),
-        }
-    }
+    InternalRpcPluginBuilder::new(PluginMetadata::new(
+        name,
+        crate::VERSION,
+        blobstore_server_info(),
+    ))
+    .with_capabilities(vec![
+        "internal:blobstore".into(),
+        OBJECT_STORE_CAPABILITY.into(),
+    ])
+    .with_manifest(blobstore_manifest())
+    .with_operation_router(blobstore_operation_router(store))
+    .with_health(move |_context| {
+        let store = health_store.clone();
+        Box::pin(async move {
+            store.reap_expired()?;
+            let token_count = std::fs::read_dir(store.tokens_dir())
+                .map(|entries| entries.count())
+                .unwrap_or(0);
+            Ok(format!(
+                "root={} tokens={}",
+                store.root.display(),
+                token_count
+            ))
+        })
+    })
+    .rpc_method(PUT_REQUEST_OBJECT_METHOD, move |request, _context| {
+        let store = put_store.clone();
+        Box::pin(async move {
+            let params: PutRequestObjectRequest = parse_rpc_params(&request)?;
+            json_response(&store.put_request_object(params)?)
+        })
+    })
+    .rpc_method(GET_REQUEST_OBJECT_METHOD, move |request, _context| {
+        let store = get_store.clone();
+        Box::pin(async move {
+            let params: GetRequestObjectRequest = parse_rpc_params(&request)?;
+            json_response(&store.get_request_object(params)?)
+        })
+    })
+    .rpc_method(COMPLETE_REQUEST_METHOD, move |request, _context| {
+        let store = complete_store.clone();
+        Box::pin(async move {
+            let params: FinishRequestRequest = parse_rpc_params(&request)?;
+            json_response(&store.finish_request(&params.request_id)?)
+        })
+    })
+    .rpc_method(ABORT_REQUEST_METHOD, move |request, _context| {
+        let store = abort_store.clone();
+        Box::pin(async move {
+            let params: FinishRequestRequest = parse_rpc_params(&request)?;
+            json_response(&store.finish_request(&params.request_id)?)
+        })
+    })
+    .build()
 }
 
 pub(crate) async fn run_plugin(name: String) -> anyhow::Result<()> {
-    PluginRuntime::run(BlobstorePlugin::new(name)).await
+    PluginRuntime::run(build_blobstore_plugin(name)).await
 }
 
 #[cfg(test)]

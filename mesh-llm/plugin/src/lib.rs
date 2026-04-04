@@ -39,9 +39,21 @@ pub mod http {
 pub mod inference {
     pub use crate::dsl::inference::{openai_http, provider};
 }
+pub mod mesh {
+    pub use crate::manifest::mesh_channel as channel;
+}
+pub mod events {
+    pub use crate::manifest::{
+        mesh_event_local_accepting as local_accepting, mesh_event_local_standby as local_standby,
+        mesh_event_mesh_id_updated as mesh_id_updated, mesh_event_peer_down as peer_down,
+        mesh_event_peer_up as peer_up, mesh_event_peer_updated as peer_updated,
+    };
+}
 pub use manifest::{
     capability, completion, http_binding, http_delete, http_get, http_patch, http_post, http_put,
     mcp_http_endpoint, mcp_stdio_endpoint, mcp_tcp_endpoint, mcp_unix_socket_endpoint,
+    mesh_channel, mesh_event_local_accepting, mesh_event_local_standby, mesh_event_mesh_id_updated,
+    mesh_event_peer_down, mesh_event_peer_up, mesh_event_peer_updated, mesh_event_subscription,
     openai_http_inference_endpoint, operation, plugin_manifest, prompt_service, resource,
     resource_template_service, CompletionBuilder, EndpointBuilder, HttpBindingBuilder,
     ManifestEntry, OperationBuilder, PluginManifestBuilder, PromptBuilder, ResourceBuilder,
@@ -54,8 +66,8 @@ pub mod mcp {
     };
 }
 pub use runtime::{
-    MeshVisibility, Plugin, PluginInitializeRequest, PluginMetadata, PluginRuntime,
-    PluginStartupPolicy, SimplePlugin,
+    InternalRpcPlugin, InternalRpcPluginBuilder, MeshVisibility, Plugin, PluginInitializeRequest,
+    PluginMetadata, PluginRuntime, PluginStartupPolicy, SimplePlugin,
 };
 
 #[allow(dead_code)]
@@ -80,15 +92,35 @@ macro_rules! plugin_manifest {
 macro_rules! plugin {
     (
         metadata: $metadata:expr,
+        $(startup_policy: $startup_policy:expr,)?
         $(provides: [$($provide:expr),* $(,)?],)?
+        $(mesh: [$($mesh:expr),* $(,)?],)?
+        $(events: [$($event:expr),* $(,)?],)?
         $(mcp: [$($mcp:expr),* $(,)?],)?
         $(http: [$($http:expr),* $(,)?],)?
         $(inference: [$($inference:expr),* $(,)?],)?
+        $(health: $health:expr,)?
+        $(on_initialized: $on_initialized:expr,)?
+        $(on_channel_message: $on_channel_message:expr,)?
+        $(on_mesh_event: $on_mesh_event:expr,)?
     ) => {{
         let mut builder = $crate::DeclarativePluginBuilder::new($metadata);
         $(
+            builder = builder.startup_policy($startup_policy);
+        )?
+        $(
             $(
                 builder = builder.provide($provide);
+            )*
+        )?
+        $(
+            $(
+                builder = builder.mesh_item($mesh);
+            )*
+        )?
+        $(
+            $(
+                builder = builder.event_item($event);
             )*
         )?
         $(
@@ -105,6 +137,18 @@ macro_rules! plugin {
             $(
                 builder = builder.inference_item($inference);
             )*
+        )?
+        $(
+            builder = builder.customize(move |plugin| plugin.with_health($health));
+        )?
+        $(
+            builder = builder.customize(move |plugin| plugin.on_initialized($on_initialized));
+        )?
+        $(
+            builder = builder.customize(move |plugin| plugin.on_channel_message($on_channel_message));
+        )?
+        $(
+            builder = builder.customize(move |plugin| plugin.on_mesh_event($on_mesh_event));
         )?
         builder.build()
     }};
