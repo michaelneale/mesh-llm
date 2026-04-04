@@ -1,5 +1,7 @@
 use anyhow::Result;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -169,6 +171,26 @@ impl InferenceWorkerRequest {
     }
 }
 
+type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+pub trait InferenceProvider: Send + Sync {
+    fn backend_label(&self) -> &'static str;
+
+    fn start_endpoint<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceEndpointRequest,
+    ) -> ProviderFuture<'a, InferenceServerProcess>;
+
+    fn start_worker<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceWorkerRequest,
+    ) -> ProviderFuture<'a, u16>;
+}
+
 /// Built-in provider adapter for the current llama.cpp runtime path.
 ///
 /// This is the first step toward a pluggable backend provider interface:
@@ -177,83 +199,48 @@ impl InferenceWorkerRequest {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BuiltinLlamaProvider;
 
-impl BuiltinLlamaProvider {
-    pub async fn start_endpoint(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceEndpointRequest,
-    ) -> Result<InferenceServerProcess> {
-        crate::inference::launch::start_llama_server(bin_dir, binary_flavor, request).await
+impl InferenceProvider for BuiltinLlamaProvider {
+    fn backend_label(&self) -> &'static str {
+        "llama"
     }
 
-    pub async fn start_worker(
-        self,
-        bin_dir: &Path,
+    fn start_endpoint<'a>(
+        &'a self,
+        bin_dir: &'a Path,
         binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceWorkerRequest,
-    ) -> Result<u16> {
-        crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
+        request: &'a InferenceEndpointRequest,
+    ) -> ProviderFuture<'a, InferenceServerProcess> {
+        Box::pin(async move {
+            crate::inference::launch::start_llama_server(bin_dir, binary_flavor, request).await
+        })
+    }
+
+    fn start_worker<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceWorkerRequest,
+    ) -> ProviderFuture<'a, u16> {
+        Box::pin(async move {
+            crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
+        })
     }
 }
 
-/// Named backend selection seam for built-in inference providers.
-///
-/// Today this only resolves to the llama.cpp path on this branch, but the
-/// call sites no longer need to know which concrete provider they are using.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BuiltinProviderKind {
-    Llama,
-}
+static BUILTIN_LLAMA_PROVIDER: BuiltinLlamaProvider = BuiltinLlamaProvider;
 
-impl BuiltinProviderKind {
-    pub fn backend_label(self) -> &'static str {
-        match self {
-            BuiltinProviderKind::Llama => "llama",
-        }
-    }
-
-    pub async fn start_endpoint(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceEndpointRequest,
-    ) -> Result<InferenceServerProcess> {
-        match self {
-            BuiltinProviderKind::Llama => {
-                BuiltinLlamaProvider
-                    .start_endpoint(bin_dir, binary_flavor, request)
-                    .await
-            }
-        }
-    }
-
-    pub async fn start_worker(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceWorkerRequest,
-    ) -> Result<u16> {
-        match self {
-            BuiltinProviderKind::Llama => {
-                BuiltinLlamaProvider
-                    .start_worker(bin_dir, binary_flavor, request)
-                    .await
-            }
-        }
-    }
-}
-
-pub fn select_local_endpoint_provider(_request: &InferenceEndpointRequest) -> BuiltinProviderKind {
-    BuiltinProviderKind::Llama
+pub fn select_local_endpoint_provider(
+    _request: &InferenceEndpointRequest,
+) -> &'static dyn InferenceProvider {
+    &BUILTIN_LLAMA_PROVIDER
 }
 
 pub fn select_distributed_endpoint_provider(
     _request: &InferenceEndpointRequest,
-) -> BuiltinProviderKind {
-    BuiltinProviderKind::Llama
+) -> &'static dyn InferenceProvider {
+    &BUILTIN_LLAMA_PROVIDER
 }
 
-pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> BuiltinProviderKind {
-    BuiltinProviderKind::Llama
+pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> &'static dyn InferenceProvider {
+    &BUILTIN_LLAMA_PROVIDER
 }
