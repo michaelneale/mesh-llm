@@ -576,6 +576,122 @@ def compare_parity_to_canonical(
     compare_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def baseline_divergence_report(
+    baseline_cfg: dict[str, Any],
+    root: Path,
+    stamp: str,
+    models: list[dict[str, Any]],
+) -> None:
+    out_path = root / stamp / "baseline-divergence.tsv"
+    header = [
+        "suite",
+        "model_id",
+        "gguf_baseline",
+        "mlx_baseline",
+        "status",
+    ]
+    lines = ["\t".join(header)]
+
+    for model in models:
+        gguf_exact = baseline_cfg.get("exact", {}).get("gguf", {}).get(model["id"])
+        mlx_exact = baseline_cfg.get("exact", {}).get("mlx", {}).get(model["id"])
+        if gguf_exact is not None or mlx_exact is not None:
+            gguf_value = "" if gguf_exact is None else str(gguf_exact.get("exit", ""))
+            mlx_value = "" if mlx_exact is None else str(mlx_exact.get("exit", ""))
+            status = "same" if gguf_value == mlx_value else "diverged"
+            lines.append("\t".join(["exact", model["id"], gguf_value, mlx_value, status]))
+
+        gguf_behavior = baseline_cfg.get("behavior", {}).get("gguf", {}).get(model["id"])
+        mlx_behavior = baseline_cfg.get("behavior", {}).get("mlx", {}).get(model["id"])
+        if gguf_behavior is not None or mlx_behavior is not None:
+            gguf_failed = "" if gguf_behavior is None else str(gguf_behavior.get("failed_prompt_count", ""))
+            mlx_failed = "" if mlx_behavior is None else str(mlx_behavior.get("failed_prompt_count", ""))
+            gguf_flagged = "" if gguf_behavior is None else ",".join(gguf_behavior.get("flagged_prompt_ids", []))
+            mlx_flagged = "" if mlx_behavior is None else ",".join(mlx_behavior.get("flagged_prompt_ids", []))
+            gguf_value = f"{gguf_failed}:{gguf_flagged}".rstrip(":")
+            mlx_value = f"{mlx_failed}:{mlx_flagged}".rstrip(":")
+            status = "same" if gguf_value == mlx_value else "diverged"
+            lines.append("\t".join(["behavior", model["id"], gguf_value, mlx_value, status]))
+
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def promote_baselines(
+    baseline_cfg: dict[str, Any],
+    baseline_path: Path,
+    root: Path,
+    stamp: str,
+    models: list[dict[str, Any]],
+    backend_filter: str,
+    suite: str,
+) -> None:
+    for section in ("exact", "behavior"):
+        baseline_cfg.setdefault(section, {})
+        baseline_cfg[section].setdefault("gguf", {})
+        baseline_cfg[section].setdefault("mlx", {})
+
+    requested = {"gguf", "mlx"} if backend_filter == "both" else {backend_filter}
+
+    model_by_id = {model["id"]: model for model in models}
+
+    if suite in ("exact", "all"):
+        exact_path = summary_path(root, stamp, "exact")
+        if exact_path.exists():
+            if "gguf" in requested:
+                strict_failures: list[str] = []
+                for line in exact_path.read_text(encoding="utf-8").splitlines()[1:]:
+                    model_id, _label, expectation_class, backend, case_id, exit_code = line.split("\t")
+                    if backend != "gguf" or expectation_class != "strict":
+                        continue
+                    if exit_code != "0":
+                        strict_failures.append(f"{case_id}={exit_code}")
+                if strict_failures:
+                    raise SystemExit(
+                        "❌ refusing to promote canonical GGUF exact baseline; strict rows failed: "
+                        + ", ".join(strict_failures)
+                    )
+            for line in exact_path.read_text(encoding="utf-8").splitlines()[1:]:
+                model_id, _label, _expectation, backend, case_id, exit_code = line.split("\t")
+                if backend not in requested:
+                    continue
+                baseline_cfg["exact"][backend][model_id] = {
+                    "exit": int(exit_code),
+                    "case_id": case_id,
+                }
+
+    if suite in ("behavior", "all"):
+        behavior_path = summary_path(root, stamp, "behavior")
+        if behavior_path.exists():
+            if "gguf" in requested:
+                strict_failures: list[str] = []
+                for line in behavior_path.read_text(encoding="utf-8").splitlines()[1:]:
+                    model_id, _label, expectation_class, backend, case_id, exit_code, failed_prompts, _prompt_count = line.split("\t")
+                    if backend != "gguf" or expectation_class != "strict":
+                        continue
+                    if exit_code != "0" or (failed_prompts and failed_prompts != "0"):
+                        strict_failures.append(f"{case_id}=exit:{exit_code},failed:{failed_prompts or '0'}")
+                if strict_failures:
+                    raise SystemExit(
+                        "❌ refusing to promote canonical GGUF behavior baseline; strict rows were flagged: "
+                        + ", ".join(strict_failures)
+                    )
+            for line in behavior_path.read_text(encoding="utf-8").splitlines()[1:]:
+                model_id, _label, _expectation, backend, case_id, exit_code, failed_prompts, prompt_count = line.split("\t")
+                if backend not in requested:
+                    continue
+                report_path = behavior_report_path(root, stamp, case_id)
+                baseline_cfg["behavior"][backend][model_id] = {
+                    "exit": int(exit_code),
+                    "case_id": case_id,
+                    "failed_prompt_count": int(failed_prompts or "0"),
+                    "prompt_count": int(prompt_count or "0"),
+                    "flagged_prompt_ids": flagged_prompt_summary(report_path),
+                }
+
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text(json.dumps(baseline_cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=["exact", "behavior", "all"], default="all")
@@ -590,13 +706,15 @@ def main() -> int:
     parser.add_argument("--max-prompts", type=int, default=0)
     parser.add_argument("--max-tokens", type=int, default=0)
     parser.add_argument("--wait-seconds", type=int, default=0)
+    parser.add_argument("--promote-baseline", action="store_true")
     args = parser.parse_args()
 
     if args.backend in ("mlx", "both") and os.uname().sysname != "Darwin":
         raise SystemExit("❌ MLX validation requires macOS")
 
     matrix = load_matrix(Path(args.matrix))
-    baselines = load_baselines(Path(args.baselines) if args.baselines else None)
+    baseline_path = Path(args.baselines) if args.baselines else None
+    baselines = load_baselines(baseline_path)
     stamp = args.stamp or subprocess.check_output(["date", "+%Y%m%d-%H%M%S"], text=True).strip()
     root = Path(args.root)
     selectors = {item.strip() for item in args.cases.split(",") if item.strip()}
@@ -633,6 +751,13 @@ def main() -> int:
     compare_exact_against_baseline(baselines, root, stamp, models, args.backend)
     compare_behavior_against_baseline(baselines, root, stamp, models, args.backend)
     compare_parity_to_canonical(baselines, root, stamp, models)
+    baseline_divergence_report(baselines, root, stamp, models)
+
+    if args.promote_baseline:
+        if baseline_path is None:
+            raise SystemExit("❌ --promote-baseline requires a writable --baselines path")
+        promote_baselines(baselines, baseline_path, root, stamp, models, args.backend, args.suite)
+        baseline_divergence_report(baselines, root, stamp, models)
 
     if args.suite in ("exact", "all"):
         exact_path = summary_path(root, stamp, "exact")
@@ -661,6 +786,10 @@ def main() -> int:
     if parity_compare_path.exists():
         print("\n=== Parity vs canonical baseline ===")
         print(parity_compare_path.read_text(encoding="utf-8"), end="")
+    divergence_path = root / stamp / "baseline-divergence.tsv"
+    if divergence_path.exists():
+        print("\n=== Baseline divergence ===")
+        print(divergence_path.read_text(encoding="utf-8"), end="")
     print(f"\nRaw artifacts: {root / stamp}")
     return overall_rc
 

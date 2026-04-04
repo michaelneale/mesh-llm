@@ -36,6 +36,13 @@ The validation system has two suites:
   - the checked-in `MLX` baseline for backend regression detection
   - the checked-in `GGUF` baseline for parity
 
+Canonical baseline rule:
+
+- `GGUF` is only promotable as the canonical baseline when the `strict` GGUF
+  rows are clean for the suite being promoted.
+- Weak canaries may remain weak, but they do not define what “good GGUF”
+  means for the reference baseline.
+
 This gives three useful comparisons:
 
 1. `GGUF run` vs `GGUF baseline`
