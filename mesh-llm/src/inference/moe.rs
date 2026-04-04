@@ -8,7 +8,6 @@
 
 use clap::ValueEnum;
 use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -20,11 +19,6 @@ pub enum MoeRankingStrategy {
     Auto,
     Analyze,
     MicroAnalyze,
-    Sequential,
-    HeuristicMean,
-    HeuristicMax,
-    HeuristicMeanPlusStd,
-    HeuristicArch,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -133,12 +127,6 @@ enum GgufType {
     Float64 = 12,
 }
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GgmlType {
-    F32 = 0,
-}
-
 impl GgufType {
     fn from_u32(v: u32) -> Option<Self> {
         match v {
@@ -183,16 +171,6 @@ fn read_u64(f: &mut std::fs::File) -> std::io::Result<u64> {
     let mut buf = [0u8; 8];
     f.read_exact(&mut buf)?;
     Ok(u64::from_le_bytes(buf))
-}
-
-fn align_offset(offset: u64, alignment: usize) -> u64 {
-    let alignment = alignment.max(1) as u64;
-    let remainder = offset % alignment;
-    if remainder == 0 {
-        offset
-    } else {
-        offset + (alignment - remainder)
-    }
 }
 
 /// Read a little-endian i64.
@@ -667,24 +645,6 @@ pub fn load_cached_ranking(path: &Path) -> Option<Vec<u32>> {
     load_cached_ranking_file(path).map(|file| file.ranking)
 }
 
-pub fn write_cached_ranking(path: &Path, ranking: &[u32]) -> anyhow::Result<()> {
-    if ranking.is_empty() {
-        anyhow::bail!("cannot write empty ranking to {}", path.display());
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let content = ranking
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(path, format!("{content}\n"))?;
-    Ok(())
-}
-
 fn write_shared_ranking_artifact(
     path: &Path,
     artifact: &SharedRankingArtifact,
@@ -718,14 +678,6 @@ fn write_shared_ranking_artifact(
     lines.extend(artifact.ranking.iter().map(u32::to_string));
     std::fs::write(path, format!("{}\n", lines.join("\n")))?;
     Ok(())
-}
-
-pub fn heuristic_ranking_cache_path_for_method(
-    model_path: &Path,
-    method: HeuristicScoreMethod,
-) -> PathBuf {
-    let stem = ranking_cache_stem(model_path);
-    ranking_cache_root().join(format!("{stem}.{}.csv", method.cache_suffix()))
 }
 
 fn parse_micro_cache_filename(
@@ -875,257 +827,6 @@ pub fn shared_ranking_cache_path(model_path: &Path, artifact: &SharedRankingArti
             artifact.micro_tokens.unwrap_or(8),
             artifact.micro_layer_scope.unwrap_or_default(),
         ),
-    }
-}
-
-#[derive(Debug)]
-struct GgufTensorInfo {
-    name: String,
-    dims: Vec<i64>,
-    tensor_type: u32,
-    offset: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HeuristicScoreMethod {
-    MeanL2,
-    MaxL2,
-    MeanPlusStd,
-    ArchitectureAware,
-}
-
-impl HeuristicScoreMethod {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::MeanL2 => "mean_l2",
-            Self::MaxL2 => "max_l2",
-            Self::MeanPlusStd => "mean_plus_std",
-            Self::ArchitectureAware => "architecture_aware",
-        }
-    }
-
-    pub fn cache_suffix(self) -> &'static str {
-        match self {
-            Self::MeanL2 => "heuristic",
-            Self::MaxL2 => "heuristic-max",
-            Self::MeanPlusStd => "heuristic-mean-plus-std",
-            Self::ArchitectureAware => "heuristic-arch",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ExpertGateStats {
-    pub mean_l2: f64,
-    pub max_l2: f64,
-    pub stddev_l2: f64,
-}
-
-pub fn compute_heuristic_ranking_with_method(
-    model_path: &Path,
-    expert_count: u32,
-    method: HeuristicScoreMethod,
-) -> anyhow::Result<Vec<u32>> {
-    let stats = compute_gate_statistics(model_path, expert_count)?;
-    let architecture = scan_gguf_compact_meta(model_path)
-        .map(|meta| meta.architecture)
-        .filter(|value| !value.is_empty());
-    Ok(rank_experts_from_gate_stats(
-        &stats,
-        method,
-        architecture.as_deref(),
-    ))
-}
-
-pub fn compute_gate_statistics(
-    model_path: &Path,
-    expert_count: u32,
-) -> anyhow::Result<Vec<ExpertGateStats>> {
-    let mut f = std::fs::File::open(model_path)?;
-
-    let mut magic = [0u8; 4];
-    f.read_exact(&mut magic)?;
-    anyhow::ensure!(
-        &magic == b"GGUF",
-        "not a GGUF file: {}",
-        model_path.display()
-    );
-
-    let version = read_u32(&mut f)?;
-    anyhow::ensure!(version >= 2, "unsupported GGUF version {version}");
-
-    let n_tensors = read_i64(&mut f)?;
-    let n_kv = read_i64(&mut f)?;
-    anyhow::ensure!(
-        n_tensors >= 0,
-        "invalid tensor count in {}",
-        model_path.display()
-    );
-    anyhow::ensure!(n_kv >= 0, "invalid kv count in {}", model_path.display());
-
-    let mut alignment = 32usize;
-    for _ in 0..n_kv {
-        let key = read_gguf_string(&mut f)?;
-        let vtype = GgufType::from_u32(read_u32(&mut f)?).ok_or_else(|| {
-            anyhow::anyhow!(
-                "invalid GGUF kv value type while scanning {}",
-                model_path.display()
-            )
-        })?;
-
-        if key == "general.alignment" {
-            if let Some(value) = read_gguf_value_as_u32(&mut f, vtype)? {
-                alignment = value as usize;
-            }
-        } else {
-            skip_gguf_value(&mut f, vtype)?;
-        }
-    }
-
-    let mut router_gates = Vec::new();
-    for _ in 0..n_tensors {
-        let name = read_gguf_string(&mut f)?;
-        let n_dims = read_u32(&mut f)? as usize;
-        anyhow::ensure!(n_dims <= 4, "tensor {} has too many dimensions", name);
-
-        let mut dims = Vec::with_capacity(n_dims);
-        for _ in 0..n_dims {
-            dims.push(read_i64(&mut f)?);
-        }
-        let tensor_type = read_u32(&mut f)?;
-        let offset = read_u64(&mut f)?;
-
-        if name.contains("ffn_gate_inp") {
-            router_gates.push(GgufTensorInfo {
-                name,
-                dims,
-                tensor_type,
-                offset,
-            });
-        }
-    }
-
-    anyhow::ensure!(
-        !router_gates.is_empty(),
-        "no router gate tensors found in {}",
-        model_path.display()
-    );
-
-    let data_start = align_offset(f.stream_position()?, alignment);
-    let mut per_expert_norms: Vec<Vec<f64>> = vec![Vec::new(); expert_count as usize];
-    let mut n_layers = 0usize;
-
-    for gate in router_gates {
-        if gate.tensor_type != GgmlType::F32 as u32 {
-            continue;
-        }
-        anyhow::ensure!(
-            gate.dims.len() >= 2,
-            "router gate tensor {} has invalid rank",
-            gate.name
-        );
-
-        let n_embd = usize::try_from(gate.dims[0]).map_err(|_| {
-            anyhow::anyhow!(
-                "router gate tensor {} has invalid embedding size",
-                gate.name
-            )
-        })?;
-        let n_exp = usize::try_from(gate.dims[1]).map_err(|_| {
-            anyhow::anyhow!("router gate tensor {} has invalid expert size", gate.name)
-        })?;
-        if n_exp != expert_count as usize {
-            continue;
-        }
-
-        let n_values = n_embd
-            .checked_mul(n_exp)
-            .ok_or_else(|| anyhow::anyhow!("router gate tensor {} is too large", gate.name))?;
-        let n_bytes = n_values
-            .checked_mul(std::mem::size_of::<f32>())
-            .ok_or_else(|| anyhow::anyhow!("router gate tensor {} is too large", gate.name))?;
-
-        let mut bytes = vec![0u8; n_bytes];
-        f.seek(SeekFrom::Start(data_start + gate.offset))?;
-        f.read_exact(&mut bytes)?;
-
-        for expert in 0..n_exp {
-            let mut sum_sq = 0.0f64;
-            let row_start = expert * n_embd * 4;
-            for dim in 0..n_embd {
-                let idx = row_start + dim * 4;
-                let value = f32::from_le_bytes([
-                    bytes[idx],
-                    bytes[idx + 1],
-                    bytes[idx + 2],
-                    bytes[idx + 3],
-                ]) as f64;
-                sum_sq += value * value;
-            }
-            per_expert_norms[expert].push(sum_sq.sqrt());
-        }
-        n_layers += 1;
-    }
-
-    anyhow::ensure!(
-        n_layers > 0,
-        "no F32 router gate tensors found in {} for heuristic ranking",
-        model_path.display()
-    );
-
-    let mut stats = Vec::with_capacity(expert_count as usize);
-    for norms in per_expert_norms {
-        let mean_l2 = norms.iter().sum::<f64>() / n_layers as f64;
-        let max_l2 = norms.iter().copied().fold(0.0f64, f64::max);
-        let variance = norms
-            .iter()
-            .map(|value| {
-                let delta = *value - mean_l2;
-                delta * delta
-            })
-            .sum::<f64>()
-            / n_layers as f64;
-        stats.push(ExpertGateStats {
-            mean_l2,
-            max_l2,
-            stddev_l2: variance.sqrt(),
-        });
-    }
-    Ok(stats)
-}
-
-pub fn rank_experts_from_gate_stats(
-    stats: &[ExpertGateStats],
-    method: HeuristicScoreMethod,
-    architecture: Option<&str>,
-) -> Vec<u32> {
-    let mut ranking: Vec<u32> = (0..stats.len() as u32).collect();
-    ranking.sort_by(|a, b| {
-        heuristic_score(&stats[*b as usize], method, architecture)
-            .partial_cmp(&heuristic_score(&stats[*a as usize], method, architecture))
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| a.cmp(b))
-    });
-    ranking
-}
-
-fn heuristic_score(
-    stats: &ExpertGateStats,
-    method: HeuristicScoreMethod,
-    architecture: Option<&str>,
-) -> f64 {
-    match method {
-        HeuristicScoreMethod::MeanL2 => stats.mean_l2,
-        HeuristicScoreMethod::MaxL2 => stats.max_l2,
-        HeuristicScoreMethod::MeanPlusStd => stats.mean_l2 + stats.stddev_l2,
-        HeuristicScoreMethod::ArchitectureAware => {
-            let arch = architecture.unwrap_or_default().to_ascii_lowercase();
-            if arch.contains("deepseek") || arch.contains("glm") {
-                stats.mean_l2 + stats.stddev_l2
-            } else {
-                stats.mean_l2
-            }
-        }
     }
 }
 
@@ -1526,68 +1227,6 @@ mod tests {
     fn write_gguf_string(file: &mut std::fs::File, value: &str) {
         file.write_all(&(value.len() as u64).to_le_bytes()).unwrap();
         file.write_all(value.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn test_compute_heuristic_ranking_from_router_gate_tensor() {
-        let dir = std::env::temp_dir().join("moe-test-heuristic");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("heuristic.gguf");
-
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.write_all(b"GGUF").unwrap();
-        file.write_all(&3u32.to_le_bytes()).unwrap();
-        file.write_all(&1i64.to_le_bytes()).unwrap(); // one tensor
-        file.write_all(&3i64.to_le_bytes()).unwrap(); // three kvs
-
-        // general.alignment = 32
-        write_gguf_string(&mut file, "general.alignment");
-        file.write_all(&(GgufType::Uint32 as u32).to_le_bytes())
-            .unwrap();
-        file.write_all(&32u32.to_le_bytes()).unwrap();
-
-        write_gguf_string(&mut file, "qwen.expert_count");
-        file.write_all(&(GgufType::Uint32 as u32).to_le_bytes())
-            .unwrap();
-        file.write_all(&4u32.to_le_bytes()).unwrap();
-
-        write_gguf_string(&mut file, "qwen.expert_used_count");
-        file.write_all(&(GgufType::Uint32 as u32).to_le_bytes())
-            .unwrap();
-        file.write_all(&2u32.to_le_bytes()).unwrap();
-
-        write_gguf_string(&mut file, "blk.0.ffn_gate_inp.weight");
-        file.write_all(&2u32.to_le_bytes()).unwrap(); // n_dims
-        file.write_all(&2i64.to_le_bytes()).unwrap(); // n_embd
-        file.write_all(&4i64.to_le_bytes()).unwrap(); // n_expert
-        file.write_all(&(GgmlType::F32 as u32).to_le_bytes())
-            .unwrap();
-        file.write_all(&0u64.to_le_bytes()).unwrap(); // data offset within blob
-
-        let meta_end = file.stream_position().unwrap();
-        let aligned = align_offset(meta_end, 32);
-        if aligned > meta_end {
-            file.write_all(&vec![0u8; (aligned - meta_end) as usize])
-                .unwrap();
-        }
-
-        // Expert rows:
-        // e0 => norm 5
-        // e1 => norm 1
-        // e2 => norm sqrt(2)
-        // e3 => norm 2
-        let values = [3.0f32, 4.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0];
-        for value in values {
-            file.write_all(&value.to_le_bytes()).unwrap();
-        }
-        drop(file);
-
-        let ranking =
-            compute_heuristic_ranking_with_method(&path, 4, HeuristicScoreMethod::MeanL2).unwrap();
-        assert_eq!(ranking, vec![0, 3, 2, 1]);
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -43,14 +43,6 @@ pub(crate) struct MoeGroupingBenchmarkArgs {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct MoeHeuristicBenchmarkArgs {
-    pub model: String,
-    pub min_experts: Option<u32>,
-    pub analyze_ranking: Option<PathBuf>,
-    pub output: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct MoeModelMatrixBenchmarkArgs {
     pub models: Vec<String>,
     pub nodes: usize,
@@ -63,8 +55,6 @@ pub(crate) struct MoeModelMatrixBenchmarkArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BenchmarkVariant {
-    Sequential,
-    Heuristic,
     Analyze,
 }
 
@@ -91,13 +81,6 @@ struct AnalyzeMassProfile {
     entries: Vec<AnalyzeExpertMass>,
     mass_by_expert: HashMap<u32, f64>,
     total_mass: f64,
-}
-
-#[derive(Clone, Debug)]
-struct HeuristicRankingResult {
-    method: moe::HeuristicScoreMethod,
-    ranking: Vec<u32>,
-    source: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,27 +124,6 @@ struct MoeRankingBenchmarkReport {
     config: BenchmarkConfig,
     prompt_corpus: Option<PromptCorpusSummary>,
     variants: Vec<VariantReport>,
-}
-
-#[derive(Debug, Serialize)]
-struct HeuristicVariantReport {
-    method: String,
-    ranking_source: String,
-    spearman_rank_correlation: f64,
-    recall_at_min_experts: f64,
-    weighted_recall_at_min_experts: f64,
-    captures_top_truth_expert: bool,
-    first_missed_truth_expert: Option<u32>,
-    top_experts_preview: Vec<u32>,
-}
-
-#[derive(Debug, Serialize)]
-struct MoeHeuristicBenchmarkReport {
-    benchmark: &'static str,
-    model: BenchmarkModelInfo,
-    min_experts: u32,
-    analyze_ranking_source: String,
-    variants: Vec<HeuristicVariantReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,7 +177,6 @@ struct MoeMicroAnalyzeBenchmarkReport {
 struct MoeModelMatrixModelReport {
     model: BenchmarkModelInfo,
     ranking: MoeRankingBenchmarkReport,
-    heuristic: MoeHeuristicBenchmarkReport,
     grouping: MoeGroupingBenchmarkReport,
     micro_analyze: MoeMicroAnalyzeBenchmarkReport,
 }
@@ -275,13 +236,6 @@ pub(crate) async fn run_moe_grouping_benchmark(args: MoeGroupingBenchmarkArgs) -
     Ok(())
 }
 
-pub(crate) async fn run_moe_heuristic_benchmark(args: MoeHeuristicBenchmarkArgs) -> Result<()> {
-    let model = resolve_benchmark_model(&args.model, args.min_experts).await?;
-    let report = build_heuristic_report(&model, args.analyze_ranking.as_deref())?;
-    write_json_report(&report, args.output.as_deref(), "MoE heuristic benchmark")?;
-    Ok(())
-}
-
 pub(crate) async fn run_moe_model_matrix_benchmark(
     args: MoeModelMatrixBenchmarkArgs,
 ) -> Result<()> {
@@ -300,15 +254,10 @@ pub(crate) async fn run_moe_model_matrix_benchmark(
             &model,
             args.nodes,
             args.overlap,
-            &[
-                BenchmarkVariant::Sequential,
-                BenchmarkVariant::Heuristic,
-                BenchmarkVariant::Analyze,
-            ],
+            &[BenchmarkVariant::Analyze],
             Some(ensured_analyze.as_path()),
             prompt_corpus.clone(),
         )?;
-        let heuristic = build_heuristic_report(&model, Some(ensured_analyze.as_path()))?;
         let grouping = build_grouping_report(
             &model,
             args.nodes,
@@ -323,7 +272,6 @@ pub(crate) async fn run_moe_model_matrix_benchmark(
         reports.push(MoeModelMatrixModelReport {
             model: benchmark_model_info(&model),
             ranking,
-            heuristic,
             grouping,
             micro_analyze,
         });
@@ -352,22 +300,12 @@ fn build_ranking_report(
 ) -> Result<MoeRankingBenchmarkReport> {
     let mut reports = Vec::with_capacity(variants.len());
     for &variant in variants {
-        let ranking = resolve_variant_ranking(
-            variant,
-            model,
-            analyze_ranking,
-            moe::HeuristicScoreMethod::MeanL2,
-        )?;
+        let ranking = resolve_variant_ranking(variant, model, analyze_ranking)?;
         let assignments =
             moe::compute_assignments_with_overlap(&ranking, nodes, model.min_experts, overlap);
         reports.push(VariantReport {
             name: variant_name(variant),
-            ranking_source: variant_source_label(
-                variant,
-                model,
-                analyze_ranking,
-                moe::HeuristicScoreMethod::MeanL2,
-            ),
+            ranking_source: variant_source_label(variant, model, analyze_ranking),
             ranking_len: ranking.len(),
             assignments: assignment_reports(assignments),
         });
@@ -386,59 +324,6 @@ fn build_ranking_report(
     })
 }
 
-fn build_heuristic_report(
-    model: &ResolvedBenchmarkModel,
-    analyze_ranking: Option<&Path>,
-) -> Result<MoeHeuristicBenchmarkReport> {
-    let analyze_path = ensure_full_analyze_ranking(model, analyze_ranking)?;
-    let profile = load_analyze_mass_profile(&analyze_path)?;
-    let truth_ranking = profile.ranking();
-    let variants = compute_all_heuristics(model)?
-        .into_iter()
-        .map(|variant| {
-            let top_truth = truth_ranking
-                .first()
-                .copied()
-                .ok_or_else(|| anyhow!("Analyze ranking is empty for {}", model.name))?;
-            let first_missed_truth_expert = first_missing_truth_expert(
-                &variant.ranking,
-                &truth_ranking,
-                model.min_experts as usize,
-            );
-            Ok(HeuristicVariantReport {
-                method: variant.method.label().to_string(),
-                ranking_source: variant.source,
-                spearman_rank_correlation: spearman_rank_correlation(&variant.ranking, &profile),
-                recall_at_min_experts: recall_at_top_n(
-                    &variant.ranking,
-                    &truth_ranking,
-                    model.min_experts as usize,
-                ),
-                weighted_recall_at_min_experts: weighted_recall_at_top_n(
-                    &variant.ranking,
-                    &profile,
-                    model.min_experts as usize,
-                ),
-                captures_top_truth_expert: variant
-                    .ranking
-                    .iter()
-                    .take(model.min_experts as usize)
-                    .any(|expert| *expert == top_truth),
-                first_missed_truth_expert,
-                top_experts_preview: variant.ranking.iter().take(16).copied().collect(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(MoeHeuristicBenchmarkReport {
-        benchmark: "moe-heuristic",
-        model: benchmark_model_info(model),
-        min_experts: model.min_experts,
-        analyze_ranking_source: analyze_path.display().to_string(),
-        variants,
-    })
-}
-
 fn build_grouping_report(
     model: &ResolvedBenchmarkModel,
     nodes: usize,
@@ -448,8 +333,6 @@ fn build_grouping_report(
     let analyze_path = ensure_full_analyze_ranking(model, analyze_ranking)?;
     let profile = load_analyze_mass_profile(&analyze_path)?;
     let analyze_ranking_vec = profile.ranking().to_vec();
-    let arch_heuristic =
-        compute_heuristic_result(model, moe::HeuristicScoreMethod::ArchitectureAware)?;
     let sequential: Vec<u32> = (0..model.info.expert_count).collect();
     let replicate = model.min_experts as usize;
 
@@ -482,22 +365,6 @@ fn build_grouping_report(
             analyze_ranking_vec.clone(),
             moe::compute_snake_draft_assignments(&analyze_ranking_vec, nodes, replicate),
             replicate,
-        ),
-        (
-            "snake-heuristic-replicated",
-            "snake-draft",
-            arch_heuristic.source.clone(),
-            arch_heuristic.ranking.clone(),
-            moe::compute_snake_draft_assignments(&arch_heuristic.ranking, nodes, replicate),
-            replicate,
-        ),
-        (
-            "snake-heuristic-no-replicas",
-            "snake-draft",
-            arch_heuristic.source.clone(),
-            arch_heuristic.ranking.clone(),
-            moe::compute_snake_draft_assignments(&arch_heuristic.ranking, nodes, 0),
-            0usize,
         ),
     ];
 
@@ -703,28 +570,8 @@ fn resolve_variant_ranking(
     variant: BenchmarkVariant,
     model: &ResolvedBenchmarkModel,
     analyze_ranking: Option<&Path>,
-    heuristic_method: moe::HeuristicScoreMethod,
 ) -> Result<Vec<u32>> {
     match variant {
-        BenchmarkVariant::Sequential => Ok((0..model.info.expert_count).collect()),
-        BenchmarkVariant::Heuristic => {
-            let cached_path =
-                moe::heuristic_ranking_cache_path_for_method(&model.path, heuristic_method);
-            if let Some(ranking) = moe::load_cached_ranking(&cached_path) {
-                return Ok(ranking);
-            }
-
-            let ranking = moe::compute_heuristic_ranking_with_method(
-                &model.path,
-                model.info.expert_count,
-                heuristic_method,
-            )
-            .with_context(|| format!("Compute heuristic ranking for {}", model.path.display()))?;
-            moe::write_cached_ranking(&cached_path, &ranking).with_context(|| {
-                format!("Write heuristic ranking cache to {}", cached_path.display())
-            })?;
-            Ok(ranking)
-        }
         BenchmarkVariant::Analyze => {
             if let Some(path) = analyze_ranking {
                 return moe::load_cached_ranking(path)
@@ -747,8 +594,6 @@ fn resolve_variant_ranking(
 
 fn variant_name(variant: BenchmarkVariant) -> &'static str {
     match variant {
-        BenchmarkVariant::Sequential => "sequential",
-        BenchmarkVariant::Heuristic => "heuristic",
         BenchmarkVariant::Analyze => "analyze",
     }
 }
@@ -757,19 +602,8 @@ fn variant_source_label(
     variant: BenchmarkVariant,
     model: &ResolvedBenchmarkModel,
     analyze_ranking: Option<&Path>,
-    heuristic_method: moe::HeuristicScoreMethod,
 ) -> String {
     match variant {
-        BenchmarkVariant::Sequential => "sequential-fallback".to_string(),
-        BenchmarkVariant::Heuristic => {
-            let cached_path =
-                moe::heuristic_ranking_cache_path_for_method(&model.path, heuristic_method);
-            if cached_path.exists() {
-                cached_path.display().to_string()
-            } else {
-                heuristic_method.label().to_string()
-            }
-        }
         BenchmarkVariant::Analyze => {
             if let Some(path) = analyze_ranking {
                 return path.display().to_string();
@@ -915,49 +749,6 @@ impl AnalyzeMassProfile {
     }
 }
 
-fn compute_all_heuristics(model: &ResolvedBenchmarkModel) -> Result<Vec<HeuristicRankingResult>> {
-    [
-        moe::HeuristicScoreMethod::MeanL2,
-        moe::HeuristicScoreMethod::MaxL2,
-        moe::HeuristicScoreMethod::MeanPlusStd,
-        moe::HeuristicScoreMethod::ArchitectureAware,
-    ]
-    .into_iter()
-    .map(|method| compute_heuristic_result(model, method))
-    .collect()
-}
-
-fn compute_heuristic_result(
-    model: &ResolvedBenchmarkModel,
-    method: moe::HeuristicScoreMethod,
-) -> Result<HeuristicRankingResult> {
-    let cached = moe::heuristic_ranking_cache_path_for_method(&model.path, method);
-    if let Some(ranking) = moe::load_cached_ranking(&cached) {
-        return Ok(HeuristicRankingResult {
-            method,
-            ranking,
-            source: cached.display().to_string(),
-        });
-    }
-
-    let ranking =
-        moe::compute_heuristic_ranking_with_method(&model.path, model.info.expert_count, method)
-            .with_context(|| {
-                format!(
-                    "Compute {} heuristic for {}",
-                    method.label(),
-                    model.path.display()
-                )
-            })?;
-    moe::write_cached_ranking(&cached, &ranking)
-        .with_context(|| format!("Write heuristic ranking cache to {}", cached.display()))?;
-    Ok(HeuristicRankingResult {
-        method,
-        ranking,
-        source: cached.display().to_string(),
-    })
-}
-
 fn recall_at_top_n(candidate: &[u32], truth: &[u32], n: usize) -> f64 {
     let n = n.min(candidate.len()).min(truth.len());
     if n == 0 {
@@ -1008,15 +799,6 @@ fn spearman_rank_correlation(candidate: &[u32], truth: &AnalyzeMassProfile) -> f
         .sum::<f64>();
     let n = n as f64;
     1.0 - (6.0 * sum_d2) / (n * (n * n - 1.0))
-}
-
-fn first_missing_truth_expert(candidate: &[u32], truth: &[u32], n: usize) -> Option<u32> {
-    let candidate_set: BTreeSet<u32> = candidate.iter().take(n).copied().collect();
-    truth
-        .iter()
-        .take(n)
-        .find(|expert| !candidate_set.contains(expert))
-        .copied()
 }
 
 fn mass_pct_for_experts(experts: &[u32], profile: &AnalyzeMassProfile) -> f64 {

@@ -19,7 +19,7 @@ pub(crate) enum BenchmarkCommand {
         #[arg(long)]
         min_experts: Option<u32>,
         /// Ranking sources to compare.
-        #[arg(long, value_delimiter = ',', default_value = "sequential,analyze")]
+        #[arg(long, value_delimiter = ',', default_value = "analyze")]
         variants: Vec<MoeRankingVariant>,
         /// Optional explicit moe-analyze CSV path.
         #[arg(long)]
@@ -88,22 +88,6 @@ pub(crate) enum BenchmarkCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Compare weight-only heuristic variants against full analyze ranking.
-    #[command(name = "moe-heuristic")]
-    MoeHeuristic {
-        /// Model spec: local path, catalog name, HF exact ref, or HF URL.
-        #[arg(long)]
-        model: String,
-        /// Minimum experts per node used for recall@N metrics.
-        #[arg(long)]
-        min_experts: Option<u32>,
-        /// Optional explicit full moe-analyze CSV path.
-        #[arg(long)]
-        analyze_ranking: Option<PathBuf>,
-        /// Where to write the JSON report. Prints to stdout when omitted.
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
     /// Run the full offline MoE benchmark suite across several models.
     #[command(name = "moe-model-matrix")]
     MoeModelMatrix {
@@ -133,8 +117,6 @@ pub(crate) enum BenchmarkCommand {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum MoeRankingVariant {
-    Sequential,
-    Heuristic,
     Analyze,
 }
 

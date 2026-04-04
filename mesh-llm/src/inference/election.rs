@@ -604,31 +604,6 @@ fn resolve_runtime_moe_config(
                 artifact.origin.label().to_string(),
             )
         }
-        moe::MoeRankingStrategy::Sequential => (
-            (0..base.n_expert).collect(),
-            "sequential-fallback".to_string(),
-            "fallback".to_string(),
-        ),
-        moe::MoeRankingStrategy::HeuristicMean => resolve_heuristic_runtime_ranking(
-            model_path,
-            base.n_expert,
-            moe::HeuristicScoreMethod::MeanL2,
-        )?,
-        moe::MoeRankingStrategy::HeuristicMax => resolve_heuristic_runtime_ranking(
-            model_path,
-            base.n_expert,
-            moe::HeuristicScoreMethod::MaxL2,
-        )?,
-        moe::MoeRankingStrategy::HeuristicMeanPlusStd => resolve_heuristic_runtime_ranking(
-            model_path,
-            base.n_expert,
-            moe::HeuristicScoreMethod::MeanPlusStd,
-        )?,
-        moe::MoeRankingStrategy::HeuristicArch => resolve_heuristic_runtime_ranking(
-            model_path,
-            base.n_expert,
-            moe::HeuristicScoreMethod::ArchitectureAware,
-        )?,
     };
 
     eprintln!(
@@ -673,28 +648,6 @@ fn refresh_auto_moe_config_from_cache(
     cfg.ranking_source = artifact.kind.label().to_string();
     cfg.ranking_origin = artifact.origin.label().to_string();
     true
-}
-
-fn resolve_heuristic_runtime_ranking(
-    model_path: &Path,
-    expert_count: u32,
-    method: moe::HeuristicScoreMethod,
-) -> anyhow::Result<(Vec<u32>, String, String)> {
-    let cached = moe::heuristic_ranking_cache_path_for_method(model_path, method);
-    if let Some(ranking) = moe::load_cached_ranking(&cached) {
-        return Ok((
-            ranking,
-            format!("heuristic-{}", method.cache_suffix()),
-            "local-heuristic-cache".to_string(),
-        ));
-    }
-    let ranking = moe::compute_heuristic_ranking_with_method(model_path, expert_count, method)?;
-    moe::write_cached_ranking(&cached, &ranking)?;
-    Ok((
-        ranking,
-        format!("heuristic-{}", method.cache_suffix()),
-        "local-heuristic".to_string(),
-    ))
 }
 
 fn resolve_analyze_binary(bin_dir: &Path) -> anyhow::Result<std::path::PathBuf> {

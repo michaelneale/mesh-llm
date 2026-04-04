@@ -76,20 +76,6 @@ pub(crate) async fn dispatch_benchmark_command(command: &BenchmarkCommand) -> Re
             };
             moe_benchmark::run_moe_grouping_benchmark(args).await
         }
-        BenchmarkCommand::MoeHeuristic {
-            model,
-            min_experts,
-            analyze_ranking,
-            output,
-        } => {
-            let args = moe_benchmark::MoeHeuristicBenchmarkArgs {
-                model: model.clone(),
-                min_experts: *min_experts,
-                analyze_ranking: analyze_ranking.clone(),
-                output: output.clone(),
-            };
-            moe_benchmark::run_moe_heuristic_benchmark(args).await
-        }
         BenchmarkCommand::MoeModelMatrix {
             model,
             nodes,
@@ -115,8 +101,6 @@ pub(crate) async fn dispatch_benchmark_command(command: &BenchmarkCommand) -> Re
 
 fn map_variant(variant: MoeRankingVariant) -> BenchmarkVariant {
     match variant {
-        MoeRankingVariant::Sequential => BenchmarkVariant::Sequential,
-        MoeRankingVariant::Heuristic => BenchmarkVariant::Heuristic,
         MoeRankingVariant::Analyze => BenchmarkVariant::Analyze,
     }
 }
