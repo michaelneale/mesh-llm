@@ -538,7 +538,7 @@ pub fn classify(body: &Value) -> Classification {
         Category::Reasoning
     } else if creative_score >= 1 {
         Category::Creative
-    } else if media.has_media || image_score >= 1 {
+    } else if media.needs_vision || image_score >= 1 {
         Category::Image
     } else if needs_tools && code_score == 0 && reasoning_score == 0 && creative_score == 0 {
         // Only ToolCall if tools present AND no other signal dominates

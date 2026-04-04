@@ -1328,16 +1328,13 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
         .unwrap_or(0);
     let response_id = format!("resp_{created_at}");
     let item_id = format!("msg_{created_at}");
-    let mut model = String::from("unknown");
+    let mut model = String::new();
     let mut output_text = String::new();
     let mut usage = None;
     let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
     tcp_stream.write_all(header.as_bytes()).await?;
 
-    let created = serde_json::to_string(&responses_stream_created_event(&model, created_at))
-        .context("serialize response.created stream event")?;
-    write_chunked_sse_event(tcp_stream, Some("response.created"), &created).await?;
-
+    let mut created_emitted = false;
     let mut done_seen = false;
     loop {
         while let Some(frame_end) = carry.find("\n\n") {
@@ -1359,7 +1356,17 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
             let chunk: serde_json::Value =
                 serde_json::from_str(&data).context("parse upstream chat stream chunk")?;
             if let Some(chunk_model) = chunk.get("model").and_then(|value| value.as_str()) {
-                model = chunk_model.to_string();
+                if model.is_empty() {
+                    model = chunk_model.to_string();
+                }
+            }
+            // Emit response.created once we have the model from the first chunk.
+            if !created_emitted && !model.is_empty() {
+                let created =
+                    serde_json::to_string(&responses_stream_created_event(&model, created_at))
+                        .context("serialize response.created stream event")?;
+                write_chunked_sse_event(tcp_stream, Some("response.created"), &created).await?;
+                created_emitted = true;
             }
             if let Some(delta) = chunk
                 .get("choices")
@@ -1395,6 +1402,13 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
         if carry.contains('\r') {
             carry = carry.replace("\r\n", "\n");
         }
+    }
+
+    // If upstream sent no model field at all (e.g. empty stream), still emit response.created.
+    if !created_emitted {
+        let created = serde_json::to_string(&responses_stream_created_event(&model, created_at))
+            .context("serialize response.created stream event")?;
+        write_chunked_sse_event(tcp_stream, Some("response.created"), &created).await?;
     }
 
     let text_done =

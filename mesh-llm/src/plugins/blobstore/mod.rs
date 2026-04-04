@@ -18,6 +18,8 @@ use crate::plugin::blobstore::{
 
 const DEFAULT_REQUEST_OBJECT_TTL_SECS: u64 = 15 * 60;
 const DEFAULT_USES_REMAINING: u32 = 3;
+/// Maximum decoded size for a single uploaded object (50 MiB).
+const MAX_OBJECT_BYTES: usize = 50 * 1024 * 1024;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -179,6 +181,13 @@ impl BlobStore {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(request.bytes_base64)
             .map_err(|err| PluginError::invalid_params(format!("Invalid bytes_base64: {err}")))?;
+        if bytes.len() > MAX_OBJECT_BYTES {
+            return Err(PluginError::invalid_params(format!(
+                "Object too large: {} bytes exceeds the {} byte limit",
+                bytes.len(),
+                MAX_OBJECT_BYTES
+            )));
+        }
         let size_bytes = bytes.len() as u64;
         let created_at = now_secs();
         let expires_at = created_at
@@ -204,8 +213,8 @@ impl BlobStore {
             uses_remaining,
         };
 
-        std::fs::write(self.object_path(&token), bytes)
-            .with_context(|| format!("Write object for token {token}"))
+        let object_path = self.object_path(&token);
+        self.write_atomic(&object_path, &bytes)
             .map_err(|err| PluginError::internal(err.to_string()))?;
         self.write_json(&self.token_path(&token), &stored)
             .map_err(|err| PluginError::internal(err.to_string()))?;
@@ -370,9 +379,23 @@ impl BlobStore {
         serde_json::from_str(&raw).with_context(|| format!("Parse {}", path.display()))
     }
 
+    fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let tmp_path = path.with_extension(format!(
+            "tmp-{}-{:016x}",
+            std::process::id(),
+            rand::rng().random::<u64>()
+        ));
+        std::fs::write(&tmp_path, bytes)
+            .with_context(|| format!("Write staging file {}", tmp_path.display()))?;
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            let _ = std::fs::remove_file(&tmp_path);
+            format!("Rename {} -> {}", tmp_path.display(), path.display())
+        })
+    }
+
     fn write_json<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
         let bytes = serde_json::to_vec(value).context("Serialize blobstore metadata")?;
-        std::fs::write(path, bytes).with_context(|| format!("Write {}", path.display()))
+        self.write_atomic(path, &bytes)
     }
 }
 
