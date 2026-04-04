@@ -30,7 +30,7 @@ trap cleanup EXIT
 
 echo "=== Mode: $MODE ==="
 echo "=== Ensuring local model is downloaded ==="
-"$LOCAL_BIN" download "$MODEL_NAME"
+"$LOCAL_BIN" models download "$MODEL_NAME"
 
 echo "=== Killing old processes ==="
 ssh -p $REMOTE_PORT $REMOTE "pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server" 2>/dev/null || true

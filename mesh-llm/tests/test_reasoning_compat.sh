@@ -29,7 +29,7 @@ if [ -z "$MODEL" ] || [ ! -f "$MODEL" ]; then
     [ -x "$MESH_BIN" ] || MESH_BIN="mesh-llm"
     echo "Downloading $MODEL_STEM via mesh-llm..."
     set +e
-    MODEL=$("$MESH_BIN" models download "$MODEL_STEM" | grep "^   " | head -1 | xargs)
+    MODEL=$("$MESH_BIN" models download "$MODEL_STEM" | grep "\.gguf$" | head -1 | xargs)
     set -e
 fi
 
