@@ -34,8 +34,8 @@ pub use io::{
 };
 pub use runtime::{
     EnsureInferenceEndpointRequest, EnsureInferenceEndpointResponse, InferenceEndpointDescriptor,
-    InferenceLocalModelMatcher, MeshVisibility, Plugin, PluginInitializeRequest, PluginMetadata,
-    PluginRuntime, PluginStartupPolicy, SimplePlugin,
+    InferenceLocalModelMatcher, InferenceProviderCapabilitiesDescriptor, MeshVisibility, Plugin,
+    PluginInitializeRequest, PluginMetadata, PluginRuntime, PluginStartupPolicy, SimplePlugin,
 };
 
 #[allow(dead_code)]

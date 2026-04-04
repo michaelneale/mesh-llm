@@ -42,10 +42,14 @@ async fn sync_plugin_managed_inference_providers(
             provider_id.clone(),
             endpoint.plugin_name.clone(),
             provider::InferenceProviderCapabilities {
-                supports_local_runtime: true,
-                supports_distributed_host_runtime: false,
-                requires_worker_runtime: false,
-                supports_moe_shard_runtime: false,
+                supports_local_runtime: endpoint.provider_capabilities.supports_local_runtime,
+                supports_distributed_host_runtime: endpoint
+                    .provider_capabilities
+                    .supports_distributed_host_runtime,
+                requires_worker_runtime: endpoint.provider_capabilities.requires_worker_runtime,
+                supports_moe_shard_runtime: endpoint
+                    .provider_capabilities
+                    .supports_moe_shard_runtime,
             },
         );
         let provider = Arc::new(provider::PluginManagedEndpointProvider::new(

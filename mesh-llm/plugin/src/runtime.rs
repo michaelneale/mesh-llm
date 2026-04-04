@@ -91,6 +91,8 @@ pub struct InferenceEndpointDescriptor {
     pub supports_streaming: bool,
     #[serde(default)]
     pub local_model_matcher: InferenceLocalModelMatcher,
+    #[serde(default)]
+    pub provider_capabilities: InferenceProviderCapabilitiesDescriptor,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,6 +101,14 @@ pub enum InferenceLocalModelMatcher {
     #[default]
     Never,
     MlxModelDir,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InferenceProviderCapabilitiesDescriptor {
+    pub supports_local_runtime: bool,
+    pub supports_distributed_host_runtime: bool,
+    pub requires_worker_runtime: bool,
+    pub supports_moe_shard_runtime: bool,
 }
 
 #[derive(Clone)]

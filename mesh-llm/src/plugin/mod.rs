@@ -75,6 +75,7 @@ pub struct ManagedInferenceEndpoint {
     pub address: Option<String>,
     pub supports_streaming: bool,
     pub local_model_matcher: mesh_llm_plugin::InferenceLocalModelMatcher,
+    pub provider_capabilities: mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor,
 }
 
 pub(crate) type BridgeFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -387,6 +388,7 @@ impl PluginManager {
                     address: descriptor.address,
                     supports_streaming: descriptor.supports_streaming,
                     local_model_matcher: descriptor.local_model_matcher,
+                    provider_capabilities: descriptor.provider_capabilities,
                 });
             }
         }
@@ -661,6 +663,13 @@ mod tests {
                                 supports_streaming: true,
                                 local_model_matcher:
                                     mesh_llm_plugin::InferenceLocalModelMatcher::MlxModelDir,
+                                provider_capabilities:
+                                    mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor {
+                                        supports_local_runtime: true,
+                                        supports_distributed_host_runtime: false,
+                                        requires_worker_runtime: false,
+                                        supports_moe_shard_runtime: false,
+                                    },
                             },
                         ])
                         .unwrap(),
@@ -716,6 +725,12 @@ mod tests {
                 address: None,
                 supports_streaming: true,
                 local_model_matcher: mesh_llm_plugin::InferenceLocalModelMatcher::MlxModelDir,
+                provider_capabilities: mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor {
+                    supports_local_runtime: true,
+                    supports_distributed_host_runtime: false,
+                    requires_worker_runtime: false,
+                    supports_moe_shard_runtime: false,
+                },
             }]
         );
     }

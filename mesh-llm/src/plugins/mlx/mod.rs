@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use mesh_llm_plugin::{
     async_trait, plugin_server_info, EnsureInferenceEndpointRequest,
     EnsureInferenceEndpointResponse, InferenceEndpointDescriptor, InferenceLocalModelMatcher,
-    Plugin, PluginContext, PluginResult, PluginRuntime,
+    InferenceProviderCapabilitiesDescriptor, Plugin, PluginContext, PluginResult, PluginRuntime,
 };
 use rmcp::model::ServerInfo;
 use std::path::{Path, PathBuf};
@@ -168,6 +168,12 @@ impl Plugin for MlxPlugin {
                 .map(|active| format!("http://127.0.0.1:{}", active.port)),
             supports_streaming: true,
             local_model_matcher: InferenceLocalModelMatcher::MlxModelDir,
+            provider_capabilities: InferenceProviderCapabilitiesDescriptor {
+                supports_local_runtime: true,
+                supports_distributed_host_runtime: false,
+                requires_worker_runtime: false,
+                supports_moe_shard_runtime: false,
+            },
         }]))
     }
 }
