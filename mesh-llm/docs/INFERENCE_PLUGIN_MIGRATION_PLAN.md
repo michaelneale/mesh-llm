@@ -176,6 +176,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - provider selection now goes through a named built-in provider seam instead of hard-coding llama at the orchestration call sites
 - this MLX sync branch now also has a built-in `BuiltinMlxProvider` for local endpoint startup
 - the provider contract now advertises explicit capabilities so orchestration can ask what a backend supports instead of inferring it indirectly
+- worker-runtime startup is now gated by provider capabilities instead of being assumed unconditionally in the shared runtime path
 
 ## Sync Branches
 
