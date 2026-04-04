@@ -214,6 +214,7 @@ impl InferenceServerHandle {
         }
     }
 
+    #[cfg(test)]
     pub fn is_external(&self) -> bool {
         self.external
     }

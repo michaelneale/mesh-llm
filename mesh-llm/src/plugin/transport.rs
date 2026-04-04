@@ -1,5 +1,7 @@
 use super::runtime::PluginRuntime;
-use super::{PluginInferenceEvent, PluginMeshEvent, PluginRpcBridge, PluginSummary, PROTOCOL_VERSION};
+use super::{
+    PluginInferenceEvent, PluginMeshEvent, PluginRpcBridge, PluginSummary, PROTOCOL_VERSION,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use rand::Rng;
 use rmcp::model::ErrorCode;
@@ -346,8 +348,7 @@ fn try_parse_inference_notification(
 ) -> Option<PluginInferenceEvent> {
     match notification.method.as_str() {
         "inference/register" => {
-            let params: serde_json::Value =
-                serde_json::from_str(&notification.params_json).ok()?;
+            let params: serde_json::Value = serde_json::from_str(&notification.params_json).ok()?;
             let model = params.get("model")?.as_str()?.to_string();
             let port = params.get("port")?.as_u64()? as u16;
             let backend = params
@@ -370,8 +371,7 @@ fn try_parse_inference_notification(
             })
         }
         "inference/unregister" => {
-            let params: serde_json::Value =
-                serde_json::from_str(&notification.params_json).ok()?;
+            let params: serde_json::Value = serde_json::from_str(&notification.params_json).ok()?;
             let model = params.get("model")?.as_str()?.to_string();
             let port = params.get("port")?.as_u64()? as u16;
             tracing::info!(

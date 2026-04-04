@@ -23,8 +23,7 @@ pub async fn health_check(port: u16) -> bool {
     let Ok(mut stream) = tokio::net::TcpStream::connect(&addr).await else {
         return false;
     };
-    let request =
-        format!("GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    let request = format!("GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).await.is_err() {
         return false;
     }
@@ -42,8 +41,7 @@ pub async fn list_models(port: u16) -> Result<Vec<String>> {
     let mut stream = tokio::net::TcpStream::connect(&addr)
         .await
         .context("connect to lemonade")?;
-    let request =
-        format!("GET /v1/models HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    let request = format!("GET /v1/models HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();
@@ -56,8 +54,8 @@ pub async fn list_models(port: u16) -> Result<Vec<String>> {
         .map(|pos| &response[pos + 4..])
         .unwrap_or("");
 
-    let json: serde_json::Value = serde_json::from_str(body)
-        .context("parse lemonade /v1/models response")?;
+    let json: serde_json::Value =
+        serde_json::from_str(body).context("parse lemonade /v1/models response")?;
 
     let models = json
         .get("data")
@@ -101,27 +99,6 @@ pub async fn connect_external(port: u16) -> Result<InferenceServerProcess> {
         death_rx,
         context_length: 0, // unknown for external servers
     })
-}
-
-/// Discover a running Lemonade server and return (port, models).
-/// Returns None if no Lemonade server is found.
-pub async fn discover() -> Option<(u16, Vec<String>)> {
-    if !health_check(DEFAULT_PORT).await {
-        return None;
-    }
-    let models = list_models(DEFAULT_PORT).await.ok()?;
-    if models.is_empty() {
-        return None;
-    }
-    Some((DEFAULT_PORT, models))
-}
-
-/// Discover a running Lemonade server and connect to it.
-/// Returns (port, model_names, process) or None.
-pub async fn discover_and_connect() -> Option<(u16, Vec<String>, InferenceServerProcess)> {
-    let (port, models) = discover().await?;
-    let process = connect_external(port).await.ok()?;
-    Some((port, models, process))
 }
 
 #[cfg(test)]
@@ -187,7 +164,10 @@ mod tests {
             .expect("write request");
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.expect("read response");
+        stream
+            .read_to_end(&mut response)
+            .await
+            .expect("read response");
         let response = String::from_utf8_lossy(&response);
 
         eprintln!("response preview: {}", &response[..response.len().min(500)]);

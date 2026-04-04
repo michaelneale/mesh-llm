@@ -134,7 +134,6 @@ struct PluginManagerInner {
     plugins: BTreeMap<String, ExternalPlugin>,
     inactive: BTreeMap<String, PluginSummary>,
     rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
-    inference_tx: Option<mpsc::Sender<PluginInferenceEvent>>,
     #[cfg(test)]
     bridged_plugins: BTreeSet<String>,
 }
@@ -220,7 +219,6 @@ impl PluginManager {
                     .map(|summary| (summary.name.clone(), summary))
                     .collect(),
                 rpc_bridge,
-                inference_tx,
                 #[cfg(test)]
                 bridged_plugins: BTreeSet::new(),
             }),
@@ -236,7 +234,6 @@ impl PluginManager {
                 plugins: BTreeMap::new(),
                 inactive: BTreeMap::new(),
                 rpc_bridge: Arc::new(Mutex::new(Some(bridge))),
-                inference_tx: None,
                 bridged_plugins: plugin_names
                     .iter()
                     .map(|name| (*name).to_string())
@@ -434,18 +431,6 @@ impl PluginManager {
             plugin.send_mesh_event(event.clone()).await?;
         }
         Ok(())
-    }
-
-    /// Called by the notification handler when a plugin sends `inference/register`
-    /// or `inference/unregister`. Forwards to the runtime via the inference channel.
-    pub async fn dispatch_inference_event(&self, event: PluginInferenceEvent) {
-        if let Some(ref tx) = self.inner.inference_tx {
-            if let Err(err) = tx.send(event).await {
-                tracing::warn!("Failed to dispatch plugin inference event: {err}");
-            }
-        } else {
-            tracing::debug!("Plugin inference event dropped — no inference channel configured");
-        }
     }
 
     fn start_supervisor(&self) {

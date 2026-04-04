@@ -1480,7 +1480,9 @@ async fn run_auto(
     // If --lemonade or --lemonade-port is set, connect to a running Lemonade
     // server and register its models as local inference targets.
     // Also auto-discovers Lemonade on the default port when --lemonade is set.
-    let lemonade_port = cli.lemonade_port.unwrap_or(crate::inference::lemonade::DEFAULT_PORT);
+    let lemonade_port = cli
+        .lemonade_port
+        .unwrap_or(crate::inference::lemonade::DEFAULT_PORT);
     let use_lemonade = cli.lemonade || cli.lemonade_port.is_some();
     if use_lemonade {
         match crate::inference::lemonade::connect_external(lemonade_port).await {
@@ -1529,7 +1531,9 @@ async fn run_auto(
                         });
                     }
                     Err(e) => {
-                        eprintln!("⚠️  Lemonade on port {lemonade_port} — failed to list models: {e}");
+                        eprintln!(
+                            "⚠️  Lemonade on port {lemonade_port} — failed to list models: {e}"
+                        );
                     }
                 }
             }
@@ -1782,7 +1786,9 @@ async fn run_lemonade_only(
     mut plugin_inference_rx: tokio::sync::mpsc::Receiver<plugin::PluginInferenceEvent>,
     affinity_router: affinity::AffinityRouter,
 ) -> Result<()> {
-    let lemonade_port = cli.lemonade_port.unwrap_or(crate::inference::lemonade::DEFAULT_PORT);
+    let lemonade_port = cli
+        .lemonade_port
+        .unwrap_or(crate::inference::lemonade::DEFAULT_PORT);
 
     // Connect to Lemonade
     let process = crate::inference::lemonade::connect_external(lemonade_port)
@@ -1806,7 +1812,9 @@ async fn run_lemonade_only(
     // Use first model as the "primary" for gossip bookkeeping
     let primary_model_name = models[0].clone();
 
-    eprintln!("🍋 Lemonade-only mode — all inference delegated to Lemonade on port {lemonade_port}");
+    eprintln!(
+        "🍋 Lemonade-only mode — all inference delegated to Lemonade on port {lemonade_port}"
+    );
     eprintln!("   Lemonade manages GPU (llama.cpp), NPU (FLM, RyzenAI), whisper, SD, TTS");
     for m in &models {
         eprintln!("  + {m}");
