@@ -534,8 +534,8 @@ pub(super) fn collect_repo_artifact_candidates(siblings: &[String]) -> Vec<RepoA
 
 pub(super) fn artifact_kind_label(kind: RepoArtifactKind) -> &'static str {
     match kind {
-        RepoArtifactKind::Gguf => "gguf",
-        RepoArtifactKind::Mlx => "mlx",
+        RepoArtifactKind::Gguf => "🦙 gguf",
+        RepoArtifactKind::Mlx => "🍎 mlx",
     }
 }
 
@@ -554,9 +554,9 @@ pub fn catalog_model_kind_label(model: &catalog::CatalogModel) -> &'static str {
         .unwrap_or(false)
         || model.url.contains("model.safetensors")
     {
-        "mlx"
+        "🍎 mlx"
     } else {
-        "gguf"
+        "🦙 gguf"
     }
 }
 

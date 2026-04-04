@@ -304,8 +304,8 @@ fn format_installed_size(bytes: u64) -> String {
 
 fn installed_entry_type_label(entry: &InstalledModelEntry) -> &'static str {
     match entry.kind {
-        InstalledModelKind::Gguf => "gguf",
-        InstalledModelKind::Mlx => "mlx",
+        InstalledModelKind::Gguf => "🦙 gguf",
+        InstalledModelKind::Mlx => "🍎 mlx",
     }
 }
 
