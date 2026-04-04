@@ -1,0 +1,182 @@
+{
+  "defaults": {
+    "exact": {
+      "prompt": "Reply with exactly: blue",
+      "expect_contains": "blue",
+      "expect_exact": "blue",
+      "forbid_contains": "",
+      "prompt_suite": [
+        {
+          "label": "alt-green",
+          "prompt": "Reply with exactly: green",
+          "expect_exact": "green"
+        },
+        {
+          "label": "alt-red",
+          "prompt": "Reply with exactly: red",
+          "expect_exact": "red"
+        }
+      ]
+    },
+    "behavior": {
+      "dataset": "HuggingFaceH4/mt_bench_prompts",
+      "max_tokens": 192,
+      "wait_seconds": 300
+    }
+  },
+  "models": [
+    {
+      "id": "qwen25",
+      "label": "qwen2.5-0.5b",
+      "expectation_class": "strict",
+      "notes": "Primary MLX parity canary for exact-answer drift.",
+      "gguf": {
+        "exact_case_id": "qwen25-gguf-exact",
+        "behavior_case_id": "qwen25-gguf-behavior",
+        "model_ref": "Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "qwen25-mlx-exact",
+        "behavior_case_id": "qwen25-mlx-behavior",
+        "model_ref": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "qwen3",
+      "label": "qwen3-0.6b",
+      "expectation_class": "strict",
+      "notes": "General Qwen parity and reasoning-template baseline.",
+      "gguf": {
+        "exact_case_id": "qwen3-gguf-exact",
+        "behavior_case_id": "qwen3-gguf-behavior",
+        "model_ref": "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "qwen3-mlx-exact",
+        "behavior_case_id": "qwen3-mlx-behavior",
+        "model_ref": "mlx-community/Qwen3-0.6B-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "josie",
+      "label": "qwen3-josie-0.6b",
+      "expectation_class": "weak-but-stable",
+      "notes": "Reasoning-family parity canary; shared tiny-model weirdness is expected.",
+      "gguf": {
+        "exact_case_id": "josie-gguf-exact",
+        "behavior_case_id": "josie-gguf-behavior",
+        "model_ref": "mradermacher/JOSIE-IT1-Qwen3-0.6B-GGUF/JOSIE-IT1-Qwen3-0.6B.Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "josie-mlx-exact",
+        "behavior_case_id": "josie-mlx-behavior",
+        "model_ref": "mlx-community/JOSIE-IT1-Qwen3-0.6B-4bit",
+        "template_source": "chat_template.jinja"
+      }
+    },
+    {
+      "id": "llama32",
+      "label": "llama-3.2-1b",
+      "expectation_class": "weak-but-stable",
+      "notes": "Tiny Llama parity canary; exact capitalization drift is tolerated as a known weakness.",
+      "gguf": {
+        "exact_case_id": "llama32-gguf-exact",
+        "behavior_case_id": "llama32-gguf-behavior",
+        "model_ref": "llmware/llama-3.2-1b-gguf/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "llama32-mlx-exact",
+        "behavior_case_id": "llama32-mlx-behavior",
+        "model_ref": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "gemma2",
+      "label": "gemma-2-2b",
+      "expectation_class": "strict",
+      "notes": "Gemma2 config-parse and prefill parity baseline.",
+      "gguf": {
+        "exact_case_id": "gemma2-gguf-exact",
+        "behavior_case_id": "gemma2-gguf-behavior",
+        "model_ref": "bartowski/gemma-2-2b-it-GGUF/gemma-2-2b-it-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "gemma2-mlx-exact",
+        "behavior_case_id": "gemma2-mlx-behavior",
+        "model_ref": "mlx-community/gemma-2-2b-it-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "gemma3",
+      "label": "gemma-3-1b",
+      "expectation_class": "strict",
+      "notes": "Gemma3 parity baseline.",
+      "gguf": {
+        "exact_case_id": "gemma3-gguf-exact",
+        "behavior_case_id": "gemma3-gguf-behavior",
+        "model_ref": "ggml-org/gemma-3-1b-it-GGUF/gemma-3-1b-it-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "gemma3-mlx-exact",
+        "behavior_case_id": "gemma3-mlx-behavior",
+        "model_ref": "mlx-community/gemma-3-1b-it-qat-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "gemma4",
+      "label": "gemma-4-e4b",
+      "expectation_class": "strict",
+      "notes": "Gemma4 parity baseline across newer llama pin and MLX cold-prefill fixes.",
+      "gguf": {
+        "exact_case_id": "gemma4-gguf-exact",
+        "behavior_case_id": "gemma4-gguf-behavior",
+        "model_ref": "unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "gemma4-mlx-exact",
+        "behavior_case_id": "gemma4-mlx-behavior",
+        "model_ref": "unsloth/gemma-4-E4B-it-UD-MLX-4bit",
+        "template_source": "chat_template.jinja"
+      }
+    },
+    {
+      "id": "glm4",
+      "label": "glm-4-9b",
+      "expectation_class": "strict",
+      "notes": "GLM4 parity baseline.",
+      "gguf": {
+        "exact_case_id": "glm4-gguf-exact",
+        "behavior_case_id": "glm4-gguf-behavior",
+        "model_ref": "lmstudio-community/GLM-4-9B-0414-GGUF/GLM-4-9B-0414-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "glm4-mlx-exact",
+        "behavior_case_id": "glm4-mlx-behavior",
+        "model_ref": "mlx-community/GLM-4-9B-0414-4bit",
+        "template_source": "tokenizer_config.json"
+      }
+    },
+    {
+      "id": "lfm2",
+      "label": "lfm2-350m",
+      "expectation_class": "weak-but-stable",
+      "notes": "Tiny-model shared weakness canary for exact and behavior drift.",
+      "gguf": {
+        "exact_case_id": "lfm2-gguf-exact",
+        "behavior_case_id": "lfm2-gguf-behavior",
+        "model_ref": "LiquidAI/LFM2-350M-GGUF/LFM2-350M-Q4_K_M.gguf"
+      },
+      "mlx": {
+        "exact_case_id": "lfm2-mlx-exact",
+        "behavior_case_id": "lfm2-mlx-behavior",
+        "model_ref": "mlx-community/LFM2-350M-4bit",
+        "template_source": "chat_template.jinja"
+      }
+    }
+  ]
+}

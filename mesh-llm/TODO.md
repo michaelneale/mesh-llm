@@ -60,6 +60,9 @@ See `tests/test_reasoning_compat.sh` for the contract tests validating this beha
 
 **Why off by default:** Qwen3.5-9B is broken with thinking (reasoning burns entire token budget, content always empty). MiniMax-M2.5 is 2-27x slower with thinking for no quality gain. Agentic eval with pi confirmed: same 3/4 accuracy, half the total time with thinking off.
 
+## MLX / GGUF Parity
+- [ ] **CI strategy for parity matrix**: Decide how the reproducible GGUF vs MLX parity suite and behavior suite should run in CI (PR vs nightly vs manual, artifact retention, model scope, and machine requirements) so local validation can become repeatable regression coverage.
+
 ## Smart Router
 - Design: [MULTI_MODAL.md](docs/MULTI_MODAL.md)
 - [ ] **Context-aware routing**: Hosts advertise `n_ctx` in gossip. Router estimates request token count and skips hosts that can't fit it. Today a long chat routed to a small-context host returns 400 with no fallback.

@@ -1,29 +1,61 @@
 # Testing mesh-llm
 
-## Local GGUF/MLX parity rerun
+## Local validation matrix
 
-Use the checked-in exact parity suite when you want to rerun the local backend
-comparison matrix and preserve raw per-case artifacts:
+Use the checked-in validation runner when you want to rerun the local backend
+comparison matrix and preserve raw per-case artifacts for both the deterministic
+exact suite and the MT-Bench-derived behavior suite:
 
 ```bash
 just build
-scripts/run-mlx-parity-matrix.sh --stamp rerun-$(date +%Y%m%d-%H%M%S)
+scripts/run-validation-matrix.py --stamp rerun-$(date +%Y%m%d-%H%M%S)
 ```
 
 Outputs:
 
-- summary TSV: `MLX_VALIDATION_RESULTS/<stamp>/exact-summary.tsv`
-- raw logs per case: `MLX_VALIDATION_RESULTS/<stamp>/<case-id>/`
+- exact summary TSV: `MLX_VALIDATION_RESULTS/<stamp>/exact-summary.tsv`
+- behavior summary TSV: `MLX_VALIDATION_RESULTS/<stamp>/behavior-summary.tsv`
+- combined summary TSV: `MLX_VALIDATION_RESULTS/<stamp>/validation-summary.tsv`
+- raw logs per case:
+  - `MLX_VALIDATION_RESULTS/<stamp>/exact/<case-id>/`
+  - `MLX_VALIDATION_RESULTS/<stamp>/behavior/<case-id>/`
 
 Useful options:
 
 ```bash
-# rerun only a couple of cases
-scripts/run-mlx-parity-matrix.sh --skip-build --cases qwen25-gguf-exact,qwen25-mlx-exact
+# exact-only parity rerun
+scripts/run-validation-matrix.py --suite exact --skip-build
+
+# behavior-only rerun
+scripts/run-validation-matrix.py --suite behavior --skip-build
+
+# rerun only one model family on both backends
+scripts/run-validation-matrix.py --skip-build --cases qwen25
+
+# run only the GGUF side
+scripts/run-validation-matrix.py --skip-build --backend gguf
+
+# run only the MLX side
+scripts/run-validation-matrix.py --skip-build --backend mlx
+
+# shorten the behavior run for local debugging
+scripts/run-validation-matrix.py --suite behavior --skip-build --cases qwen25 --max-prompts 3
+
+# compatibility wrappers
+scripts/run-mlx-parity-matrix.sh --skip-build
+scripts/run-behavior-matrix.sh --skip-build
 
 # store artifacts somewhere else
-scripts/run-mlx-parity-matrix.sh --root /tmp/mesh-llm-validation
+scripts/run-validation-matrix.py --root /tmp/mesh-llm-validation
 ```
+
+The shared matrix definition lives in:
+
+- `scripts/validation-matrix.json`
+
+Each row pins the exact GGUF and MLX artifacts to avoid model drift and tags the
+row with an expectation class such as `strict` or `weak-but-stable` so tiny
+model weirdness stays explicit instead of silently redefining success.
 
 ## Single-model permutations
 

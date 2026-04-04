@@ -184,6 +184,7 @@ def main() -> int:
     parser.add_argument("--max-prompts", type=int, default=0)
     parser.add_argument("--max-tokens", type=int, default=192)
     parser.add_argument("--wait-seconds", type=int, default=300)
+    parser.add_argument("--mesh-log-output", default="")
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--label", default="")
     args = parser.parse_args()
@@ -288,6 +289,13 @@ def main() -> int:
             output_path = Path(args.output_json)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
+            if args.mesh_log_output:
+                mesh_log_output = Path(args.mesh_log_output)
+                mesh_log_output.parent.mkdir(parents=True, exist_ok=True)
+                mesh_log_output.write_text(
+                    log_path.read_text(encoding="utf-8", errors="replace"),
+                    encoding="utf-8",
+                )
 
             if failed:
                 print(f"❌ Behavior smoke failed: {failed} prompt(s) flagged", file=sys.stderr)
@@ -299,12 +307,12 @@ def main() -> int:
         finally:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             time.sleep(2)
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             try:
                 process.wait(timeout=10)
