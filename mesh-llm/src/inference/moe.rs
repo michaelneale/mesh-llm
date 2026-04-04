@@ -451,27 +451,26 @@ mod tests {
 
     #[test]
     fn test_detect_moe_qwen3() {
-        let path =
-            std::path::Path::new("/Users/micn/.cache/huggingface/hub/Qwen3-30B-A3B-Q4_K_M.gguf");
+        let hf_cache = crate::models::huggingface_hub_cache_dir();
+        let path = hf_cache.join("Qwen3-30B-A3B-Q4_K_M.gguf");
         if !path.exists() {
             eprintln!("Skipping: model file not found");
             return;
         }
-        let info = detect_moe(path).expect("Should detect MoE");
+        let info = detect_moe(&path).expect("Should detect MoE");
         assert_eq!(info.expert_count, 128);
         assert_eq!(info.expert_used_count, 8);
     }
 
     #[test]
     fn test_detect_moe_olmoe() {
-        let path = std::path::Path::new(
-            "/Users/micn/.cache/huggingface/hub/olmoe-1b-7b-0924-instruct-q4_k_m.gguf",
-        );
+        let hf_cache = crate::models::huggingface_hub_cache_dir();
+        let path = hf_cache.join("olmoe-1b-7b-0924-instruct-q4_k_m.gguf");
         if !path.exists() {
             eprintln!("Skipping: OLMoE model file not found");
             return;
         }
-        let info = detect_moe(path).expect("Should detect MoE");
+        let info = detect_moe(&path).expect("Should detect MoE");
         assert_eq!(info.expert_count, 64);
         assert_eq!(info.expert_used_count, 8);
     }
@@ -479,15 +478,14 @@ mod tests {
     #[test]
     fn test_detect_moe_dense_model() {
         // Qwen2.5-3B is dense (no experts) — should return None
-        let path = std::path::Path::new(
-            "/Users/micn/.cache/huggingface/hub/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        );
+        let hf_cache = crate::models::huggingface_hub_cache_dir();
+        let path = hf_cache.join("Qwen2.5-3B-Instruct-Q4_K_M.gguf");
         if !path.exists() {
             eprintln!("Skipping: dense model file not found");
             return;
         }
         assert!(
-            detect_moe(path).is_none(),
+            detect_moe(&path).is_none(),
             "Dense model should not be detected as MoE"
         );
     }

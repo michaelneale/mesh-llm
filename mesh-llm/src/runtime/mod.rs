@@ -260,8 +260,8 @@ pub(crate) async fn run() -> Result<()> {
             "--mmproj requires an explicit primary model via --model or --gguf"
         );
         anyhow::ensure!(
-            mmproj.exists(),
-            "mmproj file not found: {}",
+            mmproj.is_file(),
+            "mmproj path is not a file: {}",
             mmproj.display()
         );
     }

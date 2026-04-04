@@ -8,8 +8,11 @@ set -euo pipefail
 MODE="${1:-client}"
 REMOTE="mic@home.dwyer.au"
 REMOTE_PORT=23632
-LOCAL_BIN="$(dirname "$0")/target/release/mesh-llm"
-LOCAL_BIN_DIR="$(dirname "$0")/../llama.cpp/build/bin"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOCAL_BIN="${WORKSPACE_ROOT}/target/release/mesh-llm"
+[ -x "$LOCAL_BIN" ] || LOCAL_BIN="mesh-llm"
+LOCAL_BIN_DIR="${WORKSPACE_ROOT}/../llama.cpp/build/bin"
 REMOTE_BIN="~/bin/mesh-llm"
 MODEL_NAME="Qwen2.5-3B-Instruct-Q4_K_M"
 REMOTE_MODEL="$MODEL_NAME"

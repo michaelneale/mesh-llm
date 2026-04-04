@@ -25,7 +25,9 @@ total_pass() { PASS=$((PASS + 1)); echo "  ✅ $1"; }
 total_fail() { FAIL=$((FAIL + 1)); echo "  ❌ $1: $2"; }
 
 if [ -z "$MODEL" ] || [ ! -f "$MODEL" ]; then
-    MESH_BIN="$(dirname "$0")/../../target/release/mesh-llm"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    MESH_BIN="$WORKSPACE_ROOT/target/release/mesh-llm"
     [ -x "$MESH_BIN" ] || MESH_BIN="mesh-llm"
     echo "Downloading $MODEL_STEM via mesh-llm..."
     set +e
