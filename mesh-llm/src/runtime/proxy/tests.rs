@@ -62,6 +62,9 @@ struct BlobstoreTestBridge {
     store: BlobStore,
 }
 
+#[derive(Clone, Default)]
+struct NoopTestBridge;
+
 impl BlobstoreTestBridge {
     fn error_response(message: impl Into<String>) -> plugin::proto::ErrorResponse {
         plugin::proto::ErrorResponse {
@@ -69,6 +72,32 @@ impl BlobstoreTestBridge {
             message: message.into(),
             data_json: String::new(),
         }
+    }
+}
+
+impl plugin::PluginRpcBridge for NoopTestBridge {
+    fn handle_request(
+        &self,
+        plugin_name: String,
+        method: String,
+        _params_json: String,
+    ) -> plugin::BridgeFuture<Result<plugin::RpcResult, plugin::proto::ErrorResponse>> {
+        Box::pin(async move {
+            Err(plugin::proto::ErrorResponse {
+                code: ErrorCode::METHOD_NOT_FOUND.0,
+                message: format!("Noop test bridge cannot handle {plugin_name}:{method}"),
+                data_json: String::new(),
+            })
+        })
+    }
+
+    fn handle_notification(
+        &self,
+        _plugin_name: String,
+        _method: String,
+        _params_json: String,
+    ) -> plugin::BridgeFuture<()> {
+        Box::pin(async {})
     }
 }
 
@@ -218,6 +247,24 @@ async fn start_blobstore_plugin_manager() -> (plugin::PluginManager, std::path::
         plugin::PluginManager::for_test_bridge(&[plugin::BLOBSTORE_PLUGIN_ID], Arc::new(bridge)),
         root,
     )
+}
+
+async fn start_inference_endpoint_plugin_manager(
+    address: String,
+    model: &str,
+) -> plugin::PluginManager {
+    let plugin_manager = plugin::PluginManager::for_test_bridge(&[], Arc::new(NoopTestBridge));
+    plugin_manager
+        .set_test_inference_endpoints(vec![plugin::InferenceEndpointRoute {
+            plugin_name: plugin::LEMONADE_PLUGIN_ID.into(),
+            endpoint_id: "lemonade".into(),
+            address,
+            protocol: Some("openai_compatible".into()),
+            supports_streaming: true,
+            models: vec![model.to_string()],
+        }])
+        .await;
+    plugin_manager
 }
 
 async fn spawn_capturing_upstream(
@@ -566,6 +613,69 @@ async fn test_api_proxy_rewrites_image_blob_url_to_data_url() {
     proxy_handle.abort();
     let _ = upstream_handle.await;
     let _ = std::fs::remove_dir_all(blobstore_root);
+}
+
+#[tokio::test]
+async fn test_api_proxy_routes_to_registered_inference_endpoint() {
+    let (upstream_port, upstream_rx, upstream_handle) =
+        spawn_capturing_upstream(r#"{"id":"chatcmpl","object":"chat.completion","choices":[]}"#)
+            .await;
+    let plugin_manager = start_inference_endpoint_plugin_manager(
+        format!("http://127.0.0.1:{upstream_port}/api/v1"),
+        "lemonade-test",
+    )
+    .await;
+    let (proxy_addr, proxy_handle) =
+        spawn_api_proxy_test_harness_with_plugin_manager(local_targets(&[]), plugin_manager).await;
+
+    let body = json!({
+        "model": "lemonade-test",
+        "messages": [{"role": "user", "content": "hello"}],
+    })
+    .to_string();
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    let response = send_request_and_read_response(proxy_addr, vec![request.into_bytes()]).await;
+    let raw = String::from_utf8(upstream_rx.await.unwrap()).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(raw.starts_with("POST /api/v1/chat/completions HTTP/1.1"));
+    assert!(raw.contains(r#""model":"lemonade-test""#));
+
+    proxy_handle.abort();
+    let _ = upstream_handle.await;
+}
+
+#[tokio::test]
+async fn test_api_proxy_lists_registered_inference_models() {
+    let plugin_manager = start_inference_endpoint_plugin_manager(
+        "http://127.0.0.1:8000/api/v1".into(),
+        "lemonade-test",
+    )
+    .await;
+    let (proxy_addr, proxy_handle) =
+        spawn_api_proxy_test_harness_with_plugin_manager(local_targets(&[]), plugin_manager).await;
+
+    let response = send_request_and_read_response(
+        proxy_addr,
+        vec![b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n".to_vec()],
+    )
+    .await;
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
+    let json: serde_json::Value = serde_json::from_str(body).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(json["data"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .any(|entry| entry["id"] == "lemonade-test"));
+
+    proxy_handle.abort();
 }
 
 #[tokio::test]

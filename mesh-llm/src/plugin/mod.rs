@@ -194,6 +194,8 @@ struct PluginManagerInner {
     bridged_plugins: BTreeSet<String>,
     #[cfg(test)]
     test_endpoints: Arc<Mutex<Vec<PluginEndpointSummary>>>,
+    #[cfg(test)]
+    test_inference_endpoints: Arc<Mutex<Vec<InferenceEndpointRoute>>>,
 }
 
 impl PluginManager {
@@ -272,6 +274,8 @@ impl PluginManager {
                 bridged_plugins: BTreeSet::new(),
                 #[cfg(test)]
                 test_endpoints: Arc::new(Mutex::new(Vec::new())),
+                #[cfg(test)]
+                test_inference_endpoints: Arc::new(Mutex::new(Vec::new())),
             }),
         };
         manager.start_supervisor();
@@ -291,6 +295,7 @@ impl PluginManager {
                     .map(|name| (*name).to_string())
                     .collect(),
                 test_endpoints: Arc::new(Mutex::new(Vec::new())),
+                test_inference_endpoints: Arc::new(Mutex::new(Vec::new())),
             }),
         }
     }
@@ -362,6 +367,11 @@ impl PluginManager {
     #[cfg(test)]
     pub async fn set_test_endpoints(&self, endpoints: Vec<PluginEndpointSummary>) {
         *self.inner.test_endpoints.lock().await = endpoints;
+    }
+
+    #[cfg(test)]
+    pub async fn set_test_inference_endpoints(&self, endpoints: Vec<InferenceEndpointRoute>) {
+        *self.inner.test_inference_endpoints.lock().await = endpoints;
     }
 
     pub async fn is_enabled(&self, name: &str) -> bool {
@@ -879,6 +889,18 @@ impl PluginManager {
     }
 
     async fn inference_endpoints(&self) -> Result<Vec<InferenceEndpointRoute>> {
+        #[cfg(test)]
+        if self.inner.plugins.is_empty() && self.inner.inactive.is_empty() {
+            let mut endpoints = self.inner.test_inference_endpoints.lock().await.clone();
+            endpoints.sort_by(|a, b| {
+                a.plugin_name
+                    .cmp(&b.plugin_name)
+                    .then_with(|| a.endpoint_id.cmp(&b.endpoint_id))
+            });
+            if !endpoints.is_empty() {
+                return Ok(endpoints);
+            }
+        }
         let summaries = self.list().await;
         let endpoint_health = self.inner.endpoint_health.lock().await.clone();
         let mut endpoints = Vec::new();
@@ -1242,11 +1264,41 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
 mod tests {
     use super::config::{MeshConfig, PluginConfigEntry};
     use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn private_host_mode() -> PluginHostMode {
         PluginHostMode {
             mesh_visibility: MeshVisibility::Private,
         }
+    }
+
+    async fn spawn_fake_models_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_seen = requests.clone();
+        let handle = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await.unwrap();
+                requests_seen.fetch_add(1, Ordering::SeqCst);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                let _ = stream.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/api/v1"), handle, requests)
     }
 
     #[test]
@@ -1436,6 +1488,67 @@ mod tests {
     fn models_probe_url_extends_api_v1_base() {
         let url = endpoint_models_url("http://localhost:8000/api/v1").unwrap();
         assert_eq!(url.as_str(), "http://localhost:8000/api/v1/models");
+    }
+
+    #[tokio::test]
+    async fn openai_http_endpoint_probe_extracts_models_from_fake_server() {
+        let (address, handle, requests) = spawn_fake_models_server(vec![(
+            "200 OK",
+            r#"{"data":[{"id":"lemonade-small"},{"id":"lemonade-large"}]}"#,
+        )])
+        .await;
+
+        let health = probe_openai_compatible_http_endpoint(&address).await;
+        assert!(health.available);
+        assert_eq!(health.state, "healthy");
+        assert_eq!(
+            health.models,
+            vec!["lemonade-small".to_string(), "lemonade-large".to_string()]
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn openai_http_endpoint_probe_marks_503_unavailable() {
+        let (address, handle, requests) =
+            spawn_fake_models_server(vec![("503 Service Unavailable", r#"{"error":"warming"}"#)])
+                .await;
+
+        let health = probe_openai_compatible_http_endpoint(&address).await;
+        assert!(!health.available);
+        assert_eq!(health.state, "unhealthy");
+        assert!(health.models.is_empty());
+        assert!(health
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("503 Service Unavailable"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn openai_http_endpoint_probe_recovers_when_fake_server_recovers() {
+        let (address, handle, requests) = spawn_fake_models_server(vec![
+            ("503 Service Unavailable", r#"{"error":"warming"}"#),
+            ("200 OK", r#"{"data":[{"id":"lemonade-recovered"}]}"#),
+        ])
+        .await;
+
+        let first = probe_openai_compatible_http_endpoint(&address).await;
+        assert!(!first.available);
+        assert_eq!(first.state, "unhealthy");
+
+        let second = probe_openai_compatible_http_endpoint(&address).await;
+        assert!(second.available);
+        assert_eq!(second.state, "healthy");
+        assert_eq!(second.models, vec!["lemonade-recovered".to_string()]);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+
+        handle.await.unwrap();
     }
 
     #[test]
