@@ -44,6 +44,14 @@ pub(super) async fn dispatch_request(
             plugins::handle(stream, state, method, path, path_only, body).await?;
             Ok(true)
         }
+        ("GET", "/api/plugins/providers") => {
+            plugins::handle(stream, state, method, path, path_only, body).await?;
+            Ok(true)
+        }
+        ("GET", p) if p.starts_with("/api/plugins/providers/") => {
+            plugins::handle(stream, state, method, path, path_only, body).await?;
+            Ok(true)
+        }
         ("GET", p) if p.starts_with("/api/plugins/") && p.ends_with("/manifest") => {
             plugins::handle(stream, state, method, path, path_only, body).await?;
             Ok(true)

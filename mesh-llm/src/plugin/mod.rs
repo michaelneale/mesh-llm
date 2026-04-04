@@ -150,6 +150,18 @@ pub struct PluginEndpointSummary {
     pub models: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct PluginCapabilityProvider {
+    pub capability: String,
+    pub plugin_name: String,
+    pub plugin_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_id: Option<String>,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct EndpointHealthRecord {
     state: String,
@@ -429,6 +441,70 @@ impl PluginManager {
         Ok(endpoints
             .into_iter()
             .find(|endpoint| endpoint.models.iter().any(|candidate| candidate == model)))
+    }
+
+    pub async fn capability_providers(&self) -> Result<Vec<PluginCapabilityProvider>> {
+        let summaries = self.list().await;
+        let endpoint_health = self.inner.endpoint_health.lock().await.clone();
+        let mut providers = Vec::new();
+        for summary in summaries {
+            let Ok(Some(manifest)) = self.manifest(&summary.name).await else {
+                continue;
+            };
+
+            let plugin_default = endpoint_state_from_plugin_status(&summary);
+            for capability in &manifest.capabilities {
+                providers.push(PluginCapabilityProvider {
+                    capability: capability.clone(),
+                    plugin_name: summary.name.clone(),
+                    plugin_status: summary.status.clone(),
+                    endpoint_id: None,
+                    available: plugin_default.available,
+                    detail: plugin_default.detail.clone(),
+                });
+            }
+
+            for endpoint in &manifest.endpoints {
+                let health = endpoint_health
+                    .get(&endpoint_key(&summary.name, &endpoint.endpoint_id))
+                    .cloned()
+                    .unwrap_or_else(|| endpoint_state_from_plugin_status(&summary));
+                let endpoint_capabilities = endpoint_declared_capabilities(endpoint);
+                for capability in endpoint_capabilities {
+                    providers.push(PluginCapabilityProvider {
+                        capability,
+                        plugin_name: summary.name.clone(),
+                        plugin_status: summary.status.clone(),
+                        endpoint_id: Some(endpoint.endpoint_id.clone()),
+                        available: health.available,
+                        detail: health.detail.clone(),
+                    });
+                }
+            }
+        }
+        providers.sort_by(|a, b| {
+            a.capability
+                .cmp(&b.capability)
+                .then_with(|| a.plugin_name.cmp(&b.plugin_name))
+                .then_with(|| a.endpoint_id.cmp(&b.endpoint_id))
+        });
+        Ok(providers)
+    }
+
+    pub async fn provider_for_capability(
+        &self,
+        capability: &str,
+    ) -> Result<Option<PluginCapabilityProvider>> {
+        let mut providers = self.capability_providers().await?;
+        providers.sort_by(|a, b| {
+            b.available
+                .cmp(&a.available)
+                .then_with(|| a.plugin_name.cmp(&b.plugin_name))
+                .then_with(|| a.endpoint_id.cmp(&b.endpoint_id))
+        });
+        Ok(providers
+            .into_iter()
+            .find(|provider| provider.capability == capability))
     }
 
     pub async fn mcp_request<T, P>(&self, plugin_name: &str, method: &str, params: P) -> Result<T>
@@ -960,6 +1036,26 @@ fn endpoint_key(plugin_name: &str, endpoint_id: &str) -> String {
     format!("{plugin_name}:{endpoint_id}")
 }
 
+fn endpoint_declared_capabilities(endpoint: &proto::EndpointManifest) -> Vec<String> {
+    match proto::EndpointKind::try_from(endpoint.kind).unwrap_or(proto::EndpointKind::Unspecified) {
+        proto::EndpointKind::Inference => {
+            let mut capabilities = vec!["endpoint:inference".into()];
+            if let Some(protocol) = endpoint.protocol.as_deref() {
+                capabilities.push(format!("endpoint:inference/{protocol}"));
+            }
+            capabilities
+        }
+        proto::EndpointKind::Mcp => {
+            let mut capabilities = vec!["endpoint:mcp".into()];
+            if let Some(namespace) = endpoint.namespace.as_deref() {
+                capabilities.push(format!("endpoint:mcp/{namespace}"));
+            }
+            capabilities
+        }
+        proto::EndpointKind::Unspecified => Vec::new(),
+    }
+}
+
 fn normalize_test_tool_result_content(result: &rmcp::model::CallToolResult) -> Result<String> {
     if let Some(value) = &result.structured_content {
         return serde_json::to_string(value).map_err(Into::into);
@@ -1296,5 +1392,27 @@ mod tests {
     fn models_probe_url_extends_api_v1_base() {
         let url = endpoint_models_url("http://localhost:8000/api/v1").unwrap();
         assert_eq!(url.as_str(), "http://localhost:8000/api/v1/models");
+    }
+
+    #[test]
+    fn endpoint_declares_inference_capabilities() {
+        let endpoint = proto::EndpointManifest {
+            endpoint_id: "demo".into(),
+            kind: proto::EndpointKind::Inference as i32,
+            transport_kind: proto::EndpointTransportKind::EndpointTransportHttp as i32,
+            protocol: Some("openai_compatible".into()),
+            address: Some("http://localhost:8000/api/v1".into()),
+            args: Vec::new(),
+            namespace: None,
+            supports_streaming: true,
+            managed_by_plugin: false,
+        };
+        assert_eq!(
+            endpoint_declared_capabilities(&endpoint),
+            vec![
+                "endpoint:inference".to_string(),
+                "endpoint:inference/openai_compatible".to_string()
+            ]
+        );
     }
 }

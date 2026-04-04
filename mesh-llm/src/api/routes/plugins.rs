@@ -19,6 +19,10 @@ pub(super) async fn handle(
     match (method, path_only) {
         ("GET", "/api/plugins") => handle_list(stream, state).await,
         ("GET", "/api/plugins/endpoints") => handle_endpoints(stream, state).await,
+        ("GET", "/api/plugins/providers") => handle_providers(stream, state).await,
+        ("GET", p) if p.starts_with("/api/plugins/providers/") => {
+            handle_provider(stream, state, p).await
+        }
         ("GET", p) if p.starts_with("/api/plugins/") && p.ends_with("/manifest") => {
             handle_manifest(stream, state, p).await
         }
@@ -55,6 +59,40 @@ async fn handle_endpoints(stream: &mut TcpStream, state: &MeshApi) -> anyhow::Re
     let plugin_manager = state.inner.lock().await.plugin_manager.clone();
     match plugin_manager.endpoints().await {
         Ok(endpoints) => respond_json(stream, 200, &endpoints).await?,
+        Err(err) => respond_error(stream, 500, &err.to_string()).await?,
+    }
+    Ok(())
+}
+
+async fn handle_providers(stream: &mut TcpStream, state: &MeshApi) -> anyhow::Result<()> {
+    let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+    match plugin_manager.capability_providers().await {
+        Ok(providers) => respond_json(stream, 200, &providers).await?,
+        Err(err) => respond_error(stream, 500, &err.to_string()).await?,
+    }
+    Ok(())
+}
+
+async fn handle_provider(
+    stream: &mut TcpStream,
+    state: &MeshApi,
+    path: &str,
+) -> anyhow::Result<()> {
+    let capability = &path["/api/plugins/providers/".len()..];
+    let capability = urlencoding::decode(capability)
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| capability.to_string());
+    let plugin_manager = state.inner.lock().await.plugin_manager.clone();
+    match plugin_manager.provider_for_capability(&capability).await {
+        Ok(Some(provider)) => respond_json(stream, 200, &provider).await?,
+        Ok(None) => {
+            respond_error(
+                stream,
+                404,
+                &format!("No provider for capability '{}'", capability),
+            )
+            .await?
+        }
         Err(err) => respond_error(stream, 500, &err.to_string()).await?,
     }
     Ok(())

@@ -26,6 +26,7 @@ sha2 = "0.10"
 httparse = "1"
 tokio-stream = "0.1"
 url = "2"
+urlencoding = "2"
 libc = "0.2.183"
 regex-lite = "0.1"
 rmcp = { version = "1.2", features = ["server", "transport-io"] }
