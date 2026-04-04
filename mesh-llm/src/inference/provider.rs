@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -165,5 +166,33 @@ impl InferenceWorkerRequest {
     pub fn with_device_hint(mut self, device_hint: Option<impl Into<String>>) -> Self {
         self.device_hint = device_hint.map(Into::into);
         self
+    }
+}
+
+/// Built-in provider adapter for the current llama.cpp runtime path.
+///
+/// This is the first step toward a pluggable backend provider interface:
+/// core call sites depend on the provider contract, while the built-in
+/// provider still delegates to the existing llama-specific launch code.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuiltinLlamaProvider;
+
+impl BuiltinLlamaProvider {
+    pub async fn start_endpoint(
+        self,
+        bin_dir: &Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &InferenceEndpointRequest,
+    ) -> Result<InferenceServerProcess> {
+        crate::inference::launch::start_llama_server(bin_dir, binary_flavor, request).await
+    }
+
+    pub async fn start_worker(
+        self,
+        bin_dir: &Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &InferenceWorkerRequest,
+    ) -> Result<u16> {
+        crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
     }
 }

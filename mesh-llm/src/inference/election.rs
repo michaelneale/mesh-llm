@@ -1940,7 +1940,10 @@ async fn moe_election_loop(
                 let request =
                     provider::InferenceEndpointRequest::local(&model, llama_port, mb, my_vram)
                         .with_ctx_size_override(ctx_size_override);
-                match launch::start_llama_server(&bin_dir, binary_flavor, &request).await {
+                match provider::BuiltinLlamaProvider
+                    .start_endpoint(&bin_dir, binary_flavor, &request)
+                    .await
+                {
                     Ok(process) => {
                         node.set_role(NodeRole::Host {
                             http_port: ingress_http_port,
@@ -2069,7 +2072,10 @@ async fn moe_election_loop(
                 my_vram,
             )
             .with_ctx_size_override(ctx_size_override);
-            match launch::start_llama_server(&bin_dir, binary_flavor, &request).await {
+            match provider::BuiltinLlamaProvider
+                .start_endpoint(&bin_dir, binary_flavor, &request)
+                .await
+            {
                 Ok(process) => {
                     node.set_role(NodeRole::Host {
                         http_port: ingress_http_port,
@@ -2442,7 +2448,10 @@ async fn start_llama(
     .with_mmproj_path(mmproj_path.as_deref())
     .with_ctx_size_override(ctx_size_override)
     .with_total_group_vram_bytes(group_vram);
-    match launch::start_llama_server(bin_dir, binary_flavor, &request).await {
+    match provider::BuiltinLlamaProvider
+        .start_endpoint(bin_dir, binary_flavor, &request)
+        .await
+    {
         Ok(process) => Some((llama_port, process)),
         Err(e) => {
             eprintln!("  Failed to start llama-server: {e}");

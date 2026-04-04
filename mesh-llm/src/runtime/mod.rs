@@ -1065,14 +1065,15 @@ async fn run_auto(
     launch::kill_orphan_rpc_servers().await;
 
     // Start rpc-server
-    let rpc_port = launch::start_rpc_server(
-        &bin_dir,
-        cli.llama_flavor,
-        &crate::inference::provider::InferenceWorkerRequest::default()
-            .with_device_hint(cli.device.as_deref())
-            .with_model_path(Some(&model)),
-    )
-    .await?;
+    let rpc_port = crate::inference::provider::BuiltinLlamaProvider
+        .start_worker(
+            &bin_dir,
+            cli.llama_flavor,
+            &crate::inference::provider::InferenceWorkerRequest::default()
+                .with_device_hint(cli.device.as_deref())
+                .with_model_path(Some(&model)),
+        )
+        .await?;
     tracing::info!("rpc-server on 127.0.0.1:{rpc_port} serving {model_name}");
 
     let tunnel_mgr =
