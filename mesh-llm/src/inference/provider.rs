@@ -213,6 +213,54 @@ pub struct InferenceProviderCapabilities {
     pub supports_moe_shard_runtime: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct InferenceProviderSelection {
+    provider_id: &'static str,
+    provider: &'static dyn InferenceProvider,
+}
+
+impl InferenceProviderSelection {
+    pub const fn new(provider_id: &'static str, provider: &'static dyn InferenceProvider) -> Self {
+        Self {
+            provider_id,
+            provider,
+        }
+    }
+
+    pub fn provider_id(&self) -> &'static str {
+        self.provider_id
+    }
+
+    pub fn backend_label(&self) -> &'static str {
+        self.provider.backend_label()
+    }
+
+    pub fn capabilities(&self) -> InferenceProviderCapabilities {
+        self.provider.capabilities()
+    }
+
+    pub fn provider(&self) -> &'static dyn InferenceProvider {
+        self.provider
+    }
+}
+
+impl std::fmt::Debug for InferenceProviderSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InferenceProviderSelection")
+            .field("provider_id", &self.provider_id)
+            .field("backend_label", &self.backend_label())
+            .finish()
+    }
+}
+
+impl PartialEq for InferenceProviderSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.provider_id == other.provider_id
+    }
+}
+
+impl Eq for InferenceProviderSelection {}
+
 pub trait InferenceProvider: Send + Sync {
     fn backend_label(&self) -> &'static str;
 
@@ -338,28 +386,34 @@ impl InferenceProvider for BuiltinMlxProvider {
 }
 
 static BUILTIN_LLAMA_PROVIDER: BuiltinLlamaProvider = BuiltinLlamaProvider;
+static BUILTIN_LLAMA_SELECTION: InferenceProviderSelection =
+    InferenceProviderSelection::new("builtin.llama", &BUILTIN_LLAMA_PROVIDER);
+
 #[cfg(target_os = "macos")]
 static BUILTIN_MLX_PROVIDER: BuiltinMlxProvider = BuiltinMlxProvider;
+#[cfg(target_os = "macos")]
+static BUILTIN_MLX_SELECTION: InferenceProviderSelection =
+    InferenceProviderSelection::new("builtin.mlx", &BUILTIN_MLX_PROVIDER);
 
 pub fn select_local_endpoint_provider(
     request: &InferenceEndpointRequest,
-) -> &'static dyn InferenceProvider {
+) -> InferenceProviderSelection {
     #[cfg(target_os = "macos")]
     if builtin_mlx_model_path(request.model_path.as_path()) {
-        return &BUILTIN_MLX_PROVIDER;
+        return BUILTIN_MLX_SELECTION;
     }
 
-    &BUILTIN_LLAMA_PROVIDER
+    BUILTIN_LLAMA_SELECTION
 }
 
 pub fn select_distributed_endpoint_provider(
     _request: &InferenceEndpointRequest,
-) -> &'static dyn InferenceProvider {
-    &BUILTIN_LLAMA_PROVIDER
+) -> InferenceProviderSelection {
+    BUILTIN_LLAMA_SELECTION
 }
 
-pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> &'static dyn InferenceProvider {
-    &BUILTIN_LLAMA_PROVIDER
+pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> InferenceProviderSelection {
+    BUILTIN_LLAMA_SELECTION
 }
 
 pub fn provider_requires_worker_runtime(model_path: &Path) -> bool {
@@ -558,21 +612,24 @@ pub async fn start_distributed_host(
         .supports_distributed_host_runtime
     {
         eprintln!(
-            "  {} does not support distributed host runtime for {}",
+            "  {} ({}) does not support distributed host runtime for {}",
             selected_provider.backend_label(),
+            selected_provider.provider_id(),
             model_name
         );
         return None;
     }
     match selected_provider
+        .provider()
         .start_endpoint(bin_dir, binary_flavor, &request)
         .await
     {
         Ok(process) => Some((listen_port, process)),
         Err(e) => {
             eprintln!(
-                "  Failed to start {} runtime: {e}",
-                selected_provider.backend_label()
+                "  Failed to start {} ({}) runtime: {e}",
+                selected_provider.backend_label(),
+                selected_provider.provider_id()
             );
             None
         }

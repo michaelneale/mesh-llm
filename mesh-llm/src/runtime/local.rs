@@ -193,6 +193,7 @@ pub(super) async fn start_runtime_local_model(
         .with_ctx_size_override(ctx_size_override);
     let selected_provider = provider::select_local_endpoint_provider(&request);
     let process = selected_provider
+        .provider()
         .start_endpoint(bin_dir, binary_flavor, &request)
         .await?;
 
