@@ -65,6 +65,7 @@ pub struct InferenceServerProcess {
 /// distributed-host shape, or ignore them for single-node serving.
 #[derive(Clone, Debug)]
 pub struct InferenceEndpointRequest {
+    pub preferred_provider_id: Option<String>,
     pub model_path: PathBuf,
     pub listen_port: u16,
     pub worker_tunnel_ports: Vec<u16>,
@@ -86,6 +87,7 @@ impl InferenceEndpointRequest {
         local_vram_bytes: u64,
     ) -> Self {
         Self {
+            preferred_provider_id: None,
             model_path: model_path.into(),
             listen_port,
             worker_tunnel_ports: Vec::new(),
@@ -105,6 +107,16 @@ impl InferenceEndpointRequest {
         self
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_preferred_provider_id(
+        mut self,
+        preferred_provider_id: Option<impl Into<String>>,
+    ) -> Self {
+        self.preferred_provider_id = preferred_provider_id.map(Into::into);
+        self
+    }
+
     pub fn with_mmproj_path(mut self, mmproj_path: Option<impl AsRef<Path>>) -> Self {
         self.mmproj_path = mmproj_path.map(|path| path.as_ref().to_path_buf());
         self
@@ -118,6 +130,7 @@ impl InferenceEndpointRequest {
         local_vram_bytes: u64,
     ) -> Self {
         Self {
+            preferred_provider_id: None,
             model_path: model_path.into(),
             listen_port,
             worker_tunnel_ports,
@@ -156,6 +169,7 @@ impl InferenceEndpointRequest {
 /// Backend-neutral request to start a worker-side runtime helper.
 #[derive(Clone, Debug, Default)]
 pub struct InferenceWorkerRequest {
+    pub preferred_provider_id: Option<String>,
     pub model_path: Option<PathBuf>,
     pub device_hint: Option<String>,
 }
@@ -163,6 +177,15 @@ pub struct InferenceWorkerRequest {
 impl InferenceWorkerRequest {
     pub fn with_model_path(mut self, model_path: Option<impl AsRef<Path>>) -> Self {
         self.model_path = model_path.map(|path| path.as_ref().to_path_buf());
+        self
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_preferred_provider_id(
+        mut self,
+        preferred_provider_id: Option<impl Into<String>>,
+    ) -> Self {
+        self.preferred_provider_id = preferred_provider_id.map(Into::into);
         self
     }
 
@@ -275,11 +298,18 @@ impl InferenceProviderRegistry {
 
     fn select_provider(
         &self,
+        preferred_provider_id: Option<&str>,
         capability_filter: impl Fn(InferenceProviderCapabilities) -> bool,
         dynamic_matches: impl Fn(&InferenceProviderDescriptor) -> bool,
         builtin_matches: impl Fn(&InferenceProviderDescriptor) -> bool,
         empty_message: &'static str,
     ) -> InferenceProviderSelection {
+        if let Some(selection) =
+            self.select_preferred_provider(preferred_provider_id, &capability_filter)
+        {
+            return selection;
+        }
+
         if let Some(selection) = registered_provider_descriptors()
             .read()
             .expect("registered inference provider lock poisoned")
@@ -303,11 +333,41 @@ impl InferenceProviderRegistry {
             .expect(empty_message)
     }
 
+    fn select_preferred_provider(
+        &self,
+        preferred_provider_id: Option<&str>,
+        capability_filter: &impl Fn(InferenceProviderCapabilities) -> bool,
+    ) -> Option<InferenceProviderSelection> {
+        let preferred_provider_id = preferred_provider_id?;
+
+        if let Some(selection) = registered_provider_descriptors()
+            .read()
+            .expect("registered inference provider lock poisoned")
+            .iter()
+            .find(|descriptor| {
+                descriptor.selection.provider_id() == preferred_provider_id
+                    && capability_filter(descriptor.selection.capabilities())
+            })
+            .map(|descriptor| descriptor.selection)
+        {
+            return Some(selection);
+        }
+
+        self.builtin_providers
+            .iter()
+            .find(|descriptor| {
+                descriptor.selection.provider_id() == preferred_provider_id
+                    && capability_filter(descriptor.selection.capabilities())
+            })
+            .map(|descriptor| descriptor.selection)
+    }
+
     pub fn select_local_endpoint_provider(
         &self,
         request: &InferenceEndpointRequest,
     ) -> InferenceProviderSelection {
         self.select_provider(
+            request.preferred_provider_id.as_deref(),
             |capabilities| capabilities.supports_local_runtime,
             |descriptor| (descriptor.matches_local_endpoint)(request),
             |descriptor| (descriptor.matches_local_endpoint)(request),
@@ -320,6 +380,7 @@ impl InferenceProviderRegistry {
         request: &InferenceEndpointRequest,
     ) -> InferenceProviderSelection {
         self.select_provider(
+            request.preferred_provider_id.as_deref(),
             |capabilities| capabilities.supports_distributed_host_runtime,
             |descriptor| (descriptor.matches_distributed_endpoint)(request),
             |descriptor| (descriptor.matches_distributed_endpoint)(request),
@@ -332,6 +393,7 @@ impl InferenceProviderRegistry {
         request: &InferenceWorkerRequest,
     ) -> InferenceProviderSelection {
         self.select_provider(
+            request.preferred_provider_id.as_deref(),
             |capabilities| capabilities.requires_worker_runtime,
             |descriptor| (descriptor.matches_worker_runtime)(request),
             |descriptor| (descriptor.matches_worker_runtime)(request),
@@ -698,6 +760,7 @@ async fn find_free_port() -> anyhow::Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     #[derive(Clone, Copy, Debug, Default)]
     struct TestLocalProvider;
@@ -755,12 +818,38 @@ mod tests {
         false
     }
 
+    fn provider_registry_test_lock() -> &'static Mutex<()> {
+        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     #[test]
     fn registered_provider_takes_precedence_over_builtin_for_matching_local_runtime() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
         clear_registered_providers_for_tests();
         register_provider(TEST_LOCAL_DESCRIPTOR);
 
         let request = InferenceEndpointRequest::local("/tmp/model.gguf", 8080, 1, 1);
+        let selection = select_local_endpoint_provider(&request);
+
+        assert_eq!(selection.provider_id(), "test.local");
+        assert_eq!(selection.backend_label(), "test-local");
+
+        clear_registered_providers_for_tests();
+    }
+
+    #[test]
+    fn preferred_provider_id_selects_registered_provider_without_matcher_path() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
+        clear_registered_providers_for_tests();
+        register_provider(TEST_LOCAL_DESCRIPTOR);
+
+        let request = InferenceEndpointRequest::local("/tmp/model.gguf", 8080, 1, 1)
+            .with_preferred_provider_id(Some("test.local"));
         let selection = select_local_endpoint_provider(&request);
 
         assert_eq!(selection.provider_id(), "test.local");
