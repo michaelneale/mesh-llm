@@ -75,6 +75,7 @@ pub struct PluginMetadata {
     plugin_version: String,
     server_info: ServerInfo,
     capabilities: Vec<String>,
+    manifest: Option<proto::PluginManifest>,
     startup_policy: PluginStartupPolicy,
 }
 
@@ -89,12 +90,18 @@ impl PluginMetadata {
             plugin_version: plugin_version.into(),
             server_info,
             capabilities: Vec::new(),
+            manifest: None,
             startup_policy: PluginStartupPolicy::Any,
         }
     }
 
     pub fn with_capabilities(mut self, capabilities: Vec<String>) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    pub fn with_manifest(mut self, manifest: proto::PluginManifest) -> Self {
+        self.manifest = Some(manifest);
         self
     }
 
@@ -167,6 +174,10 @@ pub trait Plugin: Send {
 
     fn capabilities(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    fn manifest(&self) -> Option<proto::PluginManifest> {
+        None
     }
 
     async fn initialize(
@@ -684,6 +695,10 @@ impl Plugin for SimplePlugin {
         self.metadata.capabilities.clone()
     }
 
+    fn manifest(&self) -> Option<proto::PluginManifest> {
+        self.metadata.manifest.clone()
+    }
+
     async fn initialize(
         &mut self,
         request: PluginInitializeRequest,
@@ -975,6 +990,7 @@ impl PluginRuntime {
                                 plugin_version: plugin.plugin_version(),
                                 server_info_json: serde_json::to_string(&plugin.server_info())?,
                                 capabilities: plugin.capabilities(),
+                                manifest: plugin.manifest(),
                             },
                         )),
                     };

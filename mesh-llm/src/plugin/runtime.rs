@@ -24,6 +24,7 @@ pub(crate) struct ExternalPlugin {
     host_mode: PluginHostMode,
     summary: Arc<Mutex<PluginSummary>>,
     server_info: Arc<Mutex<Option<ServerInfo>>>,
+    manifest: Arc<Mutex<Option<proto::PluginManifest>>>,
     runtime: Arc<Mutex<Option<PluginRuntime>>>,
     mesh_tx: mpsc::Sender<super::PluginMeshEvent>,
     rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
@@ -64,6 +65,7 @@ impl ExternalPlugin {
                 error: None,
             })),
             server_info: Arc::new(Mutex::new(None)),
+            manifest: Arc::new(Mutex::new(None)),
             runtime: Arc::new(Mutex::new(None)),
             mesh_tx,
             rpc_bridge,
@@ -287,6 +289,7 @@ impl ExternalPlugin {
                 )
             })?;
         *self.server_info.lock().await = Some(server_info.clone());
+        *self.manifest.lock().await = init.manifest.clone();
 
         let tools = if server_info.capabilities.tools.is_some() {
             let response = self
@@ -354,7 +357,11 @@ impl ExternalPlugin {
         let mut summary = self.summary.lock().await;
         summary.status = "running".into();
         summary.version = Some(init.plugin_version);
-        summary.capabilities = summarize_capabilities(&server_info, &init.capabilities);
+        let mut declared_capabilities = init.capabilities;
+        if let Some(manifest) = init.manifest {
+            declared_capabilities.extend(manifest.capabilities);
+        }
+        summary.capabilities = summarize_capabilities(&server_info, &declared_capabilities);
         summary.tools = tools;
         summary.error = None;
         Ok(())
@@ -367,6 +374,11 @@ impl ExternalPlugin {
             .await
             .clone()
             .with_context(|| format!("Plugin '{}' did not publish server info", self.spec.name))
+    }
+
+    pub(crate) async fn manifest(&self) -> Result<Option<proto::PluginManifest>> {
+        self.ensure_running().await?;
+        Ok(self.manifest.lock().await.clone())
     }
 
     pub(crate) async fn list_tools(&self) -> Result<Vec<ToolSummary>> {
@@ -637,6 +649,10 @@ impl ExternalPlugin {
         let mut server_info = self.server_info.lock().await;
         *server_info = None;
         drop(server_info);
+
+        let mut manifest = self.manifest.lock().await;
+        *manifest = None;
+        drop(manifest);
 
         let mut summary = self.summary.lock().await;
         summary.enabled = false;
