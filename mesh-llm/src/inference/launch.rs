@@ -188,7 +188,8 @@ fn resolve_binary_path(
 }
 
 fn temp_log_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(name)
+    let mesh_pid = std::process::id();
+    std::env::temp_dir().join(format!("mesh-llm-{mesh_pid}-{name}"))
 }
 
 #[derive(Clone, Debug)]
@@ -391,7 +392,7 @@ pub async fn start_rpc_server(
 
     tracing::info!("Starting rpc-server on :{port} (device: {device})");
 
-    let rpc_log = temp_log_path(&format!("mesh-llm-rpc-{port}.log"));
+    let rpc_log = temp_log_path(&format!("rpc-server-{port}.log"));
     let rpc_log_file = std::fs::File::create(&rpc_log)
         .with_context(|| format!("Failed to create rpc-server log file {}", rpc_log.display()))?;
     let rpc_log_file2 = rpc_log_file.try_clone()?;
@@ -615,7 +616,7 @@ pub async fn start_llama_server(
         rpc_arg
     );
 
-    let llama_log = temp_log_path("mesh-llm-llama-server.log");
+    let llama_log = temp_log_path("llama-server.log");
     let log_file = std::fs::File::create(&llama_log).with_context(|| {
         format!(
             "Failed to create llama-server log file {}",
