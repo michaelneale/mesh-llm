@@ -100,16 +100,27 @@ def parse_downloaded_gguf_path(output: str) -> str:
     raise RuntimeError("could not determine downloaded gguf path")
 
 
-def download_gguf_path(model_ref: str) -> str:
+def parse_downloaded_model_path(output: str) -> str:
+    for line in output.splitlines():
+        trimmed = line.strip()
+        if not trimmed.startswith("/"):
+            continue
+        if trimmed.endswith(".gguf") or trimmed.endswith(".json") or trimmed.endswith(".safetensors"):
+            return trimmed
+    raise RuntimeError("could not determine downloaded model path")
+
+
+def download_model_ref(model_ref: str, backend: str) -> str:
+    flag = "--gguf" if backend == "gguf" else "--mlx"
     proc = run(
-        ["./target/release/mesh-llm", "models", "download", model_ref, "--gguf"],
+        ["./target/release/mesh-llm", "models", "download", model_ref, flag],
         capture_output=True,
     )
     sys.stderr.write(proc.stdout)
     sys.stderr.write(proc.stderr)
     if proc.returncode != 0:
         raise SystemExit(proc.returncode)
-    return parse_downloaded_gguf_path(proc.stdout)
+    return parse_downloaded_model_path(proc.stdout)
 
 
 def summary_path(root: Path, stamp: str, suite: str) -> Path:
@@ -138,6 +149,7 @@ def run_exact_case(
     matrix: dict[str, Any],
     model: dict[str, Any],
     backend: str,
+    resolved_models: dict[tuple[str, str], str],
 ) -> int:
     exact_defaults = matrix["defaults"]["exact"]
     backend_cfg = model[backend]
@@ -173,7 +185,7 @@ def run_exact_case(
         prompt_suite_json,
     ]
     if backend == "gguf":
-        gguf_path = download_gguf_path(backend_cfg["model_ref"])
+        gguf_path = resolved_models[(backend, backend_cfg["model_ref"])]
         cmd.extend(
             [
                 "--bin-dir",
@@ -183,10 +195,11 @@ def run_exact_case(
             ]
         )
     else:
+        mlx_path = resolved_models[(backend, backend_cfg["model_ref"])]
         cmd.extend(
             [
                 "--model",
-                backend_cfg["model_ref"],
+                mlx_path,
                 "--expected-template-source",
                 backend_cfg["template_source"],
             ]
@@ -225,6 +238,7 @@ def run_behavior_case(
     matrix: dict[str, Any],
     model: dict[str, Any],
     backend: str,
+    resolved_models: dict[tuple[str, str], str],
     *,
     dataset: str,
     max_prompts: int,
@@ -247,7 +261,7 @@ def run_behavior_case(
     run(["just", "stop"], env=env)
 
     if backend == "gguf":
-        model_arg = download_gguf_path(backend_cfg["model_ref"])
+        model_arg = resolved_models[(backend, backend_cfg["model_ref"])]
         cmd = [
             str(REPO_ROOT / "scripts" / "run-validation-case.sh"),
             backend,
@@ -278,6 +292,7 @@ def run_behavior_case(
             str(report_path),
         ]
     else:
+        model_arg = resolved_models[(backend, backend_cfg["model_ref"])]
         cmd = [
             str(REPO_ROOT / "scripts" / "run-validation-case.sh"),
             backend,
@@ -289,7 +304,7 @@ def run_behavior_case(
             "--mesh-llm",
             "target/release/mesh-llm",
             "--model",
-            backend_cfg["model_ref"],
+            model_arg,
             "--label",
             model["label"],
             "--dataset",
@@ -441,6 +456,55 @@ def write_overall_progress(
         "overall_exit_code": overall_rc,
     }
     write_json(root / stamp / "overall-progress.json", payload)
+
+
+def preflight_models(
+    root: Path,
+    stamp: str,
+    models: list[dict[str, Any]],
+    backend_filter: str,
+    suite: str,
+) -> dict[tuple[str, str], str]:
+    resolved: dict[tuple[str, str], str] = {}
+    seen: set[tuple[str, str]] = set()
+    required_refs: list[tuple[str, str]] = []
+
+    model_by_id = {model["id"]: model for model in models}
+    for case in planned_cases(models, backend_filter, suite):
+        model = model_by_id[case["model_id"]]
+        backend = case["backend"]
+        model_ref = model[backend]["model_ref"]
+        key = (backend, model_ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        required_refs.append(key)
+
+    out_path = root / stamp / "preflight.json"
+    state: dict[str, Any] = {
+        "status": "running",
+        "total_models": len(required_refs),
+        "completed_models": 0,
+        "items": [],
+    }
+    write_json(out_path, state)
+
+    for backend, model_ref in required_refs:
+        local_path = download_model_ref(model_ref, backend)
+        resolved[(backend, model_ref)] = local_path
+        state["items"].append(
+            {
+                "backend": backend,
+                "model_ref": model_ref,
+                "local_path": local_path,
+            }
+        )
+        state["completed_models"] = len(state["items"])
+        write_json(out_path, state)
+
+    state["status"] = "completed"
+    write_json(out_path, state)
+    return resolved
 
 
 def compare_exact_against_baseline(
@@ -805,6 +869,23 @@ def main() -> int:
         current=None,
         overall_rc=overall_rc,
     )
+    write_json(
+        current_case_path,
+        {
+            "status": "preflight",
+            "completed_cases": completed_cases,
+            "total_cases": total_cases,
+        },
+    )
+    resolved_models = preflight_models(root, stamp, models, args.backend, args.suite)
+    write_json(
+        current_case_path,
+        {
+            "status": "idle",
+            "completed_cases": completed_cases,
+            "total_cases": total_cases,
+        },
+    )
 
     if args.suite in ("exact", "all"):
         for backend in backend_order:
@@ -829,7 +910,7 @@ def main() -> int:
                     overall_rc=overall_rc,
                 )
                 print(f"\n=== Running {model[backend]['exact_case_id']} ({backend}) ===")
-                rc = run_exact_case(root, stamp, matrix, model, backend)
+                rc = run_exact_case(root, stamp, matrix, model, backend, resolved_models)
                 overall_rc = overall_rc or rc
                 completed_cases += 1
                 aggregate(root, stamp, models)
@@ -875,6 +956,7 @@ def main() -> int:
                     matrix,
                     model,
                     backend,
+                    resolved_models,
                     dataset=args.dataset,
                     max_prompts=args.max_prompts,
                     max_tokens=args.max_tokens,

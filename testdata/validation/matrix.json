@@ -180,18 +180,18 @@
     },
     {
       "id": "gemma4",
-      "label": "gemma-4-e2b",
+      "label": "gemma-4-e4b",
       "expectation_class": "strict",
-      "notes": "Gemma4 E2B parity row for faster exact and behavior validation.",
+      "notes": "Gemma4 E4B parity baseline.",
       "gguf": {
         "exact_case_id": "gemma4-gguf-exact",
         "behavior_case_id": "gemma4-gguf-behavior",
-        "model_ref": "ggml-org/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf"
+        "model_ref": "unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
       },
       "mlx": {
         "exact_case_id": "gemma4-mlx-exact",
         "behavior_case_id": "gemma4-mlx-behavior",
-        "model_ref": "Rapid42/gemma-4-E2B-it-MLX",
+        "model_ref": "unsloth/gemma-4-E4B-it-UD-MLX-4bit",
         "template_source": "chat_template.jinja"
       }
     },
