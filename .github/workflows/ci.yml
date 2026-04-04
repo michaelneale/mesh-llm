@@ -279,6 +279,21 @@ jobs:
             "${CACHE_FLAGS[@]}"
           cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server
 
+      - name: Package macOS MLX smoke binaries
+        run: |
+          mkdir -p ci-artifacts
+          tar -czf ci-artifacts/macos-mlx-smoke-bins.tgz \
+            target/release/mesh-llm \
+            llama.cpp/build/bin/rpc-server \
+            llama.cpp/build/bin/llama-server
+
+      - name: Upload macOS MLX smoke binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-mlx-smoke-bins
+          path: ci-artifacts/macos-mlx-smoke-bins.tgz
+          if-no-files-found: error
+
       # ── Download model ──
       - name: Cache model
         id: cache-model
@@ -294,12 +309,6 @@ jobs:
           curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
           ls -lh ~/.models/$MODEL_FILE
 
-      - name: Cache MLX prompt model repo
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/huggingface/hub/models--${{ env.MLX_PROMPT_MODEL_CACHE_SLUG }}
-          key: mlx-hub-prompt-suite-${{ env.MLX_PROMPT_MODEL_CACHE_SLUG }}
-
       # ── Integration smoke test ──
       - name: Smoke test (real inference)
         run: |
@@ -307,19 +316,6 @@ jobs:
             target/release/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
-
-      - name: MLX prompt suite
-        run: |
-          scripts/ci-mlx-smoke-test.sh \
-            target/release/mesh-llm \
-            "${{ env.MLX_PROMPT_MODEL_REPO }}" \
-            "tokenizer_config.json" \
-            "Reply with exactly: blue" \
-            "blue" \
-            "" \
-            "tagged" \
-            "blue" \
-            '[{"label":"alt-color","prompt":"Reply with exactly: green","expect_exact":"green"},{"label":"alt-red","prompt":"Reply with exactly: red","expect_exact":"red"}]'
 
       - name: Split-mode test (host/worker routing)
         run: |
@@ -341,8 +337,8 @@ jobs:
         run: sccache --show-stats || true
 
   macos_mlx:
-    needs: changes
-    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
+    needs: [changes, macos]
+    if: ${{ needs.macos.result == 'success' && vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     name: macOS MLX (${{ matrix.name }})
     runs-on: macos-latest
     strategy:
@@ -433,16 +429,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Download macOS MLX smoke binaries
+        uses: actions/download-artifact@v4
         with:
-          workspaces: mesh-llm
+          name: macos-mlx-smoke-bins
+          path: ci-artifacts
 
-      - name: Build mesh-llm
-        run: cargo build --release -p mesh-llm --bin mesh-llm
+      - name: Extract macOS MLX smoke binaries
+        run: tar -xzf ci-artifacts/macos-mlx-smoke-bins.tgz
 
       - name: Cache MLX model repo
         uses: actions/cache@v5
@@ -462,9 +456,19 @@ jobs:
             "${{ matrix.thinking_mode }}" \
             "${{ matrix.expect_exact }}"
 
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
+      - name: MLX prompt suite
+        if: ${{ matrix.name == 'qwen3-0.6b' }}
+        run: |
+          scripts/ci-mlx-smoke-test.sh \
+            target/release/mesh-llm \
+            "${{ env.MLX_PROMPT_MODEL_REPO }}" \
+            "tokenizer_config.json" \
+            "Reply with exactly: blue" \
+            "blue" \
+            "" \
+            "tagged" \
+            "blue" \
+            '[{"label":"alt-color","prompt":"Reply with exactly: green","expect_exact":"green"},{"label":"alt-red","prompt":"Reply with exactly: red","expect_exact":"red"}]'
 
   gguf_smokes:
     needs: [changes, linux]
