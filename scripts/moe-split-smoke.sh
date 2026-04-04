@@ -10,6 +10,7 @@
 #   qwen3-next
 #   glm-deepseek2
 #   olmoe
+#   qwen35moe
 #   all
 #
 # The script:
@@ -38,6 +39,7 @@ Families:
   qwen3-next
   glm-deepseek2
   olmoe
+  qwen35moe
   all
 EOF
 }
@@ -90,7 +92,7 @@ if [[ ${#FAMILIES[@]} -eq 0 ]]; then
 fi
 
 if [[ "${FAMILIES[0]}" == "all" ]]; then
-    FAMILIES=("qwen3-a3b" "qwen3-next" "glm-deepseek2" "olmoe")
+    FAMILIES=("qwen3-a3b" "qwen3-next" "glm-deepseek2" "olmoe" "qwen35moe")
 fi
 
 LLAMA_MOE_SPLIT="$BIN_DIR/llama-moe-split"
@@ -165,6 +167,9 @@ resolve_family() {
                 path="$(find_model_by_name "OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf" || true)"
             fi
             printf '%s\n' "$path"
+            ;;
+        qwen35moe)
+            printf '%s\n' "${MOE_SPLIT_SMOKE_QWEN35MOE_MODEL:-$(find_model_by_name "qwen3.5-moe-0.87B-d0.8B-Q2_K.gguf" || true)}"
             ;;
         *)
             echo "❌ Unknown family: $family" >&2

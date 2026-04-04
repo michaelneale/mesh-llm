@@ -15,6 +15,9 @@ env:
   # Tiny model for integration tests (~138MB Q8_0, has chat template)
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
+  # Small MoE model for MoE split tests (~598MB Q2_K, qwen35moe architecture)
+  MOE_MODEL_URL: https://huggingface.co/Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF/resolve/main/qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf
+  MOE_MODEL_FILE: qwen3.5-moe-0.87B-d0.8B-Q2_K.gguf
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -165,6 +168,27 @@ jobs:
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
 
+      # ── MoE split test ──
+      - name: Cache MoE model
+        id: cache-moe-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MOE_MODEL_FILE }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+
+      - name: Download MoE model
+        if: steps.cache-moe-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
+          ls -lh ~/.models/$MOE_MODEL_FILE
+
+      - name: MoE split test (expert sharding)
+        run: |
+          scripts/ci-moe-split-test.sh \
+            llama.cpp/build/bin \
+            ~/.models/$MOE_MODEL_FILE
+
       - name: CLI smoke test
         run: |
           target/release/mesh-llm --version
@@ -263,6 +287,27 @@ jobs:
             target/release/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
+
+      # ── MoE split test ──
+      - name: Cache MoE model
+        id: cache-moe-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MOE_MODEL_FILE }}
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
+
+      - name: Download MoE model
+        if: steps.cache-moe-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
+          ls -lh ~/.models/$MOE_MODEL_FILE
+
+      - name: MoE split test (expert sharding)
+        run: |
+          scripts/ci-moe-split-test.sh \
+            llama.cpp/build/bin \
+            ~/.models/$MOE_MODEL_FILE
 
       - name: CLI smoke test
         run: |
