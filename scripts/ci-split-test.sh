@@ -27,7 +27,7 @@ C_API_PORT=9349
 C_CONSOLE_PORT=3143
 MAX_WAIT=180
 MAX_CLIENT_ROUTE_WAIT=60
-MAX_INFERENCE_ATTEMPTS=8
+MAX_INFERENCE_ATTEMPTS=15
 LOG_A=/tmp/mesh-llm-split-a.log
 LOG_B=/tmp/mesh-llm-split-b.log
 LOG_C=/tmp/mesh-llm-split-c.log
@@ -252,6 +252,7 @@ done
 echo ""
 echo "Waiting for host API (port $HOST_API) to accept direct inference..."
 HOST_READY=""
+BACKOFF=2
 for i in $(seq 1 "$MAX_INFERENCE_ATTEMPTS"); do
     HOST_RESPONSE=$(curl -s --max-time 30 -w "\n%{http_code}" "http://localhost:${HOST_API}/v1/chat/completions" \
         -H "Content-Type: application/json" \
@@ -272,11 +273,14 @@ for i in $(seq 1 "$MAX_INFERENCE_ATTEMPTS"); do
             break
         fi
     else
-        echo "  ⚠️  Host attempt $i: HTTP $HOST_HTTP_CODE (still starting)"
+        echo "  ⚠️  Host attempt $i: HTTP $HOST_HTTP_CODE (retrying in ${BACKOFF}s)"
     fi
 
     if [ "$i" -lt "$MAX_INFERENCE_ATTEMPTS" ]; then
-        sleep 3
+        sleep "$BACKOFF"
+        # Exponential backoff: 2, 3, 4, 6, 9, 13, ... capped at 15s
+        BACKOFF=$(( BACKOFF + BACKOFF / 2 ))
+        [ "$BACKOFF" -gt 15 ] && BACKOFF=15
     fi
 done
 
@@ -306,8 +310,9 @@ echo "Testing /v1/chat/completions through Client (port $C_API_PORT)..."
 echo "  Client has no local inference — must route to a peer."
 echo "  If it picks the Worker (rpc-server only), this fails."
 
-# Retry a few times — tunnel establishment can take a moment
+# Retry with exponential backoff — tunnel establishment can take a while on slow CI runners
 CONTENT=""
+BACKOFF=2
 for attempt in $(seq 1 "$MAX_INFERENCE_ATTEMPTS"); do
     RESPONSE=$(curl -s --max-time 30 -w "\n%{http_code}" "http://localhost:${C_API_PORT}/v1/chat/completions" \
         -H "Content-Type: application/json" \
@@ -330,11 +335,14 @@ for attempt in $(seq 1 "$MAX_INFERENCE_ATTEMPTS"); do
         echo "  ⚠️  Attempt $attempt: 200 but empty content — split routing bug?"
         echo "  Raw: $BODY"
     else
-        echo "  ⚠️  Attempt $attempt: HTTP $HTTP_CODE (tunnel may not be ready)"
+        echo "  ⚠️  Attempt $attempt: HTTP $HTTP_CODE (tunnel may not be ready, retrying in ${BACKOFF}s)"
     fi
 
     if [ "$attempt" -lt "$MAX_INFERENCE_ATTEMPTS" ]; then
-        sleep 3
+        sleep "$BACKOFF"
+        # Exponential backoff: 2, 3, 4, 6, 9, 13, 15, 15, ... capped at 15s
+        BACKOFF=$(( BACKOFF + BACKOFF / 2 ))
+        [ "$BACKOFF" -gt 15 ] && BACKOFF=15
     fi
 done
 
@@ -342,10 +350,12 @@ if [ -z "$CONTENT" ]; then
     echo "❌ Client inference failed after ${MAX_INFERENCE_ATTEMPTS} attempts"
     echo "  Last HTTP code: $HTTP_CODE"
     echo "  Last body: $BODY"
+    echo "--- Client status ---"
+    curl -sf "http://localhost:${C_CONSOLE_PORT}/api/status" | python3 -m json.tool 2>/dev/null || echo "(unavailable)"
     echo "--- Client log tail ---"
     tail -30 "$LOG_C" || true
     echo "--- Host log tail ---"
-    tail -20 /tmp/mesh-llm-split-a.log /tmp/mesh-llm-split-b.log || true
+    tail -20 "$LOG_A" "$LOG_B" || true
     exit 1
 fi
 

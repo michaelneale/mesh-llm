@@ -30,6 +30,14 @@ pub struct Classification {
     pub category: Category,
     pub complexity: Complexity,
     pub needs_tools: bool,
+    pub has_media_inputs: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MediaRequirements {
+    pub has_media: bool,
+    pub needs_vision: bool,
+    pub needs_audio: bool,
 }
 
 // ── Model profiles ──────────────────────────────────────────────────
@@ -318,6 +326,7 @@ pub fn classify(body: &Value) -> Classification {
     // Collect all text from messages for keyword analysis
     let text = collect_message_text(body);
     let lower = text.to_lowercase();
+    let media = media_requirements(body);
 
     // Check if the request actually needs tool execution.
     // If the client sends a tools schema, this is an agentic session (Claude Code,
@@ -529,7 +538,7 @@ pub fn classify(body: &Value) -> Classification {
         Category::Reasoning
     } else if creative_score >= 1 {
         Category::Creative
-    } else if image_score >= 1 {
+    } else if media.needs_vision || image_score >= 1 {
         Category::Image
     } else if needs_tools && code_score == 0 && reasoning_score == 0 && creative_score == 0 {
         // Only ToolCall if tools present AND no other signal dominates
@@ -558,7 +567,52 @@ pub fn classify(body: &Value) -> Classification {
         category,
         complexity,
         needs_tools,
+        has_media_inputs: media.has_media,
     }
+}
+
+pub fn media_requirements(body: &Value) -> MediaRequirements {
+    let mut requirements = MediaRequirements::default();
+    let Some(messages) = body.get("messages").and_then(|m| m.as_array()) else {
+        return requirements;
+    };
+
+    for msg in messages {
+        let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for block in blocks {
+            let block_type = block
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or_default();
+            match block_type {
+                "image_url" | "input_image" | "image" => {
+                    requirements.has_media = true;
+                    requirements.needs_vision = true;
+                }
+                "audio_url" | "input_audio" | "audio" => {
+                    requirements.has_media = true;
+                    requirements.needs_audio = true;
+                }
+                "file" | "input_file" => {
+                    requirements.has_media = true;
+                }
+                _ => {
+                    if block.get("image_url").is_some() || block.get("image").is_some() {
+                        requirements.has_media = true;
+                        requirements.needs_vision = true;
+                    }
+                    if block.get("audio_url").is_some() || block.get("audio").is_some() {
+                        requirements.has_media = true;
+                        requirements.needs_audio = true;
+                    }
+                }
+            }
+        }
+    }
+
+    requirements
 }
 
 /// Length of last user message in characters (rough complexity proxy).
@@ -738,6 +792,7 @@ pub fn pick_model_with_tools<'a>(
             category,
             complexity: Complexity::Moderate,
             needs_tools: tools_required,
+            has_media_inputs: false,
         },
         available_models,
     )
@@ -801,6 +856,7 @@ mod tests {
         assert_eq!(cl.category, Category::Chat);
         assert_eq!(cl.complexity, Complexity::Quick); // short simple question
         assert!(!cl.needs_tools);
+        assert!(!cl.has_media_inputs);
     }
 
     #[test]
@@ -921,6 +977,45 @@ mod tests {
     }
 
     #[test]
+    fn test_media_requirements_detect_audio_block() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe this clip"},
+                        {"type": "audio_url", "audio_url": {"url": "mesh://blob/client-1/example"}}
+                    ]
+                }
+            ]
+        });
+        let media = media_requirements(&body);
+        assert!(media.has_media);
+        assert!(media.needs_audio);
+        assert!(!media.needs_vision);
+        assert!(classify(&body).has_media_inputs);
+    }
+
+    #[test]
+    fn test_media_requirements_detect_image_block() {
+        let body = json!({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+                    ]
+                }
+            ]
+        });
+        let media = media_requirements(&body);
+        assert!(media.has_media);
+        assert!(media.needs_vision);
+        assert!(!media.needs_audio);
+        assert!(classify(&body).has_media_inputs);
+    }
+
+    #[test]
     fn test_pick_model_primary_strength_wins() {
         // Qwen3-8B (tier 2, Chat primary) and 235B (tier 4, Chat 3rd) score within
         // 15 points at Moderate complexity, so either is a valid pick (load spread).
@@ -930,6 +1025,7 @@ mod tests {
                 category: Category::Chat,
                 complexity: Complexity::Moderate,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -946,6 +1042,7 @@ mod tests {
                 category: Category::Chat,
                 complexity: Complexity::Deep,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -965,6 +1062,7 @@ mod tests {
                 category: Category::Chat,
                 complexity: Complexity::Quick,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -983,6 +1081,7 @@ mod tests {
                 category: Category::Reasoning,
                 complexity: Complexity::Moderate,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -1004,6 +1103,7 @@ mod tests {
                 category: Category::Code,
                 complexity: Complexity::Moderate,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -1021,7 +1121,8 @@ mod tests {
                 &Classification {
                     category: Category::Chat,
                     complexity: Complexity::Moderate,
-                    needs_tools: false
+                    needs_tools: false,
+                    has_media_inputs: false,
                 },
                 &available
             ),
@@ -1037,6 +1138,7 @@ mod tests {
                 category: Category::Chat,
                 complexity: Complexity::Moderate,
                 needs_tools: false,
+                has_media_inputs: false,
             },
             &available,
         );
@@ -1131,6 +1233,7 @@ fn test_agentic_prefers_strongest_model() {
         category: Category::Code,
         complexity: Complexity::Moderate,
         needs_tools: true,
+        has_media_inputs: false,
     };
     let result = pick_model_classified(&cl, &available);
     // 32B should win: tier 3×20=60 beats Coder tier 2×20=40, despite lower speed
@@ -1148,6 +1251,7 @@ fn test_chat_prefers_fastest_model() {
         category: Category::Chat,
         complexity: Complexity::Quick,
         needs_tools: false,
+        has_media_inputs: false,
     };
     let result = pick_model_classified(&cl, &available);
     assert!(
@@ -1167,6 +1271,7 @@ fn test_agentic_deep_strongly_prefers_biggest() {
         category: Category::Code,
         complexity: Complexity::Deep,
         needs_tools: true,
+        has_media_inputs: false,
     };
     let result = pick_model_classified(&cl, &available);
     assert_eq!(result, Some("MiniMax-M2.5-Q4_K_M"));

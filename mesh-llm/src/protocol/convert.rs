@@ -201,6 +201,8 @@ pub(crate) fn local_ann_to_proto_ann(
                 reasoning: local_capability_level_to_proto(descriptor.capabilities.reasoning),
                 tool_use: local_capability_level_to_proto(descriptor.capabilities.tool_use),
                 moe: descriptor.capabilities.moe,
+                multimodal: descriptor.capabilities.multimodal,
+                audio: local_capability_level_to_proto(descriptor.capabilities.audio),
             }),
             topology: descriptor.topology.as_ref().map(|topology| {
                 crate::proto::node::ModelTopology {
@@ -348,7 +350,9 @@ pub(crate) fn proto_ann_to_local(
                         .capabilities
                         .as_ref()
                         .map(|caps| crate::models::ModelCapabilities {
+                            multimodal: caps.multimodal,
                             vision: proto_capability_level_to_local(caps.vision),
+                            audio: proto_capability_level_to_local(caps.audio),
                             reasoning: proto_capability_level_to_local(caps.reasoning),
                             tool_use: proto_capability_level_to_local(caps.tool_use),
                             moe: caps.moe,

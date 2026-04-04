@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::io;
@@ -6,25 +6,31 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::inference::launch;
-use crate::{plugin, VERSION};
+use crate::VERSION;
 
 const DEFAULT_RELEASE_REPO: &str = "michaelneale/mesh-llm";
 #[cfg(not(windows))]
 const INSTALL_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh";
-#[cfg_attr(not(windows), allow(dead_code))]
 const RELEASES_URL: &str = "https://github.com/michaelneale/mesh-llm/releases/latest";
 const SELF_UPDATE_ATTEMPTED_ENV: &str = "MESH_LLM_SELF_UPDATE_ATTEMPTED";
-const SELF_UPDATE_DISABLED_ENV: &str = "MESH_LLM_NO_SELF_UPDATE";
 const SELF_UPDATE_REPO_ENV: &str = "MESH_LLM_SELF_UPDATE_REPO";
 
 enum InstallOutcome {
     #[cfg_attr(windows, allow(dead_code))]
     RestartNow,
+    #[cfg_attr(windows, allow(dead_code))]
+    ExitNow,
     #[cfg_attr(not(windows), allow(dead_code))]
     HandoffAndExit,
+}
+
+#[derive(Clone, Copy)]
+enum PostInstallAction {
+    RestartCurrentProcess,
+    ExitAfterInstall,
 }
 
 struct ReleaseInfo {
@@ -32,26 +38,60 @@ struct ReleaseInfo {
     assets: Vec<String>,
 }
 
+struct UpdateTarget {
+    exe: PathBuf,
+    install_dir: PathBuf,
+    asset_name: String,
+    bundle_flavor: launch::BinaryFlavor,
+}
+
 pub(crate) async fn check_for_update() {
     if !platform_has_release_assets() {
         return;
     }
     if let Some(release) = latest_release_info().await {
-        if version_newer(&release.version, VERSION)
-            && release_has_any_platform_asset(
-                &release.assets,
-                std::env::consts::OS,
-                std::env::consts::ARCH,
-            )
-        {
-            eprintln!(
-                "💡 Update available: v{VERSION} → v{}  https://github.com/michaelneale/mesh-llm/releases",
-                release.version
-            );
-            #[cfg(windows)]
-            eprintln!("   Download the latest Windows ZIP from {RELEASES_URL}");
-            #[cfg(not(windows))]
-            eprintln!("   curl -fsSL {INSTALL_SCRIPT_URL} | bash");
+        if !version_newer(&release.version, VERSION) {
+            return;
+        }
+        // Determine whether this is a bundle install and, if so, whether the
+        // specific installed flavor's asset is present in the new release.
+        let bundle_asset = std::env::current_exe().ok().and_then(|exe| {
+            let (_, flavor) = bundle_install_dir(&exe, None)?;
+            stable_release_asset_name(flavor)
+        });
+        match bundle_asset {
+            Some(ref asset) if release.assets.iter().any(|a| a == asset) => {
+                eprintln!(
+                    "✨ New version: v{VERSION} -> v{}. Run 'mesh-llm update'.",
+                    release.version
+                );
+            }
+            _ => {
+                // Either not a bundle install, or the installed flavor's asset
+                // is not published in the new release — fall back to generic guidance.
+                #[cfg(not(windows))]
+                if release_has_any_platform_asset(
+                    &release.assets,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                ) {
+                    eprintln!(
+                        "✨ New version: v{VERSION} -> v{}. Reinstall with: curl -fsSL {INSTALL_SCRIPT_URL} | bash",
+                        release.version
+                    );
+                }
+                #[cfg(windows)]
+                if release_has_any_platform_asset(
+                    &release.assets,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH,
+                ) {
+                    eprintln!(
+                        "✨ New version: v{VERSION} -> v{}. Download from {RELEASES_URL}",
+                        release.version
+                    );
+                }
+            }
         }
     }
 }
@@ -67,72 +107,70 @@ fn platform_has_release_assets_for(os: &str, arch: &str) -> bool {
     )
 }
 
-pub(crate) async fn maybe_self_update(cli: &Cli) -> Result<bool> {
-    if !should_attempt_self_update(cli) {
+pub(crate) async fn maybe_auto_update(cli: &Cli) -> Result<bool> {
+    if !should_attempt_auto_update(cli) {
         return Ok(false);
     }
-
-    let exe = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => return Ok(false),
-    };
-    let Some((install_dir, bundle_flavor)) = bundle_install_dir(&exe, cli.llama_flavor) else {
+    let Some(target) = discover_update_target(cli) else {
         return Ok(false);
     };
-    let Some(asset_name) = stable_release_asset_name(bundle_flavor) else {
-        return Ok(false);
-    };
+    apply_update_if_available(target, PostInstallAction::RestartCurrentProcess).await
+}
 
+pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
+    let target = require_update_target(cli)?;
     let Some(release) = latest_release_info().await else {
-        return Ok(true);
+        bail!("Could not check for a new release right now. Try again shortly.");
     };
     if !version_newer(&release.version, VERSION) {
-        return Ok(true);
+        eprintln!("mesh-llm is already up to date (v{VERSION}).");
+        return Ok(());
     }
-    if !release.assets.iter().any(|asset| asset == &asset_name) {
-        return Ok(false);
-    }
-    if !path_is_writable(&exe) {
-        eprintln!(
-            "⚠️  Startup self-update skipped: {} is not writable",
-            exe.display()
+    if !release
+        .assets
+        .iter()
+        .any(|asset| asset == &target.asset_name)
+    {
+        bail!(
+            "Latest release v{} does not include {}.",
+            release.version,
+            target.asset_name
         );
-        return Ok(true);
+    }
+    if !path_is_writable(&target.exe) {
+        bail!("{} is not writable.", target.exe.display());
     }
 
     eprintln!(
-        "⬇️ Updating mesh-llm v{VERSION} → v{} ({})...",
+        "⬇️ Updating mesh-llm v{VERSION} -> v{} ({})...",
         release.version,
-        bundle_flavor.suffix()
+        target.bundle_flavor.suffix()
     );
-    match install_latest_bundle(&exe, &install_dir, &asset_name, bundle_flavor).await {
-        Ok(InstallOutcome::RestartNow) => {
-            eprintln!("✅ Updated to v{}; restarting", release.version);
-            std::env::set_var(SELF_UPDATE_ATTEMPTED_ENV, "1");
-            exec_current_binary(&exe)?;
+    match install_latest_bundle(
+        &target.exe,
+        &target.install_dir,
+        &target.asset_name,
+        target.bundle_flavor,
+        PostInstallAction::ExitAfterInstall,
+    )
+    .await
+    {
+        Ok(InstallOutcome::ExitNow) => {
+            eprintln!("✅ Updated to v{}", release.version);
+            Ok(())
         }
         Ok(InstallOutcome::HandoffAndExit) => {
-            eprintln!("✅ Updated to v{}; restarting", release.version);
+            eprintln!(
+                "✅ Applying update to v{}; exiting so the installer can finish",
+                release.version
+            );
             std::process::exit(0);
         }
-        Err(err) => {
-            eprintln!("⚠️  Startup self-update failed: {err}");
+        Ok(InstallOutcome::RestartNow) => {
+            eprintln!("✅ Updated to v{}", release.version);
+            Ok(())
         }
-    }
-
-    Ok(true)
-}
-
-pub(crate) fn startup_self_update_enabled(cli: &Cli) -> bool {
-    if !should_attempt_self_update(cli) {
-        return false;
-    }
-    match plugin::load_config(cli.config.as_deref()) {
-        Ok(config) => config.self_update_enabled(),
-        Err(err) => {
-            eprintln!("⚠️  Failed to read config for self-update: {err}");
-            false
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -178,12 +216,111 @@ pub(crate) fn version_newer(a: &str, b: &str) -> bool {
     parse(a) > parse(b)
 }
 
-fn should_attempt_self_update(cli: &Cli) -> bool {
-    cli.command.is_none()
+fn should_attempt_auto_update(cli: &Cli) -> bool {
+    cli.auto_update
         && cli.plugin.is_none()
-        && !cli.no_self_update
+        && !matches!(cli.command, Some(Command::Update))
         && std::env::var_os(SELF_UPDATE_ATTEMPTED_ENV).is_none()
-        && std::env::var_os(SELF_UPDATE_DISABLED_ENV).is_none()
+}
+
+fn discover_update_target(cli: &Cli) -> Option<UpdateTarget> {
+    let exe = std::env::current_exe().ok()?;
+    let (install_dir, bundle_flavor) = bundle_install_dir(&exe, cli.llama_flavor)?;
+    let asset_name = stable_release_asset_name(bundle_flavor)?;
+    Some(UpdateTarget {
+        exe,
+        install_dir,
+        asset_name,
+        bundle_flavor,
+    })
+}
+
+fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
+    if !platform_has_release_assets() {
+        bail!(
+            "`mesh-llm update` is not supported on this platform. Download the latest release from {RELEASES_URL}."
+        );
+    }
+
+    let exe = std::env::current_exe().context("Cannot determine mesh-llm executable path")?;
+    let Some((install_dir, bundle_flavor)) = bundle_install_dir(&exe, cli.llama_flavor) else {
+        bail!(
+            "`mesh-llm update` only works for release-bundle installs. Current executable: {}",
+            exe.display()
+        );
+    };
+    let Some(asset_name) = stable_release_asset_name(bundle_flavor) else {
+        #[cfg(not(windows))]
+        bail!("No published release bundle matches this install. Reinstall with {INSTALL_SCRIPT_URL}.");
+        #[cfg(windows)]
+        bail!("No published release bundle matches this install. Download the latest release from {RELEASES_URL}.");
+    };
+
+    Ok(UpdateTarget {
+        exe,
+        install_dir,
+        asset_name,
+        bundle_flavor,
+    })
+}
+
+async fn apply_update_if_available(
+    target: UpdateTarget,
+    action: PostInstallAction,
+) -> Result<bool> {
+    let Some(release) = latest_release_info().await else {
+        return Ok(true);
+    };
+    if !version_newer(&release.version, VERSION) {
+        return Ok(true);
+    }
+    if !release
+        .assets
+        .iter()
+        .any(|asset| asset == &target.asset_name)
+    {
+        return Ok(false);
+    }
+    if !path_is_writable(&target.exe) {
+        eprintln!(
+            "⚠️  Auto-update skipped: {} is not writable",
+            target.exe.display()
+        );
+        return Ok(true);
+    }
+
+    eprintln!(
+        "⬇️ Updating mesh-llm v{VERSION} -> v{} ({})...",
+        release.version,
+        target.bundle_flavor.suffix()
+    );
+    match install_latest_bundle(
+        &target.exe,
+        &target.install_dir,
+        &target.asset_name,
+        target.bundle_flavor,
+        action,
+    )
+    .await
+    {
+        Ok(InstallOutcome::RestartNow) => {
+            eprintln!("✅ Updated to v{}; restarting", release.version);
+            std::env::set_var(SELF_UPDATE_ATTEMPTED_ENV, "1");
+            exec_current_binary(&target.exe)?;
+        }
+        Ok(InstallOutcome::ExitNow) => {
+            eprintln!("✅ Updated to v{}", release.version);
+        }
+        Ok(InstallOutcome::HandoffAndExit) => {
+            eprintln!("✅ Updated to v{}; restarting", release.version);
+            std::process::exit(0);
+        }
+        Err(err) => {
+            eprintln!("⚠️  Auto-update failed: {err}");
+        }
+    }
+
+    Ok(true)
 }
 
 fn stable_release_asset_name(flavor: launch::BinaryFlavor) -> Option<String> {
@@ -339,6 +476,7 @@ async fn install_latest_bundle(
     install_dir: &Path,
     asset_name: &str,
     expected_flavor: launch::BinaryFlavor,
+    action: PostInstallAction,
 ) -> Result<InstallOutcome> {
     let unique = format!(
         "{}-{}",
@@ -368,8 +506,9 @@ async fn install_latest_bundle(
             &extracted,
             &backup,
             &staged_files,
+            action,
         )?;
-        Ok::<InstallOutcome, anyhow::Error>(install_outcome())
+        Ok::<InstallOutcome, anyhow::Error>(install_outcome(action))
     }
     .await;
 
@@ -627,12 +766,15 @@ fn replace_bundle_files(
 }
 
 #[cfg(not(windows))]
-fn install_outcome() -> InstallOutcome {
-    InstallOutcome::RestartNow
+fn install_outcome(action: PostInstallAction) -> InstallOutcome {
+    match action {
+        PostInstallAction::RestartCurrentProcess => InstallOutcome::RestartNow,
+        PostInstallAction::ExitAfterInstall => InstallOutcome::ExitNow,
+    }
 }
 
 #[cfg(windows)]
-fn install_outcome() -> InstallOutcome {
+fn install_outcome(_action: PostInstallAction) -> InstallOutcome {
     InstallOutcome::HandoffAndExit
 }
 
@@ -644,6 +786,7 @@ fn finish_bundle_install(
     extracted: &Path,
     backup: &Path,
     staged_files: &[String],
+    _action: PostInstallAction,
 ) -> Result<()> {
     replace_bundle_files(install_dir, extracted, backup, staged_files)
 }
@@ -656,12 +799,20 @@ fn finish_bundle_install(
     extracted: &Path,
     backup: &Path,
     staged_files: &[String],
+    action: PostInstallAction,
 ) -> Result<()> {
     use std::process::Command;
 
     let script = workspace.join("apply-update.ps1");
-    let script_body =
-        windows_update_script(exe, install_dir, workspace, extracted, backup, staged_files)?;
+    let script_body = windows_update_script(
+        exe,
+        install_dir,
+        workspace,
+        extracted,
+        backup,
+        staged_files,
+        action,
+    )?;
     std::fs::write(&script, script_body)
         .with_context(|| format!("Failed to write {}", script.display()))?;
 
@@ -685,10 +836,12 @@ fn windows_update_script(
     extracted: &Path,
     backup: &Path,
     staged_files: &[String],
+    action: PostInstallAction,
 ) -> Result<String> {
     use std::collections::BTreeSet;
 
     let staged_json = serde_json::to_string(staged_files)?;
+    let restart_after_update = matches!(action, PostInstallAction::RestartCurrentProcess);
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().to_string())
@@ -714,6 +867,7 @@ $stagingDir = '{staging_dir}'
 $backupDir = '{backup_dir}'
 $exePath = '{exe_path}'
 $waitPid = {wait_pid}
+$restartAfterUpdate = {restart_after_update}
 $managedNames = @((ConvertFrom-Json '{managed_json_ps}'))
 $stagedNames = @((ConvertFrom-Json '{staged_json_ps}'))
 $args = @((ConvertFrom-Json '{args_json_ps}'))
@@ -775,9 +929,12 @@ try {{
         $installed.Add($name) | Out-Null
     }}
 
-    $env:MESH_LLM_SELF_UPDATE_ATTEMPTED = '1'
-    & $exePath @args
-    exit $LASTEXITCODE
+    if ($restartAfterUpdate) {{
+        $env:MESH_LLM_SELF_UPDATE_ATTEMPTED = '1'
+        & $exePath @args
+        exit $LASTEXITCODE
+    }}
+    exit 0
 }} catch {{
     Restore-Backups $backedUp.ToArray() $installed.ToArray()
     throw
@@ -791,6 +948,11 @@ try {{
         backup_dir = quote(backup),
         exe_path = quote(exe),
         wait_pid = std::process::id(),
+        restart_after_update = if restart_after_update {
+            "$true"
+        } else {
+            "$false"
+        },
         managed_json_ps = managed_json_ps,
         staged_json_ps = staged_json_ps,
         args_json_ps = args_json_ps
@@ -961,48 +1123,25 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_should_attempt_self_update_defaults_to_startup_only() {
+    fn test_should_attempt_auto_update_only_when_flag_is_set() {
         std::env::remove_var(SELF_UPDATE_ATTEMPTED_ENV);
-        std::env::remove_var(SELF_UPDATE_DISABLED_ENV);
-        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
-        assert!(should_attempt_self_update(&cli));
+        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "--auto"]);
+        assert!(should_attempt_auto_update(&cli));
 
         let cli = Cli::parse_from(["mesh-llm", "download"]);
-        assert!(!should_attempt_self_update(&cli));
+        assert!(!should_attempt_auto_update(&cli));
+
+        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "update"]);
+        assert!(!should_attempt_auto_update(&cli));
     }
 
     #[test]
     #[serial]
-    fn test_should_attempt_self_update_respects_disable_flags() {
+    fn test_should_attempt_auto_update_respects_restart_guard() {
         std::env::set_var(SELF_UPDATE_ATTEMPTED_ENV, "1");
-        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
-        assert!(!should_attempt_self_update(&cli));
+        let cli = Cli::parse_from(["mesh-llm", "--auto-update", "--auto"]);
+        assert!(!should_attempt_auto_update(&cli));
         std::env::remove_var(SELF_UPDATE_ATTEMPTED_ENV);
-
-        std::env::set_var(SELF_UPDATE_DISABLED_ENV, "1");
-        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
-        assert!(!should_attempt_self_update(&cli));
-        std::env::remove_var(SELF_UPDATE_DISABLED_ENV);
-
-        let cli = Cli::parse_from(["mesh-llm", "--auto", "--no-self-update"]);
-        assert!(!should_attempt_self_update(&cli));
-    }
-
-    #[test]
-    fn test_startup_self_update_enabled_respects_config() {
-        let dir = temp_dir("self-update-config");
-        let config = dir.join("config.toml");
-        std::fs::write(&config, "self_update = false\n").unwrap();
-
-        let cli = Cli::parse_from([
-            "mesh-llm",
-            "--auto",
-            "--config",
-            config.to_string_lossy().as_ref(),
-        ]);
-        assert!(!startup_self_update_enabled(&cli));
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

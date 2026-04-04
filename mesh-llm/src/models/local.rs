@@ -460,6 +460,40 @@ pub fn find_model_path(stem: &str) -> PathBuf {
     canonical_dir.join(&filename)
 }
 
+pub fn find_mmproj_path(model_name: &str, model_path: &Path) -> Option<PathBuf> {
+    if let Some(path) = crate::models::catalog::MODEL_CATALOG
+        .iter()
+        .find(|m| {
+            m.name == model_name || m.file.strip_suffix(".gguf").unwrap_or(&m.file) == model_name
+        })
+        .and_then(|m| m.mmproj.as_ref())
+        .map(|asset| crate::models::catalog::models_dir().join(&asset.file))
+        .filter(|p| p.exists())
+    {
+        return Some(path);
+    }
+
+    let parent = model_path.parent()?;
+    let mut candidates = std::fs::read_dir(parent)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path != model_path)
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("gguf"))
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_ascii_lowercase().contains("mmproj"))
+                .unwrap_or(false)
+        });
+
+    let candidate = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    Some(candidate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,6 +616,49 @@ mod tests {
         restore_env("HF_HUB_CACHE", prev_hub_cache);
         restore_env("HF_HOME", prev_hf_home);
         restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    fn mmproj_path_falls_back_to_single_sibling_sidecar() {
+        let temp = std::env::temp_dir().join(format!(
+            "mesh-llm-mmproj-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let model = temp.join("Qwen3VL-2B-Instruct-Q4_K_M.gguf");
+        let mmproj = temp.join("mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf");
+        std::fs::write(&model, b"model").unwrap();
+        std::fs::write(&mmproj, b"mmproj").unwrap();
+
+        let found = find_mmproj_path("Qwen3VL-2B-Instruct-Q4_K_M", &model);
+        assert_eq!(found.as_deref(), Some(mmproj.as_path()));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn mmproj_path_ignores_ambiguous_sibling_sidecars() {
+        let temp = std::env::temp_dir().join(format!(
+            "mesh-llm-mmproj-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let model = temp.join("Qwen3VL-2B-Instruct-Q4_K_M.gguf");
+        let mmproj_a = temp.join("mmproj-a.gguf");
+        let mmproj_b = temp.join("mmproj-b.gguf");
+        std::fs::write(&model, b"model").unwrap();
+        std::fs::write(&mmproj_a, b"mmproj").unwrap();
+        std::fs::write(&mmproj_b, b"mmproj").unwrap();
+
+        assert!(find_mmproj_path("Qwen3VL-2B-Instruct-Q4_K_M", &model).is_none());
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {

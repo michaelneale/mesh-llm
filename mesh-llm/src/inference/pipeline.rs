@@ -164,7 +164,7 @@ pub fn should_pipeline(classification: &crate::network::router::Classification) 
     use crate::network::router::{Category, Complexity};
 
     // Only pipeline for complex tasks that need tools
-    if !classification.needs_tools {
+    if classification.has_media_inputs || !classification.needs_tools {
         return false;
     }
 
@@ -280,6 +280,7 @@ mod tests {
             category: Category::Code,
             complexity: Complexity::Deep,
             needs_tools: true,
+            has_media_inputs: false,
         };
         assert!(should_pipeline(&cl));
     }
@@ -291,6 +292,7 @@ mod tests {
             category: Category::Chat,
             complexity: Complexity::Quick,
             needs_tools: false,
+            has_media_inputs: false,
         };
         assert!(!should_pipeline(&cl));
     }
@@ -302,6 +304,7 @@ mod tests {
             category: Category::ToolCall,
             complexity: Complexity::Quick,
             needs_tools: true,
+            has_media_inputs: false,
         };
         assert!(!should_pipeline(&cl));
     }
@@ -313,6 +316,7 @@ mod tests {
             category: Category::Code,
             complexity: Complexity::Moderate,
             needs_tools: true,
+            has_media_inputs: false,
         };
         assert!(should_pipeline(&cl));
     }
@@ -324,6 +328,19 @@ mod tests {
             category: Category::Chat,
             complexity: Complexity::Moderate,
             needs_tools: false,
+            has_media_inputs: false,
+        };
+        assert!(!should_pipeline(&cl));
+    }
+
+    #[test]
+    fn test_should_not_pipeline_media_request() {
+        use crate::network::router::{Category, Classification, Complexity};
+        let cl = Classification {
+            category: Category::Code,
+            complexity: Complexity::Deep,
+            needs_tools: true,
+            has_media_inputs: true,
         };
         assert!(!should_pipeline(&cl));
     }
@@ -342,6 +359,7 @@ mod tests {
             category: Category::Code,
             complexity: Complexity::Deep,
             needs_tools: true,
+            has_media_inputs: false,
         };
 
         let (out_body, model, plan) = route_with_pipeline(

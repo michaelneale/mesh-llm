@@ -1,81 +1,118 @@
-# mesh-llm
+# mesh-llm crate
 
-Rust sidecar for distributed llama.cpp inference over QUIC. See the [project README](../README.md) for usage.
+Rust implementation of mesh-llm: a peer-to-peer control plane for llama.cpp inference over QUIC, with distributed routing, model orchestration, plugin hosting, and a local management API.
 
-```
+For install and end-user usage, see the [project README](../README.md). For deeper architecture and test flows, see [docs/DESIGN.md](docs/DESIGN.md), [docs/TESTING.md](docs/TESTING.md), and [docs/message_protocol.md](docs/message_protocol.md).
+
+## Source layout
+
+The crate root stays intentionally small:
+
+```text
 src/
-├── main.rs        CLI, orchestration, startup flows (auto, idle, passive)
-├── backend.rs     Backend registry and launch/control abstraction (llama today, MLX next)
-├── mesh.rs        QUIC endpoint, gossip, peer management, request rate sharing
-├── election.rs    Per-model host election, latency-aware split, llama-server lifecycle
-├── proxy.rs       HTTP proxy plumbing: request parsing, model routing, response helpers
-├── api.rs         Mesh management API (:3131): status, events, runtime load/unload, discover, join, chat proxy
-├── tunnel.rs      TCP ↔ QUIC relay (RPC + HTTP), B2B rewrite map
-├── rewrite.rs     REGISTER_PEER interception and endpoint rewriting
-├── launch.rs      rpc-server and backend inference process management
-├── download.rs    Model catalog and HuggingFace download (reqwest, resume support)
-├── nostr.rs       Nostr publish/discover: mesh listings, smart auto-join, publish watchdog
-├── hardware.rs    GPU/host hardware detection: Collector trait, DefaultCollector, TegraCollector
-├── plugins/
-│   ├── mod.rs                 Plugin module registry
-│   ├── blackboard/mod.rs      Shared ephemeral messages across the mesh (plugin runtime/state)
-│   ├── blackboard/mcp.rs      Standalone MCP server for blackboard
-│   └── example/               Standalone example plugin crate for tools, channel, bulk, and mesh events
+├── lib.rs                 crate entrypoint, module wiring, version, public re-exports
+├── main.rs                binary entrypoint
+├── api/                   management API, status shaping, HTTP routing
+├── cli/                   clap types, subcommands, command handlers
+├── inference/             election, launch, pipeline splits, MoE orchestration
+├── mesh/                  peer membership, gossip, routing tables, QUIC node behavior
+├── models/                catalog, search, GGUF metadata, inventory, resolution
+├── network/               proxying, tunnels, affinity, Nostr discovery, endpoint rewrite
+├── plugin/                external plugin host, MCP bridge, transport, config
+├── plugins/               built-in plugins shipped with mesh-llm
+├── protocol/              control-plane protocol versions and conversions
+├── runtime/               top-level startup flows and local runtime coordination
+└── system/                hardware detection, benchmarking, self-update
 ```
 
-## Design
+Notable built-ins under `src/plugins/` today:
 
-**mesh-llm owns :9337** — never llama-server directly. The API proxy peeks at the `model` field and routes to the right node.
+```text
+plugins/
+├── blackboard/            shared mesh message feed + MCP surface
+└── example/               standalone example plugin crate
+```
 
-**One model per node** — multi-model = different nodes serving different things. No VRAM double-commitment.
+## Runtime model
 
-**Solo by default** — if a model fits (VRAM ≥ size × 1.1), it runs solo. Tensor split only when necessary.
+- `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by model.
+- The management API and web console live on `:3131`.
+- Dense models that fit run locally. Dense models that do not fit can be split with pipeline parallelism.
+- MoE models are handled through expert-aware orchestration in `inference/moe.rs`.
+- Routing and demand tracking are mesh-wide. Nodes can serve different models at the same time.
+- Discovery is optional and Nostr-backed. Private meshes work with explicit join tokens only.
 
-**Latency-aware splitting** — when splitting is needed, peers sorted by RTT ascending. Take just enough for the VRAM shortfall. 80ms hard cap — high-latency nodes participate as API clients, not split partners.
+The current control plane prefers protocol `mesh-llm/1` with protobuf framing, while keeping backward-compatible support for older `mesh-llm/0` peers in `src/protocol/`.
 
-**Demand-aware rebalancing** — request rates tracked per model, gossipped every 60s. Standby nodes promote when a model is hot (≥10 req/min, ≥3x imbalance vs coldest) or has zero servers.
+## API surface
 
-**Event-driven** — death detected via tunnel failure + 60s heartbeat. Dead peers broadcast, not re-added by gossip. Cost proportional to topology changes, not node count.
+The management API exposes the state the UI uses directly:
 
-**Passive scaling** — clients don't gossip, use routing tables only. Zero per-client state on servers.
+- `GET /api/status` for node, peer, and routing state
+- `GET /api/events` for live updates
+- `GET /api/models` and runtime endpoints for loaded model/process state
+- `GET /api/discover` for mesh discovery results
+- `GET /api/plugins` plus per-plugin tool endpoints
+- `GET /api/blackboard/feed`, `GET /api/blackboard/search`, `POST /api/blackboard/post`
 
-**Backend-pluggable local runtime** — the control plane now launches inference through a backend registry. `llama` is the only concrete backend today, but runtime load/unload and process tracking are no longer hard-wired to one launcher.
+The OpenAI-compatible inference API remains on `http://localhost:9337/v1`, including `/v1/models`.
 
-## Nostr discovery
+## Plugins and MCP
 
-Opt-in. Without `--publish`, nothing touches Nostr.
+Plugin hosting now lives in `src/plugin/` rather than a crate-root module. mesh-llm supports:
+
+- built-in plugins shipped with the binary
+- external executable plugins declared in `~/.mesh-llm/config.toml`
+- MCP exposure through the plugin bridge
+
+The blackboard plugin is auto-registered unless explicitly disabled in config. Useful entry points:
 
 ```bash
-# Publish
-mesh-llm --model Qwen2.5-3B --publish --mesh-name "Sydney Lab" --region AU
+mesh-llm plugin list
+mesh-llm blackboard
+mesh-llm blackboard --search "routing"
+mesh-llm --client --join <token> blackboard --mcp
+```
 
-# Discover
+External plugins are configured as executables, for example:
+
+```toml
+[[plugin]]
+name = "my-plugin"
+command = "/absolute/path/to/plugin-binary"
+args = ["--stdio"]
+```
+
+## Discovery and mesh modes
+
+Opt-in Nostr discovery:
+
+```bash
+mesh-llm --model Qwen2.5-3B --publish --mesh-name "Sydney Lab" --region AU
 mesh-llm discover
 mesh-llm discover --model GLM --region AU
-
-# Auto-join (discover + join + serve)
 mesh-llm --auto
 ```
 
-Smart auto-join scores meshes by: name match, node count, model coverage, sticky preference, overload. QUIC health probe before committing. Publish watchdog auto-takes-over if the original publisher dies.
-
-## Named meshes (buddy mode)
-
-Create a shared mesh — everyone runs the same command:
+Named meshes still work as a strict discovery filter:
 
 ```bash
 mesh-llm --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night"
 ```
 
-The first person to run it creates the mesh and starts serving. Everyone else discovers "poker-night" and joins automatically. `--mesh-name` implies `--publish` and strictly filters discovery to that name only — your group won't accidentally land in someone else's mesh.
-
-## No-arg behavior
+No-arg behavior remains intentionally simple:
 
 ```bash
-mesh-llm    # no args
+mesh-llm
 ```
 
-Prints the standard `--help` output and exits. It does not bind the console or API ports until you start or join a mesh with CLI flags.
+It prints `--help` and exits without binding the console or API ports.
+
+## Development notes
+
+- Build and test from the repo root with `just`; do not invoke ad-hoc build commands.
+- Keep new code inside the owning domain module instead of adding new crate-root files.
+- When changing protocol behavior, preserve compatibility unless a breaking change is explicitly intended.
 
 ## Live demo
 

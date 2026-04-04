@@ -519,7 +519,7 @@ ensure_service_env_file() {
         echo "# Optional environment variables for mesh-llm."
         echo "# Use plain KEY=value lines."
         echo "# Example:"
-        echo "# MESH_LLM_NO_SELF_UPDATE=1"
+        echo "# RUST_LOG=mesh_inference=debug"
     } > "$SERVICE_ENV_FILE"
 }
 

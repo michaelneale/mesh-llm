@@ -80,9 +80,9 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub(crate) plugin: Option<String>,
 
-    /// Disable startup self-update for this process.
-    #[arg(long, hide = true)]
-    pub(crate) no_self_update: bool,
+    /// Update mesh-llm before continuing for release-bundle installs if a newer bundled release is available.
+    #[arg(long, global = true)]
+    pub(crate) auto_update: bool,
 
     // ── Advanced options (hidden from default --help) ─────────────
     /// Draft model for speculative decoding.
@@ -177,6 +177,8 @@ pub(crate) enum Command {
         #[arg(long)]
         draft: bool,
     },
+    /// Update mesh-llm to the latest bundled release and exit.
+    Update,
     /// Inspect and manage local runtime-served models.
     #[command(hide = true)]
     Runtime {

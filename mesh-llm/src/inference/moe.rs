@@ -1120,7 +1120,6 @@ mod tests {
     use super::*;
     use crate::models::gguf::detect_moe;
     use serial_test::serial;
-    use std::io::Write;
 
     #[test]
     fn test_assignments_2_nodes() {
@@ -1222,11 +1221,6 @@ mod tests {
         assert_eq!(loaded, artifact);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn write_gguf_string(file: &mut std::fs::File, value: &str) {
-        file.write_all(&(value.len() as u64).to_le_bytes()).unwrap();
-        file.write_all(value.as_bytes()).unwrap();
     }
 
     #[test]

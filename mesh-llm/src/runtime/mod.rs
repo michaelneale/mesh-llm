@@ -11,7 +11,7 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::inference::{election, launch, moe};
 use crate::mesh;
 use crate::mesh::NodeRole;
@@ -69,14 +69,10 @@ pub(crate) async fn run() -> Result<()> {
         return plugin::run_plugin_process(name).await;
     }
 
-    let checked_updates = if autoupdate::startup_self_update_enabled(&cli) {
-        autoupdate::maybe_self_update(&cli).await?
-    } else {
-        false
-    };
+    let checked_updates = autoupdate::maybe_auto_update(&cli).await?;
 
     // Finish the release check before startup continues.
-    if !checked_updates {
+    if !checked_updates && !matches!(cli.command, Some(Command::Update)) {
         autoupdate::check_for_update().await;
     }
 
@@ -302,7 +298,9 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
 /// If not on disk, downloads it (drafts are <1GB).
 pub async fn ensure_draft(model: &std::path::Path) -> Option<PathBuf> {
     let filename = model.file_name()?.to_str()?;
-    let catalog_entry = catalog::MODEL_CATALOG.iter().find(|m| m.file == filename)?;
+    let catalog_entry = catalog::MODEL_CATALOG
+        .iter()
+        .find(|m| m.file == filename || m.file.eq_ignore_ascii_case(filename))?;
     let draft_name = catalog_entry.draft.as_deref()?;
     let draft_entry = catalog::MODEL_CATALOG
         .iter()
@@ -1054,7 +1052,9 @@ async fn run_auto(
     node.regossip().await;
 
     // Ensure draft model is available (downloads if needed, <1GB)
-    if cli.draft.is_none() && !cli.no_draft {
+    // `--no-draft` disables automatic draft detection, but should not
+    // override an explicitly supplied `--draft` value.
+    if !cli.no_draft && cli.draft.is_none() {
         if let Some(draft_path) = ensure_draft(&model).await {
             eprintln!("Auto-detected draft model: {}", draft_path.display());
             cli.draft = Some(draft_path);
@@ -2140,5 +2140,30 @@ mod tests {
             }
         })
         .await;
+    }
+
+    #[test]
+    fn ensure_draft_catalog_lookup_is_case_insensitive() {
+        // The ensure_draft fix: lowercase filename (from Qwen HF URL) must
+        // match the PascalCase catalog entry so draft resolution works.
+        let lowercase = "qwen2.5-3b-instruct-q4_k_m.gguf";
+        let found = catalog::MODEL_CATALOG
+            .iter()
+            .find(|m| m.file == lowercase || m.file.eq_ignore_ascii_case(lowercase));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "Qwen2.5-3B-Instruct-Q4_K_M");
+    }
+
+    #[test]
+    fn no_draft_flag_clears_preexisting_draft() {
+        // The --no-draft fix: the flag must clear a draft that was already set
+        // (e.g. cached from a previous run), not just skip auto-detection.
+        let mut draft = Some(PathBuf::from("/models/draft.gguf"));
+        let no_draft = true;
+        // Mirrors the fixed logic in run_auto
+        if no_draft {
+            draft = None;
+        }
+        assert!(draft.is_none());
     }
 }

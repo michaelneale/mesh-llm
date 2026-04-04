@@ -410,12 +410,22 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         .map(hf_asset_from_url)
         .collect();
     if let Some(assets) = hf_assets {
+        // The primary asset filename comes from the parsed source URL and may
+        // differ in case from model.file (e.g. Qwen repos use lowercase
+        // filenames). Use the URL-derived basename for the cache lookup so
+        // we find the actual file regardless of case or nested paths.
+        let source = model.source_file().unwrap_or(model.file.as_str());
+        let url_filename = source.rsplit('/').next().unwrap_or(source);
         let mut paths = download_hf_assets(&model.name, assets).await?;
         paths.sort();
         return paths
             .into_iter()
             .find(|path| {
-                path.file_name().and_then(|value| value.to_str()) == Some(model.file.as_str())
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| {
+                        name == url_filename || name.eq_ignore_ascii_case(&model.file)
+                    })
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -930,5 +940,70 @@ mod tests {
         assert!(files[0].1.contains("-00001-of-"));
         assert!(files[1].1.contains("-00002-of-"));
         assert!(files[2].1.contains("-00003-of-"));
+    }
+
+    #[test]
+    fn qwen_catalog_has_case_mismatch_between_file_and_url() {
+        // Qwen HF repos use lowercase filenames but the catalog stores PascalCase.
+        // This is the mismatch that the case-insensitive fallback in download_model fixes.
+        let model = find_model("Qwen2.5-3B-Instruct-Q4_K_M").unwrap();
+        let url_file = model.source_file().unwrap();
+        assert_ne!(model.file.as_str(), url_file);
+        assert!(model.file.eq_ignore_ascii_case(url_file));
+    }
+
+    /// Helper: simulate the path-matching predicate from download_model().
+    fn matches_model_file(path_filename: &str, url_filename: &str, catalog_file: &str) -> bool {
+        path_filename == url_filename || path_filename.eq_ignore_ascii_case(catalog_file)
+    }
+
+    #[test]
+    fn cache_lookup_matches_lowercase_url_filename() {
+        assert!(matches_model_file(
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+        ));
+    }
+
+    #[test]
+    fn cache_lookup_matches_exact_catalog_name() {
+        assert!(matches_model_file(
+            "Qwen3-8B-Q4_K_M.gguf",
+            "Qwen3-8B-Q4_K_M.gguf",
+            "Qwen3-8B-Q4_K_M.gguf",
+        ));
+    }
+
+    #[test]
+    fn cache_lookup_case_insensitive_fallback() {
+        assert!(matches_model_file(
+            "qwen3-4b-q4_k_m.gguf",
+            "DOES-NOT-MATCH",
+            "Qwen3-4B-Q4_K_M.gguf",
+        ));
+    }
+
+    #[test]
+    fn cache_lookup_rejects_wrong_file() {
+        assert!(!matches_model_file(
+            "totally-different-model.gguf",
+            "qwen3-8b-q4_k_m.gguf",
+            "Qwen3-8B-Q4_K_M.gguf",
+        ));
+    }
+
+    #[test]
+    fn url_basename_strips_nested_path() {
+        let source = "Qwen3-Coder-Next-Q4_K_M/model-00001-of-00004.gguf";
+        let basename = source.rsplit('/').next().unwrap_or(source);
+        assert_eq!(basename, "model-00001-of-00004.gguf");
+    }
+
+    #[test]
+    fn url_basename_handles_flat_path() {
+        let source = "Qwen3-4B-Q4_K_M.gguf";
+        let basename = source.rsplit('/').next().unwrap_or(source);
+        assert_eq!(basename, "Qwen3-4B-Q4_K_M.gguf");
     }
 }

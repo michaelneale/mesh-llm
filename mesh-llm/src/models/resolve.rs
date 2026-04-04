@@ -35,7 +35,9 @@ pub(super) fn merge_capabilities(
     right: ModelCapabilities,
 ) -> ModelCapabilities {
     ModelCapabilities {
+        multimodal: left.multimodal || right.multimodal,
         vision: left.vision.max(right.vision),
+        audio: left.audio.max(right.audio),
         reasoning: left.reasoning.max(right.reasoning),
         tool_use: left.tool_use.max(right.tool_use),
         moe: left.moe || right.moe,
@@ -58,8 +60,18 @@ pub async fn download_exact_ref(input: &str) -> Result<PathBuf> {
             repo,
             revision,
             file,
-        } => catalog::download_hf_repo_file(&repo, revision.as_deref(), &file).await,
+        } => {
+            if let Some(model) =
+                matching_catalog_primary_for_huggingface(&repo, revision.as_deref(), &file)
+            {
+                return catalog::download_model(model).await;
+            }
+            catalog::download_hf_repo_file(&repo, revision.as_deref(), &file).await
+        }
         ExactModelRef::Url { url, filename } => {
+            if let Some(model) = matching_catalog_primary_for_url(&url) {
+                return catalog::download_model(model).await;
+            }
             let dest = catalog::models_dir().join(&filename);
             if existing_download(&dest).await {
                 return Ok(dest);
@@ -348,6 +360,84 @@ fn matching_catalog_model_for_url(url: &str) -> Option<&'static catalog::Catalog
         .iter()
         .find(|model| model.url.eq_ignore_ascii_case(url))
         .or_else(|| matching_catalog_model_by_basename(url))
+}
+
+fn matching_catalog_primary_for_huggingface(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+) -> Option<&'static catalog::CatalogModel> {
+    let model = matching_catalog_model_for_huggingface(repo, revision, file)?;
+    match catalog_hf_asset_ref(model, model.file.as_str()) {
+        Some((asset_repo, asset_revision, asset_file))
+            if asset_repo.eq_ignore_ascii_case(repo)
+                && asset_file.eq_ignore_ascii_case(file)
+                && match revision {
+                    Some(revision) => asset_revision
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case(revision))
+                        .unwrap_or(false),
+                    None => true,
+                } =>
+        {
+            Some(model)
+        }
+        _ => None,
+    }
+}
+
+fn matching_catalog_primary_for_url(url: &str) -> Option<&'static catalog::CatalogModel> {
+    let model = matching_catalog_model_for_url(url)?;
+    if model.url.eq_ignore_ascii_case(url) {
+        Some(model)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primary_hf_ref_maps_to_full_catalog_download() {
+        let model = matching_catalog_primary_for_huggingface(
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            Some("main"),
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+        )
+        .expect("primary model file should map to catalog download");
+        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
+        assert!(model.mmproj.is_some());
+    }
+
+    #[test]
+    fn mmproj_hf_ref_does_not_expand_to_full_catalog_download() {
+        assert!(matching_catalog_primary_for_huggingface(
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            Some("main"),
+            "mmproj-BF16.gguf",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn primary_url_maps_to_full_catalog_download() {
+        let model = matching_catalog_primary_for_url(
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
+        )
+        .expect("primary model url should map to catalog download");
+        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
+        assert!(model.mmproj.is_some());
+    }
+
+    #[test]
+    fn mmproj_url_does_not_expand_to_full_catalog_download() {
+        assert!(matching_catalog_primary_for_url(
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf",
+        )
+        .is_none());
+    }
 }
 
 fn matching_catalog_model_by_basename(repo_file: &str) -> Option<&'static catalog::CatalogModel> {
