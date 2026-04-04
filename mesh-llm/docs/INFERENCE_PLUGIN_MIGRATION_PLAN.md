@@ -134,11 +134,10 @@ Move toward provider ownership for:
 
 The next concrete tasks are:
 
-1. Build a built-in llama provider adapter on top of the extracted provider seam.
-2. Route local runtime startup through provider-owned request structs everywhere.
-3. Route distributed host startup through provider-owned request structs everywhere.
-4. Replace direct worker helper launch calls with provider-owned worker requests.
-5. Mirror neutral contract refactors onto the sync branches as they land.
+1. Replace remaining direct backend-launch assumptions with a named provider selection seam.
+2. Add a built-in MLX provider adapter on the same endpoint-provider contract.
+3. Start separating distributed worker launch from llama-specific orchestration details.
+4. Mirror neutral contract refactors onto the sync branches as they land.
 
 ## Current Status
 
@@ -147,6 +146,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - `InferenceServerHandle` and `InferenceServerProcess` now live in `inference/provider.rs`
 - local and distributed llama endpoint launch sites now build `InferenceEndpointRequest`
 - worker helper launch sites now build `InferenceWorkerRequest`
+- a built-in `BuiltinLlamaProvider` adapter now owns the call from core into llama launch code
 
 ## Sync Branches
 

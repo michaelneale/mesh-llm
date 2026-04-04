@@ -208,7 +208,9 @@ pub(super) async fn start_runtime_local_model(
                 .with_ctx_size_override(ctx_size_override);
         (
             "llama",
-            launch::start_llama_server(bin_dir, binary_flavor, &request).await?,
+            provider::BuiltinLlamaProvider
+                .start_endpoint(bin_dir, binary_flavor, &request)
+                .await?,
         )
     };
 
