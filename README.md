@@ -164,19 +164,23 @@ MLX is available on macOS as an experimental local backend for supported text mo
 - MLX currently bypasses the existing distributed/split GGUF path and runs locally on the Mac serving node.
 - On startup, MLX prints an experimental warning and points users to the GitHub issues page if they hit problems.
 
-Current MLX runtime families:
+### Backend support matrix
 
-- Llama
-- Qwen2
-- Qwen3
-- Gemma 2 text
-- Gemma 3 text
-- Gemma 4 text
-- GLM4 text
-- LFM2 text
-- DeepSeekV3 / Kimi-K2 text
-- gpt-oss text
-- Kimi Linear text
+This is the practical support snapshot for the backends in this branch. The `🦙 GGUF / llama` column reflects the families we currently document, catalog, or smoke through the llama.cpp path here, not every model llama.cpp may support upstream.
+
+| Family | Example `🦙 GGUF / llama` model | `🦙 GGUF / llama` | Example `🍎 MLX` model | `🍎 MLX` | Notes |
+|---|---|---:|---|---:|---|
+| Llama | `Llama-3.2-3B-Instruct-Q4_K_M` | ✅ | `Llama-3.2-3B-Instruct-MLX` | ✅ | Dense text |
+| Qwen2 | `Qwen2.5-3B-Instruct-Q4_K_M` | ✅ | `Qwen2.5-3B-Instruct-MLX` | ✅ | Dense text |
+| Qwen3 | `Qwen3-8B-Q4_K_M` | ✅ | `Qwen3-4B-MLX` | ✅ | Reasoning and non-thinking flows |
+| Gemma 2 | `gemma-2-2b-it-Q4_K_M` | ✅ | `Gemma-2-2B-it-MLX` | ✅ | Dense text |
+| Gemma 3 | `Gemma-3-12B-it-Q4_K_M` | ✅ | `mlx-community/gemma-3-1b-it-qat-4bit` | ✅ | Text path only on MLX |
+| Gemma 4 | `gemma-4-E4B-it-Q4_K_M` | ✅ | `Gemma-4-E4B-it-MLX` | ✅ | Text path only on MLX |
+| GLM4 | `GLM-4.7-Flash-Q4_K_M` | ✅ | `GLM-4-9B-0414-MLX` | ✅ | Dense text |
+| LFM2 | — | — | `LFM2-350M-MLX` | ✅ | MLX-only today in this repo |
+| DeepSeekV3 / Kimi-K2 | — | — | `mlx-community/Kimi-K2-Instruct-4bit` | ✅ | Implemented on MLX, not in live smoke matrix |
+| gpt-oss | — | — | `openai/gpt-oss` MLX repos | ✅ | Implemented on MLX, not in live smoke matrix |
+| Kimi Linear | — | — | `kimi_linear` MLX repos | ✅ | Separate MLX family, not in live smoke matrix |
 
 Current MLX limitations:
 
