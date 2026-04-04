@@ -996,7 +996,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_context_size, parse_available_devices, preferred_device, BinaryFlavor};
+    use super::{
+        compute_context_size, parse_available_devices, preferred_device, temp_log_path,
+        BinaryFlavor,
+    };
     use std::path::Path;
 
     #[test]
@@ -1082,7 +1085,7 @@ No devices found
     #[test]
     fn temp_log_path_includes_pid_and_suffix() {
         let suffix = "rpc-server.log";
-        let path = super::temp_log_path(suffix);
+        let path = temp_log_path(suffix);
         let file_name = path
             .file_name()
             .expect("temp_log_path should produce a filename")
