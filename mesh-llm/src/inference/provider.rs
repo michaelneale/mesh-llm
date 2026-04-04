@@ -1,5 +1,7 @@
 use anyhow::Result;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -200,6 +202,26 @@ impl InferenceWorkerRequest {
     }
 }
 
+type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+pub trait InferenceProvider: Send + Sync {
+    fn backend_label(&self) -> &'static str;
+
+    fn start_endpoint<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceEndpointRequest,
+    ) -> ProviderFuture<'a, InferenceServerProcess>;
+
+    fn start_worker<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceWorkerRequest,
+    ) -> ProviderFuture<'a, u16>;
+}
+
 /// Built-in provider adapter for the current llama.cpp runtime path.
 ///
 /// This is the first step toward a pluggable backend provider interface:
@@ -208,135 +230,107 @@ impl InferenceWorkerRequest {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BuiltinLlamaProvider;
 
-impl BuiltinLlamaProvider {
-    pub async fn start_endpoint(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceEndpointRequest,
-    ) -> Result<InferenceServerProcess> {
-        crate::inference::launch::start_llama_server(bin_dir, binary_flavor, request).await
+impl InferenceProvider for BuiltinLlamaProvider {
+    fn backend_label(&self) -> &'static str {
+        "llama"
     }
 
-    pub async fn start_worker(
-        self,
-        bin_dir: &Path,
+    fn start_endpoint<'a>(
+        &'a self,
+        bin_dir: &'a Path,
         binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceWorkerRequest,
-    ) -> Result<u16> {
-        crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
+        request: &'a InferenceEndpointRequest,
+    ) -> ProviderFuture<'a, InferenceServerProcess> {
+        Box::pin(async move {
+            crate::inference::launch::start_llama_server(bin_dir, binary_flavor, request).await
+        })
+    }
+
+    fn start_worker<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceWorkerRequest,
+    ) -> ProviderFuture<'a, u16> {
+        Box::pin(async move {
+            crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
+        })
     }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BuiltinMlxProvider;
 
-impl BuiltinMlxProvider {
-    pub async fn start_endpoint(
-        self,
-        _bin_dir: &Path,
+impl InferenceProvider for BuiltinMlxProvider {
+    fn backend_label(&self) -> &'static str {
+        "mlx"
+    }
+
+    fn start_endpoint<'a>(
+        &'a self,
+        _bin_dir: &'a Path,
         _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceEndpointRequest,
-    ) -> Result<InferenceServerProcess> {
-        #[cfg(target_os = "macos")]
-        {
-            let Some(model_dir) = crate::mlx::mlx_model_dir(request.model_path.as_path()) else {
-                anyhow::bail!(
-                    "MLX provider expected a normalized MLX model path, got {}",
-                    request.model_path.display()
-                );
-            };
-            let model_name = builtin_mlx_model_name(request.model_path.as_path());
-            return crate::mlx::start_mlx_server(model_dir, model_name, request.listen_port).await;
-        }
+        request: &'a InferenceEndpointRequest,
+    ) -> ProviderFuture<'a, InferenceServerProcess> {
+        Box::pin(async move {
+            #[cfg(target_os = "macos")]
+            {
+                let Some(model_dir) = crate::mlx::mlx_model_dir(request.model_path.as_path())
+                else {
+                    anyhow::bail!(
+                        "MLX provider expected a normalized MLX model path, got {}",
+                        request.model_path.display()
+                    );
+                };
+                let model_name = builtin_mlx_model_name(request.model_path.as_path());
+                return crate::mlx::start_mlx_server(model_dir, model_name, request.listen_port)
+                    .await;
+            }
 
-        #[cfg(not(target_os = "macos"))]
-        {
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = request;
+                anyhow::bail!("MLX provider is only available on macOS");
+            }
+        })
+    }
+
+    fn start_worker<'a>(
+        &'a self,
+        _bin_dir: &'a Path,
+        _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
+        request: &'a InferenceWorkerRequest,
+    ) -> ProviderFuture<'a, u16> {
+        Box::pin(async move {
             let _ = request;
-            anyhow::bail!("MLX provider is only available on macOS");
-        }
+            anyhow::bail!("MLX does not use a worker helper runtime")
+        })
     }
 }
 
-/// Named backend selection seam for built-in inference providers.
-///
-/// Call sites do not need to know which concrete built-in provider they are
-/// using. This branch wires both llama.cpp and MLX through the same seam.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BuiltinProviderKind {
-    Llama,
-    #[cfg(target_os = "macos")]
-    Mlx,
-}
+static BUILTIN_LLAMA_PROVIDER: BuiltinLlamaProvider = BuiltinLlamaProvider;
+#[cfg(target_os = "macos")]
+static BUILTIN_MLX_PROVIDER: BuiltinMlxProvider = BuiltinMlxProvider;
 
-impl BuiltinProviderKind {
-    pub fn backend_label(self) -> &'static str {
-        match self {
-            BuiltinProviderKind::Llama => "llama",
-            #[cfg(target_os = "macos")]
-            BuiltinProviderKind::Mlx => "mlx",
-        }
-    }
-
-    pub async fn start_endpoint(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceEndpointRequest,
-    ) -> Result<InferenceServerProcess> {
-        match self {
-            BuiltinProviderKind::Llama => {
-                BuiltinLlamaProvider
-                    .start_endpoint(bin_dir, binary_flavor, request)
-                    .await
-            }
-            #[cfg(target_os = "macos")]
-            BuiltinProviderKind::Mlx => {
-                BuiltinMlxProvider
-                    .start_endpoint(bin_dir, binary_flavor, request)
-                    .await
-            }
-        }
-    }
-
-    pub async fn start_worker(
-        self,
-        bin_dir: &Path,
-        binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &InferenceWorkerRequest,
-    ) -> Result<u16> {
-        match self {
-            BuiltinProviderKind::Llama => {
-                BuiltinLlamaProvider
-                    .start_worker(bin_dir, binary_flavor, request)
-                    .await
-            }
-            #[cfg(target_os = "macos")]
-            BuiltinProviderKind::Mlx => {
-                let _ = (bin_dir, binary_flavor, request);
-                anyhow::bail!("MLX does not use a worker helper runtime")
-            }
-        }
-    }
-}
-
-pub fn select_local_endpoint_provider(request: &InferenceEndpointRequest) -> BuiltinProviderKind {
+pub fn select_local_endpoint_provider(
+    request: &InferenceEndpointRequest,
+) -> &'static dyn InferenceProvider {
     #[cfg(target_os = "macos")]
     if builtin_mlx_model_path(request.model_path.as_path()) {
-        return BuiltinProviderKind::Mlx;
+        return &BUILTIN_MLX_PROVIDER;
     }
 
-    BuiltinProviderKind::Llama
+    &BUILTIN_LLAMA_PROVIDER
 }
 
 pub fn select_distributed_endpoint_provider(
     _request: &InferenceEndpointRequest,
-) -> BuiltinProviderKind {
-    BuiltinProviderKind::Llama
+) -> &'static dyn InferenceProvider {
+    &BUILTIN_LLAMA_PROVIDER
 }
 
-pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> BuiltinProviderKind {
-    BuiltinProviderKind::Llama
+pub fn select_worker_provider(_request: &InferenceWorkerRequest) -> &'static dyn InferenceProvider {
+    &BUILTIN_LLAMA_PROVIDER
 }
 
 pub fn provider_requires_worker_runtime(model_path: &Path) -> bool {
