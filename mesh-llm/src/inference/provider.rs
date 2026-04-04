@@ -6,6 +6,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use tokio::net::TcpListener;
 
+fn mmproj_path_for_model(model_name: &str) -> Option<PathBuf> {
+    crate::models::catalog::MODEL_CATALOG
+        .iter()
+        .find(|model| {
+            model.name == model_name
+                || model.file.strip_suffix(".gguf").unwrap_or(&model.file) == model_name
+        })
+        .and_then(|model| model.mmproj.as_ref())
+        .map(|asset| crate::models::catalog::models_dir().join(&asset.file))
+        .filter(|path| path.exists())
+}
+
 /// Backend-neutral runtime handle for a serving instance.
 ///
 /// This sits above any concrete backend implementation:
@@ -57,6 +69,7 @@ pub struct InferenceServerProcess {
     pub handle: InferenceServerHandle,
     pub death_rx: tokio::sync::oneshot::Receiver<()>,
     pub context_length: u32,
+    pub listen_port: u16,
 }
 
 /// Backend-neutral request to start a serving endpoint for a model.
@@ -200,6 +213,11 @@ pub trait MoeRankingProvider: Send + Sync {
     fn detect_moe(&self, model_path: &Path) -> Option<crate::models::gguf::GgufMoeInfo>;
 
     fn load_cached_ranking(&self, model_path: &Path) -> Option<Vec<u32>>;
+
+    fn best_shared_ranking_artifact(
+        &self,
+        model_path: &Path,
+    ) -> Option<crate::inference::moe::SharedRankingArtifact>;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -466,6 +484,13 @@ impl MoeRankingProvider for BuiltinLlamaMoeRankingProvider {
         let ranking_path = crate::inference::moe::ranking_cache_path(model_path);
         crate::inference::moe::load_cached_ranking(&ranking_path)
     }
+
+    fn best_shared_ranking_artifact(
+        &self,
+        model_path: &Path,
+    ) -> Option<crate::inference::moe::SharedRankingArtifact> {
+        crate::inference::moe::best_shared_ranking_artifact(model_path)
+    }
 }
 
 impl InferenceProvider for BuiltinLlamaProvider {
@@ -684,6 +709,16 @@ pub fn load_cached_moe_ranking_for_model(
         .load_cached_ranking(model_path)
 }
 
+pub fn best_shared_moe_ranking_artifact_for_model(
+    model_path: &Path,
+    preferred_provider_id: Option<&str>,
+) -> Option<crate::inference::moe::SharedRankingArtifact> {
+    let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
+    selection
+        .moe_ranking_provider()?
+        .best_shared_ranking_artifact(model_path)
+}
+
 /// Start a distributed-host endpoint through the selected inference provider.
 ///
 /// This keeps mesh election in control of placement and worker selection,
@@ -838,7 +873,7 @@ pub async fn start_distributed_host(
         }
     };
 
-    let mmproj_path = crate::models::find_mmproj_path(model_name, model);
+    let mmproj_path = mmproj_path_for_model(model_name);
     let group_vram = if !rpc_ports.is_empty() {
         Some(total as u64)
     } else {
@@ -1040,11 +1075,14 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("mesh-llm-provider-moe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("moe-rankings")).expect("create moe ranking dir");
+        std::fs::create_dir_all(&root).expect("create test root");
         let model_path = root.join("model.gguf");
         std::fs::write(&model_path, b"gguf").expect("write model placeholder");
-        std::fs::write(root.join("moe-rankings/model.csv"), "3\n1\n4\n")
-            .expect("write ranking cache");
+        let ranking_path = crate::inference::moe::ranking_cache_path(&model_path);
+        if let Some(parent) = ranking_path.parent() {
+            std::fs::create_dir_all(parent).expect("create ranking cache dir");
+        }
+        std::fs::write(&ranking_path, "3\n1\n4\n").expect("write ranking cache");
 
         let selection =
             select_moe_ranking_provider(&model_path, None).expect("builtin llama ranking provider");
@@ -1053,6 +1091,17 @@ mod tests {
             load_cached_moe_ranking_for_model(&model_path, None),
             Some(vec![3, 1, 4])
         );
+        let artifact =
+            best_shared_moe_ranking_artifact_for_model(&model_path, None).expect("artifact");
+        assert_eq!(
+            artifact.kind,
+            crate::inference::moe::SharedRankingKind::Analyze
+        );
+        assert_eq!(
+            artifact.origin,
+            crate::inference::moe::SharedRankingOrigin::LegacyCache
+        );
+        assert_eq!(artifact.ranking, vec![3, 1, 4]);
 
         let _ = std::fs::remove_dir_all(&root);
     }

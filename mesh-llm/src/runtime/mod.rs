@@ -11,7 +11,7 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
-use crate::cli::{Cli, Command};
+use crate::cli::Cli;
 use crate::inference::{election, launch, moe, provider};
 use crate::mesh;
 use crate::mesh::NodeRole;

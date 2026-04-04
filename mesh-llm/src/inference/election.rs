@@ -543,7 +543,9 @@ fn resolve_runtime_moe_config(
     let started = std::time::Instant::now();
     let (ranking, ranking_source, ranking_origin) = match options.ranking_strategy {
         moe::MoeRankingStrategy::Auto => {
-            if let Some(artifact) = moe::best_shared_ranking_artifact(model_path) {
+            if let Some(artifact) =
+                provider::best_shared_moe_ranking_artifact_for_model(model_path, None)
+            {
                 let cached = moe::shared_ranking_cache_path(model_path, &artifact);
                 eprintln!(
                     "🧩 [{model_name}] Using cached MoE ranking mode={} origin={} cache={}",
@@ -1853,24 +1855,14 @@ async fn moe_election_loop(
                 }
             };
 
-            match launch::start_llama_server(
-                &bin_dir,
-                binary_flavor,
-                launch::ModelLaunchSpec {
-                    model: &model,
-                    http_port: llama_port,
-                    tunnel_ports: &[],
-                    tensor_split: None,
-                    draft: None,
-                    draft_max: 0,
-                    model_bytes,
-                    my_vram,
-                    mmproj: None,
-                    ctx_size_override,
-                    total_group_vram: None,
-                },
-            )
-            .await
+            let request =
+                provider::InferenceEndpointRequest::local(&model, llama_port, model_bytes, my_vram)
+                    .with_ctx_size_override(ctx_size_override);
+            let selection = provider::select_local_endpoint_provider(&request);
+            match selection
+                .provider()
+                .start_endpoint(&bin_dir, binary_flavor, &request)
+                .await
             {
                 Ok(process) => {
                     node.set_role(NodeRole::Host {
@@ -1879,7 +1871,7 @@ async fn moe_election_loop(
                     .await;
                     tunnel_mgr.set_http_port(ingress_http_port);
                     currently_running = true;
-                    current_local_port = Some(llama_port);
+                    current_local_port = Some(process.listen_port);
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         on_process(Some(LocalProcessInfo {
