@@ -779,25 +779,10 @@ async fn moe_election_loop(
                 };
 
                 let mb = total_model_bytes(&model);
-                match launch::start_llama_server(
-                    &bin_dir,
-                    binary_flavor,
-                    launch::ModelLaunchSpec {
-                        model: &model,
-                        http_port: llama_port,
-                        tunnel_ports: &[],
-                        tensor_split: None,
-                        draft: None,
-                        draft_max: 0,
-                        model_bytes: mb,
-                        my_vram,
-                        mmproj: None,
-                        ctx_size_override,
-                        total_group_vram: None,
-                    },
-                )
-                .await
-                {
+                let request =
+                    provider::InferenceEndpointRequest::local(&model, llama_port, mb, my_vram)
+                        .with_ctx_size_override(ctx_size_override);
+                match launch::start_llama_server(&bin_dir, binary_flavor, &request).await {
                     Ok(process) => {
                         node.set_role(NodeRole::Host {
                             http_port: ingress_http_port,
@@ -898,25 +883,14 @@ async fn moe_election_loop(
             };
 
             let shard_bytes = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
-            match launch::start_llama_server(
-                &bin_dir,
-                binary_flavor,
-                launch::ModelLaunchSpec {
-                    model: &shard_path,
-                    http_port: llama_port,
-                    tunnel_ports: &[],
-                    tensor_split: None,
-                    draft: None,
-                    draft_max: 0,
-                    model_bytes: shard_bytes,
-                    my_vram,
-                    mmproj: None,
-                    ctx_size_override,
-                    total_group_vram: None,
-                },
+            let request = provider::InferenceEndpointRequest::local(
+                &shard_path,
+                llama_port,
+                shard_bytes,
+                my_vram,
             )
-            .await
-            {
+            .with_ctx_size_override(ctx_size_override);
+            match launch::start_llama_server(&bin_dir, binary_flavor, &request).await {
                 Ok(process) => {
                     node.set_role(NodeRole::Host {
                         http_port: ingress_http_port,
@@ -1252,25 +1226,20 @@ async fn start_llama(
         None
     };
 
-    match launch::start_llama_server(
-        bin_dir,
-        binary_flavor,
-        launch::ModelLaunchSpec {
-            model,
-            http_port: llama_port,
-            tunnel_ports: &rpc_ports,
-            tensor_split: split.as_deref(),
-            draft,
-            draft_max,
-            model_bytes,
-            my_vram,
-            mmproj: mmproj_path.as_deref(),
-            ctx_size_override,
-            total_group_vram: group_vram,
-        },
+    let request = provider::InferenceEndpointRequest::distributed_host(
+        model,
+        llama_port,
+        rpc_ports.clone(),
+        model_bytes,
+        my_vram,
     )
-    .await
-    {
+    .with_tensor_split(split.as_deref())
+    .with_draft_model_path(draft)
+    .with_draft_max(draft_max)
+    .with_mmproj_path(mmproj_path.as_deref())
+    .with_ctx_size_override(ctx_size_override)
+    .with_total_group_vram_bytes(group_vram);
+    match launch::start_llama_server(bin_dir, binary_flavor, &request).await {
         Ok(process) => Some((llama_port, process)),
         Err(e) => {
             eprintln!("  Failed to start llama-server: {e}");

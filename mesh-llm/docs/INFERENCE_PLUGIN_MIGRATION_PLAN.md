@@ -134,10 +134,19 @@ Move toward provider ownership for:
 
 The next concrete tasks are:
 
-1. Extract the backend-neutral runtime handle/process contract.
-2. Add request structs for local and distributed runtime startup.
-3. Switch local runtime code to import the provider contract rather than `launch.rs`.
-4. Sketch the built-in llama provider adapter without changing behavior yet.
+1. Build a built-in llama provider adapter on top of the extracted provider seam.
+2. Route local runtime startup through provider-owned request structs everywhere.
+3. Route distributed host startup through provider-owned request structs everywhere.
+4. Replace direct worker helper launch calls with provider-owned worker requests.
+5. Mirror neutral contract refactors onto the sync branches as they land.
+
+## Current Status
+
+The following no-behavior-change groundwork is already in place on this branch:
+
+- `InferenceServerHandle` and `InferenceServerProcess` now live in `inference/provider.rs`
+- local and distributed llama endpoint launch sites now build `InferenceEndpointRequest`
+- worker helper launch sites now build `InferenceWorkerRequest`
 
 ## Sync Branches
 

@@ -173,24 +173,10 @@ pub(super) async fn start_runtime_local_model(
 
     let port = alloc_local_port().await?;
     let mmproj_path = mmproj_path_for_model(&model_name);
-    let process = launch::start_llama_server(
-        bin_dir,
-        binary_flavor,
-        launch::ModelLaunchSpec {
-            model: model_path,
-            http_port: port,
-            tunnel_ports: &[],
-            tensor_split: None,
-            draft: None,
-            draft_max: 0,
-            model_bytes,
-            my_vram,
-            mmproj: mmproj_path.as_deref(),
-            ctx_size_override,
-            total_group_vram: None,
-        },
-    )
-    .await?;
+    let request = provider::InferenceEndpointRequest::local(model_path, port, model_bytes, my_vram)
+        .with_mmproj_path(mmproj_path.as_deref())
+        .with_ctx_size_override(ctx_size_override);
+    let process = launch::start_llama_server(bin_dir, binary_flavor, &request).await?;
 
     Ok((
         model_name,

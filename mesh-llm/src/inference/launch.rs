@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 
-use super::provider::{InferenceServerHandle, InferenceServerProcess};
+use super::provider::{
+    InferenceEndpointRequest, InferenceServerHandle, InferenceServerProcess, InferenceWorkerRequest,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BinaryFlavor {
@@ -193,20 +195,6 @@ fn temp_log_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
 }
 
-pub struct ModelLaunchSpec<'a> {
-    pub model: &'a Path,
-    pub http_port: u16,
-    pub tunnel_ports: &'a [u16],
-    pub tensor_split: Option<&'a str>,
-    pub draft: Option<&'a Path>,
-    pub draft_max: u16,
-    pub model_bytes: u64,
-    pub my_vram: u64,
-    pub mmproj: Option<&'a Path>,
-    pub ctx_size_override: Option<u32>,
-    pub total_group_vram: Option<u64>,
-}
-
 fn compute_context_size(
     ctx_size_override: Option<u32>,
     model_bytes: u64,
@@ -351,15 +339,18 @@ fn command_has_output(command: &str, args: &[&str]) -> bool {
 pub async fn start_rpc_server(
     bin_dir: &Path,
     binary_flavor: Option<BinaryFlavor>,
-    device: Option<&str>,
-    gguf_path: Option<&Path>,
+    request: &InferenceWorkerRequest,
 ) -> Result<u16> {
     let rpc_server = resolve_binary_path(bin_dir, "rpc-server", binary_flavor)?;
 
     // Find a free port
     let port = find_free_port().await?;
 
-    let device = resolve_device_for_binary(&rpc_server.path, rpc_server.flavor, device)?;
+    let device = resolve_device_for_binary(
+        &rpc_server.path,
+        rpc_server.flavor,
+        request.device_hint.as_deref(),
+    )?;
     let startup_timeout = if device.starts_with("Vulkan") {
         std::time::Duration::from_secs(90)
     } else {
@@ -380,7 +371,7 @@ pub async fn start_rpc_server(
         "-p".to_string(),
         port.to_string(),
     ];
-    if let Some(path) = gguf_path {
+    if let Some(path) = request.model_path.as_deref() {
         args.push("--gguf".to_string());
         args.push(path.to_string_lossy().to_string());
         tracing::info!(
@@ -563,19 +554,19 @@ pub(crate) async fn terminate_process(pid: u32) {
 pub async fn start_llama_server(
     bin_dir: &Path,
     binary_flavor: Option<BinaryFlavor>,
-    spec: ModelLaunchSpec<'_>,
+    request: &InferenceEndpointRequest,
 ) -> Result<InferenceServerProcess> {
-    let model = spec.model;
-    let http_port = spec.http_port;
-    let tunnel_ports = spec.tunnel_ports;
-    let tensor_split = spec.tensor_split;
-    let draft = spec.draft;
-    let draft_max = spec.draft_max;
-    let model_bytes = spec.model_bytes;
-    let my_vram = spec.my_vram;
-    let mmproj = spec.mmproj;
-    let ctx_size_override = spec.ctx_size_override;
-    let total_group_vram = spec.total_group_vram;
+    let model = request.model_path.as_path();
+    let http_port = request.listen_port;
+    let tunnel_ports = request.worker_tunnel_ports.as_slice();
+    let tensor_split = request.tensor_split.as_deref();
+    let draft = request.draft_model_path.as_deref();
+    let draft_max = request.draft_max;
+    let model_bytes = request.model_bytes;
+    let my_vram = request.local_vram_bytes;
+    let mmproj = request.mmproj_path.as_deref();
+    let ctx_size_override = request.ctx_size_override;
+    let total_group_vram = request.total_group_vram_bytes;
     let llama_server = resolve_binary_path(bin_dir, "llama-server", binary_flavor)?;
 
     anyhow::ensure!(model.exists(), "Model not found at {}", model.display());

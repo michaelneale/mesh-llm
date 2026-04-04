@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -52,4 +53,117 @@ pub struct InferenceServerProcess {
     pub handle: InferenceServerHandle,
     pub death_rx: tokio::sync::oneshot::Receiver<()>,
     pub context_length: u32,
+}
+
+/// Backend-neutral request to start a serving endpoint for a model.
+///
+/// Backends can treat `worker_tunnel_ports` / `tensor_split` as the
+/// distributed-host shape, or ignore them for single-node serving.
+#[derive(Clone, Debug)]
+pub struct InferenceEndpointRequest {
+    pub model_path: PathBuf,
+    pub listen_port: u16,
+    pub worker_tunnel_ports: Vec<u16>,
+    pub tensor_split: Option<String>,
+    pub draft_model_path: Option<PathBuf>,
+    pub draft_max: u16,
+    pub model_bytes: u64,
+    pub local_vram_bytes: u64,
+    pub mmproj_path: Option<PathBuf>,
+    pub ctx_size_override: Option<u32>,
+    pub total_group_vram_bytes: Option<u64>,
+}
+
+impl InferenceEndpointRequest {
+    pub fn local(
+        model_path: impl Into<PathBuf>,
+        listen_port: u16,
+        model_bytes: u64,
+        local_vram_bytes: u64,
+    ) -> Self {
+        Self {
+            model_path: model_path.into(),
+            listen_port,
+            worker_tunnel_ports: Vec::new(),
+            tensor_split: None,
+            draft_model_path: None,
+            draft_max: 0,
+            model_bytes,
+            local_vram_bytes,
+            mmproj_path: None,
+            ctx_size_override: None,
+            total_group_vram_bytes: None,
+        }
+    }
+
+    pub fn with_ctx_size_override(mut self, ctx_size_override: Option<u32>) -> Self {
+        self.ctx_size_override = ctx_size_override;
+        self
+    }
+
+    pub fn with_mmproj_path(mut self, mmproj_path: Option<impl AsRef<Path>>) -> Self {
+        self.mmproj_path = mmproj_path.map(|path| path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn distributed_host(
+        model_path: impl Into<PathBuf>,
+        listen_port: u16,
+        worker_tunnel_ports: Vec<u16>,
+        model_bytes: u64,
+        local_vram_bytes: u64,
+    ) -> Self {
+        Self {
+            model_path: model_path.into(),
+            listen_port,
+            worker_tunnel_ports,
+            tensor_split: None,
+            draft_model_path: None,
+            draft_max: 0,
+            model_bytes,
+            local_vram_bytes,
+            mmproj_path: None,
+            ctx_size_override: None,
+            total_group_vram_bytes: None,
+        }
+    }
+
+    pub fn with_tensor_split(mut self, tensor_split: Option<impl Into<String>>) -> Self {
+        self.tensor_split = tensor_split.map(Into::into);
+        self
+    }
+
+    pub fn with_draft_model_path(mut self, draft_model_path: Option<impl AsRef<Path>>) -> Self {
+        self.draft_model_path = draft_model_path.map(|path| path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn with_draft_max(mut self, draft_max: u16) -> Self {
+        self.draft_max = draft_max;
+        self
+    }
+
+    pub fn with_total_group_vram_bytes(mut self, total_group_vram_bytes: Option<u64>) -> Self {
+        self.total_group_vram_bytes = total_group_vram_bytes;
+        self
+    }
+}
+
+/// Backend-neutral request to start a worker-side runtime helper.
+#[derive(Clone, Debug, Default)]
+pub struct InferenceWorkerRequest {
+    pub model_path: Option<PathBuf>,
+    pub device_hint: Option<String>,
+}
+
+impl InferenceWorkerRequest {
+    pub fn with_model_path(mut self, model_path: Option<impl AsRef<Path>>) -> Self {
+        self.model_path = model_path.map(|path| path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn with_device_hint(mut self, device_hint: Option<impl Into<String>>) -> Self {
+        self.device_hint = device_hint.map(Into::into);
+        self
+    }
 }
