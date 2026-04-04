@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 
-import { ChatPage } from "./App";
+import { App, ChatPage } from "./App";
 
 function buildProps(
   overrides: Partial<Parameters<typeof ChatPage>[0]> = {},
@@ -71,6 +71,142 @@ function buildProps(
   };
 }
 
+const statusTemplate = {
+  version: "1.0.0",
+  latest_version: null,
+  node_id: "node-1",
+  token: "token-123",
+  node_status: "Host",
+  is_host: true,
+  is_client: false,
+  llama_ready: true,
+  model_name: "model-a",
+  models: ["model-a"],
+  available_models: ["model-a"],
+  requested_models: [],
+  serving_models: ["model-a"],
+  hosted_models: ["model-a"],
+  api_port: 9337,
+  my_vram_gb: 16,
+  model_size_gb: 8,
+  mesh_name: "test-mesh",
+  peers: [],
+  inflight_requests: 0,
+  nostr_discovery: false,
+  my_hostname: "host.local",
+  gpus: [] as unknown[],
+};
+
+const modelsPayload = { mesh_models: [] };
+const mockFetch = vi.fn();
+
+function createStatusPayload() {
+  return {
+    ...statusTemplate,
+    peers: [] as typeof statusTemplate.peers,
+    models: [] as typeof statusTemplate.models,
+    available_models: [] as typeof statusTemplate.available_models,
+    requested_models: [] as typeof statusTemplate.requested_models,
+    serving_models: [...statusTemplate.serving_models],
+    hosted_models: [...statusTemplate.hosted_models],
+    gpus: [] as typeof statusTemplate.gpus,
+  };
+}
+
+function createResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function getRequestUrl(input: RequestInfo | URL) {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+function setupFetchMock() {
+  mockFetch.mockImplementation((input: RequestInfo | URL) => {
+    const url = getRequestUrl(input);
+    if (url.endsWith("/api/status")) {
+      return Promise.resolve(createResponse(createStatusPayload()));
+    }
+    if (url.endsWith("/api/models")) {
+      return Promise.resolve(createResponse(modelsPayload));
+    }
+    return Promise.resolve(createResponse({}));
+  });
+  globalThis.fetch = mockFetch as typeof fetch;
+}
+
+function setPath(path: string) {
+  window.history.replaceState({}, "", path);
+}
+
+class MockEventSource {
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  readyState = 0;
+  withCredentials = false;
+
+  constructor(public url: string) {
+    queueMicrotask(() => {
+      this.onopen?.(new Event("open"));
+    });
+  }
+
+  close() {}
+
+  addEventListener() {}
+
+  removeEventListener() {}
+
+  dispatchEvent() {
+    return false;
+  }
+}
+
+beforeAll(() => {
+  const makeMatchMedia = () => ({
+    matches: false,
+    media: "",
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  });
+
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: () => makeMatchMedia(),
+  });
+
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+});
+
+beforeEach(() => {
+  setupFetchMock();
+  Object.defineProperty(window, "EventSource", {
+    configurable: true,
+    writable: true,
+    value: MockEventSource,
+  });
+  setPath("/");
+});
+
+afterEach(() => {
+  vi.resetAllMocks();
+  setPath("/");
+});
+
 describe("ChatPage", () => {
   it("allows attachment-only sends and renders attachment controls", () => {
     render(
@@ -110,5 +246,46 @@ describe("ChatPage", () => {
     expect(screen.getByTestId("composer-error")).toHaveTextContent(
       "Selected model does not support the attached media.",
     );
+  });
+});
+
+describe("App routing and status", () => {
+  it("desktop unknown path fallback resolves to dashboard behavior", async () => {
+    setPath("/unknown-path");
+    render(<App />);
+
+    const networkLink = await screen.findByRole("link", { name: "Network" });
+    expect(networkLink).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(window.location.pathname).toBe("/dashboard"));
+  });
+
+  it("/dashboard route renders without redirecting to /config", async () => {
+    setPath("/dashboard");
+    render(<App />);
+
+    const networkLink = await screen.findByRole("link", { name: "Network" });
+    expect(networkLink).toHaveAttribute("aria-current", "page");
+    await waitFor(() => expect(window.location.pathname).toBe("/dashboard"));
+  });
+
+  it("/chat route renders chat section content", async () => {
+    setPath("/chat");
+    render(<App />);
+
+    const chatLink = await screen.findByRole("link", { name: "Chat" });
+    expect(chatLink).toHaveAttribute("aria-current", "page");
+    await screen.findByRole("button", { name: /New chat/i });
+  });
+
+  it("boots /api/status on mount and consumes status payload", async () => {
+    setPath("/dashboard");
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mockFetch.mock.calls.some((call) => call[0] === "/api/status")).toBe(
+        true,
+      ),
+    );
+    await screen.findByText("Mesh LLM v1.0.0");
   });
 });

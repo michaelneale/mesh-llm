@@ -7,9 +7,10 @@ use serde::Deserialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct CatalogAsset {
     pub file: String,
@@ -237,8 +238,45 @@ fn expand_split_asset(asset: &HfAsset) -> Result<Vec<HfAsset>> {
         .collect())
 }
 
+#[cfg(test)]
+use std::collections::HashMap;
+
+#[cfg(test)]
+type DownloadHfAssetsOverrideFn =
+    Box<dyn Fn(&str, Vec<HfAsset>) -> Result<Vec<PathBuf>> + Send + Sync>;
+
+#[cfg(test)]
+static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+struct DownloadHfAssetsOverrideGuard(String);
+
+#[cfg(test)]
+impl DownloadHfAssetsOverrideGuard {
+    fn set(label: String, func: DownloadHfAssetsOverrideFn) -> Self {
+        let mut map = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap();
+        map.insert(label.clone(), func);
+        DownloadHfAssetsOverrideGuard(label)
+    }
+}
+
+#[cfg(test)]
+impl Drop for DownloadHfAssetsOverrideGuard {
+    fn drop(&mut self) {
+        let mut map = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap();
+        map.remove(&self.0);
+    }
+}
+
 async fn download_hf_assets(label: &str, assets: Vec<HfAsset>) -> Result<Vec<PathBuf>> {
     let label = label.to_string();
+    #[cfg(test)]
+    {
+        if let Some(func) = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap().get(&label) {
+            return func(&label, assets);
+        }
+    }
     tokio::task::spawn_blocking(move || download_hf_assets_blocking(&label, assets))
         .await
         .context("Join Hugging Face download task")?
@@ -416,7 +454,7 @@ pub async fn download_hf_repo_file(
     paths.sort();
     paths
         .into_iter()
-        .find(|path| path.ends_with(&asset.file))
+        .find(|path| path_file_name_matches(path, &asset.file))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Downloaded Hugging Face asset not found in cache: {repo}/{file}@{revision}"
@@ -445,11 +483,8 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         return paths
             .into_iter()
             .find(|path| {
-                path.file_name()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|name| {
-                        name == url_filename || name.eq_ignore_ascii_case(&model.file)
-                    })
+                path_file_name_matches(path, url_filename)
+                    || path_file_name_matches(path, &model.file)
             })
             .ok_or_else(|| {
                 anyhow::anyhow!(
@@ -549,6 +584,13 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
 /// Download any URL to a destination path with resume support.
 pub async fn download_url(url: &str, dest: &Path) -> Result<()> {
     download_with_resume(dest, url).await
+}
+
+fn path_file_name_matches(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case(expected))
+        .unwrap_or(false)
 }
 
 /// Download a HuggingFace GGUF URL, auto-detecting split files (-00001-of-NNNNN.gguf).
@@ -967,57 +1009,6 @@ mod tests {
     }
 
     #[test]
-    fn qwen_catalog_has_case_mismatch_between_file_and_url() {
-        // Qwen HF repos use lowercase filenames but the catalog stores PascalCase.
-        // This is the mismatch that the case-insensitive fallback in download_model fixes.
-        let model = find_model("Qwen2.5-3B-Instruct-Q4_K_M").unwrap();
-        let url_file = model.source_file().unwrap();
-        assert_ne!(model.file.as_str(), url_file);
-        assert!(model.file.eq_ignore_ascii_case(url_file));
-    }
-
-    /// Helper: simulate the path-matching predicate from download_model().
-    fn matches_model_file(path_filename: &str, url_filename: &str, catalog_file: &str) -> bool {
-        path_filename == url_filename || path_filename.eq_ignore_ascii_case(catalog_file)
-    }
-
-    #[test]
-    fn cache_lookup_matches_lowercase_url_filename() {
-        assert!(matches_model_file(
-            "qwen2.5-3b-instruct-q4_k_m.gguf",
-            "qwen2.5-3b-instruct-q4_k_m.gguf",
-            "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
-        ));
-    }
-
-    #[test]
-    fn cache_lookup_matches_exact_catalog_name() {
-        assert!(matches_model_file(
-            "Qwen3-8B-Q4_K_M.gguf",
-            "Qwen3-8B-Q4_K_M.gguf",
-            "Qwen3-8B-Q4_K_M.gguf",
-        ));
-    }
-
-    #[test]
-    fn cache_lookup_case_insensitive_fallback() {
-        assert!(matches_model_file(
-            "qwen3-4b-q4_k_m.gguf",
-            "DOES-NOT-MATCH",
-            "Qwen3-4B-Q4_K_M.gguf",
-        ));
-    }
-
-    #[test]
-    fn cache_lookup_rejects_wrong_file() {
-        assert!(!matches_model_file(
-            "totally-different-model.gguf",
-            "qwen3-8b-q4_k_m.gguf",
-            "Qwen3-8B-Q4_K_M.gguf",
-        ));
-    }
-
-    #[test]
     fn url_basename_strips_nested_path() {
         let source = "Qwen3-Coder-Next-Q4_K_M/model-00001-of-00004.gguf";
         let basename = source.rsplit('/').next().unwrap_or(source);
@@ -1029,5 +1020,97 @@ mod tests {
         let source = "Qwen3-4B-Q4_K_M.gguf";
         let basename = source.rsplit('/').next().unwrap_or(source);
         assert_eq!(basename, "Qwen3-4B-Q4_K_M.gguf");
+    }
+
+    #[tokio::test]
+    async fn download_hf_repo_file_matches_cache_file_case_insensitively() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let cached_file = std::env::temp_dir()
+            .join(format!("mesh-llm-hf-case-repo-{unique}"))
+            .join("qwen2.5-coder-7b-instruct-q4_k_m.gguf");
+        std::fs::create_dir_all(cached_file.parent().unwrap()).unwrap();
+        std::fs::write(&cached_file, b"gguf").unwrap();
+
+        {
+            let label =
+                "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf@main"
+                    .to_string();
+            let _guard = DownloadHfAssetsOverrideGuard::set(
+                label,
+                Box::new({
+                    let cached = cached_file.clone();
+                    move |_, _| Ok(vec![cached.clone()])
+                }),
+            );
+            let resolved = download_hf_repo_file(
+                "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                Some("main"),
+                "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+            )
+            .await
+            .unwrap();
+            assert_eq!(resolved, cached_file);
+        }
+
+        {
+            let label =
+                "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf@main"
+                    .to_string();
+            let _guard = DownloadHfAssetsOverrideGuard::set(label, Box::new(|_, _| Ok(Vec::new())));
+            assert!(download_hf_repo_file(
+                "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+                Some("main"),
+                "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn download_model_matches_hf_cache_file_case_insensitively() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let cached_file = std::env::temp_dir()
+            .join(format!("mesh-llm-hf-case-model-{unique}"))
+            .join("qwen2.5-coder-7b-instruct-q4_k_m.gguf");
+        std::fs::create_dir_all(cached_file.parent().unwrap()).unwrap();
+        std::fs::write(&cached_file, b"gguf").unwrap();
+
+        let model = CatalogModel {
+            name: "Qwen2.5-Coder-7B-Instruct-Q4_K_M".to_string(),
+            file: "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf".to_string(),
+            url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf".to_string(),
+            size: "4.4GB".to_string(),
+            description: "".to_string(),
+            draft: None,
+            moe: None,
+            extra_files: Vec::new(),
+            mmproj: None,
+        };
+
+        {
+            let label = model.name.clone();
+            let _guard = DownloadHfAssetsOverrideGuard::set(
+                label,
+                Box::new({
+                    let cached = cached_file.clone();
+                    move |_, _| Ok(vec![cached.clone()])
+                }),
+            );
+            let resolved = download_model(&model).await.unwrap();
+            assert_eq!(resolved, cached_file);
+        }
+
+        {
+            let label = model.name.clone();
+            let _guard = DownloadHfAssetsOverrideGuard::set(label, Box::new(|_, _| Ok(Vec::new())));
+            assert!(download_model(&model).await.is_err());
+        }
     }
 }
