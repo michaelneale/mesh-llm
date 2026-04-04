@@ -34,11 +34,6 @@ async fn sync_plugin_managed_inference_providers(
         false
     }
 
-    #[cfg(target_os = "macos")]
-    fn matches_mlx_model_dir(request: &provider::InferenceEndpointRequest) -> bool {
-        crate::mlx::is_mlx_model_dir(request.model_path.as_path())
-    }
-
     let endpoints = plugin_manager.managed_inference_endpoints().await?;
     for endpoint in endpoints {
         let provider_id =
@@ -62,9 +57,8 @@ async fn sync_plugin_managed_inference_providers(
         )) as Arc<dyn provider::InferenceProvider>;
         let descriptor = match endpoint.local_model_matcher {
             #[cfg(target_os = "macos")]
-            mesh_llm_plugin::InferenceLocalModelMatcher::MlxModelDir => {
-                registration.into_descriptor_with_local_match(provider, matches_mlx_model_dir)
-            }
+            mesh_llm_plugin::InferenceLocalModelMatcher::MlxModelDir => registration
+                .into_descriptor_with_local_match(provider, provider::matches_mlx_model_dir),
             _ => {
                 registration.into_descriptor_with_local_match(provider, never_match_local_endpoint)
             }

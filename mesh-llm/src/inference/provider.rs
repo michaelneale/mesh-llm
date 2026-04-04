@@ -7,41 +7,20 @@ use std::sync::{Arc, OnceLock, RwLock};
 use tokio::net::TcpListener;
 
 #[cfg(target_os = "macos")]
-fn builtin_mlx_model_path(path: &Path) -> bool {
-    crate::mlx::is_mlx_model_dir(path)
+pub(crate) fn matches_mlx_model_dir(request: &InferenceEndpointRequest) -> bool {
+    crate::mlx::is_mlx_model_dir(request.model_path.as_path())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn builtin_mlx_model_path(_path: &Path) -> bool {
+pub(crate) fn matches_mlx_model_dir(_request: &InferenceEndpointRequest) -> bool {
     false
-}
-
-#[cfg(target_os = "macos")]
-fn builtin_mlx_model_name(path: &Path) -> String {
-    if let Some(dir) = crate::mlx::mlx_model_dir(path) {
-        if let Some(identity) =
-            crate::models::huggingface_identity_for_path(&dir.join("config.json"))
-        {
-            if let Some(name) = identity.repo_id.rsplit('/').next() {
-                return name.to_string();
-            }
-        }
-        if let Some(name) = dir.file_name().and_then(|value| value.to_str()) {
-            return name.to_string();
-        }
-    }
-
-    path.file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string()
 }
 
 /// Backend-neutral runtime handle for a serving instance.
 ///
 /// This sits above any concrete backend implementation:
 /// - llama.cpp subprocesses
-/// - MLX in-process serving
+/// - MLX plugin-managed serving
 /// - future plugin-hosted inference runtimes
 #[derive(Clone, Debug)]
 pub struct InferenceServerHandle {
@@ -524,51 +503,6 @@ impl InferenceProvider for BuiltinLlamaProvider {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct BuiltinMlxProvider;
-
-impl InferenceProvider for BuiltinMlxProvider {
-    fn start_endpoint<'a>(
-        &'a self,
-        _bin_dir: &'a Path,
-        _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &'a InferenceEndpointRequest,
-    ) -> ProviderFuture<'a, InferenceServerProcess> {
-        Box::pin(async move {
-            #[cfg(target_os = "macos")]
-            {
-                let Some(model_dir) = crate::mlx::mlx_model_dir(request.model_path.as_path())
-                else {
-                    anyhow::bail!(
-                        "MLX provider expected a normalized MLX model path, got {}",
-                        request.model_path.display()
-                    );
-                };
-                let model_name = builtin_mlx_model_name(request.model_path.as_path());
-                return crate::mlx::start_mlx_server(model_dir, model_name, request.listen_port)
-                    .await;
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                let _ = request;
-                anyhow::bail!("MLX provider is only available on macOS");
-            }
-        })
-    }
-
-    fn start_worker<'a>(
-        &'a self,
-        _bin_dir: &'a Path,
-        _binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
-        request: &'a InferenceWorkerRequest,
-    ) -> ProviderFuture<'a, u16> {
-        Box::pin(async move {
-            let _ = request;
-            anyhow::bail!("MLX does not use a worker helper runtime")
-        })
-    }
-}
 const fn always_match_local_endpoint(_request: &InferenceEndpointRequest) -> bool {
     true
 }
@@ -722,33 +656,10 @@ fn builtin_llama_selection() -> InferenceProviderSelection {
     .with_moe_ranking_provider(Arc::new(BuiltinLlamaMoeRankingProvider))
 }
 
-#[cfg(target_os = "macos")]
-fn builtin_mlx_selection() -> InferenceProviderSelection {
-    InferenceProviderSelection::new(
-        "builtin.mlx",
-        "mlx",
-        InferenceProviderCapabilities {
-            supports_local_runtime: true,
-            supports_distributed_host_runtime: false,
-            requires_worker_runtime: false,
-            supports_moe_shard_runtime: false,
-        },
-        Arc::new(BuiltinMlxProvider),
-    )
-}
-
 fn builtin_provider_registry() -> &'static InferenceProviderRegistry {
     static BUILTIN_PROVIDER_REGISTRY: OnceLock<InferenceProviderRegistry> = OnceLock::new();
     BUILTIN_PROVIDER_REGISTRY.get_or_init(|| {
         let mut providers = Vec::new();
-
-        #[cfg(target_os = "macos")]
-        providers.push(InferenceProviderDescriptor::new(
-            builtin_mlx_selection(),
-            matches_builtin_mlx_local_endpoint,
-            never_match_distributed_endpoint,
-            never_match_worker_runtime,
-        ));
 
         providers.push(InferenceProviderDescriptor::new(
             builtin_llama_selection(),
@@ -763,11 +674,6 @@ fn builtin_provider_registry() -> &'static InferenceProviderRegistry {
 
 pub fn provider_registry() -> &'static InferenceProviderRegistry {
     builtin_provider_registry()
-}
-
-#[cfg(target_os = "macos")]
-fn matches_builtin_mlx_local_endpoint(request: &InferenceEndpointRequest) -> bool {
-    builtin_mlx_model_path(request.model_path.as_path())
 }
 
 fn registered_provider_descriptors() -> &'static RwLock<Vec<InferenceProviderDescriptor>> {
@@ -1320,7 +1226,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn plugin_registration_with_local_match_overrides_builtin_mlx_selection() {
+    fn plugin_registration_with_local_match_selects_mlx_provider() {
         let _guard = provider_registry_test_lock()
             .lock()
             .expect("provider registry test lock poisoned");
@@ -1349,10 +1255,7 @@ mod tests {
                     supports_moe_shard_runtime: false,
                 },
             )
-            .into_descriptor_with_local_match(
-                Arc::new(TestLocalProvider),
-                matches_builtin_mlx_local_endpoint,
-            ),
+            .into_descriptor_with_local_match(Arc::new(TestLocalProvider), matches_mlx_model_dir),
         );
 
         let request = InferenceEndpointRequest::local(&root, 8080, 1, 1);
