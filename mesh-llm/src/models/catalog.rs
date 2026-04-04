@@ -8,6 +8,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 #[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
@@ -239,11 +243,8 @@ fn expand_split_asset(asset: &HfAsset) -> Result<Vec<HfAsset>> {
 }
 
 #[cfg(test)]
-use std::collections::HashMap;
-
-#[cfg(test)]
 type DownloadHfAssetsOverrideFn =
-    Box<dyn Fn(&str, Vec<HfAsset>) -> Result<Vec<PathBuf>> + Send + Sync>;
+    Arc<dyn Fn(&str, Vec<HfAsset>) -> Result<Vec<PathBuf>> + Send + Sync>;
 
 #[cfg(test)]
 static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
@@ -273,7 +274,8 @@ async fn download_hf_assets(label: &str, assets: Vec<HfAsset>) -> Result<Vec<Pat
     let label = label.to_string();
     #[cfg(test)]
     {
-        if let Some(func) = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap().get(&label) {
+        let func = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap().get(&label).cloned();
+        if let Some(func) = func {
             return func(&label, assets);
         }
     }
@@ -454,7 +456,7 @@ pub async fn download_hf_repo_file(
     paths.sort();
     paths
         .into_iter()
-        .find(|path| path_file_name_matches(path, &asset.file))
+        .find(|path| path_suffix_matches_ignore_case(path, &asset.file))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Downloaded Hugging Face asset not found in cache: {repo}/{file}@{revision}"
@@ -477,14 +479,14 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         paths.sort();
         if let Some(path) = paths
             .iter()
-            .find(|path| path_file_name_matches(path, source))
+            .find(|path| path_suffix_matches_ignore_case(path, source))
             .cloned()
         {
             return Ok(path);
         }
         return paths
             .into_iter()
-            .find(|path| path_file_name_matches(path, &model.file))
+            .find(|path| path_suffix_matches_ignore_case(path, &model.file))
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "Downloaded model path not found in cache for {}",
@@ -585,7 +587,7 @@ pub async fn download_url(url: &str, dest: &Path) -> Result<()> {
     download_with_resume(dest, url).await
 }
 
-fn path_file_name_matches(path: &Path, expected: &str) -> bool {
+fn path_suffix_matches_ignore_case(path: &Path, expected: &str) -> bool {
     let expected_parts = expected
         .split(['/', '\\'])
         .filter(|part| !part.is_empty())
@@ -1032,13 +1034,13 @@ mod tests {
     #[test]
     fn path_file_name_matches_nested_path_ignore_case() {
         let path = Path::new("/tmp/cache/Subdir/Model.Q4_K_M.gguf");
-        assert!(path_file_name_matches(path, "subdir/model.q4_k_m.gguf"));
+        assert!(path_suffix_matches_ignore_case(path, "subdir/model.q4_k_m.gguf"));
     }
 
     #[test]
     fn path_file_name_matches_rejects_wrong_suffix() {
         let path = Path::new("/tmp/cache/other/Model.Q4_K_M.gguf");
-        assert!(!path_file_name_matches(path, "subdir/model.q4_k_m.gguf"));
+        assert!(!path_suffix_matches_ignore_case(path, "subdir/model.q4_k_m.gguf"));
     }
 
     #[tokio::test]
@@ -1059,7 +1061,7 @@ mod tests {
                     .to_string();
             let _guard = DownloadHfAssetsOverrideGuard::set(
                 label,
-                Box::new({
+                Arc::new({
                     let cached = cached_file.clone();
                     move |_, _| Ok(vec![cached.clone()])
                 }),
@@ -1078,7 +1080,7 @@ mod tests {
             let label =
                 "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf@main"
                     .to_string();
-            let _guard = DownloadHfAssetsOverrideGuard::set(label, Box::new(|_, _| Ok(Vec::new())));
+            let _guard = DownloadHfAssetsOverrideGuard::set(label, Arc::new(|_, _| Ok(Vec::new())));
             assert!(download_hf_repo_file(
                 "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
                 Some("main"),
@@ -1107,7 +1109,7 @@ mod tests {
                 .to_string();
         let _guard = DownloadHfAssetsOverrideGuard::set(
             label,
-            Box::new({
+            Arc::new({
                 let cached = cached_file.clone();
                 move |_, _| Ok(vec![cached.clone()])
             }),
@@ -1151,7 +1153,7 @@ mod tests {
             let label = model.name.clone();
             let _guard = DownloadHfAssetsOverrideGuard::set(
                 label,
-                Box::new({
+                Arc::new({
                     let cached = cached_file.clone();
                     move |_, _| Ok(vec![cached.clone()])
                 }),
@@ -1162,7 +1164,7 @@ mod tests {
 
         {
             let label = model.name.clone();
-            let _guard = DownloadHfAssetsOverrideGuard::set(label, Box::new(|_, _| Ok(Vec::new())));
+            let _guard = DownloadHfAssetsOverrideGuard::set(label, Arc::new(|_, _| Ok(Vec::new())));
             assert!(download_model(&model).await.is_err());
         }
     }
@@ -1196,7 +1198,7 @@ mod tests {
         let label = model.name.clone();
         let _guard = DownloadHfAssetsOverrideGuard::set(
             label,
-            Box::new({
+            Arc::new({
                 let wrong = wrong_file.clone();
                 let expected = expected_file.clone();
                 move |_, _| Ok(vec![wrong.clone(), expected.clone()])
