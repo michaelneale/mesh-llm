@@ -177,6 +177,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - provider selection now returns an explicit selection object with provider id, label, and capabilities rather than a bare runtime handle
 - provider lookup now goes through a small registry-shaped seam rather than direct selector logic, so plugin-backed providers can slot in later without another call-site rewrite
 - the provider registry can now admit explicitly registered non-built-in providers, with registered providers taking precedence over the built-in fallback descriptors
+- provider requests can now carry an explicit preferred provider id, so future plugin-backed backends can be selected by descriptor instead of only by model-path matching
 - the provider contract now advertises explicit capabilities so orchestration can ask what a backend supports instead of inferring it indirectly
 - worker-runtime startup is now gated by provider capabilities instead of being assumed unconditionally in the shared runtime path
 
