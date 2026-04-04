@@ -183,6 +183,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - worker-runtime startup is now gated by provider capabilities instead of being assumed unconditionally in the shared runtime path
 - MoE GGUF detection and cached-ranking lookup now route through a backend-facing `MoeRankingProvider` on the provider seam, so ranking generation can move out of core without rewriting election policy
 - on the MoE sync branch, full-analyze and micro-analyze ranking generation now also route through the builtin ranking provider, so `election.rs` keeps only ranking policy and plan selection
+- on the MoE sync branch, heuristic ranking and shard preparation now also route through the provider seam, so backend-specific MoE tooling keeps shrinking inside `election.rs`
 
 ## Sync Branches
 

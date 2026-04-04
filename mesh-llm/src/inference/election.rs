@@ -1551,11 +1551,37 @@ async fn moe_election_loop(
             node.set_model_runtime_starting(&model_name).await;
             node.regossip().await;
 
+            let provider_request =
+                provider::InferenceEndpointRequest::local(&model, 0, model_bytes, my_vram)
+                    .with_ctx_size_override(ctx_size_override);
+            let selected_provider = provider::select_local_endpoint_provider(&provider_request);
+            if !selected_provider.capabilities().supports_moe_shard_runtime {
+                eprintln!(
+                    "  ❌ {} ({}) does not support MoE shard preparation for {}",
+                    selected_provider.backend_label(),
+                    selected_provider.provider_id(),
+                    model_name
+                );
+                node.set_model_runtime_context_length(&model_name, None)
+                    .await;
+                node.regossip().await;
+                if peer_rx.changed().await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                continue;
+            }
+
             let shard_path = moe::split_path(&model, plan.active_ids.len(), my_shard_index);
 
             if !shard_path.exists() {
                 eprintln!("  Splitting GGUF → {} ...", shard_path.display());
-                match moe::run_split(&bin_dir, &model, my_assignment, &shard_path) {
+                match selected_provider.provider().prepare_moe_shard(
+                    &bin_dir,
+                    &model,
+                    my_assignment,
+                    &shard_path,
+                ) {
                     Ok(()) => {
                         let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
                         eprintln!("  Split complete: {:.1} GB", size as f64 / 1e9);
@@ -1601,8 +1627,8 @@ async fn moe_election_loop(
                 shard_bytes,
                 my_vram,
             )
+            .with_preferred_provider_id(Some(selected_provider.provider_id()))
             .with_ctx_size_override(ctx_size_override);
-            let selected_provider = provider::select_local_endpoint_provider(&request);
             match selected_provider
                 .provider()
                 .start_endpoint(&bin_dir, binary_flavor, &request)

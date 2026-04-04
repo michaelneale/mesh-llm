@@ -489,6 +489,14 @@ pub trait InferenceProvider: Send + Sync {
         binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
         request: &'a InferenceWorkerRequest,
     ) -> ProviderFuture<'a, u16>;
+
+    fn prepare_moe_shard(
+        &self,
+        bin_dir: &Path,
+        model_path: &Path,
+        assignment: &crate::inference::moe::NodeAssignment,
+        output_path: &Path,
+    ) -> Result<()>;
 }
 
 /// Built-in provider adapter for the current llama.cpp runtime path.
@@ -715,6 +723,16 @@ impl InferenceProvider for BuiltinLlamaProvider {
         Box::pin(async move {
             crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
         })
+    }
+
+    fn prepare_moe_shard(
+        &self,
+        bin_dir: &Path,
+        model_path: &Path,
+        assignment: &crate::inference::moe::NodeAssignment,
+        output_path: &Path,
+    ) -> Result<()> {
+        crate::inference::moe::run_split(bin_dir, model_path, assignment, output_path)
     }
 }
 
@@ -1528,6 +1546,16 @@ mod tests {
             _request: &'a InferenceWorkerRequest,
         ) -> ProviderFuture<'a, u16> {
             Box::pin(async { unreachable!("test provider start_worker should not run") })
+        }
+
+        fn prepare_moe_shard(
+            &self,
+            _bin_dir: &Path,
+            _model_path: &Path,
+            _assignment: &crate::inference::moe::NodeAssignment,
+            _output_path: &Path,
+        ) -> Result<()> {
+            unreachable!("test provider prepare_moe_shard should not run")
         }
     }
 
