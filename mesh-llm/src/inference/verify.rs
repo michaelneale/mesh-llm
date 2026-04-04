@@ -39,49 +39,96 @@ pub struct MatmulCapture {
     pub z: Vec<i32>,
 }
 
-/// Tracks which remote peers have been successfully challenged.
+/// Verification state for a peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifyState {
+    /// Challenge passed — peer is trusted until TTL expires.
+    Verified { at_ms: u64 },
+    /// Challenge was attempted and failed — peer is untrusted.
+    Failed { at_ms: u64 },
+    /// Peer doesn't support challenge endpoints (e.g. Metal build, old llama.cpp).
+    Unsupported,
+}
+
+/// Tracks which remote peers have been challenged and their results.
 #[derive(Clone)]
 pub struct VerificationTracker {
     inner: Arc<Mutex<TrackerInner>>,
+    /// When true, only Verified peers are routable.
+    pub require_verification: bool,
 }
 
 struct TrackerInner {
-    /// peer_id → last successful verification time (epoch ms)
-    verified: HashMap<iroh::EndpointId, u64>,
+    peers: HashMap<iroh::EndpointId, VerifyState>,
 }
 
 /// How long a verification stays valid before re-challenge (10 minutes).
 const VERIFY_TTL_MS: u64 = 10 * 60 * 1000;
 
 impl VerificationTracker {
-    pub fn new() -> Self {
+    pub fn new(require_verification: bool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(TrackerInner {
-                verified: HashMap::new(),
+                peers: HashMap::new(),
             })),
+            require_verification,
         }
     }
 
     /// Returns true if this peer has been verified recently (within TTL).
     pub async fn is_verified(&self, peer_id: iroh::EndpointId) -> bool {
         let inner = self.inner.lock().await;
-        if let Some(&ts) = inner.verified.get(&peer_id) {
-            now_millis().saturating_sub(ts) < VERIFY_TTL_MS
-        } else {
-            false
+        matches!(
+            inner.peers.get(&peer_id),
+            Some(VerifyState::Verified { at_ms }) if now_millis().saturating_sub(*at_ms) < VERIFY_TTL_MS
+        )
+    }
+
+    /// Returns true if the proxy should skip this peer.
+    /// Only returns true when `require_verification` is enabled.
+    pub async fn should_skip(&self, peer_id: iroh::EndpointId) -> bool {
+        if !self.require_verification {
+            return false;
+        }
+        !self.is_verified(peer_id).await
+    }
+
+    /// Check if a challenge needs to run (not yet verified, or TTL expired).
+    pub async fn needs_challenge(&self, peer_id: iroh::EndpointId) -> bool {
+        let inner = self.inner.lock().await;
+        match inner.peers.get(&peer_id) {
+            Some(VerifyState::Verified { at_ms }) => {
+                now_millis().saturating_sub(*at_ms) >= VERIFY_TTL_MS
+            }
+            Some(VerifyState::Unsupported) => false, // no point re-trying
+            _ => true,
         }
     }
 
     pub async fn mark_verified(&self, peer_id: iroh::EndpointId) {
-        self.inner
-            .lock()
-            .await
-            .verified
-            .insert(peer_id, now_millis());
+        self.inner.lock().await.peers.insert(
+            peer_id,
+            VerifyState::Verified {
+                at_ms: now_millis(),
+            },
+        );
     }
 
     pub async fn mark_failed(&self, peer_id: iroh::EndpointId) {
-        self.inner.lock().await.verified.remove(&peer_id);
+        self.inner.lock().await.peers.insert(
+            peer_id,
+            VerifyState::Failed {
+                at_ms: now_millis(),
+            },
+        );
+    }
+
+    pub async fn mark_unsupported(&self, peer_id: iroh::EndpointId) {
+        self.inner
+            .lock()
+            .await
+            .peers
+            .insert(peer_id, VerifyState::Unsupported);
     }
 }
 
@@ -169,7 +216,7 @@ pub fn spawn_challenge(
     model_name: String,
 ) {
     tokio::spawn(async move {
-        if tracker.is_verified(peer_id).await {
+        if !tracker.needs_challenge(peer_id).await {
             return;
         }
         tracing::info!(
@@ -194,12 +241,14 @@ pub fn spawn_challenge(
                 }
             },
             Err(err) => {
-                // Not all servers support challenge endpoints — don't mark as failed,
-                // just log. The peer may be running a llama.cpp build without CommitLLM.
+                // Challenge endpoints not available — peer is running a llama.cpp
+                // build without CommitLLM capture (e.g. Metal, old version).
+                // Mark as unsupported so we don't retry, but distinguish from failure.
                 tracing::debug!(
-                    "[{model_name}] Could not challenge peer {}: {err}",
+                    "[{model_name}] Peer {} does not support verification challenges: {err}",
                     peer_id.fmt_short()
                 );
+                tracker.mark_unsupported(peer_id).await;
             }
         }
     });

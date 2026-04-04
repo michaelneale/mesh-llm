@@ -25,6 +25,7 @@ async fn spawn_api_proxy_test_harness(
         Some(listener),
         false,
         affinity::AffinityRouter::default(),
+        verify::VerificationTracker::new(false),
     ));
     (addr, handle)
 }

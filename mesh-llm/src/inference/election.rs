@@ -283,13 +283,13 @@ pub async fn election_loop(
     force_split: bool,
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
+    verification_tracker: verify::VerificationTracker,
     target_tx: Arc<watch::Sender<ModelTargets>>,
     mut stop_rx: watch::Receiver<bool>,
     mut on_change: impl FnMut(bool, bool) + Send,
     mut on_process: impl FnMut(Option<LocalProcessInfo>) + Send,
 ) {
     let mut peer_rx = node.peer_change_rx.clone();
-    let verification_tracker = verify::VerificationTracker::new();
 
     // Track the set of model-group worker IDs to detect when we actually need to restart
     let mut last_worker_set: Vec<iroh::EndpointId> = vec![];

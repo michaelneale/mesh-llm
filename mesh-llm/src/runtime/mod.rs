@@ -1161,11 +1161,16 @@ async fn run_auto(
         None
     };
 
+    // CommitLLM verification tracker — shared between election loops and proxy
+    let verification_tracker =
+        crate::inference::verify::VerificationTracker::new(cli.require_verification);
+
     // API proxy: model-aware routing
     let proxy_node = node.clone();
     let proxy_rx = target_rx.clone();
     let proxy_affinity = affinity_router.clone();
     let api_control_tx = control_tx.clone();
+    let proxy_verification = verification_tracker.clone();
     tokio::spawn(async move {
         api_proxy(
             proxy_node,
@@ -1175,6 +1180,7 @@ async fn run_auto(
             existing_listener,
             cli.listen_all,
             proxy_affinity,
+            proxy_verification,
         )
         .await;
     });
@@ -1252,11 +1258,12 @@ async fn run_auto(
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
+    let primary_verification = verification_tracker.clone();
     let primary_task = tokio::spawn(async move {
         election::election_loop(
             node2, tunnel_mgr2, api_port, rpc_port, bin_dir2, model2, model_name_for_election,
-            draft2, draft_max, force_split, llama_flavor, cli.ctx_size, primary_target_tx,
-            primary_stop_rx,
+            draft2, draft_max, force_split, llama_flavor, cli.ctx_size,
+            primary_verification, primary_target_tx, primary_stop_rx,
             move |is_host, llama_ready| {
                 let advertise_node = node_for_cb.clone();
                 let advertise_model = primary_model_name_for_advertise.clone();
@@ -1384,11 +1391,12 @@ async fn run_auto(
             let managed_model_name = extra_name.clone();
             eprintln!("  + {extra_name}");
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
+            let extra_verification = verification_tracker.clone();
             let extra_task = tokio::spawn(async move {
                 election::election_loop(
                     extra_node, extra_tunnel, api_port_extra, 0, extra_bin, extra_path, extra_model_name.clone(),
-                    None, 8, false, extra_llama_flavor, cli.ctx_size, extra_target_tx,
-                    extra_stop_rx,
+                    None, 8, false, extra_llama_flavor, cli.ctx_size,
+                    extra_verification, extra_target_tx, extra_stop_rx,
                     move |is_host, llama_ready| {
                         let advertise_node = extra_node_for_advertise.clone();
                         let model_name = extra_model_name_for_advertise.clone();

@@ -155,6 +155,12 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub(crate) config: Option<PathBuf>,
 
+    /// Only route to peers that pass CommitLLM verification challenges.
+    /// When enabled, peers that fail or don't support challenge endpoints
+    /// are excluded from inference routing.
+    #[arg(long)]
+    pub(crate) require_verification: bool,
+
     /// Internal: set when this node joined via Nostr discovery (not --join).
     #[arg(skip)]
     pub(crate) nostr_discovery: bool,

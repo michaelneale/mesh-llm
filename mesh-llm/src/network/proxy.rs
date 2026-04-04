@@ -3,7 +3,7 @@
 //! Used by the API proxy (port 9337), bootstrap proxy, and passive mode.
 //! All inference traffic flows through these functions.
 
-use crate::inference::election;
+use crate::inference::{election, verify};
 use crate::mesh;
 use crate::network::affinity::{
     prepare_remote_targets_for_request, AffinityRouter, PreparedTargets,
@@ -1013,12 +1013,46 @@ pub async fn route_model_request(
     parsed_body: Option<&serde_json::Value>,
     prefetched: &[u8],
     affinity: &AffinityRouter,
+    verification: &verify::VerificationTracker,
 ) -> bool {
     let mut tcp_stream = tcp_stream;
     let ordered_candidates =
         order_targets_by_context(&node, model, parsed_body, &targets.candidates(model)).await;
     if ordered_candidates.is_empty() {
         return false;
+    }
+
+    // When --require-verification is set, filter out remote peers that
+    // haven't passed verification. Local targets always pass through.
+    let ordered_candidates = if verification.require_verification {
+        let mut filtered = Vec::with_capacity(ordered_candidates.len());
+        for target in ordered_candidates {
+            match &target {
+                election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
+                    filtered.push(target);
+                }
+                election::InferenceTarget::Remote(peer_id)
+                | election::InferenceTarget::MoeRemote(peer_id) => {
+                    if !verification.should_skip(*peer_id).await {
+                        filtered.push(target);
+                    } else {
+                        tracing::debug!(
+                            "Skipping unverified peer {} for model {model}",
+                            peer_id.fmt_short()
+                        );
+                    }
+                }
+                election::InferenceTarget::None => {}
+            }
+        }
+        filtered
+    } else {
+        ordered_candidates
+    };
+
+    if ordered_candidates.is_empty() {
+        let _ = send_503(tcp_stream).await;
+        return true;
     }
 
     let selection = crate::network::affinity::select_model_target_from_candidates(

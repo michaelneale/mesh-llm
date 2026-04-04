@@ -1,5 +1,5 @@
 use crate::api;
-use crate::inference::{election, pipeline};
+use crate::inference::{election, pipeline, verify};
 use crate::mesh;
 use crate::network::{affinity, proxy, router};
 
@@ -14,6 +14,7 @@ pub(super) async fn api_proxy(
     existing_listener: Option<tokio::net::TcpListener>,
     listen_all: bool,
     affinity: affinity::AffinityRouter,
+    verification: verify::VerificationTracker,
 ) {
     let listener = match existing_listener {
         Some(l) => l,
@@ -40,6 +41,7 @@ pub(super) async fn api_proxy(
         let node = node.clone();
         let affinity = affinity.clone();
         let control_tx = control_tx.clone();
+        let verification = verification.clone();
         tokio::spawn(async move {
             let mut tcp_stream = tcp_stream;
             match proxy::read_http_request(&mut tcp_stream).await {
@@ -229,6 +231,7 @@ pub(super) async fn api_proxy(
                                 body_json,
                                 &request.raw,
                                 &affinity,
+                                &verification,
                             )
                             .await;
                             debug_assert!(routed);
