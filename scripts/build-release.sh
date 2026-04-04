@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="$REPO_ROOT/llama.cpp"
+LLAMA_BRANCH="${LLAMA_BRANCH:-rebase-upstream-master}"
 BUILD_DIR="$LLAMA_DIR/build"
 UI_DIR="$REPO_ROOT/mesh-llm/ui"
 
@@ -40,19 +41,19 @@ configure_compiler_cache() {
 
 clone_or_update_llama() {
     if [[ ! -d "$LLAMA_DIR" ]]; then
-        echo "Cloning michaelneale/llama.cpp (rebase-upstream-master)..."
-        git clone -b rebase-upstream-master \
+        echo "Cloning michaelneale/llama.cpp ($LLAMA_BRANCH)..."
+        git clone -b "$LLAMA_BRANCH" \
             https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
         return
     fi
 
     pushd "$LLAMA_DIR" >/dev/null
     current_branch="$(git branch --show-current)"
-    if [[ "$current_branch" != "rebase-upstream-master" ]]; then
-        echo "Switching llama.cpp from '$current_branch' to 'rebase-upstream-master'..."
-        git checkout rebase-upstream-master
+    if [[ "$current_branch" != "$LLAMA_BRANCH" ]]; then
+        echo "Switching llama.cpp from '$current_branch' to '$LLAMA_BRANCH'..."
+        git checkout "$LLAMA_BRANCH"
     fi
-    git pull --ff-only origin rebase-upstream-master
+    git pull --ff-only origin "$LLAMA_BRANCH"
     popd >/dev/null
 }
 

@@ -15,6 +15,7 @@ env:
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
   SCCACHE_GHA_ENABLED: "true"
+  LLAMA_BRANCH: rebase-upstream-master
 
 jobs:
   changes:
@@ -101,7 +102,7 @@ jobs:
 
       # ── llama.cpp (CPU-only for CI) ──
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b ${{ env.LLAMA_BRANCH }} --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |
@@ -205,7 +206,7 @@ jobs:
 
       # ── llama.cpp (Metal + RPC) ──
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b ${{ env.LLAMA_BRANCH }} --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |

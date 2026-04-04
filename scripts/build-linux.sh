@@ -19,6 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="$REPO_ROOT/llama.cpp"
+LLAMA_BRANCH="${LLAMA_BRANCH:-rebase-upstream-master}"
 BUILD_DIR="$LLAMA_DIR/build"
 MESH_DIR="$REPO_ROOT/mesh-llm"
 UI_DIR="$MESH_DIR/ui"
@@ -237,18 +238,18 @@ case "$BACKEND" in
 esac
 
 if [[ ! -d "$LLAMA_DIR" ]]; then
-    echo "Cloning michaelneale/llama.cpp (rebase-upstream-master)..."
-    git clone -b rebase-upstream-master \
+    echo "Cloning michaelneale/llama.cpp ($LLAMA_BRANCH)..."
+    git clone -b "$LLAMA_BRANCH" \
         https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
 else
     cd "$LLAMA_DIR"
     CURRENT_BRANCH=$(git branch --show-current)
-    if [[ "$CURRENT_BRANCH" != "rebase-upstream-master" ]]; then
-        echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to rebase-upstream-master..."
-        git checkout rebase-upstream-master
+    if [[ "$CURRENT_BRANCH" != "$LLAMA_BRANCH" ]]; then
+        echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to $LLAMA_BRANCH..."
+        git checkout "$LLAMA_BRANCH"
     fi
-    echo "Pulling latest rebase-upstream-master from origin..."
-    git pull --ff-only origin rebase-upstream-master
+    echo "Pulling latest $LLAMA_BRANCH from origin..."
+    git pull --ff-only origin "$LLAMA_BRANCH"
     cd "$REPO_ROOT"
 fi
 
