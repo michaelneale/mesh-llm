@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 
+use super::provider::{InferenceServerHandle, InferenceServerProcess};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum BinaryFlavor {
     Cpu,
@@ -189,30 +191,6 @@ fn resolve_binary_path(
 
 fn temp_log_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
-}
-
-#[derive(Clone, Debug)]
-pub struct InferenceServerHandle {
-    pid: u32,
-    expected_exit: Arc<AtomicBool>,
-}
-
-impl InferenceServerHandle {
-    pub fn pid(&self) -> u32 {
-        self.pid
-    }
-
-    pub async fn shutdown(&self) {
-        self.expected_exit.store(true, Ordering::Relaxed);
-        terminate_process(self.pid).await;
-    }
-}
-
-#[derive(Debug)]
-pub struct InferenceServerProcess {
-    pub handle: InferenceServerHandle,
-    pub death_rx: tokio::sync::oneshot::Receiver<()>,
-    pub context_length: u32,
 }
 
 pub struct ModelLaunchSpec<'a> {
@@ -512,7 +490,7 @@ pub async fn kill_llama_server() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
-async fn terminate_process(pid: u32) {
+pub(crate) async fn terminate_process(pid: u32) {
     let pid_str = pid.to_string();
 
     #[cfg(not(windows))]
@@ -803,10 +781,7 @@ pub async fn start_llama_server(
                 .id()
                 .context("llama-server started but did not expose a PID")?;
             let expected_exit = Arc::new(AtomicBool::new(false));
-            let handle = InferenceServerHandle {
-                pid,
-                expected_exit: expected_exit.clone(),
-            };
+            let handle = InferenceServerHandle::process(pid, expected_exit.clone());
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
                 let _ = child.wait().await;

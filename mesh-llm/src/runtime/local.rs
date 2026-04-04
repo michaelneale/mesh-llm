@@ -1,5 +1,5 @@
 use crate::api;
-use crate::inference::{election, launch};
+use crate::inference::{election, launch, provider};
 use crate::mesh;
 use crate::models;
 use crate::network::router;
@@ -15,7 +15,7 @@ pub(super) enum RuntimeEvent {
 pub(super) struct LocalRuntimeModelHandle {
     pub(super) port: u16,
     pub(super) backend: String,
-    pub(super) process: launch::InferenceServerHandle,
+    pub(super) process: provider::InferenceServerHandle,
     pub(super) context_length: u32,
 }
 
