@@ -13,9 +13,13 @@ pub(super) async fn handle(
         return respond_error(stream, 405, "Method Not Allowed").await;
     }
 
-    if !path_only.starts_with("/api/chat") {
+    let upstream_path = if path_only.starts_with("/api/chat") {
+        "/v1/chat/completions"
+    } else if path_only.starts_with("/api/responses") {
+        "/v1/responses"
+    } else {
         return Ok(());
-    }
+    };
 
     let inner = state.inner.lock().await;
     if !inner.llama_ready && !inner.is_client {
@@ -27,7 +31,11 @@ pub(super) async fn handle(
 
     let target = format!("127.0.0.1:{port}");
     if let Ok(mut upstream) = TcpStream::connect(&target).await {
-        let rewritten = req.replacen("/api/chat", "/v1/chat/completions", 1);
+        let rewritten = if path_only.starts_with("/api/chat") {
+            req.replacen("/api/chat", upstream_path, 1)
+        } else {
+            req.replacen("/api/responses", upstream_path, 1)
+        };
         upstream.write_all(rewritten.as_bytes()).await?;
         tokio::io::copy_bidirectional(stream, &mut upstream).await?;
     } else {

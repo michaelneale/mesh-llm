@@ -1240,14 +1240,7 @@ async fn start_llama(
     };
 
     // Look up mmproj for vision models
-    let mmproj_path = crate::models::catalog::MODEL_CATALOG
-        .iter()
-        .find(|m| {
-            m.name == model_name || m.file.strip_suffix(".gguf").unwrap_or(&m.file) == model_name
-        })
-        .and_then(|m| m.mmproj.as_ref())
-        .map(|asset| crate::models::catalog::models_dir().join(&asset.file))
-        .filter(|p| p.exists());
+    let mmproj_path = crate::models::find_mmproj_path(model_name, model);
 
     // In split mode (pipeline parallel), pass total group VRAM so context size
     // accounts for the host only holding its share of layers. KV cache is also

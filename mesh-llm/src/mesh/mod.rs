@@ -496,18 +496,19 @@ fn model_identity_score(identity: &ServedModelIdentity) -> u8 {
 
 fn model_descriptor_score(descriptor: &ServedModelDescriptor) -> u8 {
     let identity = &descriptor.identity;
-    let capability_bonus =
-        u8::from(descriptor.capabilities.vision != crate::models::CapabilityLevel::None)
-            + u8::from(descriptor.capabilities.reasoning != crate::models::CapabilityLevel::None)
-            + u8::from(descriptor.capabilities.tool_use != crate::models::CapabilityLevel::None)
-            + u8::from(descriptor.capabilities.moe)
-            + u8::from(
-                descriptor
-                    .topology
-                    .as_ref()
-                    .and_then(|value| value.moe.as_ref())
-                    .is_some(),
-            );
+    let capability_bonus = u8::from(descriptor.capabilities.multimodal)
+        + u8::from(descriptor.capabilities.audio != crate::models::CapabilityLevel::None)
+        + u8::from(descriptor.capabilities.vision != crate::models::CapabilityLevel::None)
+        + u8::from(descriptor.capabilities.reasoning != crate::models::CapabilityLevel::None)
+        + u8::from(descriptor.capabilities.tool_use != crate::models::CapabilityLevel::None)
+        + u8::from(descriptor.capabilities.moe)
+        + u8::from(
+            descriptor
+                .topology
+                .as_ref()
+                .and_then(|value| value.moe.as_ref())
+                .is_some(),
+        );
     model_identity_score(identity) + capability_bonus
 }
 
@@ -1722,6 +1723,10 @@ impl Node {
                 );
             }
         }
+    }
+
+    pub async fn plugin_manager(&self) -> Option<crate::plugin::PluginManager> {
+        self.plugin_manager.lock().await.clone()
     }
 
     pub fn start_plugin_channel_forwarder(

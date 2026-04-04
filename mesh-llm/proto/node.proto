@@ -61,6 +61,8 @@ message ModelCapabilities {
   CapabilityLevel reasoning = 2;
   CapabilityLevel tool_use = 3;
   bool moe = 4;
+  bool multimodal = 5;
+  CapabilityLevel audio = 6;
 }
 
 enum CapabilityLevel {

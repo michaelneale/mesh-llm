@@ -61,12 +61,30 @@ See `tests/test_reasoning_compat.sh` for the contract tests validating this beha
 **Why off by default:** Qwen3.5-9B is broken with thinking (reasoning burns entire token budget, content always empty). MiniMax-M2.5 is 2-27x slower with thinking for no quality gain. Agentic eval with pi confirmed: same 3/4 accuracy, half the total time with thinking off.
 
 ## Smart Router
+- Design: [MULTI_MODAL.md](docs/MULTI_MODAL.md)
 - [ ] **Context-aware routing**: Hosts advertise `n_ctx` in gossip. Router estimates request token count and skips hosts that can't fit it. Today a long chat routed to a small-context host returns 400 with no fallback.
 - [ ] **Retry on 400**: If a host returns 400 (context overflow, bad request), try the next host instead of forwarding the error. Requires reading the response status before committing to the byte-pipe tunnel. Non-trivial — the current `relay_tcp_via_quic` is a blind bidirectional copy.
 - [ ] **Static speed estimates**: `tok_s: f64` on ModelProfile. Quick tasks prefer fast models.
 - [ ] **Response quality checks**: Detect empty/repetitive/truncated responses, retry with different model.
 - [ ] **MoM-aware routing**: Route by task type to best-suited model (see Mixture of Models above).
 - [ ] **Vision-aware routing**: Auto-route image requests to vision-capable models.
+
+## Multi-Modal
+
+Design: [MULTI_MODAL.md](docs/MULTI_MODAL.md)
+
+- [ ] **Capability model**: Add `multimodal` and `audio` alongside `vision`.
+- [ ] **Protocol advertisement**: Surface multimodal/audio capability in gossip, `/api/status`, and `/v1/models`.
+- [ ] **Audio-aware routing**: Auto-route audio requests to audio-capable models.
+- [ ] **Structured media detection**: Detect image/audio/file inputs from content blocks, not just prompt keywords.
+- [ ] **Pipeline safety**: Skip or constrain pre-plan/pipeline behavior for media requests until multimodal-safe.
+- [ ] **Request-scoped blob plugin**: Ingress-local object storage with opaque tokens, no replication, request-bound cleanup.
+- [ ] **Console uploads**: Add audio/file upload UX, upload before dispatch, and send token references instead of large inline payloads.
+- [ ] **Console attachment state**: Show previews/badges, upload status, remove/retry actions, and no-compatible-model fallback.
+- [ ] **Console model UX**: Surface vision/audio/multimodal capability hints and let `auto` switch to compatible models when attachments are present.
+- [ ] **Responses compatibility**: Add multimodal `/v1/responses` support after chat completions are solid.
+- [ ] **Audio transcription shim**: Optional `/v1/audio/transcriptions` compatibility layer.
+- [ ] **Realtime shim**: Optional `v1/realtime` compatibility layer for text and media session orchestration.
 
 ## Resilience
 - [ ] **Multi-node tensor split recovery**: If one split peer dies, re-split across remaining.

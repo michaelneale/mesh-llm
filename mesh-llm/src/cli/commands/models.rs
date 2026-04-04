@@ -82,8 +82,14 @@ pub async fn run_model_search(query: &[String], catalog_only: bool, limit: usize
             println!("   {}", stats.join("  "));
         }
         let mut caps = vec!["💬 text".to_string()];
+        if result.capabilities.multimodal_label().is_some() {
+            caps.push("🎛️ multimodal".to_string());
+        }
         if let Some(label) = result.capabilities.vision_label() {
             caps.push(format!("👁️ vision ({label})"));
+        }
+        if let Some(label) = result.capabilities.audio_label() {
+            caps.push(format!("🔊 audio ({label})"));
         }
         if let Some(label) = result.capabilities.reasoning_label() {
             caps.push(format!("🧠 reasoning ({label})"));
@@ -121,6 +127,9 @@ pub fn run_model_recommended() {
         }
         if let Some(label) = model_capabilities.vision_label() {
             println!("  👁️ Vision: {}", label);
+        }
+        if let Some(label) = model_capabilities.audio_label() {
+            println!("  🔊 Audio: {}", label);
         }
         if let Some(label) = model_capabilities.reasoning_label() {
             println!("  🧠 Reasoning: {}", label);
@@ -182,6 +191,9 @@ pub fn run_model_installed() {
         if let Some(label) = model_capabilities.vision_label() {
             println!("  👁️ Vision: {}", label);
         }
+        if let Some(label) = model_capabilities.audio_label() {
+            println!("  🔊 Audio: {}", label);
+        }
         if let Some(label) = model_capabilities.reasoning_label() {
             println!("  🧠 Reasoning: {}", label);
         }
@@ -212,8 +224,14 @@ pub async fn run_model_show(model_ref: &str) -> Result<()> {
     }
     println!("Capabilities:");
     println!("  💬 text");
+    if details.capabilities.multimodal_label().is_some() {
+        println!("  🎛️ multimodal");
+    }
     if let Some(label) = details.capabilities.vision_label() {
         println!("  👁️ vision ({label})");
+    }
+    if let Some(label) = details.capabilities.audio_label() {
+        println!("  🔊 audio ({label})");
     }
     if let Some(label) = details.capabilities.reasoning_label() {
         println!("  🧠 reasoning ({label})");
