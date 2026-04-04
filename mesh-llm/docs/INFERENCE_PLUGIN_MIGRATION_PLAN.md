@@ -182,6 +182,7 @@ The following no-behavior-change groundwork is already in place on this branch:
 - the shared inference layer now has a host-side plugin registration adapter that turns a plugin-style inference registration into a preferred-only provider descriptor
 - the provider contract now advertises explicit capabilities so orchestration can ask what a backend supports instead of inferring it indirectly
 - worker-runtime startup is now gated by provider capabilities instead of being assumed unconditionally in the shared runtime path
+- MoE GGUF detection and cached-ranking lookup now route through a backend-facing `MoeRankingProvider` on the provider seam, so ranking generation can move out of core without rewriting election policy
 
 ## Sync Branches
 

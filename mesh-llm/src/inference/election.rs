@@ -8,7 +8,6 @@
 use crate::inference::provider;
 use crate::inference::{launch, moe};
 use crate::mesh;
-use crate::models;
 use crate::network::tunnel;
 use mesh::NodeRole;
 use std::collections::HashMap;
@@ -228,7 +227,7 @@ fn lookup_moe_config(
     }
 
     // Tier 2: auto-detect from GGUF header
-    let info = models::gguf::detect_moe(model_path)?;
+    let info = provider::detect_moe_for_model(model_path, None)?;
     eprintln!(
         "🔍 Auto-detected MoE from GGUF: {} experts, top-{}",
         info.expert_count, info.expert_used_count
@@ -239,8 +238,8 @@ fn lookup_moe_config(
     let min_experts = (info.expert_count as f64 * 0.5).ceil() as u32;
 
     // Check for cached ranking on disk
-    let ranking_path = moe::ranking_cache_path(model_path);
-    if let Some(ranking) = moe::load_cached_ranking(&ranking_path) {
+    if let Some(ranking) = provider::load_cached_moe_ranking_for_model(model_path, None) {
+        let ranking_path = moe::ranking_cache_path(model_path);
         eprintln!("  Using cached ranking from {}", ranking_path.display());
         return Some(crate::models::catalog::MoeConfig {
             n_expert: info.expert_count,

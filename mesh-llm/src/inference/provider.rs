@@ -228,6 +228,12 @@ impl InferenceWorkerRequest {
 
 type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+pub trait MoeRankingProvider: Send + Sync {
+    fn detect_moe(&self, model_path: &Path) -> Option<crate::models::gguf::GgufMoeInfo>;
+
+    fn load_cached_ranking(&self, model_path: &Path) -> Option<Vec<u32>>;
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InferenceProviderCapabilities {
     pub supports_local_runtime: bool,
@@ -266,6 +272,7 @@ pub struct InferenceProviderSelection {
     backend_label: Arc<str>,
     capabilities: InferenceProviderCapabilities,
     provider: Arc<dyn InferenceProvider>,
+    moe_ranking_provider: Option<Arc<dyn MoeRankingProvider>>,
 }
 
 impl InferenceProviderSelection {
@@ -280,6 +287,7 @@ impl InferenceProviderSelection {
             backend_label: backend_label.into(),
             capabilities,
             provider,
+            moe_ranking_provider: None,
         }
     }
 
@@ -297,6 +305,18 @@ impl InferenceProviderSelection {
 
     pub fn provider(&self) -> &dyn InferenceProvider {
         self.provider.as_ref()
+    }
+
+    pub fn with_moe_ranking_provider(
+        mut self,
+        moe_ranking_provider: Arc<dyn MoeRankingProvider>,
+    ) -> Self {
+        self.moe_ranking_provider = Some(moe_ranking_provider);
+        self
+    }
+
+    pub fn moe_ranking_provider(&self) -> Option<&dyn MoeRankingProvider> {
+        self.moe_ranking_provider.as_deref()
     }
 }
 
@@ -465,6 +485,20 @@ pub trait InferenceProvider: Send + Sync {
 /// provider still delegates to the existing llama-specific launch code.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BuiltinLlamaProvider;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BuiltinLlamaMoeRankingProvider;
+
+impl MoeRankingProvider for BuiltinLlamaMoeRankingProvider {
+    fn detect_moe(&self, model_path: &Path) -> Option<crate::models::gguf::GgufMoeInfo> {
+        crate::models::gguf::detect_moe(model_path)
+    }
+
+    fn load_cached_ranking(&self, model_path: &Path) -> Option<Vec<u32>> {
+        let ranking_path = crate::inference::moe::ranking_cache_path(model_path);
+        crate::inference::moe::load_cached_ranking(&ranking_path)
+    }
+}
 
 impl InferenceProvider for BuiltinLlamaProvider {
     fn start_endpoint<'a>(
@@ -685,6 +719,7 @@ fn builtin_llama_selection() -> InferenceProviderSelection {
         },
         Arc::new(BuiltinLlamaProvider),
     )
+    .with_moe_ranking_provider(Arc::new(BuiltinLlamaMoeRankingProvider))
 }
 
 #[cfg(target_os = "macos")]
@@ -849,6 +884,38 @@ pub fn primary_backend_label_for_model(
     select_local_endpoint_provider(&request)
         .backend_label()
         .to_string()
+}
+
+pub fn select_moe_ranking_provider(
+    model_path: &Path,
+    preferred_provider_id: Option<&str>,
+) -> Option<InferenceProviderSelection> {
+    let request = InferenceEndpointRequest::local(model_path, 0, 0, 0)
+        .with_preferred_provider_id(preferred_provider_id);
+    let selection = select_local_endpoint_provider(&request);
+    if selection.moe_ranking_provider().is_some() {
+        Some(selection)
+    } else {
+        None
+    }
+}
+
+pub fn detect_moe_for_model(
+    model_path: &Path,
+    preferred_provider_id: Option<&str>,
+) -> Option<crate::models::gguf::GgufMoeInfo> {
+    let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
+    selection.moe_ranking_provider()?.detect_moe(model_path)
+}
+
+pub fn load_cached_moe_ranking_for_model(
+    model_path: &Path,
+    preferred_provider_id: Option<&str>,
+) -> Option<Vec<u32>> {
+    let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
+    selection
+        .moe_ranking_provider()?
+        .load_cached_ranking(model_path)
 }
 
 /// Start a distributed-host endpoint through the selected inference provider.
@@ -1193,6 +1260,60 @@ mod tests {
         );
         assert_eq!(explicit_selection.provider_id(), "plugin.notes");
         assert_eq!(explicit_selection.backend_label(), "plugin-notes");
+
+        clear_registered_providers_for_tests();
+    }
+
+    #[test]
+    fn builtin_llama_selection_exposes_moe_ranking_provider() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
+        clear_registered_providers_for_tests();
+
+        let root =
+            std::env::temp_dir().join(format!("mesh-llm-provider-moe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("moe-rankings")).expect("create moe ranking dir");
+        let model_path = root.join("model.gguf");
+        std::fs::write(&model_path, b"gguf").expect("write model placeholder");
+        std::fs::write(root.join("moe-rankings/model.csv"), "3\n1\n4\n")
+            .expect("write ranking cache");
+
+        let selection =
+            select_moe_ranking_provider(&model_path, None).expect("builtin llama ranking provider");
+        assert_eq!(selection.provider_id(), "builtin.llama");
+        assert_eq!(
+            load_cached_moe_ranking_for_model(&model_path, None),
+            Some(vec![3, 1, 4])
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preferred_provider_without_ranking_provider_disables_moe_ranking_selection() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
+        clear_registered_providers_for_tests();
+        register_plugin_provider(
+            PluginInferenceProviderRegistration::new(
+                "plugin.notes",
+                "plugin-notes",
+                InferenceProviderCapabilities {
+                    supports_local_runtime: true,
+                    supports_distributed_host_runtime: false,
+                    requires_worker_runtime: false,
+                    supports_moe_shard_runtime: false,
+                },
+            ),
+            Arc::new(TestLocalProvider),
+        );
+
+        let selection =
+            select_moe_ranking_provider(Path::new("/tmp/model.gguf"), Some("plugin.notes"));
+        assert!(selection.is_none());
 
         clear_registered_providers_for_tests();
     }
