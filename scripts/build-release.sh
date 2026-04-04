@@ -40,19 +40,19 @@ configure_compiler_cache() {
 
 clone_or_update_llama() {
     if [[ ! -d "$LLAMA_DIR" ]]; then
-        echo "Cloning michaelneale/llama.cpp (rebase-upstream-master)..."
-        git clone -b rebase-upstream-master \
+        echo "Cloning michaelneale/llama.cpp (upstream-latest)..."
+        git clone -b upstream-latest \
             https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
         return
     fi
 
     pushd "$LLAMA_DIR" >/dev/null
     current_branch="$(git branch --show-current)"
-    if [[ "$current_branch" != "rebase-upstream-master" ]]; then
-        echo "Switching llama.cpp from '$current_branch' to 'rebase-upstream-master'..."
-        git checkout rebase-upstream-master
+    if [[ "$current_branch" != "upstream-latest" ]]; then
+        echo "Switching llama.cpp from '$current_branch' to 'upstream-latest'..."
+        git checkout upstream-latest
     fi
-    git pull --ff-only origin rebase-upstream-master
+    git pull --ff-only origin upstream-latest
     popd >/dev/null
 }
 

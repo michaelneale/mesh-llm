@@ -331,4 +331,4 @@ bench-prefix-affinity:
 
 # Show the diff from upstream llama.cpp
 diff:
-    cd {{ llama_dir }} && git log --oneline master..rebase-upstream-master
+    cd {{ llama_dir }} && git log --oneline master..upstream-latest

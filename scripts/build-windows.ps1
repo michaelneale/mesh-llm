@@ -591,18 +591,18 @@ switch ($backendName) {
 
 Invoke-InRepo {
     if (-not (Test-Path $llamaDir)) {
-        Write-Host "Cloning michaelneale/llama.cpp (rebase-upstream-master branch)..."
-        Invoke-NativeCommand "git" @("clone", "-b", "rebase-upstream-master", "https://github.com/michaelneale/llama.cpp.git", $llamaDir)
+        Write-Host "Cloning michaelneale/llama.cpp (upstream-latest branch)..."
+        Invoke-NativeCommand "git" @("clone", "-b", "upstream-latest", "https://github.com/michaelneale/llama.cpp.git", $llamaDir)
     } else {
         Push-Location $llamaDir
         try {
             $currentBranch = (& git branch --show-current).Trim()
-            if ($currentBranch -ne "rebase-upstream-master") {
-                Write-Host "Switching llama.cpp from '$currentBranch' to rebase-upstream-master..."
-                Invoke-NativeCommand "git" @("checkout", "rebase-upstream-master")
+            if ($currentBranch -ne "upstream-latest") {
+                Write-Host "Switching llama.cpp from '$currentBranch' to upstream-latest..."
+                Invoke-NativeCommand "git" @("checkout", "upstream-latest")
             }
-            Write-Host "Pulling latest rebase-upstream-master from origin..."
-            Invoke-NativeCommand "git" @("pull", "--ff-only", "origin", "rebase-upstream-master")
+            Write-Host "Pulling latest upstream-latest from origin..."
+            Invoke-NativeCommand "git" @("pull", "--ff-only", "origin", "upstream-latest")
         } finally {
             Pop-Location
         }

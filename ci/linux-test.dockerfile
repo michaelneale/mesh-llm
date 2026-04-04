@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y cmake pkg-config git && rm -rf /var/lib
 WORKDIR /src
 
 # Clone llama.cpp fork (not in docker context due to .dockerignore)
-RUN git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git
+RUN git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git
 
 # Build llama.cpp (CPU + RPC, no GPU)
 RUN cmake -B llama.cpp/build -S llama.cpp \

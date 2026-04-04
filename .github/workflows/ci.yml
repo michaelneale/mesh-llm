@@ -112,7 +112,7 @@ jobs:
 
       # ── llama.cpp (CPU-only for CI) ──
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |
@@ -261,7 +261,7 @@ jobs:
 
       # ── llama.cpp (Metal + RPC) ──
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |

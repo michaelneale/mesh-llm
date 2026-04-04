@@ -45,7 +45,7 @@ jobs:
         run: cargo build --release -p mesh-llm --bin mesh-llm
 
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |
@@ -194,7 +194,7 @@ jobs:
         run: cargo build --release -p mesh-llm --bin mesh-llm
 
       - name: Clone llama.cpp fork
-        run: git clone -b rebase-upstream-master --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
         run: |
