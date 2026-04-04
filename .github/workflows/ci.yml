@@ -342,7 +342,7 @@ jobs:
   macos_mlx:
     needs: [changes, macos]
     if: ${{ needs.macos.result == 'success' && vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    name: macOS MLX (${{ matrix.name }})
+    name: macOS MLX
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -476,7 +476,7 @@ jobs:
   gguf_smokes:
     needs: [changes, linux]
     if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    name: GGUF Smokes (${{ matrix.name }})
+    name: GGUF Smokes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
