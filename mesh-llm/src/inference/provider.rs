@@ -1,9 +1,13 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use std::future::Future;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::thread;
 use tokio::net::TcpListener;
 
 fn mmproj_path_for_model(model_name: &str) -> Option<PathBuf> {
@@ -218,6 +222,22 @@ pub trait MoeRankingProvider: Send + Sync {
         &self,
         model_path: &Path,
     ) -> Option<crate::inference::moe::SharedRankingArtifact>;
+
+    fn ensure_full_analyze_ranking(
+        &self,
+        bin_dir: &Path,
+        model_name: &str,
+        model_path: &Path,
+        cached_path: &Path,
+    ) -> Result<crate::inference::moe::SharedRankingArtifact>;
+
+    fn ensure_micro_analyze_ranking(
+        &self,
+        bin_dir: &Path,
+        model_name: &str,
+        model_path: &Path,
+        options: &crate::inference::moe::MoeRuntimeOptions,
+    ) -> Result<crate::inference::moe::SharedRankingArtifact>;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -491,6 +511,152 @@ impl MoeRankingProvider for BuiltinLlamaMoeRankingProvider {
     ) -> Option<crate::inference::moe::SharedRankingArtifact> {
         crate::inference::moe::best_shared_ranking_artifact(model_path)
     }
+
+    fn ensure_full_analyze_ranking(
+        &self,
+        bin_dir: &Path,
+        model_name: &str,
+        model_path: &Path,
+        cached_path: &Path,
+    ) -> Result<crate::inference::moe::SharedRankingArtifact> {
+        if let Some(artifact) = crate::inference::moe::load_shared_ranking_artifact(
+            cached_path,
+            crate::inference::moe::SharedRankingKind::Analyze,
+            crate::inference::moe::SharedRankingOrigin::LegacyCache,
+            None,
+            None,
+            None,
+        ) {
+            eprintln!(
+                "🧩 [{model_name}] Using cached MoE ranking mode=full-analyze origin={} cache={}",
+                artifact.origin.label(),
+                cached_path.display()
+            );
+            return Ok(artifact);
+        }
+        if let Some(parent) = cached_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let analyze_bin = resolve_analyze_binary(bin_dir)?;
+        let started = std::time::Instant::now();
+        eprintln!(
+            "🧩 [{model_name}] MoE analysis mode=full-analyze cache={}",
+            cached_path.display()
+        );
+        let progress = Arc::new(Mutex::new(MoeAnalyzeProgressState::default()));
+        let spinner = spawn_moe_analysis_spinner(
+            model_name.to_string(),
+            "full-analyze",
+            Arc::clone(&progress),
+            started,
+        );
+        let mut child = Command::new(&analyze_bin)
+            .args([
+                "-m",
+                &model_path.to_string_lossy(),
+                "--all-layers",
+                "--export-ranking",
+                &cached_path.to_string_lossy(),
+                "-n",
+                "32",
+                "-c",
+                "4096",
+                "-ngl",
+                "99",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdout_relay = child.stdout.take().map(|stdout| {
+            spawn_moe_analyze_log_relay(stdout, model_name.to_string(), Arc::clone(&progress))
+        });
+        let stderr_relay = child.stderr.take().map(|stderr| {
+            spawn_moe_analyze_log_relay(stderr, model_name.to_string(), Arc::clone(&progress))
+        });
+        let status = child.wait()?;
+        if let Some(handle) = stdout_relay {
+            let _ = handle.join();
+        }
+        if let Some(handle) = stderr_relay {
+            let _ = handle.join();
+        }
+        if let Ok(mut state) = progress.lock() {
+            if let Some(total) = state.total_prompts {
+                state.current_prompt = total;
+            }
+            state.done = true;
+        }
+        let _ = spinner.join();
+        anyhow::ensure!(status.success(), "llama-moe-analyze exited with {status}");
+        let ranking = crate::inference::moe::load_cached_ranking(cached_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "No ranking produced by full analyze at {}",
+                cached_path.display()
+            )
+        })?;
+        let artifact = crate::inference::moe::SharedRankingArtifact {
+            kind: crate::inference::moe::SharedRankingKind::Analyze,
+            origin: crate::inference::moe::SharedRankingOrigin::LocalFullAnalyze,
+            ranking,
+            micro_prompt_count: None,
+            micro_tokens: None,
+            micro_layer_scope: None,
+        };
+        crate::inference::moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+        eprintln!(
+            "  Full moe-analyze cached at {} in {:.1}s (origin={})",
+            cached_path.display(),
+            started.elapsed().as_secs_f64(),
+            artifact.origin.label()
+        );
+        Ok(artifact)
+    }
+
+    fn ensure_micro_analyze_ranking(
+        &self,
+        bin_dir: &Path,
+        model_name: &str,
+        model_path: &Path,
+        options: &crate::inference::moe::MoeRuntimeOptions,
+    ) -> Result<crate::inference::moe::SharedRankingArtifact> {
+        let cached_path = crate::inference::moe::micro_ranking_cache_path(
+            model_path,
+            options.micro_prompt_count,
+            options.micro_tokens,
+            options.micro_layer_scope,
+        );
+        if let Some(artifact) = crate::inference::moe::load_shared_ranking_artifact(
+            &cached_path,
+            crate::inference::moe::SharedRankingKind::MicroAnalyze,
+            crate::inference::moe::SharedRankingOrigin::LegacyCache,
+            Some(options.micro_prompt_count),
+            Some(options.micro_tokens),
+            Some(options.micro_layer_scope),
+        ) {
+            eprintln!(
+                "🧩 [{model_name}] Using cached MoE ranking mode=micro-analyze origin={} cache={}",
+                artifact.origin.label(),
+                cached_path.display()
+            );
+            return Ok(artifact);
+        }
+        let ranking = run_micro_analyze_ranking(bin_dir, model_name, model_path, options)?;
+        let artifact = crate::inference::moe::SharedRankingArtifact {
+            kind: crate::inference::moe::SharedRankingKind::MicroAnalyze,
+            origin: crate::inference::moe::SharedRankingOrigin::LocalMicroAnalyze,
+            ranking,
+            micro_prompt_count: Some(options.micro_prompt_count),
+            micro_tokens: Some(options.micro_tokens),
+            micro_layer_scope: Some(options.micro_layer_scope),
+        };
+        crate::inference::moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+        eprintln!(
+            "  Micro moe-analyze cached at {} (origin={})",
+            cached_path.display(),
+            artifact.origin.label()
+        );
+        Ok(artifact)
+    }
 }
 
 impl InferenceProvider for BuiltinLlamaProvider {
@@ -515,6 +681,319 @@ impl InferenceProvider for BuiltinLlamaProvider {
             crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
         })
     }
+}
+
+fn resolve_analyze_binary(bin_dir: &Path) -> Result<std::path::PathBuf> {
+    let candidates = [
+        bin_dir.join("llama-moe-analyze"),
+        bin_dir.join("../llama.cpp/build/bin/llama-moe-analyze"),
+        bin_dir.join("../../llama.cpp/build/bin/llama-moe-analyze"),
+        bin_dir.join("../../../llama.cpp/build/bin/llama-moe-analyze"),
+    ];
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate.canonicalize().unwrap_or(candidate));
+        }
+    }
+    anyhow::bail!(
+        "llama-moe-analyze not found in {} or nearby llama.cpp/build/bin directories",
+        bin_dir.display()
+    )
+}
+
+fn should_suppress_moe_analyze_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty() || trimmed.starts_with("print_info:")
+}
+
+fn should_relay_moe_analyze_warning(line: &str) -> bool {
+    let trimmed = line.trim();
+    if should_suppress_moe_analyze_line(trimmed) {
+        return false;
+    }
+
+    trimmed.starts_with("W ")
+        || trimmed.starts_with("E ")
+        || trimmed.to_ascii_lowercase().contains("failed")
+        || trimmed.to_ascii_lowercase().contains("error")
+}
+
+#[derive(Default)]
+struct MoeAnalyzeProgressState {
+    current_prompt: usize,
+    total_prompts: Option<usize>,
+    done: bool,
+}
+
+fn format_moe_analysis_progress_line(
+    model_name: &str,
+    mode: &str,
+    spinner: &str,
+    current: usize,
+    total: Option<usize>,
+    elapsed: std::time::Duration,
+) -> String {
+    let progress = match total {
+        Some(total) if total > 0 => format!(
+            "{:>5.1}%  {}/{}",
+            (current as f64 / total as f64) * 100.0,
+            current,
+            total
+        ),
+        Some(total) => format!("       0/{}", total),
+        None => "starting".to_string(),
+    };
+    format!(
+        "🧩 [{}] {:<17} {}  {:>3}s",
+        model_name,
+        format!("MoE {mode}"),
+        format!("{spinner} {progress}"),
+        elapsed.as_secs()
+    )
+}
+
+fn spawn_moe_analysis_spinner(
+    model_name: String,
+    mode: &'static str,
+    progress: Arc<Mutex<MoeAnalyzeProgressState>>,
+    started: std::time::Instant,
+) -> thread::JoinHandle<()> {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    thread::spawn(move || {
+        let mut frame_idx = 0usize;
+        loop {
+            let (current, total, done) = progress
+                .lock()
+                .map(|state| (state.current_prompt, state.total_prompts, state.done))
+                .unwrap_or((0, None, true));
+            let spinner = if done {
+                "✓"
+            } else {
+                FRAMES[frame_idx % FRAMES.len()]
+            };
+            let line = format_moe_analysis_progress_line(
+                &model_name,
+                mode,
+                spinner,
+                current,
+                total,
+                started.elapsed(),
+            );
+            eprint!("\r\x1b[2K{line}");
+            let _ = std::io::stderr().flush();
+            if done {
+                eprintln!();
+                break;
+            }
+            frame_idx += 1;
+            thread::sleep(std::time::Duration::from_millis(125));
+        }
+    })
+}
+
+fn parse_moe_analyze_prompt_total(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("Running ")?;
+    let prompt_count = rest.split_whitespace().next()?;
+    prompt_count.parse::<usize>().ok()
+}
+
+fn parse_moe_analyze_prompt_progress(line: &str) -> Option<(usize, usize)> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("Prompt ")?;
+    let progress = rest.split(':').next()?.trim();
+    let (current, total) = progress.split_once('/')?;
+    Some((current.parse::<usize>().ok()?, total.parse::<usize>().ok()?))
+}
+
+fn spawn_moe_analyze_log_relay<R: std::io::Read + Send + 'static>(
+    reader: R,
+    model_name: String,
+    progress: Arc<Mutex<MoeAnalyzeProgressState>>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let reader = BufReader::new(reader);
+        for line in reader.lines().map_while(Result::ok) {
+            if let Some(total) = parse_moe_analyze_prompt_total(&line) {
+                if let Ok(mut state) = progress.lock() {
+                    state.total_prompts = Some(total);
+                }
+                continue;
+            }
+            if let Some((current, total)) = parse_moe_analyze_prompt_progress(&line) {
+                if let Ok(mut state) = progress.lock() {
+                    state.total_prompts = Some(total);
+                    state.current_prompt = current.saturating_sub(1);
+                }
+                continue;
+            }
+            if should_relay_moe_analyze_warning(&line) {
+                eprint!("\r\x1b[2K");
+                eprintln!("  [{model_name}] {line}");
+            }
+        }
+    })
+}
+
+#[derive(Clone, Copy)]
+struct AnalyzeMassRow {
+    expert_id: u32,
+    gate_mass: f64,
+}
+
+fn run_micro_analyze_ranking(
+    bin_dir: &Path,
+    model_name: &str,
+    model_path: &Path,
+    options: &crate::inference::moe::MoeRuntimeOptions,
+) -> Result<Vec<u32>> {
+    let prompts = default_micro_prompts();
+    let prompt_count = options.micro_prompt_count.max(1).min(prompts.len());
+    let analyze_bin = resolve_analyze_binary(bin_dir)?;
+    let timestamp_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp_dir = std::env::temp_dir().join(format!(
+        "mesh-llm-micro-live-{}-{}",
+        std::process::id(),
+        timestamp_nanos
+    ));
+    std::fs::create_dir_all(&tmp_dir)?;
+    let started = std::time::Instant::now();
+    let mut mass_by_expert: HashMap<u32, f64> = HashMap::new();
+    eprintln!(
+        "🧩 [{model_name}] MoE analysis mode=micro-analyze prompts={} tokens={} layers={} cache=pending",
+        prompt_count,
+        options.micro_tokens,
+        match options.micro_layer_scope {
+            crate::inference::moe::MoeMicroLayerScope::All => "all",
+            crate::inference::moe::MoeMicroLayerScope::First => "first",
+        }
+    );
+    let progress = Arc::new(Mutex::new(MoeAnalyzeProgressState {
+        current_prompt: 0,
+        total_prompts: Some(prompt_count),
+        done: false,
+    }));
+    let spinner = spawn_moe_analysis_spinner(
+        model_name.to_string(),
+        "micro-analyze",
+        Arc::clone(&progress),
+        started,
+    );
+
+    for (idx, prompt) in prompts.iter().take(prompt_count).enumerate() {
+        let output_path = tmp_dir.join(format!("prompt-{idx}.csv"));
+        let mut command = Command::new(&analyze_bin);
+        command.args([
+            "-m",
+            &model_path.to_string_lossy(),
+            "--export-ranking",
+            &output_path.to_string_lossy(),
+            "-n",
+            &options.micro_tokens.to_string(),
+            "-c",
+            "4096",
+            "-ngl",
+            "99",
+            "-p",
+            prompt,
+        ]);
+        if matches!(
+            options.micro_layer_scope,
+            crate::inference::moe::MoeMicroLayerScope::All
+        ) {
+            command.arg("--all-layers");
+        }
+        let output = command.output()?;
+        if !output.status.success() {
+            if let Ok(mut state) = progress.lock() {
+                state.done = true;
+            }
+            let _ = spinner.join();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut details = stderr
+                .lines()
+                .chain(stdout.lines())
+                .filter(|line| !should_suppress_moe_analyze_line(line))
+                .collect::<Vec<_>>();
+            if details.len() > 20 {
+                details.truncate(20);
+            }
+            let detail_text = if details.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", details.join(" | "))
+            };
+            anyhow::bail!(
+                "llama-moe-analyze exited with {}{}",
+                output.status,
+                detail_text
+            );
+        }
+        for row in load_analyze_mass_rows(&output_path)? {
+            *mass_by_expert.entry(row.expert_id).or_insert(0.0) += row.gate_mass;
+        }
+        if let Ok(mut state) = progress.lock() {
+            state.current_prompt = idx + 1;
+        }
+    }
+    if let Ok(mut state) = progress.lock() {
+        state.current_prompt = prompt_count;
+        state.done = true;
+    }
+    let _ = spinner.join();
+
+    let mut rows = mass_by_expert.into_iter().collect::<Vec<_>>();
+    rows.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let ranking = rows.into_iter().map(|(expert_id, _)| expert_id).collect();
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    eprintln!(
+        "  Micro moe-analyze used {} prompt(s), {} token(s), {} in {:.1}s",
+        prompt_count,
+        options.micro_tokens,
+        match options.micro_layer_scope {
+            crate::inference::moe::MoeMicroLayerScope::All => "all layers",
+            crate::inference::moe::MoeMicroLayerScope::First => "first layer",
+        },
+        started.elapsed().as_secs_f64()
+    );
+    Ok(ranking)
+}
+
+fn load_analyze_mass_rows(path: &Path) -> Result<Vec<AnalyzeMassRow>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut rows = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("expert") {
+            continue;
+        }
+        let parts = trimmed.split(',').map(str::trim).collect::<Vec<_>>();
+        if parts.len() < 2 {
+            continue;
+        }
+        rows.push(AnalyzeMassRow {
+            expert_id: parts[0].parse()?,
+            gate_mass: parts[1].parse()?,
+        });
+    }
+    Ok(rows)
+}
+
+fn default_micro_prompts() -> &'static [&'static str] {
+    &[
+        "User: Explain how mixture-of-experts routing works in a language model.\nAssistant:",
+        "User: Write a short professional email asking for feedback on a technical design.\nAssistant:",
+        "User: Outline a debugging plan for a flaky distributed systems test.\nAssistant:",
+        "User: Summarize the tradeoffs between latency and quality in MoE inference.\nAssistant:",
+    ]
 }
 
 const fn always_match_local_endpoint(_request: &InferenceEndpointRequest) -> bool {
@@ -717,6 +1196,46 @@ pub fn best_shared_moe_ranking_artifact_for_model(
     selection
         .moe_ranking_provider()?
         .best_shared_ranking_artifact(model_path)
+}
+
+pub fn ensure_full_analyze_ranking_for_model(
+    bin_dir: &Path,
+    model_name: &str,
+    model_path: &Path,
+    cached_path: &Path,
+    preferred_provider_id: Option<&str>,
+) -> Result<crate::inference::moe::SharedRankingArtifact> {
+    let selection =
+        select_moe_ranking_provider(model_path, preferred_provider_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no MoE ranking provider available for {}",
+                model_path.display()
+            )
+        })?;
+    selection
+        .moe_ranking_provider()
+        .expect("selection should include a MoE ranking provider")
+        .ensure_full_analyze_ranking(bin_dir, model_name, model_path, cached_path)
+}
+
+pub fn ensure_micro_analyze_ranking_for_model(
+    bin_dir: &Path,
+    model_name: &str,
+    model_path: &Path,
+    options: &crate::inference::moe::MoeRuntimeOptions,
+    preferred_provider_id: Option<&str>,
+) -> Result<crate::inference::moe::SharedRankingArtifact> {
+    let selection =
+        select_moe_ranking_provider(model_path, preferred_provider_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no MoE ranking provider available for {}",
+                model_path.display()
+            )
+        })?;
+    selection
+        .moe_ranking_provider()
+        .expect("selection should include a MoE ranking provider")
+        .ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options)
 }
 
 /// Start a distributed-host endpoint through the selected inference provider.
