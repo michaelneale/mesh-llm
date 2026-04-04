@@ -1830,7 +1830,7 @@ async fn run_lemonade_only(
     // Runtime control for load/unload
     let (control_tx, mut control_rx) =
         tokio::sync::mpsc::unbounded_channel::<api::RuntimeControlRequest>();
-    let (runtime_event_tx, mut runtime_event_rx) =
+    let (_runtime_event_tx, mut runtime_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
 
     // API proxy

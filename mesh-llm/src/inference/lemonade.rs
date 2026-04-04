@@ -23,9 +23,8 @@ pub async fn health_check(port: u16) -> bool {
     let Ok(mut stream) = tokio::net::TcpStream::connect(&addr).await else {
         return false;
     };
-    let request = format!(
-        "GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).await.is_err() {
         return false;
     }
@@ -43,9 +42,8 @@ pub async fn list_models(port: u16) -> Result<Vec<String>> {
     let mut stream = tokio::net::TcpStream::connect(&addr)
         .await
         .context("connect to lemonade")?;
-    let request = format!(
-        "GET /v1/models HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /v1/models HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
 
     let mut response = Vec::new();
