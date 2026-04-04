@@ -22,12 +22,13 @@ The system has three core pieces:
 
 - one long-lived control connection per plugin process
 - zero or more short-lived negotiated streams for large or streaming data
-- one declarative plugin manifest that the host projects into MCP, HTTP, and optional promoted product APIs
+- one declarative plugin manifest that the host `stapler` projects into MCP, HTTP, and optional promoted product APIs
 
 `mesh-llm` remains the owner of:
 
 - plugin lifecycle
 - local IPC
+- stapling manifest-declared services onto host-facing protocols
 - HTTP serving
 - MCP serving
 - capability routing
@@ -44,6 +45,8 @@ A plugin owns:
 
 Plugins do not need to implement raw MCP or raw HTTP servers.
 
+The `stapler` is the host projection layer that turns plugin manifests into exposed MCP and HTTP surfaces.
+
 ## High-Level Model
 
 The plugin system is service-oriented rather than transport-oriented.
@@ -59,7 +62,7 @@ A plugin declares services such as:
 - mesh channels
 - named capabilities
 
-Those declarations are projected by the host into:
+Those declarations are projected by the host `stapler` into:
 
 - MCP tools, resources, prompts, and completions
 - HTTP routes
@@ -98,13 +101,13 @@ For large or streaming payloads, the host and plugin negotiate a short-lived sid
 
 `mesh-llm` is the MCP server.
 
-Plugins do not need to implement MCP JSON-RPC directly. They declare MCP-facing services in the manifest, and the host exposes them over MCP.
+Plugins do not need to implement MCP JSON-RPC directly. They declare MCP-facing services in the manifest, and the host `stapler` exposes them over MCP.
 
 ### 4. HTTP Is A Host Projection
 
 `mesh-llm` owns the HTTP server.
 
-Plugins may declare HTTP bindings, but they do not need to run an HTTP server themselves. The host maps HTTP requests onto plugin operations and resources.
+Plugins may declare HTTP bindings, but they do not need to run an HTTP server themselves. The host `stapler` maps HTTP requests onto plugin operations and resources.
 
 ### 5. Capabilities Are Stable Product Contracts
 
@@ -213,7 +216,7 @@ plugin! {
 }
 ```
 
-The plugin author declares services and writes normal typed handlers. The runtime handles:
+The plugin author declares services and writes normal typed handlers. The runtime and `stapler` handle:
 
 - schema exposure
 - MCP projection

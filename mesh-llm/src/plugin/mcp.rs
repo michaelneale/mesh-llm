@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::plugin::stapler;
 use crate::plugin::{self, PluginManager, PluginRpcBridge, RpcResult};
 
 #[derive(Clone)]
@@ -196,6 +197,28 @@ impl PluginMcpServer {
     async fn discover_tools(&self) -> Result<BTreeMap<String, PluginToolRef>, ErrorData> {
         let mut tools = BTreeMap::new();
         for (plugin_name, server_info) in self.plugin_manager.list_server_infos().await {
+            let manifest = self
+                .plugin_manager
+                .manifest(&plugin_name)
+                .await
+                .map_err(internal_error)?;
+            if let Some(manifest) = manifest.filter(|manifest| !manifest.mcp_tools.is_empty()) {
+                for tool in &manifest.mcp_tools {
+                    let raw_name = tool.name.clone();
+                    for mcp_name in tool_aliases(&plugin_name, &raw_name) {
+                        tools.insert(
+                            mcp_name.clone(),
+                            PluginToolRef {
+                                plugin_name: plugin_name.clone(),
+                                tool_name: raw_name.clone(),
+                                tool: stapler::mcp_tool(mcp_name, tool),
+                            },
+                        );
+                    }
+                }
+                continue;
+            }
+
             if server_info.capabilities.tools.is_none() {
                 continue;
             }
@@ -230,6 +253,24 @@ impl PluginMcpServer {
     async fn discover_prompts(&self) -> Result<BTreeMap<String, PluginPromptRef>, ErrorData> {
         let mut prompts = BTreeMap::new();
         for (plugin_name, server_info) in self.plugin_manager.list_server_infos().await {
+            let manifest = self
+                .plugin_manager
+                .manifest(&plugin_name)
+                .await
+                .map_err(internal_error)?;
+            if let Some(manifest) = manifest.filter(|manifest| !manifest.mcp_prompts.is_empty()) {
+                for prompt in &manifest.mcp_prompts {
+                    prompts.insert(
+                        canonical_name(&plugin_name, &prompt.name),
+                        PluginPromptRef {
+                            plugin_name: plugin_name.clone(),
+                            prompt_name: prompt.name.clone(),
+                        },
+                    );
+                }
+                continue;
+            }
+
             if server_info.capabilities.prompts.is_none() {
                 continue;
             }
@@ -342,6 +383,18 @@ impl ServerHandler for PluginMcpServer {
         self.refresh_peer(context.peer.clone()).await;
         let mut prompts = Vec::new();
         for (plugin_name, server_info) in self.plugin_manager.list_server_infos().await {
+            let manifest = self
+                .plugin_manager
+                .manifest(&plugin_name)
+                .await
+                .map_err(internal_error)?;
+            if let Some(manifest) = manifest.filter(|manifest| !manifest.mcp_prompts.is_empty()) {
+                prompts.extend(manifest.mcp_prompts.into_iter().map(|prompt| {
+                    stapler::mcp_prompt(canonical_name(&plugin_name, &prompt.name), &prompt)
+                }));
+                continue;
+            }
+
             if server_info.capabilities.prompts.is_none() {
                 continue;
             }
@@ -402,6 +455,16 @@ impl ServerHandler for PluginMcpServer {
         self.refresh_peer(context.peer.clone()).await;
         let mut resources = Vec::new();
         for (plugin_name, server_info) in self.plugin_manager.list_server_infos().await {
+            let manifest = self
+                .plugin_manager
+                .manifest(&plugin_name)
+                .await
+                .map_err(internal_error)?;
+            if let Some(manifest) = manifest.filter(|manifest| !manifest.mcp_resources.is_empty()) {
+                resources.extend(manifest.mcp_resources.iter().map(stapler::mcp_resource));
+                continue;
+            }
+
             if server_info.capabilities.resources.is_none() {
                 continue;
             }
@@ -431,6 +494,23 @@ impl ServerHandler for PluginMcpServer {
         self.refresh_peer(context.peer.clone()).await;
         let mut resource_templates = Vec::new();
         for (plugin_name, server_info) in self.plugin_manager.list_server_infos().await {
+            let manifest = self
+                .plugin_manager
+                .manifest(&plugin_name)
+                .await
+                .map_err(internal_error)?;
+            if let Some(manifest) =
+                manifest.filter(|manifest| !manifest.mcp_resource_templates.is_empty())
+            {
+                resource_templates.extend(
+                    manifest
+                        .mcp_resource_templates
+                        .iter()
+                        .map(stapler::mcp_resource_template),
+                );
+                continue;
+            }
+
             if server_info.capabilities.resources.is_none() {
                 continue;
             }
