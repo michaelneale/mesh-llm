@@ -370,10 +370,14 @@ fn installed_entry_exact_ref(entry: &InstalledModelEntry) -> Option<String> {
 }
 
 fn installed_entry_run_command(entry: &InstalledModelEntry) -> Option<String> {
-    let path = entry.path.to_str()?;
+    let target = installed_catalog_model(entry)
+        .map(|model| model.name.clone())
+        .or_else(|| installed_entry_exact_ref(entry))
+        .or_else(|| entry.path.to_str().map(str::to_string))?;
+    let escaped = shell_escape(&target);
     match entry.kind {
-        InstalledModelKind::Gguf => Some(format!("mesh-llm --gguf-file {}", shell_escape(path))),
-        InstalledModelKind::Mlx => Some(format!("mesh-llm --mlx-file {}", shell_escape(path))),
+        InstalledModelKind::Gguf => Some(format!("mesh-llm --model {} --gguf", escaped)),
+        InstalledModelKind::Mlx => Some(format!("mesh-llm --model {} --mlx", escaped)),
     }
 }
 
