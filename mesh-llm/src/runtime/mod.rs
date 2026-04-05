@@ -839,10 +839,11 @@ async fn run_auto(
         cli.enumerate_host,
     )
     .await?;
-    let _local_mesh_state = crate::runtime::config::hydrate_local_mesh_config(
-        authored_cfg,
-        &node.id().to_string(),
-    );
+    // Temporary inert scaffolding for future mesh-config activation; keep this
+    // startup projection path in place even though the hydrated state is not
+    // yet consumed beyond this scope.
+    let _local_mesh_state =
+        crate::runtime::config::hydrate_local_mesh_config(authored_cfg, &node.id().fmt_short().to_string());
     node.start_accepting();
     let token = node.invite_token();
     node.set_blackboard_name(blackboard_display_name(&cli, &node))

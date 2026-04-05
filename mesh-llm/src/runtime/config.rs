@@ -91,13 +91,60 @@ fn save_toml_atomically<T: Serialize>(value: &T, path: &Path, label: &str) -> Re
     tmp_file
         .sync_all()
         .with_context(|| format!("failed to sync temp config {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path).with_context(|| {
-        format!(
-            "failed to atomically replace config {} via {}",
-            path.display(),
-            tmp_path.display()
-        )
-    })
+
+    #[cfg(windows)]
+    {
+        match std::fs::rename(&tmp_path, path) {
+            Ok(()) => Ok(()),
+            Err(rename_err) if rename_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Err(remove_err) = std::fs::remove_file(path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(remove_err).with_context(|| {
+                        format!(
+                            "failed to remove existing config {} after rename via {} failed: {}",
+                            path.display(),
+                            tmp_path.display(),
+                            rename_err
+                        )
+                    });
+                }
+
+                std::fs::rename(&tmp_path, path)
+                    .map_err(|retry_err| {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        retry_err
+                    })
+                    .with_context(|| {
+                        format!(
+                            "failed to atomically replace config {} via {}",
+                            path.display(),
+                            tmp_path.display()
+                        )
+                    })
+            }
+            Err(rename_err) => {
+                let _ = std::fs::remove_file(&tmp_path);
+                Err(rename_err).with_context(|| {
+                    format!(
+                        "failed to atomically replace config {} via {}",
+                        path.display(),
+                        tmp_path.display()
+                    )
+                })
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&tmp_path, path).with_context(|| {
+            format!(
+                "failed to atomically replace config {} via {}",
+                path.display(),
+                tmp_path.display()
+            )
+        })
+    }
 }
 
 // Mesh-level runtime config (projected view of all nodes, no authored fields)
@@ -903,12 +950,12 @@ mod tests {
         let node_path = node_config_path();
 
         assert!(
-            mesh_path.ends_with(".mesh-llm/mesh.toml"),
+            mesh_path.ends_with(Path::new(".mesh-llm").join("mesh.toml")),
             "mesh path: {}",
             mesh_path.display()
         );
         assert!(
-            node_path.ends_with(".mesh-llm/node.toml"),
+            node_path.ends_with(Path::new(".mesh-llm").join("node.toml")),
             "node path: {}",
             node_path.display()
         );

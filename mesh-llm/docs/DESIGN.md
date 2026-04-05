@@ -257,7 +257,7 @@ All configs must declare `version = 1`. Unsupported versions fail fast with a de
 version = 1
 
 [[nodes]]
-node_id = "worker1"
+node_id = "abc12345"
 hostname = "worker1.local"   # optional
 placement_mode = "separate"  # optional: "pooled" (default) or "separate"
 
@@ -274,7 +274,7 @@ split = { start = 0, end = 21, total = 33 }  # optional: layer split range
 name = "GLM-4.7-Flash"
 ```
 
-The `nodes` field is a TOML array of tables (`[[nodes]]`). Each entry carries `node_id` as a field. The `models` sub-array uses the same inline-array-of-tables format (`[[nodes.models]]`).
+The `nodes` field is a TOML array of tables (`[[nodes]]`). Each entry carries `node_id` as a field. Use the same short node ID string the runtime exposes via `/api/status` and the UI (`EndpointId::fmt_short()`), not an arbitrary nickname. The `models` sub-array uses the same inline-array-of-tables format (`[[nodes.models]]`).
 
 ### Fields
 
@@ -298,4 +298,4 @@ The `nodes` field is a TOML array of tables (`[[nodes]]`). Each entry carries `n
 
 Config is loaded at startup and projected to a `NodeConfig` for the local node. The runtime projection includes `node_id`, `hostname`, and a `models` list of `ModelAssignment { name, path, ctx_size, moe_experts }`. Fields dropped from the runtime view: `split`, `placement_mode`, `gpu_index`, and `model_key`.
 
-**Runtime hydration is inert: no automatic behavior changes.** Loading the config does not auto-apply models, change election, alter routing, or launch processes. The config is stored in memory only.
+**Runtime hydration is inert: no automatic behavior changes.** Loading the config does not auto-apply models, change election, alter routing, or launch processes. This startup hydration path is temporary scaffolding for future config-backed runtime behavior: today it validates and projects the local node view during startup, but it does not yet retain a long-lived `LocalMeshConfigState` for later runtime use. This temporary behavior will be expanded in a later change, so the hydration wiring is intentionally present even though it is not fully activated yet.

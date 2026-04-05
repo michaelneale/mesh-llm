@@ -371,17 +371,17 @@ Use `--mesh-config <path>` to point a running node at a custom config file durin
 
 1. Parse a minimal authored TOML:
    ```bash
-   cargo test -p mesh-llm mesh_config_parses_minimal_authored_toml -- --exact
+   cargo test -p mesh-llm authored_config_supports_schema_v1_gpu_placement -- --exact
    ```
 
 2. Semantic round-trip (save then load):
    ```bash
-   cargo test -p mesh-llm mesh_config_semantic_round_trip -- --exact
+   cargo test -p mesh-llm authored_config_save_load_round_trip -- --exact
    ```
 
 3. Projection drops authored split metadata:
    ```bash
-   cargo test -p mesh-llm mesh_config_projection_drops_authored_split_metadata -- --exact
+   cargo test -p mesh-llm authored_for_node_runtime_drops_split_metadata -- --exact
    ```
 
 4. CLI flag does not conflict with plugin config flag:
@@ -397,14 +397,14 @@ Use `--mesh-config <path>` to point a running node at a custom config file durin
 6. Run all mesh config tests together:
    ```bash
    cargo test -p mesh-llm mesh_config
-   cargo test -p mesh-llm runtime_hydrat
+   cargo test -p mesh-llm runtime_hydration
    cargo test -p mesh-llm cli_mesh_config
    ```
 
 ### What these tests verify
 
-- `mesh_config_parses_minimal_authored_toml`: a `version = 1` TOML with one node and one model parses cleanly.
-- `mesh_config_semantic_round_trip`: a config saved with `save_mesh_config` and reloaded with `load_mesh_config` preserves all fields.
-- `mesh_config_projection_drops_authored_split_metadata`: `project_node_config` returns a `LocalNodeConfig` that has no `split` field — the type itself enforces the projection boundary.
+- `authored_config_supports_schema_v1_gpu_placement`: a `version = 1` authored TOML with split metadata and GPU placement parses cleanly.
+- `authored_config_save_load_round_trip`: a config saved with `AuthoredMeshConfig::save` and reloaded with `AuthoredMeshConfig::load` preserves all fields.
+- `authored_for_node_runtime_drops_split_metadata`: `AuthoredMeshConfig::for_node_runtime` returns a `NodeConfig` that has no `split`, `gpu_index`, or `model_key` field — the type itself enforces the projection boundary.
 - `cli_mesh_config_flag_does_not_conflict_with_plugin_config`: `--config` (plugin config) and `--mesh-config` (mesh config) can both be passed on the same command line without conflict.
-- `runtime_hydrates_mesh_config_without_model_application`: `hydrate_local_mesh_config` populates `LocalMeshConfigState` correctly and does not call any model-launch or routing mutators.
+- `runtime_hydrates_mesh_config_without_model_application`: `hydrate_local_mesh_config` populates `LocalMeshConfigState` correctly but remains temporary inert scaffolding for future activation; it does not call model-launch or routing mutators.

@@ -247,22 +247,22 @@ A minimal config looks like this:
 version = 1
 
 [[nodes]]
-node_id = "worker1"
+node_id = "abc12345"  # use the short node_id shown by /api/status
 
 [[nodes.models]]
 name = "Qwen2.5-7B"
 
 [[nodes]]
-node_id = "worker2"
+node_id = "def67890"
 
 [[nodes.models]]
 name = "GLM-4.7-Flash"
 ctx_size = 4096
 ```
 
-Each entry in the `nodes` array has a `node_id` field. Per-node fields include an optional `hostname` and an optional `placement_mode` (`"pooled"` or `"separate"`). Each model in the `models` array is identified by its `name`. Optional per-model fields include `ctx_size`, `gpu_index`, `model_key`, `path`, `moe_experts`, and `split` (`{ start, end, total }` absolute layer range). The `split` field is persisted in the file but not acted on at runtime.
+Each entry in the `nodes` array has a `node_id` field. Use the same short node ID string the running system exposes in `/api/status` and the UI, not an arbitrary nickname. Per-node fields include an optional `hostname` and an optional `placement_mode` (`"pooled"` or `"separate"`). Each model in the `models` array is identified by its `name`. Optional per-model fields include `ctx_size`, `gpu_index`, `model_key`, `path`, `moe_experts`, and `split` (`{ start, end, total }` absolute layer range). The `split` field is persisted in the file but not acted on at runtime.
 
-Config is loaded at startup and stored in memory. It does not auto-apply models, change election, alter routing, or launch processes.
+Config is loaded and projected at startup as temporary inert scaffolding for future mesh-config activation. Today it is used for validation and local-node projection only; it does not yet auto-apply models, change election, alter routing, launch processes, or retain a long-lived runtime config state beyond startup. This temporary behavior will be expanded in a later change, so the startup wiring should remain in place.
 
 ## Web console
 
