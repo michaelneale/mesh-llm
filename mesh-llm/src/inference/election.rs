@@ -850,10 +850,28 @@ async fn moe_election_loop(
 
             // Get or create the shard GGUF via local split
             let shard_path = moe::split_path(&model, n_nodes, my_shard_index);
+            let shard_provider = provider::select_local_endpoint_provider(
+                &provider::InferenceEndpointRequest::local(&model, 0, model_bytes, my_vram),
+            );
 
             if !shard_path.exists() {
                 eprintln!("  Splitting GGUF → {} ...", shard_path.display());
-                match moe::run_split(&bin_dir, &model, my_assignment, &shard_path) {
+                if !shard_provider.capabilities().supports_moe_shard_runtime {
+                    eprintln!(
+                        "  ❌ {} provider cannot prepare MoE shards",
+                        shard_provider.backend_label()
+                    );
+                    if peer_rx.changed().await.is_err() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    continue;
+                }
+                match shard_provider
+                    .provider()
+                    .prepare_moe_shard(&bin_dir, &model, my_assignment, &shard_path)
+                    .await
+                {
                     Ok(()) => {
                         let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
                         eprintln!("  Split complete: {:.1} GB", size as f64 / 1e9);

@@ -455,6 +455,14 @@ pub trait InferenceProvider: Send + Sync {
         binary_flavor: Option<crate::inference::launch::BinaryFlavor>,
         request: &'a InferenceWorkerRequest,
     ) -> ProviderFuture<'a, u16>;
+
+    fn prepare_moe_shard<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        model_path: &'a Path,
+        assignment: &'a crate::inference::moe::NodeAssignment,
+        output_path: &'a Path,
+    ) -> ProviderFuture<'a, ()>;
 }
 
 /// Built-in provider adapter for the current llama.cpp runtime path.
@@ -499,6 +507,18 @@ impl InferenceProvider for BuiltinLlamaProvider {
     ) -> ProviderFuture<'a, u16> {
         Box::pin(async move {
             crate::inference::launch::start_rpc_server(bin_dir, binary_flavor, request).await
+        })
+    }
+
+    fn prepare_moe_shard<'a>(
+        &'a self,
+        bin_dir: &'a Path,
+        model_path: &'a Path,
+        assignment: &'a crate::inference::moe::NodeAssignment,
+        output_path: &'a Path,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            crate::inference::moe::run_split(bin_dir, model_path, assignment, output_path)
         })
     }
 }
@@ -629,6 +649,20 @@ impl InferenceProvider for PluginManagedEndpointProvider {
                 )
                 .await?;
             Ok(response.port)
+        })
+    }
+
+    fn prepare_moe_shard<'a>(
+        &'a self,
+        _bin_dir: &'a Path,
+        model_path: &'a Path,
+        assignment: &'a crate::inference::moe::NodeAssignment,
+        output_path: &'a Path,
+    ) -> ProviderFuture<'a, ()> {
+        Box::pin(async move {
+            self.plugin_manager
+                .prepare_managed_moe_shard(&self.plugin_name, model_path, output_path, assignment)
+                .await
         })
     }
 }
@@ -1052,6 +1086,16 @@ mod tests {
             _request: &'a InferenceWorkerRequest,
         ) -> ProviderFuture<'a, u16> {
             Box::pin(async { unreachable!("test provider start_worker should not run") })
+        }
+
+        fn prepare_moe_shard<'a>(
+            &'a self,
+            _bin_dir: &'a Path,
+            _model_path: &'a Path,
+            _assignment: &'a crate::inference::moe::NodeAssignment,
+            _output_path: &'a Path,
+        ) -> ProviderFuture<'a, ()> {
+            Box::pin(async { unreachable!("test provider prepare_moe_shard should not run") })
         }
     }
 

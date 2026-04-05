@@ -103,6 +103,18 @@ pub struct EnsureInferenceWorkerResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PrepareMoeShardRequest {
+    pub model_path: String,
+    pub output_path: String,
+    pub experts: Vec<u32>,
+    pub n_shared: u32,
+    pub n_unique: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PrepareMoeShardResponse {}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InferenceEndpointDescriptor {
     pub endpoint_id: String,
     pub address: Option<String>,
@@ -387,6 +399,14 @@ pub trait Plugin: Send {
         Ok(None)
     }
 
+    async fn prepare_moe_shard(
+        &mut self,
+        _request: PrepareMoeShardRequest,
+        _context: &mut PluginContext<'_>,
+    ) -> PluginResult<Option<PrepareMoeShardResponse>> {
+        Ok(None)
+    }
+
     async fn handle_rpc(
         &mut self,
         request: proto::RpcRequest,
@@ -459,6 +479,15 @@ pub trait Plugin: Send {
                     Some(result) => json_response(&result),
                     None => Err(PluginError::method_not_found(
                         "Unsupported plugin method 'inference/ensure_worker'",
+                    )),
+                }
+            }
+            "inference/prepare_moe_shard" => {
+                let params: PrepareMoeShardRequest = parse_rpc_params(&request)?;
+                match self.prepare_moe_shard(params, context).await? {
+                    Some(result) => json_response(&result),
+                    None => Err(PluginError::method_not_found(
+                        "Unsupported plugin method 'inference/prepare_moe_shard'",
                     )),
                 }
             }

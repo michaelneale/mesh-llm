@@ -36,7 +36,8 @@ pub use runtime::{
     EnsureInferenceEndpointRequest, EnsureInferenceEndpointResponse, EnsureInferenceWorkerRequest,
     EnsureInferenceWorkerResponse, InferenceEndpointDescriptor, InferenceLocalModelMatcher,
     InferenceProviderCapabilitiesDescriptor, MeshVisibility, Plugin, PluginInitializeRequest,
-    PluginMetadata, PluginRuntime, PluginStartupPolicy, SimplePlugin,
+    PluginMetadata, PluginRuntime, PluginStartupPolicy, PrepareMoeShardRequest,
+    PrepareMoeShardResponse, SimplePlugin,
 };
 
 #[allow(dead_code)]

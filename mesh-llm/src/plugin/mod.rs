@@ -367,6 +367,29 @@ impl PluginManager {
         .await
     }
 
+    pub async fn prepare_managed_moe_shard(
+        &self,
+        plugin_name: &str,
+        model_path: &std::path::Path,
+        output_path: &std::path::Path,
+        assignment: &crate::inference::moe::NodeAssignment,
+    ) -> Result<()> {
+        let _: mesh_llm_plugin::PrepareMoeShardResponse = self
+            .mcp_request(
+                plugin_name,
+                "inference/prepare_moe_shard",
+                mesh_llm_plugin::PrepareMoeShardRequest {
+                    model_path: model_path.display().to_string(),
+                    output_path: output_path.display().to_string(),
+                    experts: assignment.experts.clone(),
+                    n_shared: assignment.n_shared as u32,
+                    n_unique: assignment.n_unique as u32,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn managed_inference_endpoints(&self) -> Result<Vec<ManagedInferenceEndpoint>> {
         #[cfg(test)]
         let plugin_names = {
@@ -738,6 +761,19 @@ mod tests {
                             .unwrap(),
                         })
                     }
+                    "inference/prepare_moe_shard" => {
+                        let request: mesh_llm_plugin::PrepareMoeShardRequest =
+                            serde_json::from_str(&params_json).unwrap();
+                        assert_eq!(request.experts, vec![1, 2, 5]);
+                        assert_eq!(request.n_shared, 1);
+                        assert_eq!(request.n_unique, 2);
+                        Ok(RpcResult {
+                            result_json: serde_json::to_string(
+                                &mesh_llm_plugin::PrepareMoeShardResponse::default(),
+                            )
+                            .unwrap(),
+                        })
+                    }
                     _ => Err(proto::ErrorResponse {
                         code: ErrorCode::METHOD_NOT_FOUND.0,
                         message: format!("Unsupported plugin method '{method}'"),
@@ -885,6 +921,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.port, 19091);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn prepare_managed_moe_shard_routes_through_plugin_bridge() {
+        let plugin_manager =
+            PluginManager::for_test_bridge(&[MLX_PLUGIN_ID], Arc::new(EnsureEndpointTestBridge));
+        plugin_manager
+            .prepare_managed_moe_shard(
+                MLX_PLUGIN_ID,
+                std::path::Path::new("/tmp/model.gguf"),
+                std::path::Path::new("/tmp/node-0.gguf"),
+                &crate::inference::moe::NodeAssignment {
+                    experts: vec![1, 2, 5],
+                    n_shared: 1,
+                    n_unique: 2,
+                },
+            )
+            .await
+            .unwrap();
     }
 
     #[test]
