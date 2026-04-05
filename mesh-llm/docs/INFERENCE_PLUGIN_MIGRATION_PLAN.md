@@ -160,10 +160,10 @@ Move toward provider ownership for:
 
 The next concrete tasks are:
 
-1. Mirror the newest shared contract work onto the sync branches without dragging along plugin-host assumptions they do not carry yet.
-2. Start replacing built-in backend wiring with plugin-managed provider registrations where the branch is ready, beginning with MLX.
-3. Continue splitting MoE ranking generation from host policy on the MoE sync branch.
-4. Keep the provider registry and plugin-managed endpoint seam aligned with the pure plugin model on `codex/plugin-manifest-proto-slice`.
+1. Replace the remaining built-in llama execution path with the new plugin-managed llama plugin where the branch is ready.
+2. Continue splitting MoE ranking generation from host policy on the MoE sync branch.
+3. Mirror neutral launch-setting and provider-registry improvements across the sync branches as they become ready.
+4. Keep the inference-provider seam aligned with the pure plugin model described in `PLUGINS.md` without prematurely porting implementation work onto the plugin branch.
 
 ## Current Status
 
@@ -189,6 +189,13 @@ The following no-behavior-change groundwork is already in place on this branch:
 - plugin-managed MoE shard preparation now has a host/plugin handshake (`inference/prepare_moe_shard`) and the provider contract uses it instead of calling split logic directly
 - managed provider manifests can now declare selection metadata and provider capabilities, so host registration no longer hard-codes those properties
 - managed-provider model-path matchers now apply across local runtime, distributed-host runtime, and worker-runtime selection, not just local runtime
+- plugin initialization now carries host launch hints such as resolved `bin_dir` and preferred binary flavor, so managed inference plugins can launch backend runtimes without rediscovering host policy on their own
+- this MLX sync branch now has a built-in plugin-managed llama provider scaffold that:
+  - declares a managed GGUF-backed inference endpoint
+  - serves `inference/ensure_endpoint`
+  - serves `inference/ensure_worker`
+  - serves `inference/prepare_moe_shard`
+  - registers into the runtime provider registry and overrides the built-in llama provider for GGUF local, distributed, and worker selection
 
 ## Sync Branches
 

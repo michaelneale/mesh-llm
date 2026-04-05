@@ -1,4 +1,6 @@
-use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, MLX_PLUGIN_ID};
+use super::{
+    PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, LLAMA_PLUGIN_ID, MLX_PLUGIN_ID,
+};
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
 use serde::Deserialize;
@@ -35,9 +37,11 @@ pub struct ExternalPluginSpec {
     pub args: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PluginHostMode {
     pub mesh_visibility: MeshVisibility,
+    pub bin_dir_hint: Option<PathBuf>,
+    pub binary_flavor_hint: Option<&'static str>,
 }
 
 pub fn config_path(override_path: Option<&Path>) -> Result<PathBuf> {
@@ -67,6 +71,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let mut names = BTreeMap::<String, ()>::new();
     let mut blackboard_enabled = true;
     let mut blobstore_enabled = true;
+    let mut llama_enabled = true;
     #[cfg(target_os = "macos")]
     let mut mlx_enabled = true;
     for entry in &config.plugins {
@@ -92,6 +97,16 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
                 );
             }
             blobstore_enabled = enabled;
+            continue;
+        }
+        if entry.name == LLAMA_PLUGIN_ID {
+            if entry.command.is_some() || !entry.args.is_empty() {
+                bail!(
+                    "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
+                    LLAMA_PLUGIN_ID
+                );
+            }
+            llama_enabled = enabled;
             continue;
         }
         #[cfg(target_os = "macos")]
@@ -125,6 +140,9 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     if blobstore_enabled {
         externals.push(blobstore_plugin_spec()?);
     }
+    if llama_enabled {
+        externals.push(llama_plugin_spec()?);
+    }
     #[cfg(target_os = "macos")]
     if mlx_enabled {
         externals.push(mlx_plugin_spec()?);
@@ -157,6 +175,18 @@ pub fn blobstore_plugin_spec() -> Result<ExternalPluginSpec> {
         name: BLOBSTORE_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), BLOBSTORE_PLUGIN_ID.into()],
+    })
+}
+
+pub fn llama_plugin_spec() -> Result<ExternalPluginSpec> {
+    let command = std::env::current_exe()
+        .context("Cannot determine mesh-llm executable path")?
+        .display()
+        .to_string();
+    Ok(ExternalPluginSpec {
+        name: LLAMA_PLUGIN_ID.to_string(),
+        command,
+        args: vec!["--plugin".into(), LLAMA_PLUGIN_ID.into()],
     })
 }
 

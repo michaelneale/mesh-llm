@@ -1253,6 +1253,8 @@ mod tests {
             &resolved_plugins,
             plugin::PluginHostMode {
                 mesh_visibility: MeshVisibility::Private,
+                bin_dir_hint: None,
+                binary_flavor_hint: None,
             },
             mesh_tx,
         )

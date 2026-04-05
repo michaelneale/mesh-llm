@@ -8,8 +8,7 @@ use super::{
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::{MeshVisibility, STARTUP_DISABLED_ERROR_CODE};
 use rmcp::model::{
-    CallToolResult as McpCallToolResult, InitializeRequestParams, ListToolsResult,
-    PaginatedRequestParams, ServerInfo,
+    CallToolResult as McpCallToolResult, ListToolsResult, PaginatedRequestParams, ServerInfo,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -209,7 +208,14 @@ impl ExternalPlugin {
 
         let (_, outbound_tx, pending) = self.runtime_handles().await?;
         let init_result: Result<proto::InitializeResponse> = async {
-            let host_info_json = serde_json::to_string(&InitializeRequestParams::default())?;
+            let host_info_json = serde_json::to_string(&mesh_llm_plugin::HostLaunchInfo {
+                bin_dir: self
+                    .host_mode
+                    .bin_dir_hint
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                binary_flavor: self.host_mode.binary_flavor_hint.map(str::to_string),
+            })?;
             let response = self
                 .request_once(
                     generation,

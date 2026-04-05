@@ -32,6 +32,7 @@ use mesh_llm_plugin::MeshVisibility;
 
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
+pub const LLAMA_PLUGIN_ID: &str = "llama";
 pub const MLX_PLUGIN_ID: &str = "mlx";
 pub(crate) const PROTOCOL_VERSION: u32 = mesh_llm_plugin::PROTOCOL_VERSION;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -164,7 +165,7 @@ impl PluginManager {
             let plugin = match ExternalPlugin::spawn(
                 spec,
                 instance_id.clone(),
-                host_mode,
+                host_mode.clone(),
                 mesh_tx.clone(),
                 rpc_bridge.clone(),
             )
@@ -332,6 +333,8 @@ impl PluginManager {
             endpoint_id: endpoint_id.to_string(),
             model_path: request.model_path.display().to_string(),
             requested_port: Some(request.listen_port),
+            model_bytes: request.model_bytes,
+            local_vram_bytes: request.local_vram_bytes,
             ctx_size_override: request.ctx_size_override,
             worker_tunnel_ports: request.worker_tunnel_ports.clone(),
             tensor_split: request.tensor_split.clone(),
@@ -569,6 +572,7 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
     match name.as_str() {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
+        LLAMA_PLUGIN_ID => crate::plugins::llama::run_plugin(name).await,
         #[cfg(target_os = "macos")]
         MLX_PLUGIN_ID => crate::plugins::mlx::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
@@ -583,6 +587,8 @@ mod tests {
     fn private_host_mode() -> PluginHostMode {
         PluginHostMode {
             mesh_visibility: MeshVisibility::Private,
+            bin_dir_hint: None,
+            binary_flavor_hint: None,
         }
     }
 
@@ -590,13 +596,14 @@ mod tests {
     fn resolves_default_blackboard_plugin() {
         let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, LLAMA_PLUGIN_ID);
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals[2].name, MLX_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, MLX_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -613,12 +620,13 @@ mod tests {
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals.len(), 2);
         assert_eq!(resolved.externals[0].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, LLAMA_PLUGIN_ID);
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals[1].name, MLX_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, MLX_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -635,12 +643,36 @@ mod tests {
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved.externals.len(), 1);
+        assert_eq!(resolved.externals.len(), 2);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, LLAMA_PLUGIN_ID);
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals[1].name, MLX_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, MLX_PLUGIN_ID);
+        assert!(resolved.inactive.is_empty());
+    }
+
+    #[test]
+    fn llama_can_be_disabled() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: LLAMA_PLUGIN_ID.into(),
+                enabled: Some(false),
+                command: None,
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolved.externals.len(), 3);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+        #[cfg(target_os = "macos")]
+        assert_eq!(resolved.externals[2].name, MLX_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -650,17 +682,20 @@ mod tests {
             &MeshConfig::default(),
             PluginHostMode {
                 mesh_visibility: MeshVisibility::Public,
+                bin_dir_hint: None,
+                binary_flavor_hint: None,
             },
         )
         .unwrap();
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved.externals.len(), 2);
+        assert_eq!(resolved.externals.len(), 3);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert_eq!(resolved.externals[1].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, LLAMA_PLUGIN_ID);
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals[2].name, MLX_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, MLX_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -677,14 +712,15 @@ mod tests {
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals.len(), 4);
+        assert_eq!(resolved.externals.len(), 5);
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals.len(), 4);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert_eq!(resolved.externals[1].name, "demo");
         assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        assert_eq!(resolved.externals[3].name, LLAMA_PLUGIN_ID);
         #[cfg(target_os = "macos")]
-        assert_eq!(resolved.externals[3].name, MLX_PLUGIN_ID);
+        assert_eq!(resolved.externals[4].name, MLX_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
     }
 
@@ -725,6 +761,8 @@ mod tests {
                         let request: mesh_llm_plugin::EnsureInferenceEndpointRequest =
                             serde_json::from_str(&params_json).unwrap();
                         assert_eq!(request.endpoint_id, "local-mlx");
+                        assert_eq!(request.model_bytes, 1);
+                        assert_eq!(request.local_vram_bytes, 1);
                         if !request.worker_tunnel_ports.is_empty() {
                             assert_eq!(request.worker_tunnel_ports, vec![7001, 7002]);
                             assert_eq!(request.tensor_split.as_deref(), Some("3,5"));
@@ -931,6 +969,167 @@ mod tests {
         plugin_manager
             .prepare_managed_moe_shard(
                 MLX_PLUGIN_ID,
+                std::path::Path::new("/tmp/model.gguf"),
+                std::path::Path::new("/tmp/node-0.gguf"),
+                &crate::inference::moe::NodeAssignment {
+                    experts: vec![1, 2, 5],
+                    n_shared: 1,
+                    n_unique: 2,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    struct LlamaEndpointTestBridge;
+
+    impl PluginRpcBridge for LlamaEndpointTestBridge {
+        fn handle_request(
+            &self,
+            plugin_name: String,
+            method: String,
+            params_json: String,
+        ) -> BridgeFuture<Result<RpcResult, proto::ErrorResponse>> {
+            Box::pin(async move {
+                assert_eq!(plugin_name, LLAMA_PLUGIN_ID);
+                match method.as_str() {
+                    "inference/list_endpoints" => Ok(RpcResult {
+                        result_json: serde_json::to_string(&vec![
+                            mesh_llm_plugin::InferenceEndpointDescriptor {
+                                endpoint_id: "local-llama".into(),
+                                address: None,
+                                supports_streaming: true,
+                                local_model_matcher:
+                                    mesh_llm_plugin::InferenceLocalModelMatcher::GgufModelFile,
+                                provider_capabilities:
+                                    mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor {
+                                        supports_local_runtime: true,
+                                        supports_distributed_host_runtime: true,
+                                        requires_worker_runtime: true,
+                                        supports_moe_shard_runtime: true,
+                                    },
+                            },
+                        ])
+                        .unwrap(),
+                    }),
+                    "inference/ensure_endpoint" => {
+                        let request: mesh_llm_plugin::EnsureInferenceEndpointRequest =
+                            serde_json::from_str(&params_json).unwrap();
+                        assert_eq!(request.endpoint_id, "local-llama");
+                        assert_eq!(request.model_bytes, 42);
+                        assert_eq!(request.local_vram_bytes, 99);
+                        Ok(RpcResult {
+                            result_json: serde_json::to_string(
+                                &mesh_llm_plugin::EnsureInferenceEndpointResponse {
+                                    address: format!(
+                                        "http://127.0.0.1:{}",
+                                        request.requested_port.unwrap_or(8125)
+                                    ),
+                                    backend_label: "llama".into(),
+                                    context_length: 16384,
+                                },
+                            )
+                            .unwrap(),
+                        })
+                    }
+                    "inference/ensure_worker" => Ok(RpcResult {
+                        result_json: serde_json::to_string(
+                            &mesh_llm_plugin::EnsureInferenceWorkerResponse { port: 19092 },
+                        )
+                        .unwrap(),
+                    }),
+                    "inference/prepare_moe_shard" => Ok(RpcResult {
+                        result_json: serde_json::to_string(
+                            &mesh_llm_plugin::PrepareMoeShardResponse::default(),
+                        )
+                        .unwrap(),
+                    }),
+                    _ => Err(proto::ErrorResponse {
+                        code: ErrorCode::METHOD_NOT_FOUND.0,
+                        message: format!("Unsupported plugin method '{method}'"),
+                        data_json: String::new(),
+                    }),
+                }
+            })
+        }
+
+        fn handle_notification(
+            &self,
+            _plugin_name: String,
+            _method: String,
+            _params_json: String,
+        ) -> BridgeFuture<()> {
+            Box::pin(async move {})
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_inference_endpoints_include_llama_when_available() {
+        let plugin_manager =
+            PluginManager::for_test_bridge(&[LLAMA_PLUGIN_ID], Arc::new(LlamaEndpointTestBridge));
+        let endpoints = plugin_manager.managed_inference_endpoints().await.unwrap();
+        assert_eq!(
+            endpoints,
+            vec![ManagedInferenceEndpoint {
+                plugin_name: LLAMA_PLUGIN_ID.into(),
+                endpoint_id: "local-llama".into(),
+                address: None,
+                supports_streaming: true,
+                local_model_matcher: mesh_llm_plugin::InferenceLocalModelMatcher::GgufModelFile,
+                provider_capabilities: mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor {
+                    supports_local_runtime: true,
+                    supports_distributed_host_runtime: true,
+                    requires_worker_runtime: true,
+                    supports_moe_shard_runtime: true,
+                },
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_managed_inference_endpoint_routes_through_llama_plugin_bridge() {
+        let plugin_manager =
+            PluginManager::for_test_bridge(&[LLAMA_PLUGIN_ID], Arc::new(LlamaEndpointTestBridge));
+        let response = plugin_manager
+            .ensure_managed_inference_endpoint(
+                LLAMA_PLUGIN_ID,
+                "local-llama",
+                &crate::inference::provider::InferenceEndpointRequest::local(
+                    "/tmp/model.gguf",
+                    8125,
+                    42,
+                    99,
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.address, "http://127.0.0.1:8125");
+        assert_eq!(response.backend_label, "llama");
+        assert_eq!(response.context_length, 16384);
+    }
+
+    #[tokio::test]
+    async fn ensure_managed_inference_worker_routes_through_llama_plugin_bridge() {
+        let plugin_manager =
+            PluginManager::for_test_bridge(&[LLAMA_PLUGIN_ID], Arc::new(LlamaEndpointTestBridge));
+        let response = plugin_manager
+            .ensure_managed_inference_worker(
+                LLAMA_PLUGIN_ID,
+                Some(std::path::Path::new("/tmp/model.gguf")),
+                Some("cuda:0"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.port, 19092);
+    }
+
+    #[tokio::test]
+    async fn prepare_managed_moe_shard_routes_through_llama_plugin_bridge() {
+        let plugin_manager =
+            PluginManager::for_test_bridge(&[LLAMA_PLUGIN_ID], Arc::new(LlamaEndpointTestBridge));
+        plugin_manager
+            .prepare_managed_moe_shard(
+                LLAMA_PLUGIN_ID,
                 std::path::Path::new("/tmp/model.gguf"),
                 std::path::Path::new("/tmp/node-0.gguf"),
                 &crate::inference::moe::NodeAssignment {

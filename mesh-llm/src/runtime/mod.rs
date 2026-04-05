@@ -806,6 +806,8 @@ fn plugin_host_mode(cli: &Cli) -> plugin::PluginHostMode {
         } else {
             mesh_llm_plugin::MeshVisibility::Private
         },
+        bin_dir_hint: cli.bin_dir.clone().or_else(|| detect_bin_dir().ok()),
+        binary_flavor_hint: cli.llama_flavor.map(|flavor| flavor.suffix()),
     }
 }
 
@@ -1974,7 +1976,7 @@ fn has_bundled_llama_bins(dir: &Path) -> bool {
             .any(|name| dir.join(name).exists())
 }
 
-fn detect_bin_dir() -> Result<PathBuf> {
+pub(crate) fn detect_bin_dir() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("Failed to determine own binary path")?;
     let dir = exe.parent().context("Binary has no parent directory")?;
 
@@ -2070,10 +2072,62 @@ fn build_serving_list(resolved_models: &[PathBuf], model_name: &str) -> Vec<Stri
 mod tests {
     use super::*;
     use hf_hub::{Cache, Repo, RepoType};
+    use rmcp::model::ErrorCode;
     use serial_test::serial;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
+
+    struct LlamaManagedEndpointBridge;
+
+    impl plugin::PluginRpcBridge for LlamaManagedEndpointBridge {
+        fn handle_request(
+            &self,
+            plugin_name: String,
+            method: String,
+            _params_json: String,
+        ) -> plugin::BridgeFuture<Result<plugin::RpcResult, plugin::proto::ErrorResponse>> {
+            Box::pin(async move {
+                assert_eq!(plugin_name, plugin::LLAMA_PLUGIN_ID);
+                match method.as_str() {
+                    "inference/list_endpoints" => Ok(plugin::RpcResult {
+                        result_json: serde_json::to_string(&vec![
+                            mesh_llm_plugin::InferenceEndpointDescriptor {
+                                endpoint_id: "local-llama".into(),
+                                address: None,
+                                supports_streaming: true,
+                                local_model_matcher:
+                                    mesh_llm_plugin::InferenceLocalModelMatcher::GgufModelFile,
+                                provider_capabilities:
+                                    mesh_llm_plugin::InferenceProviderCapabilitiesDescriptor {
+                                        supports_local_runtime: true,
+                                        supports_distributed_host_runtime: true,
+                                        requires_worker_runtime: true,
+                                        supports_moe_shard_runtime: true,
+                                    },
+                            },
+                        ])
+                        .unwrap(),
+                    }),
+                    _ => Err(plugin::proto::ErrorResponse {
+                        code: ErrorCode::METHOD_NOT_FOUND.0,
+                        message: format!("Unsupported plugin method '{method}'"),
+                        data_json: String::new(),
+                    }),
+                }
+            })
+        }
+
+        fn handle_notification(
+            &self,
+            _plugin_name: String,
+            _method: String,
+            _params_json: String,
+        ) -> plugin::BridgeFuture<()> {
+            Box::pin(async move {})
+        }
+    }
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
         if let Some(value) = value {
@@ -2081,6 +2135,45 @@ mod tests {
         } else {
             std::env::remove_var(key);
         }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn sync_plugin_managed_inference_providers_registers_llama_provider() {
+        let plugin_manager = plugin::PluginManager::for_test_bridge(
+            &[plugin::LLAMA_PLUGIN_ID],
+            Arc::new(LlamaManagedEndpointBridge),
+        );
+
+        provider::clear_registered_providers_for_tests();
+        sync_plugin_managed_inference_providers(&plugin_manager)
+            .await
+            .unwrap();
+
+        let root = std::env::temp_dir().join(format!(
+            "mesh-llm-runtime-sync-llama-{}.gguf",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&root);
+        std::fs::write(&root, b"gguf").unwrap();
+
+        let local = provider::select_local_endpoint_provider(
+            &provider::InferenceEndpointRequest::local(&root, 8080, 1, 1),
+        );
+        assert_eq!(local.provider_id(), "plugin.llama.local-llama");
+
+        let distributed = provider::select_distributed_endpoint_provider(
+            &provider::InferenceEndpointRequest::distributed_host(&root, 8123, vec![7001], 1, 1),
+        );
+        assert_eq!(distributed.provider_id(), "plugin.llama.local-llama");
+
+        let worker = provider::select_worker_provider(
+            &provider::InferenceWorkerRequest::default().with_model_path(Some(&root)),
+        );
+        assert_eq!(worker.provider_id(), "plugin.llama.local-llama");
+
+        provider::clear_registered_providers_for_tests();
+        let _ = std::fs::remove_file(&root);
     }
 
     #[tokio::test]

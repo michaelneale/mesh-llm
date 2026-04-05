@@ -58,6 +58,12 @@ pub struct PluginInitializeRequest {
     pub mesh_visibility: MeshVisibility,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct HostLaunchInfo {
+    pub bin_dir: Option<String>,
+    pub binary_flavor: Option<String>,
+}
+
 impl From<proto::InitializeRequest> for PluginInitializeRequest {
     fn from(value: proto::InitializeRequest) -> Self {
         Self {
@@ -74,6 +80,8 @@ pub struct EnsureInferenceEndpointRequest {
     pub endpoint_id: String,
     pub model_path: String,
     pub requested_port: Option<u16>,
+    pub model_bytes: u64,
+    pub local_vram_bytes: u64,
     pub ctx_size_override: Option<u32>,
     #[serde(default)]
     pub worker_tunnel_ports: Vec<u16>,
@@ -174,6 +182,13 @@ impl PluginMetadata {
     pub fn with_startup_policy(mut self, startup_policy: PluginStartupPolicy) -> Self {
         self.startup_policy = startup_policy;
         self
+    }
+}
+
+impl PluginInitializeRequest {
+    pub fn host_launch_info(&self) -> Result<HostLaunchInfo> {
+        serde_json::from_str(&self.host_info_json)
+            .map_err(|err| anyhow::anyhow!("Invalid host launch info: {err}"))
     }
 }
 
