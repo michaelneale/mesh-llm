@@ -363,17 +363,17 @@ where
     let mut explicit_surface = None;
 
     match original.get(1).and_then(|arg| arg.to_str()) {
-        Some("serve") => {
-            let next_is_flag = original
-                .get(2)
-                .and_then(|arg| arg.to_str())
-                .map(|arg| arg.starts_with('-'))
-                .unwrap_or(true);
-            if next_is_flag {
+        Some("serve") => match original.get(2).and_then(|arg| arg.to_str()) {
+            Some(arg) if arg.starts_with('-') => {
                 normalized.remove(1);
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
-        }
+            None => {
+                normalized[1] = OsString::from("--help");
+                explicit_surface = Some(RuntimeSurface::Serve);
+            }
+            _ => {}
+        },
         Some("client") => {
             normalized.remove(1);
             normalized.insert(1, OsString::from("--client"));
@@ -486,6 +486,20 @@ mod tests {
         assert_eq!(
             normalized.normalized,
             vec!["mesh-llm", "--auto", "--model", "Qwen3-8B-Q4_K_M"]
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn normalize_runtime_surface_args_bare_serve_rewrites_to_help() {
+        let normalized = normalize_runtime_surface_args(["mesh-llm", "serve"]);
+
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+        assert_eq!(
+            normalized.normalized,
+            vec!["mesh-llm", "--help"]
                 .into_iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>()

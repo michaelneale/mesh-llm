@@ -41,6 +41,7 @@ pub enum Metric {
     GpuCount,
     Hostname,
     IsSoc,
+    GpuFacts,
 }
 
 pub trait Collector {
@@ -701,12 +702,25 @@ fn detect_nvidia_identities() -> Vec<(Option<String>, Option<String>)> {
     Vec::new()
 }
 
+fn inferred_gpu_name_count(name: Option<&str>) -> usize {
+    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return 0;
+    };
+
+    name.split_once('×')
+        .or_else(|| name.split_once('x'))
+        .or_else(|| name.split_once('X'))
+        .and_then(|(count, _)| count.trim().parse::<usize>().ok())
+        .filter(|&count| count > 0)
+        .unwrap_or(1)
+}
+
 fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
     let expected_count = survey
         .gpu_vram
         .len()
         .max(usize::from(survey.gpu_count))
-        .max(if survey.gpu_name.is_some() { 1 } else { 0 });
+        .max(inferred_gpu_name_count(survey.gpu_name.as_deref()));
     let mut names = expand_gpu_names(survey.gpu_name.as_deref(), expected_count);
     if names.is_empty() && expected_count > 0 {
         names = (0..expected_count)
@@ -714,8 +728,13 @@ fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
             .collect();
     }
 
+    let needs_nvidia_identities = metrics.contains(&Metric::GpuName);
     #[allow(unused_mut)]
-    let mut nvidia_identities = detect_nvidia_identities();
+    let mut nvidia_identities = if needs_nvidia_identities {
+        detect_nvidia_identities()
+    } else {
+        Vec::new()
+    };
     let count = expected_count.max(names.len());
     survey.gpus = (0..count)
         .map(|index| {
@@ -774,7 +793,9 @@ pub fn query(metrics: &[Metric]) -> HardwareSurvey {
     if metrics.contains(&Metric::Hostname) {
         survey.hostname = detect_hostname();
     }
-    hydrate_gpu_facts(&mut survey, metrics);
+    if metrics.contains(&Metric::GpuFacts) {
+        hydrate_gpu_facts(&mut survey, metrics);
+    }
     survey
 }
 
@@ -785,6 +806,7 @@ pub fn survey() -> HardwareSurvey {
         Metric::GpuCount,
         Metric::Hostname,
         Metric::IsSoc,
+        Metric::GpuFacts,
     ])
 }
 

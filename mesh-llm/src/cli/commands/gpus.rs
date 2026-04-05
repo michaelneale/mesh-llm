@@ -79,7 +79,7 @@ fn format_vram(bytes: u64) -> String {
     if bytes == 0 {
         "unknown".to_string()
     } else {
-        format!("{:.1} GiB", bytes as f64 / 1024.0_f64.powi(3))
+        format!("{:.1} GB", bytes as f64 / 1e9)
     }
 }
 
@@ -97,8 +97,8 @@ mod tests {
     }
 
     #[test]
-    fn test_format_vram_gib() {
-        assert_eq!(format_vram(24 * 1024 * 1024 * 1024), "24.0 GiB");
+    fn test_format_vram_gb() {
+        assert_eq!(format_vram(24_000_000_000), "24.0 GB");
     }
 
     #[test]
