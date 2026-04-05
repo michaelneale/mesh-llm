@@ -476,8 +476,8 @@ impl InferenceProviderSelection {
         self
     }
 
-    pub fn moe_ranking_provider(&self) -> Option<&dyn MoeRankingProvider> {
-        self.moe_ranking_provider.as_deref()
+    fn cloned_moe_ranking_provider(&self) -> Option<Arc<dyn MoeRankingProvider>> {
+        self.moe_ranking_provider.clone()
     }
 }
 
@@ -497,6 +497,74 @@ impl PartialEq for InferenceProviderSelection {
 }
 
 impl Eq for InferenceProviderSelection {}
+
+#[derive(Clone)]
+pub struct MoeRankingProviderSelection {
+    provider_id: Arc<str>,
+    backend_label: Arc<str>,
+    ranking_provider: Arc<dyn MoeRankingProvider>,
+}
+
+impl MoeRankingProviderSelection {
+    pub fn new(
+        provider_id: impl Into<Arc<str>>,
+        backend_label: impl Into<Arc<str>>,
+        ranking_provider: Arc<dyn MoeRankingProvider>,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            backend_label: backend_label.into(),
+            ranking_provider,
+        }
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn backend_label(&self) -> &str {
+        &self.backend_label
+    }
+
+    pub fn ranking_provider(&self) -> &dyn MoeRankingProvider {
+        self.ranking_provider.as_ref()
+    }
+}
+
+impl std::fmt::Debug for MoeRankingProviderSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MoeRankingProviderSelection")
+            .field("provider_id", &self.provider_id())
+            .field("backend_label", &self.backend_label())
+            .finish()
+    }
+}
+
+impl PartialEq for MoeRankingProviderSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.provider_id() == other.provider_id()
+    }
+}
+
+impl Eq for MoeRankingProviderSelection {}
+
+#[derive(Clone, Debug)]
+pub struct MoeRankingProviderDescriptor {
+    selection: MoeRankingProviderSelection,
+    matches_model: fn(&Path) -> bool,
+}
+
+impl MoeRankingProviderDescriptor {
+    pub const fn new(
+        selection: MoeRankingProviderSelection,
+        matches_model: fn(&Path) -> bool,
+    ) -> Self {
+        Self {
+            selection,
+            matches_model,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct InferenceProviderRegistry {
@@ -1316,6 +1384,45 @@ impl PluginInferenceProviderRegistration {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct PluginMoeRankingProviderRegistration {
+    provider_id: String,
+    backend_label: String,
+    matches_model: fn(&Path) -> bool,
+}
+
+impl PluginMoeRankingProviderRegistration {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn new(provider_id: impl Into<String>, backend_label: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            backend_label: backend_label.into(),
+            matches_model: never_match_model_for_moe_ranking,
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_model_matcher(mut self, matches_model: fn(&Path) -> bool) -> Self {
+        self.matches_model = matches_model;
+        self
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn into_descriptor(
+        self,
+        ranking_provider: Arc<dyn MoeRankingProvider>,
+    ) -> MoeRankingProviderDescriptor {
+        MoeRankingProviderDescriptor::new(
+            MoeRankingProviderSelection::new(
+                self.provider_id,
+                self.backend_label,
+                ranking_provider,
+            ),
+            self.matches_model,
+        )
+    }
+}
+
 fn builtin_llama_selection() -> InferenceProviderSelection {
     InferenceProviderSelection::new(
         "builtin.llama",
@@ -1353,6 +1460,14 @@ fn registered_provider_descriptors() -> &'static RwLock<Vec<InferenceProviderDes
     REGISTERED_PROVIDER_DESCRIPTORS.get_or_init(|| RwLock::new(Vec::new()))
 }
 
+fn registered_moe_ranking_provider_descriptors(
+) -> &'static RwLock<Vec<MoeRankingProviderDescriptor>> {
+    static REGISTERED_MOE_RANKING_PROVIDER_DESCRIPTORS: OnceLock<
+        RwLock<Vec<MoeRankingProviderDescriptor>>,
+    > = OnceLock::new();
+    REGISTERED_MOE_RANKING_PROVIDER_DESCRIPTORS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn register_provider(descriptor: InferenceProviderDescriptor) {
     provider_registry().register_provider(descriptor);
@@ -1364,6 +1479,17 @@ pub fn register_plugin_provider(
     provider: Arc<dyn InferenceProvider>,
 ) {
     register_provider(registration.into_descriptor(provider));
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn register_plugin_moe_ranking_provider(
+    registration: PluginMoeRankingProviderRegistration,
+    ranking_provider: Arc<dyn MoeRankingProvider>,
+) {
+    registered_moe_ranking_provider_descriptors()
+        .write()
+        .expect("registered moe ranking provider lock poisoned")
+        .push(registration.into_descriptor(ranking_provider));
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1381,11 +1507,20 @@ const fn never_match_worker_runtime(_request: &InferenceWorkerRequest) -> bool {
     false
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+const fn never_match_model_for_moe_ranking(_model_path: &Path) -> bool {
+    false
+}
+
 #[cfg(test)]
 fn clear_registered_providers_for_tests() {
     registered_provider_descriptors()
         .write()
         .expect("registered inference provider lock poisoned")
+        .clear();
+    registered_moe_ranking_provider_descriptors()
+        .write()
+        .expect("registered moe ranking provider lock poisoned")
         .clear();
 }
 
@@ -1426,15 +1561,39 @@ pub fn primary_backend_label_for_model(
 pub fn select_moe_ranking_provider(
     model_path: &Path,
     preferred_provider_id: Option<&str>,
-) -> Option<InferenceProviderSelection> {
+) -> Option<MoeRankingProviderSelection> {
+    if let Some(preferred_provider_id) = preferred_provider_id {
+        if let Some(selection) = registered_moe_ranking_provider_descriptors()
+            .read()
+            .expect("registered moe ranking provider lock poisoned")
+            .iter()
+            .find(|descriptor| descriptor.selection.provider_id() == preferred_provider_id)
+            .map(|descriptor| descriptor.selection.clone())
+        {
+            return Some(selection);
+        }
+    } else if let Some(selection) = registered_moe_ranking_provider_descriptors()
+        .read()
+        .expect("registered moe ranking provider lock poisoned")
+        .iter()
+        .find(|descriptor| (descriptor.matches_model)(model_path))
+        .map(|descriptor| descriptor.selection.clone())
+    {
+        return Some(selection);
+    }
+
     let request = InferenceEndpointRequest::local(model_path, 0, 0, 0)
         .with_preferred_provider_id(preferred_provider_id);
     let selection = select_local_endpoint_provider(&request);
-    if selection.moe_ranking_provider().is_some() {
-        Some(selection)
-    } else {
-        None
-    }
+    selection
+        .cloned_moe_ranking_provider()
+        .map(|ranking_provider| {
+            MoeRankingProviderSelection::new(
+                selection.provider_id().to_string(),
+                selection.backend_label().to_string(),
+                ranking_provider,
+            )
+        })
 }
 
 pub fn detect_moe_for_model(
@@ -1443,7 +1602,7 @@ pub fn detect_moe_for_model(
 ) -> Option<crate::models::gguf::GgufMoeInfo> {
     let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
     let request = MoeDetectionRequest::new(model_path);
-    selection.moe_ranking_provider()?.detect_moe(&request)
+    selection.ranking_provider().detect_moe(&request)
 }
 
 pub fn load_cached_moe_ranking_for_model(
@@ -1452,9 +1611,7 @@ pub fn load_cached_moe_ranking_for_model(
 ) -> Option<Vec<u32>> {
     let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
     let request = CachedRankingRequest::new(model_path);
-    selection
-        .moe_ranking_provider()?
-        .load_cached_ranking(&request)
+    selection.ranking_provider().load_cached_ranking(&request)
 }
 
 pub fn best_shared_moe_ranking_artifact_for_model(
@@ -1463,7 +1620,7 @@ pub fn best_shared_moe_ranking_artifact_for_model(
 ) -> Option<crate::inference::moe::SharedRankingArtifact> {
     let selection = select_moe_ranking_provider(model_path, preferred_provider_id)?;
     selection
-        .moe_ranking_provider()?
+        .ranking_provider()
         .best_shared_ranking_artifact(&SharedRankingArtifactLookupRequest::new(model_path))
 }
 
@@ -1479,13 +1636,9 @@ pub fn import_shared_moe_ranking_artifact_for_model(
                 model_path.display()
             )
         })?;
-    selection
-        .moe_ranking_provider()
-        .expect("selection should include a MoE ranking provider")
-        .import_shared_ranking_artifact(&SharedRankingArtifactImportRequest::new(
-            model_path,
-            artifact.clone(),
-        ))
+    selection.ranking_provider().import_shared_ranking_artifact(
+        &SharedRankingArtifactImportRequest::new(model_path, artifact.clone()),
+    )
 }
 
 pub fn ensure_full_analyze_ranking_for_model(
@@ -1505,8 +1658,7 @@ pub fn ensure_full_analyze_ranking_for_model(
             )
         })?;
     selection
-        .moe_ranking_provider()
-        .expect("selection should include a MoE ranking provider")
+        .ranking_provider()
         .ensure_full_analyze_ranking(&request)
 }
 
@@ -1531,8 +1683,7 @@ pub fn ensure_micro_analyze_ranking_for_model(
             )
         })?;
     selection
-        .moe_ranking_provider()
-        .expect("selection should include a MoE ranking provider")
+        .ranking_provider()
         .ensure_micro_analyze_ranking(&request)
 }
 
@@ -1551,8 +1702,7 @@ pub fn resolve_heuristic_ranking_for_model(
             )
         })?;
     selection
-        .moe_ranking_provider()
-        .expect("selection should include a MoE ranking provider")
+        .ranking_provider()
         .resolve_heuristic_ranking(&request)
 }
 
@@ -2077,6 +2227,58 @@ mod tests {
         assert_eq!(
             artifact.origin,
             crate::inference::moe::SharedRankingOrigin::PeerImport
+        );
+
+        clear_registered_providers_for_tests();
+    }
+
+    #[test]
+    fn standalone_moe_ranking_provider_can_be_registered_without_execution_provider() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
+        clear_registered_providers_for_tests();
+        register_plugin_moe_ranking_provider(
+            PluginMoeRankingProviderRegistration::new("plugin.rank-only", "plugin-rank-only"),
+            Arc::new(TestRankingProvider),
+        );
+
+        let selection =
+            select_moe_ranking_provider(Path::new("/tmp/model.gguf"), Some("plugin.rank-only"))
+                .expect("standalone ranking provider");
+        assert_eq!(selection.provider_id(), "plugin.rank-only");
+        assert_eq!(selection.backend_label(), "plugin-rank-only");
+        assert_eq!(
+            load_cached_moe_ranking_for_model(
+                Path::new("/tmp/model.gguf"),
+                Some("plugin.rank-only")
+            ),
+            Some(vec![9, 4, 1])
+        );
+
+        clear_registered_providers_for_tests();
+    }
+
+    #[test]
+    fn standalone_moe_ranking_provider_matcher_can_select_without_preferred_id() {
+        let _guard = provider_registry_test_lock()
+            .lock()
+            .expect("provider registry test lock poisoned");
+        clear_registered_providers_for_tests();
+        register_plugin_moe_ranking_provider(
+            PluginMoeRankingProviderRegistration::new("plugin.rank-match", "plugin-rank-match")
+                .with_model_matcher(|model_path| {
+                    model_path.extension().is_some_and(|ext| ext == "gguf")
+                }),
+            Arc::new(TestRankingProvider),
+        );
+
+        let selection = select_moe_ranking_provider(Path::new("/tmp/model.gguf"), None)
+            .expect("matcher-based ranking provider");
+        assert_eq!(selection.provider_id(), "plugin.rank-match");
+        assert_eq!(
+            load_cached_moe_ranking_for_model(Path::new("/tmp/model.gguf"), None),
+            Some(vec![9, 4, 1])
         );
 
         clear_registered_providers_for_tests();
