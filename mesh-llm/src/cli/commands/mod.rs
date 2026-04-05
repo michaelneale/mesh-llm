@@ -95,7 +95,8 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
                 owner_key,
                 force,
                 no_passphrase,
-            } => auth::run_init(owner_key.clone(), *force, *no_passphrase),
+                keychain,
+            } => auth::run_init(owner_key.clone(), *force, *no_passphrase, *keychain),
             AuthCommand::Status { owner_key } => auth::run_status(owner_key.clone()),
         },
     }?;

@@ -30,6 +30,7 @@ argon2 = "0.5"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 rpassword = "5"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 chrono = { version = "0.4", features = ["serde"] }
 httparse = "1"
 tokio-stream = "0.1"
