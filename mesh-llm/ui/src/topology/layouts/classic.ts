@@ -118,19 +118,19 @@ export function layoutTopologyNodesClassic(
     }
 
     topRows.forEach((row, index) => {
-      const distanceFromCenter =
-        smallMeshBandOffset + (topRows.length - index - 1) * smallMeshRowStep;
+      const distanceFromCenter = smallMeshBandOffset + index * smallMeshRowStep;
       placeRow(
         row.nodes,
         row.bucket,
-        -distanceFromCenter,
+        distanceFromCenter,
         smallMeshHorizontalSpacing,
         positioned,
       );
     });
 
     bottomRows.forEach((row, index) => {
-      const distanceFromCenter = smallMeshBandOffset + index * smallMeshRowStep;
+      const distanceFromCenter =
+        smallMeshBandOffset + (topRows.length + index) * smallMeshRowStep;
       placeRow(
         row.nodes,
         row.bucket,
@@ -157,7 +157,7 @@ export function layoutTopologyNodesClassic(
 
   if (peerCount <= 10) {
     for (let i = 0; i < peerCount; i += 1) {
-      const angle = -Math.PI / 2 + (2 * Math.PI * i) / peerCount;
+      const angle = (Math.PI * (i + 1)) / (peerCount + 1);
       const node = all[i];
       positioned.push({
         ...node,

@@ -3857,6 +3857,8 @@ function DashboardPage({
   );
   const [isMeshOverviewFullscreen, setIsMeshOverviewFullscreen] =
     useState(false);
+  const [selectedTopologyNodeId, setSelectedTopologyNodeId] =
+    useState<string>("");
   const [detailPanelStack, setDetailPanelStack] = useState<DetailPanelEntry[]>(
     [],
   );
@@ -4214,6 +4216,7 @@ function DashboardPage({
                   layoutMode={meshTopologyLayoutMode}
                   themeMode={themeMode}
                   onOpenNode={openNodeDetail}
+                  highlightedNodeId={selectedTopologyNodeId}
                   fullscreen={false}
                   heightClass="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]"
                 />
@@ -4374,13 +4377,32 @@ function DashboardPage({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {peerRows.map((peer) => (
-                      <TableRow key={peer.id}>
+                     {peerRows.map((peer) => (
+                      <TableRow
+                        key={peer.id}
+                        data-id={peer.role !== "Client" ? peer.id : undefined}
+                        className={cn(
+                          peer.role !== "Client" && "cursor-pointer",
+                          peer.id === selectedTopologyNodeId &&
+                            "bg-muted/50 hover:bg-muted/60",
+                        )}
+                        onClick={
+                          peer.role !== "Client"
+                            ? () => setSelectedTopologyNodeId(peer.id)
+                            : undefined
+                        }
+                      >
                         <TableCell className="font-mono text-xs">
                           <button
                             type="button"
                             className="text-left underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
-                            onClick={() => openNodeDetail(peer.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (peer.role !== "Client") {
+                                setSelectedTopologyNodeId(peer.id);
+                              }
+                              openNodeDetail(peer.id);
+                            }}
                           >
                             {peer.id}
                           </button>
@@ -4448,6 +4470,7 @@ function DashboardPage({
                       layoutMode={meshTopologyLayoutMode}
                       themeMode={themeMode}
                       onOpenNode={openNodeDetail}
+                      highlightedNodeId={selectedTopologyNodeId}
                       fullscreen
                       heightClass="min-h-[420px]"
                       containerStyle={{
@@ -4465,7 +4488,7 @@ function DashboardPage({
         : null}
 
       <Sheet open={detailPanelStack.length > 0} onOpenChange={(open) => !open && closeDetailPanel()}>
-        <SheetContent side="right" className="w-full overflow-y-auto border-l bg-background/95 p-0 backdrop-blur sm:max-w-2xl">
+        <SheetContent side="right" className="w-full overflow-y-auto border-l bg-background/95 p-0 backdrop-blur sm:max-w-2xl" onOpenAutoFocus={(e) => e.preventDefault()}>
           {activeDetail?.kind === "node" && activeNode ? (
             <NodeSidebar
               node={activeNode}
@@ -4632,7 +4655,6 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
   const dotClass = isCenter
     ? "bg-primary border-primary"
     : "bg-muted border-border";
-  const dotCenterY = 22;
   const baseHandleStyle = {
     opacity: 0,
     width: 1,
@@ -4640,27 +4662,21 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
     border: 0,
     pointerEvents: "none" as const,
   };
-  const targetHandleStyle = isHorizontal
-    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
-    : { ...baseHandleStyle, left: "50%", top: dotCenterY, transform: "translate(-50%, -50%)" };
-  const sourceHandleStyle = isHorizontal
-    ? { ...baseHandleStyle, top: dotCenterY, transform: "translateY(-50%)" }
-    : { ...baseHandleStyle, left: "50%", bottom: dotCenterY, top: "auto", transform: "translate(-50%, 50%)" };
 
   return (
     <div className="relative w-[246px] pt-2">
-      <Handle
-        type="target"
-        position={isHorizontal ? Position.Left : Position.Top}
-        style={targetHandleStyle}
-      />
-      <Handle
-        type="source"
-        position={isHorizontal ? Position.Right : Position.Bottom}
-        style={sourceHandleStyle}
-      />
-
-      <div className={cn("mx-auto h-7 w-7 rounded-full border-2", dotClass)} />
+      <div className={cn("relative mx-auto h-7 w-7 rounded-full border-2", dotClass)}>
+        <Handle
+          type="target"
+          position={isHorizontal ? Position.Left : Position.Top}
+          style={baseHandleStyle}
+        />
+        <Handle
+          type="source"
+          position={isHorizontal ? Position.Right : Position.Bottom}
+          style={baseHandleStyle}
+        />
+      </div>
       <div className="mt-1 flex items-center justify-center gap-1 text-[10px] leading-3 text-foreground">
         <span className="break-all">{data.node.id}</span>
         {data.node.self ? (
@@ -4853,6 +4869,7 @@ function MeshTopologyDiagram({
   layoutMode,
   themeMode,
   onOpenNode,
+  highlightedNodeId,
   fullscreen = false,
   heightClass,
   containerStyle,
@@ -4863,6 +4880,7 @@ function MeshTopologyDiagram({
   layoutMode: TopologyLayoutMode;
   themeMode: ThemeMode;
   onOpenNode?: (nodeId: string) => void;
+  highlightedNodeId?: string;
   fullscreen?: boolean;
   heightClass?: string;
   containerStyle?: CSSProperties;
@@ -4882,6 +4900,7 @@ function MeshTopologyDiagram({
       layoutMode={layoutMode}
       themeMode={themeMode}
       onOpenNode={onOpenNode}
+      highlightedNodeId={highlightedNodeId}
       fullscreen={fullscreen}
       heightClass={heightClass}
       containerStyle={containerStyle}
@@ -4896,6 +4915,7 @@ function MeshTopologyFlow({
   layoutMode,
   themeMode,
   onOpenNode,
+  highlightedNodeId,
   fullscreen,
   heightClass,
   containerStyle,
@@ -4906,6 +4926,7 @@ function MeshTopologyFlow({
   layoutMode: TopologyLayoutMode;
   themeMode: ThemeMode;
   onOpenNode?: (nodeId: string) => void;
+  highlightedNodeId?: string;
   fullscreen: boolean;
   heightClass?: string;
   containerStyle?: CSSProperties;
@@ -4983,6 +5004,12 @@ function MeshTopologyFlow({
       nodes.some((n) => n.id === prev) ? prev : center.id,
     );
   }, [nodes, center.id]);
+
+  useEffect(() => {
+    if (highlightedNodeId && nodes.some((n) => n.id === highlightedNodeId)) {
+      setSelectedNodeId(highlightedNodeId);
+    }
+  }, [highlightedNodeId, nodes]);
 
   const nodeInfoById = useMemo(() => {
     const out = new Map<string, TopologyNodeInfo>();
