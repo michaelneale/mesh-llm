@@ -258,10 +258,19 @@ impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
         }
-        validate_endpoint_id_length(self.node_id.len())?;
-        validate_config_hash_length(self.config_hash.len())?;
-        if self.config.is_none() {
-            return Err(ControlFrameError::MissingConfig);
+        // Error responses have empty node_id/config_hash/config — skip structural
+        // checks so callers can surface the actual error message.
+        let is_error = self
+            .error
+            .as_deref()
+            .map(|e| !e.is_empty())
+            .unwrap_or(false);
+        if !is_error {
+            validate_endpoint_id_length(self.node_id.len())?;
+            validate_config_hash_length(self.config_hash.len())?;
+            if self.config.is_none() {
+                return Err(ControlFrameError::MissingConfig);
+            }
         }
         Ok(())
     }
@@ -309,7 +318,11 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
         }
-        validate_config_hash_length(self.config_hash.len())?;
+        // Error responses (success=false) may have an empty config_hash;
+        // only enforce the length constraint on success responses.
+        if self.success || !self.config_hash.is_empty() {
+            validate_config_hash_length(self.config_hash.len())?;
+        }
         Ok(())
     }
 }
@@ -873,6 +886,103 @@ mod tests {
     }
 
     #[test]
+    fn config_snapshot_response_error_shape_passes_validation() {
+        // Error responses from handle_config_subscribe have empty node_id / config_hash
+        // and no config payload. Validation must pass so callers can surface the error.
+        let error_snapshot = ConfigSnapshotResponse {
+            gen: NODE_PROTOCOL_GENERATION,
+            node_id: vec![],
+            owner_id: String::new(),
+            revision: 0,
+            config_hash: vec![],
+            config: None,
+            hostname: None,
+            error: Some("node has no local owner".to_string()),
+        };
+        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &error_snapshot);
+        decode_control_frame::<ConfigSnapshotResponse>(STREAM_CONFIG_SUBSCRIBE, &encoded)
+            .expect("error-shaped snapshot must pass validation");
+    }
+
+    #[test]
+    fn config_push_response_error_shape_passes_validation() {
+        // Error responses from send_push_error have an empty config_hash.
+        let error_response = crate::proto::node::ConfigPushResponse {
+            gen: NODE_PROTOCOL_GENERATION,
+            success: false,
+            current_revision: 0,
+            config_hash: vec![],
+            error: Some("not the owner of this node".to_string()),
+            saved_to_disk: false,
+            applied_live: false,
+        };
+        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &error_response);
+        decode_control_frame::<crate::proto::node::ConfigPushResponse>(
+            STREAM_CONFIG_PUSH,
+            &encoded,
+        )
+        .expect("error-shaped push response must pass validation");
+    }
+
+    #[test]
+    fn config_push_valid_64_byte_signature_passes_validation() {
+        let push_with_64_bytes = ConfigPush {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: vec![0x01; 32],
+            target_node_id: vec![0x02; 32],
+            owner_id: "owner-1".to_string(),
+            expected_revision: 0,
+            config: Some(make_config_snapshot()),
+            owner_signing_public_key: vec![0x03; 32],
+            signature: vec![0x04; 64],
+        };
+        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_with_64_bytes);
+        decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
+            .expect("push with 64-byte signature must pass validation");
+    }
+
+    #[test]
+    fn config_push_wrong_length_signature_rejected() {
+        // 32-byte signature must be rejected
+        let push_32 = ConfigPush {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: vec![0x01; 32],
+            target_node_id: vec![0x02; 32],
+            owner_id: "owner-1".to_string(),
+            expected_revision: 0,
+            config: Some(make_config_snapshot()),
+            owner_signing_public_key: vec![0x03; 32],
+            signature: vec![0x04; 32],
+        };
+        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_32);
+        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
+            .expect_err("32-byte signature must be rejected");
+        assert!(
+            matches!(err, ControlFrameError::InvalidSignatureLength { got: 32 }),
+            "expected InvalidSignatureLength {{got: 32}}, got {err:?}"
+        );
+
+        // 1-byte signature must also be rejected
+        let push_1 = ConfigPush {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: vec![0x01; 32],
+            target_node_id: vec![0x02; 32],
+            owner_id: "owner-1".to_string(),
+            expected_revision: 0,
+            config: Some(make_config_snapshot()),
+            owner_signing_public_key: vec![0x03; 32],
+            signature: vec![0x04; 1],
+        };
+        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_1);
+        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
+            .expect_err("1-byte signature must be rejected");
+        assert!(
+            matches!(err, ControlFrameError::InvalidSignatureLength { got: 1 }),
+            "expected InvalidSignatureLength {{got: 1}}, got {err:?}"
+        );
+    }
+
+    #[test]
     fn proto_v1_route_table_rejects_bad_generation_or_legacy_payload() {
         use crate::proto::node::RouteTable;
 
@@ -1298,7 +1408,6 @@ mod tests {
     #[test]
     fn owner_fields_roundtrip_through_proto_announcement() {
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xAB; 32]).public());
-        let config_hash_bytes = vec![0xDE_u8; 32];
         let ann = super::PeerAnnouncement {
             addr: iroh::EndpointAddr {
                 id: peer_id,
@@ -1746,7 +1855,6 @@ mod tests {
         // This documents the intentional behavior: config_hash is ephemeral in v0 gossip
         // (lost in JSON round-trip due to skip_serializing).
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0x66; 32]).public());
-        let config_hash_bytes = vec![0xFF_u8; 32];
 
         let ann = super::PeerAnnouncement {
             addr: EndpointAddr {
