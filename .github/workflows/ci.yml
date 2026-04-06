@@ -231,7 +231,7 @@ jobs:
 
   macos:
     needs: changes
-    if: ${{ vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -378,10 +378,10 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
-  macos_mlx:
+  mlx_smoke_tests:
     needs: [changes, macos]
     if: ${{ needs.macos.result == 'success' && vars.ENABLE_MACOS_CI == 'true' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    name: macOS MLX
+    name: MLX Smoke Tests
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -459,10 +459,10 @@ jobs:
           path: MLX_VALIDATION_RESULTS/ci-macos-mlx-${{ matrix.id }}
           if-no-files-found: warn
 
-  gguf_smokes:
+  llama_smoke_tests:
     needs: [changes, linux]
     if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
-    name: GGUF Smokes
+    name: Llama Smoke Tests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
