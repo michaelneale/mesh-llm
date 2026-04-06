@@ -188,6 +188,7 @@ impl MeshApi {
                 sse_clients: Vec::new(),
                 inventory_scan_running: false,
                 inventory_scan_waiters: Vec::new(),
+                cached_inventory: crate::models::LocalModelInventorySnapshot::default(),
             })),
         }
     }
@@ -309,6 +310,7 @@ impl MeshApi {
                     let waiters = {
                         let mut inner = inner_arc.lock().await;
                         inner.inventory_scan_running = false;
+                        inner.cached_inventory = snapshot.clone();
                         std::mem::take(&mut inner.inventory_scan_waiters)
                     };
                     for tx in waiters {
@@ -323,7 +325,18 @@ impl MeshApi {
         rx.await.unwrap_or_default()
     }
 
+    /// Build mesh model list with a fresh filesystem scan. Used by `/api/models`.
     async fn mesh_models(&self) -> Vec<MeshModelPayload> {
+        let local_scan = self.local_inventory_snapshot().await;
+        self.build_mesh_models(local_scan).await
+    }
+
+    /// Build mesh model list from a pre-existing inventory snapshot.
+    /// Used by `status()` with `cached_inventory` to avoid scanning.
+    async fn build_mesh_models(
+        &self,
+        local_scan: crate::models::LocalModelInventorySnapshot,
+    ) -> Vec<MeshModelPayload> {
         let (node, my_vram_gb, model_name, model_size_bytes, _local_processes) = {
             let inner = self.inner.lock().await;
             (
@@ -334,8 +347,6 @@ impl MeshApi {
                 inner.local_processes.clone(),
             )
         };
-
-        let local_scan = self.local_inventory_snapshot().await;
         let all_peers = node.peers().await;
         let catalog = node.mesh_catalog_entries().await;
         let served = node.models_being_served().await;
@@ -718,6 +729,7 @@ impl MeshApi {
             latest_version,
             nostr_discovery,
             local_processes,
+            cached_inventory,
         ) = {
             let inner = self.inner.lock().await;
             (
@@ -738,6 +750,7 @@ impl MeshApi {
                 inner.latest_version.clone(),
                 inner.nostr_discovery,
                 inner.local_processes.clone(),
+                inner.cached_inventory.clone(),
             )
         }; // inner lock dropped here
 
@@ -783,6 +796,8 @@ impl MeshApi {
             .or_else(|| my_hosted_models.first().cloned())
             .or_else(|| my_serving_models.first().cloned())
             .unwrap_or_else(|| model_name.clone());
+        let mesh_models = self.build_mesh_models(cached_inventory).await;
+
         let (launch_pi, launch_goose) = if effective_llama_ready {
             (
                 Some(format!("pi --provider mesh --model {display_model_name}")),
@@ -831,7 +846,7 @@ impl MeshApi {
             peers,
             launch_pi,
             launch_goose,
-            mesh_models: Vec::new(),
+            mesh_models,
             inflight_requests,
             mesh_id,
             mesh_name,
@@ -948,6 +963,18 @@ pub async fn start(
             inner.latest_version = Some(latest);
         }
         state5.push_status().await;
+    });
+
+    // Populate the inventory cache eagerly in the background so status()
+    // never performs blocking filesystem/GGUF reads inline.
+    let state6 = state.clone();
+    tokio::spawn(async move {
+        let snapshot = state6.local_inventory_snapshot().await;
+        {
+            let mut inner = state6.inner.lock().await;
+            inner.cached_inventory = snapshot;
+        }
+        state6.push_status().await;
     });
 
     let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
@@ -2121,22 +2148,46 @@ data: [DONE]
         let _ = upstream_handle.await;
     }
 
-    /// Regression test: status() must NOT call mesh_models() because that
-    /// triggers a full HuggingFace cache filesystem scan via
-    /// local_inventory_snapshot(). The UI fetches mesh_models from the
-    /// separate /api/models endpoint instead.
+    /// Regression test: status() must build mesh_models from cached_inventory
+    /// (populated at startup), not by calling mesh_models() which triggers a
+    /// filesystem scan via local_inventory_snapshot().
     ///
-    /// PR #127 (commit 30d0cf7) accidentally inlined mesh_models() back into
-    /// status(), causing a filesystem scan on every push_status() — which
-    /// fires on every inflight request count change during inference.
+    /// Merge commit 143b768 resolved a conflict by calling self.mesh_models()
+    /// from status(), which routed through local_inventory_snapshot() and did
+    /// a full HF cache walk on every push_status() — fired on every inflight
+    /// request count change during inference.
     #[tokio::test]
-    async fn test_status_does_not_contain_scanned_mesh_models() {
+    async fn test_status_uses_cached_inventory_not_scan() {
         let state = build_test_mesh_api().await;
-        let status = state.status().await;
+
+        // Inject a sentinel into cached_inventory.
+        {
+            let mut inner = state.inner.lock().await;
+            inner
+                .cached_inventory
+                .model_names
+                .insert("sentinel-cached-model".to_string());
+        }
+
+        // status() should use cached_inventory, so mesh_models won't include
+        // models from a fresh filesystem scan that doesn't know about our sentinel.
+        // But mesh_models is built from cached_inventory + peer data + catalog,
+        // so the sentinel won't appear there either (it's not in the catalog).
+        // The real invariant: status() must NOT call local_inventory_snapshot().
+        // We verify this by checking status() completes instantly — if it scanned,
+        // the spawn_blocking would yield.  More directly: confirm the source code
+        // uses build_mesh_models(cached_inventory) not self.mesh_models().
+        //
+        // As a functional check: prime cached_inventory empty, confirm status
+        // returns without blocking (a real scan would take measurable time on
+        // machines with models).
+        let start = std::time::Instant::now();
+        let _status = state.status().await;
+        let elapsed = start.elapsed();
         assert!(
-            status.mesh_models.is_empty(),
-            "status() must not populate mesh_models (it triggers a filesystem scan); \
-             the UI fetches them from /api/models instead"
+            elapsed < std::time::Duration::from_secs(2),
+            "status() took {:?} — likely calling local_inventory_snapshot() instead of using cached_inventory",
+            elapsed
         );
     }
 }

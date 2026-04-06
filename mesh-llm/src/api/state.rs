@@ -61,4 +61,8 @@ pub(super) struct ApiInner {
     pub(super) inventory_scan_running: bool,
     pub(super) inventory_scan_waiters:
         Vec<tokio::sync::oneshot::Sender<crate::models::LocalModelInventorySnapshot>>,
+    /// Cached local inventory snapshot, populated at startup and refreshed
+    /// whenever `/api/models` triggers a scan. `status()` reads from this
+    /// instead of scanning the filesystem on every call.
+    pub(super) cached_inventory: crate::models::LocalModelInventorySnapshot,
 }
