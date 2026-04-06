@@ -2071,16 +2071,6 @@ impl Node {
         *self.display_name.lock().await = Some(name);
     }
 
-    /// Get the operator-facing display name for this node.
-    /// Falls back to the short endpoint ID if no name is set.
-    pub async fn display_name(&self) -> String {
-        if let Some(ref name) = *self.display_name.lock().await {
-            name.clone()
-        } else {
-            self.endpoint.id().fmt_short().to_string()
-        }
-    }
-
     pub async fn set_plugin_manager(&self, plugin_manager: crate::plugin::PluginManager) {
         let peers = {
             let state = self.state.lock().await;
@@ -4048,14 +4038,15 @@ impl Node {
             .map_err(|e| anyhow::anyhow!("config apply task panicked: {e}"))?;
 
         // 7. Build + send response
-        use crate::runtime::config_state::ApplyResult;
+        use crate::protocol::convert::local_apply_mode_to_proto;
+        use crate::runtime::config_state::{ApplyResult, ConfigApplyMode};
         let response = match result {
             ApplyResult::Applied {
                 revision,
                 hash,
-                saved_to_disk,
+                apply_mode,
             } => {
-                if saved_to_disk {
+                if apply_mode != ConfigApplyMode::Noop {
                     let _ = self.config_revision_tx.send(revision);
                 }
                 crate::proto::node::ConfigPushResponse {
@@ -4064,8 +4055,7 @@ impl Node {
                     current_revision: revision,
                     config_hash: hash.to_vec(),
                     error: None,
-                    saved_to_disk,
-                    applied_live: false,
+                    apply_mode: local_apply_mode_to_proto(apply_mode),
                 }
             }
             ApplyResult::RevisionConflict { current_revision } => {
@@ -4077,8 +4067,7 @@ impl Node {
                     error: Some(
                         "revision conflict: expected_revision does not match current".to_string(),
                     ),
-                    saved_to_disk: false,
-                    applied_live: false,
+                    apply_mode: local_apply_mode_to_proto(ConfigApplyMode::Noop),
                 }
             }
             ApplyResult::ValidationError(msg) | ApplyResult::PersistError(msg) => {
@@ -4088,8 +4077,7 @@ impl Node {
                     current_revision,
                     config_hash: current_hash.to_vec(),
                     error: Some(msg),
-                    saved_to_disk: false,
-                    applied_live: false,
+                    apply_mode: local_apply_mode_to_proto(ConfigApplyMode::Noop),
                 }
             }
         };
@@ -4810,8 +4798,7 @@ async fn send_push_error(send: &mut iroh::endpoint::SendStream, msg: &str) -> an
         current_revision: 0,
         config_hash: vec![],
         error: Some(msg.to_string()),
-        saved_to_disk: false,
-        applied_live: false,
+        apply_mode: crate::proto::node::ConfigApplyMode::Noop as i32,
     };
     write_len_prefixed(send, &response.encode_to_vec()).await?;
     Ok(())
@@ -8390,8 +8377,7 @@ mod tests {
             current_revision: 42,
             config_hash: vec![0xCC; 32],
             error: None,
-            saved_to_disk: true,
-            applied_live: false,
+            apply_mode: crate::proto::node::ConfigApplyMode::Staged as i32,
         };
 
         let encoded = response.encode_to_vec();
@@ -8403,8 +8389,10 @@ mod tests {
         assert_eq!(decoded.current_revision, 42);
         assert_eq!(decoded.config_hash, vec![0xCC; 32]);
         assert!(decoded.error.is_none());
-        assert!(decoded.saved_to_disk);
-        assert!(!decoded.applied_live);
+        assert_eq!(
+            decoded.apply_mode,
+            crate::proto::node::ConfigApplyMode::Staged as i32,
+        );
     }
 
     #[test]
@@ -8912,7 +8900,11 @@ mod tests {
             32,
             "response config_hash must be 32 bytes"
         );
-        assert!(response.saved_to_disk, "config must be saved to disk");
+        assert_eq!(
+            response.apply_mode,
+            crate::proto::node::ConfigApplyMode::Staged as i32,
+            "config must be staged to disk"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
         Ok(())

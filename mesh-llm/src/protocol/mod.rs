@@ -756,14 +756,17 @@ mod tests {
             current_revision: 9,
             config_hash: config_hash.clone(),
             error: None,
-            saved_to_disk: true,
-            applied_live: true,
+            apply_mode: crate::proto::node::ConfigApplyMode::Staged as i32,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
         let decoded: ConfigPushResponse = decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
             .expect("valid push response must decode");
         assert!(decoded.success);
         assert_eq!(decoded.current_revision, 9);
+        assert_eq!(
+            decoded.apply_mode,
+            crate::proto::node::ConfigApplyMode::Staged as i32
+        );
     }
 
     #[test]
@@ -877,8 +880,7 @@ mod tests {
             current_revision: 2,
             config_hash: vec![0x07; 32],
             error: Some("fail".to_string()),
-            saved_to_disk: false,
-            applied_live: false,
+            apply_mode: crate::proto::node::ConfigApplyMode::Noop as i32,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
         let err = decode_control_frame::<ConfigPushResponse>(STREAM_CONFIG_PUSH, &encoded)
@@ -914,8 +916,7 @@ mod tests {
             current_revision: 0,
             config_hash: vec![],
             error: Some("not the owner of this node".to_string()),
-            saved_to_disk: false,
-            applied_live: false,
+            apply_mode: crate::proto::node::ConfigApplyMode::Noop as i32,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &error_response);
         decode_control_frame::<crate::proto::node::ConfigPushResponse>(
@@ -923,6 +924,62 @@ mod tests {
             &encoded,
         )
         .expect("error-shaped push response must pass validation");
+    }
+
+    #[test]
+    fn config_apply_mode_roundtrip_all_variants() {
+        use crate::proto::node::ConfigApplyMode;
+
+        for (variant, label) in [
+            (ConfigApplyMode::Staged, "Staged"),
+            (ConfigApplyMode::Live, "Live"),
+            (ConfigApplyMode::Noop, "Noop"),
+        ] {
+            let response = ConfigPushResponse {
+                gen: NODE_PROTOCOL_GENERATION,
+                success: true,
+                current_revision: 1,
+                config_hash: vec![0xAA; 32],
+                error: None,
+                apply_mode: variant as i32,
+            };
+            let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &response);
+            let decoded: ConfigPushResponse =
+                decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
+                    .expect("ConfigPushResponse must round-trip");
+            assert_eq!(
+                decoded.apply_mode,
+                variant as i32,
+                "{label} must survive encode/decode round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn config_apply_mode_unknown_value_preserved_by_proto() {
+        use prost::Message as _;
+
+        let response = ConfigPushResponse {
+            gen: NODE_PROTOCOL_GENERATION,
+            success: true,
+            current_revision: 1,
+            config_hash: vec![0xAA; 32],
+            error: None,
+            apply_mode: 99,
+        };
+        let encoded = response.encode_to_vec();
+        let decoded =
+            ConfigPushResponse::decode(encoded.as_slice()).expect("must decode");
+        assert_eq!(decoded.apply_mode, 99, "proto must preserve unknown enum values");
+    }
+
+    #[test]
+    fn config_apply_mode_default_is_unspecified() {
+        let response = ConfigPushResponse::default();
+        assert_eq!(
+            response.apply_mode, 0,
+            "default apply_mode must be 0 (Unspecified)"
+        );
     }
 
     #[test]

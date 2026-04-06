@@ -63,6 +63,44 @@ fn proto_capability_level_to_local(level: i32) -> crate::models::CapabilityLevel
     }
 }
 
+pub(crate) fn local_apply_mode_to_proto(
+    mode: crate::runtime::config_state::ConfigApplyMode,
+) -> i32 {
+    match mode {
+        crate::runtime::config_state::ConfigApplyMode::Staged => {
+            crate::proto::node::ConfigApplyMode::Staged as i32
+        }
+        crate::runtime::config_state::ConfigApplyMode::Live => {
+            crate::proto::node::ConfigApplyMode::Live as i32
+        }
+        crate::runtime::config_state::ConfigApplyMode::Noop => {
+            crate::proto::node::ConfigApplyMode::Noop as i32
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn proto_apply_mode_to_local(
+    mode: i32,
+) -> crate::runtime::config_state::ConfigApplyMode {
+    match crate::proto::node::ConfigApplyMode::try_from(mode)
+        .unwrap_or(crate::proto::node::ConfigApplyMode::Unspecified)
+    {
+        crate::proto::node::ConfigApplyMode::Staged => {
+            crate::runtime::config_state::ConfigApplyMode::Staged
+        }
+        crate::proto::node::ConfigApplyMode::Live => {
+            crate::runtime::config_state::ConfigApplyMode::Live
+        }
+        crate::proto::node::ConfigApplyMode::Noop => {
+            crate::runtime::config_state::ConfigApplyMode::Noop
+        }
+        crate::proto::node::ConfigApplyMode::Unspecified => {
+            crate::runtime::config_state::ConfigApplyMode::Staged
+        }
+    }
+}
+
 fn descriptor_identity_to_proto(
     identity: &crate::mesh::ServedModelIdentity,
 ) -> crate::proto::node::ServedModelIdentity {

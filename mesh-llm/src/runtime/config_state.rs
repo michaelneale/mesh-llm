@@ -4,12 +4,25 @@ use std::path::{Path, PathBuf};
 use crate::plugin::{load_config, validate_config, MeshConfig};
 use crate::protocol::convert::{canonical_config_hash, mesh_config_to_proto};
 
+/// How a config push was applied by the receiving node.
+///
+/// - `Staged` — config written to disk; takes effect on next restart.
+/// - `Live`   — config applied immediately without restart (future).
+/// - `Noop`   — config identical to what is already on disk; nothing changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ConfigApplyMode {
+    Staged,
+    #[allow(dead_code)]
+    Live,
+    Noop,
+}
+
 #[derive(Debug)]
 pub(crate) enum ApplyResult {
     Applied {
         revision: u64,
         hash: [u8; 32],
-        saved_to_disk: bool,
+        apply_mode: ConfigApplyMode,
     },
     RevisionConflict {
         current_revision: u64,
@@ -154,7 +167,7 @@ impl ConfigState {
             return ApplyResult::Applied {
                 revision: self.revision,
                 hash: self.config_hash,
-                saved_to_disk: false,
+                apply_mode: ConfigApplyMode::Noop,
             };
         }
 
@@ -187,7 +200,7 @@ impl ConfigState {
         ApplyResult::Applied {
             revision: self.revision,
             hash: self.config_hash,
-            saved_to_disk: true,
+            apply_mode: ConfigApplyMode::Staged,
         }
     }
 }
@@ -247,10 +260,10 @@ mod tests {
             ApplyResult::Applied {
                 revision,
                 hash: _,
-                saved_to_disk,
+                apply_mode,
             } => {
                 assert_eq!(revision, 1);
-                assert!(saved_to_disk);
+                assert_eq!(apply_mode, ConfigApplyMode::Staged);
             }
             other => panic!("expected Applied, got {other:?}"),
         }
@@ -408,10 +421,14 @@ mod tests {
         let rev_after_first = match r1 {
             ApplyResult::Applied {
                 revision,
-                saved_to_disk,
+                apply_mode,
                 ..
             } => {
-                assert!(saved_to_disk, "first apply must save to disk");
+                assert_eq!(
+                    apply_mode,
+                    ConfigApplyMode::Staged,
+                    "first apply must be Staged"
+                );
                 revision
             }
             other => panic!("expected Applied, got {other:?}"),
@@ -421,19 +438,65 @@ mod tests {
         match r2 {
             ApplyResult::Applied {
                 revision,
-                saved_to_disk,
+                apply_mode,
                 ..
             } => {
-                assert!(!saved_to_disk, "no-op apply must not save to disk");
+                assert_eq!(
+                    apply_mode,
+                    ConfigApplyMode::Noop,
+                    "identical config must be Noop"
+                );
                 assert_eq!(
                     revision, rev_after_first,
                     "revision must not change on no-op"
                 );
             }
-            other => panic!("expected Applied with saved_to_disk=false, got {other:?}"),
+            other => panic!("expected Applied with Noop, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_apply_mode_conversion_roundtrip() {
+        use crate::protocol::convert::{local_apply_mode_to_proto, proto_apply_mode_to_local};
+
+        for mode in [
+            ConfigApplyMode::Staged,
+            ConfigApplyMode::Live,
+            ConfigApplyMode::Noop,
+        ] {
+            let proto_val = local_apply_mode_to_proto(mode);
+            let back = proto_apply_mode_to_local(proto_val);
+            assert_eq!(
+                back, mode,
+                "{mode:?} must survive local→proto→local round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn config_apply_mode_unspecified_maps_to_staged() {
+        use crate::protocol::convert::proto_apply_mode_to_local;
+
+        let result = proto_apply_mode_to_local(0);
+        assert_eq!(
+            result,
+            ConfigApplyMode::Staged,
+            "Unspecified (0) must map to Staged as safe default"
+        );
+    }
+
+    #[test]
+    fn config_apply_mode_unknown_value_maps_to_staged() {
+        use crate::protocol::convert::proto_apply_mode_to_local;
+
+        let result = proto_apply_mode_to_local(99);
+        assert_eq!(
+            result,
+            ConfigApplyMode::Staged,
+            "unknown proto value must fall back to Staged"
+        );
     }
 
     #[test]

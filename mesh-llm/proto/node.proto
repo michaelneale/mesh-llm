@@ -261,12 +261,20 @@ message ConfigPush {
   bytes signature = 8;
 }
 
+enum ConfigApplyMode {
+  CONFIG_APPLY_MODE_UNSPECIFIED = 0;
+  CONFIG_APPLY_MODE_STAGED = 1;
+  CONFIG_APPLY_MODE_LIVE = 2;
+  CONFIG_APPLY_MODE_NOOP = 3;
+}
+
 message ConfigPushResponse {
   uint32 gen = 1;
   bool success = 2;
   uint64 current_revision = 3;
   bytes config_hash = 4;
   optional string error = 5;
-  bool saved_to_disk = 6;
-  bool applied_live = 7;
+  reserved 6, 7;
+  reserved "saved_to_disk", "applied_live";
+  ConfigApplyMode apply_mode = 8;
 }
