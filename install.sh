@@ -12,8 +12,8 @@ INSTALL_SERVICE_START="${MESH_LLM_INSTALL_SERVICE_START:-1}"
 
 SERVICE_NAME="mesh-llm"
 SERVICE_LABEL="com.mesh-llm.mesh-llm"
+MESH_CONFIG_FILE="$HOME/.mesh-llm/config.toml"
 SERVICE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mesh-llm"
-SERVICE_ARGS_FILE="$SERVICE_CONFIG_DIR/service.args"
 SERVICE_ENV_FILE="$SERVICE_CONFIG_DIR/service.env"
 SERVICE_RUNNER="$SERVICE_CONFIG_DIR/run-service.sh"
 SYSTEMD_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -23,7 +23,6 @@ LAUNCHD_PLIST_PATH="$LAUNCHD_AGENT_DIR/$SERVICE_LABEL.plist"
 LAUNCHD_LOG_DIR="$HOME/Library/Logs/mesh-llm"
 LAUNCHD_STDOUT_LOG="$LAUNCHD_LOG_DIR/stdout.log"
 LAUNCHD_STDERR_LOG="$LAUNCHD_LOG_DIR/stderr.log"
-SYSTEMD_ARGS_COMMENT_PREFIX="# mesh-llm-install-args: "
 DIST_DIR="dist"
 SYSTEMD_TEMPLATE_PATH="$DIST_DIR/$SERVICE_NAME.service"
 LAUNCHD_TEMPLATE_PATH="$DIST_DIR/$SERVICE_LABEL.plist"
@@ -53,12 +52,10 @@ bool_is_true() {
 
 usage() {
     cat <<EOF
-Usage: install.sh [--service] [--service-args '<mesh-llm args>'] [--no-start-service]
+Usage: install.sh [--service] [--no-start-service]
 
 Options:
   --service                  Install a per-user background service for this platform.
-  --service-args '<args>'    Seed the installed service with these mesh-llm args.
-                             The string is shell-split once during install.
   --no-start-service         Install the service files but do not start them yet.
   -h, --help                 Show this help text.
 
@@ -67,7 +64,6 @@ Environment overrides:
   MESH_LLM_INSTALL_FLAVOR
   MESH_LLM_INSTALL_REF=main
   MESH_LLM_INSTALL_SERVICE=1
-  MESH_LLM_INSTALL_SERVICE_ARGS='--auto'
   MESH_LLM_INSTALL_SERVICE_START=0
 EOF
 }
@@ -79,12 +75,9 @@ parse_args() {
                 INSTALL_SERVICE=1
                 ;;
             --service-args)
-                if (($# < 2)); then
-                    echo "error: --service-args requires a value" >&2
-                    exit 1
-                fi
-                INSTALL_SERVICE_ARGS="$2"
-                shift
+                echo "error: background services now run \`mesh-llm serve\` and load startup models from $MESH_CONFIG_FILE" >&2
+                echo "Add startup models under [[models]] instead of passing custom service args." >&2
+                exit 1
                 ;;
             --no-start-service)
                 INSTALL_SERVICE_START=0
@@ -330,81 +323,6 @@ install_bundle() {
     done
 }
 
-write_service_args_file() {
-    local path="$1"
-    local raw_args="$2"
-
-    mkdir -p "$(dirname "$path")"
-
-    if ! eval "set -- $raw_args"; then
-        echo "error: failed to parse service args: $raw_args" >&2
-        exit 1
-    fi
-
-    {
-        echo "# One mesh-llm CLI argument per line."
-        echo "# Blank lines and lines beginning with # are ignored."
-        echo "# Examples:"
-        echo "#   --auto"
-        echo "#   --model"
-        echo "#   Qwen2.5-3B"
-        local arg
-        for arg in "$@"; do
-            printf '%s\n' "$arg"
-        done
-    } > "$path"
-}
-
-serialize_shell_args() {
-    local out=""
-    local escaped
-    local arg
-    for arg in "$@"; do
-        printf -v escaped '%q' "$arg"
-        out+="${out:+ }$escaped"
-    done
-    printf '%s' "$out"
-}
-
-parse_service_args() {
-    local raw_args="$1"
-
-    if ! eval "set -- $raw_args"; then
-        echo "error: failed to parse service args: $raw_args" >&2
-        exit 1
-    fi
-
-    SERVICE_ARGS_VALUES=("$@")
-    SERVICE_ARGS_SERIALIZED="$(serialize_shell_args "$@")"
-}
-
-read_existing_systemd_args() {
-    if [[ ! -f "$SYSTEMD_UNIT_PATH" ]]; then
-        return 1
-    fi
-
-    local existing
-    existing="$(sed -n "s/^${SYSTEMD_ARGS_COMMENT_PREFIX}//p" "$SYSTEMD_UNIT_PATH" | head -n 1)"
-    [[ -n "$existing" ]] || return 1
-    printf '%s\n' "$existing"
-}
-
-resolve_systemd_service_args() {
-    local existing
-
-    if [[ -n "$INSTALL_SERVICE_ARGS" ]]; then
-        parse_service_args "$INSTALL_SERVICE_ARGS"
-        return
-    fi
-
-    if existing="$(read_existing_systemd_args)"; then
-        parse_service_args "$existing"
-        return
-    fi
-
-    parse_service_args "--auto"
-}
-
 systemd_escape_assignment_value() {
     local value="$1"
     value="${value//\\/\\\\}"
@@ -496,19 +414,6 @@ render_template_to_file() {
     ' < <(template_stream "$template_path") > "$output_path"
 }
 
-ensure_service_args_file() {
-    if [[ -n "$INSTALL_SERVICE_ARGS" ]]; then
-        write_service_args_file "$SERVICE_ARGS_FILE" "$INSTALL_SERVICE_ARGS"
-        return
-    fi
-
-    if [[ -f "$SERVICE_ARGS_FILE" ]]; then
-        return
-    fi
-
-    write_service_args_file "$SERVICE_ARGS_FILE" "--auto"
-}
-
 ensure_service_env_file() {
     if [[ -f "$SERVICE_ENV_FILE" ]]; then
         return
@@ -532,7 +437,6 @@ write_service_runner() {
 set -euo pipefail
 
 BIN="$INSTALL_DIR/mesh-llm"
-ARGS_FILE="$SERVICE_ARGS_FILE"
 ENV_FILE="$SERVICE_ENV_FILE"
 
 if [[ ! -x "\$BIN" ]]; then
@@ -547,18 +451,7 @@ if [[ -f "\$ENV_FILE" ]]; then
     set +a
 fi
 
-args=()
-if [[ -f "\$ARGS_FILE" ]]; then
-    while IFS= read -r line || [[ -n "\$line" ]]; do
-        line="\${line%\$'\\r'}"
-        case "\$line" in
-            ""|\#*) continue ;;
-        esac
-        args+=("\$line")
-    done < "\$ARGS_FILE"
-fi
-
-exec "\$BIN" "\${args[@]}"
+exec "\$BIN" serve
 EOF
 
     chmod +x "$SERVICE_RUNNER"
@@ -566,7 +459,6 @@ EOF
 
 ensure_launchd_service_files() {
     mkdir -p "$SERVICE_CONFIG_DIR"
-    ensure_service_args_file
     ensure_service_env_file
     write_service_runner
 }
@@ -575,26 +467,13 @@ install_systemd_service() {
     need_cmd systemctl
     mkdir -p "$SERVICE_CONFIG_DIR" "$SYSTEMD_UNIT_DIR"
     ensure_service_env_file
-    resolve_systemd_service_args
-
-    local env_lines=""
     local exec_line
-    local i
-    local value
-    for ((i = 0; i < ${#SERVICE_ARGS_VALUES[@]}; i++)); do
-        value="$(systemd_escape_assignment_value "${SERVICE_ARGS_VALUES[$i]}")"
-        env_lines+="Environment=\"MESH_LLM_ARG_${i}=${value}\"\n"
-    done
-
-    exec_line="ExecStart=$(systemd_quote_token "$INSTALL_DIR/mesh-llm")"
-    for ((i = 0; i < ${#SERVICE_ARGS_VALUES[@]}; i++)); do
-        exec_line+=" \${MESH_LLM_ARG_${i}}"
-    done
+    exec_line="ExecStart=$(systemd_quote_token "$INSTALL_DIR/mesh-llm") serve"
 
     render_template_to_file "$SYSTEMD_TEMPLATE_PATH" "$SYSTEMD_UNIT_PATH" \
-        "ARGS_METADATA=$SYSTEMD_ARGS_COMMENT_PREFIX$SERVICE_ARGS_SERIALIZED" \
+        "ARGS_METADATA=# mesh-llm serve (startup models come from $MESH_CONFIG_FILE)" \
         "SERVICE_ENV_FILE=$SERVICE_ENV_FILE" \
-        "ENV_LINES=$(printf '%b' "$env_lines")" \
+        "ENV_LINES=" \
         "EXEC_LINE=$exec_line"
 
     systemctl --user daemon-reload || true
@@ -616,7 +495,7 @@ install_systemd_service() {
 
     echo "Command: $exec_line"
     echo "Optional env: $SERVICE_ENV_FILE"
-    echo "Edit unit args: $SYSTEMD_UNIT_PATH"
+    echo "Edit startup models: $MESH_CONFIG_FILE"
     echo "Logs: journalctl --user -u $SERVICE_NAME.service -f"
     echo "Boot without login (optional): sudo loginctl enable-linger \$USER"
 }
@@ -650,7 +529,7 @@ install_launchd_service() {
         echo "Start it with: launchctl bootstrap $launch_domain $LAUNCHD_PLIST_PATH"
     fi
 
-    echo "Service args: $SERVICE_ARGS_FILE"
+    echo "Startup models: $MESH_CONFIG_FILE"
     echo "Optional env: $SERVICE_ENV_FILE"
     echo "Logs: $LAUNCHD_STDOUT_LOG and $LAUNCHD_STDERR_LOG"
 }
@@ -672,6 +551,11 @@ install_service() {
 
 main() {
     parse_args "$@"
+    if [[ -n "$INSTALL_SERVICE_ARGS" ]]; then
+        echo "error: background services now run \`mesh-llm serve\` and load startup models from $MESH_CONFIG_FILE" >&2
+        echo "Add startup models under [[models]] instead of using MESH_LLM_INSTALL_SERVICE_ARGS." >&2
+        exit 1
+    fi
     need_cmd curl
     need_cmd tar
     need_cmd mktemp

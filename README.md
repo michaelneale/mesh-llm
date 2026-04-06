@@ -194,6 +194,49 @@ mesh-llm gpus
 
 Prints local GPU entries, backend device names, stable IDs, VRAM, and cached bandwidth if a benchmark fingerprint is already available.
 
+### Startup config
+
+`mesh-llm serve` can now load startup models from `~/.mesh-llm/config.toml`:
+
+```toml
+version = 1
+
+[gpu]
+assignment = "auto"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[[models]]
+model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
+mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
+ctx_size = 8192
+
+[[plugin]]
+name = "blackboard"
+enabled = true
+```
+
+Start with the default config path:
+
+```bash
+mesh-llm serve
+```
+
+If no startup models are configured, `mesh-llm serve` prints a `⚠️` warning, shows help, and exits.
+
+Or point at a different file:
+
+```bash
+mesh-llm serve --config /path/to/config.toml
+```
+
+Precedence rules:
+
+- Explicit `--model` or `--gguf` ignores configured `[[models]]`.
+- Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
+- Plugin entries still live in the same file.
+
 ### No-arg behavior
 ```bash
 mesh-llm                                   # no args — prints --help and exits
@@ -208,22 +251,19 @@ To install it as a per-user background service:
 curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service
 ```
 
-To seed the service with a custom startup command on first install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service --service-args 'serve --model Qwen2.5-3B'
-```
-
 Service installs are user-scoped:
 
 - macOS installs a `launchd` agent at `~/Library/LaunchAgents/com.mesh-llm.mesh-llm.plist`
 - Linux installs a `systemd --user` unit at `~/.config/systemd/user/mesh-llm.service`
 - Shared environment config lives in `~/.config/mesh-llm/service.env`
+- Startup models live in `~/.mesh-llm/config.toml`
 
-The two platforms handle launch args differently:
+The two platforms handle launch startup the same way:
 
-- macOS: `launchd` runs `~/.config/mesh-llm/run-service.sh`, which reads `~/.config/mesh-llm/service.args`. `service.args` is one `mesh-llm` CLI argument per line. The installer creates it with `serve --auto` by default and preserves your edits on reinstall unless you pass `--service-args` again.
-- Linux: the installer writes the `mesh-llm` argv directly into `ExecStart=` in `~/.config/systemd/user/mesh-llm.service`. If you pass `--service-args`, those replace the current unit args; otherwise the installer preserves the existing unit args on reinstall.
+- macOS: `launchd` runs `~/.config/mesh-llm/run-service.sh`, which loads `service.env` and executes `mesh-llm serve`.
+- Linux: the installer writes `mesh-llm serve` directly into `ExecStart=` in `~/.config/systemd/user/mesh-llm.service`.
+
+The background service no longer stores custom startup args. Configure startup models in `~/.mesh-llm/config.toml` instead.
 
 `service.env` is optional and shared by both platforms. Use plain `KEY=value` lines, for example:
 

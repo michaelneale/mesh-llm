@@ -35,7 +35,7 @@ pub(crate) mod runtime;
     name = "mesh-llm",
     version = crate::VERSION,
     about = "Pool GPUs over the internet for LLM inference",
-    after_help = "Preferred runtime entrypoints:\n  mesh-llm serve --auto --model Qwen3-8B-Q4_K_M\n  mesh-llm client --auto\n  mesh-llm gpus\n\nRun with --help-advanced for all options."
+    after_help = "Preferred runtime entrypoints:\n  mesh-llm serve\n  mesh-llm serve --model Qwen3-8B-Q4_K_M\n  mesh-llm client --auto\n  mesh-llm gpus\n\n`mesh-llm serve` loads startup models from ~/.mesh-llm/config.toml.\nRun with --help-advanced for all options."
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -179,7 +179,7 @@ pub(crate) struct Cli {
     pub(crate) no_console: bool,
 
     /// Optional path to the mesh-llm config file.
-    #[arg(long, hide = true)]
+    #[arg(long)]
     pub(crate) config: Option<PathBuf>,
 
     /// Internal: set when this node joined via Nostr discovery (not --join).

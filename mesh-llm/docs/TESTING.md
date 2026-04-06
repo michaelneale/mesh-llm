@@ -10,6 +10,36 @@ mesh-llm gpus
 
 - Prints local GPU entries with stable IDs, backend devices, VRAM, unified-memory status, and cached bandwidth when a fingerprint is available
 
+### 0a. Startup config smoke
+
+Create `~/.mesh-llm/config.toml`:
+
+```toml
+version = 1
+
+[gpu]
+assignment = "auto"
+
+[[models]]
+model = "Qwen2.5-3B"
+
+[[models]]
+model = "/absolute/path/to/qwen2.5-vl.gguf"
+mmproj = "/absolute/path/to/mmproj.gguf"
+ctx_size = 8192
+```
+
+Then start:
+
+```bash
+mesh-llm serve
+```
+
+- Both configured startup models should be considered for launch
+- If `[[models]]` is empty, `mesh-llm serve` should print a `⚠️` warning, show help, and exit cleanly
+- Explicit `--model` or `--gguf` should ignore configured `[[models]]`
+- Explicit `--ctx-size` should override configured `ctx_size`
+
 ## Single-model permutations
 
 ### 1. Solo (single node)

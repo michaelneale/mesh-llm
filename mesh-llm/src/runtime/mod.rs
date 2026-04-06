@@ -11,7 +11,7 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::inference::{election, launch};
 use crate::mesh;
 use crate::mesh::NodeRole;
@@ -24,6 +24,21 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StartupModelSpec {
+    model_ref: PathBuf,
+    mmproj_ref: Option<PathBuf>,
+    ctx_size: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+struct StartupModelPlan {
+    declared_ref: String,
+    resolved_path: PathBuf,
+    mmproj_path: Option<PathBuf>,
+    ctx_size: Option<u32>,
+}
 
 pub(crate) async fn run() -> Result<()> {
     tracing_subscriber::fmt()
@@ -88,6 +103,11 @@ pub(crate) async fn run() -> Result<()> {
     if crate::cli::commands::dispatch(&cli).await? {
         return Ok(());
     }
+
+    let config = plugin::load_config(cli.config.as_deref())?;
+    let cli_has_explicit_models = cli_has_explicit_models(&cli);
+    let has_config_models = !config.models.is_empty();
+    let has_startup_models = cli_has_explicit_models || has_config_models;
 
     // Clean up orphan processes from previous runs (skip for client — never runs llama-server).
     // This intentionally happens after subcommand dispatch so control commands
@@ -214,7 +234,7 @@ pub(crate) async fn run() -> Result<()> {
                     if !joined {
                         eprintln!("⚠️  No meshes found — starting new");
                         let models = nostr::default_models_for_vram(my_vram_gb);
-                        start_new_mesh(&mut cli, &models, my_vram_gb);
+                        start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                     }
                 }
             }
@@ -252,7 +272,7 @@ pub(crate) async fn run() -> Result<()> {
                         anyhow::bail!("No meshes found after 5 minutes of retrying.");
                     }
                 } else {
-                    start_new_mesh(&mut cli, &models, my_vram_gb);
+                    start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                 }
             }
         }
@@ -274,20 +294,27 @@ pub(crate) async fn run() -> Result<()> {
             mmproj.display()
         );
     }
-    // --- Resolve models from CLI ---
-    // All --model entries get resolved/downloaded. First is primary (gets rpc/tunnel).
-    // Additional models run as solo llama-servers (must fit in VRAM independently).
-    // --gguf entries are explicit raw-file escapes and must already exist on disk.
-    let mut resolved_models: Vec<PathBuf> = Vec::new();
-    for path in &cli.gguf {
-        if !path.exists() {
-            anyhow::bail!("GGUF file not found: {}", path.display());
-        }
-        resolved_models.push(path.clone());
+    let startup_specs = build_startup_model_specs(&cli, &config)?;
+    if should_show_serve_config_help(normalized_args.explicit_surface, &cli, &startup_specs) {
+        let config_path = plugin::config_path(cli.config.as_deref()).unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("~"))
+                .join(".mesh-llm")
+                .join("config.toml")
+        });
+        eprintln!(
+            "⚠️ `mesh-llm serve` needs at least one startup model.\n  Add `[[models]]` to {}, or pass `--model` / `--gguf` explicitly.",
+            config_path.display()
+        );
+        Cli::command().print_help().ok();
+        eprintln!();
+        return Ok(());
     }
-    for m in &cli.model {
-        resolved_models.push(resolve_model(m).await?);
-    }
+    let startup_models = resolve_startup_models(&startup_specs).await?;
+    let resolved_models: Vec<PathBuf> = startup_models
+        .iter()
+        .map(|model| model.resolved_path.clone())
+        .collect();
     models::warn_about_updates_for_paths(&resolved_models);
 
     // Build requested model names from all resolved models
@@ -306,7 +333,7 @@ pub(crate) async fn run() -> Result<()> {
         None => detect_bin_dir()?,
     };
 
-    run_auto(cli, resolved_models, requested_model_names, bin_dir).await
+    run_auto(cli, config, startup_models, requested_model_names, bin_dir).await
 }
 
 /// Resolve a model path: local file, catalog name, or HuggingFace URL.
@@ -368,6 +395,86 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
     }
 
     anyhow::bail!("Model not found: {}", s);
+}
+
+fn cli_has_explicit_models(cli: &Cli) -> bool {
+    !cli.model.is_empty() || !cli.gguf.is_empty()
+}
+
+fn build_startup_model_specs(
+    cli: &Cli,
+    config: &plugin::MeshConfig,
+) -> Result<Vec<StartupModelSpec>> {
+    if cli.client {
+        return Ok(Vec::new());
+    }
+
+    let mut specs = Vec::new();
+    if cli_has_explicit_models(cli) {
+        for path in &cli.gguf {
+            if !path.exists() {
+                anyhow::bail!("GGUF file not found: {}", path.display());
+            }
+            specs.push(StartupModelSpec {
+                model_ref: path.clone(),
+                mmproj_ref: None,
+                ctx_size: cli.ctx_size,
+            });
+        }
+        for model in &cli.model {
+            specs.push(StartupModelSpec {
+                model_ref: model.clone(),
+                mmproj_ref: None,
+                ctx_size: cli.ctx_size,
+            });
+        }
+        if let Some(mmproj) = &cli.mmproj {
+            if let Some(primary) = specs.first_mut() {
+                primary.mmproj_ref = Some(mmproj.clone());
+            }
+        }
+        return Ok(specs);
+    }
+
+    for model in &config.models {
+        specs.push(StartupModelSpec {
+            model_ref: PathBuf::from(model.model.clone()),
+            mmproj_ref: model.mmproj.as_ref().map(PathBuf::from),
+            ctx_size: cli.ctx_size.or(model.ctx_size),
+        });
+    }
+    Ok(specs)
+}
+
+async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<StartupModelPlan>> {
+    let mut plans = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let resolved_path = resolve_model(&spec.model_ref).await?;
+        let mmproj_path = match spec.mmproj_ref.as_ref() {
+            Some(mmproj) => Some(resolve_model(mmproj).await?),
+            None => None,
+        };
+        plans.push(StartupModelPlan {
+            declared_ref: spec.model_ref.to_string_lossy().to_string(),
+            resolved_path,
+            mmproj_path,
+            ctx_size: spec.ctx_size,
+        });
+    }
+    Ok(plans)
+}
+
+fn should_show_serve_config_help(
+    explicit_surface: Option<RuntimeSurface>,
+    cli: &Cli,
+    startup_specs: &[StartupModelSpec],
+) -> bool {
+    explicit_surface == Some(RuntimeSurface::Serve)
+        && !cli.client
+        && startup_specs.is_empty()
+        && !cli.auto
+        && cli.join.is_empty()
+        && cli.discover.is_none()
 }
 
 /// Look up the model filename in the catalog and check if its draft model exists on disk.
@@ -711,7 +818,14 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
 
 pub(crate) fn load_resolved_plugins(cli: &Cli) -> Result<plugin::ResolvedPlugins> {
     let config = plugin::load_config(cli.config.as_deref())?;
-    plugin::resolve_plugins(&config, plugin_host_mode(cli))
+    resolve_plugins_from_config(&config, cli)
+}
+
+fn resolve_plugins_from_config(
+    config: &plugin::MeshConfig,
+    cli: &Cli,
+) -> Result<plugin::ResolvedPlugins> {
+    plugin::resolve_plugins(config, plugin_host_mode(cli))
 }
 
 fn plugin_host_mode(cli: &Cli) -> plugin::PluginHostMode {
@@ -814,14 +928,19 @@ pub(crate) use self::discovery::{check_mesh, nostr_relays};
 /// Auto-election mode: start rpc-server, join mesh, auto-elect host.
 async fn run_auto(
     mut cli: Cli,
-    resolved_models: Vec<PathBuf>,
+    config: plugin::MeshConfig,
+    startup_models: Vec<StartupModelPlan>,
     requested_model_names: Vec<String>,
     bin_dir: PathBuf,
 ) -> Result<()> {
-    let resolved_plugins = load_resolved_plugins(&cli)?;
+    let resolved_plugins = resolve_plugins_from_config(&config, &cli)?;
     let api_port = cli.port;
     let console_port = Some(cli.console);
     let is_client = cli.client;
+    let resolved_models: Vec<PathBuf> = startup_models
+        .iter()
+        .map(|model| model.resolved_path.clone())
+        .collect();
 
     // Scan local models on disk
     let local_models = if is_client {
@@ -1026,10 +1145,12 @@ async fn run_auto(
         None
     };
 
+    let primary_startup_model = startup_models.first().cloned();
+
     // Decide which model THIS node will serve
-    let model = if !resolved_models.is_empty() {
-        // First --model is what we serve (already resolved/downloaded)
-        resolved_models[0].clone()
+    let model = if let Some(primary) = primary_startup_model.as_ref() {
+        // First startup model is what we serve (already resolved/downloaded)
+        primary.resolved_path.clone()
     } else {
         // No --model: try to find a model on disk that the mesh needs
         eprintln!("No --model specified, checking local models against mesh...");
@@ -1109,11 +1230,10 @@ async fn run_auto(
     };
 
     // Set model source for gossip (so other joiners can discover it too)
-    let model_source = if !cli.model.is_empty() {
-        cli.model[0].to_string_lossy().to_string()
-    } else {
-        model_name.clone()
-    };
+    let model_source = primary_startup_model
+        .as_ref()
+        .map(|model| model.declared_ref.clone())
+        .unwrap_or_else(|| model_name.clone());
     node.set_model_source(model_source).await;
     // Declare which models this node may serve, but do not advertise them as
     // live/routable until their local processes have passed health checks.
@@ -1263,12 +1383,18 @@ async fn run_auto(
     let console_state_for_primary_process = console_state.clone();
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
+    let primary_mmproj = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.mmproj_path.clone());
+    let primary_ctx_size = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.ctx_size);
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_task = tokio::spawn(async move {
         election::election_loop(
             node2, tunnel_mgr2, api_port, rpc_port, bin_dir2, model2, model_name_for_election,
-            cli.mmproj.clone(),
-            draft2, draft_max, force_split, llama_flavor, cli.ctx_size, primary_target_tx,
+            primary_mmproj,
+            draft2, draft_max, force_split, llama_flavor, primary_ctx_size, primary_target_tx,
             primary_stop_rx,
             move |is_host, llama_ready| {
                 let advertise_node = node_for_cb.clone();
@@ -1352,16 +1478,17 @@ async fn run_auto(
     // Additional model election loops (multi-model per node)
     // Each additional model gets its own solo election loop — no rpc, no draft, no split.
     // They share the same target_tx so the proxy sees all models.
-    if resolved_models.len() > 1 {
+    if startup_models.len() > 1 {
         eprintln!(
             "🔀 Multi-model mode: {} additional model(s)",
-            resolved_models.len() - 1
+            startup_models.len() - 1
         );
         // Announce all models to mesh
-        let all_names: Vec<String> = resolved_models
+        let all_names: Vec<String> = startup_models
             .iter()
             .map(|m| {
-                m.file_stem()
+                m.resolved_path
+                    .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string()
@@ -1370,9 +1497,10 @@ async fn run_auto(
         node.set_models(all_names).await;
         node.regossip().await;
 
-        for extra_model in resolved_models.iter().skip(1) {
+        for extra_model in startup_models.iter().skip(1) {
             let extra_name = {
                 let stem = extra_model
+                    .resolved_path
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
@@ -1382,7 +1510,9 @@ async fn run_auto(
             let extra_node = node.clone();
             let extra_tunnel = tunnel_mgr.clone();
             let extra_bin = bin_dir.clone();
-            let extra_path = extra_model.clone();
+            let extra_path = extra_model.resolved_path.clone();
+            let extra_mmproj = extra_model.mmproj_path.clone();
+            let extra_ctx_size = extra_model.ctx_size;
             let extra_target_tx = target_tx.clone();
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
@@ -1400,8 +1530,8 @@ async fn run_auto(
             let extra_task = tokio::spawn(async move {
                 election::election_loop(
                     extra_node, extra_tunnel, api_port_extra, 0, extra_bin, extra_path, extra_model_name.clone(),
-                    None,
-                    None, 8, false, extra_llama_flavor, cli.ctx_size, extra_target_tx,
+                    extra_mmproj,
+                    None, 8, false, extra_llama_flavor, extra_ctx_size, extra_target_tx,
                     extra_stop_rx,
                     move |is_host, llama_ready| {
                         let advertise_node = extra_node_for_advertise.clone();
@@ -1528,6 +1658,7 @@ async fn run_auto(
                                 cli.llama_flavor,
                                 &node,
                                 &model_path,
+                                None,
                                 cli.ctx_size,
                             )
                             .await?;
@@ -2150,6 +2281,141 @@ mod tests {
         let result = build_serving_list(&resolved, "MiniMax-M2.5-Q4_K_M-00001-of-00004");
         assert_eq!(result, vec!["MiniMax-M2.5-Q4_K_M"]);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_build_startup_model_specs_prefers_cli_models_over_config() {
+        let cli = Cli::parse_from([
+            "mesh-llm",
+            "--model",
+            "Qwen3-8B-Q4_K_M",
+            "--ctx-size",
+            "4096",
+        ]);
+        let config = plugin::MeshConfig {
+            models: vec![plugin::ModelConfigEntry {
+                model: "Ignored-Model".into(),
+                mmproj: Some("/tmp/ignored-mmproj.gguf".into()),
+                ctx_size: Some(8192),
+            }],
+            ..plugin::MeshConfig::default()
+        };
+
+        let specs = build_startup_model_specs(&cli, &config).unwrap();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].model_ref, PathBuf::from("Qwen3-8B-Q4_K_M"));
+        assert_eq!(specs[0].mmproj_ref, None);
+        assert_eq!(specs[0].ctx_size, Some(4096));
+    }
+
+    #[test]
+    fn test_build_startup_model_specs_uses_config_models_when_cli_is_empty() {
+        let cli = Cli::parse_from(["mesh-llm", "--ctx-size", "4096"]);
+        let config = plugin::MeshConfig {
+            models: vec![
+                plugin::ModelConfigEntry {
+                    model: "Qwen3-8B-Q4_K_M".into(),
+                    mmproj: None,
+                    ctx_size: Some(8192),
+                },
+                plugin::ModelConfigEntry {
+                    model: "bartowski/Qwen2.5-VL/model.gguf".into(),
+                    mmproj: Some("bartowski/Qwen2.5-VL/mmproj.gguf".into()),
+                    ctx_size: Some(16384),
+                },
+            ],
+            ..plugin::MeshConfig::default()
+        };
+
+        let specs = build_startup_model_specs(&cli, &config).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].model_ref, PathBuf::from("Qwen3-8B-Q4_K_M"));
+        assert_eq!(specs[0].ctx_size, Some(4096));
+        assert_eq!(
+            specs[1].mmproj_ref,
+            Some(PathBuf::from("bartowski/Qwen2.5-VL/mmproj.gguf"))
+        );
+        assert_eq!(specs[1].ctx_size, Some(4096));
+    }
+
+    #[test]
+    fn test_build_startup_model_specs_ignores_config_models_for_client() {
+        let cli = Cli::parse_from(["mesh-llm", "--client"]);
+        let config = plugin::MeshConfig {
+            models: vec![plugin::ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: Some(8192),
+            }],
+            ..plugin::MeshConfig::default()
+        };
+
+        let specs = build_startup_model_specs(&cli, &config).unwrap();
+        assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn test_should_show_serve_config_help_for_bare_serve_without_models() {
+        let cli = Cli::parse_from(["mesh-llm"]);
+        let startup_specs = Vec::new();
+
+        assert!(should_show_serve_config_help(
+            Some(RuntimeSurface::Serve),
+            &cli,
+            &startup_specs
+        ));
+    }
+
+    #[test]
+    fn test_should_not_show_serve_config_help_when_models_are_present() {
+        let cli = Cli::parse_from(["mesh-llm"]);
+        let startup_specs = vec![StartupModelSpec {
+            model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
+            mmproj_ref: None,
+            ctx_size: None,
+        }];
+
+        assert!(!should_show_serve_config_help(
+            Some(RuntimeSurface::Serve),
+            &cli,
+            &startup_specs
+        ));
+    }
+
+    #[test]
+    fn test_should_not_show_serve_config_help_for_client_surface() {
+        let cli = Cli::parse_from(["mesh-llm", "--client"]);
+        let startup_specs = Vec::new();
+
+        assert!(!should_show_serve_config_help(
+            Some(RuntimeSurface::Client),
+            &cli,
+            &startup_specs
+        ));
+    }
+
+    #[test]
+    fn test_should_not_show_serve_config_help_for_auto_serve_without_models() {
+        let cli = Cli::parse_from(["mesh-llm", "--auto"]);
+        let startup_specs = Vec::new();
+
+        assert!(!should_show_serve_config_help(
+            Some(RuntimeSurface::Serve),
+            &cli,
+            &startup_specs
+        ));
+    }
+
+    #[test]
+    fn test_should_not_show_serve_config_help_for_join_serve_without_models() {
+        let cli = Cli::parse_from(["mesh-llm", "--join", "token"]);
+        let startup_specs = Vec::new();
+
+        assert!(!should_show_serve_config_help(
+            Some(RuntimeSurface::Serve),
+            &cli,
+            &startup_specs
+        ));
     }
 
     #[tokio::test]

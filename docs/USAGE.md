@@ -68,6 +68,7 @@ mesh-llm discover
 ```
 
 If you run `mesh-llm` with no arguments, it prints `--help` and exits. It does not start the console or bind ports until you choose a mode.
+Bare `mesh-llm serve` loads startup models from `[[models]]` in `~/.mesh-llm/config.toml`.
 
 ## Background service
 
@@ -77,22 +78,19 @@ To install Mesh LLM as a per-user background service:
 curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service
 ```
 
-To seed the service with a custom startup command on first install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service --service-args 'serve --model Qwen2.5-3B'
-```
-
 Service installs are user-scoped:
 
 - macOS installs a `launchd` agent at `~/Library/LaunchAgents/com.mesh-llm.mesh-llm.plist`
 - Linux installs a `systemd --user` unit at `~/.config/systemd/user/mesh-llm.service`
 - Shared environment config lives in `~/.config/mesh-llm/service.env`
+- Startup models live in `~/.mesh-llm/config.toml`
 
 Platform behavior:
 
-- macOS reads startup args from `~/.config/mesh-llm/service.args`
-- Linux writes the `mesh-llm` argv directly into `ExecStart=`
+- macOS loads `service.env` and then executes `mesh-llm serve`
+- Linux writes `mesh-llm serve` directly into `ExecStart=`
+
+The background service no longer stores custom startup args. Configure startup models in `~/.mesh-llm/config.toml` instead.
 
 Optional shared environment file example:
 
@@ -144,6 +142,50 @@ mesh-llm serve --model bartowski/Llama-3.2-3B-Instruct-GGUF/Llama-3.2-3B-Instruc
 mesh-llm serve --gguf ~/my-models/custom-model.gguf
 mesh-llm serve --gguf ~/my-models/qwen3.5-4b.gguf --mmproj ~/my-models/mmproj-BF16.gguf
 ```
+
+## Startup config
+
+`mesh-llm serve` also loads startup models from `~/.mesh-llm/config.toml` by default.
+
+```toml
+version = 1
+
+[gpu]
+assignment = "auto"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+
+[[models]]
+model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
+mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
+ctx_size = 8192
+
+[[plugin]]
+name = "blackboard"
+enabled = true
+```
+
+Use the default config:
+
+```bash
+mesh-llm serve
+```
+
+If no startup models are configured, `mesh-llm serve` prints a `⚠️` warning, shows help, and exits.
+
+Or an explicit path:
+
+```bash
+mesh-llm serve --config /path/to/config.toml
+```
+
+Config precedence:
+
+- Explicit `--model` or `--gguf` ignores configured `[[models]]`.
+- Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
+- `mmproj` is optional and only used when that startup model needs a projector sidecar.
+- Plugin entries stay in the same file.
 
 Useful model commands:
 

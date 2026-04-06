@@ -130,13 +130,22 @@ pub(super) async fn nostr_rediscovery(
 }
 
 /// Helper for StartNew path — configure CLI to start a new mesh.
-pub(super) fn start_new_mesh(cli: &mut Cli, _models: &[String], my_vram_gb: f64) {
+pub(super) fn start_new_mesh(
+    cli: &mut Cli,
+    _models: &[String],
+    my_vram_gb: f64,
+    has_startup_models: bool,
+) {
     let pack = nostr::auto_model_pack(my_vram_gb);
     let primary = pack.first().cloned().unwrap_or_default();
     eprintln!("🆕 Starting a new mesh");
-    eprintln!("   Serving: {primary}");
+    if has_startup_models {
+        eprintln!("   Using configured startup models");
+    } else {
+        eprintln!("   Serving: {primary}");
+    }
     eprintln!("   VRAM: {:.0}GB", my_vram_gb);
-    if cli.model.is_empty() {
+    if !has_startup_models && cli.model.is_empty() {
         cli.model.push(primary.into());
     }
     if !cli.publish {

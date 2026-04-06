@@ -10,7 +10,7 @@ EnvironmentFile=-@SERVICE_ENV_FILE@
 @ENV_LINES@
 @EXEC_LINE@
 WorkingDirectory=%h
-Restart=always
+Restart=on-failure
 RestartSec=5
 
 [Install]

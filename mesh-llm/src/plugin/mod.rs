@@ -26,8 +26,10 @@ use url::Url;
 
 #[allow(unused_imports)]
 pub use self::config::ExternalPluginSpec;
+#[allow(unused_imports)]
 pub use self::config::{
-    config_path, load_config, resolve_plugins, PluginHostMode, ResolvedPlugins,
+    config_path, load_config, resolve_plugins, MeshConfig, ModelConfigEntry, PluginHostMode,
+    ResolvedPlugins,
 };
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;

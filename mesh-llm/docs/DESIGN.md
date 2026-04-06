@@ -107,6 +107,27 @@ mesh hosts via QUIC. When the real `api_proxy` is ready, it takes over the liste
 This gives instant API access (within seconds of `mesh-llm serve --join`) while the local
 GPU loads its model in the background.
 
+## Local Node Config
+
+`mesh-llm serve` owns startup model configuration. By default it reads
+`~/.mesh-llm/config.toml`, which now serves as the unified local node config for:
+
+- startup models under `[[models]]`
+- local GPU startup policy under `[gpu]`
+- plugin declarations under `[[plugin]]`
+
+Phase 2 keeps this config intentionally local-node only. There is no authored mesh-wide
+`[[nodes]]` state yet.
+
+CLI precedence is by concern:
+
+- explicit `--model` or `--gguf` ignores configured `[[models]]`
+- explicit `--ctx-size` overrides configured `ctx_size`
+- plugin config continues to load from the same file
+
+Bare `mesh-llm serve` is the config-owned path. If `[[models]]` is empty, it warns,
+prints help, and exits cleanly. Background services use that path directly.
+
 ## Passive Mode
 
 Two flavors, one code path (`run_passive()`):

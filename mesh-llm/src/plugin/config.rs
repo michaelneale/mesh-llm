@@ -7,8 +7,37 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct MeshConfig {
+    #[serde(default)]
+    pub version: Option<u32>,
+    #[serde(default)]
+    pub gpu: GpuConfig,
+    #[serde(default)]
+    pub models: Vec<ModelConfigEntry>,
     #[serde(rename = "plugin", default)]
     pub plugins: Vec<PluginConfigEntry>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct GpuConfig {
+    #[serde(default)]
+    pub assignment: GpuAssignment,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuAssignment {
+    #[default]
+    Auto,
+    Pinned,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ModelConfigEntry {
+    pub model: String,
+    #[serde(default)]
+    pub mmproj: Option<String>,
+    #[serde(default)]
+    pub ctx_size: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -58,7 +87,32 @@ pub fn load_config(override_path: Option<&Path>) -> Result<MeshConfig> {
     }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read config {}", path.display()))?;
-    toml::from_str(&raw).with_context(|| format!("Failed to parse config {}", path.display()))
+    let config: MeshConfig = toml::from_str(&raw)
+        .with_context(|| format!("Failed to parse config {}", path.display()))?;
+    validate_config(&config).with_context(|| format!("Invalid config {}", path.display()))?;
+    Ok(config)
+}
+
+fn validate_config(config: &MeshConfig) -> Result<()> {
+    if let Some(version) = config.version {
+        if version != 1 {
+            bail!("unsupported config version {version}; expected version = 1");
+        }
+    }
+    if config.gpu.assignment != GpuAssignment::Auto {
+        bail!("`gpu.assignment = \"pinned\"` is not supported yet");
+    }
+    for (index, model) in config.models.iter().enumerate() {
+        if model.model.trim().is_empty() {
+            bail!("models[{index}].model must not be empty");
+        }
+        if let Some(mmproj) = &model.mmproj {
+            if mmproj.trim().is_empty() {
+                bail!("models[{index}].mmproj must not be empty when set");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Result<ResolvedPlugins> {
@@ -167,4 +221,58 @@ pub fn lemonade_plugin_spec() -> Result<ExternalPluginSpec> {
         command,
         args: vec!["--plugin".into(), LEMONADE_PLUGIN_ID.into()],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_unified_config_keeps_plugins_and_models() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+version = 1
+
+[gpu]
+assignment = "auto"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+ctx_size = 8192
+
+[[models]]
+model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/model.gguf"
+mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj.gguf"
+
+[[plugin]]
+name = "demo"
+command = "/tmp/demo"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.version, Some(1));
+        assert_eq!(config.gpu.assignment, GpuAssignment::Auto);
+        assert_eq!(config.models.len(), 2);
+        assert_eq!(config.models[0].model, "Qwen3-8B-Q4_K_M");
+        assert_eq!(config.models[0].ctx_size, Some(8192));
+        assert_eq!(
+            config.models[1].mmproj.as_deref(),
+            Some("bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj.gguf")
+        );
+        assert_eq!(config.plugins.len(), 1);
+        assert_eq!(config.plugins[0].name, "demo");
+    }
+
+    #[test]
+    fn validate_rejects_pinned_gpu_assignment() {
+        let config = MeshConfig {
+            gpu: GpuConfig {
+                assignment: GpuAssignment::Pinned,
+            },
+            ..MeshConfig::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains("not supported yet"));
+    }
 }

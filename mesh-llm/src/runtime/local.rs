@@ -157,6 +157,7 @@ pub(super) async fn start_runtime_local_model(
     binary_flavor: Option<launch::BinaryFlavor>,
     node: &mesh::Node,
     model_path: &Path,
+    mmproj_override: Option<&Path>,
     ctx_size_override: Option<u32>,
 ) -> Result<(
     String,
@@ -172,7 +173,9 @@ pub(super) async fn start_runtime_local_model(
     );
 
     let port = alloc_local_port().await?;
-    let mmproj_path = mmproj_path_for_model(&model_name);
+    let mmproj_path = mmproj_override
+        .map(Path::to_path_buf)
+        .or_else(|| mmproj_path_for_model(&model_name));
     let process = launch::start_llama_server(
         bin_dir,
         binary_flavor,
