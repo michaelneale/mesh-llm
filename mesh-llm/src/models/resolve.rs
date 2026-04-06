@@ -214,52 +214,6 @@ pub fn installed_model_display_name(model_name: &str) -> String {
         .unwrap_or_else(|| model_name.to_string())
 }
 
-pub(super) fn catalog_hf_match(
-    path: &Path,
-) -> Option<(
-    &'static catalog::CatalogModel,
-    String,
-    Option<String>,
-    String,
-)> {
-    let model = catalog_match(path)?;
-    let file_name = path.file_name()?.to_str()?;
-    if model.file == file_name {
-        if let (Some(repo), revision, Some(file)) = (
-            model.source_repo(),
-            model.source_revision(),
-            model.source_file(),
-        ) {
-            return Some((
-                model,
-                repo.to_string(),
-                revision.map(str::to_string),
-                file.to_string(),
-            ));
-        }
-        return None;
-    }
-
-    let source_url = if let Some(asset) = model
-        .extra_files
-        .iter()
-        .find(|asset| asset.file == file_name)
-    {
-        asset.url.as_str()
-    } else if let Some(asset) = model.mmproj.as_ref() {
-        if asset.file == file_name {
-            asset.url.as_str()
-        } else {
-            return None;
-        }
-    } else {
-        return None;
-    };
-
-    let (repo, revision, file) = parse_hf_resolve_url(source_url)?;
-    Some((model, repo, revision, file))
-}
-
 pub(super) fn catalog_hf_asset_ref(
     model: &'static catalog::CatalogModel,
     file_name: &str,
@@ -289,22 +243,6 @@ pub(super) fn catalog_hf_asset_ref(
     };
 
     parse_hf_resolve_url(source_url)
-}
-
-pub(super) fn catalog_match(path: &Path) -> Option<&'static catalog::CatalogModel> {
-    let file_name = path.file_name()?.to_str()?;
-    catalog::MODEL_CATALOG.iter().find(|model| {
-        model.file == file_name
-            || model
-                .extra_files
-                .iter()
-                .any(|asset| asset.file == file_name)
-            || model
-                .mmproj
-                .as_ref()
-                .map(|asset| asset.file == file_name)
-                .unwrap_or(false)
-    })
 }
 
 pub(super) fn matching_catalog_model_for_huggingface(

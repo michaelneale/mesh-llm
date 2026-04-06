@@ -332,7 +332,6 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
         } => run_model_search(query, *catalog, *limit).await?,
         ModelsCommand::Show { model } => run_model_show(model).await?,
         ModelsCommand::Download { model, draft } => run_model_download(model, *draft).await?,
-        ModelsCommand::Migrate { apply, prune } => crate::models::run_migrate(*apply, *prune)?,
         ModelsCommand::Updates { repo, all, check } => {
             crate::models::run_update(repo.as_deref(), *all, *check)?
         }

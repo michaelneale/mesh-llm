@@ -252,8 +252,6 @@ mesh-llm models search qwen 8b
 mesh-llm models search --catalog qwen
 mesh-llm models show Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf
 mesh-llm models download Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf
-mesh-llm models migrate
-mesh-llm models migrate --apply
 mesh-llm models updates --check
 mesh-llm models updates --all
 mesh-llm models updates Qwen/Qwen3-8B-GGUF
@@ -263,7 +261,6 @@ mesh-llm models updates Qwen/Qwen3-8B-GGUF
 
 - Hugging Face repo snapshots are the canonical managed model store.
 - Flat `~/.models/` storage is no longer scanned for managed models.
-- If you still have legacy files there, use `mesh-llm models migrate --apply`.
 - Arbitrary local GGUF files still work through `mesh-llm serve --gguf`.
 - MoE split artifacts are cached under `~/.cache/mesh-llm/splits/`.
 

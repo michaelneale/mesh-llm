@@ -34,15 +34,6 @@ pub enum ModelsCommand {
         #[arg(long)]
         draft: bool,
     },
-    /// Inspect or migrate deprecated ~/.models content into the Hugging Face cache.
-    Migrate {
-        /// Materialize recognized Hugging Face-backed legacy models into the HF cache.
-        #[arg(long)]
-        apply: bool,
-        /// Remove recognized legacy GGUF files that already exist in the Hugging Face cache.
-        #[arg(long)]
-        prune: bool,
-    },
     /// Check or refresh cached Hugging Face repos.
     #[command(visible_alias = "update")]
     Updates {
