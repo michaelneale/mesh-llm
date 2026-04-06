@@ -726,6 +726,24 @@ fn normalizes_missing_optional_message_fields_for_dot_access_templates() {
 }
 
 #[test]
+fn does_not_inject_tool_calls_when_template_checks_key_presence() {
+    let messages = json!([
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"}
+    ]);
+    let normalized = normalize_hf_messages(
+        "{% if 'tool_calls' in message %}{{ message.tool_calls|length }}{% endif %}",
+        messages,
+    );
+
+    let array = normalized.as_array().unwrap();
+    for message in array {
+        let object = message.as_object().unwrap();
+        assert!(!object.contains_key("tool_calls"));
+    }
+}
+
+#[test]
 fn qwen_hf_template_with_dot_access_does_not_fall_back_to_chatml() {
     let root = std::env::temp_dir().join(format!(
         "mesh-llm-template-qwen-dot-access-{}",

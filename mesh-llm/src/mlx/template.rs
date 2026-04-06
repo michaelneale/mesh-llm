@@ -489,14 +489,21 @@ fn template_references_message_field(template: &str, field: &str) -> bool {
         || template.contains(&format!("message.{field}"))
 }
 
+fn template_checks_message_field_presence(template: &str, field: &str) -> bool {
+    template.contains(&format!("'{field}' in message"))
+        || template.contains(&format!("\"{field}\" in message"))
+}
+
 fn normalize_hf_messages(template: &str, messages: Value) -> Value {
     let Some(messages) = messages.as_array() else {
         return messages;
     };
-    let fill_tool_calls = template_references_message_field(template, "tool_calls");
+    let fill_tool_calls = template_references_message_field(template, "tool_calls")
+        && !template_checks_message_field_presence(template, "tool_calls");
     let fill_tool_call_id = template_references_message_field(template, "tool_call_id");
     let fill_name = template_references_message_field(template, "name");
-    let fill_tool_responses = template_references_message_field(template, "tool_responses");
+    let fill_tool_responses = template_references_message_field(template, "tool_responses")
+        && !template_checks_message_field_presence(template, "tool_responses");
 
     Value::Array(
         messages

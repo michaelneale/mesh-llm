@@ -5358,6 +5358,7 @@ mod tests {
             model_name: "Qwen3-Coder-Next-Q4_K_M".to_string(),
             identity_hash: Some("same-model".to_string()),
             context_length: None,
+            backend: None,
             ready: false,
         }];
 
