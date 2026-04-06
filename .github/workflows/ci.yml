@@ -344,7 +344,7 @@ jobs:
             cache_slug: mlx-community--GLM-4-9B-0414-4bit
           - name: gemma-4-e4b
             id: gemma4
-            cache_slug: unsloth--gemma-4-E4B-it-UD-MLX-4bit
+            cache_slug: meshllm--gemma-4-e4b-it-parity-8bit-mlx
           - name: lfm2-350m
             id: lfm2
             cache_slug: mlx-community--LFM2-350M-4bit
@@ -425,7 +425,7 @@ jobs:
             cache_slug: lmstudio-community--GLM-4-9B-0414-GGUF
           - name: gemma-4-e4b
             id: gemma4
-            cache_slug: unsloth--gemma-4-E4B-it-GGUF
+            cache_slug: meshllm--gemma-4-e4b-it-parity-q8_0-gguf
           - name: lfm2-350m
             id: lfm2
             cache_slug: LiquidAI--LFM2-350M-GGUF

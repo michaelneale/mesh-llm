@@ -9,8 +9,8 @@ gguf	gemma2-gguf-exact	meshllm/gemma-2-2b-it-parity-q8_0-gguf/gemma-2-2b-it-q8_0
 mlx	gemma2-mlx-exact	meshllm/gemma-2-2b-it-parity-8bit-mlx	chat_template.jinja
 gguf	gemma3-gguf-exact	meshllm/gemma-3-1b-it-parity-f16-gguf/gemma-3-1b-it-f16.gguf	-
 mlx	gemma3-mlx-exact	meshllm/gemma-3-1b-it-parity-bf16-mlx	tokenizer_config.json
-gguf	gemma4-gguf-exact	unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf	-
-mlx	gemma4-mlx-exact	unsloth/gemma-4-E4B-it-UD-MLX-4bit	chat_template.jinja
+gguf	gemma4-gguf-exact	meshllm/gemma-4-e4b-it-parity-q8_0-gguf/gemma-4-e4b-it-q8_0.gguf	-
+mlx	gemma4-mlx-exact	meshllm/gemma-4-e4b-it-parity-8bit-mlx	chat_template.jinja
 gguf	glm4-gguf-exact	lmstudio-community/GLM-4-9B-0414-GGUF/GLM-4-9B-0414-Q4_K_M.gguf	-
 mlx	glm4-mlx-exact	mlx-community/GLM-4-9B-0414-4bit	tokenizer_config.json
 gguf	lfm2-gguf-exact	LiquidAI/LFM2-350M-GGUF/LFM2-350M-Q4_K_M.gguf	-

@@ -141,8 +141,8 @@ jobs:
             url: https://huggingface.co/lmstudio-community/GLM-4-9B-0414-GGUF/resolve/main/GLM-4-9B-0414-Q4_K_M.gguf
             file: GLM-4-9B-0414-Q4_K_M.gguf
           - name: gemma-4-e4b
-            url: https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf
-            file: gemma-4-E4B-it-Q4_K_M.gguf
+            url: https://huggingface.co/meshllm/gemma-4-e4b-it-parity-q8_0-gguf/resolve/main/gemma-4-e4b-it-q8_0.gguf
+            file: gemma-4-e4b-it-q8_0.gguf
     steps:
       - uses: actions/checkout@v5
 
@@ -288,8 +288,8 @@ jobs:
             repo: mlx-community/GLM-4-9B-0414-4bit
             cache_slug: mlx-community--GLM-4-9B-0414-4bit
           - name: gemma-4-e4b
-            repo: unsloth/gemma-4-E4B-it-UD-MLX-4bit
-            cache_slug: unsloth--gemma-4-E4B-it-UD-MLX-4bit
+            repo: meshllm/gemma-4-e4b-it-parity-8bit-mlx
+            cache_slug: meshllm--gemma-4-e4b-it-parity-8bit-mlx
           - name: lfm2-350m
             repo: mlx-community/LFM2-350M-4bit
             cache_slug: mlx-community--LFM2-350M-4bit

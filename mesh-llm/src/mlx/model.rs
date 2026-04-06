@@ -1917,19 +1917,23 @@ impl MlxModel {
                 .cloned()
                 .with_context(|| format!("missing {prefix}.weight"))?;
             let bias = tensors.get(&format!("{prefix}.bias")).cloned();
-            let dense_weight_t = if quantized.is_none() {
+            let scales_key = format!("{prefix}.scales");
+            let biases_key = format!("{prefix}.biases");
+            let has_quantized_tensors =
+                tensors.contains_key(&scales_key) && tensors.contains_key(&biases_key);
+            let dense_weight_t = if quantized.is_none() || !has_quantized_tensors {
                 Some(weight.transpose_axes(&[1, 0])?)
             } else {
                 let (group_size, bits) =
                     quant_params_for(&config_json, prefix, default_group_size, default_bits);
                 let scales = tensors
-                    .get(&format!("{prefix}.scales"))
+                    .get(&scales_key)
                     .cloned()
-                    .with_context(|| format!("missing {prefix}.scales"))?;
+                    .with_context(|| format!("missing {scales_key}"))?;
                 let biases = tensors
-                    .get(&format!("{prefix}.biases"))
+                    .get(&biases_key)
                     .cloned()
-                    .with_context(|| format!("missing {prefix}.biases"))?;
+                    .with_context(|| format!("missing {biases_key}"))?;
                 // Some Gemma4 MLX checkpoints use 5-bit weights for a subset of MLP
                 // blocks, and current Metal qmm kernels are missing for that shape.
                 // Allow forcing the dense path for diagnostics when comparing qmm
@@ -1942,17 +1946,17 @@ impl MlxModel {
                     None
                 }
             };
-            let (group_size, bits) = if quantized.is_some() {
+            let (group_size, bits) = if quantized.is_some() && has_quantized_tensors {
                 quant_params_for(&config_json, prefix, default_group_size, default_bits)
             } else {
                 (0, 0)
             };
             let scales = tensors
-                .get(&format!("{prefix}.scales"))
+                .get(&scales_key)
                 .cloned()
                 .unwrap_or_else(|| array!(0.0f32));
             let biases = tensors
-                .get(&format!("{prefix}.biases"))
+                .get(&biases_key)
                 .cloned()
                 .unwrap_or_else(|| array!(0.0f32));
             Ok(QuantizedLinear {
@@ -4256,6 +4260,44 @@ mod tests {
             ),
             (64, 4)
         );
+    }
+
+    #[test]
+    fn quantized_repo_can_keep_specific_linear_dense() {
+        let config = serde_json::json!({
+            "quantization": {
+                "group_size": 64,
+                "bits": 8
+            }
+        });
+        let prefix = "language_model.model.per_layer_model_projection";
+        let mut tensors = std::collections::HashMap::new();
+        tensors.insert(
+            format!("{prefix}.weight"),
+            array!([[1.0f32, 2.0f32], [3.0f32, 4.0f32]]),
+        );
+
+        let weight = tensors[&format!("{prefix}.weight")].clone();
+        let scales_key = format!("{prefix}.scales");
+        let biases_key = format!("{prefix}.biases");
+        let has_quantized_tensors =
+            tensors.contains_key(&scales_key) && tensors.contains_key(&biases_key);
+
+        assert!(!has_quantized_tensors);
+
+        let dense_weight_t = if !has_quantized_tensors {
+            Some(weight.transpose_axes(&[1, 0]).unwrap())
+        } else {
+            None
+        };
+        let (group_size, bits) = if has_quantized_tensors {
+            quant_params_for(&config, prefix, 64, 8)
+        } else {
+            (0, 0)
+        };
+
+        assert!(dense_weight_t.is_some());
+        assert_eq!((group_size, bits), (0, 0));
     }
 
     #[test]

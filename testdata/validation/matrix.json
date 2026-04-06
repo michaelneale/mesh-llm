@@ -165,16 +165,16 @@
       "id": "gemma4",
       "label": "gemma-4-e4b",
       "expectation_class": "strict",
-      "notes": "Gemma4 E4B parity baseline.",
+      "notes": "Gemma4 parity baseline using same-origin 8bit/Q8_0 artifacts published by meshllm.",
       "gguf": {
         "exact_case_id": "gemma4-gguf-exact",
         "behavior_case_id": "gemma4-gguf-behavior",
-        "model_ref": "unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+        "model_ref": "meshllm/gemma-4-e4b-it-parity-q8_0-gguf/gemma-4-e4b-it-q8_0.gguf"
       },
       "mlx": {
         "exact_case_id": "gemma4-mlx-exact",
         "behavior_case_id": "gemma4-mlx-behavior",
-        "model_ref": "unsloth/gemma-4-E4B-it-UD-MLX-4bit",
+        "model_ref": "meshllm/gemma-4-e4b-it-parity-8bit-mlx",
         "template_source": "chat_template.jinja"
       }
     },
