@@ -783,8 +783,6 @@ impl MeshApi {
             .or_else(|| my_hosted_models.first().cloned())
             .or_else(|| my_serving_models.first().cloned())
             .unwrap_or_else(|| model_name.clone());
-        let mesh_models = self.mesh_models().await;
-
         let (launch_pi, launch_goose) = if effective_llama_ready {
             (
                 Some(format!("pi --provider mesh --model {display_model_name}")),
@@ -833,7 +831,7 @@ impl MeshApi {
             peers,
             launch_pi,
             launch_goose,
-            mesh_models,
+            mesh_models: Vec::new(),
             inflight_requests,
             mesh_id,
             mesh_name,
@@ -2121,5 +2119,24 @@ data: [DONE]
 
         handle.abort();
         let _ = upstream_handle.await;
+    }
+
+    /// Regression test: status() must NOT call mesh_models() because that
+    /// triggers a full HuggingFace cache filesystem scan via
+    /// local_inventory_snapshot(). The UI fetches mesh_models from the
+    /// separate /api/models endpoint instead.
+    ///
+    /// PR #127 (commit 30d0cf7) accidentally inlined mesh_models() back into
+    /// status(), causing a filesystem scan on every push_status() — which
+    /// fires on every inflight request count change during inference.
+    #[tokio::test]
+    async fn test_status_does_not_contain_scanned_mesh_models() {
+        let state = build_test_mesh_api().await;
+        let status = state.status().await;
+        assert!(
+            status.mesh_models.is_empty(),
+            "status() must not populate mesh_models (it triggers a filesystem scan); \
+             the UI fetches them from /api/models instead"
+        );
     }
 }
