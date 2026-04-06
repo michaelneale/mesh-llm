@@ -967,13 +967,10 @@ pub async fn start(
 
     // Populate the inventory cache eagerly in the background so status()
     // never performs blocking filesystem/GGUF reads inline.
+    // local_inventory_snapshot() updates cached_inventory when the scan completes.
     let state6 = state.clone();
     tokio::spawn(async move {
-        let snapshot = state6.local_inventory_snapshot().await;
-        {
-            let mut inner = state6.inner.lock().await;
-            inner.cached_inventory = snapshot;
-        }
+        state6.local_inventory_snapshot().await;
         state6.push_status().await;
     });
 
@@ -2160,34 +2157,20 @@ data: [DONE]
     async fn test_status_uses_cached_inventory_not_scan() {
         let state = build_test_mesh_api().await;
 
-        // Inject a sentinel into cached_inventory.
+        // Set inventory_scan_running = true so any accidental call into
+        // local_inventory_snapshot() will block forever waiting for a scan
+        // that never completes. status() must still complete promptly
+        // because it reads cached_inventory directly.
         {
             let mut inner = state.inner.lock().await;
-            inner
-                .cached_inventory
-                .model_names
-                .insert("sentinel-cached-model".to_string());
+            inner.inventory_scan_running = true;
         }
 
-        // status() should use cached_inventory, so mesh_models won't include
-        // models from a fresh filesystem scan that doesn't know about our sentinel.
-        // But mesh_models is built from cached_inventory + peer data + catalog,
-        // so the sentinel won't appear there either (it's not in the catalog).
-        // The real invariant: status() must NOT call local_inventory_snapshot().
-        // We verify this by checking status() completes instantly — if it scanned,
-        // the spawn_blocking would yield.  More directly: confirm the source code
-        // uses build_mesh_models(cached_inventory) not self.mesh_models().
-        //
-        // As a functional check: prime cached_inventory empty, confirm status
-        // returns without blocking (a real scan would take measurable time on
-        // machines with models).
-        let start = std::time::Instant::now();
-        let _status = state.status().await;
-        let elapsed = start.elapsed();
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(500), state.status()).await;
         assert!(
-            elapsed < std::time::Duration::from_secs(2),
-            "status() took {:?} — likely calling local_inventory_snapshot() instead of using cached_inventory",
-            elapsed
+            result.is_ok(),
+            "status() blocked — likely calling local_inventory_snapshot() instead of using cached_inventory"
         );
     }
 }
