@@ -1,4 +1,4 @@
-use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, LEMONADE_PLUGIN_ID};
+use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, LEMONADE_PLUGIN_ID, MINIMAX_PLUGIN_ID};
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
 use serde::Deserialize;
@@ -122,6 +122,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let mut blackboard_enabled = true;
     let mut blobstore_enabled = true;
     let mut lemonade_enabled = false;
+    let mut minimax_enabled = false;
     for entry in &config.plugins {
         if names.insert(entry.name.clone(), ()).is_some() {
             bail!("Duplicate plugin entry '{}'", entry.name);
@@ -157,6 +158,16 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
             lemonade_enabled = enabled;
             continue;
         }
+        if entry.name == MINIMAX_PLUGIN_ID {
+            if entry.command.is_some() || !entry.args.is_empty() {
+                bail!(
+                    "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
+                    MINIMAX_PLUGIN_ID
+                );
+            }
+            minimax_enabled = enabled;
+            continue;
+        }
         if !enabled {
             continue;
         }
@@ -176,6 +187,9 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     }
     if lemonade_enabled {
         externals.push(lemonade_plugin_spec()?);
+    }
+    if minimax_enabled {
+        externals.push(minimax_plugin_spec()?);
     }
     if blobstore_enabled {
         externals.push(blobstore_plugin_spec()?);
@@ -220,6 +234,18 @@ pub fn lemonade_plugin_spec() -> Result<ExternalPluginSpec> {
         name: LEMONADE_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), LEMONADE_PLUGIN_ID.into()],
+    })
+}
+
+pub fn minimax_plugin_spec() -> Result<ExternalPluginSpec> {
+    let command = std::env::current_exe()
+        .context("Cannot determine mesh-llm executable path")?
+        .display()
+        .to_string();
+    Ok(ExternalPluginSpec {
+        name: MINIMAX_PLUGIN_ID.to_string(),
+        command,
+        args: vec!["--plugin".into(), MINIMAX_PLUGIN_ID.into()],
     })
 }
 
@@ -274,5 +300,57 @@ command = "/tmp/demo"
         };
         let err = validate_config(&config).unwrap_err();
         assert!(err.to_string().contains("not supported yet"));
+    }
+
+    #[test]
+    fn minimax_can_be_enabled_explicitly() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: MINIMAX_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: None,
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        // blackboard + minimax + blobstore
+        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, MINIMAX_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+    }
+
+    #[test]
+    fn minimax_is_disabled_by_default() {
+        let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
+        assert!(!resolved
+            .externals
+            .iter()
+            .any(|e| e.name == MINIMAX_PLUGIN_ID));
+    }
+
+    #[test]
+    fn minimax_rejects_custom_command() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: MINIMAX_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some("/usr/bin/custom".into()),
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let err = resolve_plugins(&config, private_host_mode()).unwrap_err();
+        assert!(
+            err.to_string().contains("only `enabled` may be set"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn private_host_mode() -> PluginHostMode {
+        PluginHostMode {
+            mesh_visibility: mesh_llm_plugin::MeshVisibility::Private,
+        }
     }
 }

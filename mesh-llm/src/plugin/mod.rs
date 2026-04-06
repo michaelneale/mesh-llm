@@ -45,6 +45,7 @@ use mesh_llm_plugin::MeshVisibility;
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
 pub const LEMONADE_PLUGIN_ID: &str = "lemonade";
+pub const MINIMAX_PLUGIN_ID: &str = "minimax";
 pub const BLACKBOARD_CAPABILITY: &str = "blackboard.v1";
 pub(crate) const PROTOCOL_VERSION: u32 = mesh_llm_plugin::PROTOCOL_VERSION;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -1573,6 +1574,7 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
         LEMONADE_PLUGIN_ID => crate::plugins::lemonade::run_plugin(name).await,
+        MINIMAX_PLUGIN_ID => crate::plugins::minimax::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
 }

@@ -374,6 +374,10 @@ curl -s http://localhost:9337/v1/models | jq '.data[].id'
 
 mesh-llm ships a built-in `lemonade` plugin that registers a local [Lemonade Server](https://lemonade-server.ai) as another OpenAI-compatible backend. For setup and verification steps, see [docs/USAGE.md](docs/USAGE.md#lemonade-integration).
 
+### MiniMax
+
+mesh-llm ships a built-in `minimax` plugin that routes requests to the [MiniMax cloud API](https://platform.minimax.io) through the same local endpoint. Enable it by adding `MINIMAX_API_KEY` to your environment and a `[[plugin]]` entry to `~/.mesh-llm/config.toml`. See [docs/USAGE.md](docs/USAGE.md#minimax-integration) for details.
+
 If you want the mesh to be discoverable via `--auto`, publish it:
 
 ```bash

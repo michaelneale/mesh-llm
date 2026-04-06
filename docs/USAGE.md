@@ -243,6 +243,62 @@ Notes:
 - Use the exact model ID returned by Lemonade's `/api/v1/models`.
 - If you use the mesh-llm background service, add `MESH_LLM_LEMONADE_BASE_URL=...` to `~/.config/mesh-llm/service.env`.
 
+## MiniMax integration
+
+mesh-llm includes a built-in `minimax` plugin that routes requests to the [MiniMax cloud API](https://platform.minimax.io) through the same `http://localhost:9337/v1` endpoint that mesh-llm already exposes.
+
+Set your API key:
+
+```bash
+export MINIMAX_API_KEY=your_key_here
+```
+
+Enable the plugin in `~/.mesh-llm/config.toml`:
+
+```toml
+[[plugin]]
+name = "minimax"
+enabled = true
+```
+
+Start mesh-llm normally:
+
+```bash
+mesh-llm serve
+```
+
+After startup, mesh-llm includes the MiniMax models in its model list:
+
+```bash
+curl -s http://localhost:9337/v1/models | jq '.data[].id'
+# → "MiniMax-M2.7"
+# → "MiniMax-M2.7-highspeed"
+```
+
+Send a request:
+
+```bash
+curl http://localhost:9337/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "MiniMax-M2.7",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+To use a different base URL (for example, a private deployment), set:
+
+```bash
+export MINIMAX_BASE_URL=https://api.minimax.io/v1
+```
+
+Notes:
+
+- `MINIMAX_API_KEY` must be set before starting mesh-llm with the plugin enabled.
+- The plugin is disabled by default; add the `[[plugin]]` entry to enable it.
+- MiniMax-M2.7 and MiniMax-M2.7-highspeed are the models exposed by this plugin.
+- Streaming responses are supported; the plugin uses chunked transfer encoding.
+
 Useful model commands:
 
 ```bash
