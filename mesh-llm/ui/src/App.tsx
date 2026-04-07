@@ -4014,6 +4014,7 @@ function DashboardPage({
   }, [activeDetail, status, topologyNodes, totalMeshVramGb]);
 
   function pushDetail(entry: DetailPanelEntry) {
+    if (isMeshOverviewFullscreen) return;
     setDetailPanelStack((prev) => {
       const current = prev[prev.length - 1];
       const isSameEntry =
@@ -4498,7 +4499,7 @@ function DashboardPage({
           )
         : null}
 
-      <Sheet open={detailPanelStack.length > 0} onOpenChange={(open) => !open && closeDetailPanel()}>
+      <Sheet open={detailPanelStack.length > 0 && !isMeshOverviewFullscreen} onOpenChange={(open) => !open && closeDetailPanel()}>
         <SheetContent side="right" className="w-full overflow-y-auto border-l bg-background/95 p-0 backdrop-blur sm:max-w-2xl" onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).focus(); }}>
           {activeDetail?.kind === "node" && activeNode ? (
             <NodeSidebar
