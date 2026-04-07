@@ -341,10 +341,16 @@ impl KvCacheQuant {
 
     /// Choose a KV cache quantization pair for the given model size.
     ///
-    /// Defaults are chosen to be safe on all supported backends (CUDA, HIP,
-    /// Metal) without needing the GGML_CUDA_FA_ALL_QUANTS build flag and
-    /// without triggering the Metal FA-fallback crash. See the module-level
-    /// comment in `build_llama_server_args` for the tier rationale.
+    /// The small and large tiers are safe on all supported backends without
+    /// extra build flags. The medium tier (5-50GB) opts into Q8_0/Q4_0 for
+    /// ~25% additional KV savings and relies on GGML_CUDA_FA_ALL_QUANTS in
+    /// our CUDA build (enforced by scripts/build-linux.sh) and on Metal
+    /// Flash Attention being available on the host (true for all M1+ Macs).
+    /// `validation_warnings()` returns the open upstream bugs this tier
+    /// currently trips (`#20866`, `#21450`), and
+    /// `detect_known_crash_signature` attributes the matching crash in the
+    /// llama-server failure path. See the tier comment block in
+    /// `build_llama_server_args` for the full rationale.
     pub fn for_model_size(model_bytes: u64) -> Self {
         if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
             Self {
@@ -375,7 +381,7 @@ impl KvCacheQuant {
         let tier = if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
             "model > 50GB"
         } else if model_bytes >= Self::MEDIUM_TIER_MIN_BYTES {
-            "model 5-50GB, safe asymmetric"
+            "model 5-50GB, aggressive asymmetric"
         } else {
             "model < 5GB, no quantization"
         };
@@ -944,28 +950,31 @@ pub async fn start_llama_server(
     //
     // Current tiers:
     //   < 5GB:  leave default (FP16) — small models, KV cache is negligible
-    //   5-50GB: K=Q8_0, V=F16 — K-only quantization. Safe asymmetric config:
-    //           works on CUDA, HIP, and Metal without the GGML_CUDA_FA_ALL_QUANTS
-    //           build flag and without triggering the Metal FA-fallback crash.
-    //           V stays in F16 so the non-FA path can handle it too.
+    //   5-50GB: K=Q8_0, V=Q4_0 — aggressive asymmetric, ~25% less KV memory
+    //           than Q8_0/Q8_0 with minimal quality impact. Relies on two
+    //           open upstream bugs being worked around (see caveats below).
     //   > 50GB: Q4_0/Q4_0 — maximum compression, matched quantized types so
     //           no GGML_CUDA_FA_ALL_QUANTS needed. Requires -fa on.
     //
-    // Why not K=Q8_0/V=Q4_0? That's a more aggressive saving (~25% less KV
-    // memory) but hits two open upstream bugs as of 2026-04:
+    // Caveats for the 5-50GB K=Q8_0/V=Q4_0 tier as of 2026-04:
     //   - ggml-org/llama.cpp#20866 — asymmetric K/V types require rebuilding
     //     llama.cpp with -DGGML_CUDA_FA_ALL_QUANTS=ON. Standard Homebrew and
     //     release binaries crash with BEST_FATTN_KERNEL_NONE → GGML_ABORT.
-    //     Our CUDA build DOES set that flag (see scripts/build-linux.sh), but
-    //     we default conservatively so users with external llama.cpp binaries
-    //     don't crash.
+    //     Our own CUDA build sets that flag and the post-cmake assertion in
+    //     scripts/build-linux.sh keeps it from being dropped silently. Users
+    //     pointing mesh-llm at an external llama.cpp binary can still trip
+    //     this; `detect_known_crash_signature` attributes the failure.
     //   - ggml-org/llama.cpp#21450 — Metal crashes on mixed quantized KV when
     //     Flash Attention falls back to CPU ("quantized V cache requires Flash
-    //     Attention"). Affects Apple Silicon hosts that can't use Metal FA.
+    //     Attention"). All Apple Silicon (M1+) supports Metal FA and is not
+    //     affected in practice. Older Intel Macs or any host without Metal
+    //     FA trip this; `detect_known_crash_signature` attributes the
+    //     failure when it matches.
     //
     // TODO(ggml-org/llama.cpp#20866, ggml-org/llama.cpp#21450): once both are
-    // closed upstream and our fork is rebased past the fixes, restore the
-    // 5-50GB tier to K=Q8_0, V=Q4_0 for the extra ~25% KV savings.
+    // closed upstream and our fork is rebased past the fixes, remove the
+    // corresponding KvCacheWarning variants, the build assertion, and this
+    // caveat block.
     KvCacheQuant::for_model_size(model_bytes).append_args(&mut args, model_bytes);
     if let Some(ts) = tensor_split {
         args.push("--tensor-split".to_string());
