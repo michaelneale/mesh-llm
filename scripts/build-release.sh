@@ -28,7 +28,7 @@ configure_compiler_cache() {
     elif command -v ccache >/dev/null 2>&1; then
         cache_bin="ccache"
     else
-        return
+        return 0
     fi
 
     echo "Using compiler cache: $cache_bin"
