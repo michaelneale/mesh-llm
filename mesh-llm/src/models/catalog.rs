@@ -671,13 +671,20 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
         for (f, u) in &files {
             let path = dir.join(f);
             if path.exists() {
-                let size = tokio::fs::metadata(&path)
+                let local_size = tokio::fs::metadata(&path)
                     .await
                     .map(|m| m.len())
                     .unwrap_or(0);
-                if size > 1_000_000 {
-                    eprintln!("  ✅ {f} already exists ({:.1}GB)", size as f64 / 1e9);
+                if local_size > 0 && local_file_matches_remote(&path, u, local_size).await {
+                    eprintln!("  ✅ {f} already exists ({:.1}GB)", local_size as f64 / 1e9);
                     continue;
+                }
+                if local_size > 0 {
+                    eprintln!(
+                        "  🟡 {f} exists but appears truncated ({:.1}GB), re-downloading...",
+                        local_size as f64 / 1e9,
+                    );
+                    let _ = tokio::fs::remove_file(&path).await;
                 }
             }
             needed.push((f.clone(), u.clone()));
@@ -709,19 +716,69 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
     // Not a split file — single download
     let dest = dir.join(filename);
     if dest.exists() {
-        let size = tokio::fs::metadata(&dest).await?.len();
-        if size > 1_000_000 {
+        let local_size = tokio::fs::metadata(&dest).await?.len();
+        if local_size > 0 && local_file_matches_remote(&dest, url, local_size).await {
             eprintln!(
                 "✅ {} already exists ({:.1}GB)",
                 filename,
-                size as f64 / 1e9
+                local_size as f64 / 1e9
             );
             return Ok(dest);
+        }
+        if local_size > 0 {
+            eprintln!(
+                "🟡 {} exists but appears truncated ({:.1}GB), re-downloading...",
+                filename,
+                local_size as f64 / 1e9,
+            );
+            let _ = tokio::fs::remove_file(&dest).await;
         }
     }
     eprintln!("📥 Downloading {filename}...");
     download_with_resume(&dest, url).await?;
     Ok(dest)
+}
+
+/// Check whether a local file looks complete by comparing its size against the
+/// remote `Content-Length`.  Returns `true` when the sizes match, or when the
+/// remote size cannot be determined (we give the benefit of the doubt so
+/// offline/air-gapped setups still work).
+async fn local_file_matches_remote(dest: &Path, url: &str, local_size: u64) -> bool {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return true, // can't check → assume ok
+    };
+    match client.head(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // reqwest's content_length() returns 0 for HEAD responses (no body),
+            // so we parse the Content-Length header directly.
+            let remote_size = resp
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
+            match remote_size {
+                Some(remote) if remote > 0 => {
+                    if local_size >= remote {
+                        true
+                    } else {
+                        eprintln!(
+                            "  ℹ️ {} local {}, remote {}",
+                            dest.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+                            format_size_bytes(local_size),
+                            format_size_bytes(remote),
+                        );
+                        false
+                    }
+                }
+                _ => true, // server didn't send Content-Length → can't verify
+            }
+        }
+        _ => true, // HEAD failed → give benefit of the doubt
+    }
 }
 
 /// Download with resume support and retries using reqwest.
@@ -927,6 +984,38 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
                 None => {
                     // Stream complete
                     file.flush().await?;
+
+                    // Verify downloaded size matches expected total before
+                    // promoting the partial file. A truncated response that
+                    // the server closed cleanly would otherwise be accepted
+                    // and later mistaken for a fully-cached model.
+                    if let Some(total) = total_bytes {
+                        if downloaded < total {
+                            eprintln!();
+                            eprintln!(
+                                "  🟡 Download incomplete: received {} of {} expected.",
+                                format_size_bytes(downloaded),
+                                format_size_bytes(total),
+                            );
+                            if attempt >= MAX_ATTEMPTS {
+                                anyhow::bail!(
+                                    "Download failed after {MAX_ATTEMPTS} attempts: \
+                                     truncated at {} of {}",
+                                    format_size_bytes(downloaded),
+                                    format_size_bytes(total),
+                                );
+                            }
+                            let retry_secs = std::cmp::min(1u64 << (attempt - 1).min(4), 30);
+                            eprintln!(
+                                "  Retrying in {retry_secs}s (attempt {}/{MAX_ATTEMPTS})",
+                                attempt + 1
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+                            attempt += 1;
+                            break;
+                        }
+                    }
+
                     print_transfer_status(label, downloaded, total_bytes, attempt, "complete")?;
                     eprintln!();
                     tokio::fs::rename(&tmp, dest)
@@ -1532,5 +1621,128 @@ mod tests {
         let ranges = seen_ranges.lock().await.clone();
         assert!(ranges[0].is_some());
         assert_eq!(ranges[1], None);
+    }
+
+    #[tokio::test]
+    async fn download_with_resume_rejects_truncated_stream() {
+        // Server advertises 64KB via Content-Length but only sends 16KB then
+        // closes the connection cleanly (stream returns None).  The download
+        // must NOT promote the partial file to the final destination.
+        let full_size = 64 * 1024usize;
+        let truncated_size = 16 * 1024usize;
+        let payload: Vec<u8> = (0..truncated_size).map(|v| (v % 251) as u8).collect();
+        let request_count = Arc::new(AtomicUsize::new(0));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload_for_task = payload.clone();
+        let request_count_for_task = request_count.clone();
+        let server = tokio::spawn(async move {
+            // Handle up to MAX_ATTEMPTS (6) requests — each one truncated.
+            for _ in 0..6 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let _ = read_http_request(&mut stream).await;
+                request_count_for_task.fetch_add(1, Ordering::SeqCst);
+                // Lie about the size: Content-Length says full_size but we only
+                // send truncated_size bytes.
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                    full_size
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&payload_for_task).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let dest = temp_download_dest("truncated-stream");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let url = format!("http://{addr}/model.gguf");
+        let result = download_with_resume(&dest, &url).await;
+
+        // Must fail — the download was truncated every time.  reqwest may
+        // surface this as a transport error ("error decoding response body")
+        // or our own truncation check may catch it; either way the call must
+        // not succeed.
+        assert!(result.is_err(), "truncated download should not succeed");
+        // The final .gguf must NOT exist (only .part may remain).
+        assert!(
+            !dest.exists(),
+            "truncated file must not be promoted to final path"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dest.parent().unwrap());
+    }
+
+    /// Spawn a tiny HTTP server that responds to HEAD with the given
+    /// Content-Length and immediately closes.  Returns (addr, join_handle).
+    async fn spawn_head_server(
+        content_length: usize,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            // Serve exactly one request.
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn local_file_matches_remote_detects_truncated_file() {
+        let remote_size = 32 * 1024usize;
+        let (addr, server) = spawn_head_server(remote_size).await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mesh-llm-truncation-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local_file = dir.join("model.gguf");
+        let local_size = remote_size / 2;
+        std::fs::write(&local_file, &vec![b'a'; local_size]).unwrap();
+
+        let url = format!("http://{addr}/model.gguf");
+        let matches = local_file_matches_remote(&local_file, &url, local_size as u64).await;
+        assert!(!matches, "truncated local file should not match remote");
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_file_matches_remote_accepts_complete_file() {
+        let remote_size = 32 * 1024usize;
+        let (addr, server) = spawn_head_server(remote_size).await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mesh-llm-complete-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local_file = dir.join("model.gguf");
+        std::fs::write(&local_file, &vec![b'a'; remote_size]).unwrap();
+
+        let url = format!("http://{addr}/model.gguf");
+        let matches = local_file_matches_remote(&local_file, &url, remote_size as u64).await;
+        assert!(matches, "complete local file should match remote");
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
