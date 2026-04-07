@@ -372,39 +372,63 @@ jobs:
             llama.cpp/build/bin \
             ~/.models/$MOE_MODEL_FILE
 
+  smoke_case_matrix:
+    needs: [changes]
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Smoke Case Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      gguf_matrix: ${{ steps.gen.outputs.gguf_matrix }}
+      mlx_matrix: ${{ steps.gen.outputs.mlx_matrix }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Generate smoke matrices from matrix.json
+        id: gen
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import os
+
+          matrix = json.loads(Path("testdata/validation/matrix.json").read_text(encoding="utf-8"))
+          gguf = []
+          mlx = []
+
+          for model in matrix.get("models", []):
+            model_id = model.get("id")
+            label = model.get("label", model_id)
+
+            gguf_entry = model.get("gguf")
+            if gguf_entry:
+              ref = gguf_entry.get("model_ref", "")
+              parts = ref.split("/")
+              if len(parts) >= 2:
+                cache_slug = f"{parts[0]}--{parts[1]}"
+                gguf.append({"name": label, "id": model_id, "cache_slug": cache_slug})
+
+            mlx_entry = model.get("mlx")
+            if mlx_entry:
+              ref = mlx_entry.get("model_ref", "")
+              parts = ref.split("/")
+              if len(parts) >= 2:
+                cache_slug = f"{parts[0]}--{parts[1]}"
+                mlx.append({"name": label, "id": model_id, "cache_slug": cache_slug})
+
+          out_path = Path(os.environ["GITHUB_OUTPUT"])
+          with out_path.open("a", encoding="utf-8") as out:
+            out.write(f"gguf_matrix={json.dumps({'include': gguf}, separators=(',', ':'))}\n")
+            out.write(f"mlx_matrix={json.dumps({'include': mlx}, separators=(',', ':'))}\n")
+          PY
+
   mlx_smoke_tests:
-    needs: [changes, macos, inference_smoke_tests]
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.macos.result == 'success' && needs.inference_smoke_tests.result == 'success' && github.event.inputs.run_mlx_smoke_tests != 'false' }}
+    needs: [changes, macos, inference_smoke_tests, smoke_case_matrix]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.macos.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.smoke_case_matrix.result == 'success' && github.event.inputs.run_mlx_smoke_tests != 'false' }}
     name: MLX Smoke Tests
     runs-on: macos-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: qwen2.5-0.5b
-            id: qwen25
-            cache_slug: meshllm--qwen2.5-0.5b-instruct-parity-8bit-mlx
-          - name: qwen3-0.6b
-            id: qwen3
-            cache_slug: meshllm--qwen3-0.6b-parity-8bit-mlx
-          - name: llama-3.2-1b
-            id: llama32
-            cache_slug: meshllm--llama-3.2-1b-instruct-parity-bf16-mlx
-          - name: gemma-3-1b
-            id: gemma3
-            cache_slug: meshllm--gemma-3-1b-it-parity-bf16-mlx
-          - name: gemma-2-2b
-            id: gemma2
-            cache_slug: meshllm--gemma-2-2b-it-parity-8bit-mlx
-          - name: glm-4-9b
-            id: glm4
-            cache_slug: meshllm--glm-4-9b-0414-parity-4bit-mlx
-          - name: gemma-4-e4b
-            id: gemma4
-            cache_slug: meshllm--gemma-4-e4b-it-parity-8bit-mlx
-          - name: lfm2-350m
-            id: lfm2
-            cache_slug: meshllm--lfm2-350m-parity-4bit-mlx
+      matrix: ${{ fromJSON(needs.smoke_case_matrix.outputs.mlx_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -454,38 +478,13 @@ jobs:
           if-no-files-found: warn
 
   llama_smoke_tests:
-    needs: [changes, linux, inference_smoke_tests]
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.linux.result == 'success' && needs.inference_smoke_tests.result == 'success' && github.event.inputs.run_llama_smoke_tests != 'false' }}
+    needs: [changes, linux, inference_smoke_tests, smoke_case_matrix]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.linux.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.smoke_case_matrix.result == 'success' && github.event.inputs.run_llama_smoke_tests != 'false' }}
     name: Llama Smoke Tests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: qwen2.5-0.5b
-            id: qwen25
-            cache_slug: meshllm--qwen2.5-0.5b-instruct-parity-q8_0-gguf
-          - name: qwen3-0.6b
-            id: qwen3
-            cache_slug: meshllm--qwen3-0.6b-parity-q8_0-gguf
-          - name: llama-3.2-1b
-            id: llama32
-            cache_slug: meshllm--llama-3.2-1b-instruct-parity-f16-gguf
-          - name: gemma-3-1b
-            id: gemma3
-            cache_slug: meshllm--gemma-3-1b-it-parity-f16-gguf
-          - name: gemma-2-2b
-            id: gemma2
-            cache_slug: meshllm--gemma-2-2b-it-parity-q8_0-gguf
-          - name: glm-4-9b
-            id: glm4
-            cache_slug: meshllm--glm-4-9b-0414-parity-q4_k_m-gguf
-          - name: gemma-4-e4b
-            id: gemma4
-            cache_slug: meshllm--gemma-4-e4b-it-parity-q8_0-gguf
-          - name: lfm2-350m
-            id: lfm2
-            cache_slug: meshllm--lfm2-350m-parity-q4_k_m-gguf
+      matrix: ${{ fromJSON(needs.smoke_case_matrix.outputs.gguf_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
