@@ -408,6 +408,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Verify macOS runner memory (>= 64GB)
+        run: |
+          REQUIRED_BYTES=68719476736
+          MEM_BYTES="$(sysctl -n hw.memsize)"
+          echo "Detected runner memory bytes: ${MEM_BYTES}"
+          if [ "${MEM_BYTES}" -lt "${REQUIRED_BYTES}" ]; then
+            echo "MLX smoke tests require at least 64GB RAM."
+            exit 1
+          fi
+
       - name: Download macOS binaries
         uses: actions/download-artifact@v4
         with:
