@@ -143,6 +143,13 @@ pub async fn download_exact_ref_with_profile(
     input: &str,
     profile: CapabilityProfile,
 ) -> Result<PathBuf> {
+    if is_imatrix_artifact(input) {
+        bail!(
+            "🟡 '{}' is an imatrix artifact, not a runnable model. Choose a .gguf model variant instead.",
+            input
+        );
+    }
+
     #[cfg(test)]
     {
         let override_fn = DOWNLOAD_EXACT_REF_OVERRIDE.lock().unwrap().clone();
@@ -220,7 +227,20 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
     let raw = input.to_string_lossy();
 
     if input.exists() {
+        if is_imatrix_artifact(&raw) {
+            bail!(
+                "🟡 '{}' is an imatrix artifact, not a runnable model. Choose a .gguf model variant instead.",
+                raw
+            );
+        }
         return Ok(input.to_path_buf());
+    }
+
+    if is_imatrix_artifact(&raw) {
+        bail!(
+            "🟡 '{}' is an imatrix artifact, not a runnable model. Choose a .gguf model variant instead.",
+            raw
+        );
     }
 
     if !raw.contains('/') {
@@ -819,7 +839,11 @@ fn split_part_number(file: &str) -> Option<usize> {
 
 fn is_primary_model_gguf(file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
-    lower.ends_with(".gguf") && !lower.contains("mmproj")
+    lower.ends_with(".gguf") && !lower.contains("mmproj") && !lower.contains("imatrix")
+}
+
+fn is_imatrix_artifact(value: &str) -> bool {
+    value.to_ascii_lowercase().contains("imatrix")
 }
 
 fn file_quality_score(file: &str) -> usize {
@@ -1277,9 +1301,12 @@ mod tests {
     use super::choose_hf_file_for_selector;
     use super::canonical_hf_ref_file_component;
     use super::file_preference_score;
+    use super::is_imatrix_artifact;
     use super::normalize_selector_key;
+    use super::resolve_model_spec;
     use crate::models::CapabilityLevel;
     use crate::models::ModelCapabilities;
+    use std::path::Path;
     use hf_hub::api::Siblings;
 
     #[test]
@@ -1439,5 +1466,38 @@ mod tests {
             .expect("should pick one variant");
         assert_eq!(picked.stem, "Model-IQ2_XXS");
         assert_eq!(fit, Some(false));
+    }
+
+    #[test]
+    fn aggregate_variants_ignores_imatrix_artifacts() {
+        let siblings = vec![
+            Siblings {
+                rfilename: "MiniMax-M2-BF16.imatrix.gguf".to_string(),
+                size: Some(492_000_000),
+            },
+            Siblings {
+                rfilename: "MiniMax-M2-BF16.i1-IQ1_S.gguf".to_string(),
+                size: Some(46_500_000_000),
+            },
+        ];
+        let variants = aggregate_variants_from_siblings(&siblings);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].stem, "MiniMax-M2-BF16.i1-IQ1_S");
+        assert_eq!(variants[0].size_bytes, Some(46_500_000_000));
+    }
+
+    #[test]
+    fn imatrix_detector_flags_expected_values() {
+        assert!(is_imatrix_artifact("MiniMax-M2-BF16.imatrix.gguf"));
+        assert!(is_imatrix_artifact("org/repo/MiniMax-M2-BF16.imatrix"));
+        assert!(!is_imatrix_artifact("MiniMax-M2-BF16.i1-IQ1_S.gguf"));
+    }
+
+    #[tokio::test]
+    async fn resolve_model_spec_rejects_imatrix_refs() {
+        let err = resolve_model_spec(Path::new("org/repo/MiniMax-M2-BF16.imatrix.gguf"))
+            .await
+            .expect_err("imatrix refs should be rejected");
+        assert!(err.to_string().contains("imatrix artifact"));
     }
 }

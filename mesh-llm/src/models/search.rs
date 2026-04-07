@@ -292,5 +292,17 @@ fn file_quality_score(file: &str) -> usize {
 
 fn is_primary_model_gguf(file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
-    lower.ends_with(".gguf") && !lower.contains("mmproj")
+    lower.ends_with(".gguf") && !lower.contains("mmproj") && !lower.contains("imatrix")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_primary_model_gguf;
+
+    #[test]
+    fn primary_model_filter_excludes_imatrix_and_mmproj() {
+        assert!(is_primary_model_gguf("MiniMax-M2-BF16.i1-IQ1_S.gguf"));
+        assert!(!is_primary_model_gguf("MiniMax-M2-BF16.imatrix.gguf"));
+        assert!(!is_primary_model_gguf("mmproj-BF16.gguf"));
+    }
 }
