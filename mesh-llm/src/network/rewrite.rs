@@ -198,11 +198,13 @@ where
     R: AsyncRead + Unpin,
 {
     let remaining = deadline_remaining(started, deadline)?;
-    Ok(Some(
-        tokio::time::timeout(remaining, reader.read(buf))
-            .await
-            .map_err(|_| anyhow::anyhow!("RPC payload read timed out"))??,
-    ))
+    let n = tokio::time::timeout(remaining, reader.read(buf))
+        .await
+        .map_err(|_| anyhow::anyhow!("RPC payload read timed out"))??;
+    if n == 0 {
+        return Ok(None);
+    }
+    Ok(Some(n))
 }
 
 fn deadline_remaining(started: Instant, deadline: Duration) -> Result<Duration> {
@@ -304,5 +306,36 @@ mod tests {
         let mut forwarded = Vec::new();
         target_read.read_to_end(&mut forwarded).await.unwrap();
         assert!(forwarded.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_with_rewrite_errors_on_eof_mid_payload() {
+        let port_map = new_rewrite_map();
+        let (mut source_write, source_read) = tokio::io::duplex(128);
+        let (target_write, mut target_read) = tokio::io::duplex(128);
+        let sender = tokio::spawn(async move {
+            let mut frame = vec![0x01];
+            frame.extend_from_slice(&16u64.to_le_bytes());
+            frame.extend_from_slice(b"short");
+            source_write.write_all(&frame).await.unwrap();
+        });
+
+        let err = relay_with_rewrite_inner(source_read, target_write, port_map)
+            .await
+            .unwrap_err();
+        sender.await.unwrap();
+        assert!(err.to_string().contains("stream closed mid-payload"));
+
+        let mut forwarded = Vec::new();
+        target_read.read_to_end(&mut forwarded).await.unwrap();
+        assert_eq!(&forwarded[..9], &frame_prefix(0x01, 16));
+        assert_eq!(&forwarded[9..], b"short");
+    }
+
+    fn frame_prefix(cmd: u8, payload_size: u64) -> [u8; 9] {
+        let mut prefix = [0u8; 9];
+        prefix[0] = cmd;
+        prefix[1..].copy_from_slice(&payload_size.to_le_bytes());
+        prefix
     }
 }

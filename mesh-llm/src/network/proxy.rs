@@ -61,6 +61,16 @@ pub struct BufferedHttpRequest {
     pub response_adapter: ResponseAdapter,
 }
 
+pub(crate) struct BufferedHttpRequestHead {
+    raw: Vec<u8>,
+    header_end: usize,
+    pub(crate) method: String,
+    pub(crate) path: String,
+    content_length: Option<usize>,
+    is_chunked: bool,
+    expects_continue: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseAdapter {
     None,
@@ -111,11 +121,34 @@ pub async fn read_http_request(stream: &mut TcpStream) -> Result<BufferedHttpReq
     read_http_request_with_limits(stream, HTTP_READ_LIMITS, None).await
 }
 
-pub(crate) async fn read_http_request_from_reader<R>(reader: &mut R) -> Result<BufferedHttpRequest>
+pub(crate) async fn read_http_request_head_from_reader<R>(
+    reader: &mut R,
+) -> Result<BufferedHttpRequestHead>
 where
     R: AsyncRead + Unpin,
 {
-    read_http_request_with_limits_from_reader(reader, HTTP_READ_LIMITS).await
+    let mut raw = Vec::with_capacity(8192);
+    let parsed =
+        read_until_headers_parsed(reader, &mut raw, HTTP_READ_LIMITS.max_header_bytes).await?;
+    Ok(BufferedHttpRequestHead {
+        raw,
+        header_end: parsed.header_end,
+        method: parsed.method,
+        path: parsed.path,
+        content_length: parsed.content_length,
+        is_chunked: parsed.is_chunked,
+        expects_continue: parsed.expects_continue,
+    })
+}
+
+pub(crate) async fn read_http_request_from_reader_with_head<R>(
+    reader: &mut R,
+    head: BufferedHttpRequestHead,
+) -> Result<BufferedHttpRequest>
+where
+    R: AsyncRead + Unpin,
+{
+    read_http_request_with_limits_from_reader(reader, HTTP_READ_LIMITS, head).await
 }
 
 pub async fn read_http_request_with_plugin_manager(
@@ -236,19 +269,26 @@ async fn read_http_request_with_limits(
 async fn read_http_request_with_limits_from_reader<R>(
     reader: &mut R,
     limits: HttpReadLimits,
+    head: BufferedHttpRequestHead,
 ) -> Result<BufferedHttpRequest>
 where
     R: AsyncRead + Unpin,
 {
-    let mut raw = Vec::with_capacity(8192);
-    let parsed = read_until_headers_parsed(reader, &mut raw, limits.max_header_bytes).await?;
-    if parsed.expects_continue {
+    let BufferedHttpRequestHead {
+        mut raw,
+        header_end,
+        method,
+        path,
+        content_length,
+        is_chunked,
+        expects_continue,
+    } = head;
+    if expects_continue {
         bail!("Expect: 100-continue is not supported over mesh tunnels");
     }
-    let body_limits = body_limits_for_path(&parsed.path, limits);
-    let header_end = parsed.header_end;
+    let body_limits = body_limits_for_path(&path, limits);
 
-    let body = if parsed.is_chunked {
+    let body = if is_chunked {
         loop {
             if let Some((consumed, decoded)) =
                 try_decode_chunked_body(&raw[header_end..], body_limits.max_body_bytes)?
@@ -264,7 +304,7 @@ where
                 );
             }
         }
-    } else if let Some(content_length) = parsed.content_length {
+    } else if let Some(content_length) = content_length {
         if content_length > body_limits.max_body_bytes {
             bail!("HTTP body exceeds {} bytes", body_limits.max_body_bytes);
         }
@@ -284,10 +324,10 @@ where
     } else {
         serde_json::from_slice(&body).ok()
     };
-    let mut request_path = parsed.path.clone();
+    let mut request_path = path.clone();
     let mut response_adapter = ResponseAdapter::None;
     let rewritten_body = if let Some(body_json) = body_json.as_mut() {
-        let normalization = normalize_openai_compat_request(&parsed.path, body_json)?;
+        let normalization = normalize_openai_compat_request(&path, body_json)?;
         if let Some(rewritten_path) = normalization.rewritten_path {
             request_path = rewritten_path;
         }
@@ -312,7 +352,7 @@ where
 
     Ok(BufferedHttpRequest {
         raw,
-        method: parsed.method,
+        method,
         path: request_path,
         body_json,
         model_name,

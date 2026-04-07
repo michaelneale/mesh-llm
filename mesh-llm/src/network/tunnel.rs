@@ -327,18 +327,26 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let request = match proxy::read_http_request_from_reader(reader).await {
-        Ok(request) => request,
+    let head = match proxy::read_http_request_head_from_reader(reader).await {
+        Ok(head) => head,
         Err(err) => {
             write_http_error(writer, 400, &format!("bad tunneled HTTP request: {err}")).await?;
             return Ok(None);
         }
     };
 
-    if !proxy::is_tunneled_http_request(&request.method, &request.path) {
+    if !proxy::is_tunneled_http_request(&head.method, &head.path) {
         write_http_error(writer, 403, "mesh peers may only tunnel inference routes").await?;
         return Ok(None);
     }
+
+    let request = match proxy::read_http_request_from_reader_with_head(reader, head).await {
+        Ok(request) => request,
+        Err(err) => {
+            write_http_error(writer, 400, &format!("bad tunneled HTTP request: {err}")).await?;
+            return Ok(None);
+        }
+    };
 
     Ok(Some(request))
 }
@@ -710,6 +718,34 @@ mod tests {
         let sender = tokio::spawn(async move {
             client_write
                 .write_all(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let request = receive_tunneled_http_request(&mut server_read, &mut server_write)
+            .await
+            .unwrap();
+        assert!(request.is_none());
+        server_write.shutdown().await.unwrap();
+        sender.await.unwrap();
+
+        let mut response = Vec::new();
+        client_read.read_to_end(&mut response).await.unwrap();
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+        assert!(response.contains("mesh peers may only tunnel inference routes"));
+    }
+
+    #[tokio::test]
+    async fn receive_tunneled_http_request_rejects_management_routes_before_reading_body() {
+        let (mut client_write, mut server_read) = tokio::io::duplex(4096);
+        let (mut server_write, mut client_read) = tokio::io::duplex(4096);
+
+        let sender = tokio::spawn(async move {
+            client_write
+                .write_all(
+                    b"POST /api/objects HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048576\r\n\r\n",
+                )
                 .await
                 .unwrap();
         });

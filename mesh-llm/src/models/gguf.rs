@@ -132,8 +132,24 @@ fn skip_gguf_value_with_depth(
                 std::io::Error::new(std::io::ErrorKind::InvalidData, "bad array type")
             })?;
             let count = read_bounded_len(f, MAX_GGUF_ARRAY_ELEMENTS, "array")?;
-            for _ in 0..count {
-                skip_gguf_value_with_depth(f, elem_type, depth + 1)?;
+            if let Some(elem_size) = elem_type.fixed_size() {
+                let total_bytes = count.checked_mul(elem_size).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "array byte span too large",
+                    )
+                })?;
+                let offset = i64::try_from(total_bytes).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "array byte span too large",
+                    )
+                })?;
+                f.seek(SeekFrom::Current(offset))?;
+            } else {
+                for _ in 0..count {
+                    skip_gguf_value_with_depth(f, elem_type, depth + 1)?;
+                }
             }
         }
         other => {

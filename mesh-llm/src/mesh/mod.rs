@@ -9321,7 +9321,6 @@ async fn load_or_create_key_at(dir: &std::path::Path) -> Result<SecretKey> {
     tokio::task::spawn_blocking(move || {
         ensure_private_identity_dir(&dir)?;
         let key_path = dir.join("key");
-
         if key_path.exists() {
             ensure_private_identity_file(&key_path)?;
             let hex = std::fs::read_to_string(&key_path)?;
@@ -9333,7 +9332,6 @@ async fn load_or_create_key_at(dir: &std::path::Path) -> Result<SecretKey> {
             tracing::info!("Loaded key from {}", key_path.display());
             return Ok(key);
         }
-
         let key = SecretKey::generate(&mut rand::rng());
         crate::crypto::write_keystore_bytes_atomically(
             &key_path,
