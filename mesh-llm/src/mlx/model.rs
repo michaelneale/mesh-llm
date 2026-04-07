@@ -488,8 +488,15 @@ impl Attention {
 
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
-        let k = Self::apply_qk_norm(k, self.k_norm.as_ref(), b, l, self.num_kv_heads, self.head_dim)?
-            .transpose_axes(&[0, 2, 1, 3])?;
+        let k = Self::apply_qk_norm(
+            k,
+            self.k_norm.as_ref(),
+            b,
+            l,
+            self.num_kv_heads,
+            self.head_dim,
+        )?
+        .transpose_axes(&[0, 2, 1, 3])?;
         let v = v.reshape(&[b, l, self.num_kv_heads, self.head_dim])?;
         let v = if let Some(norm) = &self.v_norm {
             norm.forward(&v)?
@@ -519,7 +526,7 @@ impl Attention {
             } else {
                 None
             };
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask, None::<&Array>)?
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
         };
 
         let attn =
@@ -550,8 +557,15 @@ impl Attention {
         } else {
             let k = self.k_proj.forward(x)?;
             let v = self.v_proj.forward(x)?;
-            let k = Self::apply_qk_norm(k, self.k_norm.as_ref(), b, l, self.num_kv_heads, self.head_dim)?
-                .transpose_axes(&[0, 2, 1, 3])?;
+            let k = Self::apply_qk_norm(
+                k,
+                self.k_norm.as_ref(),
+                b,
+                l,
+                self.num_kv_heads,
+                self.head_dim,
+            )?
+            .transpose_axes(&[0, 2, 1, 3])?;
             let v = v.reshape(&[b, l, self.num_kv_heads, self.head_dim])?;
             let v = if let Some(norm) = &self.v_norm {
                 norm.forward(&v)?
@@ -584,7 +598,7 @@ impl Attention {
             } else {
                 None
             };
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask, None::<&Array>)?
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
         };
 
         let attn =
@@ -722,7 +736,6 @@ impl DeepseekV3Attention {
                 &kv_latent,
                 self.scale,
                 Some((&mask).into()),
-                None::<&Array>,
             )?;
             self.unembed_out.forward(&output, true)?
         } else {
@@ -734,7 +747,6 @@ impl DeepseekV3Attention {
                 &v,
                 self.scale,
                 Some((&mask).into()),
-                None::<&Array>,
             )?
         };
 
@@ -1837,7 +1849,12 @@ fn slice_rows(tensor: &Array, start: i32, end: i32) -> Result<Array> {
     Ok(tensor.index((start..end, std::ops::RangeFull)))
 }
 
-fn split_fused_qkv(prefix: &str, tensors: &mut HashMap<String, Array>, q_rows: i32, kv_rows: i32) -> Result<()> {
+fn split_fused_qkv(
+    prefix: &str,
+    tensors: &mut HashMap<String, Array>,
+    q_rows: i32,
+    kv_rows: i32,
+) -> Result<()> {
     if tensors.contains_key(&format!("{prefix}.q_proj.weight")) {
         return Ok(());
     }
