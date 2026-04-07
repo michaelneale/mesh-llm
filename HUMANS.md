@@ -509,7 +509,7 @@ let plugin = mesh_llm_plugin::plugin! {
 | 8 | Validation plugins (llama backend, MLX, Ollama, Lemonade) |
 | 9 | Host-owned plugin crypto API |
 
-For the full plugin architecture spec, see [PLUGINS.md](PLUGINS.md). For the sequencing plan, see [PLUGINS_PLAN.md](PLUGINS_PLAN.md).
+For the full plugin architecture spec, see [mesh-llm/docs/PLUGINS.md](mesh-llm/docs/PLUGINS.md). For the sequencing plan, see [mesh-llm/docs/PLUGINS_PLAN.md](mesh-llm/docs/PLUGINS_PLAN.md).
 
 ---
 
@@ -530,8 +530,8 @@ These remain as focused reference files:
 | [mesh-llm/docs/ROUTER_V2.md](mesh-llm/docs/ROUTER_V2.md) | Router v2 adaptive proposal |
 | [mesh-llm/docs/ROUTER_BENCHMARKS.md](mesh-llm/docs/ROUTER_BENCHMARKS.md) | Router benchmarks |
 | [mesh-llm/docs/PREFIX_AFFINITY_BENCHMARKS.md](mesh-llm/docs/PREFIX_AFFINITY_BENCHMARKS.md) | Prefix affinity benchmarks |
-| [PLUGINS.md](PLUGINS.md) | Full plugin architecture spec |
-| [PLUGINS_PLAN.md](PLUGINS_PLAN.md) | Plugin implementation sequencing |
+| [mesh-llm/docs/PLUGINS.md](mesh-llm/docs/PLUGINS.md) | Full plugin architecture spec |
+| [mesh-llm/docs/PLUGINS_PLAN.md](mesh-llm/docs/PLUGINS_PLAN.md) | Plugin implementation sequencing |
 | [fly/README.md](fly/README.md) | Fly.io deployment |
 | [relay/README.md](relay/README.md) | Self-hosted iroh relay |
 | [evals/README.md](evals/README.md) | Router evaluation suite |

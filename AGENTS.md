@@ -21,8 +21,8 @@ These guide every design decision in this project:
 |---|---|
 | `README.md` | User-facing: install, usage, CLI, examples, agents |
 | `HUMANS.md` | Developer-facing: architecture, testing, release, roadmap, plugins |
-| `PLUGINS.md` | Full plugin architecture spec |
-| `PLUGINS_PLAN.md` | Plugin implementation sequencing |
+| `mesh-llm/docs/PLUGINS.md` | Full plugin architecture spec |
+| `mesh-llm/docs/PLUGINS_PLAN.md` | Plugin implementation sequencing |
 | `mesh-llm/docs/message_protocol.md` | Wire protocol spec |
 | `mesh-llm/docs/MULTI_MODAL.md` | Multimodal capability details |
 | `mesh-llm/docs/MoE_PLAN.md` | MoE expert sharding design |

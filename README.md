@@ -458,7 +458,7 @@ command = "/path/to/plugin-binary"
 args = ["--stdio"]
 ```
 
-See [HUMANS.md](HUMANS.md#plugins) for the full plugin architecture and development plan.
+See [HUMANS.md](HUMANS.md#plugins) for the plugin overview, and [mesh-llm/docs/PLUGINS.md](mesh-llm/docs/PLUGINS.md) for the full architecture spec.
 
 ## More docs
 
