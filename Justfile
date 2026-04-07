@@ -310,6 +310,7 @@ auto: build
 # ── Utilities ──────────────────────────────────────────────────
 
 # Clean UI build artifacts (node_modules, dist). Fixes stale npm state.
+[unix]
 clean-ui:
     cd "{{ ui_dir }}" && rm -rf node_modules dist
     echo "Cleaned UI: node_modules + dist removed"
