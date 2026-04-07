@@ -314,6 +314,11 @@ clean-ui:
     cd "{{ ui_dir }}" && rm -rf node_modules dist
     echo "Cleaned UI: node_modules + dist removed"
 
+[windows]
+clean-ui:
+    Set-Location "{{ ui_dir }}"
+    Remove-Item -Recurse -Force node_modules,dist -ErrorAction SilentlyContinue
+    echo "Cleaned UI: node_modules + dist removed"
 # Stop all running servers
 stop:
     pkill -f "mesh-llm" 2>/dev/null || true
