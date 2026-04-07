@@ -372,10 +372,11 @@ jobs:
             llama.cpp/build/bin \
             ~/.models/$MOE_MODEL_FILE
 
-  smoke_case_matrix:
+  generate_model_family_test_matrix:
     needs: [changes]
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: Smoke Case Matrix
+    name: Generate model/family test matrix
+    # Derives GGUF and MLX smoke-test matrices from testdata/validation/matrix.json.
     runs-on: ubuntu-latest
     outputs:
       gguf_matrix: ${{ steps.gen.outputs.gguf_matrix }}
@@ -422,13 +423,13 @@ jobs:
           PY
 
   mlx_smoke_tests:
-    needs: [changes, macos, inference_smoke_tests, smoke_case_matrix]
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.macos.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.smoke_case_matrix.result == 'success' && github.event.inputs.run_mlx_smoke_tests != 'false' }}
+    needs: [changes, macos, inference_smoke_tests, generate_model_family_test_matrix]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.macos.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.generate_model_family_test_matrix.result == 'success' && github.event.inputs.run_mlx_smoke_tests != 'false' }}
     name: MLX Smoke Tests
     runs-on: macos-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.smoke_case_matrix.outputs.mlx_matrix) }}
+      matrix: ${{ fromJSON(needs.generate_model_family_test_matrix.outputs.mlx_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -478,13 +479,13 @@ jobs:
           if-no-files-found: warn
 
   llama_smoke_tests:
-    needs: [changes, linux, inference_smoke_tests, smoke_case_matrix]
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.linux.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.smoke_case_matrix.result == 'success' && github.event.inputs.run_llama_smoke_tests != 'false' }}
+    needs: [changes, linux, inference_smoke_tests, generate_model_family_test_matrix]
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.linux.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.generate_model_family_test_matrix.result == 'success' && github.event.inputs.run_llama_smoke_tests != 'false' }}
     name: Llama Smoke Tests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.smoke_case_matrix.outputs.gguf_matrix) }}
+      matrix: ${{ fromJSON(needs.generate_model_family_test_matrix.outputs.gguf_matrix) }}
     steps:
       - uses: actions/checkout@v5
 
