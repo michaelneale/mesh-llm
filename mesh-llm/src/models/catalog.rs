@@ -369,25 +369,7 @@ fn format_download_bytes(bytes: u64) -> String {
 fn download_hf_assets_blocking(label: &str, assets: Vec<HfAsset>) -> Result<Vec<PathBuf>> {
     let api = super::build_hf_api(false)?;
     let cache = crate::models::huggingface_hub_cache();
-    let mut download_plan = std::collections::BTreeSet::new();
-    let mut config_repos = std::collections::BTreeSet::new();
-
-    for asset in assets {
-        for expanded in expand_split_asset(&asset)? {
-            config_repos.insert((expanded.repo.clone(), expanded.revision.clone()));
-            download_plan.insert((true, expanded));
-        }
-    }
-    for (repo, revision) in config_repos {
-        download_plan.insert((
-            false,
-            HfAsset {
-                repo,
-                revision,
-                file: "config.json".to_string(),
-            },
-        ));
-    }
+    let download_plan = build_download_plan(assets)?;
 
     eprintln!("📥 Ensuring {} is available locally...", label);
 
@@ -452,6 +434,31 @@ fn download_hf_assets_blocking(label: &str, assets: Vec<HfAsset>) -> Result<Vec<
     }
 
     Ok(primary_paths)
+}
+
+fn build_download_plan(
+    assets: Vec<HfAsset>,
+) -> Result<std::collections::BTreeSet<(bool, HfAsset)>> {
+    let mut download_plan = std::collections::BTreeSet::new();
+    let mut config_repos = std::collections::BTreeSet::new();
+
+    for asset in assets {
+        for expanded in expand_split_asset(&asset)? {
+            config_repos.insert((expanded.repo.clone(), expanded.revision.clone()));
+            download_plan.insert((true, expanded));
+        }
+    }
+    for (repo, revision) in config_repos {
+        download_plan.insert((
+            false,
+            HfAsset {
+                repo,
+                revision,
+                file: "config.json".to_string(),
+            },
+        ));
+    }
+    Ok(download_plan)
 }
 
 fn hf_download_error_looks_access_denied(err: &SyncApiError) -> bool {
@@ -664,13 +671,20 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
         for (f, u) in &files {
             let path = dir.join(f);
             if path.exists() {
-                let size = tokio::fs::metadata(&path)
+                let local_size = tokio::fs::metadata(&path)
                     .await
                     .map(|m| m.len())
                     .unwrap_or(0);
-                if size > 1_000_000 {
-                    eprintln!("  ✅ {f} already exists ({:.1}GB)", size as f64 / 1e9);
+                if local_size > 0 && local_file_matches_remote(&path, u, local_size).await {
+                    eprintln!("  ✅ {f} already exists ({:.1}GB)", local_size as f64 / 1e9);
                     continue;
+                }
+                if local_size > 0 {
+                    eprintln!(
+                        "  🟡 {f} exists but appears truncated ({:.1}GB), re-downloading...",
+                        local_size as f64 / 1e9,
+                    );
+                    let _ = tokio::fs::remove_file(&path).await;
                 }
             }
             needed.push((f.clone(), u.clone()));
@@ -702,14 +716,22 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
     // Not a split file — single download
     let dest = dir.join(filename);
     if dest.exists() {
-        let size = tokio::fs::metadata(&dest).await?.len();
-        if size > 1_000_000 {
+        let local_size = tokio::fs::metadata(&dest).await?.len();
+        if local_size > 0 && local_file_matches_remote(&dest, url, local_size).await {
             eprintln!(
                 "✅ {} already exists ({:.1}GB)",
                 filename,
-                size as f64 / 1e9
+                local_size as f64 / 1e9
             );
             return Ok(dest);
+        }
+        if local_size > 0 {
+            eprintln!(
+                "🟡 {} exists but appears truncated ({:.1}GB), re-downloading...",
+                filename,
+                local_size as f64 / 1e9,
+            );
+            let _ = tokio::fs::remove_file(&dest).await;
         }
     }
     eprintln!("📥 Downloading {filename}...");
@@ -717,10 +739,53 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
     Ok(dest)
 }
 
+/// Check whether a local file looks complete by comparing its size against the
+/// remote `Content-Length`.  Returns `true` when the sizes match, or when the
+/// remote size cannot be determined (we give the benefit of the doubt so
+/// offline/air-gapped setups still work).
+async fn local_file_matches_remote(dest: &Path, url: &str, local_size: u64) -> bool {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return true, // can't check → assume ok
+    };
+    match client.head(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            // reqwest's content_length() returns 0 for HEAD responses (no body),
+            // so we parse the Content-Length header directly.
+            let remote_size = resp
+                .headers()
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok());
+            match remote_size {
+                Some(remote) if remote > 0 => {
+                    if local_size >= remote {
+                        true
+                    } else {
+                        eprintln!(
+                            "  ℹ️ {} local {}, remote {}",
+                            dest.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+                            format_size_bytes(local_size),
+                            format_size_bytes(remote),
+                        );
+                        false
+                    }
+                }
+                _ => true, // server didn't send Content-Length → can't verify
+            }
+        }
+        _ => true, // HEAD failed → give benefit of the doubt
+    }
+}
+
 /// Download with resume support and retries using reqwest.
 async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
     use tokio_stream::StreamExt;
 
+    const MAX_ATTEMPTS: u64 = 6;
     let tmp = dest.with_extension("gguf.part");
     let label = dest
         .file_name()
@@ -731,9 +796,8 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
         .connect_timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    let mut attempt: u64 = 0;
+    let mut attempt: u64 = 1;
     loop {
-        attempt += 1;
         // Check how much we already have (for resume)
         let existing_bytes = if tmp.exists() {
             tokio::fs::metadata(&tmp).await?.len()
@@ -748,32 +812,86 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
             request = request.header("Range", format!("bytes={existing_bytes}-"));
         }
 
-        // Exponential backoff: 3s, 6s, 12s, ... capped at 60s
-        let backoff_secs = std::cmp::min(3 * (1u64 << (attempt - 1).min(4)), 60);
+        // Exponential backoff: 1s, 2s, 4s, ... capped at 30s
+        let backoff_secs = std::cmp::min(1 * (1u64 << (attempt - 1).min(4)), 30);
 
         let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!();
-                eprintln!("  ⚠️ {label}: connection failed: {e}");
-                eprintln!("  retrying in {backoff_secs}s...");
+                if attempt >= MAX_ATTEMPTS {
+                    anyhow::bail!("Download failed after {MAX_ATTEMPTS} attempts: {e}");
+                }
+                eprintln!(
+                    "  🟡 Download failed ({}). Retrying in {backoff_secs}s (attempt {}/{MAX_ATTEMPTS})",
+                    e
+                , attempt + 1);
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                attempt += 1;
                 continue;
             }
         };
 
         let status = response.status();
+
+        // Resume was requested but server ignored Range. Reset and restart from zero.
+        if existing_bytes > 0 && status == reqwest::StatusCode::OK {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            eprintln!();
+            eprintln!(
+                "  🟡 Existing partial download is not recoverable; clearing and restarting."
+            );
+            if attempt >= MAX_ATTEMPTS {
+                anyhow::bail!(
+                    "Download failed after {MAX_ATTEMPTS} attempts: server ignored ranged resume"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            attempt += 1;
+            continue;
+        }
+
+        if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            eprintln!();
+            eprintln!(
+                "  🟡 Existing partial download is not recoverable; clearing and restarting."
+            );
+            if attempt >= MAX_ATTEMPTS {
+                anyhow::bail!(
+                    "Download failed after {MAX_ATTEMPTS} attempts: ranged resume rejected"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            attempt += 1;
+            continue;
+        }
+
         if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
-            // If server doesn't support resume (416 Range Not Satisfiable), start fresh
-            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                eprintln!();
-                eprintln!("  ⚠️ {label}: server rejected resume, starting fresh...");
-                continue;
+            let retryable = matches!(
+                status,
+                reqwest::StatusCode::TOO_MANY_REQUESTS
+                    | reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                    | reqwest::StatusCode::BAD_GATEWAY
+                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    | reqwest::StatusCode::GATEWAY_TIMEOUT
+            );
+            if !retryable {
+                anyhow::bail!("Download failed: HTTP {}", status);
+            }
+            if attempt >= MAX_ATTEMPTS {
+                anyhow::bail!(
+                    "Download failed after {MAX_ATTEMPTS} attempts: HTTP {}",
+                    status
+                );
             }
             eprintln!();
-            eprintln!("  ⚠️ {label}: HTTP {status}, retrying in {backoff_secs}s...");
+            eprintln!(
+                "  🟡 Download failed (HTTP {status}). Retrying in {backoff_secs}s (attempt {}/{MAX_ATTEMPTS})",
+                attempt + 1
+            );
             tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+            attempt += 1;
             continue;
         }
 
@@ -824,9 +942,6 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
         // Print initial progress
         print_transfer_status(label, downloaded, total_bytes, attempt, "downloading")?;
 
-        // Reset backoff on successful data receipt
-        let mut got_data = false;
-
         loop {
             match stream.next().await {
                 Some(Ok(chunk)) => {
@@ -834,7 +949,6 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
                         .await
                         .context("Failed to write chunk")?;
                     downloaded += chunk.len() as u64;
-                    got_data = true;
 
                     // Update progress every 500ms
                     if last_progress.elapsed() >= std::time::Duration::from_millis(500) {
@@ -851,22 +965,57 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
                 Some(Err(e)) => {
                     file.flush().await.ok();
                     eprintln!();
-                    eprintln!(
-                        "  ⚠️ {label}: interrupted at {}: {e}",
-                        format_size_bytes(downloaded)
-                    );
-                    // If we got data, reset attempt counter (connection was working)
-                    if got_data {
-                        attempt = 0;
+                    if attempt >= MAX_ATTEMPTS {
+                        anyhow::bail!(
+                            "Download failed after {MAX_ATTEMPTS} attempts: interrupted at {} ({e})",
+                            format_size_bytes(downloaded)
+                        );
                     }
-                    let retry_secs = std::cmp::min(3 * (1u64 << attempt.min(4)), 60);
-                    eprintln!("  retrying in {retry_secs}s (will resume)...");
+                    let retry_secs = std::cmp::min(1 * (1u64 << (attempt - 1).min(4)), 30);
+                    eprintln!(
+                        "  🟡 Download failed ({}). Retrying in {retry_secs}s (attempt {}/{MAX_ATTEMPTS})",
+                        e,
+                        attempt + 1
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+                    attempt += 1;
                     break;
                 }
                 None => {
                     // Stream complete
                     file.flush().await?;
+
+                    // Verify downloaded size matches expected total before
+                    // promoting the partial file. A truncated response that
+                    // the server closed cleanly would otherwise be accepted
+                    // and later mistaken for a fully-cached model.
+                    if let Some(total) = total_bytes {
+                        if downloaded < total {
+                            eprintln!();
+                            eprintln!(
+                                "  🟡 Download incomplete: received {} of {} expected.",
+                                format_size_bytes(downloaded),
+                                format_size_bytes(total),
+                            );
+                            if attempt >= MAX_ATTEMPTS {
+                                anyhow::bail!(
+                                    "Download failed after {MAX_ATTEMPTS} attempts: \
+                                     truncated at {} of {}",
+                                    format_size_bytes(downloaded),
+                                    format_size_bytes(total),
+                                );
+                            }
+                            let retry_secs = std::cmp::min(1u64 << (attempt - 1).min(4), 30);
+                            eprintln!(
+                                "  Retrying in {retry_secs}s (attempt {}/{MAX_ATTEMPTS})",
+                                attempt + 1
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(retry_secs)).await;
+                            attempt += 1;
+                            break;
+                        }
+                    }
+
                     print_transfer_status(label, downloaded, total_bytes, attempt, "complete")?;
                     eprintln!();
                     tokio::fs::rename(&tmp, dest)
@@ -967,6 +1116,54 @@ pub fn list_models() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex;
+
+    struct TestRequest {
+        range: Option<String>,
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> anyhow::Result<TestRequest> {
+        let mut buf = vec![0u8; 4096];
+        let mut read = 0usize;
+        loop {
+            if read == buf.len() {
+                buf.resize(buf.len() * 2, 0);
+            }
+            let n = stream.read(&mut buf[read..]).await?;
+            if n == 0 {
+                break;
+            }
+            read += n;
+            if read >= 4 && buf[..read].windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&buf[..read]);
+        let mut range = None;
+        for line in head.lines() {
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("range") {
+                    range = Some(value.trim().to_string());
+                    break;
+                }
+            }
+        }
+        Ok(TestRequest { range })
+    }
+
+    fn temp_download_dest(prefix: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("mesh-llm-download-test-{prefix}-{unique}"))
+            .join("model.gguf")
+    }
 
     #[test]
     fn source_identity_is_exposed_for_hf_catalog_entries() {
@@ -1048,6 +1245,48 @@ mod tests {
         assert!(files[0].1.contains("-00001-of-"));
         assert!(files[1].1.contains("-00002-of-"));
         assert!(files[2].1.contains("-00003-of-"));
+    }
+
+    #[test]
+    fn expand_split_asset_expands_all_parts_from_first_shard() {
+        let asset = HfAsset {
+            repo: "org/repo".to_string(),
+            revision: "main".to_string(),
+            file: "MiniMax-M2-HQ4_K-00001-of-00004.gguf".to_string(),
+        };
+        let expanded = expand_split_asset(&asset).unwrap();
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[0].file, "MiniMax-M2-HQ4_K-00001-of-00004.gguf");
+        assert_eq!(expanded[3].file, "MiniMax-M2-HQ4_K-00004-of-00004.gguf");
+    }
+
+    #[test]
+    fn download_plan_expands_split_shorthand_to_all_shards() {
+        let plan = build_download_plan(vec![HfAsset {
+            repo: "anikifoss/MiniMax-M2-HQ4_K".to_string(),
+            revision: "main".to_string(),
+            file: "MiniMax-M2-HQ4_K-00001-of-00004.gguf".to_string(),
+        }])
+        .unwrap();
+        let required_files: Vec<String> = plan
+            .iter()
+            .filter_map(|(required, asset)| {
+                if *required {
+                    Some(asset.file.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(required_files.len(), 4);
+        assert!(required_files.contains(&"MiniMax-M2-HQ4_K-00001-of-00004.gguf".to_string()));
+        assert!(required_files.contains(&"MiniMax-M2-HQ4_K-00002-of-00004.gguf".to_string()));
+        assert!(required_files.contains(&"MiniMax-M2-HQ4_K-00003-of-00004.gguf".to_string()));
+        assert!(required_files.contains(&"MiniMax-M2-HQ4_K-00004-of-00004.gguf".to_string()));
+        assert!(plan
+            .iter()
+            .any(|(required, asset)| !required && asset.file == "config.json"));
     }
 
     #[test]
@@ -1232,5 +1471,278 @@ mod tests {
 
         let resolved = download_model(&model).await.unwrap();
         assert_eq!(resolved, expected_file);
+    }
+
+    #[tokio::test]
+    async fn download_with_resume_retries_transient_status_and_succeeds() {
+        let payload = Arc::new(vec![b'x'; 32 * 1024]);
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let seen_ranges = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload_for_task = payload.clone();
+        let request_count_for_task = request_count.clone();
+        let seen_ranges_for_task = seen_ranges.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut stream).await.unwrap();
+                seen_ranges_for_task.lock().await.push(req.range);
+                let n = request_count_for_task.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    stream
+                        .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                } else {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        payload_for_task.len()
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&payload_for_task).await.unwrap();
+                }
+            }
+        });
+
+        let dest = temp_download_dest("retry-status");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let url = format!("http://{addr}/model.gguf");
+        download_with_resume(&dest, &url).await.unwrap();
+        server.await.unwrap();
+
+        let downloaded = std::fs::read(&dest).unwrap();
+        assert_eq!(downloaded, *payload);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        let ranges = seen_ranges.lock().await.clone();
+        assert_eq!(ranges, vec![None, None]);
+    }
+
+    #[tokio::test]
+    async fn download_with_resume_recovers_from_interrupted_stream() {
+        let payload = Arc::new((0..200_000u32).map(|v| (v % 251) as u8).collect::<Vec<_>>());
+        let cut = 80_000usize;
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let seen_ranges = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload_for_task = payload.clone();
+        let request_count_for_task = request_count.clone();
+        let seen_ranges_for_task = seen_ranges.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut stream).await.unwrap();
+                seen_ranges_for_task.lock().await.push(req.range.clone());
+                let n = request_count_for_task.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        payload_for_task.len()
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(&payload_for_task[..cut]).await.unwrap();
+                    let _ = stream.shutdown().await;
+                } else {
+                    let expected_range = format!("bytes={cut}-");
+                    assert_eq!(req.range.as_deref(), Some(expected_range.as_str()));
+                    let total = payload_for_task.len();
+                    let rest = &payload_for_task[cut..];
+                    let header = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nAccept-Ranges: bytes\r\n\r\n",
+                        rest.len(),
+                        cut,
+                        total - 1,
+                        total
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(rest).await.unwrap();
+                }
+            }
+        });
+
+        let dest = temp_download_dest("resume-interrupt");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let url = format!("http://{addr}/model.gguf");
+        download_with_resume(&dest, &url).await.unwrap();
+        server.await.unwrap();
+
+        let downloaded = std::fs::read(&dest).unwrap();
+        assert_eq!(downloaded, *payload);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        let ranges = seen_ranges.lock().await.clone();
+        assert_eq!(ranges, vec![None, Some(format!("bytes={cut}-"))]);
+    }
+
+    #[tokio::test]
+    async fn download_with_resume_clears_unrecoverable_partial_and_restarts() {
+        let payload = Arc::new(vec![b'z'; 48 * 1024]);
+        let stale_partial = vec![b'p'; 12 * 1024];
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let seen_ranges = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload_for_task = payload.clone();
+        let request_count_for_task = request_count.clone();
+        let seen_ranges_for_task = seen_ranges.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let req = read_http_request(&mut stream).await.unwrap();
+                seen_ranges_for_task.lock().await.push(req.range.clone());
+                let n = request_count_for_task.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    assert!(req.range.is_some());
+                }
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                    payload_for_task.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(&payload_for_task).await.unwrap();
+            }
+        });
+
+        let dest = temp_download_dest("reset-unrecoverable");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let tmp = dest.with_extension("gguf.part");
+        std::fs::write(&tmp, &stale_partial).unwrap();
+
+        let url = format!("http://{addr}/model.gguf");
+        download_with_resume(&dest, &url).await.unwrap();
+        server.await.unwrap();
+
+        let downloaded = std::fs::read(&dest).unwrap();
+        assert_eq!(downloaded, *payload);
+        assert_eq!(request_count.load(Ordering::SeqCst), 2);
+        let ranges = seen_ranges.lock().await.clone();
+        assert!(ranges[0].is_some());
+        assert_eq!(ranges[1], None);
+    }
+
+    #[tokio::test]
+    async fn download_with_resume_rejects_truncated_stream() {
+        // Server advertises 64KB via Content-Length but only sends 16KB then
+        // closes the connection cleanly (stream returns None).  The download
+        // must NOT promote the partial file to the final destination.
+        let full_size = 64 * 1024usize;
+        let truncated_size = 16 * 1024usize;
+        let payload: Vec<u8> = (0..truncated_size).map(|v| (v % 251) as u8).collect();
+        let request_count = Arc::new(AtomicUsize::new(0));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let payload_for_task = payload.clone();
+        let request_count_for_task = request_count.clone();
+        let server = tokio::spawn(async move {
+            // Handle up to MAX_ATTEMPTS (6) requests — each one truncated.
+            for _ in 0..6 {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let _ = read_http_request(&mut stream).await;
+                request_count_for_task.fetch_add(1, Ordering::SeqCst);
+                // Lie about the size: Content-Length says full_size but we only
+                // send truncated_size bytes.
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                    full_size
+                );
+                let _ = stream.write_all(header.as_bytes()).await;
+                let _ = stream.write_all(&payload_for_task).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let dest = temp_download_dest("truncated-stream");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let url = format!("http://{addr}/model.gguf");
+        let result = download_with_resume(&dest, &url).await;
+
+        // Must fail — the download was truncated every time.  reqwest may
+        // surface this as a transport error ("error decoding response body")
+        // or our own truncation check may catch it; either way the call must
+        // not succeed.
+        assert!(result.is_err(), "truncated download should not succeed");
+        // The final .gguf must NOT exist (only .part may remain).
+        assert!(
+            !dest.exists(),
+            "truncated file must not be promoted to final path"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(dest.parent().unwrap());
+    }
+
+    /// Spawn a tiny HTTP server that responds to HEAD with the given
+    /// Content-Length and immediately closes.  Returns (addr, join_handle).
+    async fn spawn_head_server(
+        content_length: usize,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            // Serve exactly one request.
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn local_file_matches_remote_detects_truncated_file() {
+        let remote_size = 32 * 1024usize;
+        let (addr, server) = spawn_head_server(remote_size).await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mesh-llm-truncation-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local_file = dir.join("model.gguf");
+        let local_size = remote_size / 2;
+        std::fs::write(&local_file, &vec![b'a'; local_size]).unwrap();
+
+        let url = format!("http://{addr}/model.gguf");
+        let matches = local_file_matches_remote(&local_file, &url, local_size as u64).await;
+        assert!(!matches, "truncated local file should not match remote");
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn local_file_matches_remote_accepts_complete_file() {
+        let remote_size = 32 * 1024usize;
+        let (addr, server) = spawn_head_server(remote_size).await;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mesh-llm-complete-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local_file = dir.join("model.gguf");
+        std::fs::write(&local_file, &vec![b'a'; remote_size]).unwrap();
+
+        let url = format!("http://{addr}/model.gguf");
+        let matches = local_file_matches_remote(&local_file, &url, remote_size as u64).await;
+        assert!(matches, "complete local file should match remote");
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

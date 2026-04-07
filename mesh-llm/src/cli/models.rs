@@ -20,11 +20,35 @@ pub enum ModelsCommand {
         /// Maximum number of results to show.
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Prefer text-capable variants.
+        #[arg(long)]
+        text: bool,
+        /// Prefer vision-capable variants.
+        #[arg(long)]
+        vision: bool,
+        /// Prefer audio-capable variants.
+        #[arg(long)]
+        audio: bool,
+        /// Prefer multimodal variants.
+        #[arg(long)]
+        multimodal: bool,
     },
     /// Show details for one exact model reference.
     Show {
         /// Exact catalog id, Hugging Face ref, or direct URL.
         model: String,
+        /// Prefer text-capable variants.
+        #[arg(long)]
+        text: bool,
+        /// Prefer vision-capable variants.
+        #[arg(long)]
+        vision: bool,
+        /// Prefer audio-capable variants.
+        #[arg(long)]
+        audio: bool,
+        /// Prefer multimodal variants.
+        #[arg(long)]
+        multimodal: bool,
     },
     /// Download one exact model reference.
     Download {
@@ -33,6 +57,18 @@ pub enum ModelsCommand {
         /// Also download the recommended draft model for speculative decoding.
         #[arg(long)]
         draft: bool,
+        /// Prefer text-capable variants.
+        #[arg(long)]
+        text: bool,
+        /// Prefer vision-capable variants.
+        #[arg(long)]
+        vision: bool,
+        /// Prefer audio-capable variants.
+        #[arg(long)]
+        audio: bool,
+        /// Prefer multimodal variants.
+        #[arg(long)]
+        multimodal: bool,
     },
     /// Check or refresh cached Hugging Face repos.
     #[command(visible_alias = "update")]

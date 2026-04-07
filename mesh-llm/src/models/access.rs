@@ -16,7 +16,7 @@ pub fn repo_url(repo: &str) -> String {
 
 pub fn gated_access_message(repo: &str) -> String {
     format!(
-        "This Hugging Face repo is gated; capabilities are unavailable until terms are accepted at {}",
+        "🟡 This Hugging Face repo is gated and cannot be downloaded until terms are accepted at {}",
         repo_url(repo)
     )
 }

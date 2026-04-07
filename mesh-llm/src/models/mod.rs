@@ -20,9 +20,12 @@ pub use local::{
     huggingface_identity_for_path, resolve_mmproj_path, scan_installed_models, scan_local_models,
 };
 pub use maintenance::{run_update, warn_about_updates_for_paths};
+#[cfg(test)]
+pub(crate) use resolve::DownloadExactRefOverrideGuard;
 pub use resolve::{
-    download_exact_ref, find_catalog_model_exact, installed_model_capabilities,
-    installed_model_display_name, resolve_model_spec, show_exact_model,
+    download_exact_ref_with_profile, find_catalog_model_exact, inspect_repo_ref,
+    installed_model_capabilities, installed_model_display_name, resolve_model_spec,
+    show_exact_model, CapabilityProfile, RepoInspection, RepoVariantInspection,
 };
 pub use search::{search_catalog_models, search_huggingface, SearchProgress};
 pub use topology::{infer_local_model_topology, ModelMoeInfo, ModelTopology};
@@ -40,7 +43,10 @@ fn build_hf_api(progress: bool) -> Result<Api> {
 }
 
 fn build_hf_tokio_api(progress: bool) -> Result<TokioApi> {
-    let mut builder = TokioApiBuilder::from_cache(huggingface_hub_cache()).with_progress(progress);
+    let mut builder = TokioApiBuilder::from_cache(huggingface_hub_cache())
+        .with_progress(progress)
+        .with_parallel_failures(2)
+        .with_retries(5);
     if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
         let endpoint = endpoint.trim();
         if !endpoint.is_empty() {

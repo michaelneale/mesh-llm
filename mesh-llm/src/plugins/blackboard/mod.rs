@@ -3,6 +3,7 @@
 //! Every node holds the same in-memory list (eventually consistent via flood-fill).
 //! Items expire after 48 hours and the list is capped at 500 items.
 
+#[cfg(test)]
 pub mod mcp;
 
 use anyhow::Result;
@@ -140,27 +141,16 @@ pub enum BlackboardMessage {
 #[derive(Clone)]
 pub struct BlackboardStore {
     items: Arc<Mutex<Vec<BlackboardItem>>>,
-    enabled: Arc<std::sync::atomic::AtomicBool>,
     /// Rate limit tracking: peer_id → list of post timestamps (unix secs).
     rate_log: Arc<Mutex<std::collections::HashMap<String, Vec<u64>>>>,
 }
 
 impl BlackboardStore {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(_enabled: bool) -> Self {
         Self {
             items: Arc::new(Mutex::new(Vec::new())),
-            enabled: Arc::new(std::sync::atomic::AtomicBool::new(enabled)),
             rate_log: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[allow(dead_code)]
-    pub fn set_enabled(&self, v: bool) {
-        self.enabled.store(v, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Insert an item if not already present. Returns true if new.
@@ -329,7 +319,7 @@ fn build_blackboard_plugin(name: String) -> mesh_llm_plugin::SimplePlugin {
         ),
         startup_policy: PluginStartupPolicy::PrivateMeshOnly,
         provides: [
-            capability("blackboard.v1"),
+            capability(crate::plugin::BLACKBOARD_CAPABILITY),
         ],
         mesh: [
             mesh_llm_plugin::mesh::channel(BLACKBOARD_CHANNEL),
@@ -684,7 +674,7 @@ mod tests {
         assert!(manifest
             .capabilities
             .iter()
-            .any(|cap| cap == "blackboard.v1"));
+            .any(|cap| cap == crate::plugin::BLACKBOARD_CAPABILITY));
         assert_eq!(manifest.mesh_channels.len(), 1);
         assert_eq!(manifest.mesh_channels[0].name, BLACKBOARD_CHANNEL);
         assert_eq!(manifest.mesh_event_subscriptions.len(), 1);

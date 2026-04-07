@@ -215,6 +215,37 @@ pub async fn infer_remote_hf_capabilities(
     caps.normalize()
 }
 
+pub fn infer_filename_capabilities(name: &str) -> ModelCapabilities {
+    let mut caps = ModelCapabilities::default();
+    let value = name.to_lowercase();
+
+    if strong_vision_name_signal(&value) {
+        caps.upgrade_vision(CapabilityLevel::Supported);
+    } else if likely_vision_name_signal(&value) {
+        caps.upgrade_vision(CapabilityLevel::Likely);
+    }
+
+    if strong_audio_name_signal(&value) {
+        caps.upgrade_audio(CapabilityLevel::Supported);
+    } else if likely_audio_name_signal(&value) {
+        caps.upgrade_audio(CapabilityLevel::Likely);
+    }
+
+    if strong_reasoning_name_signal(&value) {
+        caps.upgrade_reasoning(CapabilityLevel::Supported);
+    } else if likely_reasoning_name_signal(&value) {
+        caps.upgrade_reasoning(CapabilityLevel::Likely);
+    }
+
+    if strong_tool_use_name_signal(&value) {
+        caps.upgrade_tool_use(CapabilityLevel::Supported);
+    } else if likely_tool_use_name_signal(&value) {
+        caps.upgrade_tool_use(CapabilityLevel::Likely);
+    }
+
+    caps.normalize()
+}
+
 pub fn merge_name_signals(mut caps: ModelCapabilities, values: &[&str]) -> ModelCapabilities {
     if values.iter().any(|value| strong_vision_name_signal(value)) {
         caps.upgrade_vision(CapabilityLevel::Supported);
@@ -673,7 +704,7 @@ async fn fetch_remote_json(repo: &str, revision: Option<&str>, file: &str) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_name_signals, CapabilityLevel};
+    use super::{infer_filename_capabilities, merge_name_signals, CapabilityLevel};
 
     #[test]
     fn qwen3vl_name_signal_is_supported_vision() {
@@ -686,5 +717,16 @@ mod tests {
         );
         assert_eq!(caps.vision, CapabilityLevel::Supported);
         assert!(caps.multimodal);
+    }
+
+    #[test]
+    fn filename_capabilities_detect_audio_and_vision() {
+        let vision = infer_filename_capabilities("Qwen3VL-2B-Instruct-Q4_K_M");
+        assert_eq!(vision.vision, CapabilityLevel::Supported);
+        assert!(vision.multimodal);
+
+        let audio = infer_filename_capabilities("Qwen2-Audio-7B-Instruct-Q4_K_M");
+        assert_eq!(audio.audio, CapabilityLevel::Supported);
+        assert!(audio.multimodal);
     }
 }

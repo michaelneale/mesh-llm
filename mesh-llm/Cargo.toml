@@ -43,7 +43,7 @@ schemars = "1"
 prost = "0.14"
 toml = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-hf-hub = { git = "https://github.com/i386/hf-hub.git", rev = "090aee46516b5da81fd2340b8a281a9f5f54b921", default-features = false, features = ["ureq", "tokio", "rustls-tls", "cache-manager"] }
+hf-hub = { git = "https://github.com/i386/hf-hub.git", rev = "d938c23e74bc7d8a3919843daa8065eb8f10fdf8", default-features = false, features = ["ureq", "tokio", "rustls-tls", "cache-manager"] }
 
 [dev-dependencies]
 axum = "0.8"

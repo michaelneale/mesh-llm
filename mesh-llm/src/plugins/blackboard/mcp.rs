@@ -332,6 +332,11 @@ mod tests {
         assert_eq!(info.server_info.name, "mesh-blackboard");
     }
 
+    #[test]
+    fn test_run_mcp_server_symbol_is_reachable() {
+        let _ = run_mcp_server;
+    }
+
     /// Posting with PII should be blocked before it hits the network.
     #[tokio::test]
     async fn test_post_blocks_pii() {

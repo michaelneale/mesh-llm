@@ -81,6 +81,10 @@ pub(crate) async fn run() -> Result<()> {
 
     let normalized_args = crate::cli::normalize_runtime_surface_args(std::env::args_os());
     let mut cli = Cli::parse_from(normalized_args.normalized.clone());
+    let capability_profile = runtime_capability_profile(&cli)?;
+    unsafe {
+        std::env::set_var("MESH_LLM_CAPABILITY_PROFILE", capability_profile.as_label());
+    }
 
     if let Some(warning) = crate::cli::legacy_runtime_surface_warning(
         &cli,
@@ -344,6 +348,14 @@ async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
 
 fn cli_has_explicit_models(cli: &Cli) -> bool {
     !cli.model.is_empty() || !cli.gguf.is_empty()
+}
+
+fn runtime_capability_profile(cli: &Cli) -> Result<models::CapabilityProfile> {
+    Ok(models::CapabilityProfile {
+        vision: cli.vision,
+        audio: cli.audio,
+        multimodal: cli.multimodal,
+    })
 }
 
 fn build_startup_model_specs(
@@ -1173,6 +1185,25 @@ async fn run_auto(
         // Strip split GGUF suffix: "MiniMax-M2.5-Q4_K_M-00001-of-00004" → "MiniMax-M2.5-Q4_K_M"
         router::strip_split_suffix_owned(&stem)
     };
+
+    // Prevent non-MoE startup models that exceed local fit budget from entering serve mode.
+    // MoE models are allowed to continue so election can run split placement.
+    let model_bytes = election::total_model_bytes(&model);
+    let available_vram = node.vram_bytes();
+    let catalog_match = models::find_catalog_model_exact(&model_name);
+    let is_moe_model = models::infer_local_model_topology(&model, catalog_match)
+        .and_then(|topology| topology.moe)
+        .is_some();
+    if let Some(message) =
+        startup_model_over_capacity_message(&model_name, model_bytes, available_vram, is_moe_model)
+    {
+        if cli.force_serve {
+            eprintln!("{message}");
+            eprintln!("🟡 continuing because --force was set");
+        } else {
+            anyhow::bail!("{message}");
+        }
+    }
 
     // Set model source for gossip (so other joiners can discover it too)
     let model_source = primary_startup_model
@@ -2045,6 +2076,27 @@ fn build_serving_list(resolved_models: &[PathBuf], model_name: &str) -> Vec<Stri
     all
 }
 
+fn startup_model_over_capacity_message(
+    model_name: &str,
+    model_bytes: u64,
+    available_vram: u64,
+    is_moe_model: bool,
+) -> Option<String> {
+    if is_moe_model || model_bytes == 0 {
+        return None;
+    }
+    let required_bytes = (model_bytes as f64 * 1.1) as u64;
+    if required_bytes <= available_vram {
+        return None;
+    }
+    Some(format!(
+        "🟡 {} is too large to serve on this machine (needs {:.1} GB, available {:.1} GB).",
+        model_name,
+        required_bytes as f64 / 1e9,
+        available_vram as f64 / 1e9
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2179,6 +2231,41 @@ mod tests {
         let resolved: Vec<PathBuf> = vec![];
         let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(result, vec!["Qwen3-30B-A3B-Q4_K_M"]);
+    }
+
+    #[test]
+    fn startup_capacity_message_none_when_model_fits() {
+        let message = startup_model_over_capacity_message(
+            "Qwen3-8B-Q4_K_M",
+            4_000_000_000,
+            5_000_000_000,
+            false,
+        );
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn startup_capacity_message_none_for_moe_models() {
+        let message = startup_model_over_capacity_message(
+            "qwen3.5-moe-0.87B-d0.8B-Q2_K",
+            626_599_552,
+            100_000_000,
+            true,
+        );
+        assert!(message.is_none());
+    }
+
+    #[test]
+    fn startup_capacity_message_reports_non_moe_over_capacity() {
+        let message = startup_model_over_capacity_message(
+            "Qwen3-8B-Q4_K_M",
+            4_000_000_000,
+            100_000_000,
+            false,
+        )
+        .expect("expected over-capacity warning");
+        assert!(message.contains("too large to serve on this machine"));
+        assert!(message.contains("Qwen3-8B-Q4_K_M"));
     }
 
     #[test]
