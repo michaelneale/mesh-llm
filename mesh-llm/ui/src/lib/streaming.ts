@@ -12,11 +12,11 @@ export function createRafBatcher(callback: (text: string) => void) {
   let latest = "";
 
   return {
-    /** Call on every token delta — cheap, just a string concat + raf check. */
+    /** Call on every stream update — stores the latest text snapshot + raf check. */
     push(text: string) {
       latest = text;
       if (!raf) {
-        raf = requestAnimationFrame(() => {
+        raf = window.requestAnimationFrame(() => {
           raf = 0;
           callback(latest);
         });
@@ -25,14 +25,14 @@ export function createRafBatcher(callback: (text: string) => void) {
     /** Flush any pending update synchronously (call when stream ends). */
     flush() {
       if (raf) {
-        cancelAnimationFrame(raf);
+        window.cancelAnimationFrame(raf);
         raf = 0;
       }
       callback(latest);
     },
     cancel() {
       if (raf) {
-        cancelAnimationFrame(raf);
+        window.cancelAnimationFrame(raf);
         raf = 0;
       }
     },

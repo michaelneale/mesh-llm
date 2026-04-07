@@ -1374,7 +1374,7 @@ export function App() {
   useEffect(() => {
     if (isSending) return;
     const queued = queuedInputRef.current;
-    if (!queued) return;
+    if (queued == null) return;
     queuedInputRef.current = null;
     setQueuedText(null);
     void sendMessage(queued);

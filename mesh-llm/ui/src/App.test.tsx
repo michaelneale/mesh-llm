@@ -248,6 +248,77 @@ describe("ChatPage", () => {
       "Selected model does not support the attached media.",
     );
   });
+
+  it("shows Queue button label and calls onSubmit when isSending=true", () => {
+    const onSubmit = vi.fn();
+    render(
+      <ChatPage
+        {...buildProps({ isSending: true, input: "next message", onSubmit })}
+      />,
+    );
+
+    const btn = screen.getByTestId("chat-send");
+    expect(btn).toHaveTextContent("Queue");
+    btn.click();
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it("renders queued bubble with the queued text when queuedText is set", () => {
+    render(
+      <ChatPage
+        {...buildProps({
+          isSending: true,
+          queuedText: "queued message",
+          messages: [
+            {
+              id: "msg-1",
+              role: "user" as const,
+              content: "hello",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Queued")).toBeInTheDocument();
+    expect(screen.getByText("queued message")).toBeInTheDocument();
+  });
+
+  it("shows Send button and no queued bubble when not sending", () => {
+    render(<ChatPage {...buildProps({ isSending: false, queuedText: null })} />);
+
+    expect(screen.getByTestId("chat-send")).toHaveTextContent("Send");
+    expect(screen.queryByText("Queued")).not.toBeInTheDocument();
+  });
+
+  it("calls onSubmit for attachment-only queue (empty text, pending attachment, isSending=true)", () => {
+    const onSubmit = vi.fn();
+    render(
+      <ChatPage
+        {...buildProps({
+          isSending: true,
+          input: "",
+          queuedText: "",
+          pendingAttachments: [
+            {
+              id: "att-2",
+              kind: "image",
+              dataUrl: "data:image/png;base64,abc",
+              mimeType: "image/png",
+              fileName: "photo.png",
+              status: "pending",
+            },
+          ],
+          onSubmit,
+        })}
+      />,
+    );
+
+    const btn = screen.getByTestId("chat-send");
+    expect(btn).toHaveTextContent("Queue");
+    btn.click();
+    expect(onSubmit).toHaveBeenCalled();
+  });
 });
 
 describe("App routing and status", () => {
