@@ -1741,7 +1741,9 @@ export function App() {
       return;
     if (isSending) {
       queuedInputRef.current = trimmed;
-      setQueuedText(trimmed);
+      // For attachment-only sends trimmed is ""; show a placeholder so the
+      // queued-message UI indicator is visible.
+      setQueuedText(trimmed || "📎 Attachment");
       setInput("");
       return;
     }
@@ -3916,7 +3918,7 @@ function DashboardPage({
   const [meshTopologyLayoutMode, setMeshTopologyLayoutMode] =
     useState<TopologyLayoutMode>("elk");
   const topologyDiagramNodes = useMemo(
-    () => topologyNodes.filter((node) => !node.client),
+    () => topologyNodes,
     [topologyNodes],
   );
   const filteredModels = useMemo(() => {
@@ -4151,6 +4153,9 @@ function DashboardPage({
     </Select>
   );
 
+  const gpuNodeCount = topologyDiagramNodes.filter((n) => !n.client).length;
+  const clientCount = topologyDiagramNodes.filter((n) => n.client).length;
+
   return (
     <div className="space-y-4">
       <Alert className="border-primary/20 bg-primary/5">
@@ -4222,9 +4227,16 @@ function DashboardPage({
         />
         <StatCard
           title="Nodes"
-          value={`${topologyDiagramNodes.length}`}
+          value={`${gpuNodeCount}`}
+          valueSuffix={
+            clientCount > 0 ? (
+              <span className="text-xs font-normal text-muted-foreground">
+                +{clientCount} client{clientCount === 1 ? "" : "s"}
+              </span>
+            ) : undefined
+          }
           icon={<Network className="h-4 w-4" />}
-          tooltip="Total nodes currently visible in topology."
+          tooltip="GPU nodes in the mesh, plus connected clients."
         />
         <StatCard
           title="Inflight"
@@ -4432,28 +4444,21 @@ function DashboardPage({
                       {peerRows.map((peer) => (
                        <TableRow
                          key={peer.id}
-                         data-id={peer.role !== "Client" ? peer.id : undefined}
-                         tabIndex={peer.role !== "Client" ? 0 : undefined}
+                         data-id={peer.id}
+                         tabIndex={0}
                          className={cn(
-                           peer.role !== "Client" && "cursor-pointer",
-                           peer.id === selectedTopologyNodeId &&
-                             "bg-muted/50 hover:bg-muted/60",
-                         )}
-                         onClick={
-                           peer.role !== "Client"
-                             ? () => setSelectedTopologyNodeId(peer.id)
-                             : undefined
-                         }
-                         onKeyDown={
-                           peer.role !== "Client"
-                             ? (e) => {
-                                 if (e.key === "Enter" || e.key === " ") {
-                                   e.preventDefault();
-                                   setSelectedTopologyNodeId(peer.id);
-                                 }
-                               }
-                             : undefined
-                         }
+                            "cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:bg-muted/40",
+                            peer.id === selectedTopologyNodeId &&
+                              "bg-muted/50 hover:bg-muted/60",
+                          )}
+                          onClick={() => setSelectedTopologyNodeId(peer.id)}
+                          onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget) return;
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setSelectedTopologyNodeId(peer.id);
+                            }
+                          }}
                        >
                         <TableCell className="font-mono text-xs">
                           <button
@@ -4461,9 +4466,7 @@ function DashboardPage({
                             className="text-left underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (peer.role !== "Client") {
-                                setSelectedTopologyNodeId(peer.id);
-                              }
+                              setSelectedTopologyNodeId(peer.id);
                               openNodeDetail(peer.id);
                             }}
                           >
@@ -4710,7 +4713,7 @@ type TopologyFlowNodeData = {
   layoutDirection: "horizontal" | "vertical";
 };
 
-type TopologyFlowDiagramNode = Node<TopologyFlowNodeData, "topologyNode">;
+type TopologyFlowDiagramNode = Node<TopologyFlowNodeData, "topologyNode" | "clientDot">;
 
 function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
   const isCenter = data.node.bucket === "center";
@@ -4882,7 +4885,26 @@ function TopologyFlowNode({ data }: NodeProps<TopologyFlowDiagramNode>) {
   );
 }
 
-const topologyNodeTypes = { topologyNode: TopologyFlowNode } as NodeTypes;
+function TopologyClientDot({ data }: NodeProps<TopologyFlowDiagramNode>) {
+  const isHorizontal = data.layoutDirection === "horizontal";
+  const handleStyle = { opacity: 0, width: 1, height: 1, border: 0, pointerEvents: "none" as const };
+  return (
+    <div className={cn("flex flex-col items-center gap-0.5", data.selected ? "opacity-100" : "opacity-40")}>
+      <div className={cn("relative h-3.5 w-3.5 rounded-full border bg-muted", data.selected ? "border-ring ring-1 ring-ring/50" : "border-border")}>
+        <Handle type="target" position={isHorizontal ? Position.Left : Position.Top} style={handleStyle} />
+        <Handle type="source" position={isHorizontal ? Position.Right : Position.Bottom} style={handleStyle} />
+      </div>
+      <span className={cn("max-w-[60px] truncate text-[8px] leading-none", data.selected ? "text-foreground" : "text-muted-foreground")}>
+        {data.node.hostname || data.node.id.slice(0, 8)}
+      </span>
+    </div>
+  );
+}
+
+const topologyNodeTypes = {
+  topologyNode: TopologyFlowNode,
+  clientDot: TopologyClientDot,
+} as NodeTypes;
 
 function positionedTopologyLayoutsEqual(
   left: PositionedTopologyNode[],
@@ -5134,8 +5156,8 @@ function MeshTopologyFlow({
     ): BucketedTopologyNode => ({
       ...node,
       bucket,
-      width: TOPOLOGY_NODE_WIDTH,
-      height: estimateTopologyNodeHeight(node, nodeInfoById.get(node.id)),
+      width: node.client ? 64 : TOPOLOGY_NODE_WIDTH,
+      height: node.client ? 28 : estimateTopologyNodeHeight(node, nodeInfoById.get(node.id)),
     });
 
     return [
@@ -5305,7 +5327,7 @@ function MeshTopologyFlow({
     const isHorizontal = activeLayout.direction === "horizontal";
     return positioned.map((p) => ({
       id: p.id,
-      type: "topologyNode",
+      type: p.client ? "clientDot" : "topologyNode",
       position: { x: p.x, y: p.y },
       origin: [0.5, 0],
       sourcePosition: isHorizontal ? Position.Right : Position.Bottom,
@@ -5346,8 +5368,10 @@ function MeshTopologyFlow({
     return positioned
       .filter((p) => p.id !== center.id)
       .map((p) => {
-        const stroke =
-          p.bucket === "serving"
+        const isClient = p.bucket === "client";
+        const stroke = isClient
+          ? "rgba(160,160,160,0.15)"
+          : p.bucket === "serving"
             ? "rgba(34,197,94,0.35)"
             : "rgba(56,189,248,0.3)";
         return {
@@ -5363,8 +5387,8 @@ function MeshTopologyFlow({
               : undefined,
           style: {
             stroke,
-            strokeWidth: 2.4,
-            strokeDasharray: "2 6",
+            strokeWidth: isClient ? 1 : 2.4,
+            strokeDasharray: isClient ? "1 4" : "2 6",
           },
         };
       });
