@@ -267,8 +267,8 @@ jobs:
         run: sccache --show-stats || true
 
   inference_smoke_tests:
-    needs: [changes, linux, macos]
-    if: ${{ github.event_name == 'workflow_dispatch' && needs.linux.result == 'success' && needs.macos.result == 'success' && (github.event.inputs.run_llama_smoke_tests != 'false' || github.event.inputs.run_mlx_smoke_tests != 'false') }}
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     name: Inference Smoke Tests
     runs-on: ubuntu-latest
     steps:
