@@ -151,6 +151,7 @@ fn runtime_descriptor_to_proto(
         identity_hash: descriptor.identity_hash.clone(),
         context_length: descriptor.context_length,
         ready: descriptor.ready,
+        backend: descriptor.backend.clone(),
     }
 }
 
@@ -161,6 +162,7 @@ fn proto_runtime_descriptor_to_local(
         model_name: descriptor.model_name.clone(),
         identity_hash: descriptor.identity_hash.clone(),
         context_length: descriptor.context_length,
+        backend: descriptor.backend.clone(),
         ready: descriptor.ready,
     }
 }

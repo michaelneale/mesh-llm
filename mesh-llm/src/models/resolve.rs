@@ -1,6 +1,7 @@
 use super::ModelCapabilities;
-use super::{capabilities, catalog, find_model_path, format_size_bytes};
+use super::{build_hf_tokio_api, capabilities, catalog, find_model_path, format_size_bytes};
 use anyhow::{anyhow, bail, Context, Result};
+use hf_hub::{Repo, RepoType};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -8,12 +9,38 @@ pub struct ModelDetails {
     pub display_name: String,
     pub exact_ref: String,
     pub source: &'static str,
+    pub kind: &'static str,
     pub download_url: String,
     pub size_label: Option<String>,
     pub description: Option<String>,
     pub draft: Option<String>,
     pub capabilities: ModelCapabilities,
     pub moe: Option<catalog::MoeConfig>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ResolveFormatPreference {
+    Auto,
+    Gguf,
+    Mlx,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MlxSelectionPolicy {
+    AllowImplicit,
+    RequireExplicitFlag,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) enum RepoArtifactKind {
+    Gguf,
+    Mlx,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RepoArtifactCandidate {
+    pub kind: RepoArtifactKind,
+    pub file: String,
 }
 
 #[derive(Clone, Debug)]
@@ -53,8 +80,13 @@ pub fn find_catalog_model_exact(query: &str) -> Option<&'static catalog::Catalog
     })
 }
 
-pub async fn download_exact_ref(input: &str) -> Result<PathBuf> {
-    match parse_exact_model_ref(input)? {
+pub async fn download_exact_ref(
+    input: &str,
+    preference: ResolveFormatPreference,
+    command_prefix: &str,
+    mlx_policy: MlxSelectionPolicy,
+) -> Result<PathBuf> {
+    match parse_exact_model_ref(input, preference, command_prefix, mlx_policy).await? {
         ExactModelRef::Catalog(model) => catalog::download_model(model).await,
         ExactModelRef::HuggingFace {
             repo,
@@ -104,17 +136,30 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
         );
     }
 
-    download_exact_ref(&raw)
-        .await
-        .with_context(|| format!("Resolve model spec {raw}"))
+    download_exact_ref(
+        &raw,
+        ResolveFormatPreference::Auto,
+        "mesh-llm models download",
+        MlxSelectionPolicy::AllowImplicit,
+    )
+    .await
+    .with_context(|| format!("Resolve model spec {raw}"))
 }
 
 pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
-    match parse_exact_model_ref(input)? {
+    match parse_exact_model_ref(
+        input,
+        ResolveFormatPreference::Auto,
+        "mesh-llm models show",
+        MlxSelectionPolicy::AllowImplicit,
+    )
+    .await?
+    {
         ExactModelRef::Catalog(model) => Ok(ModelDetails {
             display_name: model.name.to_string(),
             exact_ref: model.name.to_string(),
             source: "catalog",
+            kind: catalog_model_kind_label(model),
             download_url: match (
                 model.source_repo(),
                 model.source_revision(),
@@ -171,6 +216,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                     .to_string(),
                 exact_ref,
                 source: "huggingface",
+                kind: artifact_kind_label_for_file(&file),
                 download_url,
                 size_label,
                 description: catalog.map(|model| model.description.to_string()),
@@ -189,6 +235,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 display_name: filename,
                 exact_ref: url.clone(),
                 source: "url",
+                kind: artifact_kind_label_for_file(&url),
                 download_url: url,
                 size_label,
                 description: catalog.map(|model| model.description.to_string()),
@@ -328,7 +375,7 @@ fn matching_catalog_primary_for_url(url: &str) -> Option<&'static catalog::Catal
 }
 
 #[cfg(test)]
-mod tests {
+mod repo_artifact_tests {
     use super::*;
 
     #[test]
@@ -404,7 +451,7 @@ pub(super) fn parse_huggingface_ref(input: &str) -> Option<(String, Option<Strin
     if let Some(parsed) = parse_hf_resolve_url(input) {
         return Some(parsed);
     }
-    if !input.ends_with(".gguf") {
+    if !is_supported_huggingface_file_ref(input) {
         return None;
     }
 
@@ -423,11 +470,315 @@ pub(super) fn parse_huggingface_ref(input: &str) -> Option<(String, Option<Strin
     ))
 }
 
-fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
+pub(super) fn parse_huggingface_repo_ref(input: &str) -> Option<(String, Option<String>)> {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        return None;
+    }
+    if input.contains("/resolve/") || is_supported_huggingface_file_ref(input) {
+        return None;
+    }
+    let parts: Vec<&str> = input.split('/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let (repo_tail, revision) = match parts[1].split_once('@') {
+        Some((repo, revision)) if !repo.is_empty() && !revision.is_empty() => {
+            (repo, Some(revision.to_string()))
+        }
+        Some(_) => return None,
+        None => (parts[1], None),
+    };
+    if parts[0].is_empty() || repo_tail.is_empty() {
+        return None;
+    }
+    Some((format!("{}/{}", parts[0], repo_tail), revision))
+}
+
+fn is_supported_huggingface_file_ref(input: &str) -> bool {
+    input.ends_with(".gguf")
+        || input.ends_with("model.safetensors")
+        || input.ends_with("model.safetensors.index.json")
+}
+
+pub(super) fn artifact_kind_for_file(file: &str) -> Option<RepoArtifactKind> {
+    if file.ends_with(".gguf") {
+        return Some(RepoArtifactKind::Gguf);
+    }
+    if file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json") {
+        return Some(RepoArtifactKind::Mlx);
+    }
+    None
+}
+
+fn validate_preference_matches_file(file: &str, preference: ResolveFormatPreference) -> Result<()> {
+    match preference {
+        ResolveFormatPreference::Auto => Ok(()),
+        ResolveFormatPreference::Gguf => {
+            if artifact_kind_for_file(file) == Some(RepoArtifactKind::Gguf) {
+                Ok(())
+            } else {
+                bail!("`--gguf` requires a GGUF artifact");
+            }
+        }
+        ResolveFormatPreference::Mlx => {
+            if artifact_kind_for_file(file) == Some(RepoArtifactKind::Mlx) {
+                Ok(())
+            } else {
+                bail!("`--mlx` requires an MLX artifact");
+            }
+        }
+    }
+}
+
+fn ensure_explicit_mlx_selection(
+    kind: Option<RepoArtifactKind>,
+    preference: ResolveFormatPreference,
+    mlx_policy: MlxSelectionPolicy,
+    command_prefix: &str,
+    target: &str,
+) -> Result<()> {
+    if kind == Some(RepoArtifactKind::Mlx)
+        && mlx_policy == MlxSelectionPolicy::RequireExplicitFlag
+        && preference != ResolveFormatPreference::Mlx
+    {
+        bail!(
+            "MLX selection requires explicit `--mlx`.\nRetry with:\n  {command_prefix} {target} --mlx"
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn collect_repo_artifact_candidates(siblings: &[String]) -> Vec<RepoArtifactCandidate> {
+    let mut gguf = Vec::new();
+    let mut mlx = Vec::new();
+    for sibling in siblings {
+        if sibling.ends_with(".gguf") {
+            if sibling.contains("-000") && !sibling.contains("-00001-of-") {
+                continue;
+            }
+            gguf.push(RepoArtifactCandidate {
+                kind: RepoArtifactKind::Gguf,
+                file: sibling.clone(),
+            });
+            continue;
+        }
+        if sibling == "model.safetensors.index.json" || sibling == "model.safetensors" {
+            mlx.push(RepoArtifactCandidate {
+                kind: RepoArtifactKind::Mlx,
+                file: sibling.clone(),
+            });
+        }
+    }
+    gguf.sort_by(|left, right| {
+        file_preference_score(&left.file)
+            .cmp(&file_preference_score(&right.file))
+            .then_with(|| left.file.cmp(&right.file))
+    });
+    mlx.sort_by(|left, right| {
+        right
+            .file
+            .ends_with("model.safetensors.index.json")
+            .cmp(&left.file.ends_with("model.safetensors.index.json"))
+            .then_with(|| left.file.cmp(&right.file))
+    });
+    if mlx
+        .iter()
+        .any(|candidate| candidate.file.ends_with("model.safetensors.index.json"))
+    {
+        mlx.retain(|candidate| candidate.file.ends_with("model.safetensors.index.json"));
+    }
+    gguf.extend(mlx);
+    gguf
+}
+
+pub(super) fn artifact_kind_label(kind: RepoArtifactKind) -> &'static str {
+    match kind {
+        RepoArtifactKind::Gguf => "🦙 gguf",
+        RepoArtifactKind::Mlx => "🍎 mlx",
+    }
+}
+
+pub(super) fn artifact_kind_label_for_file(file: &str) -> &'static str {
+    artifact_kind_for_file(file)
+        .map(artifact_kind_label)
+        .unwrap_or("unknown")
+}
+
+pub fn catalog_model_kind_label(model: &catalog::CatalogModel) -> &'static str {
+    if model
+        .source_file()
+        .map(|file| {
+            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
+        })
+        .unwrap_or(false)
+        || model.url.contains("model.safetensors")
+    {
+        "🍎 mlx"
+    } else {
+        "🦙 gguf"
+    }
+}
+
+fn format_repo_artifact_suggestions(
+    repo: &str,
+    revision: Option<&str>,
+    candidates: &[RepoArtifactCandidate],
+    command_prefix: &str,
+) -> String {
+    let mut lines = vec![format!("🤔 Multiple artifacts found in {repo}")];
+    if let Some(revision) = revision {
+        lines[0].push('@');
+        lines[0].push_str(revision);
+    }
+    let gguf: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == RepoArtifactKind::Gguf)
+        .collect();
+    let mlx: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| candidate.kind == RepoArtifactKind::Mlx)
+        .collect();
+    if !gguf.is_empty() {
+        lines.push(String::new());
+        lines.push("🦙 GGUF:".to_string());
+        for candidate in gguf {
+            lines.push(format!(
+                "  {command_prefix} {}",
+                format_huggingface_exact_ref(repo, revision, &candidate.file)
+            ));
+        }
+    }
+    if !mlx.is_empty() {
+        lines.push(String::new());
+        lines.push("🍎 MLX:".to_string());
+        for candidate in mlx {
+            lines.push(format!(
+                "  {command_prefix} {}",
+                format_huggingface_exact_ref(repo, revision, &candidate.file)
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn choose_repo_artifact_candidate(
+    repo: &str,
+    revision: Option<&str>,
+    candidates: &[RepoArtifactCandidate],
+    preference: ResolveFormatPreference,
+    command_prefix: &str,
+    mlx_policy: MlxSelectionPolicy,
+) -> Result<RepoArtifactCandidate> {
+    let filtered: Vec<_> = candidates
+        .iter()
+        .filter(|candidate| match preference {
+            ResolveFormatPreference::Auto => true,
+            ResolveFormatPreference::Gguf => candidate.kind == RepoArtifactKind::Gguf,
+            ResolveFormatPreference::Mlx => candidate.kind == RepoArtifactKind::Mlx,
+        })
+        .cloned()
+        .collect();
+
+    match filtered.len() {
+        0 => match preference {
+            ResolveFormatPreference::Auto => {
+                bail!("No downloadable model artifacts found in {repo}")
+            }
+            ResolveFormatPreference::Gguf => bail!("No GGUF artifacts found in {repo}"),
+            ResolveFormatPreference::Mlx => bail!("No MLX artifacts found in {repo}"),
+        },
+        1 => {
+            let candidate = filtered[0].clone();
+            ensure_explicit_mlx_selection(
+                Some(candidate.kind),
+                preference,
+                mlx_policy,
+                command_prefix,
+                &repo.to_string(),
+            )?;
+            Ok(candidate)
+        }
+        _ => bail!(
+            "{}",
+            format_repo_artifact_suggestions(repo, revision, &filtered, command_prefix)
+        ),
+    }
+}
+
+async fn resolve_repo_artifact_ref(
+    repo: &str,
+    revision: Option<&str>,
+    preference: ResolveFormatPreference,
+    command_prefix: &str,
+    mlx_policy: MlxSelectionPolicy,
+) -> Result<(String, Option<String>, String)> {
+    let api = build_hf_tokio_api(false)?;
+    let repo_handle = match revision {
+        Some(rev) => Repo::with_revision(repo.to_string(), RepoType::Model, rev.to_string()),
+        None => Repo::new(repo.to_string(), RepoType::Model),
+    };
+    let detail = api
+        .repo(repo_handle)
+        .info()
+        .await
+        .map_err(|err| anyhow!("Fetch Hugging Face repo {repo}: {err}"))?;
+    let siblings: Vec<String> = detail
+        .siblings
+        .into_iter()
+        .map(|sibling| sibling.rfilename)
+        .collect();
+    let candidates = collect_repo_artifact_candidates(&siblings);
+    let choice = choose_repo_artifact_candidate(
+        repo,
+        revision,
+        &candidates,
+        preference,
+        command_prefix,
+        mlx_policy,
+    )?;
+    Ok((repo.to_string(), revision.map(str::to_string), choice.file))
+}
+
+async fn parse_exact_model_ref(
+    input: &str,
+    preference: ResolveFormatPreference,
+    command_prefix: &str,
+    mlx_policy: MlxSelectionPolicy,
+) -> Result<ExactModelRef> {
     if let Some(model) = find_catalog_model_exact(input) {
+        ensure_explicit_mlx_selection(
+            artifact_kind_for_file(&model.file),
+            preference,
+            mlx_policy,
+            command_prefix,
+            input,
+        )?;
         return Ok(ExactModelRef::Catalog(model));
     }
     if let Some((repo, revision, file)) = parse_huggingface_ref(input) {
+        validate_preference_matches_file(&file, preference)?;
+        ensure_explicit_mlx_selection(
+            artifact_kind_for_file(&file),
+            preference,
+            mlx_policy,
+            command_prefix,
+            input,
+        )?;
+        return Ok(ExactModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        });
+    }
+    if let Some((repo, revision)) = parse_huggingface_repo_ref(input) {
+        let (repo, revision, file) = resolve_repo_artifact_ref(
+            &repo,
+            revision.as_deref(),
+            preference,
+            command_prefix,
+            mlx_policy,
+        )
+        .await?;
         return Ok(ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -435,13 +786,22 @@ fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
         });
     }
     if input.starts_with("http://") || input.starts_with("https://") {
+        let filename = remote_filename(input)?;
+        validate_preference_matches_file(&filename, preference)?;
+        ensure_explicit_mlx_selection(
+            artifact_kind_for_file(&filename),
+            preference,
+            mlx_policy,
+            command_prefix,
+            input,
+        )?;
         return Ok(ExactModelRef::Url {
             url: input.to_string(),
-            filename: remote_filename(input)?,
+            filename,
         });
     }
     bail!(
-        "Expected an exact model ref. Use a catalog id, a Hugging Face ref like org/repo/file.gguf, or a direct URL."
+        "Expected a model ref. Use a catalog id, a Hugging Face ref like org/repo/file.gguf, org/repo/model.safetensors, or org/repo, or a direct URL."
     )
 }
 
@@ -518,4 +878,112 @@ pub(super) async fn remote_hf_size_label_with_api(
 ) -> Option<String> {
     let url = huggingface_resolve_url(repo, revision, file);
     remote_size_label(&url).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_huggingface_repo_ref_accepts_repo_and_revision_shorthand() {
+        let (repo, revision) =
+            parse_huggingface_repo_ref("mlx-community/Qwen2.5-0.5B-Instruct@main").unwrap();
+        assert_eq!(repo, "mlx-community/Qwen2.5-0.5B-Instruct");
+        assert_eq!(revision.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn collect_repo_artifact_candidates_prefers_mlx_index_and_split_gguf_primary() {
+        let siblings = vec![
+            "Qwen3-8B-Q4_K_M-00002-of-00004.gguf".to_string(),
+            "Qwen3-8B-Q4_K_M-00001-of-00004.gguf".to_string(),
+            "Qwen3-8B-Q6_K.gguf".to_string(),
+            "model.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ];
+        let candidates = collect_repo_artifact_candidates(&siblings);
+        let files: Vec<_> = candidates
+            .into_iter()
+            .map(|candidate| candidate.file)
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                "Qwen3-8B-Q4_K_M-00001-of-00004.gguf".to_string(),
+                "Qwen3-8B-Q6_K.gguf".to_string(),
+                "model.safetensors.index.json".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn format_repo_artifact_suggestions_groups_by_backend() {
+        let text = format_repo_artifact_suggestions(
+            "some-org/repo",
+            None,
+            &[
+                RepoArtifactCandidate {
+                    kind: RepoArtifactKind::Gguf,
+                    file: "Qwen3-8B-Q4_K_M.gguf".to_string(),
+                },
+                RepoArtifactCandidate {
+                    kind: RepoArtifactKind::Mlx,
+                    file: "model.safetensors".to_string(),
+                },
+            ],
+            "mesh-llm models download",
+        );
+        assert!(text.contains("🤔 Multiple artifacts found in some-org/repo"));
+        assert!(text.contains("🦙 GGUF:"));
+        assert!(text.contains("🍎 MLX:"));
+        assert!(text.contains("mesh-llm models download some-org/repo/Qwen3-8B-Q4_K_M.gguf"));
+        assert!(text.contains("mesh-llm models download some-org/repo/model.safetensors"));
+    }
+
+    #[test]
+    fn explicit_mlx_flag_is_required_for_exact_mlx_artifacts_when_requested() {
+        let err = ensure_explicit_mlx_selection(
+            Some(RepoArtifactKind::Mlx),
+            ResolveFormatPreference::Auto,
+            MlxSelectionPolicy::RequireExplicitFlag,
+            "mesh-llm --model",
+            "mlx-community/Qwen3-0.6B-4bit/model.safetensors.index.json",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("MLX selection requires explicit `--mlx`"));
+        assert!(err.contains(
+            "mesh-llm --model mlx-community/Qwen3-0.6B-4bit/model.safetensors.index.json --mlx"
+        ));
+    }
+
+    #[test]
+    fn explicit_mlx_flag_allows_exact_mlx_artifacts() {
+        ensure_explicit_mlx_selection(
+            Some(RepoArtifactKind::Mlx),
+            ResolveFormatPreference::Mlx,
+            MlxSelectionPolicy::RequireExplicitFlag,
+            "mesh-llm --model",
+            "mlx-community/Qwen3-0.6B-4bit/model.safetensors.index.json",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn choose_repo_artifact_candidate_requires_mlx_flag_for_mlx_only_repo() {
+        let err = choose_repo_artifact_candidate(
+            "mlx-community/Qwen3-0.6B-4bit",
+            None,
+            &[RepoArtifactCandidate {
+                kind: RepoArtifactKind::Mlx,
+                file: "model.safetensors.index.json".to_string(),
+            }],
+            ResolveFormatPreference::Auto,
+            "mesh-llm --model",
+            MlxSelectionPolicy::RequireExplicitFlag,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("MLX selection requires explicit `--mlx`"));
+    }
 }

@@ -10,3 +10,4 @@ mesh-llm/ui/dist/
 evals/results/
 .sisyphus/
 .playwright-mcp/
+MLX_VALIDATION_RESULTS/

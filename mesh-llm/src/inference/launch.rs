@@ -220,14 +220,36 @@ fn temp_log_path(name: &str) -> PathBuf {
 pub struct InferenceServerHandle {
     pid: u32,
     expected_exit: Arc<AtomicBool>,
+    shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl InferenceServerHandle {
+    fn process(pid: u32, expected_exit: Arc<AtomicBool>) -> Self {
+        Self {
+            pid,
+            expected_exit,
+            shutdown_tx: None,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn in_process(shutdown_tx: tokio::sync::watch::Sender<bool>) -> Self {
+        Self {
+            pid: std::process::id(),
+            expected_exit: Arc::new(AtomicBool::new(true)),
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
     pub async fn shutdown(&self) {
+        if let Some(tx) = &self.shutdown_tx {
+            let _ = tx.send(true);
+            return;
+        }
         self.expected_exit.store(true, Ordering::Relaxed);
         terminate_process(self.pid).await;
     }
@@ -1098,10 +1120,7 @@ pub async fn start_llama_server(
                 .id()
                 .context("llama-server started but did not expose a PID")?;
             let expected_exit = Arc::new(AtomicBool::new(false));
-            let handle = InferenceServerHandle {
-                pid,
-                expected_exit: expected_exit.clone(),
-            };
+            let handle = InferenceServerHandle::process(pid, expected_exit.clone());
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {
                 let _ = child.wait().await;

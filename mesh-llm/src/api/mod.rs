@@ -196,6 +196,10 @@ impl MeshApi {
         self.inner.lock().await.primary_backend = Some(backend);
     }
 
+    pub async fn clear_primary_backend(&self) {
+        self.inner.lock().await.primary_backend = None;
+    }
+
     pub async fn set_draft_name(&self, name: String) {
         self.inner.lock().await.draft_name = Some(name);
     }

@@ -182,20 +182,7 @@ def parse_downloaded_model_path(output: str) -> str:
     raise RuntimeError("could not determine downloaded model path")
 
 
-def resolve_local_model_ref(model_ref: str) -> str | None:
-    path = Path(model_ref)
-    if not path.is_absolute():
-        return None
-    if not path.exists():
-        raise FileNotFoundError(f"local model_ref does not exist: {model_ref}")
-    return str(path)
-
-
 def download_model_ref(model_ref: str, backend: str) -> str:
-    local_path = resolve_local_model_ref(model_ref)
-    if local_path is not None:
-        log(f"📍 Using local model ref [{backend}] {model_ref}")
-        return local_path
     flag = "--gguf" if backend == "gguf" else "--mlx"
     log(f"📥 Preflight download start [{backend}] {model_ref}")
     proc = run_streaming(

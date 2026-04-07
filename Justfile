@@ -203,6 +203,16 @@ bundle output="/tmp/mesh-bundle.tar.gz":
     cp {{ build_dir }}/bin/rpc-server "$BUNDLE/$rpc_name"
     cp {{ build_dir }}/bin/llama-server "$BUNDLE/$llama_name"
     cp {{ build_dir }}/bin/llama-moe-split "$BUNDLE/"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        shopt -s nullglob
+        metallibs=(target/release/build/mlx-sys-*/out/build/lib/mlx.metallib)
+        shopt -u nullglob
+        if [ "${#metallibs[@]}" -gt 0 ]; then
+            cp "${metallibs[0]}" "$BUNDLE/mlx.metallib"
+        else
+            echo "Note: mlx.metallib not found in target/release/build — MLX bundles may fail on remote hosts"
+        fi
+    fi
     for lib in {{ build_dir }}/bin/*.dylib; do
         cp "$lib" "$BUNDLE/" 2>/dev/null || true
     done

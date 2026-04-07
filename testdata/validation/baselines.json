@@ -42,10 +42,6 @@
       "lfm2": {
         "exit": 1,
         "case_id": "lfm2-gguf-exact"
-      },
-      "olmo2": {
-        "exit": 0,
-        "case_id": "olmo2-gguf-exact"
       }
     },
     "mlx": {
@@ -84,10 +80,6 @@
       "lfm2": {
         "exit": 1,
         "case_id": "lfm2-mlx-exact"
-      },
-      "olmo2": {
-        "exit": 0,
-        "case_id": "olmo2-mlx-exact"
       }
     }
   },

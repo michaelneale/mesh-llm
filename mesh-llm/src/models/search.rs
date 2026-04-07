@@ -1,6 +1,6 @@
 use super::resolve::{
-    file_preference_score, matching_catalog_model_for_huggingface, merge_capabilities,
-    remote_hf_size_label_with_api,
+    artifact_kind_label, collect_repo_artifact_candidates, matching_catalog_model_for_huggingface,
+    merge_capabilities, remote_hf_size_label_with_api, RepoArtifactKind,
 };
 use super::ModelCapabilities;
 use super::{build_hf_tokio_api, capabilities, catalog};
@@ -14,6 +14,7 @@ use tokio::task::JoinSet;
 pub struct SearchHit {
     pub repo_id: String,
     pub file: String,
+    pub kind: &'static str,
     pub exact_ref: String,
     pub size_label: Option<String>,
     pub downloads: Option<u64>,
@@ -60,7 +61,6 @@ where
     let repos = api
         .search(RepoType::Model)
         .with_query(query)
-        .with_filter("gguf")
         .with_limit(repo_limit)
         .run()
         .await
@@ -87,7 +87,7 @@ where
         let (index, result) = joined.context("Join Hugging Face repo inspection task")?;
         completed += 1;
         progress(SearchProgress::InspectingRepos { completed, total });
-        if let Some(hit) = result? {
+        for hit in result? {
             indexed_hits.push((index, hit));
         }
         if let Some((next_index, repo)) = pending.next() {
@@ -108,7 +108,7 @@ where
     Ok(hits)
 }
 
-async fn build_search_hit(api: TokioApi, repo: RepoSummary) -> Result<Option<SearchHit>> {
+async fn build_search_hit(api: TokioApi, repo: RepoSummary) -> Result<Vec<SearchHit>> {
     let detail = api
         .repo(repo.repo())
         .info()
@@ -120,51 +120,52 @@ async fn build_search_hit(api: TokioApi, repo: RepoSummary) -> Result<Option<Sea
         .clone()
         .or(detail.model_id.clone())
         .unwrap_or(repo.id.clone());
+    let repo_id_lc = repo_id.to_lowercase();
     let sibling_names: Vec<String> = detail
         .siblings
         .iter()
         .map(|sibling| sibling.rfilename.clone())
         .collect();
-    let mut files: Vec<String> = detail
-        .siblings
-        .into_iter()
-        .map(|sibling| sibling.rfilename)
-        .filter(|file| file.ends_with(".gguf"))
-        .collect();
-    if files.is_empty() {
-        return Ok(None);
+    let candidates = collect_repo_artifact_candidates(&sibling_names);
+    if candidates.is_empty() {
+        return Ok(Vec::new());
     }
-    files.sort_by(|left, right| {
-        file_preference_score(left)
-            .cmp(&file_preference_score(right))
-            .then_with(|| left.cmp(right))
-    });
-    let Some(file) = files.into_iter().next() else {
-        return Ok(None);
-    };
-    let catalog = matching_catalog_model_for_huggingface(&repo_id, None, &file);
-    let size_label = match catalog {
-        Some(model) => Some(model.size.to_string()),
-        None => remote_hf_size_label_with_api(&api, &repo_id, None, &file).await,
-    };
-    let remote_caps =
-        capabilities::infer_remote_hf_capabilities(&repo_id, None, &file, Some(&sibling_names))
-            .await;
-    let capabilities = match catalog {
-        Some(model) => {
-            let base = capabilities::infer_catalog_capabilities(model);
-            merge_capabilities(base, remote_caps)
+
+    let mut hits = Vec::new();
+    for candidate in candidates {
+        if candidate.kind == RepoArtifactKind::Mlx && !repo_id_lc.contains("mlx") {
+            continue;
         }
-        None => remote_caps,
-    };
-    Ok(Some(SearchHit {
-        repo_id: repo_id.clone(),
-        file: file.clone(),
-        exact_ref: format!("{repo_id}/{file}"),
-        size_label,
-        downloads: detail.downloads.or(repo.downloads),
-        likes: detail.likes.or(repo.likes),
-        catalog,
-        capabilities,
-    }))
+        let catalog = matching_catalog_model_for_huggingface(&repo_id, None, &candidate.file);
+        let size_label = match catalog {
+            Some(model) => Some(model.size.to_string()),
+            None => remote_hf_size_label_with_api(&api, &repo_id, None, &candidate.file).await,
+        };
+        let remote_caps = capabilities::infer_remote_hf_capabilities(
+            &repo_id,
+            None,
+            &candidate.file,
+            Some(&sibling_names),
+        )
+        .await;
+        let capabilities = match catalog {
+            Some(model) => {
+                let base = capabilities::infer_catalog_capabilities(model);
+                merge_capabilities(base, remote_caps)
+            }
+            None => remote_caps,
+        };
+        hits.push(SearchHit {
+            repo_id: repo_id.clone(),
+            file: candidate.file.clone(),
+            kind: artifact_kind_label(candidate.kind),
+            exact_ref: format!("{repo_id}/{}", candidate.file),
+            size_label,
+            downloads: detail.downloads.or(repo.downloads),
+            likes: detail.likes.or(repo.likes),
+            catalog,
+            capabilities,
+        });
+    }
+    Ok(hits)
 }

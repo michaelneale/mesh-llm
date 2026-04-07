@@ -65,13 +65,28 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) auto: bool,
 
-    /// Model to serve (path, catalog name, HF exact ref, or HuggingFace URL).
+    /// Model to serve (path, catalog name, Hugging Face ref, repo shorthand, or URL).
     #[arg(long)]
     pub(crate) model: Vec<PathBuf>,
 
+    /// Prefer the GGUF backend when resolving an ambiguous Hugging Face repo.
+    #[arg(long, conflicts_with = "mlx")]
+    pub(crate) gguf: bool,
+
+    /// Prefer the MLX backend when resolving an ambiguous Hugging Face repo.
+    #[arg(long, conflicts_with = "gguf")]
+    pub(crate) mlx: bool,
+
     /// Raw local GGUF file to serve directly (repeatable).
-    #[arg(long)]
-    pub(crate) gguf: Vec<PathBuf>,
+    #[arg(long = "gguf-file")]
+    pub(crate) gguf_file: Vec<PathBuf>,
+
+    /// Raw local MLX model path to serve directly (repeatable).
+    ///
+    /// Accepts a model directory or a file inside one, such as
+    /// `config.json`, `tokenizer.json`, or `model.safetensors`.
+    #[arg(long = "mlx-file")]
+    pub(crate) mlx_file: Vec<PathBuf>,
 
     /// Explicit mmproj sidecar to pass to llama-server for the primary served model.
     #[arg(long, hide = true)]
@@ -419,7 +434,11 @@ pub(crate) fn legacy_runtime_surface_warning(
         ));
     }
 
-    if !cli.model.is_empty() || !cli.gguf.is_empty() || cli.mmproj.is_some() {
+    if !cli.model.is_empty()
+        || !cli.gguf_file.is_empty()
+        || !cli.mlx_file.is_empty()
+        || cli.mmproj.is_some()
+    {
         return Some(format!(
             "⚠️ top-level serving flags now map to `mesh-llm serve`.\n  Please use: {}",
             suggested_serve_command(original_args)

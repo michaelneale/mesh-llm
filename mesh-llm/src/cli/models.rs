@@ -9,7 +9,7 @@ pub enum ModelsCommand {
     /// List built-in catalog models.
     #[command(hide = true)]
     List,
-    /// Search for GGUF models in the catalog or on Hugging Face.
+    /// Search for catalog models and downloadable GGUF/MLX artifacts on Hugging Face.
     Search {
         /// Search terms.
         #[arg(required = true)]
@@ -23,13 +23,19 @@ pub enum ModelsCommand {
     },
     /// Show details for one exact model reference.
     Show {
-        /// Exact catalog id, Hugging Face ref, or direct URL.
+        /// Exact catalog id, Hugging Face ref, repo shorthand, or direct URL.
         model: String,
     },
     /// Download one exact model reference.
     Download {
-        /// Exact catalog id, Hugging Face ref, or direct URL.
+        /// Exact catalog id, Hugging Face ref, repo shorthand, or direct URL.
         model: String,
+        /// Prefer the GGUF backend when resolving an ambiguous Hugging Face repo.
+        #[arg(long, conflicts_with = "mlx")]
+        gguf: bool,
+        /// Prefer the MLX backend when resolving an ambiguous Hugging Face repo.
+        #[arg(long, conflicts_with = "gguf")]
+        mlx: bool,
         /// Also download the recommended draft model for speculative decoding.
         #[arg(long)]
         draft: bool,

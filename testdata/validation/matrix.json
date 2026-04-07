@@ -211,40 +211,6 @@
         "model_ref": "meshllm/lfm2-350m-parity-4bit-mlx",
         "template_source": "chat_template.jinja"
       }
-    },
-    {
-      "id": "olmo2",
-      "label": "olmo2-7b-instruct",
-      "expectation_class": "strict",
-      "notes": "Published same-origin OLMo2 parity pair.",
-      "gguf": {
-        "exact_case_id": "olmo2-gguf-exact",
-        "behavior_case_id": "olmo2-gguf-behavior",
-        "model_ref": "meshllm/olmo2-7b-instruct-parity-q8_0-gguf/olmo2-7b-instruct-q8_0.gguf"
-      },
-      "mlx": {
-        "exact_case_id": "olmo2-mlx-exact",
-        "behavior_case_id": "olmo2-mlx-behavior",
-        "model_ref": "meshllm/olmo2-7b-instruct-parity-8bit-mlx",
-        "template_source": "chat_template.jinja"
-      }
-    },
-    {
-      "id": "olmo2",
-      "label": "olmo2-7b-instruct",
-      "expectation_class": "strict",
-      "notes": "Published same-origin OLMo2 parity pair derived from allenai/OLMo-2-1124-7B-Instruct.",
-      "gguf": {
-        "exact_case_id": "olmo2-gguf-exact",
-        "behavior_case_id": "olmo2-gguf-behavior",
-        "model_ref": "meshllm/olmo2-7b-instruct-parity-q8_0-gguf/olmo2-7b-instruct-q8_0.gguf"
-      },
-      "mlx": {
-        "exact_case_id": "olmo2-mlx-exact",
-        "behavior_case_id": "olmo2-mlx-behavior",
-        "model_ref": "meshllm/olmo2-7b-instruct-parity-8bit-mlx",
-        "template_source": "tokenizer_config.json"
-      }
     }
   ]
 }

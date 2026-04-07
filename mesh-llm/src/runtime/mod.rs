@@ -18,6 +18,7 @@ use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
 use crate::models::catalog;
+use crate::models::ResolveFormatPreference;
 use crate::network::{affinity, nostr, router, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, benchmark, hardware};
@@ -31,6 +32,7 @@ struct StartupModelSpec {
     model_ref: PathBuf,
     mmproj_ref: Option<PathBuf>,
     ctx_size: Option<u32>,
+    preference: ResolveFormatPreference,
 }
 
 #[derive(Clone, Debug)]
@@ -106,9 +108,9 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     let config = plugin::load_config(cli.config.as_deref())?;
-    let cli_has_explicit_models = cli_has_explicit_models(&cli);
+    let has_cli_explicit_models = cli_has_explicit_models(&cli);
     let has_config_models = !config.models.is_empty();
-    let has_startup_models = cli_has_explicit_models || has_config_models;
+    let has_startup_models = has_cli_explicit_models || has_config_models;
 
     // Clean up orphan processes from previous runs (skip for client — never runs llama-server).
     // This intentionally happens after subcommand dispatch so control commands
@@ -280,14 +282,16 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     // --- Validation ---
-    if cli.client && (!cli.model.is_empty() || !cli.gguf.is_empty()) {
-        anyhow::bail!("--client and --model are mutually exclusive");
+    if cli.client
+        && (!cli.model.is_empty() || !cli.gguf_file.is_empty() || !cli.mlx_file.is_empty())
+    {
+        anyhow::bail!("--client is mutually exclusive with model selection flags: --model, --gguf-file, --mlx-file");
     }
     if let Some(mmproj) = &cli.mmproj {
         anyhow::ensure!(!cli.client, "--mmproj cannot be used with --client");
         anyhow::ensure!(
-            !cli.model.is_empty() || !cli.gguf.is_empty(),
-            "--mmproj requires an explicit primary model via --model or --gguf"
+            cli_has_explicit_models(&cli),
+            "--mmproj requires an explicit primary model via --model, --gguf-file, or --mlx-file"
         );
         anyhow::ensure!(
             mmproj.is_file(),
@@ -322,11 +326,7 @@ pub(crate) async fn run() -> Result<()> {
     // Strip split GGUF suffix so "MiniMax-M2.5-Q4_K_M-00001-of-00004" → "MiniMax-M2.5-Q4_K_M"
     let requested_model_names: Vec<String> = resolved_models
         .iter()
-        .filter_map(|m| {
-            m.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| router::strip_split_suffix_owned(s))
-        })
+        .map(|m| resolved_model_name(m))
         .collect();
 
     let bin_dir = match &cli.bin_dir {
@@ -338,12 +338,50 @@ pub(crate) async fn run() -> Result<()> {
 }
 
 /// Resolve a model path: local file, catalog name, or HuggingFace URL.
-async fn resolve_model(input: &std::path::Path) -> Result<PathBuf> {
+async fn resolve_model(
+    input: &std::path::Path,
+    preference: ResolveFormatPreference,
+) -> Result<PathBuf> {
+    let s = input.to_string_lossy();
+
+    // Already a local file
+    if input.exists() {
+        #[cfg(target_os = "macos")]
+        {
+            if preference == ResolveFormatPreference::Mlx {
+                // When --mlx is explicit, normalize a safetensors file path to its parent model dir
+                // so downstream code consistently receives a directory, not a file path.
+                if let Some(dir) = crate::mlx::mlx_model_dir(input) {
+                    if crate::mlx::is_mlx_model_dir(dir) {
+                        return Ok(dir.to_path_buf());
+                    }
+                }
+            } else if let Some(dir) = crate::mlx::mlx_model_dir(input) {
+                if crate::mlx::is_mlx_model_dir(dir) {
+                    anyhow::bail!(
+                        "MLX model paths require explicit `--mlx` or `--mlx-file`.\nRetry with:\n  mesh-llm --model {} --mlx",
+                        input.display()
+                    );
+                }
+            }
+        }
+        return Ok(input.to_path_buf());
+    }
+    if s.contains('/') {
+        return models::download_exact_ref(
+            &s,
+            preference,
+            "mesh-llm --model",
+            models::MlxSelectionPolicy::RequireExplicitFlag,
+        )
+        .await;
+    }
+
     models::resolve_model_spec(input).await
 }
 
 fn cli_has_explicit_models(cli: &Cli) -> bool {
-    !cli.model.is_empty() || !cli.gguf.is_empty()
+    !cli.model.is_empty() || !cli.gguf_file.is_empty() || !cli.mlx_file.is_empty()
 }
 
 fn build_startup_model_specs(
@@ -354,9 +392,24 @@ fn build_startup_model_specs(
         return Ok(Vec::new());
     }
 
+    #[cfg(not(target_os = "macos"))]
+    {
+        if !cli.mlx_file.is_empty() || cli.mlx {
+            anyhow::bail!("MLX model selection is only supported on macOS");
+        }
+    }
+
+    let preference = if cli.gguf {
+        ResolveFormatPreference::Gguf
+    } else if cli.mlx {
+        ResolveFormatPreference::Mlx
+    } else {
+        ResolveFormatPreference::Auto
+    };
+
     let mut specs = Vec::new();
     if cli_has_explicit_models(cli) {
-        for path in &cli.gguf {
+        for path in &cli.gguf_file {
             if !path.exists() {
                 anyhow::bail!("GGUF file not found: {}", path.display());
             }
@@ -364,6 +417,15 @@ fn build_startup_model_specs(
                 model_ref: path.clone(),
                 mmproj_ref: None,
                 ctx_size: cli.ctx_size,
+                preference: ResolveFormatPreference::Gguf,
+            });
+        }
+        for path in &cli.mlx_file {
+            specs.push(StartupModelSpec {
+                model_ref: path.clone(),
+                mmproj_ref: None,
+                ctx_size: cli.ctx_size,
+                preference: ResolveFormatPreference::Mlx,
             });
         }
         for model in &cli.model {
@@ -371,6 +433,7 @@ fn build_startup_model_specs(
                 model_ref: model.clone(),
                 mmproj_ref: None,
                 ctx_size: cli.ctx_size,
+                preference,
             });
         }
         if let Some(mmproj) = &cli.mmproj {
@@ -386,6 +449,7 @@ fn build_startup_model_specs(
             model_ref: PathBuf::from(model.model.clone()),
             mmproj_ref: model.mmproj.as_ref().map(PathBuf::from),
             ctx_size: cli.ctx_size.or(model.ctx_size),
+            preference: ResolveFormatPreference::Auto,
         });
     }
     Ok(specs)
@@ -394,9 +458,9 @@ fn build_startup_model_specs(
 async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     for spec in specs {
-        let resolved_path = resolve_model(&spec.model_ref).await?;
+        let resolved_path = resolve_model(&spec.model_ref, spec.preference).await?;
         let mmproj_path = match spec.mmproj_ref.as_ref() {
-            Some(mmproj) => Some(resolve_model(mmproj).await?),
+            Some(mmproj) => Some(resolve_model(mmproj, ResolveFormatPreference::Auto).await?),
             None => None,
         };
         plans.push(StartupModelPlan {
@@ -1164,15 +1228,7 @@ async fn run_auto(
         }
     };
 
-    let model_name = {
-        let stem = model
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        // Strip split GGUF suffix: "MiniMax-M2.5-Q4_K_M-00001-of-00004" → "MiniMax-M2.5-Q4_K_M"
-        router::strip_split_suffix_owned(&stem)
-    };
+    let model_name = resolved_model_name(&model);
 
     // Set model source for gossip (so other joiners can discover it too)
     let model_source = primary_startup_model
@@ -1203,18 +1259,33 @@ async fn run_auto(
     // Clean up stale processes from previous runs
     launch::kill_orphan_rpc_servers().await;
 
-    // Start rpc-server
-    let rpc_port = launch::start_rpc_server(
-        &bin_dir,
-        cli.llama_flavor,
-        cli.device.as_deref(),
-        Some(&model),
+    #[cfg(target_os = "macos")]
+    let is_mlx = crate::mlx::is_mlx_model_dir(&model);
+    #[cfg(not(target_os = "macos"))]
+    let is_mlx = false;
+
+    let rpc_port: Option<u16> = if is_mlx {
+        tracing::info!("MLX model detected — skipping rpc-server");
+        None
+    } else {
+        let port = launch::start_rpc_server(
+            &bin_dir,
+            cli.llama_flavor,
+            cli.device.as_deref(),
+            Some(&model),
+        )
+        .await?;
+        tracing::info!("rpc-server on 127.0.0.1:{port} serving {model_name}");
+        Some(port)
+    };
+
+    let tunnel_mgr = tunnel::Manager::start(
+        node.clone(),
+        rpc_port.unwrap_or(0),
+        channels.rpc,
+        channels.http,
     )
     .await?;
-    tracing::info!("rpc-server on 127.0.0.1:{rpc_port} serving {model_name}");
-
-    let tunnel_mgr =
-        tunnel::Manager::start(node.clone(), rpc_port, channels.rpc, channels.http).await?;
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -1268,7 +1339,6 @@ async fn run_auto(
             plugin_manager.clone(),
             affinity_router.clone(),
         );
-        cs.set_primary_backend("llama".into()).await;
         cs.set_runtime_control(control_tx.clone()).await;
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
         cs.set_nostr_discovery(cli.nostr_discovery).await;
@@ -1338,9 +1408,21 @@ async fn run_auto(
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_task = tokio::spawn(async move {
         election::election_loop(
-            node2, tunnel_mgr2, api_port, rpc_port, bin_dir2, model2, model_name_for_election,
+            node2,
+            tunnel_mgr2,
+            api_port,
+            rpc_port.unwrap_or(0),
+            bin_dir2,
+            model2,
+            model_name_for_election,
             primary_mmproj,
-            draft2, draft_max, force_split, llama_flavor, primary_ctx_size, moe_runtime_options, primary_target_tx,
+            draft2,
+            draft_max,
+            force_split,
+            llama_flavor,
+            primary_ctx_size,
+            moe_runtime_options,
+            primary_target_tx,
             primary_stop_rx,
             move |is_host, llama_ready| {
                 let advertise_node = node_for_cb.clone();
@@ -1390,9 +1472,11 @@ async fn run_auto(
                                 &context_node,
                                 &model_name,
                                 Some(process.context_length),
+                                Some(&process.backend),
                             )
                             .await;
                             if let Some(cs) = console_state {
+                                cs.set_primary_backend(process.backend.clone()).await;
                                 cs.upsert_local_process(local_process_payload(
                                     &model_name,
                                     &process.backend,
@@ -1403,8 +1487,10 @@ async fn run_auto(
                             }
                         }
                         None => {
-                            set_advertised_model_context(&context_node, &model_name, None).await;
+                            set_advertised_model_context(&context_node, &model_name, None, None)
+                                .await;
                             if let Some(cs) = console_state {
+                                cs.clear_primary_backend().await;
                                 cs.remove_local_process(&model_name).await;
                             }
                         }
@@ -1432,27 +1518,13 @@ async fn run_auto(
         // Announce all models to mesh
         let all_names: Vec<String> = startup_models
             .iter()
-            .map(|m| {
-                m.resolved_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            })
+            .map(|m| resolved_model_name(&m.resolved_path))
             .collect();
         node.set_models(all_names).await;
         node.regossip().await;
 
         for extra_model in startup_models.iter().skip(1) {
-            let extra_name = {
-                let stem = extra_model
-                    .resolved_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                router::strip_split_suffix_owned(&stem)
-            };
+            let extra_name = resolved_model_name(&extra_model.resolved_path);
             let extra_node = node.clone();
             let extra_tunnel = tunnel_mgr.clone();
             let extra_bin = bin_dir.clone();
@@ -1508,6 +1580,7 @@ async fn run_auto(
                                         &context_node,
                                         &model_name,
                                         Some(process.context_length),
+                                        Some(&process.backend),
                                     )
                                     .await;
                                     if let Some(cs) = console_state {
@@ -1521,8 +1594,13 @@ async fn run_auto(
                                     }
                                 }
                                 None => {
-                                    set_advertised_model_context(&context_node, &model_name, None)
-                                        .await;
+                                    set_advertised_model_context(
+                                        &context_node,
+                                        &model_name,
+                                        None,
+                                        None,
+                                    )
+                                    .await;
                                     if let Some(cs) = console_state {
                                         cs.remove_local_process(&model_name).await;
                                     }
@@ -1588,7 +1666,11 @@ async fn run_auto(
                     api::RuntimeControlRequest::Load { spec, resp } => {
                         let mut assigned_runtime_model: Option<String> = None;
                         let result = async {
-                            let model_path = resolve_model(&PathBuf::from(&spec)).await?;
+                            let model_path = resolve_model(
+                                &PathBuf::from(&spec),
+                                ResolveFormatPreference::Auto,
+                            )
+                            .await?;
                             let runtime_model_name = resolved_model_name(&model_path);
                             let already_loaded = managed_models.contains_key(&runtime_model_name)
                                 || runtime_models.contains_key(&runtime_model_name);
@@ -1615,6 +1697,7 @@ async fn run_auto(
                                 &node,
                                 &loaded_name,
                                 Some(handle.context_length),
+                                Some(&handle.backend),
                             )
                             .await;
                             advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
@@ -2029,15 +2112,7 @@ fn build_serving_list(resolved_models: &[PathBuf], model_name: &str) -> Vec<Stri
     let clean_name = router::strip_split_suffix_owned(model_name);
     let mut all: Vec<String> = resolved_models
         .iter()
-        .map(|m| {
-            let stem = m
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            // Strip split GGUF suffix: "Model-00001-of-00004" → "Model"
-            router::strip_split_suffix_owned(&stem)
-        })
+        .map(|m| resolved_model_name(m))
         .collect();
     if !all.contains(&clean_name) {
         all.insert(0, clean_name);
@@ -2095,9 +2170,12 @@ mod tests {
         std::fs::create_dir_all(model_path.parent().unwrap()).unwrap();
         std::fs::write(&model_path, b"gguf").unwrap();
 
-        let resolved = resolve_model(Path::new("Llama-3.2-1B-Instruct-Q4_K_M"))
-            .await
-            .unwrap();
+        let resolved = resolve_model(
+            Path::new("Llama-3.2-1B-Instruct-Q4_K_M"),
+            ResolveFormatPreference::Auto,
+        )
+        .await
+        .unwrap();
         assert_eq!(resolved, model_path);
 
         let _ = std::fs::remove_dir_all(&cache_root);
@@ -2139,14 +2217,20 @@ mod tests {
         std::fs::create_dir_all(model_path.parent().unwrap()).unwrap();
         std::fs::write(&model_path, b"gguf").unwrap();
 
-        let resolved_by_stem = resolve_model(Path::new("Custom-Model-Q4_K_M"))
-            .await
-            .unwrap();
+        let resolved_by_stem = resolve_model(
+            Path::new("Custom-Model-Q4_K_M"),
+            ResolveFormatPreference::Auto,
+        )
+        .await
+        .unwrap();
         assert_eq!(resolved_by_stem, model_path);
 
-        let resolved_by_filename = resolve_model(Path::new("Custom-Model-Q4_K_M.gguf"))
-            .await
-            .unwrap();
+        let resolved_by_filename = resolve_model(
+            Path::new("Custom-Model-Q4_K_M.gguf"),
+            ResolveFormatPreference::Auto,
+        )
+        .await
+        .unwrap();
         assert_eq!(resolved_by_filename, model_path);
 
         let _ = std::fs::remove_dir_all(&cache_root);
@@ -2320,6 +2404,7 @@ mod tests {
             model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
             mmproj_ref: None,
             ctx_size: None,
+            preference: ResolveFormatPreference::Auto,
         }];
 
         assert!(!should_show_serve_config_help(

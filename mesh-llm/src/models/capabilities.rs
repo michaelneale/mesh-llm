@@ -278,6 +278,7 @@ where
             saw_processor = true;
         }
         if name.ends_with("tokenizer_config.json")
+            || name.ends_with("chat_template.jinja")
             || name.ends_with("chat_template.json")
             || name.contains("reasoning")
             || name.contains("thinking")
@@ -632,7 +633,12 @@ fn json_contains_tool_use_tokens(value: &Value) -> bool {
 fn read_local_metadata_jsons(path: &Path) -> Vec<Value> {
     let mut values = Vec::new();
     for dir in path.ancestors().skip(1).take(6) {
-        for name in ["config.json", "tokenizer_config.json", "chat_template.json"] {
+        for name in [
+            "config.json",
+            "tokenizer_config.json",
+            "chat_template.json",
+            "chat_template.jinja",
+        ] {
             let candidate = dir.join(name);
             if !candidate.is_file() {
                 continue;
@@ -640,7 +646,9 @@ fn read_local_metadata_jsons(path: &Path) -> Vec<Value> {
             let Ok(text) = std::fs::read_to_string(&candidate) else {
                 continue;
             };
-            if let Ok(value) = serde_json::from_str(&text) {
+            if name.ends_with(".jinja") {
+                values.push(Value::String(text));
+            } else if let Ok(value) = serde_json::from_str(&text) {
                 values.push(value);
             }
         }
@@ -650,7 +658,12 @@ fn read_local_metadata_jsons(path: &Path) -> Vec<Value> {
 
 async fn fetch_remote_metadata_jsons(repo: &str, revision: Option<&str>) -> Vec<Value> {
     let mut values = Vec::new();
-    for filename in ["config.json", "tokenizer_config.json", "chat_template.json"] {
+    for filename in [
+        "config.json",
+        "tokenizer_config.json",
+        "chat_template.json",
+        "chat_template.jinja",
+    ] {
         if let Some(value) = fetch_remote_json(repo, revision, filename).await {
             values.push(value);
         }
@@ -668,7 +681,11 @@ async fn fetch_remote_json(repo: &str, revision: Option<&str>, file: &str) -> Op
     };
     let path = api.repo(repo).get(file).await.ok()?;
     let text = tokio::fs::read_to_string(path).await.ok()?;
-    serde_json::from_str(&text).ok()
+    if file.ends_with(".jinja") {
+        Some(Value::String(text))
+    } else {
+        serde_json::from_str(&text).ok()
+    }
 }
 
 #[cfg(test)]

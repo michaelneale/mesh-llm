@@ -82,6 +82,7 @@ message ModelRuntimeDescriptor {
   optional string identity_hash = 2;
   optional uint32 context_length = 3;
   bool ready = 4;
+  optional string backend = 5;
 }
 
 message ModelMoeInfo {

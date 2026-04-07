@@ -91,6 +91,8 @@ pub struct ModelRuntimeDescriptor {
     pub identity_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     pub ready: bool,
 }
 
@@ -133,7 +135,10 @@ pub fn infer_served_model_descriptors(
                 if identity.local_file_name.is_none() {
                     identity.local_file_name = Some(format!("{model_name}.gguf"));
                 }
-                descriptor_from_identity(model_name, identity)
+                match primary_model_path {
+                    Some(path) => descriptor_from_known_path(model_name, path, identity),
+                    None => descriptor_from_identity(model_name, identity),
+                }
             } else {
                 descriptor_from_model_path(
                     model_name,
@@ -378,7 +383,7 @@ fn descriptor_from_model_path(
 ) -> Option<ServedModelDescriptor> {
     let mut identity = identity_from_model_path(model_name, path)?;
     identity.is_primary = is_primary;
-    Some(descriptor_from_identity(model_name, identity))
+    Some(descriptor_from_known_path(model_name, path, identity))
 }
 
 fn descriptor_from_identity(
@@ -386,7 +391,19 @@ fn descriptor_from_identity(
     mut identity: ServedModelIdentity,
 ) -> ServedModelDescriptor {
     identity.model_name = model_name.to_string();
-    let path = crate::models::find_model_path(model_name);
+    descriptor_from_known_path(
+        model_name,
+        &crate::models::find_model_path(model_name),
+        identity,
+    )
+}
+
+fn descriptor_from_known_path(
+    model_name: &str,
+    path: &std::path::Path,
+    mut identity: ServedModelIdentity,
+) -> ServedModelDescriptor {
+    identity.model_name = model_name.to_string();
     let catalog = crate::models::find_catalog_model_exact(model_name);
     let mut topology = crate::models::infer_local_model_topology(&path, catalog);
     if topology.is_none() {
@@ -407,7 +424,7 @@ fn descriptor_from_identity(
             });
         }
     }
-    enrich_topology_with_local_shared_ranking(path.as_path(), &mut topology);
+    enrich_topology_with_local_shared_ranking(path, &mut topology);
     let mut capabilities =
         crate::models::capabilities::infer_local_model_capabilities(model_name, &path, catalog);
     capabilities.moe = capabilities.moe
@@ -1955,6 +1972,7 @@ impl Node {
         &self,
         model_name: &str,
         context_length: Option<u32>,
+        backend: Option<&str>,
     ) {
         let identity_hash = self
             .served_model_descriptors
@@ -1971,12 +1989,16 @@ impl Node {
             {
                 runtime.identity_hash = identity_hash.or_else(|| runtime.identity_hash.clone());
                 runtime.context_length = Some(context_length);
+                runtime.backend = backend
+                    .map(str::to_string)
+                    .or_else(|| runtime.backend.clone());
                 runtime.ready = true;
             } else {
                 runtimes.push(ModelRuntimeDescriptor {
                     model_name: model_name.to_string(),
                     identity_hash,
                     context_length: Some(context_length),
+                    backend: backend.map(str::to_string),
                     ready: true,
                 });
             }
@@ -2006,6 +2028,7 @@ impl Node {
                 model_name: model_name.to_string(),
                 identity_hash,
                 context_length: None,
+                backend: None,
                 ready: false,
             });
         }
@@ -5752,6 +5775,7 @@ mod tests {
             model_name: "Qwen3-Coder-Next-Q4_K_M".to_string(),
             identity_hash: Some("same-model".to_string()),
             context_length: None,
+            backend: None,
             ready: false,
         }];
 
@@ -6132,6 +6156,7 @@ mod tests {
                 model_name: "Qwen3-8B-Q4_K_M".to_string(),
                 identity_hash: Some("sha256:abc123".into()),
                 context_length: Some(32768),
+                backend: Some("llama".into()),
                 ready: true,
             }],
             owner_id: None,
@@ -6186,6 +6211,14 @@ mod tests {
             Some(32768),
             "proto_ann_to_local must preserve served model runtime context length"
         );
+        assert_eq!(
+            roundtripped
+                .served_model_runtime
+                .first()
+                .and_then(|runtime| runtime.backend.as_deref()),
+            Some("llama"),
+            "proto_ann_to_local must preserve served model runtime backend"
+        );
 
         let frame = build_gossip_frame(&[local_ann], peer_id);
         assert_eq!(frame.sender_id, peer_id_bytes);
@@ -6216,6 +6249,14 @@ mod tests {
             Some(32768),
             "build_gossip_frame must preserve served model runtime context length"
         );
+        assert_eq!(
+            wire_pa
+                .served_model_runtime
+                .first()
+                .and_then(|runtime| runtime.backend.as_deref()),
+            Some("llama"),
+            "build_gossip_frame must preserve served model runtime backend"
+        );
         let (_, final_local) =
             proto_ann_to_local(wire_pa).expect("final proto_ann_to_local must succeed");
         assert!(final_local.available_model_metadata.is_empty());
@@ -6227,6 +6268,13 @@ mod tests {
                 .first()
                 .and_then(ModelRuntimeDescriptor::advertised_context_length),
             Some(32768)
+        );
+        assert_eq!(
+            final_local
+                .served_model_runtime
+                .first()
+                .and_then(|runtime| runtime.backend.as_deref()),
+            Some("llama")
         );
     }
 

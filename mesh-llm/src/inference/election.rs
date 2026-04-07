@@ -1816,7 +1816,7 @@ async fn moe_election_loop(
         last_plan_change_at = tokio::time::Instant::now();
 
         if matches!(role, MoePlacementRole::Standby) {
-            node.set_model_runtime_context_length(&model_name, None)
+            node.set_model_runtime_context_length(&model_name, None, None)
                 .await;
             node.regossip().await;
             eprintln!(
@@ -1910,7 +1910,7 @@ async fn moe_election_loop(
             }
         } else if plan.active_ids.len() == 1 {
             if model_fits {
-                node.set_model_runtime_context_length(&model_name, None)
+                node.set_model_runtime_context_length(&model_name, None, None)
                     .await;
                 node.regossip().await;
                 eprintln!(
@@ -1989,7 +1989,7 @@ async fn moe_election_loop(
                     }
                 }
             } else {
-                node.set_model_runtime_context_length(&model_name, None)
+                node.set_model_runtime_context_length(&model_name, None, None)
                     .await;
                 node.regossip().await;
                 eprintln!("⚠️  [{}] MoE model too large to serve entirely ({:.1}GB model, {:.1}GB VRAM) — waiting for peers",
@@ -2042,7 +2042,7 @@ async fn moe_election_loop(
                     }
                     Err(e) => {
                         eprintln!("  ❌ moe-split failed: {e}");
-                        node.set_model_runtime_context_length(&model_name, None)
+                        node.set_model_runtime_context_length(&model_name, None, None)
                             .await;
                         node.regossip().await;
                         if peer_rx.changed().await.is_err() {
@@ -2141,7 +2141,7 @@ async fn moe_election_loop(
                         "  ⚠️  [{}] Refusing to enter MoE split mode on this node until the shard validates",
                         model_name
                     );
-                    node.set_model_runtime_context_length(&model_name, None)
+                    node.set_model_runtime_context_length(&model_name, None, None)
                         .await;
                     node.regossip().await;
                 }
@@ -2286,6 +2286,30 @@ async fn start_llama(
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
 ) -> Option<(u16, launch::InferenceServerProcess)> {
+    // ── MLX native backend: if model normalizes to a safetensors directory, run in-process ──
+    #[cfg(target_os = "macos")]
+    if let Some(dir) = crate::mlx::mlx_model_dir(model) {
+        if crate::mlx::is_mlx_model_dir(dir) {
+            let llama_port = match find_free_port().await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("  Failed to find free port: {e}");
+                    return None;
+                }
+            };
+            eprintln!("🍎 MLX native backend: loading {model_name}...");
+            match crate::mlx::start_mlx_server(dir, model_name.to_string(), llama_port).await {
+                Ok(process) => {
+                    eprintln!("✅ MLX server ready on port {llama_port}");
+                    return Some((llama_port, process));
+                }
+                Err(e) => {
+                    eprintln!("  ❌ MLX server failed: {e}");
+                    return None;
+                }
+            }
+        }
+    }
     let my_vram = node.vram_bytes();
     let model_bytes = total_model_bytes(model);
     let min_vram = (model_bytes as f64 * 1.1) as u64;

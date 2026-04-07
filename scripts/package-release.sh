@@ -45,6 +45,23 @@ copy_runtime_libs() {
     shopt -u nullglob
 }
 
+copy_mlx_metallib() {
+    local bundle_dir="$1"
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        return
+    fi
+
+    shopt -s nullglob
+    local metallibs=("$REPO_ROOT"/target/release/build/mlx-sys-*/out/build/lib/mlx.metallib)
+    shopt -u nullglob
+
+    if [[ ${#metallibs[@]} -gt 0 ]]; then
+        cp "${metallibs[0]}" "$bundle_dir/mlx.metallib"
+    else
+        echo "Note: mlx.metallib not found in target/release/build — MLX remote runs may fail" >&2
+    fi
+}
+
 bundle_bin_name() {
     local name="$1"
     if [[ "$name" == "mesh-llm" ]]; then
@@ -148,6 +165,7 @@ cp "$BUILD_BIN_DIR/rpc-server${BIN_EXT}" "$bundle_dir/$(bundle_bin_name rpc-serv
 cp "$BUILD_BIN_DIR/llama-server${BIN_EXT}" "$bundle_dir/$(bundle_bin_name llama-server)"
 cp "$BUILD_BIN_DIR/llama-moe-split${BIN_EXT}" "$bundle_dir/llama-moe-split"
 copy_runtime_libs "$bundle_dir"
+copy_mlx_metallib "$bundle_dir"
 
 if [[ "$os_name" == "Darwin" ]]; then
     for bin in "$bundle_dir/mesh-llm" "$bundle_dir/rpc-server" "$bundle_dir/llama-server" "$bundle_dir/llama-moe-split"; do

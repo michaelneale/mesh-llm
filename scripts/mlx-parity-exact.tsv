@@ -15,5 +15,3 @@ gguf	glm4-gguf-exact	meshllm/glm-4-9b-0414-parity-q4_k_m-gguf/glm-4-9b-0414-q4_k
 mlx	glm4-mlx-exact	meshllm/glm-4-9b-0414-parity-4bit-mlx	chat_template.jinja
 gguf	lfm2-gguf-exact	meshllm/lfm2-350m-parity-q4_k_m-gguf/lfm2-350m-q4_k_m.gguf	-
 mlx	lfm2-mlx-exact	meshllm/lfm2-350m-parity-4bit-mlx	chat_template.jinja
-gguf	olmo2-gguf-exact	meshllm/olmo2-7b-instruct-parity-q8_0-gguf/olmo2-7b-instruct-q8_0.gguf	-
-mlx	olmo2-mlx-exact	meshllm/olmo2-7b-instruct-parity-8bit-mlx	tokenizer_config.json

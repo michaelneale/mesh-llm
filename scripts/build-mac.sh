@@ -16,6 +16,7 @@ UI_DIR="$MESH_DIR/ui"
 
 compiler_launcher_flags=()
 rustc_wrapper=""
+LLAMA_BRANCH="${LLAMA_BRANCH:-upstream-latest}"
 
 detect_jobs() {
     sysctl -n hw.ncpu 2>/dev/null || echo 4

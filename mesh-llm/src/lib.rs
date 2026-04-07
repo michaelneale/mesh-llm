@@ -3,6 +3,8 @@ mod cli;
 pub mod crypto;
 mod inference;
 mod mesh;
+#[cfg(target_os = "macos")]
+mod mlx;
 mod models;
 mod network;
 mod plugin;
