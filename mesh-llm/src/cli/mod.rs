@@ -134,6 +134,10 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     pub(crate) split: bool,
 
+    /// Force serving startup even when the model is over local fit budget.
+    #[arg(long = "force-serve", hide = true)]
+    pub(crate) force_serve: bool,
+
     /// Override context size (tokens). Default: auto-scaled to available VRAM.
     #[arg(long, hide = true)]
     pub(crate) ctx_size: Option<u32>,
@@ -396,6 +400,11 @@ where
         Some("serve") => match original.get(2).and_then(|arg| arg.to_str()) {
             Some(arg) if arg.starts_with('-') => {
                 normalized.remove(1);
+                for value in normalized.iter_mut().skip(1) {
+                    if value.to_string_lossy() == "--force" {
+                        *value = OsString::from("--force-serve");
+                    }
+                }
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
             None => {
@@ -516,6 +525,19 @@ mod tests {
         assert_eq!(
             normalized.normalized,
             vec!["mesh-llm", "--auto", "--model", "Qwen3-8B-Q4_K_M"]
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn normalize_runtime_surface_args_maps_serve_force_flag() {
+        let normalized = normalize_runtime_surface_args(["mesh-llm", "serve", "--force"]);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+        assert_eq!(
+            normalized.normalized,
+            vec!["mesh-llm", "--force-serve"]
                 .into_iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>()

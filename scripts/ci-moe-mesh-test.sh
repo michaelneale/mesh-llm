@@ -2,7 +2,8 @@
 # ci-moe-mesh-test.sh — verify MoE expert sharding works end-to-end through a mesh.
 #
 # Starts two mesh-llm nodes on the same machine with a small MoE model,
-# forces the MoE split path with --split --max-vram 0.1, waits for the mesh
+# forces the MoE split path with --split and an aggressive VRAM cap (--max-vram 0.1),
+# then uses --force so startup still proceeds for this e2e split test.
 # to form and both nodes to serve their expert shards, then verifies inference
 # works through both the host and a client node.
 #
@@ -86,6 +87,7 @@ MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
     --model "$MODEL" \
     --split \
     --max-vram 0.1 \
+    --force \
     --no-draft \
     --bin-dir "$BIN_DIR" \
     --device CPU \
@@ -126,6 +128,7 @@ MESH_LLM_EPHEMERAL_KEY=1 "$MESH_LLM" \
     --model "$MODEL" \
     --split \
     --max-vram 0.1 \
+    --force \
     --no-draft \
     --bin-dir "$BIN_DIR" \
     --device CPU \

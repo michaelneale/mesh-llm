@@ -167,9 +167,14 @@ pub(super) async fn start_runtime_local_model(
     let model_name = resolved_model_name(model_path);
     let model_bytes = election::total_model_bytes(model_path);
     let my_vram = node.vram_bytes();
-    let topology =
-        models::infer_local_model_topology(model_path, models::find_catalog_model_exact(&model_name));
-    let is_moe = topology.as_ref().and_then(|value| value.moe.as_ref()).is_some();
+    let topology = models::infer_local_model_topology(
+        model_path,
+        models::find_catalog_model_exact(&model_name),
+    );
+    let is_moe = topology
+        .as_ref()
+        .and_then(|value| value.moe.as_ref())
+        .is_some();
     anyhow::ensure!(
         is_moe || my_vram >= (model_bytes as f64 * 1.1) as u64,
         "🟡 {} is too large to serve on this machine (needs {:.1} GB, available {:.1} GB).",

@@ -158,13 +158,12 @@ pub async fn download_exact_ref_with_profile(
         }
     }
 
-    if let Some(selection) =
-        resolve_repo_or_family_ref(input, profile, true).await?
-    {
+    if let Some(selection) = resolve_repo_or_family_ref(input, profile, true).await? {
         if selection.fit == Some(false) {
             eprintln!("🟡 This model is likely too large for local serving on this machine.");
         }
-        return catalog::download_hf_repo_file(&selection.repo, None, &selection.selected.file).await;
+        return catalog::download_hf_repo_file(&selection.repo, None, &selection.selected.file)
+            .await;
     }
 
     match parse_exact_model_ref(input)? {
@@ -347,7 +346,9 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 let mut all_known = true;
                 let mut total = 0u64;
                 for name in &resolved_files {
-                    if let Some(sibling) = info.siblings.iter().find(|value| value.rfilename == *name) {
+                    if let Some(sibling) =
+                        info.siblings.iter().find(|value| value.rfilename == *name)
+                    {
                         if let Some(size) = sibling.size {
                             total = total.saturating_add(size);
                         } else {
@@ -917,13 +918,15 @@ fn aggregate_variants_from_siblings(siblings: &[Siblings]) -> Vec<VariantCandida
         }
         let stem = canonical_hf_ref_file_component(file);
         let score = file_preference_score(file);
-        let entry = by_stem.entry(stem.clone()).or_insert_with(|| VariantAggregate {
-            stem: stem.clone(),
-            selected_file: file.to_string(),
-            selected_score: score,
-            total_size: 0,
-            missing_size: false,
-        });
+        let entry = by_stem
+            .entry(stem.clone())
+            .or_insert_with(|| VariantAggregate {
+                stem: stem.clone(),
+                selected_file: file.to_string(),
+                selected_score: score,
+                total_size: 0,
+                missing_size: false,
+            });
         if score < entry.selected_score {
             entry.selected_score = score;
             entry.selected_file = file.to_string();
@@ -1038,7 +1041,12 @@ fn pick_repo_summary<'a>(query: &str, repos: &'a [RepoSummary]) -> Option<&'a Re
         let r_exact = right.id.eq_ignore_ascii_case(&query);
         r_exact
             .cmp(&l_exact)
-            .then_with(|| right.downloads.unwrap_or(0).cmp(&left.downloads.unwrap_or(0)))
+            .then_with(|| {
+                right
+                    .downloads
+                    .unwrap_or(0)
+                    .cmp(&left.downloads.unwrap_or(0))
+            })
             .then_with(|| left.id.cmp(&right.id))
     });
     candidates.into_iter().next()
@@ -1137,7 +1145,11 @@ async fn resolve_repo_or_family_ref(
     }
     let vram_bytes = {
         let detected = hardware::survey().vram_bytes;
-        if detected > 0 { Some(detected) } else { None }
+        if detected > 0 {
+            Some(detected)
+        } else {
+            None
+        }
     };
     let Some((selected, fit)) = choose_variant(&variants, profile, vram_bytes, true) else {
         let label = profile.as_label();
@@ -1194,7 +1206,10 @@ async fn resolve_repo_or_family_ref(
     }))
 }
 
-pub async fn inspect_repo_ref(input: &str, profile: CapabilityProfile) -> Result<Option<RepoInspection>> {
+pub async fn inspect_repo_ref(
+    input: &str,
+    profile: CapabilityProfile,
+) -> Result<Option<RepoInspection>> {
     let Some(query) = parse_repo_query(input) else {
         return Ok(None);
     };
@@ -1219,7 +1234,11 @@ pub async fn inspect_repo_ref(input: &str, profile: CapabilityProfile) -> Result
 
     let vram_bytes = {
         let detected = hardware::survey().vram_bytes;
-        if detected > 0 { Some(detected) } else { None }
+        if detected > 0 {
+            Some(detected)
+        } else {
+            None
+        }
     };
     let Some((recommended, fit)) = choose_variant(&variants, profile, vram_bytes, true) else {
         let label = profile.as_label();
@@ -1293,21 +1312,21 @@ pub(super) async fn remote_hf_size_label_with_api(
 
 #[cfg(test)]
 mod tests {
-    use super::capability_matches;
-    use super::choose_variant;
     use super::aggregate_variants_from_siblings;
-    use super::CapabilityProfile;
-    use super::VariantCandidate;
-    use super::choose_hf_file_for_selector;
     use super::canonical_hf_ref_file_component;
+    use super::capability_matches;
+    use super::choose_hf_file_for_selector;
+    use super::choose_variant;
     use super::file_preference_score;
     use super::is_imatrix_artifact;
     use super::normalize_selector_key;
     use super::resolve_model_spec;
+    use super::CapabilityProfile;
+    use super::VariantCandidate;
     use crate::models::CapabilityLevel;
     use crate::models::ModelCapabilities;
-    use std::path::Path;
     use hf_hub::api::Siblings;
+    use std::path::Path;
 
     #[test]
     fn file_preference_prefers_single_file_over_split() {
@@ -1385,7 +1404,7 @@ mod tests {
             Some(96_000_000_000),
             true,
         )
-            .expect("should pick one variant");
+        .expect("should pick one variant");
         assert_eq!(picked.stem, "MiniMax-M2-Q2_K_L");
         assert_eq!(fit, Some(true));
     }
@@ -1418,7 +1437,7 @@ mod tests {
             Some(96_000_000_000),
             true,
         )
-            .expect("should pick one variant");
+        .expect("should pick one variant");
         assert_eq!(picked.stem, "Model-vision-Q4_K_M");
         assert_eq!(fit, Some(true));
     }
@@ -1462,8 +1481,13 @@ mod tests {
                 size_bytes: Some(80_000_000_000),
             },
         ];
-        let (picked, fit) = choose_variant(&variants, CapabilityProfile::Text, Some(64_000_000_000), true)
-            .expect("should pick one variant");
+        let (picked, fit) = choose_variant(
+            &variants,
+            CapabilityProfile::Text,
+            Some(64_000_000_000),
+            true,
+        )
+        .expect("should pick one variant");
         assert_eq!(picked.stem, "Model-IQ2_XXS");
         assert_eq!(fit, Some(false));
     }

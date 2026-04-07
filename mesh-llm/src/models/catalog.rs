@@ -781,7 +781,9 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
         if existing_bytes > 0 && status == reqwest::StatusCode::OK {
             let _ = tokio::fs::remove_file(&tmp).await;
             eprintln!();
-            eprintln!("  🟡 Existing partial download is not recoverable; clearing and restarting.");
+            eprintln!(
+                "  🟡 Existing partial download is not recoverable; clearing and restarting."
+            );
             if attempt >= MAX_ATTEMPTS {
                 anyhow::bail!(
                     "Download failed after {MAX_ATTEMPTS} attempts: server ignored ranged resume"
@@ -795,7 +797,9 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
             let _ = tokio::fs::remove_file(&tmp).await;
             eprintln!();
-            eprintln!("  🟡 Existing partial download is not recoverable; clearing and restarting.");
+            eprintln!(
+                "  🟡 Existing partial download is not recoverable; clearing and restarting."
+            );
             if attempt >= MAX_ATTEMPTS {
                 anyhow::bail!(
                     "Download failed after {MAX_ATTEMPTS} attempts: ranged resume rejected"
@@ -819,7 +823,10 @@ async fn download_with_resume(dest: &Path, url: &str) -> Result<()> {
                 anyhow::bail!("Download failed: HTTP {}", status);
             }
             if attempt >= MAX_ATTEMPTS {
-                anyhow::bail!("Download failed after {MAX_ATTEMPTS} attempts: HTTP {}", status);
+                anyhow::bail!(
+                    "Download failed after {MAX_ATTEMPTS} attempts: HTTP {}",
+                    status
+                );
             }
             eprintln!();
             eprintln!(
@@ -1020,8 +1027,8 @@ pub fn list_models() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;

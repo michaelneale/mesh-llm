@@ -1,9 +1,9 @@
 use crate::cli::models::ModelsCommand;
 use crate::models::{
     capabilities, catalog, download_exact_ref_with_profile, find_catalog_model_exact,
-    huggingface_hub_cache_dir, inspect_repo_ref, installed_model_capabilities, scan_installed_models,
-    search_catalog_models, search_huggingface, show_exact_model, CapabilityProfile,
-    RepoVariantInspection, SearchProgress,
+    huggingface_hub_cache_dir, inspect_repo_ref, installed_model_capabilities,
+    scan_installed_models, search_catalog_models, search_huggingface, show_exact_model,
+    CapabilityProfile, RepoVariantInspection, SearchProgress,
 };
 use crate::system::hardware;
 use anyhow::{anyhow, Result};
@@ -82,9 +82,15 @@ pub async fn run_model_search(
         println!("   🔗 {}", result.repo_url);
         let mut stats = Vec::new();
         if result.gguf_files > 0 {
-            stats.push(format!("📦 {} GGUF files", format_count(result.gguf_files as u64)));
+            stats.push(format!(
+                "📦 {} GGUF files",
+                format_count(result.gguf_files as u64)
+            ));
         }
-        if let Some(size_bytes) = inspected.as_ref().and_then(|value| value.recommended_size_bytes) {
+        if let Some(size_bytes) = inspected
+            .as_ref()
+            .and_then(|value| value.recommended_size_bytes)
+        {
             stats.push(format!("📏 {}", format_installed_size(size_bytes)));
         } else if let Some(size) = &result.size_label {
             stats.push(format!("📏 {}", size));
@@ -145,7 +151,14 @@ pub async fn run_model_search(
             println!("   ⬇️ mesh-llm models download {}", recommended_ref);
         }
         if let Some(fit) = inspected.as_ref().and_then(|value| value.recommended_fit) {
-            println!("   {}", if fit { "✅ likely comfortable here" } else { "⛔ likely too large for local serve" });
+            println!(
+                "   {}",
+                if fit {
+                    "✅ likely comfortable here"
+                } else {
+                    "⛔ likely too large for local serve"
+                }
+            );
         } else if let Some(size) = &result.size_label {
             if let Some(fit) = fit_hint_for_size_label(size) {
                 println!("   {}", fit);
@@ -330,7 +343,10 @@ fn print_repo_show(repo: crate::models::RepoInspection) {
         println!("📝 {}", trim_ellipsis(description, 120));
     }
     let mut stats = Vec::new();
-    stats.push(format!("📦 {} GGUF files", format_count(repo.variant_count as u64)));
+    stats.push(format!(
+        "📦 {} GGUF files",
+        format_count(repo.variant_count as u64)
+    ));
     if let Some(downloads) = repo.downloads {
         stats.push(format!("⬇️ {}", format_count(downloads)));
     }
@@ -354,7 +370,10 @@ fn print_repo_show(repo: crate::models::RepoInspection) {
     println!();
     println!("🏆 highest quality");
     println!("   🔗 {}", repo.highest_quality_ref);
-    println!("   ⬇️ mesh-llm models download {}", repo.highest_quality_ref);
+    println!(
+        "   ⬇️ mesh-llm models download {}",
+        repo.highest_quality_ref
+    );
     if let Some(size) = repo.highest_quality_size_bytes {
         println!("   📏 size: {}", format_installed_size(size));
     }
@@ -421,7 +440,9 @@ fn capability_profile_from_flags(
         .filter(|flag| *flag)
         .count();
     if selected > 1 {
-        anyhow::bail!("Choose only one capability selector: --text, --vision, --audio, or --multimodal");
+        anyhow::bail!(
+            "Choose only one capability selector: --text, --vision, --audio, or --multimodal"
+        );
     }
     if vision {
         Ok(CapabilityProfile::Vision)
@@ -586,13 +607,16 @@ mod tests {
 
     #[test]
     fn variant_row_is_pasteable_and_annotated() {
-        let row = format_variant_row(3, &RepoVariantInspection {
-            reference: "unsloth/MiniMax-M2-GGUF/MiniMax-M2-Q4_K_M".to_string(),
-            quant: "Q4_K_M".to_string(),
-            capability: "text".to_string(),
-            size_bytes: Some(128_800_000_000),
-            fit: Some(false),
-        });
+        let row = format_variant_row(
+            3,
+            &RepoVariantInspection {
+                reference: "unsloth/MiniMax-M2-GGUF/MiniMax-M2-Q4_K_M".to_string(),
+                quant: "Q4_K_M".to_string(),
+                capability: "text".to_string(),
+                size_bytes: Some(128_800_000_000),
+                fit: Some(false),
+            },
+        );
         assert!(row.starts_with("3"));
         assert!(row.contains("unsloth/MiniMax-M2-GGUF/MiniMax-M2-Q4_K_M"));
         assert!(row.contains("Q4_K_M"));
@@ -606,9 +630,7 @@ mod tests {
         let captured = Arc::new(Mutex::new(Vec::<(String, CapabilityProfile)>::new()));
         let seen = captured.clone();
         let _guard = DownloadExactRefOverrideGuard::set(Arc::new(move |input, profile| {
-            seen.lock()
-                .unwrap()
-                .push((input.to_string(), profile));
+            seen.lock().unwrap().push((input.to_string(), profile));
             Ok(std::env::temp_dir().join("mesh-llm-test.gguf"))
         }));
 
@@ -625,10 +647,7 @@ mod tests {
 
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1);
-        assert_eq!(
-            captured[0].0,
-            "anikifoss/MiniMax-M2-HQ4_K/MiniMax-M2-HQ4_K"
-        );
+        assert_eq!(captured[0].0, "anikifoss/MiniMax-M2-HQ4_K/MiniMax-M2-HQ4_K");
         assert_eq!(captured[0].1, CapabilityProfile::Vision);
     }
 }

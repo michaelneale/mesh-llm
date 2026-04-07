@@ -1,7 +1,6 @@
 use super::resolve::{
     canonical_hf_ref_file_component, file_preference_score, matching_catalog_model_for_huggingface,
-    merge_capabilities,
-    remote_hf_size_label_with_api,
+    merge_capabilities, remote_hf_size_label_with_api,
 };
 use super::ModelCapabilities;
 use super::{access, build_hf_tokio_api, capabilities, catalog};
