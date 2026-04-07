@@ -220,6 +220,7 @@ fn temp_log_path(name: &str) -> PathBuf {
 pub struct InferenceServerHandle {
     pid: u32,
     expected_exit: Arc<AtomicBool>,
+    shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 impl InferenceServerHandle {
@@ -227,9 +228,21 @@ impl InferenceServerHandle {
         self.pid
     }
 
+    pub fn in_process(shutdown_tx: tokio::sync::watch::Sender<bool>) -> Self {
+        Self {
+            pid: std::process::id(),
+            expected_exit: Arc::new(AtomicBool::new(true)),
+            shutdown_tx: Some(shutdown_tx),
+        }
+    }
+
     pub async fn shutdown(&self) {
         self.expected_exit.store(true, Ordering::Relaxed);
-        terminate_process(self.pid).await;
+        if let Some(shutdown_tx) = &self.shutdown_tx {
+            let _ = shutdown_tx.send(true);
+        } else {
+            terminate_process(self.pid).await;
+        }
     }
 }
 
@@ -871,6 +884,7 @@ pub async fn start_llama_server(
             let handle = InferenceServerHandle {
                 pid,
                 expected_exit: expected_exit.clone(),
+                shutdown_tx: None,
             };
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
             tokio::spawn(async move {

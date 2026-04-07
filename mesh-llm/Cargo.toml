@@ -44,6 +44,9 @@ prost = "0.14"
 toml = "0.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 hf-hub = { git = "https://github.com/i386/hf-hub.git", rev = "a123ed91f20317d117f83d943b204137d0d24c5e", default-features = false, features = ["ureq", "tokio", "rustls-tls", "cache-manager"] }
+minijinja = { version = "2", features = ["loader"] }
+tokenizers = "0.22"
+mlx_rs = { package = "mlx-rs", path = "../../../mlx-rs/mlx-rs", features = ["safetensors"] }
 
 [dev-dependencies]
 axum = "0.8"

@@ -3,6 +3,7 @@ mod cli;
 pub mod crypto;
 mod inference;
 mod mesh;
+pub(crate) mod mlx;
 mod models;
 mod network;
 mod plugin;

@@ -1,6 +1,7 @@
 use crate::api;
 use crate::inference::{election, launch};
 use crate::mesh;
+use crate::mlx;
 use crate::models;
 use crate::network::router;
 use anyhow::Result;
@@ -176,31 +177,41 @@ pub(super) async fn start_runtime_local_model(
     let mmproj_path = mmproj_override
         .map(Path::to_path_buf)
         .or_else(|| mmproj_path_for_model(&model_name));
-    let process = launch::start_llama_server(
-        bin_dir,
-        binary_flavor,
-        launch::ModelLaunchSpec {
-            model: model_path,
-            http_port: port,
-            tunnel_ports: &[],
-            tensor_split: None,
-            split_mode: election::local_multi_gpu_split_mode(binary_flavor),
-            draft: None,
-            draft_max: 0,
-            model_bytes,
-            my_vram,
-            mmproj: mmproj_path.as_deref(),
-            ctx_size_override,
-            total_group_vram: None,
-        },
-    )
-    .await?;
+    let (backend, process) = if mlx::model::is_mlx_model_dir(model_path) {
+        (
+            "mlx".to_string(),
+            mlx::server::start_mlx_server(model_path, model_name.clone(), port).await?,
+        )
+    } else {
+        (
+            "llama".to_string(),
+            launch::start_llama_server(
+                bin_dir,
+                binary_flavor,
+                launch::ModelLaunchSpec {
+                    model: model_path,
+                    http_port: port,
+                    tunnel_ports: &[],
+                    tensor_split: None,
+                    split_mode: election::local_multi_gpu_split_mode(binary_flavor),
+                    draft: None,
+                    draft_max: 0,
+                    model_bytes,
+                    my_vram,
+                    mmproj: mmproj_path.as_deref(),
+                    ctx_size_override,
+                    total_group_vram: None,
+                },
+            )
+            .await?,
+        )
+    };
 
     Ok((
         model_name,
         LocalRuntimeModelHandle {
             port,
-            backend: "llama".into(),
+            backend,
             process: process.handle,
             context_length: process.context_length,
         },

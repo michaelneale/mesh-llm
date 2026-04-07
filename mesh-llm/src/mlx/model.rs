@@ -519,7 +519,7 @@ impl Attention {
             } else {
                 None
             };
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask, None::<&Array>)?
         };
 
         let attn =
@@ -584,7 +584,7 @@ impl Attention {
             } else {
                 None
             };
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask)?
+            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, self.scale, mask, None::<&Array>)?
         };
 
         let attn =
@@ -722,6 +722,7 @@ impl DeepseekV3Attention {
                 &kv_latent,
                 self.scale,
                 Some((&mask).into()),
+                None::<&Array>,
             )?;
             self.unembed_out.forward(&output, true)?
         } else {
@@ -733,6 +734,7 @@ impl DeepseekV3Attention {
                 &v,
                 self.scale,
                 Some((&mask).into()),
+                None::<&Array>,
             )?
         };
 
@@ -1831,6 +1833,111 @@ fn transform_deepseek_v3_tensors(
     Ok(())
 }
 
+fn slice_rows(tensor: &Array, start: i32, end: i32) -> Result<Array> {
+    Ok(tensor.index((start..end, std::ops::RangeFull)))
+}
+
+fn split_fused_qkv(prefix: &str, tensors: &mut HashMap<String, Array>, q_rows: i32, kv_rows: i32) -> Result<()> {
+    if tensors.contains_key(&format!("{prefix}.q_proj.weight")) {
+        return Ok(());
+    }
+
+    let total_rows = q_rows + kv_rows + kv_rows;
+    for suffix in ["weight", "scales", "biases"] {
+        let key = format!("{prefix}.qkv_proj.{suffix}");
+        let fused = tensors
+            .get(&key)
+            .cloned()
+            .with_context(|| format!("missing {key}"))?;
+        let shape = fused.shape();
+        if shape.is_empty() || shape[0] != total_rows {
+            bail!(
+                "unexpected {key} shape {:?}; expected first dimension {}",
+                shape,
+                total_rows,
+            );
+        }
+        tensors.insert(
+            format!("{prefix}.q_proj.{suffix}"),
+            slice_rows(&fused, 0, q_rows)?,
+        );
+        tensors.insert(
+            format!("{prefix}.k_proj.{suffix}"),
+            slice_rows(&fused, q_rows, q_rows + kv_rows)?,
+        );
+        tensors.insert(
+            format!("{prefix}.v_proj.{suffix}"),
+            slice_rows(&fused, q_rows + kv_rows, total_rows)?,
+        );
+    }
+
+    Ok(())
+}
+
+fn split_fused_gate_up(
+    prefix: &str,
+    tensors: &mut HashMap<String, Array>,
+    hidden_rows: i32,
+) -> Result<()> {
+    if tensors.contains_key(&format!("{prefix}.gate_proj.weight")) {
+        return Ok(());
+    }
+
+    let total_rows = hidden_rows * 2;
+    for suffix in ["weight", "scales", "biases"] {
+        let key = format!("{prefix}.gate_up_proj.{suffix}");
+        let fused = tensors
+            .get(&key)
+            .cloned()
+            .with_context(|| format!("missing {key}"))?;
+        let shape = fused.shape();
+        if shape.is_empty() || shape[0] != total_rows {
+            bail!(
+                "unexpected {key} shape {:?}; expected first dimension {}",
+                shape,
+                total_rows,
+            );
+        }
+        tensors.insert(
+            format!("{prefix}.gate_proj.{suffix}"),
+            slice_rows(&fused, 0, hidden_rows)?,
+        );
+        tensors.insert(
+            format!("{prefix}.up_proj.{suffix}"),
+            slice_rows(&fused, hidden_rows, total_rows)?,
+        );
+    }
+
+    Ok(())
+}
+
+fn transform_phi3_tensors(
+    tensors: &mut HashMap<String, Array>,
+    prefixes: &TensorPrefixes,
+    config: &ModelConfig,
+) -> Result<()> {
+    let head_dim = config
+        .head_dim
+        .unwrap_or_else(|| config.hidden_size / config.num_attention_heads);
+    let q_rows = config.num_attention_heads * head_dim;
+    let kv_rows = config.num_key_value_heads * head_dim;
+    let mlp_rows = config.intermediate_size;
+
+    for i in 0..config.num_hidden_layers {
+        let attn_prefix = format!("{}.layers.{i}.self_attn", prefixes.model);
+        if tensors.contains_key(&format!("{attn_prefix}.qkv_proj.weight")) {
+            split_fused_qkv(&attn_prefix, tensors, q_rows, kv_rows)?;
+        }
+
+        let mlp_prefix = format!("{}.layers.{i}.mlp", prefixes.model);
+        if tensors.contains_key(&format!("{mlp_prefix}.gate_up_proj.weight")) {
+            split_fused_gate_up(&mlp_prefix, tensors, mlp_rows)?;
+        }
+    }
+
+    Ok(())
+}
+
 // ── Full model ──
 
 pub struct MlxModel {
@@ -1915,6 +2022,13 @@ impl MlxModel {
                 default_group_size,
                 default_bits,
             )?;
+        }
+        if config_json
+            .get("model_type")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("phi3"))
+        {
+            transform_phi3_tensors(&mut tensors, &prefixes, &config)?;
         }
 
         let load_qlinear = |prefix: &str| -> Result<QuantizedLinear> {
@@ -3417,6 +3531,7 @@ fn config_supports_mlx(config: &Value) -> bool {
                 | "glm4"
                 | "deepseek_v3"
                 | "lfm2"
+                | "phi3"
                 | "qwen2"
                 | "qwen3"
                 | "gpt_oss"
@@ -3430,6 +3545,7 @@ fn config_supports_mlx(config: &Value) -> bool {
                 | "glm4forcausallm"
                 | "deepseekv3forcausallm"
                 | "lfm2forcausallm"
+                | "phi3forcausallm"
                 | "llamaforcausallm"
                 | "qwen2forcausallm"
                 | "qwen3forcausallm"
@@ -3605,6 +3721,10 @@ mod tests {
             "model_type": "qwen2",
             "architectures": ["Qwen2ForCausalLM"]
         });
+        let phi3: Value = serde_json::json!({
+            "model_type": "phi3",
+            "architectures": ["Phi3ForCausalLM"]
+        });
         let gpt_oss: Value = serde_json::json!({
             "model_type": "gpt_oss",
             "architectures": ["GptOssForCausalLM"]
@@ -3639,6 +3759,7 @@ mod tests {
         assert!(config_supports_mlx(&kimi));
         assert!(config_supports_mlx(&glm4));
         assert!(config_supports_mlx(&lfm2));
+        assert!(config_supports_mlx(&phi3));
         assert!(config_supports_mlx(&qwen));
         assert!(config_supports_mlx(&gpt_oss));
         assert!(config_supports_mlx(&kimi_linear));
@@ -4297,5 +4418,80 @@ mod tests {
         let logits = embedding.as_linear().forward(&hidden).unwrap();
 
         assert_eq!(logits.as_slice::<f32>(), &[50.0, 110.0, 170.0]);
+    }
+
+    #[test]
+    fn phi3_tensor_transform_splits_fused_attention_and_mlp_weights() {
+        let prefixes = TensorPrefixes {
+            model: "model".to_string(),
+            lm_head: Some("lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 8,
+            "num_hidden_layers": 1,
+            "intermediate_size": 12,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "vocab_size": 32,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": false,
+            "quantization": {
+                "group_size": 2,
+                "bits": 4
+            },
+            "eos_token_id": 1
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "model.layers.0.self_attn.qkv_proj.weight".to_string(),
+            Array::from_slice(&vec![0u32; 24 * 3], &[24, 3]),
+        );
+        tensors.insert(
+            "model.layers.0.self_attn.qkv_proj.scales".to_string(),
+            Array::from_slice(&vec![0.0f32; 24 * 2], &[24, 2]),
+        );
+        tensors.insert(
+            "model.layers.0.self_attn.qkv_proj.biases".to_string(),
+            Array::from_slice(&vec![0.0f32; 24 * 2], &[24, 2]),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.gate_up_proj.weight".to_string(),
+            Array::from_slice(&vec![0u32; 24 * 3], &[24, 3]),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.gate_up_proj.scales".to_string(),
+            Array::from_slice(&vec![0.0f32; 24 * 2], &[24, 2]),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.gate_up_proj.biases".to_string(),
+            Array::from_slice(&vec![0.0f32; 24 * 2], &[24, 2]),
+        );
+
+        transform_phi3_tensors(&mut tensors, &prefixes, &config).unwrap();
+
+        assert_eq!(
+            tensors["model.layers.0.self_attn.q_proj.weight"].shape(),
+            &[8, 3]
+        );
+        assert_eq!(
+            tensors["model.layers.0.self_attn.k_proj.weight"].shape(),
+            &[8, 3]
+        );
+        assert_eq!(
+            tensors["model.layers.0.self_attn.v_proj.weight"].shape(),
+            &[8, 3]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.gate_proj.weight"].shape(),
+            &[12, 3]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.up_proj.weight"].shape(),
+            &[12, 3]
+        );
     }
 }
