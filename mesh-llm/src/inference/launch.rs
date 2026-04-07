@@ -1053,9 +1053,14 @@ pub async fn start_llama_server(
             )
         })?;
 
-    // Wait for health check
+    // Wait for health check — scale timeout by model size so large MoE shards
+    // don't hit a fixed ceiling. 120s per GB gives plenty of headroom for slow
+    // I/O or GPU upload, with a 600s floor for small models.
+    let model_gb = model_bytes / GB + 1; // ceiling
+    let max_wait_secs = std::cmp::max(600, model_gb * 120);
+    tracing::info!("Health timeout: {max_wait_secs}s (model ~{model_gb} GB)");
     let url = format!("http://127.0.0.1:{http_port}/health");
-    for i in 0..600 {
+    for i in 0..max_wait_secs {
         if i > 0 && i % 10 == 0 {
             let bytes = crate::network::tunnel::bytes_transferred();
             let kb = bytes as f64 / 1024.0;
@@ -1120,7 +1125,7 @@ pub async fn start_llama_server(
     }
 
     anyhow::bail!(
-        "llama-server failed to become healthy within 600s. {}",
+        "llama-server failed to become healthy within {max_wait_secs}s (model ~{model_gb} GB). {}",
         log_tail_message(&llama_log, 80)
     );
 }
