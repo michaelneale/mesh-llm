@@ -373,9 +373,9 @@ jobs:
             ~/.models/$MOE_MODEL_FILE
 
   generate_model_family_test_matrix:
-    needs: [changes]
+    needs: [inference_smoke_tests]
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: Generate model/family test matrix
+    name: Generate smoke test matrix
     # Derives GGUF and MLX smoke-test matrices from testdata/validation/matrix.json.
     runs-on: ubuntu-latest
     outputs:
