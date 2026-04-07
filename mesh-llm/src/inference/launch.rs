@@ -255,13 +255,14 @@ pub struct ModelLaunchSpec<'a> {
     pub total_group_vram: Option<u64>,
 }
 
+pub(crate) const GB: u64 = 1_000_000_000;
+
 fn compute_context_size(
     ctx_size_override: Option<u32>,
     model_bytes: u64,
     my_vram: u64,
     total_group_vram: Option<u64>,
 ) -> u32 {
-    const GB: u64 = 1_000_000_000;
     let host_model_bytes = if let Some(group_vram) = total_group_vram {
         if group_vram > 0 {
             let host_fraction = my_vram as f64 / group_vram as f64;
@@ -285,6 +286,214 @@ fn compute_context_size(
         8192
     } else {
         4096
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KvType {
+    F16,
+    Q8_0,
+    Q4_0,
+}
+
+impl KvType {
+    fn as_arg(&self) -> &'static str {
+        match self {
+            KvType::F16 => "f16",
+            KvType::Q8_0 => "q8_0",
+            KvType::Q4_0 => "q4_0",
+        }
+    }
+
+    fn is_quantized(&self) -> bool {
+        !matches!(self, KvType::F16)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct KvCacheQuant {
+    pub k_type: KvType,
+    pub v_type: KvType,
+}
+
+/// Tracks a known open upstream llama.cpp bug that constrains what KV cache
+/// configurations are actually safe to run. Used by `validation_warnings()`
+/// so call sites and tests can assert on specific bugs by ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KvCacheWarning {
+    /// ggml-org/llama.cpp#20866 — asymmetric quantized K/V types hit
+    /// BEST_FATTN_KERNEL_NONE in the CUDA FA kernel selector unless llama.cpp
+    /// is built with -DGGML_CUDA_FA_ALL_QUANTS=ON. Our own CUDA build sets
+    /// this flag (see scripts/build-linux.sh), but standard Homebrew and
+    /// official release binaries will crash on FA ops.
+    MismatchedQuantNeedsCudaFaAllQuants,
+    /// ggml-org/llama.cpp#21450 — on Metal (Apple Silicon), when Flash
+    /// Attention falls back to CPU, a quantized V cache crashes with
+    /// "quantized V cache requires Flash Attention".
+    QuantizedVBreaksMetalFaFallback,
+}
+
+impl KvCacheQuant {
+    /// Thresholds in bytes for the tier boundaries below. Named constants so
+    /// the tests can assert exact boundary behavior.
+    pub const MEDIUM_TIER_MIN_BYTES: u64 = 5 * GB;
+    pub const LARGE_TIER_MIN_BYTES: u64 = 50 * GB;
+
+    /// Choose a KV cache quantization pair for the given model size.
+    ///
+    /// Defaults are chosen to be safe on all supported backends (CUDA, HIP,
+    /// Metal) without needing the GGML_CUDA_FA_ALL_QUANTS build flag and
+    /// without triggering the Metal FA-fallback crash. See the module-level
+    /// comment in `build_llama_server_args` for the tier rationale.
+    pub fn for_model_size(model_bytes: u64) -> Self {
+        if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
+            Self {
+                k_type: KvType::Q4_0,
+                v_type: KvType::Q4_0,
+            }
+        } else if model_bytes >= Self::MEDIUM_TIER_MIN_BYTES {
+            // Aggressive asymmetric: ~25% less KV memory than Q8_0/Q8_0 with
+            // minimal quality impact. Known risks:
+            // - ggml-org/llama.cpp#20866: requires CUDA build flag (we set it)
+            // - ggml-org/llama.cpp#21450: crashes if Metal FA unavailable.
+            //   Safe on M1+ Macs (all support Metal FA); rare CPU-FA fallback
+            //   on older Intel Macs is detected by `detect_known_crash_signature`.
+            Self {
+                k_type: KvType::Q8_0,
+                v_type: KvType::Q4_0,
+            }
+        } else {
+            Self {
+                k_type: KvType::F16,
+                v_type: KvType::F16,
+            }
+        }
+    }
+
+    /// Tier-specific human-readable label used in the startup log line.
+    pub fn label(&self, model_bytes: u64) -> String {
+        let tier = if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
+            "model > 50GB"
+        } else if model_bytes >= Self::MEDIUM_TIER_MIN_BYTES {
+            "model 5-50GB, safe asymmetric"
+        } else {
+            "model < 5GB, no quantization"
+        };
+        format!(
+            "{} K + {} V ({tier})",
+            self.k_type.as_arg().to_uppercase(),
+            self.v_type.as_arg().to_uppercase()
+        )
+    }
+
+    /// Return the set of known open upstream bugs this configuration would
+    /// trip over. Empty means safe to ship with default llama.cpp builds.
+    pub fn validation_warnings(&self) -> Vec<KvCacheWarning> {
+        let mut warnings = Vec::new();
+        let mismatched = self.k_type != self.v_type;
+
+        if self.v_type.is_quantized() && mismatched {
+            warnings.push(KvCacheWarning::QuantizedVBreaksMetalFaFallback);
+        }
+
+        if self.k_type.is_quantized() && self.v_type.is_quantized() && mismatched {
+            warnings.push(KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants);
+        }
+
+        warnings
+    }
+
+    /// Emit `--cache-type-k`/`--cache-type-v` args (skipped for f16/f16 which
+    /// is the llama-server default), log validation warnings for any known
+    /// upstream bugs, and log the tier info line.
+    pub fn append_args(&self, args: &mut Vec<String>, model_bytes: u64) {
+        for warning in self.validation_warnings() {
+            emit_kv_cache_warning(warning, self.k_type, self.v_type);
+        }
+
+        if self.k_type == KvType::F16 && self.v_type == KvType::F16 {
+            tracing::info!("KV cache: {}", self.label(model_bytes));
+            return;
+        }
+
+        args.extend_from_slice(&[
+            "--cache-type-k".to_string(),
+            self.k_type.as_arg().to_string(),
+            "--cache-type-v".to_string(),
+            self.v_type.as_arg().to_string(),
+        ]);
+        tracing::info!("KV cache: {}", self.label(model_bytes));
+    }
+}
+
+impl KvCacheWarning {
+    /// Substrings that uniquely identify this bug's crash in a llama.cpp log
+    /// tail. `detect_known_crash_signature` scans for any of these.
+    fn crash_signatures(&self) -> &'static [&'static str] {
+        match self {
+            KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants => &[
+                "fatal error",
+                "BEST_FATTN_KERNEL_NONE",
+                "ggml-cuda/fattn.cu",
+            ],
+            KvCacheWarning::QuantizedVBreaksMetalFaFallback => &[
+                "quantized V cache requires Flash Attention",
+                "V cache quantization requires flash_attn",
+            ],
+        }
+    }
+
+    /// Stable, user-facing description of the upstream bug this warning
+    /// corresponds to. Used in post-mortem messages.
+    fn post_mortem_hint(&self) -> &'static str {
+        match self {
+            KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants =>
+                "Known upstream bug: CUDA FA kernel selector rejects mismatched K/V \
+                 quantization types without GGML_CUDA_FA_ALL_QUANTS. Our custom CUDA \
+                 build sets this flag (see scripts/build-linux.sh); if you are running \
+                 a Homebrew or official release llama.cpp binary this will crash every \
+                 time. Track ggml-org/llama.cpp#20866.",
+            KvCacheWarning::QuantizedVBreaksMetalFaFallback =>
+                "Known upstream bug: Metal crashes on quantized V cache when Flash \
+                 Attention falls back to CPU. All Apple Silicon (M1+) supports Metal FA \
+                 and is not affected. If you are seeing this on Apple Silicon, please \
+                 file a mesh-llm bug — it should not happen. Older Intel Macs or any \
+                 host without Metal FA will trip this. Track ggml-org/llama.cpp#21450.",
+        }
+    }
+}
+
+/// Scan a log tail for a known upstream crash signature and return the
+/// matching warning, if any. Used for post-mortem diagnostics when
+/// llama-server exits before becoming healthy.
+pub(crate) fn detect_known_crash_signature(log_tail: &str) -> Option<KvCacheWarning> {
+    let candidates = [
+        KvCacheWarning::QuantizedVBreaksMetalFaFallback,
+        KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants,
+    ];
+    candidates
+        .into_iter()
+        .find(|w| w.crash_signatures().iter().any(|sig| log_tail.contains(sig)))
+}
+
+fn emit_kv_cache_warning(warning: KvCacheWarning, k: KvType, v: KvType) {
+    match warning {
+        KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants => tracing::warn!(
+            "KV cache K/V types mismatched and both quantized ({}/{}); the CUDA \
+             FA kernel selector returns BEST_FATTN_KERNEL_NONE unless llama.cpp is \
+             built with -DGGML_CUDA_FA_ALL_QUANTS=ON. Our own build sets this flag \
+             (see scripts/build-linux.sh), but standard Homebrew or release binaries \
+             will crash on FA ops. Track ggml-org/llama.cpp#20866 for the upstream fix.",
+            k.as_arg(),
+            v.as_arg()
+        ),
+        KvCacheWarning::QuantizedVBreaksMetalFaFallback => tracing::warn!(
+            "KV cache V is quantized ({}); requires -fa on at runtime. On Apple \
+             Silicon, if Metal Flash Attention is unavailable, llama-server will \
+             crash with 'quantized V cache requires Flash Attention'. Track \
+             ggml-org/llama.cpp#21450 for the Metal fix.",
+            v.as_arg()
+        ),
     }
 }
 
@@ -667,7 +876,6 @@ pub async fn start_llama_server(
     // So both weights and KV are distributed. The host only needs VRAM for
     // its share of weights + its share of KV. We estimate the host's weight
     // share proportionally and let llama-server pick the largest -c that fits.
-    const GB: u64 = 1_000_000_000;
     let host_model_bytes = if let Some(group_vram) = total_group_vram {
         // Split mode: host holds its share of the weights
         if group_vram > 0 {
@@ -734,28 +942,31 @@ pub async fn start_llama_server(
     // in the weighted sum and are far more tolerant of compression.
     // (See TurboQuant ICLR 2026 / asymmetric K/V findings.)
     //
+    // Current tiers:
     //   < 5GB:  leave default (FP16) — small models, KV cache is negligible
-    //   5-50GB: K=Q8_0, V=Q4_0 — keeps attention routing precise, compresses
-    //           values aggressively. ~25% less KV memory than Q8_0/Q8_0 with
-    //           minimal quality impact (<0.5% PPL on most models).
-    //   > 50GB: Q4_0/Q4_0 — maximum compression, critical memory savings
-    if model_bytes >= 50 * GB {
-        args.extend_from_slice(&[
-            "--cache-type-k".to_string(),
-            "q4_0".to_string(),
-            "--cache-type-v".to_string(),
-            "q4_0".to_string(),
-        ]);
-        tracing::info!("KV cache: Q4_0 K + Q4_0 V (model > 50GB)");
-    } else if model_bytes >= 5 * GB {
-        args.extend_from_slice(&[
-            "--cache-type-k".to_string(),
-            "q8_0".to_string(),
-            "--cache-type-v".to_string(),
-            "q4_0".to_string(),
-        ]);
-        tracing::info!("KV cache: Q8_0 K + Q4_0 V (model 5-50GB)");
-    }
+    //   5-50GB: K=Q8_0, V=F16 — K-only quantization. Safe asymmetric config:
+    //           works on CUDA, HIP, and Metal without the GGML_CUDA_FA_ALL_QUANTS
+    //           build flag and without triggering the Metal FA-fallback crash.
+    //           V stays in F16 so the non-FA path can handle it too.
+    //   > 50GB: Q4_0/Q4_0 — maximum compression, matched quantized types so
+    //           no GGML_CUDA_FA_ALL_QUANTS needed. Requires -fa on.
+    //
+    // Why not K=Q8_0/V=Q4_0? That's a more aggressive saving (~25% less KV
+    // memory) but hits two open upstream bugs as of 2026-04:
+    //   - ggml-org/llama.cpp#20866 — asymmetric K/V types require rebuilding
+    //     llama.cpp with -DGGML_CUDA_FA_ALL_QUANTS=ON. Standard Homebrew and
+    //     release binaries crash with BEST_FATTN_KERNEL_NONE → GGML_ABORT.
+    //     Our CUDA build DOES set that flag (see scripts/build-linux.sh), but
+    //     we default conservatively so users with external llama.cpp binaries
+    //     don't crash.
+    //   - ggml-org/llama.cpp#21450 — Metal crashes on mixed quantized KV when
+    //     Flash Attention falls back to CPU ("quantized V cache requires Flash
+    //     Attention"). Affects Apple Silicon hosts that can't use Metal FA.
+    //
+    // TODO(ggml-org/llama.cpp#20866, ggml-org/llama.cpp#21450): once both are
+    // closed upstream and our fork is rebased past the fixes, restore the
+    // 5-50GB tier to K=Q8_0, V=Q4_0 for the extra ~25% KV savings.
+    KvCacheQuant::for_model_size(model_bytes).append_args(&mut args, model_bytes);
     if let Some(ts) = tensor_split {
         args.push("--tensor-split".to_string());
         args.push(ts.to_string());
@@ -858,9 +1069,19 @@ pub async fn start_llama_server(
                 llama_server.path.display()
             )
         })? {
+            let tail = log_tail(&llama_log, 80);
+            let hint = detect_known_crash_signature(&tail)
+                .map(|w| format!("\n\n{}", w.post_mortem_hint()))
+                .unwrap_or_default();
+            let tail_msg = if tail.is_empty() {
+                format!("See {}", llama_log.display())
+            } else {
+                format!("See {}:\n{}", llama_log.display(), tail)
+            };
             anyhow::bail!(
-                "llama-server exited before becoming healthy on port {http_port} (status: {status}). {}",
-                log_tail_message(&llama_log, 80)
+                "llama-server exited before becoming healthy on port {http_port} (status: {status}). {}{}",
+                tail_msg,
+                hint
             );
         }
         if reqwest_health_check(&url).await {
@@ -1065,9 +1286,209 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod tests {
     use super::{
         compute_context_size, parse_available_devices, preferred_device, temp_log_path,
-        BinaryFlavor, SplitMode,
+        BinaryFlavor, KvCacheQuant, KvCacheWarning, KvType, SplitMode, GB,
     };
     use std::path::Path;
+
+    #[test]
+    fn kv_quant_small_model_is_plain_f16() {
+        let quant = KvCacheQuant::for_model_size(1 * GB);
+        assert_eq!(quant.k_type, KvType::F16);
+        assert_eq!(quant.v_type, KvType::F16);
+        assert!(
+            quant.validation_warnings().is_empty(),
+            "small-model default should not trigger any upstream bug warnings"
+        );
+    }
+
+    #[test]
+    fn kv_quant_medium_model_is_aggressive_asymmetric() {
+        let quant = KvCacheQuant::for_model_size(20 * GB);
+        assert_eq!(
+            quant.k_type,
+            KvType::Q8_0,
+            "medium-tier K should be Q8_0 for attention routing precision"
+        );
+        assert_eq!(
+            quant.v_type,
+            KvType::Q4_0,
+            "medium-tier V is Q4_0 for 25% memory savings over Q8_0/Q8_0. \
+             This intentionally opts into two open upstream bugs (#20866 on CUDA, \
+             #21450 on Metal FA fallback); our own CUDA build sets GGML_CUDA_FA_ALL_QUANTS \
+             and Metal FA is available on all M1+ Macs. If you change this, also update \
+             kv_quant_medium_model_emits_expected_warnings and the detect_known_crash_signature \
+             wiring."
+        );
+    }
+
+    #[test]
+    fn kv_quant_medium_model_emits_expected_warnings() {
+        let warnings = KvCacheQuant::for_model_size(20 * GB).validation_warnings();
+        assert!(
+            warnings.contains(&KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants),
+            "medium tier must flag #20866 so the startup log is clear about the CUDA \
+             build requirement, got {warnings:?}"
+        );
+        assert!(
+            warnings.contains(&KvCacheWarning::QuantizedVBreaksMetalFaFallback),
+            "medium tier must flag #21450 so a user hitting the rare Metal-CPU-FA-fallback \
+             crash can connect their failure to the open upstream issue, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn kv_quant_large_model_is_matched_q4_0() {
+        let quant = KvCacheQuant::for_model_size(100 * GB);
+        assert_eq!(quant.k_type, KvType::Q4_0);
+        assert_eq!(
+            quant.v_type,
+            KvType::Q4_0,
+            "large-tier K and V must be the same quantized type to avoid #20866"
+        );
+    }
+
+    #[test]
+    fn kv_quant_default_tier_warnings_are_intentional() {
+        let expected: &[(u64, &[KvCacheWarning])] = &[
+            (1, &[]),
+            (4, &[]),
+            (5, &[
+                KvCacheWarning::QuantizedVBreaksMetalFaFallback,
+                KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants,
+            ]),
+            (20, &[
+                KvCacheWarning::QuantizedVBreaksMetalFaFallback,
+                KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants,
+            ]),
+            (49, &[
+                KvCacheWarning::QuantizedVBreaksMetalFaFallback,
+                KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants,
+            ]),
+            (50, &[]),
+            (100, &[]),
+        ];
+
+        for (size_gb, expected_warnings) in expected {
+            let actual = KvCacheQuant::for_model_size(size_gb * GB).validation_warnings();
+            assert_eq!(
+                actual, *expected_warnings,
+                "tier for {size_gb}GB drifted from the documented warning set. \
+                 If you changed the defaults, update this test to the new expected \
+                 warnings and verify detect_known_crash_signature still maps them."
+            );
+        }
+    }
+
+    #[test]
+    fn kv_quant_mismatched_quant_flags_cuda_bug() {
+        let quant = KvCacheQuant {
+            k_type: KvType::Q8_0,
+            v_type: KvType::Q4_0,
+        };
+        let warnings = quant.validation_warnings();
+        assert!(
+            warnings.contains(&KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants),
+            "K=Q8_0/V=Q4_0 must flag #20866, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn kv_quant_quantized_v_flags_metal_bug() {
+        let quant = KvCacheQuant {
+            k_type: KvType::F16,
+            v_type: KvType::Q4_0,
+        };
+        let warnings = quant.validation_warnings();
+        assert!(
+            warnings.contains(&KvCacheWarning::QuantizedVBreaksMetalFaFallback),
+            "any quantized V must flag #21450, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn kv_quant_tier_boundaries_are_exact() {
+        let just_below_medium = KvCacheQuant::for_model_size(KvCacheQuant::MEDIUM_TIER_MIN_BYTES - 1);
+        assert_eq!(just_below_medium.k_type, KvType::F16);
+        assert_eq!(just_below_medium.v_type, KvType::F16);
+        let at_medium = KvCacheQuant::for_model_size(KvCacheQuant::MEDIUM_TIER_MIN_BYTES);
+        assert_eq!(at_medium.k_type, KvType::Q8_0);
+        assert_eq!(at_medium.v_type, KvType::Q4_0);
+        let just_below_large = KvCacheQuant::for_model_size(KvCacheQuant::LARGE_TIER_MIN_BYTES - 1);
+        assert_eq!(just_below_large.k_type, KvType::Q8_0);
+        assert_eq!(just_below_large.v_type, KvType::Q4_0);
+        let at_large = KvCacheQuant::for_model_size(KvCacheQuant::LARGE_TIER_MIN_BYTES);
+        assert_eq!(at_large.k_type, KvType::Q4_0);
+        assert_eq!(at_large.v_type, KvType::Q4_0);
+    }
+
+    #[test]
+    fn kv_quant_append_args_emits_cache_flags_for_quantized_tiers() {
+        let mut args: Vec<String> = Vec::new();
+        KvCacheQuant::for_model_size(20 * GB).append_args(&mut args, 20 * GB);
+        assert_eq!(
+            args,
+            vec![
+                "--cache-type-k".to_string(),
+                "q8_0".to_string(),
+                "--cache-type-v".to_string(),
+                "q4_0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn kv_quant_append_args_is_silent_for_f16_default() {
+        let mut args: Vec<String> = Vec::new();
+        KvCacheQuant::for_model_size(1 * GB).append_args(&mut args, 1 * GB);
+        assert!(
+            args.is_empty(),
+            "f16/f16 must not emit --cache-type-* flags (it's the llama-server default): {args:?}"
+        );
+    }
+
+    #[test]
+    fn detect_crash_signature_matches_cuda_fa_abort() {
+        let log = "ggml_backend_cuda_flash_attn_ext\n\
+                   /llama.cpp/ggml/src/ggml-cuda/fattn.cu:504: fatal error\n\
+                   BEST_FATTN_KERNEL_NONE";
+        assert_eq!(
+            super::detect_known_crash_signature(log),
+            Some(KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants)
+        );
+    }
+
+    #[test]
+    fn detect_crash_signature_matches_metal_v_cache_error_both_phrasings() {
+        let new_phrasing = "common_init_from_params: quantized V cache requires Flash Attention";
+        let old_phrasing =
+            "llama_init_from_model: V cache quantization requires flash_attn";
+        assert_eq!(
+            super::detect_known_crash_signature(new_phrasing),
+            Some(KvCacheWarning::QuantizedVBreaksMetalFaFallback)
+        );
+        assert_eq!(
+            super::detect_known_crash_signature(old_phrasing),
+            Some(KvCacheWarning::QuantizedVBreaksMetalFaFallback)
+        );
+    }
+
+    #[test]
+    fn detect_crash_signature_returns_none_for_unrelated_logs() {
+        let log = "llama_context: n_ctx = 65536\n\
+                   sched_reserve: graph nodes = 3849\n\
+                   common_init_from_params: warming up the model with an empty run";
+        assert_eq!(super::detect_known_crash_signature(log), None);
+    }
+
+    #[test]
+    fn post_mortem_hint_references_issue_number() {
+        assert!(KvCacheWarning::MismatchedQuantNeedsCudaFaAllQuants
+            .post_mortem_hint()
+            .contains("#20866"));
+        assert!(KvCacheWarning::QuantizedVBreaksMetalFaFallback
+            .post_mortem_hint()
+            .contains("#21450"));
+    }
 
     #[test]
     fn parse_available_devices_ignores_non_device_lines() {
