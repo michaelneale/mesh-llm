@@ -1,9 +1,9 @@
 use crate::cli::models::ModelsCommand;
 use crate::models::{
-    capabilities, catalog, download_exact_ref, find_catalog_model_exact, huggingface_hub_cache_dir,
-    installed_model_capabilities, scan_installed_models, search_catalog_models, search_huggingface,
-    show_exact_model, MlxSelectionPolicy, ResolveFormatPreference, SearchArtifactFilter,
-    SearchProgress,
+    capabilities, catalog, catalog_model_kind_label, download_exact_ref, find_catalog_model_exact,
+    huggingface_hub_cache_dir, installed_model_capabilities, scan_installed_models,
+    search_catalog_models, search_huggingface, show_exact_model, MlxSelectionPolicy,
+    ResolveFormatPreference, SearchArtifactFilter, SearchProgress,
 };
 use crate::system::hardware;
 use anyhow::{anyhow, Result};
@@ -34,11 +34,8 @@ pub async fn run_model_search(
         let results: Vec<_> = search_catalog_models(&query)
             .into_iter()
             .filter(|model| match filter {
-                SearchArtifactFilter::Gguf => {
-                    model.file.to_ascii_lowercase().ends_with(".gguf")
-                        || model.file.to_ascii_lowercase().contains("gguf")
-                }
-                SearchArtifactFilter::Mlx => model.file.to_ascii_lowercase().contains("mlx"),
+                SearchArtifactFilter::Gguf => catalog_model_kind_label(model) == "🦙 gguf",
+                SearchArtifactFilter::Mlx => catalog_model_kind_label(model) == "🍎 mlx",
             })
             .collect();
         if results.is_empty() {

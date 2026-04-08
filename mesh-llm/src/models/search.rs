@@ -131,7 +131,6 @@ async fn build_search_hit(
         .clone()
         .or(detail.model_id.clone())
         .unwrap_or(repo.id.clone());
-    let repo_id_lc = repo_id.to_lowercase();
     let sibling_names: Vec<String> = detail
         .siblings
         .iter()
@@ -149,9 +148,6 @@ async fn build_search_hit(
             SearchArtifactFilter::Mlx => candidate.kind == RepoArtifactKind::Mlx,
         };
         if !matches_filter {
-            continue;
-        }
-        if candidate.kind == RepoArtifactKind::Mlx && !repo_id_lc.contains("mlx") {
             continue;
         }
         let catalog = matching_catalog_model_for_huggingface(&repo_id, None, &candidate.file);
