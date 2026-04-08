@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
-use ed25519_dalek::{Signer, Verifier};
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 
 use super::error::CryptoError;
 use super::keys::{owner_id_from_verifying_key, OwnerKeypair};
+use super::keystore::write_keystore_bytes_atomically;
 
 pub const NODE_OWNERSHIP_VERSION: u32 = 1;
 pub const TRUST_STORE_VERSION: u32 = 1;
@@ -161,7 +162,8 @@ pub fn save_node_ownership(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(ownership)?)?;
+    let bytes = serde_json::to_vec_pretty(ownership)?;
+    write_keystore_bytes_atomically(path, &bytes)?;
     Ok(())
 }
 
@@ -183,7 +185,8 @@ pub fn save_trust_store(path: &Path, store: &TrustStore) -> Result<(), CryptoErr
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(store)?)?;
+    let bytes = serde_json::to_vec_pretty(store)?;
+    write_keystore_bytes_atomically(path, &bytes)?;
     Ok(())
 }
 
@@ -303,6 +306,10 @@ pub fn verify_node_ownership(
         hostname_hint: ownership.claim.hostname_hint.clone(),
         ..OwnershipSummary::default()
     };
+    if ownership.claim.version != NODE_OWNERSHIP_VERSION {
+        summary.status = OwnershipStatus::UnsupportedProtocol;
+        return summary;
+    }
 
     let owner_sign_public_key = match decode_hex_32(
         "owner_sign_public_key",
@@ -363,7 +370,7 @@ pub fn verify_node_ownership(
         }
     };
     let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-    if verifying_key.verify(&canonical, &signature).is_err() {
+    if verifying_key.verify_strict(&canonical, &signature).is_err() {
         summary.status = OwnershipStatus::InvalidSignature;
         return summary;
     }
@@ -594,5 +601,31 @@ mod tests {
         );
 
         assert_eq!(summary.status, OwnershipStatus::UntrustedOwner);
+    }
+
+    #[test]
+    fn unsupported_claim_version_is_rejected() {
+        let owner = OwnerKeypair::generate();
+        let node_endpoint_id = [0x42; 32];
+        let mut ownership = sign_node_ownership(
+            &owner,
+            &node_endpoint_id,
+            current_time_unix_ms() + 60_000,
+            None,
+            None,
+        )
+        .unwrap();
+        ownership.claim.version = NODE_OWNERSHIP_VERSION + 1;
+
+        let summary = verify_node_ownership(
+            Some(&ownership),
+            &node_endpoint_id,
+            &TrustStore::default(),
+            TrustPolicy::Off,
+            current_time_unix_ms(),
+        );
+
+        assert_eq!(summary.status, OwnershipStatus::UnsupportedProtocol);
+        assert!(!summary.verified);
     }
 }

@@ -947,6 +947,7 @@ pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
         Some(0.0),
         cli.enumerate_host,
         Some(owner_config),
+        cli.config.as_deref(),
     )
     .await?;
     node.start_accepting();
@@ -1011,6 +1012,7 @@ async fn run_auto(
         max_vram,
         cli.enumerate_host,
         Some(owner_config),
+        cli.config.as_deref(),
     )
     .await?;
     node.start_accepting();

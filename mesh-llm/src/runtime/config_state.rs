@@ -14,6 +14,11 @@ pub(crate) enum ApplyResult {
     RevisionConflict {
         current_revision: u64,
     },
+    PersistedWithRevisionTrackingError {
+        revision: u64,
+        hash: [u8; 32],
+        error: String,
+    },
     ValidationError(String),
     PersistError(String),
 }
@@ -78,6 +83,8 @@ fn atomic_write(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.write_all(contents)?;
     file.sync_all()?;
     drop(file);
+    // TODO(windows): this remove+rename sequence is not truly atomic on Windows.
+    // Replace with MoveFileExW(MOVEFILE_REPLACE_EXISTING) or tempfile::persist_noclobber-like behavior.
     #[cfg(windows)]
     if target.exists() {
         std::fs::remove_file(target)?;
@@ -174,9 +181,13 @@ impl ConfigState {
             self.config_hash = new_hash;
             self.last_write_hash = new_hash;
             self.revision = new_revision;
-            return ApplyResult::PersistError(format!(
-                "failed to write revision sidecar: {e}; config persisted and in-memory revision advanced, but on-disk revision tracking may be stale"
-            ));
+            return ApplyResult::PersistedWithRevisionTrackingError {
+                revision: self.revision,
+                hash: self.config_hash,
+                error: format!(
+                    "failed to write revision sidecar: {e}; config persisted and in-memory revision advanced, but on-disk revision tracking may be stale"
+                ),
+            };
         }
 
         self.config = new_config;

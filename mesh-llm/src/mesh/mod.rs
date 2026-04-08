@@ -1585,6 +1585,7 @@ impl Node {
         max_vram_gb: Option<f64>,
         enumerate_host: bool,
         owner_config: Option<OwnerRuntimeConfig>,
+        config_path: Option<&std::path::Path>,
     ) -> Result<(Self, TunnelChannels)> {
         // Clients use an ephemeral key so they get a unique identity even
         // when running on the same machine as a GPU node.
@@ -1721,11 +1722,11 @@ impl Node {
             owner_attestation.as_ref(),
             endpoint.id().as_bytes(),
             &trust_store,
-            trust_policy,
+            TrustPolicy::Off,
             current_time_unix_ms(),
         );
         let config_state_init = {
-            let path = crate::plugin::config_path(None)
+            let path = crate::plugin::config_path(config_path)
                 .unwrap_or_else(|_| std::path::PathBuf::from("config.toml"));
             crate::runtime::config_state::ConfigState::load(&path)?
         };
@@ -3950,7 +3951,7 @@ impl Node {
                     config_hash: vec![],
                     config: None,
                     hostname: None,
-                    error: Some("node has no local owner".to_string()),
+                    error: Some(self.local_owner_status_error().await),
                 };
                 write_len_prefixed(&mut send, &error_snapshot.encode_to_vec()).await?;
                 return Ok(());
@@ -4063,6 +4064,30 @@ impl Node {
         }
     }
 
+    async fn local_owner_status_error(&self) -> String {
+        let summary = self.owner_summary.lock().await.clone();
+        match summary.status {
+            OwnershipStatus::Verified => "node owner is verified".to_string(),
+            OwnershipStatus::Unsigned => "node has no local owner attestation".to_string(),
+            OwnershipStatus::Expired => "node owner attestation is expired".to_string(),
+            OwnershipStatus::InvalidSignature => {
+                "node owner attestation has invalid signature".to_string()
+            }
+            OwnershipStatus::MismatchedNodeId => {
+                "node owner attestation does not match local node id".to_string()
+            }
+            OwnershipStatus::RevokedOwner => "node owner is revoked".to_string(),
+            OwnershipStatus::RevokedCert => "node owner certificate is revoked".to_string(),
+            OwnershipStatus::RevokedNodeId => "node endpoint id is revoked".to_string(),
+            OwnershipStatus::UnsupportedProtocol => {
+                "node owner attestation uses unsupported protocol version".to_string()
+            }
+            OwnershipStatus::UntrustedOwner => {
+                "node owner is not trusted by local policy".to_string()
+            }
+        }
+    }
+
     async fn peer_verified_owner(
         &self,
         peer_id: EndpointId,
@@ -4106,7 +4131,8 @@ impl Node {
         let local_id = match self.local_verified_owner_id().await {
             Some(id) => id,
             None => {
-                send_push_error(&mut send, "node has no local owner").await?;
+                let msg = self.local_owner_status_error().await;
+                send_push_error(&mut send, &msg).await?;
                 return Ok(());
             }
         };
@@ -4218,6 +4244,22 @@ impl Node {
                         "revision conflict: expected_revision does not match current".to_string(),
                     ),
                     saved_to_disk: false,
+                    applied_live: false,
+                }
+            }
+            ApplyResult::PersistedWithRevisionTrackingError {
+                revision,
+                hash,
+                error,
+            } => {
+                let _ = self.config_revision_tx.send(revision);
+                crate::proto::node::ConfigPushResponse {
+                    gen: NODE_PROTOCOL_GENERATION,
+                    success: false,
+                    current_revision: revision,
+                    config_hash: hash.to_vec(),
+                    error: Some(error),
+                    saved_to_disk: true,
                     applied_live: false,
                 }
             }
