@@ -147,7 +147,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: llama.cpp/build/bin
-          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-on-cuda12.8
+          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
 
       - name: Short-circuit if cache already warm
         if: steps.llama_cuda_cache.outputs.cache-hit == 'true'
@@ -161,6 +161,7 @@ jobs:
         if: steps.llama_cuda_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
+          MESH_LLM_CUDA_FA_ALL_QUANTS: off
           MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
