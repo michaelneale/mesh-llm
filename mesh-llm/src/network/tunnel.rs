@@ -26,12 +26,7 @@ use tokio::sync::Mutex;
 static BYTES_TRANSFERRED: AtomicU64 = AtomicU64::new(0);
 
 fn quic_response_first_byte_timeout() -> Duration {
-    std::env::var("MESH_LLM_TUNNEL_FIRST_BYTE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(60))
+    Duration::from_secs(5 * 60)
 }
 
 /// Get total bytes transferred through all tunnels

@@ -949,13 +949,14 @@ pub async fn release_request_objects(node: &mesh::Node, request_ids: &[String]) 
     }
 }
 
+/// Remote first-byte timeout: 5 minutes. This covers the full round trip
+/// through the QUIC tunnel including remote prefill. Concurrent requests
+/// on a loaded host can legitimately take minutes. A truly dead QUIC
+/// connection will reset/error much faster than this (QUIC idle timeout,
+/// connection loss detection). The old 60s default caused spurious 503s
+/// when the remote host was alive but busy.
 fn response_first_byte_timeout() -> Duration {
-    std::env::var("MESH_LLM_TUNNEL_FIRST_BYTE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(60))
+    Duration::from_secs(5 * 60)
 }
 
 fn saturating_u32(value: usize) -> u32 {
@@ -1548,18 +1549,7 @@ async fn probe_http_response_local<R: AsyncRead + Unpin>(reader: &mut R) -> Resu
 /// hardware with large prompts and concurrent slots completes well
 /// within this window.
 fn local_response_first_byte_timeout() -> Duration {
-    match std::env::var("MESH_LLM_LOCAL_FIRST_BYTE_TIMEOUT_SECS") {
-        Ok(raw) => match raw.parse::<u64>() {
-            Ok(secs) if secs > 0 => Duration::from_secs(secs),
-            _ => {
-                tracing::warn!(
-                    "Invalid MESH_LLM_LOCAL_FIRST_BYTE_TIMEOUT_SECS={raw:?}, using default 600s"
-                );
-                Duration::from_secs(10 * 60)
-            }
-        },
-        Err(_) => Duration::from_secs(10 * 60),
-    }
+    Duration::from_secs(10 * 60)
 }
 
 async fn probe_http_response_with_timeout<R: AsyncRead + Unpin>(
