@@ -65,9 +65,11 @@ where
     let repo_limit = limit.clamp(1, 100);
     progress(SearchProgress::SearchingHub);
     let api = build_hf_tokio_api(false)?;
-    let repos = api
-        .search(RepoType::Model)
-        .with_query(query)
+    let mut search = api.search(RepoType::Model).with_query(query);
+    if filter == SearchArtifactFilter::Gguf {
+        search = search.with_filter("gguf");
+    }
+    let repos = search
         .with_limit(repo_limit)
         .run()
         .await
@@ -94,8 +96,10 @@ where
         let (index, result) = joined.context("Join Hugging Face repo inspection task")?;
         completed += 1;
         progress(SearchProgress::InspectingRepos { completed, total });
-        for hit in result? {
-            indexed_hits.push((index, hit));
+        if let Ok(hits) = result {
+            for hit in hits {
+                indexed_hits.push((index, hit));
+            }
         }
         if let Some((next_index, repo)) = pending.next() {
             let api = api.clone();
