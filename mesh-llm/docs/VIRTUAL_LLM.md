@@ -31,6 +31,14 @@ Pending results polled via `GET /mesh/hook/poll/{async_id}` → 202 (not ready) 
 
 ---
 
+## When hooks fire
+
+All three hooks fire on every request where `mesh_hooks: true` is set in the request body. There's no conditional logic on the C++ side — it always calls mesh-llm, and mesh-llm decides whether to act (returns `none` to do nothing).
+
+mesh-llm sets `mesh_hooks: true` when forwarding requests to llama-server. It decides per-request based on what it knows: images present + text-only model, request looks complex, verification enabled, etc. When `mesh_hooks` is absent or false, all hook code is skipped — zero overhead.
+
+Polling is the only conditional: it only runs when `pending_async_ids` is non-empty (i.e., Hook 1 returned `pending`). No async work started = nothing to poll.
+
 ## Hooks
 
 ### 1. Pre-inference
