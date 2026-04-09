@@ -3758,29 +3758,25 @@ export function ChatPage(props: {
                   >
                     <File className="h-4 w-4" />
                   </Button>
-                  {selectedModelVision && (
-                    <>
-                      <input
-                        ref={imageInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        data-testid="chat-image-input"
-                        onChange={handleImageSelect}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => imageInputRef.current?.click()}
-                        disabled={!props.canChat || isSending}
-                        title="Attach image"
-                        aria-label="Attach image"
-                      >
-                        <ImagePlus className="h-4 w-4" />
-                      </Button>
-                    </>
-                  )}
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    data-testid="chat-image-input"
+                    onChange={handleImageSelect}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={!props.canChat || isSending}
+                    title="Attach image"
+                    aria-label="Attach image"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                  </Button>
                   {selectedModelAudio && (
                     <>
                       <input
