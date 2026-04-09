@@ -2,6 +2,7 @@ use super::ModelCapabilities;
 use super::{capabilities, catalog, find_model_path, format_size_bytes};
 use anyhow::{anyhow, bail, Context, Result};
 use hf_hub::{Repo, RepoType};
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -532,6 +533,32 @@ mod tests {
             "UD-Q4_K_XL/gemma-4-31B-it-UD-Q4_K_XL-00001-of-00009.gguf"
         );
     }
+
+    #[test]
+    fn fit_aware_gguf_prefers_largest_comfortable_candidate() {
+        let available = 20_000_000_000u64;
+        let ordering = compare_gguf_candidates_by_fit(
+            "repo/model-q4.gguf",
+            Some(12_000_000_000),
+            "repo/model-q5.gguf",
+            Some(17_000_000_000),
+            available,
+        );
+        assert_eq!(ordering, Ordering::Greater);
+    }
+
+    #[test]
+    fn fit_aware_gguf_prefers_smaller_when_both_too_large() {
+        let available = 20_000_000_000u64;
+        let ordering = compare_gguf_candidates_by_fit(
+            "repo/model-q8.gguf",
+            Some(29_000_000_000),
+            "repo/model-bf16.gguf",
+            Some(35_000_000_000),
+            available,
+        );
+        assert_eq!(ordering, Ordering::Less);
+    }
 }
 
 fn matching_catalog_model_by_basename(repo_file: &str) -> Option<&'static catalog::CatalogModel> {
@@ -782,6 +809,116 @@ fn gguf_matches_quant_selector(file_lower: &str, selector_lower: &str) -> bool {
         || file_lower.ends_with(&format!("/{selector_lower}.gguf"))
 }
 
+fn fit_bucket(size_bytes: u64, available_bytes: u64) -> u8 {
+    if size_bytes.saturating_mul(10) <= available_bytes.saturating_mul(9) {
+        0
+    } else if size_bytes.saturating_mul(10) <= available_bytes.saturating_mul(11) {
+        1
+    } else {
+        2
+    }
+}
+
+fn compare_gguf_candidates_by_fit(
+    left_file: &str,
+    left_size: Option<u64>,
+    right_file: &str,
+    right_size: Option<u64>,
+    available_bytes: u64,
+) -> Ordering {
+    match (left_size, right_size) {
+        (Some(left), Some(right)) => {
+            let left_bucket = fit_bucket(left, available_bytes);
+            let right_bucket = fit_bucket(right, available_bytes);
+            if left_bucket != right_bucket {
+                return left_bucket.cmp(&right_bucket);
+            }
+            let size_order = if left_bucket <= 1 {
+                right.cmp(&left)
+            } else {
+                left.cmp(&right)
+            };
+            if size_order != Ordering::Equal {
+                return size_order;
+            }
+        }
+        (Some(_), None) => return Ordering::Less,
+        (None, Some(_)) => return Ordering::Greater,
+        (None, None) => {}
+    }
+
+    file_preference_score(left_file)
+        .cmp(&file_preference_score(right_file))
+        .then_with(|| left_file.cmp(right_file))
+}
+
+async fn remote_size_bytes(url: &str) -> Option<u64> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .user_agent(format!("mesh-llm/{}", crate::VERSION))
+        .build()
+        .ok()?;
+    let response = client
+        .head(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+}
+
+async fn remote_hf_size_bytes(repo: &str, revision: Option<&str>, file: &str) -> Option<u64> {
+    let url = huggingface_resolve_url(repo, revision, file);
+    remote_size_bytes(&url).await
+}
+
+async fn select_default_hf_file_fit_aware(
+    repo: &str,
+    revision: Option<&str>,
+    siblings: &[String],
+) -> Option<String> {
+    let mut gguf_candidates = Vec::new();
+    for file in siblings {
+        let lower = file.to_lowercase();
+        if !lower.ends_with(".gguf") {
+            continue;
+        }
+        if lower.contains("-000") && !lower.contains("-00001-of-") {
+            continue;
+        }
+        gguf_candidates.push(file.clone());
+    }
+    if gguf_candidates.is_empty() {
+        return select_default_hf_file_from_siblings(siblings);
+    }
+
+    let available_bytes = crate::system::hardware::survey().vram_bytes;
+    if available_bytes == 0 {
+        return select_default_hf_file_from_siblings(siblings);
+    }
+
+    let mut scored: Vec<(String, Option<u64>)> = Vec::with_capacity(gguf_candidates.len());
+    for file in gguf_candidates {
+        let size = remote_hf_size_bytes(repo, revision, &file).await;
+        scored.push((file, size));
+    }
+    scored.sort_by(|left, right| {
+        compare_gguf_candidates_by_fit(&left.0, left.1, &right.0, right.1, available_bytes)
+    });
+    scored
+        .first()
+        .map(|(file, _)| file.clone())
+        .or_else(|| select_default_hf_file_from_siblings(siblings))
+}
+
 async fn resolve_huggingface_file(
     repo: &str,
     revision: Option<&str>,
@@ -810,6 +947,14 @@ async fn resolve_huggingface_file(
         .iter()
         .map(|sibling| sibling.rfilename.clone())
         .collect();
+
+    if file.is_empty() {
+        if let Some(resolved) =
+            select_default_hf_file_fit_aware(repo, Some(revision), &siblings).await
+        {
+            return Ok(resolved);
+        }
+    }
 
     if let Some(resolved) = resolve_hf_file_from_siblings(file, &siblings) {
         return Ok(resolved);
@@ -863,26 +1008,7 @@ pub(super) fn file_preference_score(file: &str) -> usize {
 }
 
 async fn remote_size_label(url: &str) -> Option<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
-        .connect_timeout(std::time::Duration::from_secs(30))
-        .user_agent(format!("mesh-llm/{}", crate::VERSION))
-        .build()
-        .ok()?;
-    let response = client
-        .head(url)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    let size = response
-        .headers()
-        .get(reqwest::header::CONTENT_LENGTH)?
-        .to_str()
-        .ok()?
-        .parse::<u64>()
-        .ok()?;
+    let size = remote_size_bytes(url).await?;
     Some(format_size_bytes(size))
 }
 
