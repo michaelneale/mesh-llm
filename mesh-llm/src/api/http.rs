@@ -45,6 +45,9 @@ pub(super) async fn respond_json<T: serde::Serialize>(
     let status = match code {
         200 => "OK",
         201 => "Created",
+        202 => "Accepted",
+        400 => "Bad Request",
+        404 => "Not Found",
         _ => "OK",
     };
     let resp = format!(
