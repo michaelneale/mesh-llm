@@ -559,6 +559,14 @@ mod tests {
         );
         assert_eq!(ordering, Ordering::Less);
     }
+
+    #[test]
+    fn repo_name_can_signal_gguf_intent() {
+        assert!(repo_prefers_gguf_only("unsloth/gemma-4-31B-it-GGUF"));
+        assert!(!repo_prefers_gguf_only(
+            "mlx-community/Llama-3.2-3B-Instruct-4bit"
+        ));
+    }
 }
 
 fn matching_catalog_model_by_basename(repo_file: &str) -> Option<&'static catalog::CatalogModel> {
@@ -897,12 +905,17 @@ async fn select_default_hf_file_fit_aware(
         gguf_candidates.push(file.clone());
     }
     if gguf_candidates.is_empty() {
-        return select_default_hf_file_from_siblings(siblings);
+        return None;
     }
 
     let available_bytes = crate::system::hardware::survey().vram_bytes;
     if available_bytes == 0 {
-        return select_default_hf_file_from_siblings(siblings);
+        gguf_candidates.sort_by(|left, right| {
+            file_preference_score(left)
+                .cmp(&file_preference_score(right))
+                .then_with(|| left.cmp(right))
+        });
+        return gguf_candidates.first().cloned();
     }
 
     let mut scored: Vec<(String, Option<u64>)> = Vec::with_capacity(gguf_candidates.len());
@@ -913,10 +926,11 @@ async fn select_default_hf_file_fit_aware(
     scored.sort_by(|left, right| {
         compare_gguf_candidates_by_fit(&left.0, left.1, &right.0, right.1, available_bytes)
     });
-    scored
-        .first()
-        .map(|(file, _)| file.clone())
-        .or_else(|| select_default_hf_file_from_siblings(siblings))
+    scored.first().map(|(file, _)| file.clone())
+}
+
+fn repo_prefers_gguf_only(repo: &str) -> bool {
+    repo.to_ascii_lowercase().contains("gguf")
 }
 
 async fn resolve_huggingface_file(
@@ -949,10 +963,18 @@ async fn resolve_huggingface_file(
         .collect();
 
     if file.is_empty() {
+        let gguf_only = repo_prefers_gguf_only(repo);
         if let Some(resolved) =
             select_default_hf_file_fit_aware(repo, Some(revision), &siblings).await
         {
             return Ok(resolved);
+        }
+        if !gguf_only {
+            if let Some(resolved) = select_default_hf_file_from_siblings(&siblings) {
+                return Ok(resolved);
+            }
+        } else {
+            bail!("No GGUF model files found in {repo}@{revision}.");
         }
     }
 
