@@ -353,8 +353,8 @@ mod tests {
         assert_eq!(
             files,
             vec![
-                "GLM-5.1-UD-Q5_K_XL-00001-of-00013.gguf".to_string(),
                 "GLM-5.1-UD-Q4_K_M.gguf".to_string(),
+                "GLM-5.1-UD-Q5_K_XL-00001-of-00013.gguf".to_string(),
             ]
         );
     }
