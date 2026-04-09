@@ -880,6 +880,8 @@ async fn run_auto(
 ) -> Result<()> {
     let resolved_plugins = resolve_plugins_from_config(&config, &cli)?;
     let api_port = cli.port;
+    // Export API port for llama-server mesh hook callbacks
+    std::env::set_var("MESH_API_PORT", api_port.to_string());
     let console_port = Some(cli.console);
     let is_client = cli.client;
     let resolved_models: Vec<PathBuf> = startup_models
