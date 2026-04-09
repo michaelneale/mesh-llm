@@ -363,7 +363,7 @@ jobs:
   linux_cuda:
     needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-    name: Linux CUDA
+    name: Linux CUDA slim
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
@@ -414,7 +414,7 @@ jobs:
             . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
-      # ── Cross-PR llama.cpp / CUDA artifact cache (read-only consumer) ──
+      # ── Cross-PR llama.cpp / CUDA slim artifact cache (read-only consumer) ──
       #
       # Goal: every PR gets a "warm" llama.cpp CUDA build for free. Without
       # this cache the CUDA job pays ~194s warm (sccache hit) or ~26m cold
@@ -472,7 +472,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: llama.cpp/build/bin
-          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
+          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
 
       # CI is a validation build only: we only need to prove CUDA compiles
       # and the Rust binary runs. User-facing release artifacts are produced
@@ -542,7 +542,7 @@ jobs:
   linux_rocm:
     needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-    name: Linux ROCm
+    name: Linux ROCm slim
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.0-complete
@@ -593,10 +593,55 @@ jobs:
             . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
-      - name: Build Linux ROCm backend
+      - name: Resolve llama.cpp upstream SHA
+        id: llama_sha
         shell: bash
         run: |
-          just --shell bash --shell-arg -lc release-build-amd
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          if [[ -z "$SHA" ]]; then
+            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            exit 1
+          fi
+          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llama.cpp ROCm cache
+        id: llama_rocm_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ env.CACHE_NAMESPACE }}-llama-rocm-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux-amd.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-gfx1100-rocm7.0
+
+      # This lane is compile-only plus a CLI smoke check (`--version`/`--help`).
+      # It does not exercise ROCm inference on real AMD hardware, so restrict
+      # the build to one representative target instead of compiling the full
+      # default AMDGPU target matrix.
+      - name: Build Linux ROCm backend (cache miss — full llama.cpp build)
+        if: steps.llama_rocm_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-amd gfx1100
+
+      - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
+        if: steps.llama_rocm_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✓ llama.cpp ROCm build restored from cache (SHA ${{ steps.llama_sha.outputs.sha }})"
+          if [[ ! -d llama.cpp/build/bin ]]; then
+            echo "ERROR: cache hit but llama.cpp/build/bin is missing" >&2
+            exit 1
+          fi
+          if ! find llama.cpp/build/bin -maxdepth 1 -type f | grep -q .; then
+            echo "ERROR: cache hit but llama.cpp/build/bin contains no cached binaries" >&2
+            exit 1
+          fi
+          ls -lh llama.cpp/build/bin/ | head -20
+          cargo build --release --locked -p mesh-llm --bin mesh-llm
+          ls -lh target/release/mesh-llm
 
       - name: CLI smoke test
         shell: bash

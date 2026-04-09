@@ -1,28 +1,26 @@
-name: Warm CI caches
+name: Warm GPU CI caches
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Populates the cross-PR llama.cpp / CUDA artifact cache on main, and prunes
-# old versions so the repo-level GitHub Actions cache stays under the free-
-# tier storage budget.
+# Populates the cross-PR Linux GPU artifact caches on main and prunes old
+# versions so the repo-level GitHub Actions cache stays under the free-tier
+# storage budget.
 #
 # Why this workflow is separate from ci.yml:
 #
-#   - ci.yml runs on every PR and only RESTORES the cache (restore-only via
-#     actions/cache/restore@v5). PR runs never write the cache, never pollute
-#     PR-scoped storage, and never pay the large `llama.cpp/build/bin` save.
-#   - warm-caches.yml runs only on push to main (filtered to just the files
-#     that compose the cache key) and on manual workflow_dispatch. It does
-#     a full llama.cpp CUDA build on cache miss and saves the result to the
-#     `refs/heads/main` cache scope, which every PR cross-reads automatically.
-#   - The prune job keeps only the N most recent `mesh-llm-llama-cuda-*`
-#     entries on the workflow's ref (main for push, the branch ref for
-#     manual dispatch) so the old versions are garbage-collected instead
-#     of accumulating until they overrun the GHA storage free tier.
+#   - ci.yml PR jobs only RESTORE the slim caches via actions/cache/restore@v5.
+#     PR runs never write cache entries and never pollute PR-scoped storage.
+#   - warm-caches.yml runs on push to main (filtered to cache-key inputs) and
+#     on manual workflow_dispatch. It is the single writer for the main-scoped
+#     GPU caches consumed by PR CI.
+#   - The slim jobs warm the exact artifacts consumed by the current PR smoke
+#     lanes (`linux_cuda` arch89/fa-off and `linux_rocm` gfx1100).
+#   - The fat jobs warm the full default arch matrices for CUDA and ROCm so the
+#     heavier artifact shapes have stable main-scoped cache entries too.
 #
 # Retention policy precedence:
 #   1. workflow_dispatch input `retention` (one-off manual override)
-#   2. repository variable `vars.LLAMA_CUDA_CACHE_RETENTION` (persistent, set
-#      via Settings → Secrets and variables → Actions → Variables)
+#   2. repository variable `vars.LLAMA_GPU_CACHE_RETENTION` (persistent, set via
+#      Settings → Secrets and variables → Actions → Variables)
 #   3. hardcoded default of 2
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -30,10 +28,11 @@ on:
   push:
     branches: [main]
     paths:
-      # Every file listed here is also part of the cache key's hashFiles().
-      # A change to any of them invalidates the cache AND triggers this
-      # workflow to rebuild and re-warm, in the same commit.
+      # Every file listed here is also part of one or more cache keys. A change
+      # to any of them invalidates the cache AND triggers this workflow to
+      # rebuild and re-warm in the same commit.
       - 'scripts/build-linux.sh'
+      - 'scripts/build-linux-amd.sh'
       - 'Justfile'
       - '.github/workflows/ci.yml'
       - '.github/workflows/warm-caches.yml'
@@ -41,40 +40,30 @@ on:
   workflow_dispatch:
     inputs:
       retention:
-        description: 'Number of llama-cuda cache versions to keep (overrides vars.LLAMA_CUDA_CACHE_RETENTION; default 2)'
+        description: 'Number of warmed GPU cache versions to keep (overrides vars.LLAMA_GPU_CACHE_RETENTION; default 2)'
         required: false
         default: ''
 
-# Only one warm-up runs per ref at a time. Do NOT cancel an in-progress
-# warmup on a new push: the cache save (~4 minutes) is the single most
-# expensive step and cancelling it would waste the whole run without
-# producing a usable cache. Sequencing is fine — a second push after a
-# cache-key change just waits and then saves a newer entry.
 concurrency:
   group: warm-caches-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
-  # Required by the prune step to DELETE old cache entries via the
-  # /repos/.../actions/caches/{id} endpoint.
   actions: write
 
 env:
   CACHE_NAMESPACE: mesh-llm
-  LLAMA_CUDA_CACHE_RETENTION: ${{ github.event.inputs.retention || vars.LLAMA_CUDA_CACHE_RETENTION || '2' }}
+  LLAMA_GPU_CACHE_RETENTION: ${{ github.event.inputs.retention || vars.LLAMA_GPU_CACHE_RETENTION || '2' }}
 
 jobs:
-  warm_llama_cuda:
-    name: Warm Linux CUDA cache
+  warm_llama_cuda_slim:
+    name: Warm Linux CUDA slim cache
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
 
     steps:
-      # Setup is intentionally a mirror of ci.yml's linux_cuda job prelude
-      # so the cache artifact this workflow produces is byte-compatible with
-      # the one ci.yml expects at restore time. Keep these two in sync.
       - name: Install base packages
         shell: bash
         run: |
@@ -133,32 +122,23 @@ jobs:
           echo "Resolved llama.cpp upstream-latest SHA: $SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      # This is the ONLY step in the repo that WRITES the llama-cuda cache.
-      # ci.yml uses actions/cache/restore@v5 (read-only) to avoid saving
-      # from PR runs, so the post-step save below is the single source of
-      # truth for the main-scope cache entry.
-      #
-      # The cache key MUST stay identical to the one in ci.yml's linux_cuda
-      # job or PRs will never hit what this workflow produces. Any change
-      # to the hashFiles() list or the literal suffix must be mirrored in
-      # both files in the same commit.
-      - name: Cache llama.cpp CUDA build
-        id: llama_cuda_cache
-        uses: actions/cache@v5
+      - name: Restore llama.cpp CUDA slim build
+        id: llama_cuda_slim_cache
+        uses: actions/cache/restore@v5
         with:
           path: llama.cpp/build/bin
-          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
+          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
 
-      - name: Short-circuit if cache already warm
-        if: steps.llama_cuda_cache.outputs.cache-hit == 'true'
+      - name: Short-circuit if CUDA slim cache already warm
+        if: steps.llama_cuda_slim_cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          echo "✓ llama.cpp CUDA cache already warm for SHA ${{ steps.llama_sha.outputs.sha }}"
+          echo "✓ llama.cpp CUDA slim cache already warm for SHA ${{ steps.llama_sha.outputs.sha }}"
           ls -lh llama.cpp/build/bin/ | head -20
 
-      - name: Build Linux CUDA backend (full build)
-        if: steps.llama_cuda_cache.outputs.cache-hit != 'true'
+      - name: Build Linux CUDA slim backend (full build)
+        if: steps.llama_cuda_slim_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           MESH_LLM_CUDA_FA_ALL_QUANTS: off
@@ -166,7 +146,7 @@ jobs:
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
 
-      - name: Verify binaries are present
+      - name: Verify CUDA slim binaries are present
         shell: bash
         run: |
           set -euo pipefail
@@ -176,45 +156,394 @@ jobs:
           fi
           ls -lh llama.cpp/build/bin/
 
-  prune_llama_cuda_cache:
-    name: Prune old llama-cuda caches
-    needs: warm_llama_cuda
-    if: always() && needs.warm_llama_cuda.result == 'success'
+      - name: Save llama.cpp CUDA slim build
+        if: steps.llama_cuda_slim_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cuda_slim_cache.outputs.cache-primary-key }}
+
+      - name: Verify llama.cpp CUDA slim cache write
+        if: steps.llama_cuda_slim_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cuda_slim_cache.outputs.cache-primary-key }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+  warm_llama_cuda_fat:
+    name: Warm Linux CUDA fat cache
     runs-on: ubuntu-latest
-    # No container: we only need the preinstalled github-script runtime and
-    # the GITHUB_TOKEN. Running outside the CUDA container keeps this step
-    # fast and avoids pulling in unnecessary runtime dependencies.
+    container:
+      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+
     steps:
-      # LRU prune of the `mesh-llm-llama-cuda-*` cache family on the ref
-      # this workflow is running against. The prune deliberately scopes to
-      # github.ref so a manual workflow_dispatch on a feature branch cleans
-      # up the feature branch's own cache scope, not main's.
-      #
-      # Retention is sourced from env.LLAMA_CUDA_CACHE_RETENTION which
-      # combines (in precedence order): workflow_dispatch input, repo-level
-      # `vars.LLAMA_CUDA_CACHE_RETENTION`, hardcoded default of 2.
-      #
-      # Behaviour:
-      #   - Lists every cache on the current ref whose key starts with
-      #     `${CACHE_NAMESPACE}-llama-cuda-`
-      #   - Sorts newest-first by created_at
-      #   - Keeps the top N (retention)
-      #   - Deletes the remainder via the cache-delete API
-      - name: Prune old llama-cuda caches
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libdbus-1-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: mesh-llm/ui
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Resolve llama.cpp upstream SHA
+        id: llama_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          if [[ -z "$SHA" ]]; then
+            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            exit 1
+          fi
+          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llama.cpp CUDA fat build
+        id: llama_cuda_fat_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-fat-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-arch75-80-86-89-90-120-fa-on-cuda12.8
+
+      - name: Short-circuit if CUDA fat cache already warm
+        if: steps.llama_cuda_fat_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✓ llama.cpp CUDA fat cache already warm for SHA ${{ steps.llama_sha.outputs.sha }}"
+          ls -lh llama.cpp/build/bin/ | head -20
+
+      - name: Build Linux CUDA fat backend (full build)
+        if: steps.llama_cuda_fat_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-cuda
+
+      - name: Verify CUDA fat binaries are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d llama.cpp/build/bin ]]; then
+            echo "ERROR: llama.cpp/build/bin is missing after build" >&2
+            exit 1
+          fi
+          ls -lh llama.cpp/build/bin/
+
+      - name: Save llama.cpp CUDA fat build
+        if: steps.llama_cuda_fat_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cuda_fat_cache.outputs.cache-primary-key }}
+
+      - name: Verify llama.cpp CUDA fat cache write
+        if: steps.llama_cuda_fat_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cuda_fat_cache.outputs.cache-primary-key }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+  warm_llama_rocm_slim:
+    name: Warm Linux ROCm slim cache
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.0-complete
+
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libdbus-1-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: mesh-llm/ui
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Resolve llama.cpp upstream SHA
+        id: llama_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          if [[ -z "$SHA" ]]; then
+            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            exit 1
+          fi
+          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llama.cpp ROCm slim build
+        id: llama_rocm_slim_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ env.CACHE_NAMESPACE }}-llama-rocm-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux-amd.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-gfx1100-rocm7.0
+
+      - name: Short-circuit if ROCm slim cache already warm
+        if: steps.llama_rocm_slim_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✓ llama.cpp ROCm slim cache already warm for SHA ${{ steps.llama_sha.outputs.sha }}"
+          ls -lh llama.cpp/build/bin/ | head -20
+
+      - name: Build Linux ROCm slim backend (full build)
+        if: steps.llama_rocm_slim_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-amd gfx1100
+
+      - name: Verify ROCm slim binaries are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d llama.cpp/build/bin ]]; then
+            echo "ERROR: llama.cpp/build/bin is missing after build" >&2
+            exit 1
+          fi
+          ls -lh llama.cpp/build/bin/
+
+      - name: Save llama.cpp ROCm slim build
+        if: steps.llama_rocm_slim_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_rocm_slim_cache.outputs.cache-primary-key }}
+
+      - name: Verify llama.cpp ROCm slim cache write
+        if: steps.llama_rocm_slim_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_rocm_slim_cache.outputs.cache-primary-key }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+  warm_llama_rocm_fat:
+    name: Warm Linux ROCm fat cache
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.0-complete
+
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libdbus-1-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: mesh-llm/ui
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Resolve llama.cpp upstream SHA
+        id: llama_sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          if [[ -z "$SHA" ]]; then
+            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            exit 1
+          fi
+          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Restore llama.cpp ROCm fat build
+        id: llama_rocm_fat_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ env.CACHE_NAMESPACE }}-llama-rocm-fat-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux-amd.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/cache-version.txt') }}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0
+
+      - name: Short-circuit if ROCm fat cache already warm
+        if: steps.llama_rocm_fat_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✓ llama.cpp ROCm fat cache already warm for SHA ${{ steps.llama_sha.outputs.sha }}"
+          ls -lh llama.cpp/build/bin/ | head -20
+
+      - name: Build Linux ROCm fat backend (full build)
+        if: steps.llama_rocm_fat_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-amd
+
+      - name: Verify ROCm fat binaries are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d llama.cpp/build/bin ]]; then
+            echo "ERROR: llama.cpp/build/bin is missing after build" >&2
+            exit 1
+          fi
+          ls -lh llama.cpp/build/bin/
+
+      - name: Save llama.cpp ROCm fat build
+        if: steps.llama_rocm_fat_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_rocm_fat_cache.outputs.cache-primary-key }}
+
+      - name: Verify llama.cpp ROCm fat cache write
+        if: steps.llama_rocm_fat_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_rocm_fat_cache.outputs.cache-primary-key }}
+          lookup-only: true
+          fail-on-cache-miss: true
+
+  prune_llama_gpu_caches:
+    name: Prune old GPU caches
+    needs:
+      - warm_llama_cuda_slim
+      - warm_llama_cuda_fat
+      - warm_llama_rocm_slim
+      - warm_llama_rocm_fat
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prune old GPU caches
         uses: actions/github-script@v8
         env:
-          CACHE_PREFIX: ${{ env.CACHE_NAMESPACE }}-llama-cuda-
-          RETENTION: ${{ env.LLAMA_CUDA_CACHE_RETENTION }}
+          CACHE_NAMESPACE: ${{ env.CACHE_NAMESPACE }}
+          RETENTION: ${{ env.LLAMA_GPU_CACHE_RETENTION }}
           TARGET_REF: ${{ github.ref }}
         with:
           script: |
             const retention = parseInt(process.env.RETENTION, 10);
-            const prefix = process.env.CACHE_PREFIX;
             const ref = process.env.TARGET_REF;
+            const prefixes = [
+              `${process.env.CACHE_NAMESPACE}-llama-cuda-slim-`,
+              `${process.env.CACHE_NAMESPACE}-llama-cuda-fat-`,
+              `${process.env.CACHE_NAMESPACE}-llama-rocm-slim-`,
+              `${process.env.CACHE_NAMESPACE}-llama-rocm-fat-`,
+            ];
 
             if (!Number.isFinite(retention) || retention < 1) {
               core.setFailed(
-                `LLAMA_CUDA_CACHE_RETENTION must be a positive integer, got: "${process.env.RETENTION}"`
+                `LLAMA_GPU_CACHE_RETENTION must be a positive integer, got: "${process.env.RETENTION}"`
               );
               return;
             }
@@ -222,11 +551,6 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            core.info(`Pruning "${prefix}*" caches on ${ref}, keeping ${retention} newest`);
-
-            // Paginate all caches on this ref. The REST API caps at 100
-            // per page and has no server-side key-prefix filter, so we
-            // fetch up to 10 pages (1000 entries) before giving up.
             const allCaches = [];
             for (let page = 1; page <= 10; page++) {
               const { data } = await github.request(
@@ -246,62 +570,53 @@ jobs:
               if (pageCaches.length < 100) break;
             }
 
-            const matching = allCaches.filter((c) => c.key.startsWith(prefix));
-            core.notice(
-              `Found ${matching.length} ${prefix}* cache(s) on ${ref}, retention = ${retention}`
-            );
-
-            if (matching.length <= retention) {
-              core.notice(
-                `Nothing to prune (have ${matching.length}, keeping ${retention})`
-              );
-              return;
-            }
-
-            // `allCaches` came back sorted newest-first, so `matching` is
-            // already in that order. Slice off the first `retention` to
-            // keep and delete everything after.
-            const toDelete = matching.slice(retention);
-            let freedBytes = 0;
             const failures = [];
+            const rows = [[
+              { data: 'Prefix', header: true },
+              { data: 'Before', header: true },
+              { data: 'Deleted', header: true },
+              { data: 'Failed', header: true },
+              { data: 'Freed', header: true },
+            ]];
 
-            for (const cache of toDelete) {
-              const sizeMiB = ((cache.size_in_bytes || 0) / (1024 * 1024)).toFixed(1);
-              core.info(
-                `Deleting cache ${cache.id} — ${cache.key} (${sizeMiB} MiB, created ${cache.created_at})`
-              );
-              try {
-                await github.request(
-                  'DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}',
-                  { owner, repo, cache_id: cache.id }
-                );
-                freedBytes += cache.size_in_bytes || 0;
-              } catch (err) {
-                failures.push({ id: cache.id, key: cache.key, error: err.message });
-                core.warning(`Failed to delete cache ${cache.id}: ${err.message}`);
+            for (const prefix of prefixes) {
+              const matching = allCaches.filter((c) => c.key.startsWith(prefix));
+              core.notice(`Found ${matching.length} ${prefix}* cache(s) on ${ref}, retention = ${retention}`);
+
+              const toDelete = matching.slice(retention);
+              let deleted = 0;
+              let freedBytes = 0;
+
+              for (const cache of toDelete) {
+                const sizeMiB = ((cache.size_in_bytes || 0) / (1024 * 1024)).toFixed(1);
+                core.info(`Deleting cache ${cache.id} — ${cache.key} (${sizeMiB} MiB, created ${cache.created_at})`);
+                try {
+                  await github.request(
+                    'DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}',
+                    { owner, repo, cache_id: cache.id }
+                  );
+                  deleted += 1;
+                  freedBytes += cache.size_in_bytes || 0;
+                } catch (err) {
+                  failures.push({ id: cache.id, key: cache.key, error: err.message });
+                  core.warning(`Failed to delete cache ${cache.id}: ${err.message}`);
+                }
               }
-            }
 
-            const freedMiB = (freedBytes / (1024 * 1024)).toFixed(1);
-            core.notice(
-              `Pruned ${toDelete.length - failures.length}/${toDelete.length} old llama-cuda cache(s), freed ${freedMiB} MiB`
-            );
+              rows.push([
+                prefix,
+                String(matching.length),
+                String(deleted),
+                String(toDelete.length - deleted),
+                `${(freedBytes / (1024 * 1024)).toFixed(1)} MiB`,
+              ]);
+            }
 
             await core.summary
-              .addHeading('llama-cuda cache prune summary', 2)
-              .addTable([
-                [{ data: 'Metric', header: true }, { data: 'Value', header: true }],
-                ['Ref', ref],
-                ['Retention', String(retention)],
-                ['Total matching caches (before)', String(matching.length)],
-                ['Deleted', String(toDelete.length - failures.length)],
-                ['Failed', String(failures.length)],
-                ['Freed', `${freedMiB} MiB`],
-              ])
+              .addHeading('GPU cache prune summary', 2)
+              .addTable(rows)
               .write();
 
             if (failures.length > 0) {
-              core.setFailed(
-                `Failed to delete ${failures.length} cache(s); see warnings above`
-              );
+              core.setFailed(`Failed to delete ${failures.length} cache(s); see warnings above`);
             }

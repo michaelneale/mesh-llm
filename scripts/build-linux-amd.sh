@@ -17,6 +17,7 @@ UI_DIR="$MESH_DIR/ui"
 
 AMDGPU_TARGETS="${1:-gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201}"
 ROCM_PATH="${ROCM_PATH:-/opt/rocm}"
+LLAMA_PIN_SHA="${MESH_LLM_LLAMA_PIN_SHA:-}"
 
 if [[ ! -d "$ROCM_PATH" ]]; then
     echo "Error: ROCm not found at $ROCM_PATH" >&2
@@ -52,18 +53,43 @@ configure_compiler_cache() {
 }
 
 if [[ ! -d "$LLAMA_DIR" ]]; then
-    echo "Cloning michaelneale/llama.cpp (upstream-latest)..."
-    git clone -b upstream-latest \
-        https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+    if [[ -n "$LLAMA_PIN_SHA" ]]; then
+        echo "Cloning michaelneale/llama.cpp pinned to $LLAMA_PIN_SHA..."
+        git clone -b upstream-latest --depth 1 \
+            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        if ! (cd "$LLAMA_DIR" && git cat-file -e "${LLAMA_PIN_SHA}^{commit}" 2>/dev/null); then
+            echo "Pinned SHA not on upstream-latest tip, fetching explicitly..."
+            (cd "$LLAMA_DIR" && git fetch --depth 1 origin "$LLAMA_PIN_SHA")
+        fi
+        (cd "$LLAMA_DIR" && git checkout --detach "$LLAMA_PIN_SHA")
+    else
+        echo "Cloning michaelneale/llama.cpp (upstream-latest)..."
+        git clone -b upstream-latest \
+            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+    fi
 else
     cd "$LLAMA_DIR"
-    CURRENT_BRANCH=$(git branch --show-current)
-    if [[ "$CURRENT_BRANCH" != "upstream-latest" ]]; then
-        echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to upstream-latest..."
-        git checkout upstream-latest
+    if [[ -n "$LLAMA_PIN_SHA" ]]; then
+        if ! git cat-file -e "${LLAMA_PIN_SHA}^{commit}" 2>/dev/null; then
+            echo "Fetching pinned llama.cpp SHA $LLAMA_PIN_SHA..."
+            git fetch --depth 1 origin "$LLAMA_PIN_SHA"
+        fi
+        CURRENT_SHA="$(git rev-parse HEAD)"
+        if [[ "$CURRENT_SHA" != "$LLAMA_PIN_SHA" ]]; then
+            echo "Checking out pinned llama.cpp SHA $LLAMA_PIN_SHA (was $CURRENT_SHA)..."
+            git checkout --detach "$LLAMA_PIN_SHA"
+        else
+            echo "llama.cpp already at pinned SHA $LLAMA_PIN_SHA, no checkout needed"
+        fi
+    else
+        CURRENT_BRANCH=$(git branch --show-current)
+        if [[ "$CURRENT_BRANCH" != "upstream-latest" ]]; then
+            echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to upstream-latest..."
+            git checkout upstream-latest
+        fi
+        echo "Pulling latest upstream-latest from origin..."
+        git pull --ff-only origin upstream-latest
     fi
-    echo "Pulling latest upstream-latest from origin..."
-    git pull --ff-only origin upstream-latest
     cd "$REPO_ROOT"
 fi
 
