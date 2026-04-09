@@ -14,8 +14,6 @@ use launch::{BinaryFlavor, SplitMode};
 use mesh::NodeRole;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -648,14 +646,6 @@ fn resolve_runtime_moe_config(
                 artifact.origin.label().to_string(),
             )
         }
-        moe::MoeRankingStrategy::MmapAnalyze => {
-            let artifact = ensure_mmap_analyze_ranking(bin_dir, model_name, model_path, options)?;
-            (
-                artifact.ranking,
-                artifact.kind.label().to_string(),
-                artifact.origin.label().to_string(),
-            )
-        }
     };
 
     eprintln!(
@@ -998,86 +988,6 @@ fn ensure_micro_analyze_ranking(
     Ok(artifact)
 }
 
-fn apply_memory_limit(command: &mut Command, bytes: u64) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        if bytes == 0 {
-            anyhow::bail!("memory limit must be > 0 bytes");
-        }
-        let bytes_limited = bytes.min(libc::rlim_t::MAX as u64) as libc::rlim_t;
-        // Safety: this runs in the child process immediately before exec.
-        unsafe {
-            command.pre_exec(move || {
-                let limit = libc::rlimit {
-                    rlim_cur: bytes_limited,
-                    rlim_max: bytes_limited,
-                };
-                if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        Ok(())
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = command;
-        let _ = bytes;
-        anyhow::bail!("mmap-analyze memory limits are only supported on unix targets");
-    }
-}
-
-fn ensure_mmap_analyze_ranking(
-    bin_dir: &Path,
-    model_name: &str,
-    model_path: &Path,
-    options: &moe::MoeRuntimeOptions,
-) -> anyhow::Result<moe::SharedRankingArtifact> {
-    let prompt_count = options
-        .mmap_prompt_count
-        .max(1)
-        .min(default_micro_prompts().len());
-    let cached_path = moe::mmap_ranking_cache_path(
-        model_path,
-        prompt_count,
-        options.mmap_tokens,
-        options.mmap_layer_scope,
-    );
-    if let Some(artifact) = moe::load_shared_ranking_artifact(
-        &cached_path,
-        moe::SharedRankingKind::MmapAnalyze,
-        moe::SharedRankingOrigin::LegacyCache,
-        Some(prompt_count),
-        Some(options.mmap_tokens),
-        Some(options.mmap_layer_scope),
-    ) {
-        eprintln!(
-            "🧩 [{model_name}] Using cached MoE ranking mode=mmap-analyze origin={} cache={}",
-            artifact.origin.label(),
-            cached_path.display()
-        );
-        return Ok(artifact);
-    }
-
-    let ranking = run_mmap_analyze_ranking(bin_dir, model_name, model_path, options)?;
-    let artifact = moe::SharedRankingArtifact {
-        kind: moe::SharedRankingKind::MmapAnalyze,
-        origin: moe::SharedRankingOrigin::LocalMmapAnalyze,
-        ranking,
-        micro_prompt_count: Some(prompt_count),
-        micro_tokens: Some(options.mmap_tokens),
-        micro_layer_scope: Some(options.mmap_layer_scope),
-    };
-    moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
-    eprintln!(
-        "  Mmap moe-analyze cached at {} (origin={})",
-        cached_path.display(),
-        artifact.origin.label()
-    );
-    Ok(artifact)
-}
-
 #[derive(Clone, Copy)]
 struct AnalyzeMassRow {
     expert_id: u32,
@@ -1199,143 +1109,6 @@ fn run_micro_analyze_ranking(
         prompt_count,
         options.micro_tokens,
         match options.micro_layer_scope {
-            moe::MoeMicroLayerScope::All => "all layers",
-            moe::MoeMicroLayerScope::First => "first layer",
-        },
-        started.elapsed().as_secs_f64()
-    );
-    Ok(ranking)
-}
-
-fn run_mmap_analyze_ranking(
-    bin_dir: &Path,
-    model_name: &str,
-    model_path: &Path,
-    options: &moe::MoeRuntimeOptions,
-) -> anyhow::Result<Vec<u32>> {
-    let ram_budget_gb = options.mmap_ram_budget_gb.ok_or_else(|| {
-        anyhow::anyhow!(
-            "mmap-analyze requires --moe-mmap-ram-budget-gb to enforce a hard memory cap"
-        )
-    })?;
-    let ram_budget_bytes = (ram_budget_gb * 1024.0 * 1024.0 * 1024.0) as u64;
-    anyhow::ensure!(
-        ram_budget_bytes >= 512 * 1024 * 1024,
-        "mmap-analyze RAM budget too small ({ram_budget_gb:.2}GB): minimum is 0.5GB"
-    );
-
-    let prompts = default_micro_prompts();
-    let prompt_count = options.mmap_prompt_count.max(1).min(prompts.len());
-    let analyze_bin = resolve_analyze_binary(bin_dir)?;
-    let timestamp_nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "mesh-llm-mmap-live-{}-{}",
-        std::process::id(),
-        timestamp_nanos
-    ));
-    std::fs::create_dir_all(&tmp_dir)?;
-    let started = std::time::Instant::now();
-    let mut mass_by_expert: HashMap<u32, f64> = HashMap::new();
-    eprintln!(
-        "🧩 [{model_name}] MoE analysis mode=mmap-analyze prompts={} tokens={} layers={} ram_budget_gb={:.1} ngl={} cache=pending",
-        prompt_count,
-        options.mmap_tokens,
-        match options.mmap_layer_scope {
-            moe::MoeMicroLayerScope::All => "all",
-            moe::MoeMicroLayerScope::First => "first",
-        },
-        ram_budget_gb,
-        options.mmap_ngl,
-    );
-    let progress = Arc::new(Mutex::new(MoeAnalyzeProgressState {
-        current_prompt: 0,
-        total_prompts: Some(prompt_count),
-        done: false,
-    }));
-    let spinner = spawn_moe_analysis_spinner(
-        model_name.to_string(),
-        "mmap-analyze",
-        Arc::clone(&progress),
-        started,
-    );
-
-    for (idx, prompt) in prompts.iter().take(prompt_count).enumerate() {
-        let output_path = tmp_dir.join(format!("prompt-{idx}.csv"));
-        let mut command = Command::new(&analyze_bin);
-        apply_memory_limit(&mut command, ram_budget_bytes)?;
-        command.args([
-            "-m",
-            &model_path.to_string_lossy(),
-            "--export-ranking",
-            &output_path.to_string_lossy(),
-            "-n",
-            &options.mmap_tokens.to_string(),
-            "-c",
-            "4096",
-            "-ngl",
-            &options.mmap_ngl.to_string(),
-            "-p",
-            prompt,
-        ]);
-        if matches!(options.mmap_layer_scope, moe::MoeMicroLayerScope::All) {
-            command.arg("--all-layers");
-        }
-        let output = command.output()?;
-        if !output.status.success() {
-            if let Ok(mut state) = progress.lock() {
-                state.done = true;
-            }
-            let _ = spinner.join();
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut details = stderr
-                .lines()
-                .chain(stdout.lines())
-                .filter(|line| !should_suppress_moe_analyze_line(line))
-                .collect::<Vec<_>>();
-            if details.len() > 20 {
-                details.truncate(20);
-            }
-            let detail_text = if details.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", details.join(" | "))
-            };
-            anyhow::bail!(
-                "llama-moe-analyze exited with {}{}",
-                output.status,
-                detail_text
-            );
-        }
-        for row in load_analyze_mass_rows(&output_path)? {
-            *mass_by_expert.entry(row.expert_id).or_insert(0.0) += row.gate_mass;
-        }
-        if let Ok(mut state) = progress.lock() {
-            state.current_prompt = idx + 1;
-        }
-    }
-    if let Ok(mut state) = progress.lock() {
-        state.current_prompt = prompt_count;
-        state.done = true;
-    }
-    let _ = spinner.join();
-
-    let mut rows = mass_by_expert.into_iter().collect::<Vec<_>>();
-    rows.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    let ranking = rows.into_iter().map(|(expert_id, _)| expert_id).collect();
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    eprintln!(
-        "  Mmap moe-analyze used {} prompt(s), {} token(s), {} in {:.1}s",
-        prompt_count,
-        options.mmap_tokens,
-        match options.mmap_layer_scope {
             moe::MoeMicroLayerScope::All => "all layers",
             moe::MoeMicroLayerScope::First => "first layer",
         },

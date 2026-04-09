@@ -66,34 +66,6 @@ pub(crate) enum BenchmarkCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Run constrained mmap-analyze and cache a reusable MoE ranking artifact.
-    #[command(name = "moe-mmap-analyze")]
-    MoeMmapAnalyze {
-        /// Model spec: local path, catalog name, HF exact ref, or HF URL.
-        #[arg(long)]
-        model: String,
-        /// Prompt count to run (capped by corpus size).
-        #[arg(long, default_value = "4")]
-        prompts_count: usize,
-        /// Token count per prompt.
-        #[arg(long, default_value = "32")]
-        tokens: u32,
-        /// Layer scope to analyze.
-        #[arg(long, value_enum, default_value = "all")]
-        layer_scope: crate::inference::moe::MoeMicroLayerScope,
-        /// Hard RAM cap in GiB enforced for each analyze child process.
-        #[arg(long)]
-        ram_budget_gb: f64,
-        /// GPU layer offload (`-ngl`) passed to llama-moe-analyze.
-        #[arg(long, default_value = "0")]
-        ngl: u32,
-        /// Optional local JSONL prompt corpus used for runs.
-        #[arg(long)]
-        prompts: Option<PathBuf>,
-        /// Where to write the JSON report. Prints to stdout when omitted.
-        #[arg(long)]
-        output: Option<PathBuf>,
-    },
     /// Compare expert grouping strategies using full analyze masses.
     #[command(name = "moe-grouping")]
     MoeGrouping {

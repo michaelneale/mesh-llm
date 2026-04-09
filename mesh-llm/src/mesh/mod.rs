@@ -486,7 +486,6 @@ fn shared_ranking_from_descriptor(
     let kind = match moe_info.ranking_source.as_deref()? {
         "analyze" => moe::SharedRankingKind::Analyze,
         "micro-analyze" => moe::SharedRankingKind::MicroAnalyze,
-        "mmap-analyze" => moe::SharedRankingKind::MmapAnalyze,
         _ => return None,
     };
     let micro_layer_scope = match moe_info.ranking_layer_scope.as_deref() {

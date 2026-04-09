@@ -150,26 +150,6 @@ pub(crate) struct Cli {
     #[arg(long, value_enum, default_value = "all", hide = true)]
     pub(crate) moe_micro_layer_scope: crate::inference::moe::MoeMicroLayerScope,
 
-    /// Prompt count for mmap-analyze ranking.
-    #[arg(long, default_value = "4", hide = true)]
-    pub(crate) moe_mmap_prompts: usize,
-
-    /// Token count per prompt for mmap-analyze ranking.
-    #[arg(long, default_value = "32", hide = true)]
-    pub(crate) moe_mmap_tokens: u32,
-
-    /// Layer scope for mmap-analyze ranking.
-    #[arg(long, value_enum, default_value = "all", hide = true)]
-    pub(crate) moe_mmap_layer_scope: crate::inference::moe::MoeMicroLayerScope,
-
-    /// Hard RAM cap in GiB for mmap-analyze child processes (required for mmap-analyze).
-    #[arg(long, hide = true)]
-    pub(crate) moe_mmap_ram_budget_gb: Option<f64>,
-
-    /// GPU layers for mmap-analyze (`-ngl`).
-    #[arg(long, default_value = "0", hide = true)]
-    pub(crate) moe_mmap_ngl: u32,
-
     /// Override context size (tokens). Default: auto-scaled to available VRAM.
     #[arg(long, hide = true)]
     pub(crate) ctx_size: Option<u32>,

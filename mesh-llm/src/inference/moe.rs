@@ -19,7 +19,6 @@ pub enum MoeRankingStrategy {
     Auto,
     Analyze,
     MicroAnalyze,
-    MmapAnalyze,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -33,7 +32,6 @@ pub enum MoeMicroLayerScope {
 pub enum SharedRankingKind {
     Analyze,
     MicroAnalyze,
-    MmapAnalyze,
 }
 
 impl SharedRankingKind {
@@ -41,7 +39,6 @@ impl SharedRankingKind {
         match self {
             Self::Analyze => "analyze",
             Self::MicroAnalyze => "micro-analyze",
-            Self::MmapAnalyze => "mmap-analyze",
         }
     }
 }
@@ -50,7 +47,6 @@ impl SharedRankingKind {
 pub enum SharedRankingOrigin {
     LocalFullAnalyze,
     LocalMicroAnalyze,
-    LocalMmapAnalyze,
     PeerImport,
     LegacyCache,
 }
@@ -60,7 +56,6 @@ impl SharedRankingOrigin {
         match self {
             Self::LocalFullAnalyze => "local-full-analyze",
             Self::LocalMicroAnalyze => "local-micro-analyze",
-            Self::LocalMmapAnalyze => "local-mmap-analyze",
             Self::PeerImport => "peer-import",
             Self::LegacyCache => "legacy-cache",
         }
@@ -70,7 +65,6 @@ impl SharedRankingOrigin {
         match value {
             "local-full-analyze" => Some(Self::LocalFullAnalyze),
             "local-micro-analyze" => Some(Self::LocalMicroAnalyze),
-            "local-mmap-analyze" => Some(Self::LocalMmapAnalyze),
             "peer-import" => Some(Self::PeerImport),
             "legacy-cache" => Some(Self::LegacyCache),
             _ => None,
@@ -94,11 +88,6 @@ pub struct MoeRuntimeOptions {
     pub micro_prompt_count: usize,
     pub micro_tokens: u32,
     pub micro_layer_scope: MoeMicroLayerScope,
-    pub mmap_prompt_count: usize,
-    pub mmap_tokens: u32,
-    pub mmap_layer_scope: MoeMicroLayerScope,
-    pub mmap_ram_budget_gb: Option<f64>,
-    pub mmap_ngl: u32,
 }
 
 impl Default for MoeRuntimeOptions {
@@ -108,11 +97,6 @@ impl Default for MoeRuntimeOptions {
             micro_prompt_count: 1,
             micro_tokens: 8,
             micro_layer_scope: MoeMicroLayerScope::All,
-            mmap_prompt_count: 4,
-            mmap_tokens: 32,
-            mmap_layer_scope: MoeMicroLayerScope::All,
-            mmap_ram_budget_gb: None,
-            mmap_ngl: 0,
         }
     }
 }
@@ -482,19 +466,7 @@ fn ranking_cache_root() -> PathBuf {
 
 fn ranking_strength_key(artifact: &SharedRankingArtifact) -> (u8, u8, usize, u32) {
     match artifact.kind {
-        SharedRankingKind::Analyze => (3, 0, 0, 0),
-        SharedRankingKind::MmapAnalyze => (
-            2,
-            match artifact
-                .micro_layer_scope
-                .unwrap_or(MoeMicroLayerScope::First)
-            {
-                MoeMicroLayerScope::All => 1,
-                MoeMicroLayerScope::First => 0,
-            },
-            artifact.micro_prompt_count.unwrap_or(0),
-            artifact.micro_tokens.unwrap_or(0),
-        ),
+        SharedRankingKind::Analyze => (2, 0, 0, 0),
         SharedRankingKind::MicroAnalyze => (
             1,
             match artifact
@@ -582,22 +554,6 @@ pub fn micro_ranking_cache_path(
     };
     ranking_cache_root().join(format!(
         "{stem}.micro-p{prompt_count}-t{tokens}-{layer_suffix}.csv"
-    ))
-}
-
-pub fn mmap_ranking_cache_path(
-    model_path: &Path,
-    prompt_count: usize,
-    tokens: u32,
-    layer_scope: MoeMicroLayerScope,
-) -> PathBuf {
-    let stem = ranking_cache_stem(model_path);
-    let layer_suffix = match layer_scope {
-        MoeMicroLayerScope::First => "first",
-        MoeMicroLayerScope::All => "all",
-    };
-    ranking_cache_root().join(format!(
-        "{stem}.mmap-p{prompt_count}-t{tokens}-{layer_suffix}.csv"
     ))
 }
 
@@ -745,27 +701,6 @@ fn parse_micro_cache_filename(
     ))
 }
 
-fn parse_mmap_cache_filename(
-    model_path: &Path,
-    file_name: &str,
-) -> Option<(usize, u32, MoeMicroLayerScope)> {
-    let stem = ranking_cache_stem(model_path);
-    let prefix = format!("{stem}.mmap-p");
-    let rest = file_name.strip_prefix(&prefix)?.strip_suffix(".csv")?;
-    let (prompt_count, rest) = rest.split_once("-t")?;
-    let (tokens, layer_scope) = rest.split_once('-')?;
-    let layer_scope = match layer_scope {
-        "all" => MoeMicroLayerScope::All,
-        "first" => MoeMicroLayerScope::First,
-        _ => return None,
-    };
-    Some((
-        prompt_count.parse().ok()?,
-        tokens.parse().ok()?,
-        layer_scope,
-    ))
-}
-
 pub fn best_shared_ranking_artifact(model_path: &Path) -> Option<SharedRankingArtifact> {
     if let Some(artifact) = load_shared_ranking_artifact(
         &ranking_cache_path(model_path),
@@ -786,33 +721,20 @@ pub fn best_shared_ranking_artifact(model_path: &Path) -> Option<SharedRankingAr
             Ok(value) => value,
             Err(_) => continue,
         };
-        let path = entry.path();
-        let candidate = if let Some((prompt_count, tokens, layer_scope)) =
-            parse_mmap_cache_filename(model_path, &file_name)
-        {
-            load_shared_ranking_artifact(
-                &path,
-                SharedRankingKind::MmapAnalyze,
-                SharedRankingOrigin::LegacyCache,
-                Some(prompt_count),
-                Some(tokens),
-                Some(layer_scope),
-            )
-        } else if let Some((prompt_count, tokens, layer_scope)) =
+        let Some((prompt_count, tokens, layer_scope)) =
             parse_micro_cache_filename(model_path, &file_name)
-        {
-            load_shared_ranking_artifact(
-                &path,
-                SharedRankingKind::MicroAnalyze,
-                SharedRankingOrigin::LegacyCache,
-                Some(prompt_count),
-                Some(tokens),
-                Some(layer_scope),
-            )
-        } else {
-            None
+        else {
+            continue;
         };
-        let Some(candidate) = candidate else {
+        let path = entry.path();
+        let Some(candidate) = load_shared_ranking_artifact(
+            &path,
+            SharedRankingKind::MicroAnalyze,
+            SharedRankingOrigin::LegacyCache,
+            Some(prompt_count),
+            Some(tokens),
+            Some(layer_scope),
+        ) else {
             continue;
         };
         if best
@@ -903,12 +825,6 @@ pub fn shared_ranking_cache_path(model_path: &Path, artifact: &SharedRankingArti
             model_path,
             artifact.micro_prompt_count.unwrap_or(1),
             artifact.micro_tokens.unwrap_or(8),
-            artifact.micro_layer_scope.unwrap_or_default(),
-        ),
-        SharedRankingKind::MmapAnalyze => mmap_ranking_cache_path(
-            model_path,
-            artifact.micro_prompt_count.unwrap_or(4),
-            artifact.micro_tokens.unwrap_or(32),
             artifact.micro_layer_scope.unwrap_or_default(),
         ),
     }

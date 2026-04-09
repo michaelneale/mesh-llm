@@ -1333,11 +1333,6 @@ async fn run_auto(
         micro_prompt_count: cli.moe_micro_prompts,
         micro_tokens: cli.moe_micro_tokens,
         micro_layer_scope: cli.moe_micro_layer_scope,
-        mmap_prompt_count: cli.moe_mmap_prompts,
-        mmap_tokens: cli.moe_mmap_tokens,
-        mmap_layer_scope: cli.moe_mmap_layer_scope,
-        mmap_ram_budget_gb: cli.moe_mmap_ram_budget_gb,
-        mmap_ngl: cli.moe_mmap_ngl,
     };
     let primary_mmproj = primary_startup_model
         .as_ref()
@@ -1478,11 +1473,6 @@ async fn run_auto(
                 micro_prompt_count: cli.moe_micro_prompts,
                 micro_tokens: cli.moe_micro_tokens,
                 micro_layer_scope: cli.moe_micro_layer_scope,
-                mmap_prompt_count: cli.moe_mmap_prompts,
-                mmap_tokens: cli.moe_mmap_tokens,
-                mmap_layer_scope: cli.moe_mmap_layer_scope,
-                mmap_ram_budget_gb: cli.moe_mmap_ram_budget_gb,
-                mmap_ngl: cli.moe_mmap_ngl,
             };
             let extra_console_state = console_state.clone();
             let extra_model_name_for_status = extra_model_name.clone();
