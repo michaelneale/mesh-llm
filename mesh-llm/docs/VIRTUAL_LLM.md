@@ -25,6 +25,34 @@ Before tokenization. Fires when the request has something the model can't handle
 | Long session (>10 turns) | `message_count > 10` |
 | Large user paste | Last user message > 2000 tokens, prior messages short |
 
+**What mesh-llm gets**:
+```json
+{
+  "hook": "pre_inference",
+  "trigger": "context_pressure",
+  "request_id": "chatcmpl-abc",
+  "model": "qwen3-32b",
+  "model_capabilities": ["text", "code"],
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "explain the auth flow"},
+    {"role": "assistant", "content": "The auth flow starts with..."},
+    {"role": "user", "content": [
+      {"type": "text", "text": "What about this code?"},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}}
+    ]}
+  ],
+  "has_images": true,
+  "has_audio": false,
+  "n_prompt_tokens": 14200,
+  "n_ctx": 16384,
+  "message_count": 24,
+  "last_user_message_tokens": 4800
+}
+```
+
+mesh-llm gets the **full messages array** — all user/assistant/system messages including image and audio data URLs as-is from the original request. Plus token counts, context size, and which trigger fired. This is everything mesh-llm needs to caption images, summarize conversations, or extract context from large pastes.
+
 ### Hook 2: Post-prefill
 
 After prompt evaluation, before first token. Fires when the model looks uncertain.
@@ -34,6 +62,29 @@ After prompt evaluation, before first token. Fires when the model looks uncertai
 | High first-token entropy | `entropy > threshold` (threshold set by Hook 1 response) |
 | Low first-token margin | `margin < 0.05` |
 | Top tokens are hedging | Top-3 are "I", "Sorry", "Well", "Unfortunately" |
+
+**What mesh-llm gets**:
+```json
+{
+  "hook": "post_prefill",
+  "trigger": "high_entropy",
+  "request_id": "chatcmpl-abc",
+  "n_prompt_tokens": 847,
+  "signals": {
+    "first_token_entropy": 6.8,
+    "first_token_margin": 0.02,
+    "top_tokens": [
+      {"text": "I", "prob": 0.08},
+      {"text": "The", "prob": 0.06},
+      {"text": "Sorry", "prob": 0.05},
+      {"text": "Based", "prob": 0.04},
+      {"text": "\n", "prob": 0.03}
+    ]
+  }
+}
+```
+
+No messages — mesh-llm already has the request from Hook 1, keyed by `request_id`. Just signals: entropy, margin, and top-5 token candidates with probabilities.
 
 ### Hook 3: Pre-response
 
@@ -46,6 +97,28 @@ After generation completes, before sending to client. Fires when the output look
 | High uncertainty throughout | `uncertain_token_count > 30%` of total |
 | Hallucinated ending | Tail entropy (last 16 tokens) >> mean entropy |
 | Mid-sentence cutoff | Last token isn't EOS or sentence-ending punctuation |
+
+**What mesh-llm gets**:
+```json
+{
+  "hook": "pre_response",
+  "trigger": "max_tokens",
+  "request_id": "chatcmpl-abc",
+  "generated_text": "The verify_token() function handles session validation by checking the JWT signature against the stored secret. It first decodes the token header to determine the algorithm, then...",
+  "n_decoded": 4096,
+  "n_predict": 4096,
+  "stop_reason": "max_tokens",
+  "signals": {
+    "mean_entropy": 2.4,
+    "max_entropy": 7.1,
+    "min_margin": 0.01,
+    "uncertain_token_count": 12,
+    "tail_entropy_mean": 5.8
+  }
+}
+```
+
+mesh-llm gets the **full generated text**, the stop reason, token counts, and signal summary over the whole generation. With the original request (from Hook 1 via `request_id`), mesh-llm has the full picture: what was asked, what was generated, and how confident the model was.
 
 ### Polling
 
