@@ -8,11 +8,13 @@ Related: [#183](https://github.com/michaelneale/mesh-llm/issues/183), [#165](htt
 
 ## What it does
 
-llama-server calls mesh-llm at key points during inference. mesh-llm can inject context, caption images, or verify output — using any model in the mesh. The caller sees one seamless response.
+llama-server calls mesh-llm when it detects something it might need help with. mesh-llm can inject context, caption images, summarize long conversations, or verify output — using any model in the mesh. The caller sees one seamless response.
 
-## Callback
+---
 
-All hooks POST JSON to `http://localhost:{mesh_port}/mesh/hook`.
+## Callback protocol
+
+Hooks POST JSON to `http://localhost:{mesh_port}/mesh/hook`.
 
 Response:
 ```json
@@ -24,85 +26,105 @@ Response:
 
 - **none** — continue normally
 - **inject** — add text to prompt or KV cache
-- **pending** — mesh-llm is working on it in the background, poll for result later
+- **pending** — mesh-llm is working on it, poll for result during generation
 - **stop** — halt generation
 
-Hook 1's response can also configure the rest of the request:
+Hook 1's response also configures the rest of the request:
 ```json
 {
-  "action": "none",
+  "action": "pending",
+  "async_id": "cap-001",
   "entropy_threshold": 5.0,
   "verify": true
 }
 ```
 
-- `entropy_threshold` — Hook 2 only fires if first-token entropy exceeds this (default: skip Hook 2)
-- `verify` — Hook 3 fires after generation (default: skip Hook 3)
-
-Pending results polled via `GET /mesh/hook/poll/{async_id}` → 202 (not ready) or 200 (ready, with inject action).
+Pending results polled via `GET /mesh/hook/poll/{async_id}` → 202 (not ready) or 200 (ready).
 
 ---
 
-## When hooks fire
+## Triggers
 
-mesh-llm sets `mesh_hooks: true` when forwarding requests to llama-server. When absent or false, all hook code is skipped — zero overhead.
+Hooks don't fire on every request. C++ checks cheap structural criteria and only calls mesh-llm when something looks like it needs attention. When `mesh_hooks` is false or absent, all hook code is skipped entirely.
 
-**Hook 1 (pre-inference)**: Always fires when hooks are enabled. mesh-llm needs to see every request to decide if it should act — only it knows what models are in the mesh, whether a vision model is available, etc.
+### Hook 1 — pre-inference triggers
 
-**Hook 2 (post-prefill)**: Fires only if the model is uncertain. C++ computes entropy and margin from the first-token logits. If entropy exceeds a threshold, it calls mesh-llm. If the model is confident, the hook is skipped — no POST, no latency. The threshold is set per-request by mesh-llm (via `mesh_entropy_threshold` in the request params, default 5.0).
+Checked before tokenization. All are cheap — JSON key scans, integer comparisons, array lengths.
 
-**Hook 3 (pre-response)**: Fires only if mesh-llm requested verification for this request. Hook 1's response can include `"verify": true` to enable it. If not set, the hook is skipped.
+| Trigger | Check | What it catches |
+|---|---|---|
+| Images + no multimodal | `has_images && mctx == nullptr` | Model can't see images, needs captioning |
+| Audio + no audio support | `has_audio && !audio_capable` | Model can't hear audio |
+| Tool calls + no tool support | `tools` array present + model lacks tool capability | Model may botch the tool format |
+| Prompt > 75% of context | `n_tokens > n_ctx * 0.75` | Context pressure — may need conversation summary |
+| Many turns | `message_count > 10` | Long session drift |
+| Large user message | Last user message > 2000 tokens AND previous were short | User pasted code/docs, may need help understanding it |
 
-**Polling**: Only runs when `pending_async_ids` is non-empty (Hook 1 returned `pending`). No async work = nothing to poll.
-
-So the flow is: Hook 1 always fires. It tells C++ what to watch for during this request — entropy threshold, whether to verify, any async work to poll. Hooks 2 and 3 are conditional based on what Hook 1 set up.
-
-## Hooks
-
-### 1. Pre-inference
-
-Before tokenization. Full request available.
-
+**Example — images + text-only model:**
 ```json
 {
   "hook": "pre_inference",
+  "trigger": "images_no_multimodal",
   "request_id": "chatcmpl-abc",
   "model": "qwen3-32b",
   "model_capabilities": ["text", "code"],
   "messages": [ ... ],
-  "has_images": true,
-  "has_audio": false
+  "has_images": true
 }
 ```
+mesh-llm captions via vision model in mesh → `{ "action": "inject", "text": "[Image: fibonacci function...]" }`
 
-Messages include image/audio data URLs as-is from the original request.
-
-**Sync example** — image caption (fast vision model available):
+**Example — prompt filling context window:**
 ```json
-{ "action": "inject", "text": "[Image: Python fibonacci function with bug on line 3]" }
+{
+  "hook": "pre_inference",
+  "trigger": "context_pressure",
+  "request_id": "chatcmpl-abc",
+  "model": "qwen3-32b",
+  "n_prompt_tokens": 14200,
+  "n_ctx": 16384,
+  "message_count": 24,
+  "messages": [ ... ]
+}
 ```
-Caption goes into the prompt before prefill. Blocks TTFT by the captioning time.
+mesh-llm summarizes early conversation turns via fast model → `{ "action": "inject", "text": "[Conversation summary: user asked about auth flow, then debugging JWT tokens, then...]" }`
 
-**Async example** — image caption (slow/remote vision model):
+The injected summary replaces the early messages in the prompt, freeing context for the model to generate a full response.
+
+**Example — large paste in conversation:**
 ```json
-{ "action": "pending", "async_id": "cap-001" }
+{
+  "hook": "pre_inference",
+  "trigger": "large_user_message",
+  "request_id": "chatcmpl-abc",
+  "model": "qwen3-32b",
+  "n_prompt_tokens": 6400,
+  "last_user_message_tokens": 4800,
+  "messages": [ ... ]
+}
 ```
-Generation starts immediately. Caption injected into KV cache when it arrives (see [Polling](#polling)).
+mesh-llm uses a fast model to extract the key parts → `{ "action": "inject", "text": "Key context from pasted code: the main function calls auth.validate() which..." }`
 
-**No action** — model handles it natively:
-```json
-{ "action": "none" }
-```
+Or async: `{ "action": "pending", "async_id": "ctx-001" }` — start extracting, generation begins immediately, inject when ready.
 
----
+**No trigger met** — hook doesn't fire. Zero cost.
 
-### 2. Post-prefill
+### Hook 2 — post-prefill triggers
 
-Prompt evaluated, first-token logits ready, nothing streamed yet.
+Checked after prompt evaluation, before first token. C++ already has the logit distribution from prefill.
+
+| Trigger | Check | What it catches |
+|---|---|---|
+| High entropy | `first_token_entropy > threshold` | Model doesn't know how to start |
+| Low margin | `first_token_margin < 0.05` | Model torn between multiple starts |
+| Top tokens are hedging | Top-3 tokens are "I", "Sorry", "Well", "Unfortunately" | Model about to refuse or waffle |
+
+The entropy threshold is set by Hook 1's response (`entropy_threshold` field). If Hook 1 didn't fire or didn't set a threshold, Hook 2 is skipped.
 
 ```json
 {
   "hook": "post_prefill",
+  "trigger": "high_entropy",
   "request_id": "chatcmpl-abc",
   "n_prompt_tokens": 847,
   "signals": {
@@ -117,71 +139,84 @@ Prompt evaluated, first-token logits ready, nothing streamed yet.
 }
 ```
 
-Always sync. mesh-llm looks at the numbers and returns immediately — no model consultation, <1ms.
+mesh-llm returns context or steering → `{ "action": "inject", "text": "Answer directly based on..." }`
 
-**Inject** — model is confused (high entropy), mesh-llm adds context:
-```json
-{ "action": "inject", "text": "The relevant code is in auth.rs: verify_token() checks JWT signatures." }
-```
+### Hook 3 — pre-response triggers
 
-**None** — model is confident (low entropy):
-```json
-{ "action": "none" }
-```
+Checked after generation completes. C++ has the signal summary from the rolling window.
 
----
+| Trigger | Check | What it catches |
+|---|---|---|
+| Cut off | `stop_reason == "max_tokens"` | Response incomplete |
+| Very short | `n_decoded < 10` and prompt was substantial | Refusal or punt |
+| High uncertainty | `uncertain_token_count > 30%` of total | Model was guessing throughout |
+| Bad ending | Entropy spike in last 16 tokens (tail entropy >> mean) | Ending may be hallucinated |
+| Mid-sentence | Last token isn't EOS or sentence-ending punctuation | Abrupt cutoff |
 
-### 3. Pre-response
-
-Generation complete. Full text available.
+Hook 3 only fires if Hook 1 set `verify: true` OR if a trigger from this list is met. So even without explicit verification, C++ catches obvious problems.
 
 ```json
 {
   "hook": "pre_response",
+  "trigger": "max_tokens",
   "request_id": "chatcmpl-abc",
-  "generated_text": "The verify_token() function handles...",
-  "n_decoded": 156,
-  "stop_reason": "eos",
+  "generated_text": "The verify_token() function handles session validation by...",
+  "n_decoded": 4096,
+  "n_predict": 4096,
+  "stop_reason": "max_tokens",
   "signals": {
     "mean_entropy": 2.4,
     "max_entropy": 7.1,
     "min_margin": 0.01,
-    "uncertain_token_count": 12
+    "uncertain_token_count": 12,
+    "tail_entropy_mean": 5.8
   }
 }
 ```
 
-Always sync — need the verdict before sending to client.
+**Example — response cut off at max_tokens:**
 
-**Correction** — verification failed, resume generation with fix:
-```json
-{ "action": "inject", "text": "\n\nCorrection: verify_token() checks expiry, not signatures.", "continue": true }
-```
+mesh-llm can:
+- Summarize the partial response + re-request with "continue from..." → inject + continue
+- Route to a model with larger context if available in the mesh
+- Return `none` and let the truncated response through (honest but incomplete)
 
-**None** — response is fine:
+**Example — very short response (likely refusal):**
 ```json
-{ "action": "none" }
+{
+  "hook": "pre_response",
+  "trigger": "very_short",
+  "generated_text": "I don't have access to that information.",
+  "n_decoded": 8
+}
 ```
+mesh-llm rephrases the question via another model or injects encouragement → `{ "action": "inject", "text": "\n\nLet me try again with what I know:\n", "continue": true }`
+
+**Example — high tail entropy (hallucinated ending):**
+```json
+{
+  "hook": "pre_response",
+  "trigger": "tail_entropy_spike",
+  "generated_text": "...the function returns true. Additionally, it also validates the quantum signature of the hyperspace manifold...",
+  "signals": { "mean_entropy": 2.1, "tail_entropy_mean": 6.4 }
+}
+```
+mesh-llm detects the drift, asks a verifier model to check → if bad, injects correction → `{ "action": "inject", "text": "\n\n(The previous statement about quantum signatures is incorrect. The function simply returns true after validation.)", "continue": true }`
 
 ---
 
 ## Polling
 
-When Hook 1 returns `pending`, llama-server polls every 16 tokens during generation:
+When any hook returns `pending`, llama-server polls every 16 tokens during generation:
 
 ```
 GET /mesh/hook/poll/cap-001 → 202         (not ready)
 GET /mesh/hook/poll/cap-001 → 200 + json  (ready)
 ```
 
-Ready response:
-```json
-{ "action": "inject", "text": "[Image: fibonacci function with bug on line 3]" }
-```
+On 200, tokens injected into live KV cache. Generation continues conditioned on the new content.
 
-On 200, tokens are injected into the live KV cache via `common_batch_add()` + `llama_decode()`. Generation continues conditioned on the injected content.
-
-Poll cost: ~0.1ms per poll. At 50 tok/s with interval 16, that's ~3 polls/second.
+Only runs when `pending_async_ids` is non-empty. No async work = no polling = zero cost.
 
 ---
 
@@ -193,19 +228,19 @@ Computed per-token in C++ (no callback). Cheap arithmetic on the softmax distrib
 
 **Margin**: `p_top1 - p_top2`. Large = clear choice. Small = coin flip.
 
-Accumulated in a rolling window on the slot. Sent as summary at Hook 2 (first token only) and Hook 3 (full generation).
+Accumulated in a rolling window (last 16 tokens). Sent at Hook 2 (first token) and Hook 3 (generation summary).
 
-**Self-consistency**: mesh-llm sets `n_cmpl: 3` on the request. llama-server prefills once, generates 3 completions via existing `copy_state_to()`. mesh-llm compares them at Hook 3. No new C++ code.
+**Self-consistency**: mesh-llm sets `n_cmpl: 3` on the request. llama-server prefills once, generates 3 completions via existing `copy_state_to()`. mesh-llm compares at Hook 3. No new C++ code.
 
 ---
 
 ## Token injection
 
-**Hook 1** (pre-inference): Text prepended to prompt as system message. Before tokenization — just part of the prompt.
+**Hook 1**: Text prepended to prompt as system message. Before tokenization — just part of the prompt.
 
-**Hook 2** (post-prefill): Tokens added to live KV cache. `common_batch_add()` + `llama_decode()`. Model attention now includes the injection.
+**Hook 2**: Tokens added to live KV cache via `common_batch_add()` + `llama_decode()`.
 
-**Hook 3** (pre-response): Tokens appended after generated text. With `continue: true`, generation resumes from the injection.
+**Hook 3**: Tokens appended after generated text. With `continue: true`, generation resumes.
 
 **Polling**: Same as Hook 2 — injected into live KV cache mid-generation.
 
@@ -229,6 +264,12 @@ struct mesh_hook_ctx {
     float entropy_threshold = -1.0f;  // <0 = skip Hook 2
     bool  verify = false;             // false = skip Hook 3
 
+    // trigger state (computed at pre-inference)
+    bool has_images_no_multimodal = false;
+    bool context_pressure = false;
+    bool long_session = false;
+    bool large_user_message = false;
+
     // signal window
     mesh_signal_window signals;
 
@@ -250,16 +291,17 @@ struct mesh_hook_ctx {
 
 **Hook points**:
 
-| Hook | Where | Blocking |
+| Hook | Where | Fires when |
 |---|---|---|
-| pre_inference | `launch_slot_with_task()` | sync or async |
-| post_prefill | `DONE_PROMPT → GENERATING` | sync (<1ms) |
-| pre_response | `send_final_response()` | sync |
+| pre_inference | `launch_slot_with_task()` | Any pre-inference trigger met |
+| post_prefill | `DONE_PROMPT → GENERATING` | entropy_threshold set AND exceeded |
+| pre_response | `send_final_response()` | verify set OR any pre-response trigger met |
+| polling | generation loop | pending_async_ids non-empty |
 
 **Generation loop** (after `common_sampler_accept`):
 ```cpp
 if (slot.mesh_hook.enabled) {
-    // update signal stats
+    // update signal stats (always, ~1μs)
     auto probs = get_token_probabilities(ctx, tok_idx);
     slot.mesh_hook.signals.push(compute_entropy(probs), probs[0].p - probs[1].p);
 
@@ -284,10 +326,10 @@ if (slot.mesh_hook.enabled) {
 
 **New module** `inference/virtual.rs`:
 - Decision logic per hook type
-- Spawns tokio tasks for async consultations (image captioning, context fetch)
+- Spawns tokio tasks for async consultations
 - Stores results keyed by async_id
-- Routes consultation requests through existing mesh infrastructure
+- Routes consultations through existing mesh infrastructure
 
 **`inference/launch.rs`**: Pass `--mesh-port {api_port}` to llama-server.
 
-**Request preparation**: Set `mesh_hooks: true` in forwarded request body when hooks should be active.
+**Request preparation**: Set `mesh_hooks: true` when hooks should be active.
