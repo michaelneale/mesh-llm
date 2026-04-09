@@ -38,6 +38,7 @@ function buildProps(
     composerError: null,
     setComposerError: vi.fn(),
     attachmentSendIssue: null,
+    imageDescriptionInProgress: false,
     pendingAttachments: [],
     setPendingAttachments: vi.fn(),
     conversations: [

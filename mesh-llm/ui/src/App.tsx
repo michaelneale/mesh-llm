@@ -2230,6 +2230,7 @@ export function App() {
                   composerError={composerError}
                   setComposerError={setComposerError}
                   attachmentSendIssue={attachmentSendIssue}
+                  imageDescriptionInProgress={imageDescriptionInProgress}
                   pendingAttachments={pendingAttachments}
                   setPendingAttachments={setPendingAttachments}
                   conversations={conversations}
@@ -2856,6 +2857,7 @@ export function ChatPage(props: {
   composerError: string | null;
   setComposerError: React.Dispatch<React.SetStateAction<string | null>>;
   attachmentSendIssue: string | null;
+  imageDescriptionInProgress: boolean;
   pendingAttachments: ChatAttachment[];
   setPendingAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   conversations: ChatConversation[];
@@ -2897,6 +2899,7 @@ export function ChatPage(props: {
     composerError,
     setComposerError,
     attachmentSendIssue,
+    imageDescriptionInProgress,
     pendingAttachments,
     setPendingAttachments,
     conversations,
@@ -3832,7 +3835,12 @@ export function ChatPage(props: {
                   )}
                 </div>
               ) : null}
-              {composerError || attachmentSendIssue ? (
+              {imageDescriptionInProgress && !composerError ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                  <span>Analyzing image with local vision model… (first time downloads ~230 MB)</span>
+                </div>
+              ) : composerError || attachmentSendIssue ? (
                 <Alert variant="destructive" data-testid="composer-error">
                   <AlertTitle>Attachment Issue</AlertTitle>
                   <AlertDescription>
