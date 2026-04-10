@@ -148,6 +148,8 @@ just --list           # list all recipes
 
 CI uses [`dorny/paths-filter`](https://github.com/dorny/paths-filter) to skip jobs when unchanged areas of the repo are modified. A `changes` detection job runs first on every push and PR, then each build job gates on its output.
 
+For the repo's CI design rules and workflow responsibilities, see [`docs/CI_GUIDANCE.md`](docs/CI_GUIDANCE.md).
+
 ### What triggers what
 
 | Changed paths                                                                                           | `linux` / `macos` | `linux_cuda` / `linux_rocm` / `linux_vulkan` / `windows` |
