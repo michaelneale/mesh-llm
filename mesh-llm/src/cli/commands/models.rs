@@ -449,7 +449,7 @@ pub async fn run_model_show(model_ref: &str, json_output: bool) -> Result<()> {
         if interactive {
             eprintln!("🔎 Fetching GGUF variants from Hugging Face...");
         }
-        let variants = show_model_variants_with_progress(&details.exact_ref, |progress| {
+        let variants = show_model_variants_with_progress(model_ref, |progress| {
             if !interactive {
                 return;
             }
