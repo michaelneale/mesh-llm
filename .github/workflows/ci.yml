@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # ── UI ──
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -84,32 +85,49 @@ jobs:
       - name: Install Python SDKs
         run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
 
+      # ── System dependencies ──
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
 
+      # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
+      # Workspace `. -> target` because the cargo workspace is at repo root
+      # (`Cargo.toml` members = ["mesh-llm", ...]) and cargo writes to
+      # `./target/`, NOT `mesh-llm/target/`. Using `workspaces: mesh-llm`
+      # silently caches an empty dir and gives zero PR cache hits — we
+      # measured a 4-minute regression from this exact misconfiguration.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
+      # Early-fail gate: runs before expensive compile/test work.
       - name: Check formatting
         working-directory: mesh-llm
         run: cargo fmt -- --check
 
-      - name: Build mesh-llm
-        run: cargo build --release -p mesh-llm --bin mesh-llm
+      # Build in dev/debug profile, NOT release. Two reasons:
+      #  1. Build + Unit tests steps share one target/ subdir and one
+      #     incremental cache — zero duplicated codegen.
+      #  2. debug has `incremental = true`; release has `incremental = false`.
+      #     Warm rebuild after a lib edit: release ~43s, debug ~4s (M4 Pro).
+      # mesh-llm is a thin orchestrator around llama-server; the hot loop is
+      # inside llama-server C++, so debug vs release binary perf is
+      # negligible for smoke tests. Integration steps below use target/debug.
+      - name: Build mesh-llm binary (debug)
+        run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
-        run: cargo test --release
+        run: cargo test --lib --tests
 
       - name: Clippy
         working-directory: mesh-llm
         run: cargo clippy -- -D warnings || true
 
+      # ── llama.cpp (CPU-only for CI) ──
       - name: Clone llama.cpp fork
         run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
@@ -135,7 +153,7 @@ jobs:
       - name: Package Linux binaries
         run: |
           mkdir -p ci-artifacts/linux-binaries
-          cp target/release/mesh-llm ci-artifacts/linux-binaries/
+          cp target/debug/mesh-llm ci-artifacts/linux-binaries/
           cp llama.cpp/build/bin/rpc-server ci-artifacts/linux-binaries/
           cp llama.cpp/build/bin/llama-server ci-artifacts/linux-binaries/
           cp llama.cpp/build/bin/llama-moe-split ci-artifacts/linux-binaries/ 2>/dev/null || true
@@ -150,11 +168,11 @@ jobs:
 
       - name: CLI smoke test
         run: |
-          target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
+          target/debug/mesh-llm --version
+          target/debug/mesh-llm --help | head -5
 
       - name: Client-auto boot test
-        run: scripts/ci-client-auto-test.sh target/release/mesh-llm
+        run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
 
       - name: Show sccache stats
         if: always()
@@ -167,6 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # ── UI ──
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -179,21 +198,25 @@ jobs:
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
 
+      # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
+      # See linux job for explanation of `. -> target`.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
-      - name: Build mesh-llm
-        run: cargo build --release -p mesh-llm --bin mesh-llm
+      # See linux job for rationale on building in dev/debug, not release.
+      - name: Build mesh-llm binary (debug)
+        run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
-        run: cargo test --release
+        run: cargo test -p mesh-llm --lib --tests
 
+      # ── llama.cpp (Metal + RPC) ──
       - name: Clone llama.cpp fork
         run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
@@ -218,7 +241,7 @@ jobs:
       - name: Package macOS binaries
         run: |
           mkdir -p ci-artifacts/macos-binaries
-          cp target/release/mesh-llm ci-artifacts/macos-binaries/
+          cp target/debug/mesh-llm ci-artifacts/macos-binaries/
           cp llama.cpp/build/bin/rpc-server ci-artifacts/macos-binaries/
           cp llama.cpp/build/bin/llama-server ci-artifacts/macos-binaries/
           cp llama.cpp/build/bin/llama-moe-split ci-artifacts/macos-binaries/ 2>/dev/null || true
@@ -239,11 +262,11 @@ jobs:
 
       - name: CLI smoke test
         run: |
-          target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
+          target/debug/mesh-llm --version
+          target/debug/mesh-llm --help | head -5
 
       - name: Client-auto boot test
-        run: scripts/ci-client-auto-test.sh target/release/mesh-llm
+        run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
 
       - name: Show sccache stats
         if: always()
@@ -287,8 +310,8 @@ jobs:
 
       - name: Stage binaries for inference smokes
         run: |
-          mkdir -p target/release llama.cpp/build/bin
-          cp linux-binaries/mesh-llm target/release/mesh-llm
+          mkdir -p target/debug llama.cpp/build/bin
+          cp linux-binaries/mesh-llm target/debug/mesh-llm
           cp linux-binaries/rpc-server llama.cpp/build/bin/rpc-server
           cp linux-binaries/llama-server llama.cpp/build/bin/llama-server
           cp linux-binaries/llama-moe-split llama.cpp/build/bin/llama-moe-split 2>/dev/null || true
@@ -310,21 +333,21 @@ jobs:
       - name: Smoke test (real inference)
         run: |
           scripts/ci-smoke-test.sh \
-            target/release/mesh-llm \
+            target/debug/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
 
       - name: OpenAI Python compat smoke
         run: |
           scripts/ci-compat-smoke.sh \
-            target/release/mesh-llm \
+            target/debug/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
 
       - name: Split-mode test (host/worker routing)
         run: |
           scripts/ci-split-test.sh \
-            target/release/mesh-llm \
+            target/debug/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
 
@@ -351,7 +374,7 @@ jobs:
       - name: MoE mesh test (expert sharding end-to-end)
         run: |
           scripts/ci-moe-mesh-test.sh \
-            target/release/mesh-llm \
+            target/debug/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MOE_MODEL_FILE
 
@@ -409,6 +432,42 @@ jobs:
             . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
+      # ── Cross-PR llama.cpp / CUDA slim artifact cache (read-only consumer) ──
+      #
+      # Goal: every PR gets a "warm" llama.cpp CUDA build for free. Without
+      # this cache the CUDA job pays ~194s warm (sccache hit) or ~26m cold
+      # (sccache eviction) on every PR. With it, the llama.cpp build is
+      # skipped entirely on cache hit and the only remaining work is the
+      # mesh-llm cargo build.
+      #
+      # This job RESTORES ONLY. It never writes the cache. All writes
+      # happen in .github/workflows/warm-caches.yml, which runs on push
+      # to main (paths-filtered) and on workflow_dispatch. Splitting the
+      # writer into its own workflow prevents PR runs from polluting
+      # PR-scoped cache storage with a ~500 MB `llama.cpp/build/bin`
+      # entry on every push, and lets the warmup workflow prune old
+      # versions (see warm-caches.yml for the retention policy).
+      #
+      # The cache key MUST stay byte-identical to the one in
+      # warm-caches.yml or PRs will never hit the main-warmed entry.
+      # Any change to the hashFiles() list or literal suffix must be
+      # mirrored in both files in the same commit.
+      #
+      # Cross-branch read: pushes to `main` write the cache under
+      # `refs/heads/main`. PR runs on `refs/pull/<N>/merge` automatically
+      # fall back to the base branch's cache scope, so PRs hit the
+      # main-warmed cache without needing any cache to exist on the PR
+      # ref itself.
+      #
+      # The cache key embeds EVERY input that affects the produced binaries:
+      #   - llama.cpp upstream commit SHA, resolved at workflow time below
+      #     via `git ls-remote`.
+      #   - hash of the build inputs in this repo: scripts/build-linux.sh,
+      #     Justfile, ci.yml, warm-caches.yml, gpu-warm-cache-job.yml,
+      #     cache-version.txt.
+      #   - the CUDA arch literal (`arch89`), the GGML_CUDA_FA_ALL_QUANTS
+      #     state (`fa-off`), and the CUDA toolkit version pulled from the
+      #     container image.
       - name: Resolve llama.cpp upstream SHA
         id: llama_sha
         shell: bash
@@ -422,6 +481,11 @@ jobs:
           echo "Resolved llama.cpp upstream-latest SHA: $SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+      # `actions/cache/restore@v5` (NOT `actions/cache@v5`): restore-only,
+      # never saves. PR runs on `refs/pull/<N>/merge` never write anything
+      # to PR-scoped cache storage. The only writer is warm-caches.yml.
+      # On cache miss the full llama.cpp build still runs to prove the
+      # change works, but the result is discarded at job end.
       - name: Restore llama.cpp CUDA cache
         id: llama_cuda_cache
         uses: actions/cache/restore@v5
@@ -429,7 +493,32 @@ jobs:
           path: llama.cpp/build/bin
           key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
 
-      - name: Build Linux CUDA backend (cache miss)
+      # CI is a validation build only: we only need to prove CUDA compiles
+      # and the Rust binary runs. User-facing release artifacts are produced
+      # by release.yml which keeps the full default cuda_arch list, release
+      # profile, and GGML_CUDA_FA_ALL_QUANTS=ON. Here we pass four CI-only
+      # opt-outs, all documented in scripts/build-linux.sh:
+      #   1. single cuda_arch 89 (Ada Lovelace) — ~3.7x faster llama.cpp build
+      #   2. MESH_LLM_BUILD_PROFILE=dev — debug profile for mesh-llm itself
+      #   3. MESH_LLM_CUDA_FA_ALL_QUANTS=off — skip the full FlashAttention
+      #      kernel matrix. Safe ONLY because the CUDA smoke test is
+      #      `mesh-llm --version` — the asymmetric K/V cache path that would
+      #      crash rpc-server with BEST_FATTN_KERNEL_NONE is never exercised.
+      #      NEVER set this in release.yml.
+      #   4. MESH_LLM_LLAMA_PIN_SHA — pin the llama.cpp checkout to the SHA
+      #      embedded in the artifact cache key (above). NEVER set this in
+      #      release.yml; release artifacts must build the current
+      #      upstream-latest tip.
+      #
+      # Split into two mutually exclusive steps keyed off the artifact cache:
+      #
+      #   - Cache miss → do the fast PR-only llama.cpp + mesh-llm build via the
+      #     build script. This validates the same arch89/fa-off shape that
+      #     main warms, but PR runs never write the shared cache.
+      #   - Cache hit  → skip llama.cpp entirely (we already proved it builds
+      #     at this SHA + flag combo) and run only the mesh-llm cargo build.
+      #     This is the warm path every PR hits when main has already run.
+      - name: Build Linux CUDA backend (cache miss — full llama.cpp build)
         if: steps.llama_cuda_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
@@ -439,9 +528,11 @@ jobs:
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
 
-      - name: Build mesh-llm release binary (cache hit)
+      - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
         if: steps.llama_cuda_cache.outputs.cache-hit == 'true'
         shell: bash
+        env:
+          MESH_LLM_BUILD_PROFILE: dev
         run: |
           set -euo pipefail
           echo "✓ llama.cpp CUDA build restored from cache (SHA ${{ steps.llama_sha.outputs.sha }})"
@@ -454,25 +545,20 @@ jobs:
             exit 1
           fi
           ls -lh llama.cpp/build/bin/ | head -20
-          cargo build --release -p mesh-llm --bin mesh-llm
-          ls -lh target/release/mesh-llm
-
-      - name: Build mesh-llm release binary (cache miss)
-        if: steps.llama_cuda_cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: cargo build --release -p mesh-llm --bin mesh-llm
+          cargo build -p mesh-llm --bin mesh-llm
+          ls -lh target/debug/mesh-llm
 
       - name: CLI smoke test
         shell: bash
         run: |
-          target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
+          target/debug/mesh-llm --version
+          target/debug/mesh-llm --help | head -5
 
       - name: Package Linux CUDA binaries
         shell: bash
         run: |
           mkdir -p ci-artifacts/linux-cuda-binaries
-          cp target/release/mesh-llm ci-artifacts/linux-cuda-binaries/
+          cp target/debug/mesh-llm ci-artifacts/linux-cuda-binaries/
           cp llama.cpp/build/bin/rpc-server ci-artifacts/linux-cuda-binaries/
           cp llama.cpp/build/bin/llama-server ci-artifacts/linux-cuda-binaries/
           cp llama.cpp/build/bin/llama-moe-split ci-artifacts/linux-cuda-binaries/ 2>/dev/null || true
@@ -563,13 +649,19 @@ jobs:
           path: llama.cpp/build/bin
           key: ${{ env.CACHE_NAMESPACE }}-llama-rocm-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux-rocm.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}-gfx1100-rocm7.0
 
-      - name: Build Linux ROCm backend (cache miss)
+      # This lane is compile-only plus a CLI smoke check (`--version`/`--help`).
+      # It does not exercise ROCm inference on real AMD hardware, so restrict
+      # the build to one representative target instead of compiling the full
+      # default AMDGPU target matrix.
+      - name: Build Linux ROCm backend (cache miss — full llama.cpp build)
         if: steps.llama_rocm_cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
         run: |
           just --shell bash --shell-arg -lc release-build-amd gfx1100
 
-      - name: Build mesh-llm release binary (cache hit)
+      - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
         if: steps.llama_rocm_cache.outputs.cache-hit == 'true'
         shell: bash
         run: |
