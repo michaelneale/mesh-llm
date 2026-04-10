@@ -18,9 +18,13 @@ on:
       cache_key:
         required: true
         type: string
-      build_command:
+      build_recipe:
         required: true
         type: string
+      build_args:
+        required: false
+        type: string
+        default: ''
       extra_env:
         required: false
         type: string
@@ -115,7 +119,8 @@ jobs:
         shell: bash
         env:
           MESH_LLM_LLAMA_PIN_SHA: ${{ inputs.llama_sha }}
-          BUILD_COMMAND: ${{ inputs.build_command }}
+          BUILD_RECIPE: ${{ inputs.build_recipe }}
+          BUILD_ARGS: ${{ inputs.build_args }}
           EXTRA_ENV: ${{ inputs.extra_env }}
         run: |
           set -euo pipefail
@@ -125,7 +130,12 @@ jobs:
               export "$line"
             done <<< "$EXTRA_ENV"
           fi
-          just --shell bash --shell-arg -lc "$BUILD_COMMAND"
+          if [[ -n "$BUILD_ARGS" ]]; then
+            read -r -a build_args <<< "$BUILD_ARGS"
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE" "${build_args[@]}"
+          else
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE"
+          fi
 
       - name: Verify ${{ inputs.cache_label }} binaries are present
         shell: bash
