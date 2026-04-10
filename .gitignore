@@ -14,6 +14,6 @@ MLX_VALIDATION_RESULTS/
 .envrc
 .moe-cache/
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
 .pytest_cache/

@@ -183,10 +183,9 @@ def parse_downloaded_model_path(output: str) -> str:
 
 
 def download_model_ref(model_ref: str, backend: str) -> str:
-    flag = "--gguf" if backend == "gguf" else "--mlx"
     log(f"📥 Preflight download start [{backend}] {model_ref}")
     proc = run_streaming(
-        ["./target/release/mesh-llm", "models", "download", model_ref, flag],
+        ["./target/release/mesh-llm", "models", "download", model_ref],
     )
     if proc.returncode != 0:
         log(f"❌ Preflight download failed [{backend}] {model_ref} (exit {proc.returncode})")

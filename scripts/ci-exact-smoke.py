@@ -96,9 +96,9 @@ def build_launch_command(args: argparse.Namespace, api_port: int, console_port: 
         if os.path.isdir(args.model):
             command.extend(["--mlx-file", args.model])
         else:
-            command.extend(["--model", args.model, "--mlx"])
+            command.extend(["--model", args.model, "--mlx-file", args.model])
     else:
-        command.extend(["--model", args.model, "--bin-dir", args.bin_dir])
+        command.extend(["--gguf-file", args.model, "--bin-dir", args.bin_dir])
     command.extend(["--no-draft", "--port", str(api_port), "--console", str(console_port)])
     return command
 
