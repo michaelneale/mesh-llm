@@ -72,6 +72,7 @@ cmake_flags=(
     -B "$BUILD_DIR"
     -S "$LLAMA_DIR"
     -DGGML_METAL=ON
+    -DGGML_NATIVE=OFF
     -DGGML_RPC=ON
     -DBUILD_SHARED_LIBS=OFF
     -DLLAMA_OPENSSL=OFF
