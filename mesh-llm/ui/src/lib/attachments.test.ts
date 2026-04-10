@@ -58,7 +58,7 @@ describe("getAttachmentSendIssue", () => {
         multimodalModels: new Set(["vision-only"]),
       }),
     ).toBe(
-      "Selected model does not support the attached media. Choose a compatible model or remove the attachment.",
+      "vision-only doesn't support audio. Choose an audio-capable model or remove the attachment.",
     );
   });
 

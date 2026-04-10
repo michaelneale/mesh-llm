@@ -10,6 +10,9 @@ type FileLike = {
 };
 
 type AttachmentSupportOptions = {
+  /** The *effective* media kinds that still need model support.
+   *  PDFs with extracted text should NOT be included here since
+   *  they will be sent as input_text, not input_file. */
   pendingKinds: ReadonlySet<AttachmentKind>;
   selectedModel: string;
   warmModels: readonly string[];
@@ -65,12 +68,30 @@ export function getAttachmentSendIssue({
     (!pendingKinds.has("file") || multimodalModels.has(modelName));
 
   if (selectedModel && selectedModel !== "auto") {
-    return modelSupports(selectedModel)
-      ? null
-      : "Selected model does not support the attached media. Choose a compatible model or remove the attachment.";
+    if (modelSupports(selectedModel)) return null;
+
+    // Provide a specific hint depending on what's missing.
+    if (pendingKinds.has("image") && !visionModels.has(selectedModel)) {
+      const warmVision = warmModels.filter((m) => visionModels.has(m));
+      if (warmVision.length > 0) {
+        return `${selectedModel} doesn't support images. Switch to ${warmVision[0]} or set model to Auto.`;
+      }
+      return `${selectedModel} doesn't support images. Switch to a vision model (e.g. Qwen2-VL, LLaVA) or set model to Auto.`;
+    }
+    if (pendingKinds.has("audio") && !audioModels.has(selectedModel)) {
+      return `${selectedModel} doesn't support audio. Choose an audio-capable model or remove the attachment.`;
+    }
+    return "Selected model does not support the attached media. Choose a compatible model or remove the attachment.";
   }
 
-  return warmModels.some(modelSupports)
-    ? null
-    : "No warm model supports the attached media. Warm a compatible model or remove the attachment.";
+  if (warmModels.some(modelSupports)) return null;
+
+  // Auto mode but no warm model supports it.
+  if (pendingKinds.has("image")) {
+    return "No warm model supports images. Warm a vision model (e.g. Qwen2-VL, LLaVA) to use image attachments.";
+  }
+  if (pendingKinds.has("audio")) {
+    return "No warm model supports audio input. Warm an audio-capable model to use audio attachments.";
+  }
+  return "No warm model supports the attached media. Warm a compatible model or remove the attachment.";
 }
