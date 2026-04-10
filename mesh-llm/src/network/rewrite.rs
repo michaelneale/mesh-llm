@@ -198,11 +198,15 @@ where
     R: AsyncRead + Unpin,
 {
     let remaining = deadline_remaining(started, deadline)?;
-    Ok(Some(
-        tokio::time::timeout(remaining, reader.read(buf))
-            .await
-            .map_err(|_| anyhow::anyhow!("RPC payload read timed out"))??,
-    ))
+    let bytes_read = tokio::time::timeout(remaining, reader.read(buf))
+        .await
+        .map_err(|_| anyhow::anyhow!("RPC payload read timed out"))??;
+
+    if bytes_read == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(bytes_read))
+    }
 }
 
 fn deadline_remaining(started: Instant, deadline: Duration) -> Result<Duration> {

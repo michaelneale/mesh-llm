@@ -3,12 +3,24 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug)]
 pub enum ModelsCommand {
     /// List built-in recommended models.
-    Recommended,
+    Recommended {
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List installed local models from the HF cache.
-    Installed,
+    Installed {
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List built-in catalog models.
     #[command(hide = true)]
-    List,
+    List {
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// Search for catalog models and downloadable GGUF/MLX artifacts on Hugging Face.
     Search {
         /// Search terms.
@@ -26,11 +38,17 @@ pub enum ModelsCommand {
         /// Maximum number of results to show.
         #[arg(long, default_value = "20")]
         limit: usize,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
     },
     /// Show details for one exact model reference.
     Show {
         /// Exact catalog id, Hugging Face ref, or direct URL.
         model: String,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
     },
     /// Download one exact model reference.
     Download {
@@ -39,6 +57,9 @@ pub enum ModelsCommand {
         /// Also download the recommended draft model for speculative decoding.
         #[arg(long)]
         draft: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
     },
     /// Check or refresh cached Hugging Face repos.
     #[command(visible_alias = "update")]
@@ -51,5 +72,8 @@ pub enum ModelsCommand {
         /// Check for newer upstream revisions without refreshing local cache.
         #[arg(long)]
         check: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
     },
 }
