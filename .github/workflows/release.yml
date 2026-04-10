@@ -422,7 +422,11 @@ jobs:
           cp linux-binaries/mesh-llm target/release/mesh-llm
           cp linux-binaries/rpc-server llama.cpp/build/bin/rpc-server
           cp linux-binaries/llama-server llama.cpp/build/bin/llama-server
-          cp linux-binaries/llama-moe-split llama.cpp/build/bin/llama-moe-split 2>/dev/null || true
+          if [ ! -x linux-binaries/llama-moe-split ]; then
+            echo "Required binary linux-binaries/llama-moe-split is missing or not executable after artifact extraction" >&2
+            exit 1
+          fi
+          cp linux-binaries/llama-moe-split llama.cpp/build/bin/llama-moe-split
 
       - name: Cache integration model
         id: cache-model
