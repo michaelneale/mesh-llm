@@ -65,12 +65,18 @@ jobs:
     name: Resolve llama.cpp upstream SHA
     runs-on: ubuntu-latest
     outputs:
+      cache_namespace: ${{ steps.cache_namespace.outputs.value }}
       sha: ${{ steps.resolve.outputs.sha }}
       cuda_cache_inputs_hash: ${{ steps.cache_inputs.outputs.cuda_hash }}
       rocm_cache_inputs_hash: ${{ steps.cache_inputs.outputs.rocm_hash }}
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Expose cache namespace
+        id: cache_namespace
+        shell: bash
+        run: echo "value=${CACHE_NAMESPACE}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve llama.cpp upstream SHA
         id: resolve
@@ -120,7 +126,7 @@ jobs:
       cache_label: CUDA slim
       container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda12.8', env.CACHE_NAMESPACE, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
       build_recipe: release-build-cuda
       build_args: 89
       extra_env: |
@@ -134,7 +140,7 @@ jobs:
       cache_label: CUDA fat
       container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda12.8', env.CACHE_NAMESPACE, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
       build_recipe: release-build-cuda
 
   warm_llama_rocm_slim:
@@ -145,7 +151,7 @@ jobs:
       cache_label: ROCm slim
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-rocm-slim-{1}-{2}-gfx1100-rocm7.0', env.CACHE_NAMESPACE, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-rocm-slim-{1}-{2}-gfx1100-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
       build_recipe: release-build-rocm
       build_args: gfx1100
 
@@ -157,7 +163,7 @@ jobs:
       cache_label: ROCm fat
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-rocm-fat-{1}-{2}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0', env.CACHE_NAMESPACE, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-rocm-fat-{1}-{2}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
       build_recipe: release-build-rocm
 
   prune_llama_gpu_caches:
