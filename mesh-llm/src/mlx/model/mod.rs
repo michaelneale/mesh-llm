@@ -17,12 +17,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use families::apply_family_tensor_transforms;
-#[cfg(test)]
-use family::ModelArchitecture;
 pub use family::ReasoningFamily;
 use family::{
     config_supports_mlx, detect_architecture_from_safetensors_header, ensure_supported_mlx_model,
-    model_architecture, reasoning_family, uses_traditional_rope,
+    model_architecture, reasoning_family, uses_traditional_rope, ModelArchitecture,
 };
 
 #[derive(Debug, Clone)]
@@ -117,6 +115,8 @@ pub struct ModelConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub sliding_window: Option<i32>,
+    #[serde(default)]
+    pub sliding_window_pattern: Option<i32>,
     #[serde(default)]
     #[allow(dead_code)]
     pub cache_implementation: Option<String>,
@@ -2634,15 +2634,8 @@ impl MlxModel {
                 continue;
             }
             if arch.is_gpt_oss() {
-                let window_size = if matches!(layer_type, Some("sliding_attention")) {
-                    Some(
-                        config
-                            .sliding_window
-                            .context("missing sliding_window for gpt-oss sliding layer")?,
-                    )
-                } else {
-                    None
-                };
+                let window_size =
+                    attention_window_size_for_layer(arch, &config, i as usize, layer_type)?;
                 layers.push(Layer {
                     attn: AttentionKind::Standard(Attention {
                         q_proj: load_qlinear(&format!("{p}.self_attn.q_proj"))?,
@@ -2727,19 +2720,15 @@ impl MlxModel {
             let rope_theta = rope_parameters
                 .and_then(|params| params.rope_theta)
                 .unwrap_or(config.rope_theta);
-            let kv_shared_source = if arch.is_gemma4() && (i as usize) >= first_kv_shared_layer_idx
-            {
-                non_shared_layer_types.as_ref().and_then(|types| {
-                    layer_type.and_then(|current| {
-                        types
-                            .iter()
-                            .rposition(|candidate| candidate == current)
-                            .map(|index| index)
-                    })
-                })
-            } else {
-                None
-            };
+            let window_size =
+                attention_window_size_for_layer(arch, &config, i as usize, layer_type)?;
+            let kv_shared_source = kv_shared_source_for_layer(
+                arch,
+                &config,
+                i as usize,
+                layer_type,
+                non_shared_layer_types.as_deref(),
+            );
             let scale = if arch.is_gemma4() {
                 1.0
             } else if let Some(query_pre_attn_scalar) = config.query_pre_attn_scalar {
@@ -2792,7 +2781,7 @@ impl MlxModel {
                     rope_dim,
                     rope_theta,
                     rope_traditional,
-                    window_size: None,
+                    window_size,
                     kv_shared_source,
                 }),
                 mlp: MlpKind::Dense(MLP {
@@ -3207,6 +3196,7 @@ fn effective_text_config_json(config: &Value) -> Value {
         "attn_logit_softcapping",
         "final_logit_softcapping",
         "sliding_window",
+        "sliding_window_pattern",
         "cache_implementation",
         "conv_bias",
         "conv_L_cache",
@@ -3262,6 +3252,66 @@ fn tensor_prefixes(tensors: &HashMap<String, Array>) -> Result<TensorPrefixes> {
         });
     }
     bail!("unsupported MLX tensor prefix layout")
+}
+
+fn attention_window_size_for_layer(
+    arch: ModelArchitecture,
+    config: &ModelConfig,
+    layer_idx: usize,
+    layer_type: Option<&str>,
+) -> Result<Option<i32>> {
+    if arch.is_gpt_oss() {
+        return if matches!(layer_type, Some("sliding_attention")) {
+            Ok(Some(config.sliding_window.context(
+                "missing sliding_window for gpt-oss sliding layer",
+            )?))
+        } else {
+            Ok(None)
+        };
+    }
+
+    if arch.is_gemma3() {
+        let pattern = config.sliding_window_pattern.unwrap_or(1);
+        return if pattern > 1 && (layer_idx as i32 % pattern) != (pattern - 1) {
+            Ok(Some(config.sliding_window.context(
+                "missing sliding_window for gemma3 sliding layer",
+            )?))
+        } else {
+            Ok(None)
+        };
+    }
+
+    Ok(None)
+}
+
+fn kv_shared_source_for_layer(
+    arch: ModelArchitecture,
+    config: &ModelConfig,
+    layer_idx: usize,
+    layer_type: Option<&str>,
+    non_shared_layer_types: Option<&[String]>,
+) -> Option<usize> {
+    if !(arch.is_gemma4()) {
+        return None;
+    }
+
+    let first_kv_shared_layer_idx = config
+        .num_kv_shared_layers
+        .map(|n| (config.num_hidden_layers - n) as usize)
+        .unwrap_or(config.num_hidden_layers as usize);
+
+    if layer_idx < first_kv_shared_layer_idx {
+        return None;
+    }
+
+    non_shared_layer_types.and_then(|types| {
+        layer_type.and_then(|current| {
+            types
+                .iter()
+                .rposition(|candidate| candidate == current)
+                .map(|index| index)
+        })
+    })
 }
 
 /// Argmax over the last position's logits. Returns the token ID.
@@ -4313,6 +4363,223 @@ mod tests {
     }
 
     #[test]
+    fn gemma3_real_hf_config_parses_hybrid_cache_fields() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "model_type": "gemma3_text",
+            "architectures": ["Gemma3ForCausalLM"],
+            "hidden_size": 1152,
+            "num_hidden_layers": 26,
+            "intermediate_size": 6912,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "query_pre_attn_scalar": 256,
+            "vocab_size": 262144,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 32768,
+            "rope_theta": 1000000.0,
+            "sliding_window": 512,
+            "sliding_window_pattern": 6,
+            "cache_implementation": "hybrid",
+            "tie_word_embeddings": false,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        assert_eq!(config.sliding_window, Some(512));
+        assert_eq!(config.sliding_window_pattern, Some(6));
+        assert_eq!(config.cache_implementation.as_deref(), Some("hybrid"));
+    }
+
+    #[test]
+    fn attention_window_size_for_gpt_oss_uses_layer_types() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 2880,
+            "num_hidden_layers": 3,
+            "intermediate_size": 2880,
+            "num_attention_heads": 64,
+            "num_key_value_heads": 8,
+            "head_dim": 64,
+            "vocab_size": 201088,
+            "rms_norm_eps": 0.00001,
+            "rope_theta": 150000.0,
+            "max_position_embeddings": 131072,
+            "sliding_window": 128,
+            "layer_types": ["sliding_attention", "full_attention", "sliding_attention"],
+            "tie_word_embeddings": false,
+            "eos_token_id": [199999, 200002]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            attention_window_size_for_layer(
+                ModelArchitecture::GptOss,
+                &config,
+                0,
+                Some("sliding_attention")
+            )
+            .unwrap(),
+            Some(128)
+        );
+        assert_eq!(
+            attention_window_size_for_layer(
+                ModelArchitecture::GptOss,
+                &config,
+                1,
+                Some("full_attention")
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn attention_window_size_for_gemma3_matches_hybrid_pattern() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 1152,
+            "num_hidden_layers": 8,
+            "intermediate_size": 6912,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "head_dim": 256,
+            "query_pre_attn_scalar": 256,
+            "vocab_size": 262144,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 32768,
+            "rope_theta": 1000000.0,
+            "sliding_window": 512,
+            "sliding_window_pattern": 3,
+            "cache_implementation": "hybrid",
+            "tie_word_embeddings": false,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            attention_window_size_for_layer(ModelArchitecture::Gemma3, &config, 0, None).unwrap(),
+            Some(512)
+        );
+        assert_eq!(
+            attention_window_size_for_layer(ModelArchitecture::Gemma3, &config, 1, None).unwrap(),
+            Some(512)
+        );
+        assert_eq!(
+            attention_window_size_for_layer(ModelArchitecture::Gemma3, &config, 2, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            attention_window_size_for_layer(ModelArchitecture::Gemma3, &config, 3, None).unwrap(),
+            Some(512)
+        );
+    }
+
+    #[test]
+    fn attention_window_size_for_gemma4_uses_layer_types() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 2560,
+            "num_hidden_layers": 4,
+            "intermediate_size": 10240,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 2,
+            "vocab_size": 262400,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 32768,
+            "rope_theta": 10000.0,
+            "sliding_window": 512,
+            "layer_types": ["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
+            "tie_word_embeddings": false,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            attention_window_size_for_layer(
+                ModelArchitecture::Gemma4,
+                &config,
+                0,
+                Some("sliding_attention")
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            attention_window_size_for_layer(
+                ModelArchitecture::Gemma4,
+                &config,
+                1,
+                Some("full_attention")
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn kv_shared_source_for_gemma4_matches_previous_layer_type() {
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 2560,
+            "num_hidden_layers": 6,
+            "intermediate_size": 10240,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 2,
+            "vocab_size": 262400,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 32768,
+            "rope_theta": 10000.0,
+            "sliding_window": 512,
+            "layer_types": [
+                "sliding_attention",
+                "full_attention",
+                "sliding_attention",
+                "full_attention",
+                "sliding_attention",
+                "full_attention"
+            ],
+            "tie_word_embeddings": false,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        let non_shared = &config.layer_types.as_ref().unwrap()[..4];
+        assert_eq!(
+            kv_shared_source_for_layer(
+                ModelArchitecture::Gemma4,
+                &config,
+                4,
+                Some("sliding_attention"),
+                Some(non_shared)
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            kv_shared_source_for_layer(
+                ModelArchitecture::Gemma4,
+                &config,
+                5,
+                Some("full_attention"),
+                Some(non_shared)
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            kv_shared_source_for_layer(
+                ModelArchitecture::Gemma4,
+                &config,
+                1,
+                Some("full_attention"),
+                Some(non_shared)
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn gemma3_uses_scaled_embeddings() {
         let config: ModelConfig = serde_json::from_value(serde_json::json!({
             "hidden_size": 1152,
@@ -4448,6 +4715,109 @@ mod tests {
         assert_eq!(logits.as_slice::<f32>(), &[50.0, 110.0, 170.0]);
     }
 
+    fn dense_linear(weight: &[f32], out_dim: i32, in_dim: i32) -> QuantizedLinear {
+        let weight = Array::from_slice(weight, &[out_dim, in_dim]);
+        QuantizedLinear {
+            weight: weight.clone(),
+            scales: array!(0.0f32),
+            biases: array!(0.0f32),
+            bias: None,
+            group_size: 0,
+            bits: 0,
+            dense_weight_t: Some(weight.transpose_axes(&[1, 0]).unwrap()),
+        }
+    }
+
+    fn assert_arrays_close(actual: &Array, expected: &Array, tol: f32) {
+        let actual = actual.as_dtype(Dtype::Float32).unwrap();
+        let expected = expected.as_dtype(Dtype::Float32).unwrap();
+        let actual_slice = actual.as_slice::<f32>();
+        let expected_slice = expected.as_slice::<f32>();
+        assert_eq!(actual_slice.len(), expected_slice.len());
+        for (idx, (a, b)) in actual_slice.iter().zip(expected_slice.iter()).enumerate() {
+            assert!(
+                (a - b).abs() <= tol,
+                "mismatch at index {idx}: actual={a} expected={b} tol={tol}"
+            );
+        }
+    }
+
+    #[test]
+    fn attention_kv_cache_matches_no_cache_for_incremental_decode() {
+        let attn = Attention {
+            q_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            k_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            v_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            o_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            num_heads: 1,
+            num_kv_heads: 1,
+            head_dim: 2,
+            scale: 1.0 / (2.0f32).sqrt(),
+            attn_logit_softcapping: None,
+            rope_dim: 2,
+            rope_theta: 10000.0,
+            rope_traditional: false,
+            window_size: None,
+            kv_shared_source: None,
+        };
+
+        let full = Array::from_slice(&[1.0f32, 0.0, 0.5, 1.0, -1.0, 0.25, 0.75, -0.5], &[1, 4, 2]);
+        let expected = attn.forward_no_cache(&full).unwrap();
+
+        let mut cache = KVCache::new();
+        let mut outputs = Vec::new();
+        for step in 0..4i32 {
+            let x = full.index((0..1, step..step + 1, std::ops::RangeFull));
+            outputs.push(attn.forward(&x, &mut cache, None).unwrap());
+        }
+        let output_refs: Vec<&Array> = outputs.iter().collect();
+        let actual = mlx_rs::ops::concatenate_axis(&output_refs, 1).unwrap();
+
+        assert_eq!(cache.offset, 4);
+        assert_arrays_close(&actual, &expected, 1e-4);
+    }
+
+    #[test]
+    fn attention_sliding_window_cache_matches_no_cache_for_incremental_decode() {
+        let attn = Attention {
+            q_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            k_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            v_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            o_proj: dense_linear(&[1.0, 0.0, 0.0, 1.0], 2, 2),
+            q_norm: None,
+            k_norm: None,
+            v_norm: None,
+            num_heads: 1,
+            num_kv_heads: 1,
+            head_dim: 2,
+            scale: 1.0 / (2.0f32).sqrt(),
+            attn_logit_softcapping: None,
+            rope_dim: 2,
+            rope_theta: 10000.0,
+            rope_traditional: false,
+            window_size: Some(2),
+            kv_shared_source: None,
+        };
+
+        let full = Array::from_slice(&[1.0f32, 0.0, 0.5, 1.0, -1.0, 0.25, 0.75, -0.5], &[1, 4, 2]);
+        let expected = attn.forward_no_cache(&full).unwrap();
+
+        let mut cache = KVCache::new();
+        let mut outputs = Vec::new();
+        for step in 0..4i32 {
+            let x = full.index((0..1, step..step + 1, std::ops::RangeFull));
+            outputs.push(attn.forward(&x, &mut cache, None).unwrap());
+        }
+        let output_refs: Vec<&Array> = outputs.iter().collect();
+        let actual = mlx_rs::ops::concatenate_axis(&output_refs, 1).unwrap();
+
+        assert_eq!(cache.offset, 4);
+        assert_arrays_close(&actual, &expected, 1e-4);
+    }
+
     #[test]
     fn phi3_tensor_transform_splits_fused_attention_and_mlp_weights() {
         let prefixes = TensorPrefixes {
@@ -4530,6 +4900,319 @@ mod tests {
             tensors["model.layers.0.mlp.up_proj.weight"].shape(),
             &[12, 3]
         );
+    }
+
+    #[test]
+    fn gpt_oss_tensor_transform_splits_interleaved_expert_gate_up_tensors() {
+        let prefixes = TensorPrefixes {
+            model: "model".to_string(),
+            lm_head: Some("lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 8,
+            "num_hidden_layers": 1,
+            "intermediate_size": 4,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "vocab_size": 32,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": false,
+            "quantization": {
+                "group_size": 2,
+                "bits": 4
+            },
+            "eos_token_id": 1
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "model.layers.0.mlp.experts.gate_up_proj.weight".to_string(),
+            Array::from_slice(
+                &[
+                    0.0f32, 1.0, 10.0, 11.0, 20.0, 21.0, 30.0, 31.0, 40.0, 41.0, 50.0, 51.0,
+                ],
+                &[6, 2],
+            ),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.experts.gate_up_proj.scales".to_string(),
+            Array::from_slice(
+                &[
+                    0.5f32, 1.5, 10.5, 11.5, 20.5, 21.5, 30.5, 31.5, 40.5, 41.5, 50.5, 51.5,
+                ],
+                &[1, 6, 2],
+            ),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.experts.gate_up_proj_bias".to_string(),
+            Array::from_slice(&[0.0f32, 10.0, 20.0, 30.0, 40.0, 50.0], &[1, 6]),
+        );
+        tensors.insert(
+            "model.layers.0.mlp.experts.down_proj_bias".to_string(),
+            Array::from_slice(&[1.0f32, 2.0, 3.0], &[3]),
+        );
+
+        families::apply_family_tensor_transforms(
+            ModelArchitecture::GptOss,
+            &mut tensors,
+            &prefixes,
+            &config,
+            &serde_json::json!({"model_type": "gpt_oss"}),
+            2,
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.gate_proj.weight"].as_slice::<f32>(),
+            &[0.0, 1.0, 20.0, 21.0, 40.0, 41.0]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.up_proj.weight"].as_slice::<f32>(),
+            &[10.0, 11.0, 30.0, 31.0, 50.0, 51.0]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.gate_proj.scales"].shape(),
+            &[1, 3, 2]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.up_proj.scales"].shape(),
+            &[1, 3, 2]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.gate_proj.bias"].as_slice::<f32>(),
+            &[0.0, 20.0, 40.0]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.up_proj.bias"].as_slice::<f32>(),
+            &[10.0, 30.0, 50.0]
+        );
+        assert_eq!(
+            tensors["model.layers.0.mlp.experts.down_proj.bias"].as_slice::<f32>(),
+            &[1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn gemma3_tensor_transform_drops_multimodal_tensors_and_tied_lm_head() {
+        let prefixes = TensorPrefixes {
+            model: "language_model.model".to_string(),
+            lm_head: Some("language_model.lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 8,
+            "num_hidden_layers": 1,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 32,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": true,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "vision_tower.encoder.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[2]),
+        );
+        tensors.insert(
+            "multi_modal_projector.linear.weight".to_string(),
+            Array::from_slice(&[3.0f32, 4.0], &[2]),
+        );
+        tensors.insert(
+            "language_model.model.embed_tokens.weight".to_string(),
+            Array::from_slice(&[5.0f32, 6.0], &[2]),
+        );
+        tensors.insert(
+            "language_model.lm_head.weight".to_string(),
+            Array::from_slice(&[7.0f32, 8.0], &[2]),
+        );
+
+        families::apply_family_tensor_transforms(
+            ModelArchitecture::Gemma3,
+            &mut tensors,
+            &prefixes,
+            &config,
+            &serde_json::json!({"model_type": "gemma3", "text_config": {"model_type": "gemma3_text"}}),
+            64,
+            4,
+        )
+        .unwrap();
+
+        assert!(tensors.contains_key("language_model.model.embed_tokens.weight"));
+        assert!(!tensors.contains_key("vision_tower.encoder.weight"));
+        assert!(!tensors.contains_key("multi_modal_projector.linear.weight"));
+        assert!(!tensors.contains_key("language_model.lm_head.weight"));
+    }
+
+    #[test]
+    fn gemma4_tensor_transform_normalizes_text_prefixes_and_drops_multimodal_tensors() {
+        let prefixes = TensorPrefixes {
+            model: "language_model.model".to_string(),
+            lm_head: Some("lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 2560,
+            "num_hidden_layers": 2,
+            "intermediate_size": 10240,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "global_head_dim": 512,
+            "num_kv_shared_layers": 1,
+            "vocab_size": 262400,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 32768,
+            "tie_word_embeddings": true,
+            "eos_token_id": [1, 106]
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "model.language_model.embed_tokens.weight".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[2]),
+        );
+        tensors.insert(
+            "model.language_model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::from_slice(&[3.0f32, 4.0], &[2]),
+        );
+        tensors.insert(
+            "model.vision_tower.encoder.weight".to_string(),
+            Array::from_slice(&[5.0f32, 6.0], &[2]),
+        );
+        tensors.insert(
+            "model.audio_tower.encoder.weight".to_string(),
+            Array::from_slice(&[7.0f32, 8.0], &[2]),
+        );
+        tensors.insert(
+            "lm_head.weight".to_string(),
+            Array::from_slice(&[9.0f32, 10.0], &[2]),
+        );
+
+        families::apply_family_tensor_transforms(
+            ModelArchitecture::Gemma4,
+            &mut tensors,
+            &prefixes,
+            &config,
+            &serde_json::json!({"model_type": "gemma4", "text_config": {"model_type": "gemma4_text"}}),
+            64,
+            4,
+        )
+        .unwrap();
+
+        assert!(tensors.contains_key("language_model.model.embed_tokens.weight"));
+        assert!(tensors.contains_key("language_model.model.layers.0.self_attn.q_proj.weight"));
+        assert!(!tensors.contains_key("model.language_model.embed_tokens.weight"));
+        assert!(!tensors.contains_key("model.vision_tower.encoder.weight"));
+        assert!(!tensors.contains_key("model.audio_tower.encoder.weight"));
+        assert!(!tensors.contains_key("lm_head.weight"));
+    }
+
+    #[test]
+    fn olmo2_tensor_transform_drops_rotary_inv_freq_tensors() {
+        let prefixes = TensorPrefixes {
+            model: "model".to_string(),
+            lm_head: Some("lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 8,
+            "num_hidden_layers": 2,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 32,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": false,
+            "eos_token_id": 1
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "model.layers.0.self_attn.rotary_emb.inv_freq".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[2]),
+        );
+        tensors.insert(
+            "model.layers.1.self_attn.rotary_emb.inv_freq".to_string(),
+            Array::from_slice(&[3.0f32, 4.0], &[2]),
+        );
+        tensors.insert(
+            "model.layers.1.self_attn.q_proj.weight".to_string(),
+            Array::from_slice(&[5.0f32, 6.0], &[2]),
+        );
+
+        families::apply_family_tensor_transforms(
+            ModelArchitecture::Olmo2,
+            &mut tensors,
+            &prefixes,
+            &config,
+            &serde_json::json!({"model_type": "olmo2"}),
+            64,
+            4,
+        )
+        .unwrap();
+
+        assert!(!tensors.contains_key("model.layers.0.self_attn.rotary_emb.inv_freq"));
+        assert!(!tensors.contains_key("model.layers.1.self_attn.rotary_emb.inv_freq"));
+        assert!(tensors.contains_key("model.layers.1.self_attn.q_proj.weight"));
+    }
+
+    #[test]
+    fn llama_like_tensor_transform_drops_inv_freq_and_tied_lm_head() {
+        let prefixes = TensorPrefixes {
+            model: "model".to_string(),
+            lm_head: Some("lm_head".to_string()),
+        };
+        let config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size": 8,
+            "num_hidden_layers": 1,
+            "intermediate_size": 16,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "vocab_size": 32,
+            "rms_norm_eps": 0.000001,
+            "max_position_embeddings": 128,
+            "tie_word_embeddings": true,
+            "eos_token_id": 1
+        }))
+        .unwrap();
+
+        let mut tensors = HashMap::new();
+        tensors.insert(
+            "model.layers.0.self_attn.rotary_emb.inv_freq".to_string(),
+            Array::from_slice(&[1.0f32, 2.0], &[2]),
+        );
+        tensors.insert(
+            "model.layers.0.self_attn.q_proj.weight".to_string(),
+            Array::from_slice(&[3.0f32, 4.0], &[2]),
+        );
+        tensors.insert(
+            "lm_head.weight".to_string(),
+            Array::from_slice(&[5.0f32, 6.0], &[2]),
+        );
+
+        families::apply_family_tensor_transforms(
+            ModelArchitecture::LlamaLike,
+            &mut tensors,
+            &prefixes,
+            &config,
+            &serde_json::json!({"model_type": "llama"}),
+            64,
+            4,
+        )
+        .unwrap();
+
+        assert!(!tensors.contains_key("model.layers.0.self_attn.rotary_emb.inv_freq"));
+        assert!(!tensors.contains_key("lm_head.weight"));
+        assert!(tensors.contains_key("model.layers.0.self_attn.q_proj.weight"));
     }
 
     #[test]
