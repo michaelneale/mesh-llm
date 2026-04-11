@@ -144,7 +144,7 @@ pub(super) fn start_new_mesh(
     } else {
         eprintln!("   Serving: {primary}");
     }
-    eprintln!("   VRAM: {:.0}GB", my_vram_gb);
+    eprintln!("   Capacity: {:.0}GB", my_vram_gb);
     if !has_startup_models && cli.model.is_empty() {
         cli.model.push(primary.into());
     }

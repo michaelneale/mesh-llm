@@ -36,7 +36,20 @@ message PeerAnnouncement {
   repeated ServedModelDescriptor served_model_descriptors = 25;
   repeated ServedModelIdentity served_model_identities = 26;
   repeated ModelRuntimeDescriptor served_model_runtime = 27;
-   optional string owner_id = 28;           // sha256(owner_signing_public_key), 64-char hex
+  optional SignedNodeOwnership owner_attestation = 28;
+}
+
+message SignedNodeOwnership {
+  uint32 version = 1;
+  string cert_id = 2;
+  string owner_id = 3;
+  bytes owner_sign_public_key = 4;   // 32 bytes
+  bytes node_endpoint_id = 5;        // 32 bytes
+  uint64 issued_at_unix_ms = 6;
+  uint64 expires_at_unix_ms = 7;
+  optional string node_label = 8;
+  optional string hostname_hint = 9;
+  bytes signature = 10;              // Ed25519 signature over canonical claim bytes
 }
 
 message ServedModelDescriptor {
@@ -226,13 +239,11 @@ message NodePluginEntry {
 message ConfigSubscribe {
   uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
   bytes subscriber_id = 2;               // 32 bytes — subscribing node's endpoint id
-  string owner_id = 3;                   // filter: only configs from nodes with this owner_id
 }
 
 message ConfigSnapshotResponse {
   uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
   bytes node_id = 2;                      // 32 bytes — the node this config belongs to
-  string owner_id = 3;
   uint64 revision = 4;
   bytes config_hash = 5;                  // SHA-256 of canonical proto bytes (32 bytes)
   NodeConfigSnapshot config = 6;
@@ -243,7 +254,6 @@ message ConfigSnapshotResponse {
 message ConfigUpdateNotification {
   uint32 gen = 1;
   bytes node_id = 2;
-  string owner_id = 3;
   uint64 revision = 4;
   bytes config_hash = 5;
   NodeConfigSnapshot config = 6;
@@ -253,7 +263,6 @@ message ConfigPush {
   uint32 gen = 1;
   bytes requester_id = 2;
   bytes target_node_id = 3;
-  string owner_id = 4;
   uint64 expected_revision = 5;
   NodeConfigSnapshot config = 6;
   bytes owner_signing_public_key = 7;

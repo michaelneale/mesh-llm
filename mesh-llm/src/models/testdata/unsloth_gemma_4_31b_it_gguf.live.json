@@ -1,0 +1,42 @@
+{
+  "source": "https://huggingface.co/api/models/unsloth/gemma-4-31B-it-GGUF",
+  "captured_at": "2026-04-10",
+  "repo": "unsloth/gemma-4-31B-it-GGUF",
+  "siblings": [
+    ".gitattributes",
+    "BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf",
+    "BF16/gemma-4-31B-it-BF16-00002-of-00002.gguf",
+    "README.md",
+    "config.json",
+    "gemma-4-31B-it-IQ4_NL.gguf",
+    "gemma-4-31B-it-IQ4_XS.gguf",
+    "gemma-4-31B-it-Q3_K_M.gguf",
+    "gemma-4-31B-it-Q3_K_S.gguf",
+    "gemma-4-31B-it-Q4_0.gguf",
+    "gemma-4-31B-it-Q4_1.gguf",
+    "gemma-4-31B-it-Q4_K_M.gguf",
+    "gemma-4-31B-it-Q4_K_S.gguf",
+    "gemma-4-31B-it-Q5_K_M.gguf",
+    "gemma-4-31B-it-Q5_K_S.gguf",
+    "gemma-4-31B-it-Q6_K.gguf",
+    "gemma-4-31B-it-Q8_0.gguf",
+    "gemma-4-31B-it-UD-IQ2_M.gguf",
+    "gemma-4-31B-it-UD-IQ2_XXS.gguf",
+    "gemma-4-31B-it-UD-IQ3_XXS.gguf",
+    "gemma-4-31B-it-UD-Q2_K_XL.gguf",
+    "gemma-4-31B-it-UD-Q3_K_XL.gguf",
+    "gemma-4-31B-it-UD-Q4_K_XL.gguf",
+    "gemma-4-31B-it-UD-Q5_K_XL.gguf",
+    "gemma-4-31B-it-UD-Q6_K_XL.gguf",
+    "gemma-4-31B-it-UD-Q8_K_XL.gguf",
+    "imatrix_unsloth.gguf_file",
+    "mmproj-BF16.gguf",
+    "mmproj-F16.gguf",
+    "mmproj-F32.gguf"
+  ],
+  "size_bytes": {
+    "gemma-4-31B-it-Q4_0.gguf": 17338241248,
+    "gemma-4-31B-it-UD-Q4_K_XL.gguf": 18767225056,
+    "BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf": 49950150080
+  }
+}

@@ -65,7 +65,7 @@ pub fn parse_nvidia_gpu_names(output: &str) -> Vec<String> {
 }
 
 /// Parse `nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits` → per-GPU VRAM bytes.
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 pub fn parse_nvidia_gpu_memory(output: &str) -> Vec<u64> {
     output
         .lines()

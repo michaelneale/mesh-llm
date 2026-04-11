@@ -1,4 +1,5 @@
 use super::{RuntimeModelPayload, RuntimeProcessPayload};
+use crate::crypto::{OwnershipStatus, OwnershipSummary};
 use crate::network::affinity;
 use serde::Serialize;
 
@@ -53,6 +54,7 @@ pub(super) struct StatusPayload {
     pub(super) version: String,
     pub(super) latest_version: Option<String>,
     pub(super) node_id: String,
+    pub(super) owner: OwnershipPayload,
     pub(super) token: String,
     pub(super) node_status: String,
     pub(super) is_host: bool,
@@ -86,6 +88,7 @@ pub(super) struct StatusPayload {
 #[derive(Serialize)]
 pub(super) struct PeerPayload {
     pub(super) id: String,
+    pub(super) owner: OwnershipPayload,
     pub(super) role: String,
     pub(super) models: Vec<String>,
     pub(super) available_models: Vec<String>,
@@ -98,6 +101,46 @@ pub(super) struct PeerPayload {
     pub(super) hostname: Option<String>,
     pub(super) is_soc: Option<bool>,
     pub(super) gpus: Vec<GpuEntry>,
+}
+
+#[derive(Serialize)]
+pub(super) struct OwnershipPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) cert_id: Option<String>,
+    pub(super) status: String,
+    pub(super) verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) expires_at_unix_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) node_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) hostname_hint: Option<String>,
+}
+
+pub(super) fn build_ownership_payload(summary: &OwnershipSummary) -> OwnershipPayload {
+    OwnershipPayload {
+        owner_id: summary.owner_id.clone(),
+        cert_id: summary.cert_id.clone(),
+        status: match summary.status {
+            OwnershipStatus::Verified => "verified",
+            OwnershipStatus::Unsigned => "unsigned",
+            OwnershipStatus::Expired => "expired",
+            OwnershipStatus::InvalidSignature => "invalid_signature",
+            OwnershipStatus::MismatchedNodeId => "mismatched_node_id",
+            OwnershipStatus::RevokedOwner => "revoked_owner",
+            OwnershipStatus::RevokedCert => "revoked_cert",
+            OwnershipStatus::RevokedNodeId => "revoked_node_id",
+            OwnershipStatus::UnsupportedProtocol => "unsupported_protocol",
+            OwnershipStatus::UntrustedOwner => "untrusted_owner",
+        }
+        .to_string(),
+        verified: summary.verified,
+        expires_at_unix_ms: summary.expires_at_unix_ms,
+        node_label: summary.node_label.clone(),
+        hostname_hint: summary.hostname_hint.clone(),
+    }
 }
 
 #[derive(Serialize)]

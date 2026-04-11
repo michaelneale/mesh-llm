@@ -11,3 +11,8 @@ evals/results/
 .sisyphus/
 .playwright-mcp/
 .envrc
+.moe-cache/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

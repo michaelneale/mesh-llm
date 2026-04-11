@@ -8,7 +8,15 @@ Route different requests to specialized models based on task type. Instead of on
 
 The paper shows ensemble routing across heterogeneous models outperforms any single model. Our mesh already has the ingredients — multiple models, a router that classifies requests. The gap is making the router model-aware (which models are good at what) and potentially splitting complex requests across models.
 
-**Relates to:** Smart Router (below), Vision routing (vision requests → vision model), Multi-Model Per Host.
+**Relates to:** Smart Router (below), Multi-Model Per Host.
+
+## Node Owner Identity
+
+Design: [NODE_OWNER_IDENTITY.md](docs/NODE_OWNER_IDENTITY.md)
+
+- [x] Add non-breaking owner attestation for node identities.
+- [x] Surface verified owner state in gossip, `/api/status`, and the console.
+- [x] Add optional trust policy and owner allowlists for private meshes.
 
 ## Multi-Model Per Host
 
@@ -52,37 +60,18 @@ Design: [MoE_PLAN.md](docs/MoE_PLAN.md) · Auto-deploy: [MoE_DEPLOY_DESIGN.md](d
 - [ ] **Lazy `moe-analyze`** — auto-run ranking for unknown MoE models.
 - [ ] **Scale testing** — Mixtral 8×22B, Qwen3-235B-A22B across multi-node.
 
-## Thinking / Reasoning Budget ✅
-
-Shipped in v0.40.0. `--reasoning-budget 0` is set on all llama-servers — thinking off by default. API users can opt in per-request with `chat_template_kwargs: {"enable_thinking": true}`.
-
-See `tests/test_reasoning_compat.sh` for the contract tests validating this behavior.
-
-**Why off by default:** Qwen3.5-9B is broken with thinking (reasoning burns entire token budget, content always empty). MiniMax-M2.5 is 2-27x slower with thinking for no quality gain. Agentic eval with pi confirmed: same 3/4 accuracy, half the total time with thinking off.
-
 ## Smart Router
-- Design: [MULTI_MODAL.md](docs/MULTI_MODAL.md)
 - [ ] **Context-aware routing**: Hosts advertise `n_ctx` in gossip. Router estimates request token count and skips hosts that can't fit it. Today a long chat routed to a small-context host returns 400 with no fallback.
 - [ ] **Retry on 400**: If a host returns 400 (context overflow, bad request), try the next host instead of forwarding the error. Requires reading the response status before committing to the byte-pipe tunnel. Non-trivial — the current `relay_tcp_via_quic` is a blind bidirectional copy.
 - [ ] **Static speed estimates**: `tok_s: f64` on ModelProfile. Quick tasks prefer fast models.
 - [ ] **Response quality checks**: Detect empty/repetitive/truncated responses, retry with different model.
 - [ ] **MoM-aware routing**: Route by task type to best-suited model (see Mixture of Models above).
-- [ ] **Vision-aware routing**: Auto-route image requests to vision-capable models.
 
-## Multi-Modal
+## Multi-Modal — Remaining
 
-Design: [MULTI_MODAL.md](docs/MULTI_MODAL.md)
+Core multimodal is shipped: capability model, gossip advertisement, vision/audio-aware routing, blob plugin, console uploads with attachment state, multimodal `/v1/chat/completions` and `/v1/responses`. See [MULTI_MODAL.md](docs/MULTI_MODAL.md).
 
-- [ ] **Capability model**: Add `multimodal` and `audio` alongside `vision`.
-- [ ] **Protocol advertisement**: Surface multimodal/audio capability in gossip, `/api/status`, and `/v1/models`.
-- [ ] **Audio-aware routing**: Auto-route audio requests to audio-capable models.
-- [ ] **Structured media detection**: Detect image/audio/file inputs from content blocks, not just prompt keywords.
-- [ ] **Pipeline safety**: Skip or constrain pre-plan/pipeline behavior for media requests until multimodal-safe.
-- [ ] **Request-scoped blob plugin**: Ingress-local object storage with opaque tokens, no replication, request-bound cleanup.
-- [ ] **Console uploads**: Add audio/file upload UX, upload before dispatch, and send token references instead of large inline payloads.
-- [ ] **Console attachment state**: Show previews/badges, upload status, remove/retry actions, and no-compatible-model fallback.
-- [ ] **Console model UX**: Surface vision/audio/multimodal capability hints and let `auto` switch to compatible models when attachments are present.
-- [ ] **Responses compatibility**: Add multimodal `/v1/responses` support after chat completions are solid.
+- [ ] **Runtime vision validation**: When mmproj is missing at launch time, downgrade vision capability and re-gossip corrected descriptor. Today the node advertises `vision: supported` even when mmproj wasn't loaded.
 - [ ] **Audio transcription shim**: Optional `/v1/audio/transcriptions` compatibility layer.
 - [ ] **Realtime shim**: Optional `v1/realtime` compatibility layer for text and media session orchestration.
 

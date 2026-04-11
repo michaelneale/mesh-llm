@@ -2,6 +2,8 @@
 
 This page keeps the longer operational reference out of the top-level README.
 
+For command-by-command CLI usage, model resolution rules, and JSON automation examples, see [CLI.md](./CLI.md).
+
 ## Installation details
 
 Install the latest release bundle:

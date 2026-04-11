@@ -3,6 +3,7 @@
 //! Every node holds the same in-memory list (eventually consistent via flood-fill).
 //! Items expire after 48 hours and the list is capped at 500 items.
 
+#[cfg(test)]
 pub mod mcp;
 
 use anyhow::Result;
@@ -152,10 +153,6 @@ impl BlackboardStore {
             enabled: Arc::new(std::sync::atomic::AtomicBool::new(enabled)),
             rate_log: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[allow(dead_code)]
@@ -329,7 +326,7 @@ fn build_blackboard_plugin(name: String) -> mesh_llm_plugin::SimplePlugin {
         ),
         startup_policy: PluginStartupPolicy::PrivateMeshOnly,
         provides: [
-            capability("blackboard.v1"),
+            capability(crate::plugin::BLACKBOARD_CAPABILITY),
         ],
         mesh: [
             mesh_llm_plugin::mesh::channel(BLACKBOARD_CHANNEL),

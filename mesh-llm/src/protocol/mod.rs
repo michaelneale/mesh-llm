@@ -69,7 +69,6 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingHttpPort,
-    MissingOwnerId,
     InvalidConfigHashLength {
         got: usize,
     },
@@ -114,7 +113,6 @@ impl std::fmt::Display for ControlFrameError {
             ControlFrameError::MissingHttpPort => {
                 write!(f, "HOST-role peer annotation missing http_port")
             }
-            ControlFrameError::MissingOwnerId => write!(f, "config frame missing owner_id"),
             ControlFrameError::InvalidConfigHashLength { got } => {
                 write!(f, "invalid config_hash length: expected 32, got {}", got)
             }
@@ -246,9 +244,6 @@ impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
         }
         validate_endpoint_id_length(self.subscriber_id.len())?;
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
         Ok(())
     }
 }
@@ -265,9 +260,6 @@ impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
             if self.config.is_none() {
                 return Err(ControlFrameError::MissingConfig);
             }
-            if self.owner_id.is_empty() {
-                return Err(ControlFrameError::MissingOwnerId);
-            }
         }
         Ok(())
     }
@@ -283,9 +275,6 @@ impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
         if self.config.is_none() {
             return Err(ControlFrameError::MissingConfig);
         }
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
         Ok(())
     }
 }
@@ -297,9 +286,6 @@ impl ValidateControlFrame for crate::proto::node::ConfigPush {
         }
         validate_endpoint_id_length(self.requester_id.len())?;
         validate_endpoint_id_length(self.target_node_id.len())?;
-        if self.owner_id.is_empty() {
-            return Err(ControlFrameError::MissingOwnerId);
-        }
         validate_public_key_length(self.owner_signing_public_key.len())?;
         if self.signature.is_empty() {
             return Err(ControlFrameError::MissingSignature);
@@ -518,6 +504,7 @@ pub(crate) fn decode_control_frame<T: ValidateControlFrame>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::OwnershipSummary;
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, ModelDemand, PeerInfo};
     use crate::proto::node::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
@@ -563,7 +550,6 @@ mod tests {
         ConfigSubscribe {
             gen: NODE_PROTOCOL_GENERATION,
             subscriber_id: vec![0xAA; 32],
-            owner_id: "owner-1".to_string(),
         }
     }
 
@@ -598,7 +584,8 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: None,
+            owner_attestation: None,
+            owner_summary: OwnershipSummary::default(),
         }
     }
 
@@ -647,7 +634,7 @@ mod tests {
             available_model_sizes: HashMap::from([("Qwen".into(), 1234_u64)]),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: None,
+            owner_attestation: None,
         };
         let json = serde_json::to_vec(&vec![PeerAnnouncementV0::from(&ann)]).unwrap();
 
@@ -699,14 +686,12 @@ mod tests {
 
         let subscribe = make_valid_config_subscribe();
         let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &subscribe);
-        let decoded: ConfigSubscribe = decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded)
+        let _decoded: ConfigSubscribe = decode_control_frame(STREAM_CONFIG_SUBSCRIBE, &encoded)
             .expect("valid config subscribe must decode");
-        assert_eq!(decoded.owner_id, "owner-1");
 
         let snapshot_response = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: node_id.clone(),
-            owner_id: "owner-1".to_string(),
             revision: 7,
             config_hash: config_hash.clone(),
             config: Some(snapshot.clone()),
@@ -724,7 +709,6 @@ mod tests {
         let update = ConfigUpdateNotification {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: node_id.clone(),
-            owner_id: "owner-1".to_string(),
             revision: 8,
             config_hash: config_hash.clone(),
             config: Some(snapshot.clone()),
@@ -739,7 +723,6 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x10; 32],
             target_node_id: node_id.clone(),
-            owner_id: "owner-1".to_string(),
             expected_revision: 8,
             config: Some(snapshot.clone()),
             owner_signing_public_key: vec![0x02; 32],
@@ -756,17 +739,13 @@ mod tests {
             current_revision: 9,
             config_hash: config_hash.clone(),
             error: None,
-            apply_mode: crate::proto::node::ConfigApplyMode::Staged as i32,
+            apply_mode: 1,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
         let decoded: ConfigPushResponse = decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
             .expect("valid push response must decode");
         assert!(decoded.success);
         assert_eq!(decoded.current_revision, 9);
-        assert_eq!(
-            decoded.apply_mode,
-            crate::proto::node::ConfigApplyMode::Staged as i32
-        );
     }
 
     #[test]
@@ -785,17 +764,9 @@ mod tests {
             .expect_err("invalid subscriber id length must be rejected");
         assert!(matches!(err, ControlFrameError::InvalidEndpointId { .. }));
 
-        let mut subscribe = make_valid_config_subscribe();
-        subscribe.owner_id = String::new();
-        let encoded = encode_control_frame(STREAM_CONFIG_SUBSCRIBE, &subscribe);
-        let err = decode_control_frame::<ConfigSubscribe>(STREAM_CONFIG_SUBSCRIBE, &encoded)
-            .expect_err("missing owner id must be rejected");
-        assert!(matches!(err, ControlFrameError::MissingOwnerId));
-
         let snapshot_response = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0x01; 16],
-            owner_id: "owner-1".to_string(),
             revision: 1,
             config_hash: vec![0x02; 32],
             config: Some(make_config_snapshot()),
@@ -810,7 +781,6 @@ mod tests {
         let snapshot_response = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0xAA; 32],
-            owner_id: "owner-1".to_string(),
             revision: 1,
             config_hash: vec![0x02; 16],
             config: Some(make_config_snapshot()),
@@ -828,7 +798,6 @@ mod tests {
         let update = ConfigUpdateNotification {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0xBB; 32],
-            owner_id: "owner-1".to_string(),
             revision: 2,
             config_hash: vec![0xCC; 16],
             config: Some(make_config_snapshot()),
@@ -846,19 +815,11 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: String::new(),
             expected_revision: 2,
             config: Some(make_config_snapshot()),
-            owner_signing_public_key: vec![0x03; 32],
+            owner_signing_public_key: vec![0x03; 16],
             signature: vec![0x04],
         };
-        let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
-        let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
-            .expect_err("empty owner id must be rejected");
-        assert!(matches!(err, ControlFrameError::MissingOwnerId));
-
-        push.owner_id = "owner-1".to_string();
-        push.owner_signing_public_key = vec![0x05; 16];
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push);
         let err = decode_control_frame::<ConfigPush>(STREAM_CONFIG_PUSH, &encoded)
             .expect_err("short public key must be rejected");
@@ -880,7 +841,7 @@ mod tests {
             current_revision: 2,
             config_hash: vec![0x07; 32],
             error: Some("fail".to_string()),
-            apply_mode: crate::proto::node::ConfigApplyMode::Noop as i32,
+            apply_mode: 0,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &push_response);
         let err = decode_control_frame::<ConfigPushResponse>(STREAM_CONFIG_PUSH, &encoded)
@@ -895,7 +856,6 @@ mod tests {
         let error_snapshot = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![],
-            owner_id: String::new(),
             revision: 0,
             config_hash: vec![],
             config: None,
@@ -916,7 +876,7 @@ mod tests {
             current_revision: 0,
             config_hash: vec![],
             error: Some("not the owner of this node".to_string()),
-            apply_mode: crate::proto::node::ConfigApplyMode::Noop as i32,
+            apply_mode: 0,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &error_response);
         decode_control_frame::<crate::proto::node::ConfigPushResponse>(
@@ -927,68 +887,11 @@ mod tests {
     }
 
     #[test]
-    fn config_apply_mode_roundtrip_all_variants() {
-        use crate::proto::node::ConfigApplyMode;
-
-        for (variant, label) in [
-            (ConfigApplyMode::Staged, "Staged"),
-            (ConfigApplyMode::Live, "Live"),
-            (ConfigApplyMode::Noop, "Noop"),
-        ] {
-            let response = ConfigPushResponse {
-                gen: NODE_PROTOCOL_GENERATION,
-                success: true,
-                current_revision: 1,
-                config_hash: vec![0xAA; 32],
-                error: None,
-                apply_mode: variant as i32,
-            };
-            let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &response);
-            let decoded: ConfigPushResponse = decode_control_frame(STREAM_CONFIG_PUSH, &encoded)
-                .expect("ConfigPushResponse must round-trip");
-            assert_eq!(
-                decoded.apply_mode, variant as i32,
-                "{label} must survive encode/decode round-trip"
-            );
-        }
-    }
-
-    #[test]
-    fn config_apply_mode_unknown_value_preserved_by_proto() {
-        use prost::Message as _;
-
-        let response = ConfigPushResponse {
-            gen: NODE_PROTOCOL_GENERATION,
-            success: true,
-            current_revision: 1,
-            config_hash: vec![0xAA; 32],
-            error: None,
-            apply_mode: 99,
-        };
-        let encoded = response.encode_to_vec();
-        let decoded = ConfigPushResponse::decode(encoded.as_slice()).expect("must decode");
-        assert_eq!(
-            decoded.apply_mode, 99,
-            "proto must preserve unknown enum values"
-        );
-    }
-
-    #[test]
-    fn config_apply_mode_default_is_unspecified() {
-        let response = ConfigPushResponse::default();
-        assert_eq!(
-            response.apply_mode, 0,
-            "default apply_mode must be 0 (Unspecified)"
-        );
-    }
-
-    #[test]
     fn config_push_valid_64_byte_signature_passes_validation() {
         let push_with_64_bytes = ConfigPush {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: "owner-1".to_string(),
             expected_revision: 0,
             config: Some(make_config_snapshot()),
             owner_signing_public_key: vec![0x03; 32],
@@ -1006,7 +909,6 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: "owner-1".to_string(),
             expected_revision: 0,
             config: Some(make_config_snapshot()),
             owner_signing_public_key: vec![0x03; 32],
@@ -1025,7 +927,6 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: "owner-1".to_string(),
             expected_revision: 0,
             config: Some(make_config_snapshot()),
             owner_signing_public_key: vec![0x03; 32],
@@ -1404,7 +1305,7 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: None,
+            owner_attestation: None,
         };
         let json = serde_json::to_vec(&vec![PeerAnnouncementV0::from(&ann)])
             .expect("JSON serialization must succeed");
@@ -1492,14 +1393,38 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: Some("owner-abc".to_string()),
+            owner_attestation: Some(crate::crypto::SignedNodeOwnership {
+                claim: crate::crypto::NodeOwnershipClaim {
+                    version: 1,
+                    cert_id: "cert-123".to_string(),
+                    owner_id: "owner-abc".to_string(),
+                    owner_sign_public_key: "11".repeat(32),
+                    node_endpoint_id: "22".repeat(32),
+                    issued_at_unix_ms: 10,
+                    expires_at_unix_ms: 20,
+                    node_label: Some("studio".to_string()),
+                    hostname_hint: Some("worker-01".to_string()),
+                },
+                signature: "33".repeat(64),
+            }),
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
-        assert_eq!(proto_pa.owner_id.as_deref(), Some("owner-abc"));
+        assert_eq!(
+            proto_pa
+                .owner_attestation
+                .as_ref()
+                .map(|att| att.owner_id.as_str()),
+            Some("owner-abc")
+        );
 
         let (_, roundtripped) =
             proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
-        assert_eq!(roundtripped.owner_id.as_deref(), Some("owner-abc"));
+        let roundtripped = roundtripped
+            .owner_attestation
+            .expect("owner attestation must round-trip");
+        assert_eq!(roundtripped.claim.owner_id, "owner-abc");
+        assert_eq!(roundtripped.claim.cert_id, "cert-123");
+        assert_eq!(roundtripped.claim.node_label.as_deref(), Some("studio"));
     }
 
     #[test]
@@ -1546,7 +1471,8 @@ mod tests {
     #[test]
     fn config_sync_v0_gossip_accepted() {
         // Prove that a V0 JSON gossip frame (PeerAnnouncementV0 without owner fields)
-        // is accepted by the v1 gossip decoder and produces a PeerAnnouncement with owner_id: None.
+        // is accepted by the v1 gossip decoder and produces a PeerAnnouncement without
+        // ownership metadata.
         let remote_id = EndpointId::from(SecretKey::from_bytes(&[0x33; 32]).public());
         let ann = super::PeerAnnouncement {
             addr: EndpointAddr {
@@ -1574,7 +1500,7 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: None,
+            owner_attestation: None,
         };
         let json = serde_json::to_vec(&vec![PeerAnnouncementV0::from(&ann)])
             .expect("JSON serialization must succeed");
@@ -1592,8 +1518,8 @@ mod tests {
             "decoded addr id must match remote_id"
         );
         assert_eq!(
-            decoded[0].1.owner_id, None,
-            "v0 gossip without owner_id must decode to None"
+            decoded[0].1.owner_attestation, None,
+            "v0 gossip without owner metadata must decode to None"
         );
         assert_eq!(
             decoded[0].1.serving_models.first().map(String::as_str),
@@ -1604,10 +1530,7 @@ mod tests {
 
     #[test]
     fn config_sync_v0_announcement_roundtrip() {
-        // Prove PeerAnnouncementV0 serde handles the owner_id field gracefully:
-        // - owner_id IS serialized in v0 JSON (uses #[serde(default)])
-        // - config_revision and config_hash are NOT part of PeerAnnouncementV0;
-        //   they were moved to the subscribe stream only (reserved in proto)
+        // PeerAnnouncementV0 must ignore ownership metadata so old JSON peers remain compatible.
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0x44; 32]).public());
         let ann = super::PeerAnnouncement {
             addr: EndpointAddr {
@@ -1635,102 +1558,35 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: Some("test-owner".to_string()),
+            owner_attestation: Some(crate::crypto::SignedNodeOwnership {
+                claim: crate::crypto::NodeOwnershipClaim {
+                    version: 1,
+                    cert_id: "cert-v0".to_string(),
+                    owner_id: "test-owner".to_string(),
+                    owner_sign_public_key: "44".repeat(32),
+                    node_endpoint_id: "55".repeat(32),
+                    issued_at_unix_ms: 10,
+                    expires_at_unix_ms: 20,
+                    node_label: None,
+                    hostname_hint: None,
+                },
+                signature: "66".repeat(64),
+            }),
         };
 
         let v0 = PeerAnnouncementV0::from(&ann);
         let json_str = serde_json::to_string(&v0).expect("JSON serialization must succeed");
-
-        // Assert owner_id IS in the JSON (config_revision is not a v0 field)
         assert!(
-            json_str.contains("\"owner_id\""),
-            "owner_id must be serialized in JSON"
-        );
-        assert!(
-            json_str.contains("\"test-owner\""),
-            "owner_id value must be in JSON"
+            !json_str.contains("owner_attestation"),
+            "v0 JSON must not serialize owner attestation metadata"
         );
 
-        // Deserialize an OLD-format JSON string (without owner_id field)
-        // Create a minimal valid old-format JSON by serializing a v0 without those fields
-        let old_ann = super::PeerAnnouncement {
-            addr: EndpointAddr {
-                id: peer_id,
-                addrs: Default::default(),
-            },
-            role: super::NodeRole::Worker,
-            models: vec![],
-            vram_bytes: 0,
-            model_source: None,
-            serving_models: vec![],
-            hosted_models: None,
-            available_models: vec![],
-            requested_models: vec![],
-            version: None,
-            model_demand: HashMap::new(),
-            mesh_id: None,
-            gpu_name: None,
-            hostname: None,
-            is_soc: None,
-            gpu_vram: None,
-            gpu_bandwidth_gbps: None,
-            available_model_metadata: vec![],
-            experts_summary: None,
-            available_model_sizes: HashMap::new(),
-            served_model_descriptors: vec![],
-            served_model_runtime: vec![],
-            owner_id: None,
-        };
-        let old_v0 = PeerAnnouncementV0::from(&old_ann);
-        let old_json = serde_json::to_string(&old_v0).expect("JSON serialization must succeed");
         let deserialized: PeerAnnouncementV0 =
-            serde_json::from_str(&old_json).expect("old JSON format must deserialize");
+            serde_json::from_str(&json_str).expect("v0 JSON format must deserialize");
         let restored = deserialized.into_internal();
         assert_eq!(
-            restored.owner_id, None,
-            "missing owner_id field must default to None"
-        );
-    }
-
-    #[test]
-    fn config_sync_mixed_version_proto_compat() {
-        // Prove proto3 unknown-field compatibility:
-        // Build a proto PeerAnnouncement WITH owner_id,
-        // encode to bytes, decode back, and verify fields are preserved.
-        use prost::Message as _;
-
-        let owner_id = "owner-x".to_string();
-        let endpoint_id = vec![0x55_u8; 32];
-
-        let proto_ann = crate::proto::node::PeerAnnouncement {
-            endpoint_id: endpoint_id.clone(),
-            owner_id: Some(owner_id.clone()),
-            ..Default::default()
-        };
-
-        let encoded = proto_ann.encode_to_vec();
-        let decoded = crate::proto::node::PeerAnnouncement::decode(encoded.as_slice())
-            .expect("proto decode must succeed");
-
-        assert_eq!(
-            decoded.owner_id.as_deref(),
-            Some("owner-x"),
-            "owner_id must round-trip through proto"
-        );
-
-        // Now test with a proto PeerAnnouncement WITHOUT owner_id
-        let proto_ann_empty = crate::proto::node::PeerAnnouncement {
-            endpoint_id: endpoint_id.clone(),
-            ..Default::default()
-        };
-
-        let encoded_empty = proto_ann_empty.encode_to_vec();
-        let decoded_empty = crate::proto::node::PeerAnnouncement::decode(encoded_empty.as_slice())
-            .expect("proto decode must succeed");
-
-        assert_eq!(
-            decoded_empty.owner_id, None,
-            "missing owner_id must default to None"
+            restored.owner_attestation, None,
+            "v0 JSON round-trip must drop owner attestation metadata"
         );
     }
 
@@ -1821,13 +1677,11 @@ mod tests {
 
         let signing_key = SigningKey::from_bytes(&[0x42u8; 32]);
         let verifying_key = signing_key.verifying_key();
-        let owner_id = crate::crypto::owner_id_from_verifying_key(&verifying_key);
 
         let push = ConfigPush {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: owner_id.clone(),
             expected_revision: 0,
             config: Some(NodeConfigSnapshot {
                 version: 1,
@@ -1866,13 +1720,11 @@ mod tests {
 
         let signing_key = SigningKey::from_bytes(&[0x43u8; 32]);
         let verifying_key = signing_key.verifying_key();
-        let owner_id = crate::crypto::owner_id_from_verifying_key(&verifying_key);
 
         let push = ConfigPush {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: owner_id.clone(),
             expected_revision: 0,
             config: Some(NodeConfigSnapshot {
                 version: 1,
@@ -1910,9 +1762,9 @@ mod tests {
 
     #[test]
     fn config_sync_v0_mesh_coexistence() {
-        // Prove round-trip through the V0 conversion path preserves owner_id.
-        // config_revision and config_hash are not part of PeerAnnouncementV0 gossip —
-        // they belong to the subscribe stream only.
+        // Prove round-trip through the V0 conversion path correctly handles config metadata.
+        // This documents the intentional behavior: config_hash is ephemeral in v0 gossip
+        // (lost in JSON round-trip due to skip_serializing).
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0x66; 32]).public());
 
         let ann = super::PeerAnnouncement {
@@ -1941,7 +1793,20 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: Some("mesh-owner".to_string()),
+            owner_attestation: Some(crate::crypto::SignedNodeOwnership {
+                claim: crate::crypto::NodeOwnershipClaim {
+                    version: 1,
+                    cert_id: "mesh-cert".to_string(),
+                    owner_id: "mesh-owner".to_string(),
+                    owner_sign_public_key: "aa".repeat(32),
+                    node_endpoint_id: "bb".repeat(32),
+                    issued_at_unix_ms: 10,
+                    expires_at_unix_ms: 20,
+                    node_label: None,
+                    hostname_hint: None,
+                },
+                signature: "cc".repeat(64),
+            }),
         };
 
         // Convert to V0, serialize to JSON, deserialize back, then convert to internal
@@ -1951,11 +1816,9 @@ mod tests {
             serde_json::from_slice(&json).expect("JSON deserialization must succeed");
         let restored = v0_deserialized[0].clone().into_internal();
 
-        // owner_id survives the round-trip
         assert_eq!(
-            restored.owner_id.as_deref(),
-            Some("mesh-owner"),
-            "owner_id must survive v0 JSON round-trip"
+            restored.owner_attestation, None,
+            "v0 JSON round-trip must drop owner attestation metadata"
         );
     }
 
@@ -1988,7 +1851,7 @@ mod tests {
             available_model_sizes: HashMap::new(),
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
-            owner_id: None,
+            owner_attestation: None,
         };
 
         let v0 = PeerAnnouncementV0::from(&ann);
@@ -1997,7 +1860,10 @@ mod tests {
             serde_json::from_slice(&json).expect("JSON deserialization must succeed");
         let internal = v0_deserialized[0].clone().into_internal();
 
-        assert_eq!(internal.owner_id, None, "v0 peer has no owner_id");
+        assert_eq!(
+            internal.owner_attestation, None,
+            "v0 peer has no ownership attestation"
+        );
     }
 
     #[test]
@@ -2007,7 +1873,6 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: "owner-1".to_string(),
             expected_revision: 0,
             config: Some(make_config_snapshot()),
             owner_signing_public_key: vec![0x03; 32],
@@ -2030,7 +1895,6 @@ mod tests {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
             target_node_id: vec![0x02; 32],
-            owner_id: "owner-1".to_string(),
             expected_revision: 0,
             config: Some(make_config_snapshot()),
             owner_signing_public_key: vec![0x03; 32],
@@ -2052,7 +1916,6 @@ mod tests {
         let response = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0x01; 32],
-            owner_id: "owner-1".to_string(),
             revision: 1,
             config_hash: vec![0x02; 32],
             config: None,
@@ -2075,7 +1938,6 @@ mod tests {
         let notification = ConfigUpdateNotification {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0x01; 32],
-            owner_id: "owner-1".to_string(),
             revision: 1,
             config_hash: vec![0x02; 32],
             config: None,

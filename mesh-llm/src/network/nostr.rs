@@ -74,7 +74,7 @@ impl std::fmt::Display for DiscoveredMesh {
         };
         write!(
             f,
-            "{}  {} node(s), {:.0}GB VRAM  serving: {}",
+            "{}  {} node(s), {:.0}GB capacity  serving: {}",
             self.listing.name.as_deref().unwrap_or("(unnamed)"),
             self.listing.node_count,
             vram_gb,

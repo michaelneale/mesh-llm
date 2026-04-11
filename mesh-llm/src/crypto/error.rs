@@ -23,6 +23,9 @@ pub enum CryptoError {
     #[error("invalid key material: {reason}")]
     InvalidKeyMaterial { reason: String },
 
+    #[error("missing owner passphrase and no interactive terminal is available")]
+    MissingPassphrase,
+
     #[error("OS keychain unavailable: {reason}")]
     KeychainUnavailable { reason: String },
 

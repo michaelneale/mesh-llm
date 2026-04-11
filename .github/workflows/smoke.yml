@@ -1,0 +1,131 @@
+name: Reusable Smoke Tests
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        required: true
+        type: string
+      mesh_binary_target:
+        required: true
+        type: string
+      cache_key_prefix:
+        required: true
+        type: string
+      workflow_cache_file:
+        required: true
+        type: string
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+  # Tiny model for integration tests (~138MB Q8_0, has chat template)
+  MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
+  MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
+  # Small MoE model for MoE split tests (~598MB Q2_K, qwen35moe architecture)
+  MOE_MODEL_URL: https://huggingface.co/Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF/resolve/a9b8adbec2cc87479c772dac1944f313b4036c26/qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf
+  MOE_MODEL_FILE: qwen3.5-moe-0.87B-d0.8B-Q2_K.gguf
+
+jobs:
+  smoke_tests:
+    name: Inference Smoke Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            .github/cache-version.txt
+            ci/requirements-ci-python.txt
+
+      - name: Install Python SDKs
+        run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
+
+      - name: Download Linux inference binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ci-artifacts/linux
+
+      - name: Stage binaries for inference smokes
+        run: |
+          mkdir -p "$(dirname "${{ inputs.mesh_binary_target }}")" llama.cpp/build/bin
+          cp "ci-artifacts/linux/${{ inputs.mesh_binary_target }}" "${{ inputs.mesh_binary_target }}"
+          cp ci-artifacts/linux/llama.cpp/build/bin/rpc-server llama.cpp/build/bin/rpc-server
+          cp ci-artifacts/linux/llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-server
+          cp ci-artifacts/linux/llama.cpp/build/bin/llama-moe-analyze llama.cpp/build/bin/llama-moe-analyze
+          cp ci-artifacts/linux/llama.cpp/build/bin/llama-moe-split llama.cpp/build/bin/llama-moe-split
+          chmod +x "${{ inputs.mesh_binary_target }}"
+          chmod +x llama.cpp/build/bin/rpc-server
+          chmod +x llama.cpp/build/bin/llama-server
+          chmod +x llama.cpp/build/bin/llama-moe-analyze
+          chmod +x llama.cpp/build/bin/llama-moe-split
+          test -x "${{ inputs.mesh_binary_target }}"
+          test -x llama.cpp/build/bin/rpc-server
+          test -x llama.cpp/build/bin/llama-server
+          test -x llama.cpp/build/bin/llama-moe-analyze
+          test -x llama.cpp/build/bin/llama-moe-split
+
+      - name: Cache integration model
+        id: cache-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: ${{ inputs.cache_key_prefix }}${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/smoke.yml', inputs.workflow_cache_file) }}
+
+      - name: Download integration model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
+          ls -lh ~/.models/$MODEL_FILE
+
+      - name: Smoke test (real inference)
+        run: |
+          scripts/ci-smoke-test.sh \
+            "${{ inputs.mesh_binary_target }}" \
+            llama.cpp/build/bin \
+            ~/.models/$MODEL_FILE
+
+      - name: OpenAI Python compat smoke
+        run: |
+          scripts/ci-compat-smoke.sh \
+            "${{ inputs.mesh_binary_target }}" \
+            llama.cpp/build/bin \
+            ~/.models/$MODEL_FILE
+
+      - name: Split-mode test (host/worker routing)
+        run: |
+          scripts/ci-split-test.sh \
+            "${{ inputs.mesh_binary_target }}" \
+            llama.cpp/build/bin \
+            ~/.models/$MODEL_FILE
+
+      - name: Cache MoE model
+        id: cache-moe-model
+        uses: actions/cache@v5
+        with:
+          path: ~/.models/${{ env.MOE_MODEL_FILE }}
+          key: ${{ inputs.cache_key_prefix }}${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/smoke.yml', inputs.workflow_cache_file) }}
+
+      - name: Download MoE model
+        if: steps.cache-moe-model.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.models
+          curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
+          ls -lh ~/.models/$MOE_MODEL_FILE
+
+      - name: MoE split test (expert sharding)
+        run: |
+          scripts/ci-moe-split-test.sh \
+            llama.cpp/build/bin \
+            ~/.models/$MOE_MODEL_FILE
+
+      - name: MoE mesh test (expert sharding end-to-end)
+        run: |
+          scripts/ci-moe-mesh-test.sh \
+            "${{ inputs.mesh_binary_target }}" \
+            llama.cpp/build/bin \
+            ~/.models/$MOE_MODEL_FILE

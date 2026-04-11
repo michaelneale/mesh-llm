@@ -9,17 +9,34 @@ just see local TCP sockets.
 
 ```
 src/
-├── main.rs        CLI, orchestration, startup flows (auto, idle, passive)
-├── mesh.rs        QUIC endpoint, gossip, peer management, mesh identity, request rates
-├── election.rs    Per-model host election, latency-aware tensor split, llama-server lifecycle
-├── proxy.rs       HTTP proxy plumbing: request parsing, model routing, response helpers
-├── api.rs         Mesh management API (:3131): status, events, discover, join
-├── tunnel.rs      TCP ↔ QUIC relay (RPC + HTTP), B2B rewrite map
-├── rewrite.rs     REGISTER_PEER interception and endpoint rewriting
-├── launch.rs      rpc-server and llama-server process management
-├── download.rs    Model catalog and HuggingFace download (reqwest, resume support)
-├── nostr.rs       Nostr publish/discover: mesh listings, smart auto-join, publish watchdog
-├── hardware.rs    GPU/host hardware detection: Collector trait, DefaultCollector, TegraCollector
+├── main.rs                  CLI args, orchestration (auto, idle, passive)
+├── lib.rs                   Crate root re-exports
+├── api/                     Management API (:3131): status, events, discover, join
+├── cli/                     Clap types, command parsing, command handlers
+├── crypto/                  Key management, envelope encryption, keychain
+├── inference/
+│   ├── election.rs          Per-model host election, tensor split, llama-server lifecycle
+│   ├── launch.rs            rpc-server and llama-server process management
+│   ├── moe.rs               MoE detection, expert rankings, split orchestration
+│   └── pipeline.rs          Inference pipeline coordination
+├── mesh/mod.rs              Node struct, QUIC endpoint, gossip, peer management, mesh identity
+├── models/
+│   ├── capabilities.rs      Vision/audio/multimodal/reasoning capability inference
+│   ├── catalog.rs           Model catalog and HuggingFace downloads
+│   ├── resolve.rs           Model path resolution, mmproj lookup
+│   └── ...                  GGUF parsing, inventory, search, topology
+├── network/
+│   ├── proxy.rs             HTTP proxy: request parsing, model routing, response helpers
+│   ├── router.rs            Request classification, model scoring, multimodal routing
+│   ├── tunnel.rs            TCP ↔ QUIC relay (RPC + HTTP), B2B rewrite map
+│   ├── nostr.rs             Nostr discovery, score_mesh(), smart_auto()
+│   ├── affinity.rs          Prefix-affinity request routing
+│   └── rewrite.rs           REGISTER_PEER interception and endpoint rewriting
+├── plugins/
+│   └── blobstore/           Request-scoped media object storage for multimodal
+├── protocol/                Wire protocol types, protobuf encoding/decoding
+├── runtime/                 Top-level process orchestration, startup coordination
+└── system/                  Hardware detection, benchmarking, self-update
 ```
 
 ## Node Roles

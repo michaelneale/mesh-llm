@@ -76,6 +76,8 @@ case "$os_name" in
             -DGGML_CUDA=OFF
             -DGGML_HIP=OFF
             -DGGML_METAL=OFF
+            # Release Linux CPU artifacts must stay portable across GitHub runners.
+            -DGGML_NATIVE=OFF
             -DGGML_VULKAN=OFF
         )
         ;;

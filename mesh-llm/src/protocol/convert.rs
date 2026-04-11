@@ -5,6 +5,69 @@ use crate::protocol::NODE_PROTOCOL_GENERATION;
 use iroh::{EndpointAddr, EndpointId};
 use std::collections::HashMap;
 
+fn local_owner_attestation_to_proto(
+    attestation: &crate::crypto::SignedNodeOwnership,
+) -> Option<crate::proto::node::SignedNodeOwnership> {
+    let owner_sign_public_key = match hex::decode(&attestation.claim.owner_sign_public_key) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(
+                "dropping local owner attestation from gossip: invalid owner_sign_public_key hex: {err}"
+            );
+            return None;
+        }
+    };
+    let node_endpoint_id = match hex::decode(&attestation.claim.node_endpoint_id) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(
+                "dropping local owner attestation from gossip: invalid node_endpoint_id hex: {err}"
+            );
+            return None;
+        }
+    };
+    let signature = match hex::decode(&attestation.signature) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::warn!(
+                "dropping local owner attestation from gossip: invalid signature hex: {err}"
+            );
+            return None;
+        }
+    };
+    Some(crate::proto::node::SignedNodeOwnership {
+        version: attestation.claim.version,
+        cert_id: attestation.claim.cert_id.clone(),
+        owner_id: attestation.claim.owner_id.clone(),
+        owner_sign_public_key,
+        node_endpoint_id,
+        issued_at_unix_ms: attestation.claim.issued_at_unix_ms,
+        expires_at_unix_ms: attestation.claim.expires_at_unix_ms,
+        node_label: attestation.claim.node_label.clone(),
+        hostname_hint: attestation.claim.hostname_hint.clone(),
+        signature,
+    })
+}
+
+fn proto_owner_attestation_to_local(
+    attestation: &crate::proto::node::SignedNodeOwnership,
+) -> crate::crypto::SignedNodeOwnership {
+    crate::crypto::SignedNodeOwnership {
+        claim: crate::crypto::NodeOwnershipClaim {
+            version: attestation.version,
+            cert_id: attestation.cert_id.clone(),
+            owner_id: attestation.owner_id.clone(),
+            owner_sign_public_key: hex::encode(&attestation.owner_sign_public_key),
+            node_endpoint_id: hex::encode(&attestation.node_endpoint_id),
+            issued_at_unix_ms: attestation.issued_at_unix_ms,
+            expires_at_unix_ms: attestation.expires_at_unix_ms,
+            node_label: attestation.node_label.clone(),
+            hostname_hint: attestation.hostname_hint.clone(),
+        },
+        signature: hex::encode(&attestation.signature),
+    }
+}
+
 fn local_source_kind_to_proto(kind: crate::mesh::ModelSourceKind) -> i32 {
     match kind {
         crate::mesh::ModelSourceKind::Catalog => {
@@ -60,44 +123,6 @@ fn proto_capability_level_to_local(level: i32) -> crate::models::CapabilityLevel
         crate::proto::node::CapabilityLevel::Supported => crate::models::CapabilityLevel::Supported,
         crate::proto::node::CapabilityLevel::None
         | crate::proto::node::CapabilityLevel::Unspecified => crate::models::CapabilityLevel::None,
-    }
-}
-
-pub(crate) fn local_apply_mode_to_proto(
-    mode: crate::runtime::config_state::ConfigApplyMode,
-) -> i32 {
-    match mode {
-        crate::runtime::config_state::ConfigApplyMode::Staged => {
-            crate::proto::node::ConfigApplyMode::Staged as i32
-        }
-        crate::runtime::config_state::ConfigApplyMode::Live => {
-            crate::proto::node::ConfigApplyMode::Live as i32
-        }
-        crate::runtime::config_state::ConfigApplyMode::Noop => {
-            crate::proto::node::ConfigApplyMode::Noop as i32
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) fn proto_apply_mode_to_local(
-    mode: i32,
-) -> crate::runtime::config_state::ConfigApplyMode {
-    match crate::proto::node::ConfigApplyMode::try_from(mode)
-        .unwrap_or(crate::proto::node::ConfigApplyMode::Unspecified)
-    {
-        crate::proto::node::ConfigApplyMode::Staged => {
-            crate::runtime::config_state::ConfigApplyMode::Staged
-        }
-        crate::proto::node::ConfigApplyMode::Live => {
-            crate::runtime::config_state::ConfigApplyMode::Live
-        }
-        crate::proto::node::ConfigApplyMode::Noop => {
-            crate::runtime::config_state::ConfigApplyMode::Noop
-        }
-        crate::proto::node::ConfigApplyMode::Unspecified => {
-            crate::runtime::config_state::ConfigApplyMode::Staged
-        }
     }
 }
 
@@ -296,7 +321,10 @@ pub(crate) fn local_ann_to_proto_ann(
         served_model_identities,
         served_model_descriptors,
         served_model_runtime,
-        owner_id: ann.owner_id.clone(),
+        owner_attestation: ann
+            .owner_attestation
+            .as_ref()
+            .and_then(local_owner_attestation_to_proto),
     }
 }
 
@@ -374,7 +402,6 @@ pub(crate) fn proto_ann_to_local(
             .iter()
             .map(proto_runtime_descriptor_to_local)
             .collect(),
-        owner_id: pa.owner_id.clone(),
         served_model_descriptors: if !pa.served_model_descriptors.is_empty() {
             let descriptors: Vec<_> = pa
                 .served_model_descriptors
@@ -434,6 +461,10 @@ pub(crate) fn proto_ann_to_local(
                 .map(legacy_descriptor_from_identity)
                 .collect()
         },
+        owner_attestation: pa
+            .owner_attestation
+            .as_ref()
+            .map(proto_owner_attestation_to_local),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

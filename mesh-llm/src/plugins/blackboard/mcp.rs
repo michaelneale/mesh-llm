@@ -7,9 +7,7 @@
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{Implementation, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router,
-    transport::io::stdio,
-    ServerHandler, ServiceExt,
+    tool, tool_handler, tool_router, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -248,14 +246,6 @@ fn format_items(items: &[super::BlackboardItem]) -> String {
         out.push_str("\n\n");
     }
     out.trim_end().to_string()
-}
-
-/// Run the MCP server over stdio.
-pub async fn run_mcp_server(port: u16) -> anyhow::Result<()> {
-    let server = BlackboardServer::new(port);
-    let transport = stdio();
-    server.serve(transport).await?.waiting().await?;
-    Ok(())
 }
 
 #[cfg(test)]

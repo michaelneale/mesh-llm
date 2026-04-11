@@ -4,16 +4,13 @@ use std::path::{Path, PathBuf};
 use crate::plugin::{load_config, validate_config, MeshConfig};
 use crate::protocol::convert::{canonical_config_hash, mesh_config_to_proto};
 
-/// How a config push was applied by the receiving node.
-///
-/// - `Staged` — config written to disk; takes effect on next restart.
-/// - `Live`   — config applied immediately without restart (future).
-/// - `Noop`   — config identical to what is already on disk; nothing changed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Mirrors the `ConfigApplyMode` proto enum; kept in the domain layer so
+/// `config_state` does not depend on the generated proto crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConfigApplyMode {
+    /// Config written to disk and revision counter advanced.
     Staged,
-    #[allow(dead_code)]
-    Live,
+    /// No-op: the incoming config was identical to the current one.
     Noop,
 }
 
@@ -26,6 +23,11 @@ pub(crate) enum ApplyResult {
     },
     RevisionConflict {
         current_revision: u64,
+    },
+    PersistedWithRevisionTrackingError {
+        revision: u64,
+        hash: [u8; 32],
+        error: String,
     },
     ValidationError(String),
     PersistError(String),
@@ -91,6 +93,8 @@ fn atomic_write(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     file.write_all(contents)?;
     file.sync_all()?;
     drop(file);
+    // TODO(windows): this remove+rename sequence is not truly atomic on Windows.
+    // Replace with MoveFileExW(MOVEFILE_REPLACE_EXISTING) or tempfile::persist_noclobber-like behavior.
     #[cfg(windows)]
     if target.exists() {
         std::fs::remove_file(target)?;
@@ -185,11 +189,14 @@ impl ConfigState {
         if let Err(e) = atomic_write(&sidecar, new_revision.to_string().as_bytes()) {
             self.config = new_config;
             self.config_hash = new_hash;
-            self.last_write_hash = new_hash;
             self.revision = new_revision;
-            return ApplyResult::PersistError(format!(
-                "failed to write revision sidecar: {e}; config persisted and in-memory revision advanced, but on-disk revision tracking may be stale"
-            ));
+            return ApplyResult::PersistedWithRevisionTrackingError {
+                revision: self.revision,
+                hash: self.config_hash,
+                error: format!(
+                    "failed to write revision sidecar: {e}; config persisted and in-memory revision advanced, but on-disk revision tracking may be stale"
+                ),
+            };
         }
 
         self.config = new_config;
@@ -427,7 +434,7 @@ mod tests {
                 assert_eq!(
                     apply_mode,
                     ConfigApplyMode::Staged,
-                    "first apply must be Staged"
+                    "first apply must save to disk"
                 );
                 revision
             }
@@ -444,59 +451,17 @@ mod tests {
                 assert_eq!(
                     apply_mode,
                     ConfigApplyMode::Noop,
-                    "identical config must be Noop"
+                    "no-op apply must not save to disk"
                 );
                 assert_eq!(
                     revision, rev_after_first,
                     "revision must not change on no-op"
                 );
             }
-            other => panic!("expected Applied with Noop, got {other:?}"),
+            other => panic!("expected Applied with Noop apply_mode, got {other:?}"),
         }
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn config_apply_mode_conversion_roundtrip() {
-        use crate::protocol::convert::{local_apply_mode_to_proto, proto_apply_mode_to_local};
-
-        for mode in [
-            ConfigApplyMode::Staged,
-            ConfigApplyMode::Live,
-            ConfigApplyMode::Noop,
-        ] {
-            let proto_val = local_apply_mode_to_proto(mode);
-            let back = proto_apply_mode_to_local(proto_val);
-            assert_eq!(
-                back, mode,
-                "{mode:?} must survive local→proto→local round-trip"
-            );
-        }
-    }
-
-    #[test]
-    fn config_apply_mode_unspecified_maps_to_staged() {
-        use crate::protocol::convert::proto_apply_mode_to_local;
-
-        let result = proto_apply_mode_to_local(0);
-        assert_eq!(
-            result,
-            ConfigApplyMode::Staged,
-            "Unspecified (0) must map to Staged as safe default"
-        );
-    }
-
-    #[test]
-    fn config_apply_mode_unknown_value_maps_to_staged() {
-        use crate::protocol::convert::proto_apply_mode_to_local;
-
-        let result = proto_apply_mode_to_local(99);
-        assert_eq!(
-            result,
-            ConfigApplyMode::Staged,
-            "unknown proto value must fall back to Staged"
-        );
     }
 
     #[test]

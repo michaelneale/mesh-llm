@@ -562,7 +562,7 @@ fn should_attempt_local_micro_analyze(
     let fits_with_headroom = local_vram_budget >= (model_bytes as f64 * 1.1) as u64;
     if !fits_with_headroom {
         eprintln!(
-            "🧩 [{model_name}] Skipping local micro-analyze: model needs about {:.1}GB with headroom, local VRAM is {:.1}GB",
+            "🧩 [{model_name}] Skipping local micro-analyze: model needs about {:.1}GB with headroom, local capacity is {:.1}GB",
             model_bytes as f64 * 1.1 / 1e9,
             local_vram_budget as f64 / 1e9
         );
@@ -1263,7 +1263,7 @@ pub async fn election_loop(
             return;
         } else {
             eprintln!(
-                "🧩 [{}] MoE model fits locally ({:.1}GB VRAM for {:.1}GB model) — no split needed",
+                "🧩 [{}] MoE model fits locally ({:.1}GB capacity for {:.1}GB model) — no split needed",
                 model_name,
                 my_vram as f64 / 1e9,
                 model_bytes as f64 / 1e9
@@ -1427,7 +1427,7 @@ pub async fn election_loop(
 
                 if total_vram < min_vram {
                     eprintln!(
-                        "⏳ [{}] Waiting for more peers — need {:.1}GB VRAM, have {:.1}GB",
+                        "⏳ [{}] Waiting for more peers — need {:.1}GB capacity, have {:.1}GB",
                         model_name,
                         min_vram as f64 / 1e9,
                         total_vram as f64 / 1e9
@@ -1443,7 +1443,7 @@ pub async fn election_loop(
                 }
 
                 eprintln!(
-                    "🗳 [{}] Elected as host ({:.1}GB VRAM for {:.1}GB model, {} node(s), split)",
+                    "🗳 [{}] Elected as host ({:.1}GB capacity for {:.1}GB model, {} node(s), split)",
                     model_name,
                     total_vram as f64 / 1e9,
                     model_bytes as f64 / 1e9,
@@ -1451,7 +1451,7 @@ pub async fn election_loop(
                 );
             } else {
                 eprintln!(
-                    "🗳 [{}] Running as host ({:.1}GB VRAM for {:.1}GB model, serving entirely)",
+                    "🗳 [{}] Running as host ({:.1}GB capacity for {:.1}GB model, serving entirely)",
                     model_name,
                     my_vram as f64 / 1e9,
                     model_bytes as f64 / 1e9
@@ -1917,7 +1917,7 @@ async fn moe_election_loop(
                     .await;
                 node.regossip().await;
                 eprintln!(
-                    "🧩 [{}] MoE model — serving entirely ({:.1}GB fits in {:.1}GB VRAM)",
+                    "🧩 [{}] MoE model — serving entirely ({:.1}GB fits in {:.1}GB capacity)",
                     model_name,
                     model_bytes as f64 / 1e9,
                     my_vram as f64 / 1e9
@@ -1995,7 +1995,7 @@ async fn moe_election_loop(
                 node.set_model_runtime_context_length(&model_name, None)
                     .await;
                 node.regossip().await;
-                eprintln!("⚠️  [{}] MoE model too large to serve entirely ({:.1}GB model, {:.1}GB VRAM) — waiting for peers",
+                eprintln!("⚠️  [{}] MoE model too large to serve entirely ({:.1}GB model, {:.1}GB capacity) — waiting for peers",
                     model_name, model_bytes as f64 / 1e9, my_vram as f64 / 1e9);
                 on_change(false, false);
             }
@@ -2334,7 +2334,7 @@ async fn start_llama(
                 .map(|r| format!("{}ms", r))
                 .unwrap_or("?ms".to_string());
             eprintln!(
-                "  ✓ Adding {} — {:.1}GB VRAM, RTT {rtt_str}",
+                "  ✓ Adding {} — {:.1}GB capacity, RTT {rtt_str}",
                 p.id.fmt_short(),
                 p.vram_bytes as f64 / 1e9
             );
@@ -2342,7 +2342,7 @@ async fn start_llama(
         }
         if accumulated_vram < min_vram {
             eprintln!(
-                "  ⚠ Total VRAM {:.1}GB still short of {:.1}GB — using all {} candidates",
+                "  ⚠ Total capacity {:.1}GB still short of {:.1}GB — using all {} candidates",
                 accumulated_vram as f64 / 1e9,
                 min_vram as f64 / 1e9,
                 candidates.len()
@@ -2358,7 +2358,7 @@ async fn start_llama(
             .count();
         if worker_count > 0 {
             eprintln!(
-                "  Model fits on host ({:.1}GB VRAM for {:.1}GB model) — serving entirely",
+                "  Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely",
                 my_vram as f64 / 1e9,
                 model_bytes as f64 / 1e9
             );
@@ -2426,7 +2426,7 @@ async fn start_llama(
         );
         Some(split_str)
     } else {
-        eprintln!("  Serving entirely ({:.0}GB VRAM)", my_vram_f / 1e9);
+        eprintln!("  Serving entirely ({:.0}GB capacity)", my_vram_f / 1e9);
         None
     };
 

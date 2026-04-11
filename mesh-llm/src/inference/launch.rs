@@ -901,7 +901,7 @@ pub async fn start_llama_server(
     let vram_after_model = my_vram.saturating_sub(host_model_bytes);
     let ctx_size = compute_context_size(ctx_size_override, model_bytes, my_vram, total_group_vram);
     tracing::info!(
-        "Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB VRAM, {:.1}GB free{})",
+        "Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB capacity, {:.1}GB free{})",
         model_bytes as f64 / GB as f64,
         host_model_bytes as f64 / GB as f64,
         my_vram as f64 / GB as f64,

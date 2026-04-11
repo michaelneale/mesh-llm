@@ -1,0 +1,164 @@
+name: GPU warm cache job
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        required: true
+        type: string
+      cache_label:
+        required: true
+        type: string
+      container_image:
+        required: true
+        type: string
+      llama_sha:
+        required: true
+        type: string
+      cache_key:
+        required: true
+        type: string
+      build_recipe:
+        required: true
+        type: string
+      build_args:
+        required: false
+        type: string
+        default: ''
+      extra_env:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+
+jobs:
+  warm_cache:
+    name: ${{ inputs.job_name }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ inputs.container_image }}
+
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libdbus-1-dev \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - name: Build UI
+        working-directory: mesh-llm/ui
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Use resolved llama.cpp upstream SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.llama_sha }}" ]]; then
+            echo "Reusable GPU warm-cache workflow received an empty llama_sha input" >&2
+            exit 1
+          fi
+          echo "Using llama.cpp upstream SHA: ${{ inputs.llama_sha }}"
+
+      - name: Restore llama.cpp ${{ inputs.cache_label }} build
+        id: llama_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ inputs.cache_key }}
+
+      - name: Short-circuit if ${{ inputs.cache_label }} cache already warm
+        if: steps.llama_cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✓ llama.cpp ${{ inputs.cache_label }} cache already warm for SHA ${{ inputs.llama_sha }}"
+          ls -lh llama.cpp/build/bin/ | head -20
+
+      - name: Build ${{ inputs.cache_label }} backend (full build)
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ inputs.llama_sha }}
+          BUILD_RECIPE: ${{ inputs.build_recipe }}
+          BUILD_ARGS: ${{ inputs.build_args }}
+          EXTRA_ENV: ${{ inputs.extra_env }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$EXTRA_ENV" ]]; then
+            while IFS= read -r line; do
+              [[ -z "$line" ]] && continue
+              export "$line"
+            done <<< "$EXTRA_ENV"
+          fi
+          if [[ -n "$BUILD_ARGS" ]]; then
+            read -r -a build_args <<< "$BUILD_ARGS"
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE" "${build_args[@]}"
+          else
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE"
+          fi
+
+      - name: Verify ${{ inputs.cache_label }} binaries are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d llama.cpp/build/bin ]]; then
+            echo "ERROR: llama.cpp/build/bin is missing after build" >&2
+            exit 1
+          fi
+          ls -lh llama.cpp/build/bin/
+
+      - name: Save llama.cpp ${{ inputs.cache_label }} build
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cache.outputs.cache-primary-key }}
+
+      - name: Verify llama.cpp ${{ inputs.cache_label }} cache write
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@v5
+        with:
+          path: llama.cpp/build/bin
+          key: ${{ steps.llama_cache.outputs.cache-primary-key }}
+          lookup-only: true
+          fail-on-cache-miss: true

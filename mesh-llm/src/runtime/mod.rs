@@ -13,6 +13,10 @@ use self::local::{
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
 use crate::cli::{Cli, Command, RuntimeSurface};
+use crate::crypto::{
+    default_keystore_path, default_trust_store_path, keystore_exists, keystore_metadata,
+    load_keystore, load_owner_keypair_from_keychain, load_trust_store, OwnerKeychainLoadError,
+};
 use crate::inference::{election, launch, moe};
 use crate::mesh;
 use crate::mesh::NodeRole;
@@ -24,7 +28,9 @@ use crate::system::{autoupdate, benchmark, hardware};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StartupModelSpec {
@@ -39,6 +45,98 @@ struct StartupModelPlan {
     resolved_path: PathBuf,
     mmproj_path: Option<PathBuf>,
     ctx_size: Option<u32>,
+}
+
+fn resolve_runtime_owner_key_path(cli: &Cli) -> Result<Option<PathBuf>> {
+    if let Some(path) = cli.owner_key.clone() {
+        return Ok(Some(path));
+    }
+
+    let default_path = default_keystore_path()?;
+    if keystore_exists(&default_path) {
+        Ok(Some(default_path))
+    } else {
+        Ok(None)
+    }
+}
+
+fn resolve_owner_passphrase(path: &Path) -> Result<Option<Zeroizing<String>>> {
+    let info = keystore_metadata(path)?;
+    if !info.encrypted {
+        return Ok(None);
+    }
+
+    if let Ok(passphrase) = std::env::var("MESH_LLM_OWNER_PASSPHRASE") {
+        return Ok(Some(Zeroizing::new(passphrase)));
+    }
+
+    if std::io::stdin().is_terminal() && std::io::stderr().is_terminal() {
+        let prompt = format!("Enter owner keystore passphrase for {}: ", path.display());
+        let passphrase = rpassword::prompt_password_stderr(&prompt)?;
+        return Ok(Some(Zeroizing::new(passphrase)));
+    }
+
+    Err(crate::crypto::CryptoError::MissingPassphrase.into())
+}
+
+fn load_owner_keypair_for_runtime(path: &Path) -> Result<crate::crypto::OwnerKeypair> {
+    let info = keystore_metadata(path)?;
+    if info.encrypted && std::env::var("MESH_LLM_OWNER_PASSPHRASE").is_err() {
+        match load_owner_keypair_from_keychain(path) {
+            Ok(keypair) => return Ok(keypair),
+            Err(OwnerKeychainLoadError::NoEntry)
+            | Err(OwnerKeychainLoadError::Crypto(crate::crypto::CryptoError::DecryptionFailed))
+            | Err(OwnerKeychainLoadError::Crypto(
+                crate::crypto::CryptoError::KeychainUnavailable { .. },
+            ))
+            | Err(OwnerKeychainLoadError::Crypto(
+                crate::crypto::CryptoError::KeychainAccessDenied { .. },
+            )) => {}
+            Err(OwnerKeychainLoadError::Crypto(err)) => {
+                return Err(err)
+                    .with_context(|| format!("Failed to load owner keystore {}", path.display()));
+            }
+        }
+    }
+
+    let passphrase = resolve_owner_passphrase(path)?;
+    load_keystore(path, passphrase.as_deref().map(|value| value.as_str()))
+        .with_context(|| format!("Failed to load owner keystore {}", path.display()))
+}
+
+fn owner_runtime_config(cli: &Cli) -> Result<mesh::OwnerRuntimeConfig> {
+    let trust_store_path = default_trust_store_path()?;
+    let trust_store = load_trust_store(&trust_store_path)
+        .with_context(|| format!("Failed to load trust store {}", trust_store_path.display()))?
+        .merged_with_trusted_owners(&cli.trust_owner);
+    let trust_policy = cli.trust_policy.unwrap_or(trust_store.policy);
+
+    let keypair = match resolve_runtime_owner_key_path(cli)? {
+        Some(path) => match load_owner_keypair_for_runtime(&path) {
+            Ok(keypair) => Some(keypair),
+            Err(err) if !cli.owner_required => {
+                eprintln!(
+                    "⚠️ Owner identity unavailable at {}: {err}\n  Starting without owner attestation.",
+                    path.display()
+                );
+                None
+            }
+            Err(err) => return Err(err),
+        },
+        None if cli.owner_required => {
+            anyhow::bail!(
+                "Owner identity is required but no keystore was found. Use --owner-key or run `mesh-llm auth init`."
+            );
+        }
+        None => None,
+    };
+
+    Ok(mesh::OwnerRuntimeConfig {
+        keypair,
+        node_label: cli.node_label.clone(),
+        trust_store,
+        trust_policy,
+    })
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -841,12 +939,15 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
 
 pub(crate) async fn run_plugin_mcp(cli: &Cli) -> Result<()> {
     let resolved_plugins = load_resolved_plugins(cli)?;
+    let owner_config = owner_runtime_config(cli)?;
     let (node, _channels) = mesh::Node::start(
         NodeRole::Client,
         &cli.relay,
         cli.bind_port,
         Some(0.0),
         cli.enumerate_host,
+        Some(owner_config),
+        cli.config.as_deref(),
     )
     .await?;
     node.start_accepting();
@@ -903,6 +1004,7 @@ async fn run_auto(
     } else {
         NodeRole::Worker
     };
+    let owner_config = owner_runtime_config(&cli)?;
     // Clients report 0 VRAM so they're never assigned a model to serve
     let max_vram = if is_client { Some(0.0) } else { cli.max_vram };
     let (node, channels) = mesh::Node::start(
@@ -911,6 +1013,8 @@ async fn run_auto(
         cli.bind_port,
         max_vram,
         cli.enumerate_host,
+        Some(owner_config),
+        cli.config.as_deref(),
     )
     .await?;
     node.start_accepting();
@@ -1111,7 +1215,7 @@ async fn run_auto(
             let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
             if !pack.is_empty() {
                 eprintln!(
-                    "📋 No unserved demand — serving {} for {:.0}GB VRAM",
+                    "📋 No unserved demand — serving {} for {:.0}GB capacity",
                     pack[0],
                     node.vram_bytes() as f64 / 1e9
                 );
@@ -1145,7 +1249,7 @@ async fn run_auto(
             } else {
                 eprintln!("💤 No matching model on disk — running as standby GPU node");
                 eprintln!(
-                    "   VRAM: {:.1}GB, models on disk: {:?}",
+                    "   Capacity: {:.1}GB, models on disk: {:?}",
                     node.vram_bytes() as f64 / 1e9,
                     local_models
                 );

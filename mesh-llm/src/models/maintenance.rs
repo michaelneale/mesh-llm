@@ -73,12 +73,14 @@ pub fn run_update(repo: Option<&str>, all: bool, check: bool) -> Result<()> {
                 eprintln!("   local: {}", short_revision(&repo.local_revision));
                 eprintln!("   latest: {}", short_revision(&remote_revision));
                 eprintln!("   update: mesh-llm models updates {}", repo.repo_id);
+                eprintln!();
             }
         } else {
             eprintln!("🧭 [{}/{}] {}", index + 1, total_selected, repo.repo_id);
             let counts = update_cached_repo(&api, &repo)?;
             refresh_totals.refreshed += counts.refreshed;
             refresh_totals.missing_meta += counts.missing_meta;
+            eprintln!();
         }
     }
     if check {

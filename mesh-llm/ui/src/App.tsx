@@ -51,6 +51,7 @@ import {
   RotateCcw,
   Send,
   Server,
+  Shield,
   Square,
   Sparkles,
   Brain,
@@ -127,7 +128,17 @@ import {
   getAttachmentSendIssue,
   validateAttachmentFile,
 } from "./lib/attachments";
-import { createRafBatcher } from "./lib/streaming";
+import {
+  canRunBrowserVision,
+  describeImage,
+} from "./lib/image-describe";
+import {
+  dataUrlToArrayBuffer,
+  extractPdfText,
+  isPdfMimeType,
+  renderPdfPagesToImages,
+} from "./lib/pdf";
+import { createRafBatcher, hasBlobContent, parseApiErrorBody } from "./lib/streaming";
 import { cn } from "./lib/utils";
 import {
   TOPOLOGY_LAYOUT_OPTIONS,
@@ -230,7 +241,18 @@ type NodeSidebarRecord = {
   llamaReady?: boolean;
   apiPort?: number;
   inflightRequests?: number;
+  owner: Ownership;
   privacyLimited: boolean;
+};
+
+type Ownership = {
+  owner_id?: string;
+  cert_id?: string;
+  status: string;
+  verified: boolean;
+  expires_at_unix_ms?: number;
+  node_label?: string;
+  hostname_hint?: string;
 };
 
 function modelDisplayName(model?: MeshModel | null) {
@@ -316,6 +338,7 @@ function reasoningBadge(model?: MeshModel | null) {
 
 type Peer = {
   id: string;
+  owner?: Ownership;
   role: string;
   models: string[];
   available_models?: string[];
@@ -334,6 +357,7 @@ type StatusPayload = {
   version?: string;
   latest_version?: string | null;
   node_id: string;
+  owner?: Ownership;
   token: string;
   node_status: string;
   is_host: boolean;
@@ -374,6 +398,14 @@ type ChatAttachment = {
   fileName?: string;
   status?: ChatAttachmentStatus;
   error?: string;
+  /** Extracted text from a PDF (populated at attach time). */
+  extractedText?: string;
+  /** Summary for the attachment preview (e.g. "12 pages, 4,230 words"). */
+  extractionSummary?: string;
+  /** Page images rendered from a scanned PDF (data URLs). */
+  renderedPageImages?: string[];
+  /** Browser-generated image description (when no vision model is warm). */
+  imageDescription?: string;
 };
 
 type ChatMessage = {
@@ -656,6 +688,21 @@ function sanitizeAttachment(raw: unknown): ChatAttachment | null {
         ? item.status
         : undefined,
     error: typeof item.error === "string" ? item.error : undefined,
+    extractedText:
+      typeof item.extractedText === "string" ? item.extractedText : undefined,
+    extractionSummary:
+      typeof item.extractionSummary === "string"
+        ? item.extractionSummary
+        : undefined,
+    renderedPageImages:
+      Array.isArray(item.renderedPageImages) &&
+      item.renderedPageImages.every((v) => typeof v === "string")
+        ? (item.renderedPageImages as string[])
+        : undefined,
+    imageDescription:
+      typeof item.imageDescription === "string"
+        ? item.imageDescription
+        : undefined,
   };
 }
 
@@ -1038,12 +1085,41 @@ export function App() {
     if (selectedModel) return multimodalModels.has(selectedModel);
     return meshModels.some((m) => m.status === "warm" && m.multimodal);
   }, [meshModels, multimodalModels, selectedModel]);
-  const pendingKinds = useMemo(
-    () => new Set(pendingAttachments.map((attachment) => attachment.kind)),
+  const pendingKinds = useMemo(() => {
+    const kinds = new Set<"image" | "audio" | "file">();
+    for (const attachment of pendingAttachments) {
+      // PDFs with extracted text or rendered page images don't need
+      // model multimodal support — they'll be sent as input_text or
+      // input_image blocks, not input_file.
+      if (attachment.extractedText || attachment.renderedPageImages?.length) {
+        if (attachment.renderedPageImages?.length) kinds.add("image");
+        continue;
+      }
+      // Images with a browser-generated description (or one in progress)
+      // will be sent as input_text — no vision model needed.
+      if (
+        attachment.kind === "image" &&
+        (attachment.imageDescription || attachment.status === "uploading")
+      ) {
+        continue;
+      }
+      kinds.add(attachment.kind);
+    }
+    return kinds;
+  }, [pendingAttachments]);
+  const imageDescriptionInProgress = useMemo(
+    () =>
+      pendingAttachments.some(
+        (a) =>
+          a.kind === "image" &&
+          a.status === "uploading" &&
+          !a.imageDescription,
+      ),
     [pendingAttachments],
   );
   const attachmentSendIssue = useMemo(() => {
     if (!pendingAttachments.length || !status) return null;
+    if (imageDescriptionInProgress) return "Describing image...";
     return getAttachmentSendIssue({
       pendingKinds,
       selectedModel,
@@ -1437,6 +1513,50 @@ export function App() {
   ) {
     const contentBlocks: Array<Record<string, unknown>> = [];
     for (const attachment of attachments) {
+      // PDF with extracted text → inject as input_text (no upload needed).
+      if (attachment.extractedText) {
+        const label = attachment.fileName
+          ? `[Content from ${attachment.fileName}]`
+          : "[Extracted PDF content]";
+        contentBlocks.push({
+          type: "input_text",
+          text: `${label}\n\n${attachment.extractedText}`,
+        });
+        continue;
+      }
+
+      // Image described locally → inject description as input_text.
+      if (attachment.kind === "image" && attachment.imageDescription) {
+        contentBlocks.push({
+          type: "input_text",
+          text: attachment.imageDescription,
+        });
+        continue;
+      }
+
+      // Scanned PDF rendered as images → inject each page as input_image.
+      if (attachment.renderedPageImages?.length) {
+        for (const pageDataUrl of attachment.renderedPageImages) {
+          onStatusChange?.(attachment.id, {
+            status: "uploading",
+            error: undefined,
+          });
+          const upload = await uploadRequestObject({
+            requestId,
+            dataUrl: pageDataUrl,
+            fileName: attachment.fileName,
+          });
+          const url = `mesh://blob/${clientId}/${upload.token}`;
+          contentBlocks.push({ type: "input_image", image_url: url });
+        }
+        onStatusChange?.(attachment.id, {
+          status: "pending",
+          error: undefined,
+        });
+        continue;
+      }
+
+      // Regular attachment (image, audio, non-PDF file).
       onStatusChange?.(attachment.id, { status: "uploading", error: undefined });
       try {
         const upload = await uploadRequestObject({
@@ -1538,9 +1658,13 @@ export function App() {
       const MAX_RETRIES = 3;
       const RETRY_DELAYS = [1000, 2000, 4000];
       const RETRYABLE = new Set([500, 502, 503]);
+      // Detect multimodal requests — blob tokens are single-use so retrying
+      // with the same tokens will always fail with "Unknown or expired blob
+      // token".  Skip the retry loop for these requests.
+      const effectiveMaxRetries = hasBlobContent(requestInput) ? 1 : MAX_RETRIES;
       let response: Response | null = null;
 
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      for (let attempt = 0; attempt < effectiveMaxRetries; attempt++) {
         response = await fetch("/api/responses", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1556,13 +1680,19 @@ export function App() {
           }),
         });
         if (response.ok && response.body) break;
-        if (!RETRYABLE.has(response.status) || attempt === MAX_RETRIES - 1)
+        if (!RETRYABLE.has(response.status) || attempt === effectiveMaxRetries - 1)
           break;
         await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
       }
 
-      if (!response?.ok || !response?.body)
-        throw new Error(`HTTP ${response?.status ?? "unknown"}`);
+      if (!response?.ok || !response?.body) {
+        // Try to extract the real error message from the response body
+        // instead of discarding it and showing only the status code.
+        const errorMessage = response
+          ? await parseApiErrorBody(response)
+          : "HTTP unknown";
+        throw new Error(errorMessage);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -1740,11 +1870,13 @@ export function App() {
     if ((!trimmed && pendingAttachments.length === 0) || !status)
       return;
     if (isSending) {
+      // Interrupt the current stream and slot this message in immediately.
+      // The abort handler sets isSending=false, which triggers the drain
+      // effect to pick up the queued message.
       queuedInputRef.current = trimmed;
-      // For attachment-only sends trimmed is ""; show a placeholder so the
-      // queued-message UI indicator is visible.
       setQueuedText(trimmed || "📎 Attachment");
       setInput("");
+      currentAbortRef.current?.abort();
       return;
     }
     if (attachmentSendIssue) {
@@ -2110,6 +2242,7 @@ export function App() {
                   composerError={composerError}
                   setComposerError={setComposerError}
                   attachmentSendIssue={attachmentSendIssue}
+                  imageDescriptionInProgress={imageDescriptionInProgress}
                   pendingAttachments={pendingAttachments}
                   setPendingAttachments={setPendingAttachments}
                   conversations={conversations}
@@ -2736,6 +2869,7 @@ export function ChatPage(props: {
   composerError: string | null;
   setComposerError: React.Dispatch<React.SetStateAction<string | null>>;
   attachmentSendIssue: string | null;
+  imageDescriptionInProgress: boolean;
   pendingAttachments: ChatAttachment[];
   setPendingAttachments: React.Dispatch<React.SetStateAction<ChatAttachment[]>>;
   conversations: ChatConversation[];
@@ -2777,6 +2911,7 @@ export function ChatPage(props: {
     composerError,
     setComposerError,
     attachmentSendIssue,
+    imageDescriptionInProgress,
     pendingAttachments,
     setPendingAttachments,
     conversations,
@@ -2813,6 +2948,7 @@ export function ChatPage(props: {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const audioInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   function markPendingAttachment(
     attachmentId: string,
@@ -2849,6 +2985,72 @@ export function ChatPage(props: {
     setComposerError(null);
   }
 
+  /**
+   * Add an image attachment and describe it via Florence-2 running
+   * locally in the browser. The description is injected as text so
+   * any model can reason about the image — no vision model needed.
+   */
+  function addImageAttachment(attachment: Omit<ChatAttachment, "id" | "status" | "error">) {
+    const attachmentId = randomId();
+    const needsDescription = !selectedModelVision && canRunBrowserVision();
+    setPendingAttachments((prev) => [
+      ...prev,
+      {
+        id: attachmentId,
+        status: needsDescription ? "uploading" : "pending",
+        extractionSummary: needsDescription ? "Describing image..." : undefined,
+        ...attachment,
+      },
+    ]);
+    if (needsDescription) {
+      void describeImageAttachment(attachmentId, attachment.dataUrl);
+    }
+  }
+
+  async function describeImageAttachment(attachmentId: string, dataUrl: string) {
+    try {
+      const result = await describeImage(dataUrl, (message) => {
+        setPendingAttachments((prev) =>
+          prev.map((a) =>
+            a.id === attachmentId
+              ? { ...a, extractionSummary: message }
+              : a,
+          ),
+        );
+      });
+      setPendingAttachments((prev) =>
+        prev.map((a) =>
+          a.id === attachmentId
+            ? {
+                ...a,
+                status: "pending",
+                imageDescription: result.combinedText,
+                extractionSummary: result.ocrText
+                  ? "Described + OCR extracted"
+                  : "Described by local vision",
+              }
+            : a,
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPendingAttachments((prev) =>
+        prev.map((a) =>
+          a.id === attachmentId
+            ? {
+                ...a,
+                status: "pending",
+                extractionSummary: undefined,
+                // Don't fail the attachment — it can still be sent if
+                // the user switches to a vision model.
+              }
+            : a,
+        ),
+      );
+      console.warn("Image description failed:", message);
+    }
+  }
+
   function handleImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2877,7 +3079,7 @@ export function ChatPage(props: {
         canvas.height = height;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          addPendingAttachment({
+          addImageAttachment({
             kind: "image",
             dataUrl: src,
             mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
@@ -2886,7 +3088,7 @@ export function ChatPage(props: {
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        addPendingAttachment({
+        addImageAttachment({
           kind: "image",
           dataUrl: canvas.toDataURL("image/jpeg", 0.85),
           mimeType: "image/jpeg",
@@ -2895,7 +3097,7 @@ export function ChatPage(props: {
       };
       img.onerror = () => {
         // Canvas resize failed — send original (may be large but better than nothing)
-        addPendingAttachment({
+        addImageAttachment({
           kind: "image",
           dataUrl: src,
           mimeType: parseDataUrl(src)?.mimeType || file.type || "image/jpeg",
@@ -2934,6 +3136,7 @@ export function ChatPage(props: {
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const mimeType = file.type || "application/octet-stream";
     const validationError = validateAttachmentFile(file, "file");
     if (validationError) {
       setComposerError(validationError);
@@ -2943,18 +3146,116 @@ export function ChatPage(props: {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
-      addPendingAttachment({
-        kind: "file",
-        dataUrl,
-        mimeType:
-          file.type ||
-          parseDataUrl(dataUrl)?.mimeType ||
-          "application/octet-stream",
-        fileName: file.name,
-      });
+      // Detect PDFs by MIME type, data URL content type, or file extension —
+      // file.type can be empty in some browsers/OSes for PDF files.
+      const detectedMime = parseDataUrl(dataUrl)?.mimeType ?? mimeType;
+      const isPdf =
+        isPdfMimeType(detectedMime) ||
+        file.name.toLowerCase().endsWith(".pdf");
+      if (isPdf) {
+        handlePdfAttachment(dataUrl, file.name);
+      } else {
+        addPendingAttachment({
+          kind: "file",
+          dataUrl,
+          mimeType:
+            parseDataUrl(dataUrl)?.mimeType || mimeType,
+          fileName: file.name,
+        });
+      }
     };
     reader.readAsDataURL(file);
     e.target.value = "";
+  }
+
+  async function handlePdfAttachment(dataUrl: string, fileName: string) {
+    // Add a placeholder attachment immediately so the user sees progress.
+    const attachmentId = randomId();
+    setPendingAttachments((prev) => [
+      ...prev,
+      {
+        id: attachmentId,
+        kind: "file",
+        dataUrl,
+        mimeType: "application/pdf",
+        fileName,
+        status: "uploading",
+        extractionSummary: "Extracting text...",
+      },
+    ]);
+
+    try {
+      const buffer = dataUrlToArrayBuffer(dataUrl);
+      const result = await extractPdfText(buffer);
+
+      if (result.pagesWithText > 0 && result.wordCount > 20) {
+        // Extracted meaningful text — store it for injection at send time.
+        const summary = `${result.pageCount} page${result.pageCount !== 1 ? "s" : ""}, ~${result.wordCount.toLocaleString()} words extracted`;
+        setPendingAttachments((prev) =>
+          prev.map((a) =>
+            a.id === attachmentId
+              ? {
+                  ...a,
+                  status: "pending",
+                  extractedText: result.text,
+                  extractionSummary: summary,
+                }
+              : a,
+          ),
+        );
+      } else {
+        // Scanned PDF or negligible text — try rendering pages as images.
+        const hasVisionModel =
+          warmModels.some((m) => meshModelByName[m]?.vision) ||
+          Object.values(meshModelByName).some((m) => m.vision);
+        if (hasVisionModel) {
+          const images = await renderPdfPagesToImages(buffer, {
+            maxPages: 8,
+          });
+          if (images.length > 0) {
+            const summary = `${result.pageCount} page${result.pageCount !== 1 ? "s" : ""}, rendered as ${images.length} image${images.length !== 1 ? "s" : ""} (scanned PDF)`;
+            setPendingAttachments((prev) =>
+              prev.map((a) =>
+                a.id === attachmentId
+                  ? {
+                      ...a,
+                      status: "pending",
+                      renderedPageImages: images,
+                      extractionSummary: summary,
+                    }
+                  : a,
+              ),
+            );
+          } else {
+            throw new Error("Could not render PDF pages");
+          }
+        } else {
+          // No vision model and no text — can't do much.
+          setPendingAttachments((prev) =>
+            prev.map((a) =>
+              a.id === attachmentId
+                ? {
+                    ...a,
+                    status: "failed",
+                    error:
+                      "This PDF appears to be scanned (no text content). A vision model is needed to read it.",
+                    extractionSummary: "No text found",
+                  }
+                : a,
+            ),
+          );
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPendingAttachments((prev) =>
+        prev.map((a) =>
+          a.id === attachmentId
+            ? { ...a, status: "failed", error: `PDF extraction failed: ${message}` }
+            : a,
+        ),
+      );
+    }
   }
 
   useEffect(() => {
@@ -3410,10 +3711,19 @@ export function ChatPage(props: {
                   ))}
 
                   {isSending ? (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Streaming
-                      response...
-                    </div>
+                    <button
+                      type="button"
+                      onClick={onStop}
+                      className="group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      title="Click to stop (Esc)"
+                    >
+                      <Loader2 className="h-3.5 w-3.5 animate-spin group-hover:hidden" />
+                      <Square className="hidden h-3.5 w-3.5 group-hover:block" />
+                      <span>
+                        <span className="group-hover:hidden">Streaming response...</span>
+                        <span className="hidden group-hover:inline">Stop generating</span>
+                      </span>
+                    </button>
                   ) : null}
 
                   {queuedText ? (
@@ -3458,7 +3768,7 @@ export function ChatPage(props: {
                         {attachment.status === "uploading" ? (
                           <div className="absolute inset-0 flex items-center justify-center rounded-md bg-background/70 text-xs">
                             <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                            Uploading
+                            {attachment.extractionSummary || "Uploading"}
                           </div>
                         ) : attachment.status === "failed" ? (
                           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-md bg-background/80 text-xs">
@@ -3474,6 +3784,11 @@ export function ChatPage(props: {
                             </Button>
                           </div>
                         ) : null}
+                        {attachment.extractionSummary && attachment.status !== "uploading" ? (
+                          <div className="absolute inset-x-0 bottom-0 rounded-b-md bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground truncate">
+                            {attachment.extractionSummary}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <div
@@ -3486,25 +3801,33 @@ export function ChatPage(props: {
                         ) : (
                           <File className="h-4 w-4 shrink-0 text-muted-foreground" />
                         )}
-                        <span className="truncate">
-                          {attachment.fileName ||
-                            (attachment.kind === "audio"
-                              ? "Audio attachment"
-                              : "File attachment")}
-                        </span>
+                        <div className="min-w-0 flex flex-col">
+                          <span className="truncate">
+                            {attachment.fileName ||
+                              (attachment.kind === "audio"
+                                ? "Audio attachment"
+                                : "File attachment")}
+                          </span>
+                          {attachment.extractionSummary ? (
+                            <span className="text-xs text-muted-foreground truncate">
+                              {attachment.extractionSummary}
+                            </span>
+                          ) : null}
+                        </div>
                         {attachment.status === "uploading" ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                         ) : null}
                         {attachment.status === "failed" ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => resetAttachmentStatus(attachment.id)}
-                          >
-                            Retry
-                          </Button>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="text-xs text-destructive cursor-help">
+                                Failed
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" className="max-w-xs">
+                              {attachment.error || "Upload failed"}
+                            </TooltipContent>
+                          </Tooltip>
                         ) : null}
                         <button
                           onClick={() => removePendingAttachment(attachment.id)}
@@ -3518,7 +3841,12 @@ export function ChatPage(props: {
                   )}
                 </div>
               ) : null}
-              {composerError || attachmentSendIssue ? (
+              {imageDescriptionInProgress && !composerError ? (
+                <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                  <span>Analyzing image with local vision model… (first time downloads ~230 MB)</span>
+                </div>
+              ) : composerError || attachmentSendIssue ? (
                 <Alert variant="destructive" data-testid="composer-error">
                   <AlertTitle>Attachment Issue</AlertTitle>
                   <AlertDescription>
@@ -3538,6 +3866,10 @@ export function ChatPage(props: {
                     e.preventDefault();
                     onSubmit();
                   }
+                  if (e.key === "Escape" && isSending) {
+                    e.preventDefault();
+                    onStop();
+                  }
                 }}
                 data-testid="chat-input"
                 rows={2}
@@ -3551,32 +3883,49 @@ export function ChatPage(props: {
               />
               <div className="flex items-center justify-between gap-2">
                 <div className="hidden md:block text-xs text-muted-foreground">
-                  Enter to send. Shift+Enter for newline.
+                  {isSending
+                    ? "Esc to stop. Enter to interrupt and send."
+                    : "Enter to send. Shift+Enter for newline."}
                 </div>
                 <div className="flex items-center gap-2">
-                  {selectedModelVision && (
-                    <>
-                      <input
-                        ref={imageInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        data-testid="chat-image-input"
-                        onChange={handleImageSelect}
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => imageInputRef.current?.click()}
-                        disabled={!props.canChat || isSending}
-                        title="Attach image"
-                        aria-label="Attach image"
-                      >
-                        <ImagePlus className="h-4 w-4" />
-                      </Button>
-                    </>
-                  )}
+                  <input
+                    ref={pdfInputRef}
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    data-testid="chat-pdf-input"
+                    onChange={handleFileSelect}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => pdfInputRef.current?.click()}
+                    disabled={!props.canChat || isSending}
+                    title="Attach PDF"
+                    aria-label="Attach PDF"
+                  >
+                    <File className="h-4 w-4" />
+                  </Button>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    data-testid="chat-image-input"
+                    onChange={handleImageSelect}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={!props.canChat || isSending}
+                    title="Attach image"
+                    aria-label="Attach image"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                  </Button>
                   {selectedModelAudio && (
                     <>
                       <input
@@ -3625,12 +3974,13 @@ export function ChatPage(props: {
                   {isSending ? (
                     <Button
                       type="button"
-                      variant="outline"
-                      size="icon"
+                      variant="destructive"
                       onClick={onStop}
-                      aria-label="Stop"
+                      aria-label="Stop generating"
+                      className="gap-1.5"
                     >
                       <Square className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">Stop</span>
                     </Button>
                   ) : (
                     <Button
@@ -4059,6 +4409,9 @@ function DashboardPage({
       llamaReady: topologyNode.self ? status.llama_ready : undefined,
       apiPort: topologyNode.self ? status.api_port : undefined,
       inflightRequests: topologyNode.self ? status.inflight_requests : undefined,
+      owner: topologyNode.self
+        ? status.owner ?? { status: "unsigned", verified: false }
+        : peer?.owner ?? { status: "unsigned", verified: false },
       privacyLimited:
         !topologyNode.self &&
         !topologyNode.hostname &&
@@ -4199,7 +4552,7 @@ function DashboardPage({
           </AlertDescription>
         </Alert>
       ) : null}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <StatCard
           title="Node ID"
           value={status?.node_id ?? "n/a"}
@@ -4212,6 +4565,19 @@ function DashboardPage({
           }
           icon={<Hash className="h-4 w-4" />}
           tooltip="Current node identifier in this mesh."
+        />
+        <StatCard
+          title="Owner"
+          value={ownershipPrimaryLabel(status?.owner)}
+          valueSuffix={
+            <StatusPill
+              label={ownershipStatusLabel(status?.owner?.status)}
+              tone={ownershipTone(status?.owner?.status)}
+              tooltip="Ownership certificate state for this node."
+            />
+          }
+          icon={<Shield className="h-4 w-4" />}
+          tooltip="Stable owner identity from the keystore, if this node is attested."
         />
         <StatCard
           title="Active Models"
@@ -6109,6 +6475,40 @@ function NodeSidebar({
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Shield className="h-4 w-4 text-muted-foreground" />
+              <span>Ownership</span>
+            </CardTitle>
+            <p className="text-sm leading-6 text-muted-foreground">
+              Shows whether this node identity is cryptographically bound to a stable owner.
+            </p>
+          </CardHeader>
+          <CardContent className="grid gap-3 pt-0 sm:grid-cols-2">
+            <ModelMetaItem
+              label="Ownership"
+              value={ownershipStatusLabel(node.owner.status)}
+            />
+            <ModelMetaItem
+              label="Node"
+              value={node.id}
+              copyValue={node.id}
+            />
+            <ModelMetaItem
+              label="Owner"
+              value={node.owner.owner_id ?? "Unsigned"}
+              copyValue={node.owner.owner_id}
+            />
+            {node.owner.node_label ? (
+              <ModelMetaItem label="Node Label" value={node.owner.node_label} />
+            ) : null}
+            {node.owner.hostname_hint ? (
+              <ModelMetaItem label="Hostname Hint" value={node.owner.hostname_hint} />
+            ) : null}
+          </CardContent>
+        </Card>
+
         {node.self ? (
           <Card>
             <CardHeader className="pb-2">
@@ -6736,6 +7136,44 @@ function meshGpuVram(status: StatusPayload | null) {
 function overviewVramGb(isClient: boolean, vramGb?: number | null) {
   if (isClient) return 0;
   return Math.max(0, vramGb || 0);
+}
+
+function ownershipTone(status?: string): "good" | "warn" | "bad" | "neutral" {
+  switch (status) {
+    case "verified":
+      return "good";
+    case "expired":
+    case "untrusted_owner":
+      return "warn";
+    case "invalid_signature":
+    case "mismatched_node_id":
+    case "revoked_owner":
+    case "revoked_cert":
+    case "revoked_node_id":
+      return "bad";
+    default:
+      return "neutral";
+  }
+}
+
+function ownershipStatusLabel(status?: string) {
+  if (!status) return "Unknown";
+  return status
+    .split("_")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
+function shortIdentity(value?: string | null, size = 12) {
+  if (!value) return "n/a";
+  return value.length <= size ? value : value.slice(0, size);
+}
+
+function ownershipPrimaryLabel(owner?: Ownership | null) {
+  if (!owner) return "Unsigned";
+  if (owner.node_label) return owner.node_label;
+  if (owner.owner_id) return shortIdentity(owner.owner_id, 16);
+  return ownershipStatusLabel(owner.status);
 }
 
 function shortName(name: string) {
