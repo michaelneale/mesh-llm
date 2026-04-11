@@ -1225,7 +1225,9 @@ private:
         // --- Mesh Hook 1: pre-inference ---
         // Evaluate triggers and call mesh-llm before tokenization/prefill.
         if (slot.mesh_hook.enabled && task.params.mesh_hooks) {
-            slot.mesh_hook.request_id = task.params.oaicompat_cmpl_id;
+            slot.mesh_hook.request_id = task.params.mesh_request_id.empty()
+                ? task.params.oaicompat_cmpl_id
+                : task.params.mesh_request_id;
 
             // evaluate pre-inference triggers
             // images present but model has no multimodal context
