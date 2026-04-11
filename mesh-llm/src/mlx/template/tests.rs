@@ -446,6 +446,58 @@ fn corpus_fixture(repo: &str) -> HfTemplateFixture {
 }
 
 #[test]
+fn corpus_mistral_template_reports_tokenizer_config_source() {
+    let fixture = corpus_fixture("mlx-community/Mistral-7B-Instruct-v0.2-4bit");
+    let root = write_hf_fixture_dir(&fixture);
+    let template = PromptTemplate::detect(&root, &fixture_config(&fixture.family));
+    let behavior = template.behavior();
+
+    match template {
+        PromptTemplate::HuggingFace { source_file, .. } => {
+            assert_eq!(source_file, "tokenizer_config.json");
+        }
+        other => panic!("expected huggingface template, got {other:?}"),
+    }
+    assert_eq!(behavior.prompt_template.as_deref(), Some("hf_template"));
+    assert_eq!(behavior.template_source.as_deref(), Some("huggingface"));
+}
+
+#[test]
+fn corpus_qwen3_template_reports_tokenizer_config_source() {
+    let fixture = corpus_fixture("mlx-community/Qwen3-1.7B-4bit");
+    let root = write_hf_fixture_dir(&fixture);
+    let template = PromptTemplate::detect(&root, &fixture_config(&fixture.family));
+    let behavior = template.behavior();
+
+    match template {
+        PromptTemplate::HuggingFace { source_file, .. } => {
+            assert_eq!(source_file, "tokenizer_config.json");
+        }
+        other => panic!("expected huggingface template, got {other:?}"),
+    }
+    assert_eq!(behavior.prompt_template.as_deref(), Some("chatml"));
+    assert_eq!(behavior.template_source.as_deref(), Some("huggingface"));
+    assert_eq!(behavior.default_system_prompt, None);
+}
+
+#[test]
+fn corpus_gemma3_template_reports_declared_source_file() {
+    let fixture = corpus_fixture("mlx-community/gemma-3-4b-it-qat-4bit");
+    let root = write_hf_fixture_dir(&fixture);
+    let template = PromptTemplate::detect(&root, &fixture_config(&fixture.family));
+    let behavior = template.behavior();
+
+    match template {
+        PromptTemplate::HuggingFace { source_file, .. } => {
+            assert_eq!(source_file, "chat_template.json");
+        }
+        other => panic!("expected huggingface template, got {other:?}"),
+    }
+    assert_eq!(behavior.prompt_template.as_deref(), Some("gemma3"));
+    assert_eq!(behavior.template_source.as_deref(), Some("huggingface"));
+}
+
+#[test]
 fn glm_templates_default_enable_thinking_to_false() {
     let root = std::env::temp_dir().join(format!(
         "mesh-llm-template-glm-thinking-{}",
@@ -831,6 +883,41 @@ fn heuristic_fallback_uses_gemma3_for_gemma_models() {
         &serde_json::json!({"model_type":"gemma3","architectures":["Gemma3ForConditionalGeneration"]}),
     );
     assert_eq!(template, PromptTemplate::Gemma3);
+}
+
+#[test]
+fn qwen_fallback_behavior_reports_chatml_defaults() {
+    let template = PromptTemplate::detect(
+        Path::new("/tmp/does-not-need-to-exist"),
+        &serde_json::json!({"model_type":"qwen3","architectures":["Qwen3ForCausalLM"]}),
+    );
+    let behavior = template.behavior();
+
+    assert_eq!(behavior.prompt_template.as_deref(), Some("chatml"));
+    assert_eq!(
+        behavior.default_system_prompt.as_deref(),
+        Some("You are a helpful assistant.")
+    );
+    assert_eq!(behavior.template_source.as_deref(), Some("fallback"));
+}
+
+#[test]
+fn olmo_family_fallback_behavior_reports_expected_template_names() {
+    let olmo = PromptTemplate::detect(
+        Path::new("/tmp/does-not-need-to-exist"),
+        &serde_json::json!({"model_type":"olmo","architectures":["OlmoForCausalLM"]}),
+    )
+    .behavior();
+    let olmo2 = PromptTemplate::detect(
+        Path::new("/tmp/does-not-need-to-exist"),
+        &serde_json::json!({"model_type":"olmo2","architectures":["Olmo2ForCausalLM"]}),
+    )
+    .behavior();
+
+    assert_eq!(olmo.prompt_template.as_deref(), Some("olmo"));
+    assert_eq!(olmo.template_source.as_deref(), Some("fallback"));
+    assert_eq!(olmo2.prompt_template.as_deref(), Some("olmo2"));
+    assert_eq!(olmo2.template_source.as_deref(), Some("fallback"));
 }
 
 #[test]
