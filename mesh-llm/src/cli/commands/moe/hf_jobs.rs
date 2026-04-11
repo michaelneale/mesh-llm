@@ -161,6 +161,21 @@ struct JobStatus {
     stage: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HardwareFlavor {
+    name: String,
+    pretty_name: String,
+    unit_cost_usd: f64,
+    unit_label: String,
+}
+
+#[derive(Clone, Debug)]
+struct PricingEstimate {
+    flavor: HardwareFlavor,
+    max_cost_usd: f64,
+}
+
 async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
     let token = models::hf_token_override().ok_or_else(|| {
         anyhow::anyhow!(
@@ -178,6 +193,8 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
         &spec.release_tag,
         &release_asset_name(&spec.release_tag, spec.release_target),
     );
+    let timeout_seconds = parse_timeout_seconds(&spec.timeout)?;
+    let pricing = fetch_pricing_estimate(&endpoint, &spec.flavor, timeout_seconds).await?;
     let script = remote_bash_script(&spec);
     let payload = json!({
         "dockerImage": job_image(spec.release_target),
@@ -187,12 +204,18 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
             "MESH_LLM_RELEASE_URL": release_url,
             "MODEL_REF": spec.model_ref,
             "DATASET_REPO": spec.dataset_repo,
+            "HF_JOB_FLAVOR": pricing.flavor.name,
+            "HF_JOB_FLAVOR_PRETTY": pricing.flavor.pretty_name,
+            "HF_JOB_UNIT_COST_USD": format!("{:.6}", pricing.flavor.unit_cost_usd),
+            "HF_JOB_UNIT_LABEL": pricing.flavor.unit_label,
+            "HF_JOB_TIMEOUT_SECONDS": timeout_seconds.to_string(),
+            "HF_JOB_MAX_COST_USD": format!("{:.2}", pricing.max_cost_usd),
         },
         "secrets": {
             "HF_TOKEN": token,
         },
         "flavor": spec.flavor,
-        "timeoutSeconds": parse_timeout_seconds(&spec.timeout)?,
+        "timeoutSeconds": timeout_seconds,
         "labels": {
             "app": "mesh-llm",
             "workflow": "moe-analyze-share",
@@ -205,12 +228,17 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
     });
 
     println!("☁️ Hugging Face Job submission");
-    println!("   analyzer: {}", spec.analyzer.analyzer_id());
-    println!("   model: {}", spec.model_ref);
-    println!("   dataset: {}", spec.dataset_repo);
-    println!("   flavor: {}", spec.flavor);
-    println!("   timeout: {}", spec.timeout);
-    println!("   release: {} {}", spec.release_repo, spec.release_tag);
+    println!("📍 Analyzer: {}", spec.analyzer.analyzer_id());
+    println!("📦 Model: {}", spec.model_ref);
+    println!("🗂️ Dataset: {}", spec.dataset_repo);
+    println!("🖥️ Flavor: {}", spec.flavor);
+    println!("⏱️ Timeout: {}", spec.timeout);
+    println!("📥 Release: {} {}", spec.release_repo, spec.release_tag);
+    println!(
+        "💵 Pricing: {} @ ${:.6}/{}",
+        pricing.flavor.pretty_name, pricing.flavor.unit_cost_usd, pricing.flavor.unit_label
+    );
+    println!("🧮 Max cost: ${:.2} USD", pricing.max_cost_usd);
 
     let url = format!("{}/api/jobs/{}", endpoint.trim_end_matches('/'), namespace);
     let response = reqwest::Client::new()
@@ -230,15 +258,51 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
         .await
         .context("Decode Hugging Face Jobs response")?;
     println!("✅ Submitted Hugging Face Job");
-    println!("   id: {}", job.id);
-    println!("   status: {}", job.status.stage);
+    println!("🆔 Job: {}", job.id);
+    println!("📡 Status: {}", job.status.stage);
     println!(
-        "   url: {}/jobs/{}/{}",
+        "🔗 URL: {}/jobs/{}/{}",
         endpoint.trim_end_matches('/'),
         job.owner.name,
         job.id
     );
     Ok(())
+}
+
+async fn fetch_pricing_estimate(
+    endpoint: &str,
+    flavor: &str,
+    timeout_seconds: u64,
+) -> Result<PricingEstimate> {
+    let url = format!("{}/api/jobs/hardware", endpoint.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("GET {}", url))?;
+    if response.status() != StatusCode::OK {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!(
+            "Failed to resolve Hugging Face Jobs pricing: {}: {}",
+            status,
+            body.trim()
+        );
+    }
+    let hardware: Vec<HardwareFlavor> = response
+        .json()
+        .await
+        .context("Decode Hugging Face hardware pricing response")?;
+    let flavor = hardware
+        .into_iter()
+        .find(|candidate| candidate.name == flavor)
+        .ok_or_else(|| anyhow::anyhow!("Unknown Hugging Face Jobs flavor: {flavor}"))?;
+    let max_cost_usd =
+        estimate_cost_usd(flavor.unit_cost_usd, &flavor.unit_label, timeout_seconds)?;
+    Ok(PricingEstimate {
+        flavor,
+        max_cost_usd,
+    })
 }
 
 async fn remote_identity(model_spec: &str) -> Result<models::local::HuggingFaceModelIdentity> {
@@ -316,6 +380,18 @@ fn parse_timeout_seconds(input: &str) -> Result<u64> {
         _ => bail!("Unsupported timeout unit in {}. Use s, m, h, or d.", input),
     };
     Ok((value * factor).round() as u64)
+}
+
+fn estimate_cost_usd(unit_cost_usd: f64, unit_label: &str, timeout_seconds: u64) -> Result<f64> {
+    let timeout_seconds = timeout_seconds as f64;
+    let max_cost = match unit_label {
+        "second" => unit_cost_usd * timeout_seconds,
+        "minute" => unit_cost_usd * (timeout_seconds / 60.0),
+        "hour" => unit_cost_usd * (timeout_seconds / 3600.0),
+        "day" => unit_cost_usd * (timeout_seconds / 86_400.0),
+        other => bail!("Unsupported Hugging Face pricing unit: {other}"),
+    };
+    Ok(max_cost)
 }
 
 fn release_asset_name(release_tag: &str, release_target: HfJobReleaseTarget) -> String {
@@ -420,5 +496,17 @@ mod tests {
     #[test]
     fn shell_single_quote_escapes_embedded_quotes() {
         assert_eq!(shell_single_quote("a'b"), "a'\"'\"'b");
+    }
+
+    #[test]
+    fn estimate_cost_supports_minute_pricing() {
+        let cost = estimate_cost_usd(0.03, "minute", 7200).unwrap();
+        assert!((cost - 3.60).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_cost_supports_hour_pricing() {
+        let cost = estimate_cost_usd(1.80, "hour", 7200).unwrap();
+        assert!((cost - 3.60).abs() < 1e-9);
     }
 }
