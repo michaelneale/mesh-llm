@@ -87,6 +87,22 @@ Keep CI validation shape separate from release shape.
 - Release-only settings such as broader GPU matrices or safer full release defaults must remain release-only.
 - Do not silently disable release safety settings for shipping artifacts.
 
+## Docker publish contract
+
+`.github/workflows/docker.yml` publishes to `ghcr.io/<owner>/mesh-llm` with two classes of tags:
+
+- **Public tags** are the stable tags users pull: `latest`, `client`, `<version>`, `sha-<short>`, `cpu`, `<version>-cpu`, `sha-<short>-cpu`, `vulkan`, `<version>-vulkan`, `sha-<short>-vulkan`, `cuda`, `<version>-cuda`, `sha-<short>-cuda`, `rocm`, `<version>-rocm`, and `sha-<short>-rocm`.
+- **Merge-source tags** are internal per-architecture tags used only so the merge jobs can assemble multi-arch manifests.
+
+Keep these merge-source edges intact:
+
+- `docker-client-merge` consumes `sha-<short>-amd64` and `sha-<short>-arm64`.
+- `docker-cpu-merge` consumes `sha-<short>-cpu-amd64` and `sha-<short>-cpu-arm64`.
+- `docker-vulkan-merge` consumes `sha-<short>-vulkan-amd64` and `sha-<short>-vulkan-arm64`.
+- `docker-cuda` and `docker-rocm` are amd64-only publishers, so they do not have merge jobs.
+
+`latest` must continue to resolve to the merged `client` image. Any workflow change is incorrect if a merge job references a source tag that its producer jobs do not push exactly.
+
 ## Script expectations
 
 The workflow design depends on the build scripts preserving the distinction between CI-friendly and release-friendly builds.

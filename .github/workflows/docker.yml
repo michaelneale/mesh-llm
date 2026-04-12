@@ -232,7 +232,7 @@ jobs:
             type=ref,event=branch,suffix=-cpu
             type=ref,event=pr,suffix=-cpu
             type=semver,pattern={{version}}-cpu
-            type=sha,prefix=sha-,format=short,suffix=-cpu
+            type=sha,prefix=sha-,format=short,suffix=-cpu-amd64
       - name: Build and push (non-PR)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
@@ -282,7 +282,7 @@ jobs:
             type=ref,event=branch,suffix=-cpu
             type=ref,event=pr,suffix=-cpu
             type=semver,pattern={{version}}-cpu
-            type=sha,prefix=sha-,format=short,suffix=-cpu
+            type=sha,prefix=sha-,format=short,suffix=-cpu-arm64
       - name: Build and push (non-PR)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
@@ -358,7 +358,7 @@ jobs:
             type=ref,event=branch,suffix=-vulkan
             type=ref,event=pr,suffix=-vulkan
             type=semver,pattern={{version}}-vulkan
-            type=sha,prefix=sha-,format=short,suffix=-vulkan
+            type=sha,prefix=sha-,format=short,suffix=-vulkan-amd64
       - name: Build and push (non-PR)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
@@ -408,7 +408,7 @@ jobs:
             type=ref,event=branch,suffix=-vulkan
             type=ref,event=pr,suffix=-vulkan
             type=semver,pattern={{version}}-vulkan
-            type=sha,prefix=sha-,format=short,suffix=-vulkan
+            type=sha,prefix=sha-,format=short,suffix=-vulkan-arm64
       - name: Build and push (non-PR)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
