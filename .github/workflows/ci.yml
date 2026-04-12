@@ -51,7 +51,8 @@ jobs:
               - 'Justfile'
               - 'scripts/**'
               - '.github/cache-version.txt'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/smoke.yml'
             benchmarks:
               - 'mesh-llm/benchmarks/**'
               - '.github/workflows/ci.yml'
