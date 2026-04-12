@@ -1687,6 +1687,7 @@ mod tests {
             available_models: Vec::new(),
             requested_models: Vec::new(),
             last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
             version: None,
             gpu_name: None,

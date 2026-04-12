@@ -1152,8 +1152,16 @@ pub struct PeerInfo {
     /// Models this node has requested the mesh to serve
     pub requested_models: Vec<String>,
     /// Last time we directly communicated with this peer (gossip, heartbeat, tunnel).
-    /// Peers not seen in PEER_STALE_SECS are pruned from gossip and eventually removed.
+    /// Only updated by direct bi-directional gossip exchanges, heartbeat probes,
+    /// and inbound connections — never by transitive mentions.
+    /// Used by PeerDown silencing and collect_announcements to determine if we have
+    /// independent proof-of-life for this peer.
     pub last_seen: std::time::Instant,
+    /// Last time a bridge peer mentioned this peer in gossip.
+    /// Updated on every transitive gossip update. Used together with last_seen
+    /// for the stale-prune decision: a peer stays alive as long as either
+    /// timestamp is fresh.
+    pub last_mentioned: std::time::Instant,
     /// When this peer returned after being considered dead. MoE scale-up should
     /// wait briefly before treating the peer as eligible again.
     pub moe_recovered_at: Option<std::time::Instant>,
@@ -1214,6 +1222,7 @@ impl PeerInfo {
             available_models: ann.available_models.clone(),
             requested_models: ann.requested_models.clone(),
             last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
             version: ann.version.clone(),
             gpu_name: ann.gpu_name.clone(),
@@ -2718,9 +2727,10 @@ impl Node {
                     }
                 }
 
-                // Prune stale peers: no direct contact in 2× the stale window.
-                // These are ghost records propagated via gossip from other nodes
-                // but never directly verified by us.
+                // Prune stale peers: neither directly verified nor transitively
+                // mentioned within 2× the stale window. A peer survives if
+                // either last_seen (direct) or last_mentioned (transitive) is
+                // fresh, but is pruned when both are stale.
                 let prune_cutoff =
                     std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
                 let stale_peers: Vec<EndpointId> = {
@@ -2728,13 +2738,15 @@ impl Node {
                     state
                         .peers
                         .iter()
-                        .filter(|(_, p)| p.last_seen < prune_cutoff)
+                        .filter(|(_, p)| {
+                            p.last_seen < prune_cutoff && p.last_mentioned < prune_cutoff
+                        })
                         .map(|(id, _)| *id)
                         .collect()
                 };
                 for stale_id in stale_peers {
                     eprintln!(
-                        "🧹 Pruning stale peer {} (no direct contact in {}s)",
+                        "🧹 Pruning stale peer {} (no direct or transitive contact in {}s)",
                         stale_id.fmt_short(),
                         PEER_STALE_SECS * 2
                     );
@@ -3871,12 +3883,18 @@ impl Node {
                                             remote.fmt_short()
                                         );
                                         let mut state = node.state.lock().await;
-                                        state.connections.insert(dead_id, new_conn.clone());
-                                        drop(state);
-                                        let n2 = node.clone();
-                                        tokio::spawn(async move {
-                                            n2.dispatch_streams(new_conn, dead_id).await;
-                                        });
+                                        // Only insert if no other task raced and
+                                        // established a connection while we were probing.
+                                        if !state.connections.contains_key(&dead_id) {
+                                            state.connections.insert(dead_id, new_conn.clone());
+                                            drop(state);
+                                            let n2 = node.clone();
+                                            tokio::spawn(async move {
+                                                n2.dispatch_streams(new_conn, dead_id).await;
+                                            });
+                                        } else {
+                                            drop(state);
+                                        }
                                         false
                                     }
                                     _ => true, // genuinely unreachable
@@ -4971,10 +4989,10 @@ impl Node {
 
     /// Update a peer learned transitively through gossip (not directly connected).
     /// Updates assigned/hosted state so models_being_served() includes their models.
-    /// Refreshes last_seen so the peer stays alive as long as a bridge peer keeps
-    /// mentioning it (the bridge already filters out its own stale peers before
-    /// gossiping, so presence in gossip is proof-of-life from the bridge's
-    /// perspective). Does NOT trigger peer_change events for new transitive peers
+    /// Refreshes `last_mentioned` (not `last_seen`) so the peer survives pruning
+    /// as long as a bridge peer keeps mentioning it, but PeerDown silencing and
+    /// collect_announcements use only `last_seen` (direct proof-of-life).
+    /// Does NOT trigger peer_change events for new transitive peers
     /// (avoids re-election storms at scale).
     async fn update_transitive_peer(
         &self,
@@ -5009,11 +5027,12 @@ impl Node {
             let old_peer = existing.clone();
             let serving_changed = apply_transitive_ann(existing, addr, ann);
             existing.owner_summary = owner_summary;
-            // Refresh last_seen: the bridge peer vouches for this peer being
-            // alive (collect_announcements already filters stale peers).
-            // Without this, transitive peers flicker every PEER_STALE_SECS*2
-            // because last_seen was only set on initial add.
-            existing.last_seen = std::time::Instant::now();
+            // Refresh last_mentioned: the bridge peer vouches for this peer
+            // being alive (collect_announcements already filters stale peers).
+            // We update last_mentioned (not last_seen) so that PeerDown
+            // silencing and collect_announcements use only direct proof-of-life,
+            // while the prune decision considers both timestamps.
+            existing.last_mentioned = std::time::Instant::now();
             let updated_peer = existing.clone();
             let changed = peer_meaningfully_changed(&old_peer, &updated_peer);
             if serving_changed {
@@ -5086,7 +5105,7 @@ impl Node {
             state
                 .peers
                 .values()
-                .filter(|p| p.last_seen >= stale_cutoff)
+                .filter(|p| p.last_seen >= stale_cutoff || p.last_mentioned >= stale_cutoff)
                 .map(|p| PeerAnnouncement {
                     addr: p.addr.clone(),
                     role: p.role.clone(),
@@ -6221,6 +6240,7 @@ mod tests {
             available_models: vec![],
             requested_models: vec![],
             last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
             version: None,
             gpu_name: None,
@@ -7587,14 +7607,15 @@ mod tests {
     /// Transitive peer updates should refresh last_seen so the peer doesn't
     /// get pruned while a bridge peer keeps mentioning it.
     #[test]
-    fn transitive_peer_update_refreshes_last_seen() {
+    fn transitive_peer_update_refreshes_last_mentioned() {
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC0; 32]).public());
         let mut peer = make_test_peer_info(peer_id);
 
-        // Simulate: peer was added 5 minutes ago, approaching prune threshold.
-        let old_last_seen =
+        // Simulate: peer was added long ago, both timestamps are stale.
+        let old_time =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS + 30);
-        peer.last_seen = old_last_seen;
+        peer.last_seen = old_time;
+        peer.last_mentioned = old_time;
 
         let addr = EndpointAddr {
             id: peer_id,
@@ -7617,7 +7638,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -7627,44 +7651,71 @@ mod tests {
         };
 
         apply_transitive_ann(&mut peer, &addr, &ann);
-        // apply_transitive_ann doesn't touch last_seen — the caller
-        // (update_transitive_peer) does. Simulate the caller's behavior:
-        peer.last_seen = std::time::Instant::now();
+        // Simulate update_transitive_peer refreshing last_mentioned (not last_seen).
+        peer.last_mentioned = std::time::Instant::now();
 
+        // last_mentioned is fresh, last_seen stays stale.
         assert!(
-            peer.last_seen.elapsed().as_secs() < 1,
-            "last_seen must be refreshed after transitive gossip update"
+            peer.last_mentioned.elapsed().as_secs() < 1,
+            "last_mentioned must be refreshed after transitive gossip update"
         );
         assert!(
-            peer.last_seen > old_last_seen,
-            "last_seen must advance past the stale value"
+            peer.last_seen == old_time,
+            "last_seen must NOT be refreshed by transitive gossip"
         );
 
-        // Verify the peer would survive the prune check.
+        // Peer survives prune check because last_mentioned is fresh.
         let prune_cutoff =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
         assert!(
-            peer.last_seen >= prune_cutoff,
-            "refreshed transitive peer must not be pruned"
+            peer.last_seen < prune_cutoff || peer.last_mentioned >= prune_cutoff,
+            "transitive peer with fresh last_mentioned must survive pruning"
+        );
+
+        // But PeerDown silencing uses only last_seen (direct), which is stale.
+        let directly_seen_recently = peer.last_seen.elapsed().as_secs() < PEER_STALE_SECS;
+        assert!(
+            !directly_seen_recently,
+            "transitive-only peer must NOT be considered directly seen"
         );
     }
 
-    /// Transitive peer that is NOT refreshed (old behavior) would get pruned.
-    /// This test documents the failure mode the fix addresses.
+    /// Transitive peer that is not mentioned stops surviving once both timestamps are stale.
     #[test]
-    fn transitive_peer_without_refresh_gets_pruned() {
+    fn transitive_peer_expires_when_mentions_stop() {
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC1; 32]).public());
         let mut peer = make_test_peer_info(peer_id);
 
-        // Peer added long ago, never refreshed.
-        peer.last_seen =
+        // Both timestamps are beyond the prune window.
+        let old_time =
+            std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2 + 60);
+        peer.last_seen = old_time;
+        peer.last_mentioned = old_time;
+
+        let prune_cutoff =
+            std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
+        assert!(
+            peer.last_seen < prune_cutoff && peer.last_mentioned < prune_cutoff,
+            "peer with both timestamps stale must be below prune cutoff"
+        );
+    }
+
+    /// A directly-connected peer with fresh last_seen but stale last_mentioned
+    /// still survives pruning (last_seen alone is sufficient).
+    #[test]
+    fn direct_peer_survives_with_stale_last_mentioned() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xC2; 32]).public());
+        let mut peer = make_test_peer_info(peer_id);
+
+        peer.last_seen = std::time::Instant::now();
+        peer.last_mentioned =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2 + 60);
 
         let prune_cutoff =
             std::time::Instant::now() - std::time::Duration::from_secs(PEER_STALE_SECS * 2);
         assert!(
-            peer.last_seen < prune_cutoff,
-            "stale transitive peer (never refreshed) must be below prune cutoff"
+            peer.last_seen >= prune_cutoff || peer.last_mentioned >= prune_cutoff,
+            "directly-connected peer must survive pruning via last_seen alone"
         );
     }
 
@@ -8873,6 +8924,7 @@ mod tests {
             available_models: vec![],
             requested_models: vec![],
             last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
             version: None,
             gpu_name: None,
