@@ -192,8 +192,8 @@ jobs:
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha,prefix=sha-,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=client,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest
+            type=raw,value=client
       - name: Create and push multi-arch manifest
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
@@ -319,7 +319,7 @@ jobs:
             type=ref,event=branch,suffix=-cpu
             type=semver,pattern={{version}}-cpu
             type=sha,prefix=sha-,format=short,suffix=-cpu
-            type=raw,value=cpu,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=cpu
       - name: Create and push multi-arch manifest
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
@@ -445,7 +445,7 @@ jobs:
             type=ref,event=branch,suffix=-vulkan
             type=semver,pattern={{version}}-vulkan
             type=sha,prefix=sha-,format=short,suffix=-vulkan
-            type=raw,value=vulkan,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=vulkan
       - name: Create and push multi-arch manifest
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
@@ -487,7 +487,7 @@ jobs:
             type=ref,event=branch,suffix=-cuda
             type=semver,pattern={{version}}-cuda
             type=sha,prefix=sha-,format=short,suffix=-cuda
-            type=raw,value=cuda,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=cuda
       - name: Build
         uses: docker/build-push-action@v6
         with:
@@ -535,7 +535,7 @@ jobs:
             type=ref,event=branch,suffix=-rocm
             type=semver,pattern={{version}}-rocm
             type=sha,prefix=sha-,format=short,suffix=-rocm
-            type=raw,value=rocm,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=rocm
       - name: Build
         uses: docker/build-push-action@v6
         with:
