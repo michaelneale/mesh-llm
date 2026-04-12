@@ -142,6 +142,13 @@ CLI precedence is by concern:
 - explicit `--ctx-size` overrides configured `ctx_size`
 - plugin config continues to load from the same file
 
+Pinned GPU startup is also local-node only:
+
+- `[gpu].assignment = "pinned"` means each configured `[[models]]` entry must carry its own `gpu_id`
+- valid IDs come from the local `mesh-llm gpus` / `mesh-llm gpus --json` inventory surface
+- pin resolution is host-local and fail-closed: missing, ambiguous, unsupported, or stale IDs abort startup and config push for that node instead of silently falling back to auto placement
+- explicit CLI `--model` / `--gguf` still bypass configured `[[models]]`, so they do not inherit config-owned pinned IDs
+
 Bare `mesh-llm serve` is the config-owned path. If `[[models]]` is empty, it warns,
 prints help, and exits cleanly. Background services use that path directly.
 

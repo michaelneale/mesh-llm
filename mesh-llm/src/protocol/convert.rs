@@ -497,6 +497,14 @@ pub(crate) fn mesh_config_to_proto(
     config: &crate::plugin::MeshConfig,
 ) -> crate::proto::node::NodeConfigSnapshot {
     use crate::plugin::GpuAssignment;
+    fn configured_model_ref(declared_ref: &str) -> crate::proto::node::ConfiguredModelRef {
+        crate::proto::node::ConfiguredModelRef {
+            declared_ref: declared_ref.to_string(),
+            source_kind: None,
+            revision: None,
+        }
+    }
+
     let assignment = match config.gpu.assignment {
         GpuAssignment::Auto => crate::proto::node::GpuAssignment::Auto as i32,
         GpuAssignment::Pinned => crate::proto::node::GpuAssignment::Pinned as i32,
@@ -508,6 +516,9 @@ pub(crate) fn mesh_config_to_proto(
             model: m.model.clone(),
             mmproj: m.mmproj.clone(),
             ctx_size: m.ctx_size,
+            gpu_id: m.gpu_id.clone(),
+            model_ref: Some(configured_model_ref(&m.model)),
+            mmproj_ref: m.mmproj.as_deref().map(configured_model_ref),
         })
         .collect();
     let plugins = config
@@ -534,6 +545,19 @@ pub(crate) fn proto_config_to_mesh(
     use crate::plugin::{
         GpuAssignment, GpuConfig, MeshConfig, ModelConfigEntry, PluginConfigEntry,
     };
+    fn declared_ref_or_none(
+        configured: Option<&crate::proto::node::ConfiguredModelRef>,
+    ) -> Option<String> {
+        configured.and_then(|configured| {
+            let declared_ref = configured.declared_ref.trim();
+            if declared_ref.is_empty() {
+                None
+            } else {
+                Some(declared_ref.to_string())
+            }
+        })
+    }
+
     let assignment = match snapshot.gpu.as_ref().map(|g| g.assignment) {
         Some(v) if v == crate::proto::node::GpuAssignment::Pinned as i32 => GpuAssignment::Pinned,
         _ => GpuAssignment::Auto,
@@ -542,9 +566,10 @@ pub(crate) fn proto_config_to_mesh(
         .models
         .iter()
         .map(|m| ModelConfigEntry {
-            model: m.model.clone(),
-            mmproj: m.mmproj.clone(),
+            model: declared_ref_or_none(m.model_ref.as_ref()).unwrap_or_else(|| m.model.clone()),
+            mmproj: declared_ref_or_none(m.mmproj_ref.as_ref()).or_else(|| m.mmproj.clone()),
             ctx_size: m.ctx_size,
+            gpu_id: m.gpu_id.clone(),
         })
         .collect();
     let plugins = snapshot

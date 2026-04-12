@@ -38,6 +38,8 @@ pub struct ModelConfigEntry {
     pub mmproj: Option<String>,
     #[serde(default)]
     pub ctx_size: Option<u32>,
+    #[serde(default)]
+    pub gpu_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -99,9 +101,6 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
             bail!("unsupported config version {version}; expected version = 1");
         }
     }
-    if config.gpu.assignment != GpuAssignment::Auto {
-        bail!("`gpu.assignment = \"pinned\"` is not supported yet");
-    }
     for (index, model) in config.models.iter().enumerate() {
         if model.model.trim().is_empty() {
             bail!("models[{index}].model must not be empty");
@@ -110,6 +109,21 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
             if mmproj.trim().is_empty() {
                 bail!("models[{index}].mmproj must not be empty when set");
             }
+        }
+        match config.gpu.assignment {
+            GpuAssignment::Auto => {
+                if model.gpu_id.is_some() {
+                    bail!("models[{index}].gpu_id must not be set when gpu.assignment = \"auto\"");
+                }
+            }
+            GpuAssignment::Pinned => match &model.gpu_id {
+                Some(gpu_id) if !gpu_id.trim().is_empty() => {}
+                _ => {
+                    bail!(
+                        "models[{index}].gpu_id must be set to a non-empty value when gpu.assignment = \"pinned\""
+                    );
+                }
+            },
         }
     }
     Ok(())
@@ -256,23 +270,119 @@ command = "/tmp/demo"
         assert_eq!(config.models.len(), 2);
         assert_eq!(config.models[0].model, "Qwen3-8B-Q4_K_M");
         assert_eq!(config.models[0].ctx_size, Some(8192));
+        assert_eq!(config.models[0].gpu_id, None);
         assert_eq!(
             config.models[1].mmproj.as_deref(),
             Some("bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj.gguf")
         );
+        assert_eq!(config.models[1].gpu_id, None);
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0].name, "demo");
     }
 
     #[test]
-    fn validate_rejects_pinned_gpu_assignment() {
+    fn pinned_gpu_config_accepted_pinned_config() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+version = 1
+
+[gpu]
+assignment = "pinned"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+gpu_id = "pci:0000:65:00.0"
+ctx_size = 8192
+"#,
+        )
+        .unwrap();
+
+        validate_config(&config).unwrap();
+        assert_eq!(config.models[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
+    }
+
+    #[test]
+    fn pinned_gpu_config_missing_gpu_id_rejected() {
         let config = MeshConfig {
             gpu: GpuConfig {
                 assignment: GpuAssignment::Pinned,
             },
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+            }],
             ..MeshConfig::default()
         };
+
         let err = validate_config(&config).unwrap_err();
-        assert!(err.to_string().contains("not supported yet"));
+        assert!(err.to_string().contains(
+            "models[0].gpu_id must be set to a non-empty value when gpu.assignment = \"pinned\""
+        ));
+    }
+
+    #[test]
+    fn pinned_gpu_config_empty_gpu_id_rejected() {
+        let config = MeshConfig {
+            gpu: GpuConfig {
+                assignment: GpuAssignment::Pinned,
+            },
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: Some("  \t  ".into()),
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.to_string().contains(
+            "models[0].gpu_id must be set to a non-empty value when gpu.assignment = \"pinned\""
+        ));
+    }
+
+    #[test]
+    fn pinned_gpu_config_auto_assignment_rejects_gpu_id() {
+        let config = MeshConfig {
+            gpu: GpuConfig {
+                assignment: GpuAssignment::Auto,
+            },
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: Some("pci:0000:65:00.0".into()),
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("models[0].gpu_id must not be set when gpu.assignment = \"auto\""));
+    }
+
+    #[test]
+    fn pinned_gpu_config_preserves_accepted_gpu_id_string_exactly() {
+        let raw = r#"
+version = 1
+
+[gpu]
+assignment = "pinned"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+gpu_id = "  pci:0000:65:00.0  "
+"#;
+
+        let config: MeshConfig = toml::from_str(raw).unwrap();
+        validate_config(&config).unwrap();
+
+        assert_eq!(
+            config.models[0].gpu_id.as_deref(),
+            Some("  pci:0000:65:00.0  ")
+        );
     }
 }

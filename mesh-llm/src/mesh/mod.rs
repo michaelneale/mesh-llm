@@ -4,7 +4,7 @@
 //! one QUIC connection per peer. Bi-streams are multiplexed by first byte:
 //! 0x01 = gossip, 0x02 = tunnel (RPC), 0x03 = tunnel map, 0x04 = tunnel (HTTP).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use base64::Engine;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
@@ -53,6 +53,87 @@ fn current_time_unix_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn preflight_pushed_config_for_current_node(config: &crate::plugin::MeshConfig) -> Result<()> {
+    let survey = crate::system::hardware::query(&[
+        crate::system::hardware::Metric::GpuName,
+        crate::system::hardware::Metric::GpuFacts,
+    ]);
+    preflight_pushed_config_for_current_node_with_gpus(config, &survey.gpus)
+}
+
+fn preflight_pushed_config_for_current_node_with_gpus(
+    config: &crate::plugin::MeshConfig,
+    gpus: &[crate::system::hardware::GpuFacts],
+) -> Result<()> {
+    if config.gpu.assignment != crate::plugin::GpuAssignment::Pinned {
+        return Ok(());
+    }
+
+    for model in &config.models {
+        let gpu = crate::system::hardware::resolve_pinned_gpu(model.gpu_id.as_deref(), gpus)
+            .map_err(anyhow::Error::new)
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            })?;
+
+        let stable_id = gpu
+            .stable_id
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "pushed config model '{}' resolved pinned GPU at index {} without a stable_id",
+                    model.model,
+                    gpu.index
+                )
+            })
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            })?;
+
+        if gpu.backend_device.is_none() {
+            return Err(anyhow::anyhow!(
+                "pushed config model '{}' resolved pinned GPU '{}' at index {} without a backend_device",
+                model.model,
+                stable_id,
+                gpu.index
+            ))
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            });
+        }
+    }
+
+    Ok(())
+}
+
+const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
+
+fn config_uses_pinned_gpu(config: &crate::plugin::MeshConfig) -> bool {
+    config.gpu.assignment == crate::plugin::GpuAssignment::Pinned
+}
+
+fn peer_supports_pinned_gpu_config(peer_version: Option<&str>) -> bool {
+    peer_version.is_some_and(|version| {
+        !crate::system::autoupdate::version_newer(MIN_PINNED_GPU_CONFIG_PEER_VERSION, version)
+    })
+}
+
+fn pinned_gpu_config_peer_error(peer_version: Option<&str>) -> String {
+    let advertised = peer_version.unwrap_or("unknown");
+    format!(
+        "pinned gpu config sync requires mesh-llm >= {MIN_PINNED_GPU_CONFIG_PEER_VERSION}; subscriber advertised {advertised}"
+    )
 }
 
 fn endpoint_id_hex(id: EndpointId) -> String {
@@ -3456,8 +3537,31 @@ impl Node {
             return Ok(());
         }
 
+        let subscriber_version = {
+            let state = self.state.lock().await;
+            state
+                .peers
+                .get(&remote)
+                .and_then(|peer| peer.version.clone())
+        };
+
         let snapshot = {
             let state = self.config_state.lock().await;
+            if config_uses_pinned_gpu(state.config())
+                && !peer_supports_pinned_gpu_config(subscriber_version.as_deref())
+            {
+                let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+                    gen: NODE_PROTOCOL_GENERATION,
+                    node_id: vec![],
+                    revision: 0,
+                    config_hash: vec![],
+                    config: None,
+                    hostname: None,
+                    error: Some(pinned_gpu_config_peer_error(subscriber_version.as_deref())),
+                };
+                write_len_prefixed(&mut send, &error_snapshot.encode_to_vec()).await?;
+                return Ok(());
+            }
             let proto_cfg = mesh_config_to_proto(state.config());
             ConfigSnapshotResponse {
                 gen: NODE_PROTOCOL_GENERATION,
@@ -3480,6 +3584,16 @@ impl Node {
                     }
                     let notification = {
                         let state = self.config_state.lock().await;
+                        if config_uses_pinned_gpu(state.config())
+                            && !peer_supports_pinned_gpu_config(subscriber_version.as_deref())
+                        {
+                            tracing::warn!(
+                                "closing config subscribe stream to {}: {}",
+                                remote.fmt_short(),
+                                pinned_gpu_config_peer_error(subscriber_version.as_deref())
+                            );
+                            break;
+                        }
                         let proto_cfg = mesh_config_to_proto(state.config());
                         ConfigUpdateNotification {
                             gen: NODE_PROTOCOL_GENERATION,
@@ -3651,6 +3765,10 @@ impl Node {
             return Ok(());
         };
         let mesh_config = proto_config_to_mesh(config_snapshot);
+        if let Err(err) = preflight_pushed_config_for_current_node(&mesh_config) {
+            send_push_error(&mut send, &err.to_string()).await?;
+            return Ok(());
+        }
 
         // 6. Apply via CAS — use spawn_blocking so synchronous disk I/O in apply()
         //    does not block the Tokio async runtime while the mutex is held.

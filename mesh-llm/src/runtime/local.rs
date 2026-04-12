@@ -194,6 +194,7 @@ pub(super) async fn start_runtime_local_model(
             mmproj: mmproj_path.as_deref(),
             ctx_size_override,
             total_group_vram: None,
+            selected_gpu: None,
         },
     )
     .await?;

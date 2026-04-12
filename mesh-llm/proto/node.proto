@@ -227,10 +227,19 @@ message NodeGpuConfig {
   GpuAssignment assignment = 1;
 }
 
+message ConfiguredModelRef {
+  string declared_ref = 1;
+  optional string source_kind = 2;
+  optional string revision = 3;
+}
+
 message NodeModelEntry {
   string model = 1;
   optional string mmproj = 2;
   optional uint32 ctx_size = 3;
+  optional string gpu_id = 4;
+  ConfiguredModelRef model_ref = 5;
+  ConfiguredModelRef mmproj_ref = 6;
 }
 
 message NodePluginEntry {

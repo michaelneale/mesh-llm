@@ -62,6 +62,16 @@ pub(crate) fn local_multi_gpu_split_mode(flavor: Option<BinaryFlavor>) -> Option
     }
 }
 
+fn split_mode_for_local_launch(
+    flavor: Option<BinaryFlavor>,
+    pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+) -> Option<SplitMode> {
+    if pinned_gpu.is_some() {
+        return None;
+    }
+    local_multi_gpu_split_mode(flavor)
+}
+
 /// Calculate total model size, summing all split files if present.
 /// Split files follow the pattern: name-00001-of-00004.gguf
 pub fn total_model_bytes(model: &Path) -> u64 {
@@ -145,6 +155,13 @@ fn split_peer_vram_bytes(peer: &mesh::PeerInfo, my_vram: u64) -> u64 {
     } else {
         my_vram
     }
+}
+
+fn effective_local_launch_vram(
+    my_vram: u64,
+    pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+) -> u64 {
+    pinned_gpu.map(|gpu| gpu.vram_bytes).unwrap_or(my_vram)
 }
 
 fn build_dense_launch_plan(
@@ -950,6 +967,7 @@ struct MoeElectionParams {
     model_bytes: u64,
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
+    pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
     target_tx: Arc<watch::Sender<ModelTargets>>,
     stop_rx: watch::Receiver<bool>,
 }
@@ -968,6 +986,7 @@ struct StartLlamaParams<'a> {
     force_split: bool,
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
+    pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
 }
 
 pub struct ElectionLoopParams {
@@ -985,6 +1004,7 @@ pub struct ElectionLoopParams {
     pub force_split: bool,
     pub binary_flavor: Option<launch::BinaryFlavor>,
     pub ctx_size_override: Option<u32>,
+    pub pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
     pub moe_runtime_options: moe::MoeRuntimeOptions,
     pub target_tx: Arc<watch::Sender<ModelTargets>>,
     pub stop_rx: watch::Receiver<bool>,
@@ -1491,6 +1511,7 @@ pub async fn election_loop(
         force_split,
         binary_flavor,
         ctx_size_override,
+        pinned_gpu,
         moe_runtime_options,
         target_tx,
         mut stop_rx,
@@ -1508,7 +1529,8 @@ pub async fn election_loop(
 
     let model_bytes = total_model_bytes(&model);
     let my_vram = node.vram_bytes();
-    let model_fits_locally = my_vram >= (model_bytes as f64 * 1.1) as u64;
+    let local_launch_vram = effective_local_launch_vram(my_vram, pinned_gpu.as_ref());
+    let model_fits_locally = local_launch_vram >= (model_bytes as f64 * 1.1) as u64;
 
     // Check if this is a MoE model with enough metadata to plan expert routing.
     let moe_config = lookup_moe_config(&model_name, &model);
@@ -1573,6 +1595,7 @@ pub async fn election_loop(
                     model_bytes,
                     binary_flavor,
                     ctx_size_override,
+                    pinned_gpu: pinned_gpu.clone(),
                     target_tx,
                     stop_rx,
                 },
@@ -1603,8 +1626,13 @@ pub async fn election_loop(
             .filter(|p| p.is_assigned_model(&model_name))
             .cloned()
             .collect();
-        let desired_launch =
-            build_dense_launch_plan(my_vram, model_bytes, force_split, &model_name, &model_peers);
+        let desired_launch = build_dense_launch_plan(
+            local_launch_vram,
+            model_bytes,
+            force_split,
+            &model_name,
+            &model_peers,
+        );
 
         // Splitting decision: only split when forced OR when the model
         // genuinely doesn't fit on this node alone. If it fits, every
@@ -1614,7 +1642,7 @@ pub async fn election_loop(
 
         let i_am_host = if requires_split {
             // Distributed mode: elect one host from the model group
-            should_be_host_for_model(node.id(), my_vram, &model_peers)
+            should_be_host_for_model(node.id(), local_launch_vram, &model_peers)
         } else if model_peers.is_empty() {
             // No other node serving this model — we must host
             true
@@ -1756,7 +1784,7 @@ pub async fn election_loop(
                     eprintln!(
                         "🗳 [{}] Running as host ({:.1}GB capacity for {:.1}GB model, serving entirely)",
                         model_name,
-                        my_vram as f64 / 1e9,
+                        local_launch_vram as f64 / 1e9,
                         model_bytes as f64 / 1e9
                     );
                 }
@@ -1783,6 +1811,7 @@ pub async fn election_loop(
                 force_split,
                 binary_flavor,
                 ctx_size_override,
+                pinned_gpu: pinned_gpu.as_ref(),
             })
             .await
             {
@@ -1934,6 +1963,7 @@ async fn moe_election_loop(
         model_bytes,
         binary_flavor,
         ctx_size_override,
+        pinned_gpu,
         target_tx,
         mut stop_rx,
     } = params;
@@ -2181,10 +2211,14 @@ async fn moe_election_loop(
                     draft: None,
                     draft_max: 0,
                     model_bytes,
-                    my_vram,
+                    my_vram: pinned_gpu
+                        .as_ref()
+                        .map(|gpu| gpu.vram_bytes)
+                        .unwrap_or(my_vram),
                     mmproj: None,
                     ctx_size_override,
                     total_group_vram: None,
+                    selected_gpu: pinned_gpu.as_ref(),
                 },
             )
             .await
@@ -2261,14 +2295,18 @@ async fn moe_election_loop(
                         http_port: llama_port,
                         tunnel_ports: &[],
                         tensor_split: None,
-                        split_mode: local_multi_gpu_split_mode(binary_flavor),
+                        split_mode: split_mode_for_local_launch(binary_flavor, pinned_gpu.as_ref()),
                         draft: None,
                         draft_max: 0,
                         model_bytes: mb,
-                        my_vram,
+                        my_vram: pinned_gpu
+                            .as_ref()
+                            .map(|gpu| gpu.vram_bytes)
+                            .unwrap_or(my_vram),
                         mmproj: None,
                         ctx_size_override,
                         total_group_vram: None,
+                        selected_gpu: pinned_gpu.as_ref(),
                     },
                 )
                 .await
@@ -2403,14 +2441,18 @@ async fn moe_election_loop(
                     http_port: llama_port,
                     tunnel_ports: &[],
                     tensor_split: None,
-                    split_mode: local_multi_gpu_split_mode(binary_flavor),
+                    split_mode: split_mode_for_local_launch(binary_flavor, pinned_gpu.as_ref()),
                     draft: None,
                     draft_max: 0,
                     model_bytes: shard_bytes,
-                    my_vram,
+                    my_vram: pinned_gpu
+                        .as_ref()
+                        .map(|gpu| gpu.vram_bytes)
+                        .unwrap_or(my_vram),
                     mmproj: None,
                     ctx_size_override,
                     total_group_vram: None,
+                    selected_gpu: pinned_gpu.as_ref(),
                 },
             )
             .await
@@ -2609,11 +2651,18 @@ async fn start_llama(
         force_split,
         binary_flavor,
         ctx_size_override,
+        pinned_gpu,
     } = params;
     let my_vram = node.vram_bytes();
+    let local_launch_vram = effective_local_launch_vram(my_vram, pinned_gpu);
     let model_bytes = total_model_bytes(model);
-    let launch_plan =
-        build_dense_launch_plan(my_vram, model_bytes, force_split, model_name, model_peers);
+    let launch_plan = build_dense_launch_plan(
+        local_launch_vram,
+        model_bytes,
+        force_split,
+        model_name,
+        model_peers,
+    );
     let worker_ids = match launch_plan {
         DenseLaunchPlan::Solo => {
             let worker_count = model_peers
@@ -2623,7 +2672,7 @@ async fn start_llama(
             if worker_count > 0 {
                 eprintln!(
                     "  Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely",
-                    my_vram as f64 / 1e9,
+                    local_launch_vram as f64 / 1e9,
                     model_bytes as f64 / 1e9
                 );
                 eprintln!("  Use --split to force distributed mode");
@@ -2640,7 +2689,7 @@ async fn start_llama(
                     eprintln!(
                         "  ✓ Adding {} — {:.1}GB capacity, RTT {rtt_str}",
                         peer.id.fmt_short(),
-                        split_peer_vram_bytes(peer, my_vram) as f64 / 1e9
+                        split_peer_vram_bytes(peer, local_launch_vram) as f64 / 1e9
                     );
                 }
             }
@@ -2689,11 +2738,11 @@ async fn start_llama(
 
     // Calculate tensor split from VRAM.
     // Device order: RPC workers first (matching --rpc order), then the local host device last.
-    let my_vram_f = my_vram as f64;
+    let my_vram_f = local_launch_vram as f64;
     let mut all_vrams: Vec<f64> = Vec::new();
     for id in &worker_ids {
         if let Some(peer) = model_peers.iter().find(|p| p.id == *id) {
-            all_vrams.push(split_peer_vram_bytes(peer, my_vram) as f64);
+            all_vrams.push(split_peer_vram_bytes(peer, local_launch_vram) as f64);
         }
     }
     all_vrams.push(my_vram_f); // Host device is last
@@ -2748,17 +2797,18 @@ async fn start_llama(
             // Row split only works for local multi-GPU — not over RPC.
             // When we have RPC workers, llama.cpp uses layer (pipeline) split.
             split_mode: if rpc_ports.is_empty() {
-                local_multi_gpu_split_mode(binary_flavor)
+                split_mode_for_local_launch(binary_flavor, pinned_gpu)
             } else {
                 None
             },
             draft,
             draft_max,
             model_bytes,
-            my_vram,
+            my_vram: local_launch_vram,
             mmproj: mmproj_path.as_deref(),
             ctx_size_override,
             total_group_vram: group_vram,
+            selected_gpu: pinned_gpu,
         },
     )
     .await
@@ -2859,6 +2909,49 @@ mod tests {
         );
 
         assert!(should_be_host_for_model(id_a, 60, &peers));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_launch_pinned_local_launch_disables_row_split() {
+        let pinned_gpu = crate::runtime::StartupPinnedGpuTarget {
+            index: 0,
+            stable_id: "pci:0000:65:00.0".into(),
+            backend_device: "CUDA0".into(),
+            vram_bytes: 24_000_000_000,
+        };
+
+        assert_eq!(
+            split_mode_for_local_launch(Some(BinaryFlavor::Cuda), Some(&pinned_gpu)),
+            None
+        );
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_launch_dense_planner_uses_selected_device_capacity() {
+        let model = "dense";
+        let peer = make_dense_peer(make_id(2), 50, Some(10), model);
+        let pinned_gpu = crate::runtime::StartupPinnedGpuTarget {
+            index: 0,
+            stable_id: "pci:0000:65:00.0".into(),
+            backend_device: "CUDA0".into(),
+            vram_bytes: 30,
+        };
+
+        let local_launch_vram = effective_local_launch_vram(80, Some(&pinned_gpu));
+        let plan = build_dense_launch_plan(local_launch_vram, 60, false, model, &[peer.clone()]);
+
+        assert_eq!(
+            plan,
+            DenseLaunchPlan::Split {
+                worker_ids: vec![peer.id],
+                total_group_vram: 80,
+            }
+        );
+        assert!(!should_be_host_for_model(
+            make_id(1),
+            local_launch_vram,
+            &[peer]
+        ));
     }
 
     #[test]

@@ -43,6 +43,39 @@ mesh-llm serve
 - Explicit `--model` or `--gguf` should ignore configured `[[models]]`
 - Explicit `--ctx-size` should override configured `ctx_size`
 
+### 0b. Pinned startup smoke
+
+First inspect the valid local IDs:
+
+```bash
+mesh-llm gpus
+mesh-llm gpus --json | jq .
+```
+
+Then create `~/.mesh-llm/config.toml` with a real pinnable stable ID from that output (for example `pci:*`, `uuid:*`, or `metal:*`, not fallback IDs like `index:*` or backend-device names):
+
+```toml
+version = 1
+
+[gpu]
+assignment = "pinned"
+
+[[models]]
+model = "Qwen2.5-3B"
+gpu_id = "pci:0000:65:00.0"
+```
+
+Start the node:
+
+```bash
+mesh-llm serve
+```
+
+- Startup should succeed only when `gpu_id` matches a valid local pinnable stable ID from `mesh-llm gpus`
+- If the pinned ID is missing, ambiguous, unsupported, or stale, startup should fail closed before local launch
+- Explicit `mesh-llm serve --model ...` should still bypass configured `[[models]]` and therefore bypass config-owned pinned IDs
+- Do not use GPU indexes, `index:*`, or backend-device names like `CUDA0` / `HIP0` / `MTL0` as `gpu_id`
+
 ## Single-model permutations
 
 ### 1. Solo (single node)

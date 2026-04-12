@@ -23,6 +23,84 @@ pub struct GpuFacts {
     pub pnp_instance_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinnedGpuResolverError {
+    MissingConfiguredId {
+        available_pinnable_ids: Vec<String>,
+    },
+    NonPinnableConfiguredId {
+        configured_id: String,
+        available_pinnable_ids: Vec<String>,
+    },
+    NoPinnableGpus {
+        configured_id: String,
+        available_pinnable_ids: Vec<String>,
+    },
+    NoMatch {
+        configured_id: String,
+        available_pinnable_ids: Vec<String>,
+    },
+    AmbiguousMatch {
+        configured_id: String,
+        available_pinnable_ids: Vec<String>,
+        match_indexes: Vec<usize>,
+    },
+}
+
+impl std::fmt::Display for PinnedGpuResolverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingConfiguredId {
+                available_pinnable_ids,
+            } => write!(
+                f,
+                "missing configured gpu_id; available pinnable GPU IDs: {}",
+                format_pinnable_gpu_ids(available_pinnable_ids)
+            ),
+            Self::NonPinnableConfiguredId {
+                configured_id,
+                available_pinnable_ids,
+            } => write!(
+                f,
+                "configured gpu_id '{}' is not pinnable; available pinnable GPU IDs: {}",
+                configured_id,
+                format_pinnable_gpu_ids(available_pinnable_ids)
+            ),
+            Self::NoPinnableGpus {
+                configured_id,
+                available_pinnable_ids,
+            } => write!(
+                f,
+                "configured gpu_id '{}' could not be resolved because this host has no pinnable GPUs; available pinnable GPU IDs: {}",
+                configured_id,
+                format_pinnable_gpu_ids(available_pinnable_ids)
+            ),
+            Self::NoMatch {
+                configured_id,
+                available_pinnable_ids,
+            } => write!(
+                f,
+                "configured gpu_id '{}' did not match any available pinnable GPU; available pinnable GPU IDs: {}",
+                configured_id,
+                format_pinnable_gpu_ids(available_pinnable_ids)
+            ),
+            Self::AmbiguousMatch {
+                configured_id,
+                available_pinnable_ids,
+                match_indexes,
+            } => write!(
+                f,
+                "configured gpu_id '{}' matched multiple GPUs at indexes {:?}; available pinnable GPU IDs: {}",
+                configured_id,
+                match_indexes,
+                format_pinnable_gpu_ids(available_pinnable_ids)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PinnedGpuResolverError {}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct HardwareSurvey {
     pub vram_bytes: u64,
@@ -311,24 +389,27 @@ pub fn expand_gpu_names(summary: Option<&str>, expected_count: usize) -> Vec<Str
 
 #[cfg(any(target_os = "linux", target_os = "windows", test))]
 pub fn parse_nvidia_gpu_identity(output: &str) -> Vec<(Option<String>, Option<String>)> {
+    fn normalize_identity_field(part: &str) -> Option<&str> {
+        let part = part.trim();
+        if part.is_empty() || part.eq_ignore_ascii_case("n/a") || part == "[N/A]" {
+            None
+        } else {
+            Some(part)
+        }
+    }
+
     output
         .lines()
         .map(|line| {
             let mut parts = line.split(',').map(str::trim);
-            let pci_bdf = parts.next().and_then(|part| {
-                if part.is_empty() {
-                    None
-                } else {
-                    Some(part.to_ascii_lowercase())
-                }
-            });
-            let vendor_uuid = parts.next().and_then(|part| {
-                if part.is_empty() {
-                    None
-                } else {
-                    Some(part.to_string())
-                }
-            });
+            let pci_bdf = parts
+                .next()
+                .and_then(normalize_identity_field)
+                .map(|part| part.to_ascii_lowercase());
+            let vendor_uuid = parts
+                .next()
+                .and_then(normalize_identity_field)
+                .map(str::to_string);
             (pci_bdf, vendor_uuid)
         })
         .collect()
@@ -905,11 +986,26 @@ fn detect_collector() -> Box<dyn Collector> {
 }
 
 fn backend_device_for_name(name: &str, index: usize, is_soc: bool) -> Option<String> {
-    if cfg!(target_os = "macos") && is_soc {
+    backend_device_for_name_for_platform(name, index, is_soc, cfg!(target_os = "macos"))
+}
+
+fn backend_device_for_name_for_platform(
+    name: &str,
+    index: usize,
+    is_soc: bool,
+    soc_backend_is_metal: bool,
+) -> Option<String> {
+    if soc_backend_is_metal && is_soc {
         return Some(format!("MTL{index}"));
     }
     let upper = name.to_ascii_uppercase();
-    if upper.contains("NVIDIA") {
+    if upper.contains("NVIDIA")
+        || (is_soc
+            && (upper.contains("JETSON")
+                || upper.contains("TEGRA")
+                || upper.contains("NVGPU")
+                || upper.contains("ORIN")))
+    {
         Some(format!("CUDA{index}"))
     } else if upper.contains("AMD")
         || upper.contains("RADEON")
@@ -955,6 +1051,79 @@ fn inferred_gpu_name_count(name: Option<&str>) -> usize {
         .unwrap_or(1)
 }
 
+fn is_pinnable_gpu_stable_id(stable_id: &str) -> bool {
+    stable_id.starts_with("pci:")
+        || stable_id.starts_with("uuid:")
+        || stable_id.starts_with("metal:")
+}
+
+pub fn pinnable_gpu_stable_ids(gpus: &[GpuFacts]) -> Vec<String> {
+    gpus.iter()
+        .filter_map(|gpu| gpu.stable_id.as_deref())
+        .filter(|stable_id| is_pinnable_gpu_stable_id(stable_id))
+        .map(str::to_string)
+        .collect()
+}
+
+fn format_pinnable_gpu_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(", ")
+    }
+}
+
+pub fn resolve_pinned_gpu<'a>(
+    configured_id: Option<&str>,
+    gpus: &'a [GpuFacts],
+) -> Result<&'a GpuFacts, PinnedGpuResolverError> {
+    let available_pinnable_ids = pinnable_gpu_stable_ids(gpus);
+    let Some(configured_id) = configured_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Err(PinnedGpuResolverError::MissingConfiguredId {
+            available_pinnable_ids,
+        });
+    };
+    let configured_id = configured_id.to_string();
+
+    if !is_pinnable_gpu_stable_id(&configured_id) {
+        return Err(PinnedGpuResolverError::NonPinnableConfiguredId {
+            configured_id,
+            available_pinnable_ids,
+        });
+    }
+
+    if available_pinnable_ids.is_empty() {
+        return Err(PinnedGpuResolverError::NoPinnableGpus {
+            configured_id,
+            available_pinnable_ids,
+        });
+    }
+
+    let matches = gpus
+        .iter()
+        .enumerate()
+        .filter(|(_, gpu)| gpu.stable_id.as_deref() == Some(configured_id.as_str()))
+        .filter(|(_, gpu)| {
+            gpu.stable_id
+                .as_deref()
+                .is_some_and(is_pinnable_gpu_stable_id)
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [(_, gpu)] => Ok(*gpu),
+        [] => Err(PinnedGpuResolverError::NoMatch {
+            configured_id,
+            available_pinnable_ids,
+        }),
+        _ => Err(PinnedGpuResolverError::AmbiguousMatch {
+            configured_id,
+            available_pinnable_ids,
+            match_indexes: matches.iter().map(|(index, _)| *index).collect(),
+        }),
+    }
+}
+
 fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
     let expected_count = survey
         .gpu_vram
@@ -969,12 +1138,29 @@ fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
     }
 
     let needs_nvidia_identities = metrics.contains(&Metric::GpuName);
-    #[allow(unused_mut)]
-    let mut nvidia_identities = if needs_nvidia_identities {
+    let nvidia_identities = if needs_nvidia_identities {
         detect_nvidia_identities()
     } else {
         Vec::new()
     };
+    hydrate_gpu_facts_with_identities(
+        survey,
+        metrics,
+        &nvidia_identities,
+        names,
+        expected_count,
+        cfg!(target_os = "macos"),
+    );
+}
+
+fn hydrate_gpu_facts_with_identities(
+    survey: &mut HardwareSurvey,
+    metrics: &[Metric],
+    nvidia_identities: &[(Option<String>, Option<String>)],
+    names: Vec<String>,
+    expected_count: usize,
+    soc_backend_is_metal: bool,
+) {
     let count = expected_count.max(names.len());
     survey.gpus = (0..count)
         .map(|index| {
@@ -982,9 +1168,18 @@ fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("GPU {index}"));
-            let backend_device = backend_device_for_name(&display_name, index, survey.is_soc);
+            let backend_device = if soc_backend_is_metal == cfg!(target_os = "macos") {
+                backend_device_for_name(&display_name, index, survey.is_soc)
+            } else {
+                backend_device_for_name_for_platform(
+                    &display_name,
+                    index,
+                    survey.is_soc,
+                    soc_backend_is_metal,
+                )
+            };
             let (pci_bdf, vendor_uuid) = nvidia_identities.get(index).cloned().unwrap_or_default();
-            let stable_id = if survey.is_soc && cfg!(target_os = "macos") {
+            let stable_id = if survey.is_soc && soc_backend_is_metal {
                 Some(format!("metal:{index}"))
             } else if let Some(ref pci_bdf) = pci_bdf {
                 Some(format!("pci:{pci_bdf}"))
@@ -1015,6 +1210,10 @@ fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
             }
         })
         .collect();
+
+    debug_assert!(pinnable_gpu_stable_ids(&survey.gpus)
+        .into_iter()
+        .all(|stable_id| resolve_pinned_gpu(Some(&stable_id), &survey.gpus).is_ok()));
 
     if metrics.contains(&Metric::GpuCount) && survey.gpu_count == 0 {
         survey.gpu_count = u8::try_from(survey.gpus.len()).unwrap_or(u8::MAX);
@@ -1056,6 +1255,26 @@ pub fn survey() -> HardwareSurvey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_gpu(index: usize, stable_id: Option<&str>) -> GpuFacts {
+        GpuFacts {
+            index,
+            display_name: format!("GPU {index}"),
+            backend_device: Some(format!("CUDA{index}")),
+            vram_bytes: 24_000_000_000,
+            reserved_bytes: None,
+            mem_bandwidth_gbps: None,
+            compute_tflops_fp32: None,
+            compute_tflops_fp16: None,
+            unified_memory: false,
+            stable_id: stable_id.map(str::to_string),
+            pci_bdf: None,
+            vendor_uuid: None,
+            metal_registry_id: None,
+            dxgi_luid: None,
+            pnp_instance_id: None,
+        }
+    }
 
     #[test]
     fn test_parse_nvidia_gpu_name_single() {
@@ -1280,6 +1499,50 @@ card1,25753026560,512000000";
     }
 
     #[test]
+    fn test_hydrate_gpu_facts_uses_uuid_and_cuda_for_tegra_soc() {
+        let mut survey = HardwareSurvey {
+            gpu_name: Some("Jetson AGX Orin".to_string()),
+            gpu_count: 1,
+            gpu_vram: vec![65_890_271_232],
+            is_soc: true,
+            ..Default::default()
+        };
+        let identities = vec![(
+            None,
+            Some("ddae9891-aaa8-5edd-bbf3-3a33c5adc75f".to_string()),
+        )];
+        let expected_count = survey
+            .gpu_vram
+            .len()
+            .max(usize::from(survey.gpu_count))
+            .max(inferred_gpu_name_count(survey.gpu_name.as_deref()));
+        let names = expand_gpu_names(survey.gpu_name.as_deref(), expected_count);
+
+        hydrate_gpu_facts_with_identities(
+            &mut survey,
+            &[Metric::GpuFacts],
+            &identities,
+            names,
+            expected_count,
+            false,
+        );
+
+        assert_eq!(survey.gpus.len(), 1);
+        assert_eq!(survey.gpus[0].display_name, "Jetson AGX Orin");
+        assert_eq!(survey.gpus[0].backend_device.as_deref(), Some("CUDA0"));
+        assert_eq!(
+            survey.gpus[0].stable_id.as_deref(),
+            Some("uuid:ddae9891-aaa8-5edd-bbf3-3a33c5adc75f")
+        );
+        assert_eq!(survey.gpus[0].pci_bdf, None);
+        assert_eq!(
+            survey.gpus[0].vendor_uuid.as_deref(),
+            Some("ddae9891-aaa8-5edd-bbf3-3a33c5adc75f")
+        );
+        assert!(survey.gpus[0].unified_memory);
+    }
+
+    #[test]
     fn test_summarize_gpu_name_single() {
         assert_eq!(
             summarize_gpu_name(&["A100".to_string()]),
@@ -1341,6 +1604,160 @@ card1,25753026560,512000000";
                 )
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_nvidia_gpu_identity_ignores_not_available_placeholders() {
+        let identities = parse_nvidia_gpu_identity("[N/A], ddae9891-aaa8-5edd-bbf3-3a33c5adc75f\n");
+        assert_eq!(
+            identities,
+            vec![(
+                None,
+                Some("ddae9891-aaa8-5edd-bbf3-3a33c5adc75f".to_string())
+            )]
+        );
+    }
+
+    #[test]
+    fn test_backend_device_for_name_recognizes_jetson_soc_names() {
+        assert_eq!(
+            backend_device_for_name_for_platform("Jetson AGX Orin", 0, true, false),
+            Some("CUDA0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_backend_device_for_name_recognizes_nvgpu_soc_names() {
+        assert_eq!(
+            backend_device_for_name_for_platform("Orin (nvgpu)", 1, true, false),
+            Some("CUDA1".to_string())
+        );
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_accepts_single_match() {
+        let gpus = vec![
+            synthetic_gpu(0, Some("pci:0000:65:00.0")),
+            synthetic_gpu(1, Some("uuid:GPU-def")),
+        ];
+
+        let resolved = resolve_pinned_gpu(Some("pci:0000:65:00.0"), &gpus).unwrap();
+
+        assert_eq!(resolved.index, 0);
+        assert_eq!(resolved.stable_id.as_deref(), Some("pci:0000:65:00.0"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_missing_configured_id_fails() {
+        let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"))];
+
+        let err = resolve_pinned_gpu(None, &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::MissingConfiguredId {
+                available_pinnable_ids: vec!["pci:0000:65:00.0".to_string()],
+            }
+        );
+        assert!(err
+            .to_string()
+            .contains("available pinnable GPU IDs: pci:0000:65:00.0"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_no_match_lists_available_ids() {
+        let gpus = vec![
+            synthetic_gpu(0, Some("pci:0000:65:00.0")),
+            synthetic_gpu(1, Some("uuid:GPU-def")),
+        ];
+
+        let err = resolve_pinned_gpu(Some("pci:0000:b3:00.0"), &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::NoMatch {
+                configured_id: "pci:0000:b3:00.0".to_string(),
+                available_pinnable_ids: vec![
+                    "pci:0000:65:00.0".to_string(),
+                    "uuid:GPU-def".to_string(),
+                ],
+            }
+        );
+        assert!(err.to_string().contains("pci:0000:b3:00.0"));
+        assert!(err.to_string().contains("pci:0000:65:00.0, uuid:GPU-def"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_duplicate_match_fails() {
+        let gpus = vec![
+            synthetic_gpu(0, Some("uuid:GPU-shared")),
+            synthetic_gpu(1, Some("uuid:GPU-shared")),
+        ];
+
+        let err = resolve_pinned_gpu(Some("uuid:GPU-shared"), &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::AmbiguousMatch {
+                configured_id: "uuid:GPU-shared".to_string(),
+                available_pinnable_ids: vec![
+                    "uuid:GPU-shared".to_string(),
+                    "uuid:GPU-shared".to_string(),
+                ],
+                match_indexes: vec![0, 1],
+            }
+        );
+        assert!(err.to_string().contains("indexes [0, 1]"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_rejects_index_fallback_ids() {
+        let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"))];
+
+        let err = resolve_pinned_gpu(Some("index:0"), &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::NonPinnableConfiguredId {
+                configured_id: "index:0".to_string(),
+                available_pinnable_ids: vec!["pci:0000:65:00.0".to_string()],
+            }
+        );
+        assert!(err.to_string().contains("not pinnable"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_rejects_backend_device_fallback_ids() {
+        let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"))];
+
+        let err = resolve_pinned_gpu(Some("cuda0"), &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::NonPinnableConfiguredId {
+                configured_id: "cuda0".to_string(),
+                available_pinnable_ids: vec!["pci:0000:65:00.0".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_resolver_fails_when_host_has_no_pinnable_gpus() {
+        let gpus = vec![
+            synthetic_gpu(0, Some("cuda0")),
+            synthetic_gpu(1, Some("index:1")),
+        ];
+
+        let err = resolve_pinned_gpu(Some("pci:0000:65:00.0"), &gpus).unwrap_err();
+
+        assert_eq!(
+            err,
+            PinnedGpuResolverError::NoPinnableGpus {
+                configured_id: "pci:0000:65:00.0".to_string(),
+                available_pinnable_ids: vec![],
+            }
+        );
+        assert!(err.to_string().contains("available pinnable GPU IDs: none"));
     }
 
     #[test]

@@ -508,8 +508,9 @@ mod tests {
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, ModelDemand, PeerInfo};
     use crate::proto::node::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, GossipFrame, NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry,
-        NodePluginEntry, NodeRole, PeerAnnouncement, RouteTableRequest,
+        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
+        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
+        RouteTableRequest,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -536,6 +537,17 @@ mod tests {
                 model: "Qwen3-8B".to_string(),
                 mmproj: Some("mmproj-cut".to_string()),
                 ctx_size: Some(8192),
+                gpu_id: Some("pci:0000:65:00.0".to_string()),
+                model_ref: Some(ConfiguredModelRef {
+                    declared_ref: "Qwen3-8B".to_string(),
+                    source_kind: None,
+                    revision: None,
+                }),
+                mmproj_ref: Some(ConfiguredModelRef {
+                    declared_ref: "mmproj-cut".to_string(),
+                    source_kind: None,
+                    revision: None,
+                }),
             }],
             plugins: vec![NodePluginEntry {
                 name: "blackboard".to_string(),
@@ -1537,6 +1549,7 @@ mod tests {
         assert_eq!(config.models[0].model, "Qwen3-8B");
         assert_eq!(config.models[0].mmproj.as_deref(), Some("mmproj-cut"));
         assert_eq!(config.models[0].ctx_size, Some(8192));
+        assert_eq!(config.models[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
         assert_eq!(config.plugins.len(), 1);
         assert_eq!(config.plugins[0].name, "blackboard");
 
@@ -1550,8 +1563,87 @@ mod tests {
         assert_eq!(roundtripped.models[0].model, snapshot.models[0].model);
         assert_eq!(roundtripped.models[0].mmproj, snapshot.models[0].mmproj);
         assert_eq!(roundtripped.models[0].ctx_size, snapshot.models[0].ctx_size);
+        assert_eq!(roundtripped.models[0].gpu_id, snapshot.models[0].gpu_id);
+        assert_eq!(
+            roundtripped.models[0].model_ref,
+            snapshot.models[0].model_ref
+        );
+        assert_eq!(
+            roundtripped.models[0].mmproj_ref,
+            snapshot.models[0].mmproj_ref
+        );
         assert_eq!(roundtripped.plugins.len(), snapshot.plugins.len());
         assert_eq!(roundtripped.plugins[0].name, snapshot.plugins[0].name);
+    }
+
+    #[test]
+    fn config_sync_prefers_structured_model_refs() {
+        let snapshot = NodeConfigSnapshot {
+            version: 1,
+            gpu: Some(NodeGpuConfig {
+                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            }),
+            models: vec![NodeModelEntry {
+                model: "legacy.gguf".to_string(),
+                mmproj: Some("legacy-mmproj.gguf".to_string()),
+                ctx_size: Some(4096),
+                gpu_id: None,
+                model_ref: Some(ConfiguredModelRef {
+                    declared_ref: "structured.gguf".to_string(),
+                    source_kind: Some("huggingface".to_string()),
+                    revision: Some("main".to_string()),
+                }),
+                mmproj_ref: Some(ConfiguredModelRef {
+                    declared_ref: "structured-mmproj.gguf".to_string(),
+                    source_kind: Some("huggingface".to_string()),
+                    revision: Some("main".to_string()),
+                }),
+            }],
+            plugins: vec![],
+        };
+
+        let restored = proto_config_to_mesh(&snapshot);
+
+        assert_eq!(restored.models[0].model, "structured.gguf");
+        assert_eq!(
+            restored.models[0].mmproj.as_deref(),
+            Some("structured-mmproj.gguf")
+        );
+    }
+
+    #[test]
+    fn config_sync_empty_structured_refs_fall_back_to_legacy_strings() {
+        let snapshot = NodeConfigSnapshot {
+            version: 1,
+            gpu: Some(NodeGpuConfig {
+                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            }),
+            models: vec![NodeModelEntry {
+                model: "legacy.gguf".to_string(),
+                mmproj: Some("legacy-mmproj.gguf".to_string()),
+                ctx_size: None,
+                gpu_id: None,
+                model_ref: Some(ConfiguredModelRef {
+                    declared_ref: "   ".to_string(),
+                    source_kind: Some("huggingface".to_string()),
+                    revision: Some("main".to_string()),
+                }),
+                mmproj_ref: Some(ConfiguredModelRef {
+                    declared_ref: "".to_string(),
+                    source_kind: Some("huggingface".to_string()),
+                    revision: Some("main".to_string()),
+                }),
+            }],
+            plugins: vec![],
+        };
+
+        let restored = proto_config_to_mesh(&snapshot);
+
+        assert_eq!(restored.models[0].model, "legacy.gguf");
+        assert_eq!(
+            restored.models[0].mmproj.as_deref(),
+            Some("legacy-mmproj.gguf")
+        );
     }
 
     #[test]
@@ -1566,6 +1658,21 @@ mod tests {
         different.version = 2;
         let hash3 = canonical_config_hash(&different);
         assert_ne!(hash1, hash3, "different config must produce different hash");
+    }
+
+    #[test]
+    fn canonical_config_hash_changes_when_structured_refs_change_encoding() {
+        let mut legacy_only = make_config_snapshot();
+        legacy_only.models[0].model_ref = None;
+        legacy_only.models[0].mmproj_ref = None;
+
+        let dual_encoded = make_config_snapshot();
+
+        assert_ne!(
+            canonical_config_hash(&legacy_only),
+            canonical_config_hash(&dual_encoded),
+            "legacy-only and dual-encoded snapshots currently have distinct hashes"
+        );
     }
 
     #[test]
@@ -1708,6 +1815,7 @@ mod tests {
                 model: "Qwen3-8B.gguf".to_string(),
                 mmproj: Some("mm.gguf".to_string()),
                 ctx_size: Some(8192),
+                gpu_id: Some("pci:0000:65:00.0".to_string()),
             }],
             plugins: vec![PluginConfigEntry {
                 name: "blackboard".to_string(),
@@ -1723,6 +1831,10 @@ mod tests {
         assert_eq!(restored.models[0].model, "Qwen3-8B.gguf");
         assert_eq!(restored.models[0].mmproj.as_deref(), Some("mm.gguf"));
         assert_eq!(restored.models[0].ctx_size, Some(8192));
+        assert_eq!(
+            restored.models[0].gpu_id.as_deref(),
+            Some("pci:0000:65:00.0")
+        );
         assert_eq!(restored.plugins.len(), 1);
         assert_eq!(restored.plugins[0].name, "blackboard");
         assert_eq!(restored.plugins[0].enabled, Some(true));
@@ -1751,6 +1863,7 @@ mod tests {
                 model: "test.gguf".to_string(),
                 mmproj: None,
                 ctx_size: None,
+                gpu_id: None,
             }],
             plugins: vec![],
         };
@@ -1769,12 +1882,114 @@ mod tests {
                 model: "other.gguf".to_string(),
                 mmproj: None,
                 ctx_size: None,
+                gpu_id: None,
             }],
             plugins: vec![],
         };
         let snap3 = mesh_config_to_proto(&config2);
         let h3 = canonical_config_hash(&snap3);
         assert_ne!(h1, h3, "different config must produce different hash");
+    }
+
+    #[test]
+    fn pinned_gpu_proto_roundtrip() {
+        use crate::plugin::{GpuAssignment, GpuConfig, ModelConfigEntry};
+
+        let config = crate::plugin::MeshConfig {
+            version: Some(1),
+            gpu: GpuConfig {
+                assignment: GpuAssignment::Pinned,
+            },
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".to_string(),
+                mmproj: Some("mmproj-f16.gguf".to_string()),
+                ctx_size: Some(8192),
+                gpu_id: Some("pci:0000:65:00.0".to_string()),
+            }],
+            plugins: vec![],
+        };
+
+        let snapshot = mesh_config_to_proto(&config);
+        assert_eq!(
+            snapshot.gpu.as_ref().map(|gpu| gpu.assignment),
+            Some(crate::proto::node::GpuAssignment::Pinned as i32),
+            "pinned snapshots must not be downgraded to auto"
+        );
+        assert_eq!(
+            snapshot.models[0].gpu_id.as_deref(),
+            Some("pci:0000:65:00.0"),
+            "proto snapshot must carry per-model gpu_id"
+        );
+
+        let restored = proto_config_to_mesh(&snapshot);
+        assert_eq!(restored.gpu.assignment, GpuAssignment::Pinned);
+        assert_eq!(
+            restored.models[0].gpu_id.as_deref(),
+            Some("pci:0000:65:00.0")
+        );
+
+        let roundtripped = mesh_config_to_proto(&restored);
+        assert_eq!(
+            roundtripped.gpu.as_ref().map(|gpu| gpu.assignment),
+            Some(crate::proto::node::GpuAssignment::Pinned as i32),
+            "re-encoded snapshot must keep pinned assignment"
+        );
+        assert_eq!(
+            roundtripped.models[0].gpu_id.as_deref(),
+            Some("pci:0000:65:00.0"),
+            "re-encoded snapshot must keep gpu_id presence and value"
+        );
+    }
+
+    #[test]
+    fn pinned_gpu_proto_hash_changes_when_gpu_id_changes() {
+        let mut snapshot_a = make_config_snapshot();
+        snapshot_a.models[0].gpu_id = Some("pci:0000:65:00.0".to_string());
+
+        let mut snapshot_b = snapshot_a.clone();
+        snapshot_b.models[0].gpu_id = Some("pci:0000:66:00.0".to_string());
+
+        assert_ne!(
+            canonical_config_hash(&snapshot_a),
+            canonical_config_hash(&snapshot_b),
+            "changing only gpu_id must change the canonical config hash"
+        );
+    }
+
+    #[test]
+    fn pinned_gpu_proto_missing_gpu_id_decodes_as_none() {
+        let snapshot = NodeConfigSnapshot {
+            version: 1,
+            gpu: Some(NodeGpuConfig {
+                assignment: crate::proto::node::GpuAssignment::Pinned as i32,
+            }),
+            models: vec![NodeModelEntry {
+                model: "Qwen3-8B-Q4_K_M".to_string(),
+                mmproj: None,
+                ctx_size: Some(4096),
+                gpu_id: None,
+                model_ref: Some(ConfiguredModelRef {
+                    declared_ref: "Qwen3-8B-Q4_K_M".to_string(),
+                    source_kind: None,
+                    revision: None,
+                }),
+                mmproj_ref: None,
+            }],
+            plugins: vec![],
+        };
+
+        let encoded = snapshot.encode_to_vec();
+        let decoded = NodeConfigSnapshot::decode(encoded.as_slice())
+            .expect("payload without gpu_id must still decode");
+        let restored = proto_config_to_mesh(&decoded);
+
+        assert_eq!(
+            restored.gpu.assignment,
+            crate::plugin::GpuAssignment::Pinned
+        );
+        assert_eq!(restored.models.len(), 1);
+        assert_eq!(restored.models[0].gpu_id, None);
+        assert_eq!(restored.models[0].ctx_size, Some(4096));
     }
 
     #[test]

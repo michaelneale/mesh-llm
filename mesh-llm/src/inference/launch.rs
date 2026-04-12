@@ -324,6 +324,7 @@ pub struct ModelLaunchSpec<'a> {
     pub mmproj: Option<&'a Path>,
     pub ctx_size_override: Option<u32>,
     pub total_group_vram: Option<u64>,
+    pub selected_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
 }
 
 pub(crate) const GB: u64 = 1_000_000_000;
@@ -698,6 +699,35 @@ fn resolve_device_for_binary(
     Ok(detect_device())
 }
 
+fn selected_backend_device(
+    selected_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+) -> Result<Option<&str>> {
+    match selected_gpu {
+        Some(gpu) => Ok(Some(gpu.backend_device.as_str())),
+        None => Ok(None),
+    }
+}
+
+fn ensure_selected_gpu_capacity(
+    selected_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+    required_bytes: u64,
+    purpose: &str,
+) -> Result<()> {
+    let Some(gpu) = selected_gpu else {
+        return Ok(());
+    };
+    let required_with_headroom = ((required_bytes as f64) * 1.1).ceil() as u64;
+    anyhow::ensure!(
+        gpu.vram_bytes >= required_with_headroom,
+        "pinned GPU '{}' ({}) has {:.1}GB but {purpose} assumes at least {:.1}GB on the selected device",
+        gpu.stable_id,
+        gpu.backend_device,
+        gpu.vram_bytes as f64 / GB as f64,
+        required_with_headroom as f64 / GB as f64
+    );
+    Ok(())
+}
+
 fn command_has_output(command: &str, args: &[&str]) -> bool {
     let Ok(output) = std::process::Command::new(command).args(args).output() else {
         return false;
@@ -1037,6 +1067,7 @@ pub async fn start_llama_server(
     let mmproj = spec.mmproj;
     let ctx_size_override = spec.ctx_size_override;
     let total_group_vram = spec.total_group_vram;
+    let selected_gpu = spec.selected_gpu;
     let llama_server = resolve_binary_path(bin_dir, "llama-server", binary_flavor)?;
 
     anyhow::ensure!(model.exists(), "Model not found at {}", model.display());
@@ -1086,6 +1117,7 @@ pub async fn start_llama_server(
         // Local mode: host holds all weights
         model_bytes
     };
+    ensure_selected_gpu_capacity(selected_gpu, host_model_bytes, "this local launch")?;
     let vram_after_model = my_vram.saturating_sub(host_model_bytes);
     let ctx_size = compute_context_size(ctx_size_override, model_bytes, my_vram, total_group_vram);
     tracing::info!(
@@ -1190,7 +1222,15 @@ pub async fn start_llama_server(
             }
         }
     }
-    let local_device = resolve_device_for_binary(&llama_server.path, llama_server.flavor, None)?;
+    let local_device = resolve_device_for_binary(
+        &llama_server.path,
+        llama_server.flavor,
+        selected_backend_device(selected_gpu)?,
+    )?;
+    if selected_gpu.is_some() {
+        args.push("--device".to_string());
+        args.push(local_device.clone());
+    }
     if let Some(draft_path) = draft {
         if draft_path.exists() {
             if local_device != "CPU" {
@@ -1827,6 +1867,38 @@ No devices found
             compute_context_size(None, model_bytes, my_vram, total_group_vram),
             16384
         );
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_launch_returns_required_backend_device() {
+        let pinned_gpu = crate::runtime::StartupPinnedGpuTarget {
+            index: 1,
+            stable_id: "pci:0000:65:00.0".into(),
+            backend_device: "CUDA1".into(),
+            vram_bytes: 24_000_000_000,
+        };
+        let selected = super::selected_backend_device(Some(&pinned_gpu)).unwrap();
+
+        assert_eq!(selected, Some("CUDA1"));
+    }
+
+    #[test]
+    fn pinned_gpu_runtime_launch_rejects_insufficient_selected_device_capacity() {
+        let err = super::ensure_selected_gpu_capacity(
+            Some(&crate::runtime::StartupPinnedGpuTarget {
+                index: 0,
+                stable_id: "uuid:GPU-small".into(),
+                backend_device: "CUDA0".into(),
+                vram_bytes: 8_000_000_000,
+            }),
+            10_000_000_000,
+            "this local launch",
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("uuid:GPU-small"));
+        assert!(message.contains("selected device"));
     }
 
     // ── SplitMode ──

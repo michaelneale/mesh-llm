@@ -351,6 +351,7 @@ mod tests {
                 model: model.to_string(),
                 mmproj: None,
                 ctx_size: None,
+                gpu_id: None,
             }],
             plugins: vec![],
         };
@@ -382,6 +383,7 @@ mod tests {
                 model: "test.gguf".to_string(),
                 mmproj: None,
                 ctx_size: None,
+                gpu_id: None,
             }],
             plugins: vec![],
         };
@@ -420,6 +422,7 @@ mod tests {
                 model: "noop-test.gguf".to_string(),
                 mmproj: None,
                 ctx_size: None,
+                gpu_id: None,
             }],
             plugins: vec![],
         };

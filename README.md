@@ -196,6 +196,8 @@ mesh-llm gpu benchmark --json
 
 `mesh-llm gpus` prints local GPU entries, backend device names, stable IDs, VRAM, unified-memory state, and cached bandwidth when a benchmark fingerprint is already available. Add `--json` for machine-readable inventory output, or run `mesh-llm gpu benchmark --json` to refresh the local fingerprint and print the benchmark result as JSON.
 
+Use only pinnable `Stable ID` / `stable_id` values from `mesh-llm gpus` or `mesh-llm gpus --json` for pinned startup config. Stable-ID fallback values such as `index:*` or backend-device names like `CUDA0` / `HIP0` / `MTL0` can still be printed for inventory purposes, but they are not valid pin targets.
+
 ### Startup config
 
 `mesh-llm serve` can now load startup models from `~/.mesh-llm/config.toml`:
@@ -204,15 +206,17 @@ mesh-llm gpu benchmark --json
 version = 1
 
 [gpu]
-assignment = "auto"
+assignment = "pinned"
 
 [[models]]
 model = "Qwen3-8B-Q4_K_M"
+gpu_id = "pci:0000:65:00.0"
 
 [[models]]
 model = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/qwen2.5-vl-7b-instruct-q4_k_m.gguf"
 mmproj = "bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj-f16.gguf"
 ctx_size = 8192
+gpu_id = "uuid:GPU-12345678"
 
 [[plugin]]
 name = "blackboard"
@@ -238,6 +242,13 @@ Precedence rules:
 - Explicit `--model` or `--gguf` ignores configured `[[models]]`.
 - Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
 - Plugin entries still live in the same file.
+
+Pinned startup notes:
+
+- `assignment = "pinned"` requires every configured `[[models]]` entry to include a `gpu_id`.
+- Valid `gpu_id` values come from the pinnable stable IDs reported by `mesh-llm gpus` / `mesh-llm gpus --json`, not fallback inventory IDs.
+- Pinned configs fail closed when a configured ID is missing, ambiguous, unsupported on the local backend, or no longer resolves on the current machine.
+- Explicit `--model` / `--gguf` still bypass configured `[[models]]`, so they also bypass config-owned pinned `gpu_id` values.
 
 ### No-arg behavior
 ```bash
