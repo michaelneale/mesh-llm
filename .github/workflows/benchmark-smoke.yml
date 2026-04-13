@@ -1,0 +1,108 @@
+name: Reusable Benchmark Smoke Tests
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        required: true
+        type: string
+      artifact_path:
+        required: true
+        type: string
+      benchmark_binary:
+        required: true
+        type: string
+      runs_on:
+        required: true
+        type: string
+      container_image:
+        required: false
+        default: ''
+        type: string
+      container_options:
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  smoke:
+    if: ${{ inputs.container_image == '' }}
+    name: Benchmark Smoke Tests
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+
+      - name: Run benchmark smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="${{ inputs.artifact_path }}/${{ inputs.benchmark_binary }}"
+          chmod +x "$BIN"
+          TMP_OUTPUT=$(mktemp)
+          TMP_STDERR=$(mktemp)
+          trap 'rm -f "$TMP_OUTPUT" "$TMP_STDERR"' EXIT
+          if ! "$BIN" --json >"$TMP_OUTPUT" 2>"$TMP_STDERR"; then
+            if [ -s "$TMP_OUTPUT" ]; then
+              cat "$TMP_OUTPUT"
+            fi
+            if [ -s "$TMP_STDERR" ]; then
+              cat "$TMP_STDERR" >&2
+            fi
+            exit 1
+          fi
+          OUTPUT=$(cat "$TMP_OUTPUT")
+          printf '%s\n' "$OUTPUT"
+          if [ -s "$TMP_STDERR" ]; then
+            cat "$TMP_STDERR" >&2
+          fi
+          python3 -c 'import json,sys; payload=json.loads(sys.argv[1]); assert isinstance(payload, list) and payload; [(_ for _ in ()).throw(AssertionError(entry)) if not (entry["compute_tflops_fp32"] > 0 and entry["compute_tflops_fp16"] > 0 and entry["p90_gbps"] > 0) else None for entry in payload]' "$OUTPUT"
+
+  smoke_container:
+    if: ${{ inputs.container_image != '' }}
+    name: Benchmark Smoke Tests
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+      options: ${{ inputs.container_options }}
+    steps:
+      - name: Install base packages
+        shell: bash
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ca-certificates \
+            python3
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ inputs.artifact_path }}
+
+      - name: Run benchmark smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="${{ inputs.artifact_path }}/${{ inputs.benchmark_binary }}"
+          chmod +x "$BIN"
+          TMP_OUTPUT=$(mktemp)
+          TMP_STDERR=$(mktemp)
+          trap 'rm -f "$TMP_OUTPUT" "$TMP_STDERR"' EXIT
+          if ! "$BIN" --json >"$TMP_OUTPUT" 2>"$TMP_STDERR"; then
+            if [ -s "$TMP_OUTPUT" ]; then
+              cat "$TMP_OUTPUT"
+            fi
+            if [ -s "$TMP_STDERR" ]; then
+              cat "$TMP_STDERR" >&2
+            fi
+            exit 1
+          fi
+          OUTPUT=$(cat "$TMP_OUTPUT")
+          printf '%s\n' "$OUTPUT"
+          if [ -s "$TMP_STDERR" ]; then
+            cat "$TMP_STDERR" >&2
+          fi
+          python3 -c 'import json,sys; payload=json.loads(sys.argv[1]); assert isinstance(payload, list) and payload; [(_ for _ in ()).throw(AssertionError(entry)) if not (entry["compute_tflops_fp32"] > 0 and entry["compute_tflops_fp16"] > 0 and entry["p90_gbps"] > 0) else None for entry in payload]' "$OUTPUT"

@@ -1,0 +1,12 @@
+{
+  "gpus": [
+    {
+      "name": "NVIDIA A100",
+      "vram_bytes": 80000000000,
+      "p50_gbps": 1935.2,
+      "p90_gbps": 1948.7
+    }
+  ],
+  "is_soc": false,
+  "timestamp_secs": 1700000000
+}

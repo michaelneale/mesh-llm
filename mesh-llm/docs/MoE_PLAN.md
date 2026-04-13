@@ -13,10 +13,19 @@ All core phases are complete and integrated into mesh-llm.
 - Auto-detected in `election.rs` at model load time.
 
 ### Ranking
-- **Cached rankings**: `moe::load_cached_ranking()` loads from the mesh-llm cache under `~/.cache/mesh-llm/moe-rankings/`.
-- **Dynamic analysis**: runtime can materialize cached rankings via `micro-analyze` or full `moe-analyze`.
+- **Published rankings**: `meshllm/moe-rankings` on Hugging Face is now the canonical shared ranking source for exact `repo + revision + distribution_id + analyzer_id`.
+- **Cached rankings**: local analysis results remain in the mesh-llm cache and are preferred when they are at least as strong as published data. Published rankings only replace local cache when they are stronger.
+- **Runtime resolution**: `mesh-llm moe plan` and `serve` check the local mesh-llm cache first, then the Hugging Face dataset, and prefer `full-*` over `micro-*`.
+- **HF cache behavior**: dataset artifacts stay in the Hugging Face cache when downloaded; they are not copied into `~/.cache/mesh-llm`.
+- **Dynamic analysis**: runtime can still materialize cached rankings via `micro-analyze` or full `moe-analyze`.
 - **Fallback**: no ranking → conservative 50% shared core with sequential expert IDs.
 - **Tool**: `llama-moe-analyze` (in `llama.cpp/tools/moe-analyze/`) runs inference on sample prompts and exports per-expert gate mass CSV.
+
+### MoE CLI
+
+- `mesh-llm moe plan <model>` resolves rankings from local cache or `meshllm/moe-rankings` and produces a placement recommendation.
+- `mesh-llm moe analyze full <model>` and `mesh-llm moe analyze micro <model>` generate local ranking artifacts.
+- `mesh-llm moe share <model>` opens a contribution PR against `meshllm/moe-rankings` when a locally generated ranking is new.
 
 ### Splitting (`moe.rs` + `llama-moe-split`)
 - `compute_assignments()` implements the overlap strategy: shared core (top N experts by gate mass) replicated to every node, remaining experts distributed uniquely.

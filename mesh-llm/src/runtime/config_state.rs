@@ -56,8 +56,8 @@ fn read_revision(sidecar: &Path) -> u64 {
     let rev = std::fs::read_to_string(sidecar)
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
-    if rev.is_some() {
-        return rev.unwrap();
+    if let Some(rev) = rev {
+        return rev;
     }
     let legacy = sidecar
         .parent()

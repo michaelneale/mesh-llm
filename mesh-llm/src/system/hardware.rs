@@ -1,7 +1,7 @@
-/// Hardware detection via Collector trait pattern.
-/// VRAM formula preserved byte-identical from mesh.rs:detect_vram_bytes().
+//! Hardware detection via Collector trait pattern.
+//! VRAM formula preserved byte-identical from mesh.rs:detect_vram_bytes().
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 use serde_json::Value;
 
 #[derive(Default, Debug, Clone, PartialEq)]
@@ -10,7 +10,10 @@ pub struct GpuFacts {
     pub display_name: String,
     pub backend_device: Option<String>,
     pub vram_bytes: u64,
-    pub bandwidth_gbps: Option<f64>,
+    pub reserved_bytes: Option<u64>,
+    pub mem_bandwidth_gbps: Option<f64>,
+    pub compute_tflops_fp32: Option<f64>,
+    pub compute_tflops_fp16: Option<f64>,
     pub unified_memory: bool,
     pub stable_id: Option<String>,
     pub pci_bdf: Option<String>,
@@ -30,6 +33,10 @@ pub struct HardwareSurvey {
     /// Per-GPU VRAM in bytes, same order as gpu_name list.
     /// Unified-memory SoCs report a single entry.
     pub gpu_vram: Vec<u64>,
+    /// Per-GPU reserved or otherwise unavailable bytes when the platform
+    /// reports a true reserved/unavailable value. Do not populate this from
+    /// live used-memory counters.
+    pub gpu_reserved: Vec<Option<u64>>,
     /// Per-GPU facts in device-enumeration order.
     pub gpus: Vec<GpuFacts>,
 }
@@ -76,6 +83,22 @@ pub fn parse_nvidia_gpu_memory(output: &str) -> Vec<u64> {
         .collect()
 }
 
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+pub fn parse_nvidia_gpu_memory_and_reserved(output: &str) -> Vec<(u64, Option<u64>)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split(',').map(str::trim);
+            let total_mib = parts.next()?.parse::<u64>().ok()?;
+            let reserved_mib = parts.next().and_then(|value| value.parse::<u64>().ok());
+            Some((
+                total_mib * 1024 * 1024,
+                reserved_mib.map(|mib| mib * 1024 * 1024),
+            ))
+        })
+        .collect()
+}
+
 /// Parse `sysctl -n machdep.cpu.brand_string` output → CPU brand string.
 #[cfg(any(target_os = "macos", test))]
 pub fn parse_macos_cpu_brand(output: &str) -> Option<String> {
@@ -85,6 +108,33 @@ pub fn parse_macos_cpu_brand(output: &str) -> Option<String> {
     } else {
         Some(s.to_string())
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub fn parse_iogpu_wired_limit_mb(output: &str) -> Option<u64> {
+    output.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim() != "iogpu.wired_limit_mb" {
+            return None;
+        }
+        value.trim().parse::<u64>().ok()
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn derive_macos_gpu_budget(total_bytes: u64, iogpu_output: Option<&str>) -> (u64, Option<u64>) {
+    let total_mib = total_bytes / (1024 * 1024);
+    let wired_limit_mib = iogpu_output
+        .and_then(parse_iogpu_wired_limit_mb)
+        .filter(|wired_limit_mib| *wired_limit_mib > 0)
+        .map(|wired_limit_mib| wired_limit_mib.min(total_mib));
+
+    let reserved_bytes = wired_limit_mib
+        .map(|wired_limit_mib| total_bytes.saturating_sub(wired_limit_mib * 1024 * 1024))
+        .unwrap_or_else(|| total_bytes / 4);
+    let usable_bytes = total_bytes.saturating_sub(reserved_bytes);
+
+    (usable_bytes, Some(reserved_bytes))
 }
 
 /// Parse `rocm-smi --showproductname` output → GPU names from "Card series:" lines.
@@ -102,17 +152,107 @@ pub fn parse_rocm_gpu_names(output: &str) -> Vec<String> {
     names
 }
 
-/// Parse `rocm-smi --showmeminfo vram --csv` output → per-GPU VRAM bytes.
+/// Parse `rocm-smi --showmeminfo vram --csv` output into per-GPU total bytes
+/// and live used bytes. The used column is a utilization metric, not a
+/// reserved/system-memory metric, so callers must not surface it as
+/// `reserved_bytes`.
 #[cfg(any(target_os = "linux", test))]
-pub fn parse_rocm_gpu_vrams(output: &str) -> Vec<u64> {
+pub fn parse_rocm_gpu_memory_and_used(output: &str) -> Vec<(u64, Option<u64>)> {
     output
         .lines()
         .skip(1)
         .filter_map(|line| {
-            let total = line.split(',').nth(1)?;
-            total.trim().parse::<u64>().ok()
+            let mut columns = line.split(',').map(str::trim);
+            let _device = columns.next()?;
+            let total = columns.next()?.parse::<u64>().ok()?;
+            let used = columns.next().and_then(|value| value.parse::<u64>().ok());
+            Some((total, used))
         })
         .collect()
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XpuSmiGpuInfo {
+    pub name: String,
+    pub total_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn xpu_json_string(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| match map.get(*key) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.trim().to_string()),
+        _ => None,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn xpu_json_u64(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| match map.get(*key) {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => value.trim().parse::<u64>().ok(),
+        _ => None,
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn collect_xpu_smi_devices(value: &Value, devices: &mut Vec<XpuSmiGpuInfo>) {
+    match value {
+        Value::Object(map) => {
+            let name = xpu_json_string(map, &["device_name", "deviceName", "name"]);
+            let total_bytes = xpu_json_u64(
+                map,
+                &[
+                    "memory_physical_size_byte",
+                    "memoryPhysicalSizeByte",
+                    "memory_total_bytes",
+                    "memoryTotalBytes",
+                    "memory_size_byte",
+                    "memorySizeByte",
+                    "lmem_total_bytes",
+                    "lmemTotalBytes",
+                ],
+            );
+            let used_bytes = xpu_json_u64(
+                map,
+                &[
+                    "memory_used_byte",
+                    "memoryUsedByte",
+                    "memory_used_bytes",
+                    "memoryUsedBytes",
+                    "lmem_used_bytes",
+                    "lmemUsedBytes",
+                ],
+            );
+            if let Some(name) = name.filter(|_| total_bytes.is_some() || used_bytes.is_some()) {
+                devices.push(XpuSmiGpuInfo {
+                    name,
+                    total_bytes,
+                    used_bytes,
+                });
+            }
+            for child in map.values() {
+                collect_xpu_smi_devices(child, devices);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_xpu_smi_devices(value, devices);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_xpu_smi_discovery_json(output: &str) -> Vec<XpuSmiGpuInfo> {
+    let Ok(value) = serde_json::from_str::<Value>(output) else {
+        return Vec::new();
+    };
+    let mut devices = Vec::new();
+    collect_xpu_smi_devices(&value, &mut devices);
+    devices
 }
 
 /// Summarize GPU names: empty→None, 1→name, N identical→"N× name", N mixed→"a, b".
@@ -357,9 +497,17 @@ impl Collector for DefaultCollector {
                 if let Some(out) = out {
                     if let Ok(s) = String::from_utf8(out.stdout) {
                         if let Ok(bytes) = s.trim().parse::<u64>() {
-                            // ~75% usable for Metal on unified memory (mesh.rs:263)
-                            survey.vram_bytes = (bytes as f64 * 0.75) as u64;
+                            let iogpu_output = std::process::Command::new("sysctl")
+                                .arg("iogpu")
+                                .output()
+                                .ok()
+                                .filter(|out| out.status.success())
+                                .and_then(|out| String::from_utf8(out.stdout).ok());
+                            let (usable_bytes, reserved_bytes) =
+                                derive_macos_gpu_budget(bytes, iogpu_output.as_deref());
+                            survey.vram_bytes = usable_bytes;
                             survey.gpu_vram = vec![bytes];
+                            survey.gpu_reserved = vec![reserved_bytes];
                         }
                     }
                 }
@@ -388,6 +536,29 @@ impl Collector for DefaultCollector {
                 // Try NVIDIA (mesh.rs:284-316)
                 let nvidia_vram: Option<(u64, Vec<u64>)> = (|| {
                     let out = std::process::Command::new("nvidia-smi")
+                        .args([
+                            "--query-gpu=memory.total,memory.reserved",
+                            "--format=csv,noheader,nounits",
+                        ])
+                        .output()
+                        .ok();
+                    if let Some(out) = out {
+                        if out.status.success() {
+                            let s = String::from_utf8(out.stdout).ok()?;
+                            let parsed = parse_nvidia_gpu_memory_and_reserved(&s);
+                            if !parsed.is_empty() {
+                                survey.gpu_reserved =
+                                    parsed.iter().map(|(_, reserved)| *reserved).collect();
+                                let per_gpu: Vec<u64> =
+                                    parsed.iter().map(|(total, _)| *total).collect();
+                                let total: u64 = per_gpu.iter().sum();
+                                if total > 0 {
+                                    return Some((total, per_gpu));
+                                }
+                            }
+                        }
+                    }
+                    let out = std::process::Command::new("nvidia-smi")
                         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
                         .output()
                         .ok()?;
@@ -404,6 +575,7 @@ impl Collector for DefaultCollector {
                         .collect();
                     let total: u64 = per_gpu.iter().sum();
                     if total > 0 {
+                        survey.gpu_reserved = vec![None; per_gpu.len()];
                         Some((total, per_gpu))
                     } else {
                         None
@@ -425,7 +597,12 @@ impl Collector for DefaultCollector {
                             return None;
                         }
                         let s = String::from_utf8(out.stdout).ok()?;
-                        let vrams = parse_rocm_gpu_vrams(&s);
+                        let parsed = parse_rocm_gpu_memory_and_used(&s);
+                        // ROCm exposes total and live used VRAM here, not a
+                        // true reserved/unavailable metric, so leave
+                        // reserved_bytes unavailable for this backend.
+                        survey.gpu_reserved = vec![None; parsed.len()];
+                        let vrams: Vec<u64> = parsed.iter().map(|(total, _)| *total).collect();
                         if vrams.is_empty() {
                             None
                         } else {
@@ -438,9 +615,46 @@ impl Collector for DefaultCollector {
                         survey.gpu_vram = per_gpu;
                         let ram_offload = system_ram.saturating_sub(vram);
                         survey.vram_bytes = vram + (ram_offload as f64 * 0.75) as u64;
-                    } else if system_ram > 0 {
-                        // CPU-only (mesh.rs:320-322)
-                        survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                    } else {
+                        let intel_gpus: Option<Vec<XpuSmiGpuInfo>> = (|| {
+                            for args in [["discovery", "--json"], ["discovery", "-j"]] {
+                                let out = std::process::Command::new("xpu-smi")
+                                    .args(args)
+                                    .output()
+                                    .ok()?;
+                                if !out.status.success() {
+                                    continue;
+                                }
+                                let stdout = String::from_utf8(out.stdout).ok()?;
+                                let gpus = parse_xpu_smi_discovery_json(&stdout);
+                                if !gpus.is_empty() {
+                                    return Some(gpus);
+                                }
+                            }
+                            None
+                        })();
+
+                        if let Some(intel_gpus) = intel_gpus {
+                            // xpu-smi discovery reports capacity plus used
+                            // bytes, but not a true reserved/unavailable
+                            // metric, so leave reserved_bytes unavailable.
+                            survey.gpu_reserved = vec![None; intel_gpus.len()];
+                            let per_gpu: Vec<u64> = intel_gpus
+                                .iter()
+                                .map(|gpu| gpu.total_bytes.unwrap_or(0))
+                                .collect();
+                            let total: u64 = per_gpu.iter().sum();
+                            survey.gpu_vram = per_gpu;
+                            if total > 0 {
+                                let ram_offload = system_ram.saturating_sub(total);
+                                survey.vram_bytes = total + (ram_offload as f64 * 0.75) as u64;
+                            } else if system_ram > 0 {
+                                survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                            }
+                        } else if system_ram > 0 {
+                            // CPU-only (mesh.rs:320-322)
+                            survey.vram_bytes = (system_ram as f64 * 0.75) as u64;
+                        }
                     }
                 }
             }
@@ -484,6 +698,32 @@ impl Collector for DefaultCollector {
                                 }
                                 if metrics.contains(&Metric::GpuCount) {
                                     survey.gpu_count = u8::try_from(names.len()).unwrap_or(u8::MAX);
+                                }
+                            }
+                        }
+                    } else {
+                        for args in [["discovery", "--json"], ["discovery", "-j"]] {
+                            let out = std::process::Command::new("xpu-smi")
+                                .args(args)
+                                .output()
+                                .ok();
+                            if let Some(out) = out {
+                                if out.status.success() {
+                                    if let Ok(stdout) = String::from_utf8(out.stdout) {
+                                        let gpus = parse_xpu_smi_discovery_json(&stdout);
+                                        if !gpus.is_empty() {
+                                            let names: Vec<String> =
+                                                gpus.iter().map(|gpu| gpu.name.clone()).collect();
+                                            if metrics.contains(&Metric::GpuName) {
+                                                survey.gpu_name = summarize_gpu_name(&names);
+                                            }
+                                            if metrics.contains(&Metric::GpuCount) {
+                                                survey.gpu_count =
+                                                    u8::try_from(names.len()).unwrap_or(u8::MAX);
+                                            }
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -761,7 +1001,10 @@ fn hydrate_gpu_facts(survey: &mut HardwareSurvey, metrics: &[Metric]) {
                 display_name,
                 backend_device,
                 vram_bytes: survey.gpu_vram.get(index).copied().unwrap_or(0),
-                bandwidth_gbps: None,
+                reserved_bytes: survey.gpu_reserved.get(index).cloned().flatten(),
+                mem_bandwidth_gbps: None,
+                compute_tflops_fp32: None,
+                compute_tflops_fp16: None,
                 unified_memory: survey.is_soc,
                 stable_id,
                 pci_bdf,
@@ -850,6 +1093,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_nvidia_gpu_memory_and_reserved() {
+        assert_eq!(
+            parse_nvidia_gpu_memory_and_reserved("81920,1024\n24576,0\n"),
+            vec![
+                (81_920u64 * 1024 * 1024, Some(1_024u64 * 1024 * 1024)),
+                (24_576u64 * 1024 * 1024, Some(0)),
+            ]
+        );
+    }
+
+    #[test]
     fn test_parse_macos_cpu_brand() {
         assert_eq!(
             parse_macos_cpu_brand("Apple M4 Max\n"),
@@ -860,6 +1114,40 @@ mod tests {
     #[test]
     fn test_parse_macos_cpu_brand_empty() {
         assert_eq!(parse_macos_cpu_brand(""), None);
+    }
+
+    #[test]
+    fn test_parse_iogpu_wired_limit_mb() {
+        let fixture = "\
+iogpu.wired_lwm_mb: 0
+iogpu.dynamic_lwm: 1
+iogpu.wired_limit_mb: 36864
+iogpu.debug_flags: 0";
+        assert_eq!(parse_iogpu_wired_limit_mb(fixture), Some(36_864));
+    }
+
+    #[test]
+    fn test_derive_macos_gpu_budget_uses_wired_limit_when_present() {
+        let total_bytes = 51_539_607_552_u64;
+        let iogpu = "\
+iogpu.wired_lwm_mb: 0
+iogpu.wired_limit_mb: 36864";
+        let (usable, reserved) = derive_macos_gpu_budget(total_bytes, Some(iogpu));
+
+        assert_eq!(usable, 36_864_u64 * 1024 * 1024);
+        assert_eq!(reserved, Some(total_bytes - usable));
+    }
+
+    #[test]
+    fn test_derive_macos_gpu_budget_falls_back_to_25_percent_reserved_when_wired_limit_zero() {
+        let total_bytes = 51_539_607_552_u64;
+        let iogpu = "\
+iogpu.wired_lwm_mb: 0
+iogpu.wired_limit_mb: 0";
+        let (usable, reserved) = derive_macos_gpu_budget(total_bytes, Some(iogpu));
+
+        assert_eq!(reserved, Some(total_bytes / 4));
+        assert_eq!(usable, total_bytes - (total_bytes / 4));
     }
 
     #[test]
@@ -893,32 +1181,102 @@ GPU[1]\t\t: Card series:\t\t\tAMD Instinct MI300X
     }
 
     #[test]
-    fn test_parse_rocm_gpu_vrams_single() {
-        let fixture = "\
-device,VRAM Total Memory (B),VRAM Total Used Memory (B)
-card0,25753026560,416378880";
-        assert_eq!(parse_rocm_gpu_vrams(fixture), vec![25753026560]);
-    }
-
-    #[test]
-    fn test_parse_rocm_gpu_vrams_multi() {
+    fn test_parse_rocm_gpu_memory_and_used() {
         let fixture = "\
 device,VRAM Total Memory (B),VRAM Total Used Memory (B)
 card0,25753026560,416378880
 card1,25753026560,512000000";
         assert_eq!(
-            parse_rocm_gpu_vrams(fixture),
-            vec![25753026560, 25753026560]
+            parse_rocm_gpu_memory_and_used(fixture),
+            vec![
+                (25_753_026_560, Some(416_378_880)),
+                (25_753_026_560, Some(512_000_000)),
+            ]
         );
     }
 
     #[test]
-    fn test_parse_rocm_gpu_vrams_ignores_invalid_rows() {
+    fn test_parse_xpu_smi_discovery_json() {
+        let fixture = r#"{
+          "devices": [
+            {
+              "device_name": "Intel Arc A770",
+              "memory_physical_size_byte": 17179869184,
+              "memory_used_byte": 536870912
+            },
+            {
+              "device_name": "Intel Arc B580",
+              "memory_physical_size_byte": "12884901888",
+              "memory_used_byte": "268435456"
+            }
+          ]
+        }"#;
+        assert_eq!(
+            parse_xpu_smi_discovery_json(fixture),
+            vec![
+                XpuSmiGpuInfo {
+                    name: "Intel Arc A770".to_string(),
+                    total_bytes: Some(17_179_869_184),
+                    used_bytes: Some(536_870_912),
+                },
+                XpuSmiGpuInfo {
+                    name: "Intel Arc B580".to_string(),
+                    total_bytes: Some(12_884_901_888),
+                    used_bytes: Some(268_435_456),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rocm_used_memory_does_not_surface_as_reserved_bytes() {
         let fixture = "\
 device,VRAM Total Memory (B),VRAM Total Used Memory (B)
 card0,25753026560,416378880
-card1,not-a-number,512000000";
-        assert_eq!(parse_rocm_gpu_vrams(fixture), vec![25753026560]);
+card1,25753026560,512000000";
+        let parsed = parse_rocm_gpu_memory_and_used(fixture);
+        let mut survey = HardwareSurvey {
+            gpu_vram: parsed.iter().map(|(total, _)| *total).collect(),
+            gpu_reserved: vec![None; parsed.len()],
+            ..Default::default()
+        };
+
+        hydrate_gpu_facts(&mut survey, &[Metric::GpuFacts]);
+
+        assert_eq!(survey.gpus.len(), 2);
+        assert!(survey.gpus.iter().all(|gpu| gpu.reserved_bytes.is_none()));
+    }
+
+    #[test]
+    fn test_xpu_used_memory_does_not_surface_as_reserved_bytes() {
+        let fixture = r#"{
+          "devices": [
+            {
+              "device_name": "Intel Arc A770",
+              "memory_physical_size_byte": 17179869184,
+              "memory_used_byte": 536870912
+            },
+            {
+              "device_name": "Intel Arc B580",
+              "memory_physical_size_byte": "12884901888",
+              "memory_used_byte": "268435456"
+            }
+          ]
+        }"#;
+        let gpus = parse_xpu_smi_discovery_json(fixture);
+        let mut survey = HardwareSurvey {
+            gpu_vram: gpus
+                .iter()
+                .map(|gpu| gpu.total_bytes.unwrap_or(0))
+                .collect(),
+            gpu_reserved: vec![None; gpus.len()],
+            ..Default::default()
+        };
+
+        hydrate_gpu_facts(&mut survey, &[Metric::GpuFacts]);
+
+        assert_eq!(survey.gpus.len(), 2);
+        assert!(survey.gpus.iter().all(|gpu| gpu.reserved_bytes.is_none()));
     }
 
     #[test]
@@ -993,6 +1351,7 @@ card1,not-a-number,512000000";
         assert_eq!(s.gpu_count, 0);
         assert_eq!(s.hostname, None);
         assert!(s.gpu_vram.is_empty());
+        assert!(s.gpu_reserved.is_empty());
         assert!(s.gpus.is_empty());
     }
 

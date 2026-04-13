@@ -1,0 +1,218 @@
+name: Docker precheck
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        required: true
+        type: string
+      dockerfile_path:
+        required: true
+        type: string
+      validate_shared_core:
+        required: false
+        type: boolean
+        default: false
+      validate_llama_builder:
+        required: false
+        type: boolean
+        default: false
+      validate_cuda_extra:
+        required: false
+        type: boolean
+        default: false
+      validate_workflow_no_qemu:
+        required: false
+        type: boolean
+        default: false
+      validate_fly_ui_builder:
+        required: false
+        type: boolean
+        default: false
+      validate_entrypoint_modes:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    name: ${{ inputs.job_name }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate target Dockerfile exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ inputs.dockerfile_path }}"
+
+      - name: Shared Dockerfile copies UI build before cargo build
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ui_line=$(grep -n "COPY --from=ui-builder" "${{ inputs.dockerfile_path }}" | head -1 | cut -d: -f1 || true)
+          build_line=$(grep -n "cargo build" "${{ inputs.dockerfile_path }}" | head -1 | cut -d: -f1 || true)
+          if [[ -z "$ui_line" || -z "$build_line" ]]; then
+            echo "FAIL: missing COPY --from=ui-builder or cargo build in ${{ inputs.dockerfile_path }}" >&2
+            exit 1
+          fi
+          if (( ui_line >= build_line )); then
+            echo "FAIL: ui-builder COPY (line $ui_line) must precede cargo build (line $build_line) in ${{ inputs.dockerfile_path }}" >&2
+            exit 1
+          fi
+          echo "PASS: ui-builder COPY (line $ui_line) precedes cargo build (line $build_line)"
+
+      - name: Cargo chef copies full workspace manifests
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "COPY Cargo.toml" "$file"
+          grep -q "COPY Cargo.lock" "$file"
+          grep -q "COPY mesh-llm/Cargo.toml" "$file"
+          grep -q "COPY mesh-llm/build.rs" "$file"
+          grep -q "COPY mesh-llm/plugin/Cargo.toml" "$file"
+          grep -q "COPY mesh-llm/plugin/build.rs" "$file"
+          grep -q "COPY mesh-llm/proto/" "$file"
+          if grep -qE "echo.*fn main|stub.*lib" "$file"; then
+            echo "FAIL: stub lib.rs shortcut detected in $file" >&2
+            exit 1
+          fi
+          echo "PASS: full workspace manifests present with corrected proto path"
+
+      - name: Rust builder installs libdbus-1-dev
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "libdbus-1-dev" "${{ inputs.dockerfile_path }}"
+          echo "PASS: libdbus-1-dev present"
+
+      - name: Llama builder uses upstream-latest branch
+        if: ${{ inputs.validate_llama_builder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "upstream-latest" "$file"
+          if grep -q "rebase-upstream-master" "$file"; then
+            echo "FAIL: legacy rebase-upstream-master branch referenced in $file" >&2
+            exit 1
+          fi
+          echo "PASS: uses upstream-latest branch"
+
+      - name: CUDA build enables FA all quants
+        if: ${{ inputs.validate_cuda_extra }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "DGGML_CUDA_FA_ALL_QUANTS=ON" "${{ inputs.dockerfile_path }}"
+          echo "PASS: GGML_CUDA_FA_ALL_QUANTS=ON present"
+
+      - name: Llama builder uses correct flavored binary names
+        if: ${{ inputs.validate_llama_builder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "/usr/local/lib/mesh-llm/bin/rpc-server-" "$file"
+          grep -q "/usr/local/lib/mesh-llm/bin/llama-server-" "$file"
+          grep -q "/usr/local/lib/mesh-llm/bin/llama-moe-split" "$file"
+          if grep -q "llama-moe-split-" "$file"; then
+            echo "FAIL: llama-moe-split must not be flavor-suffixed in $file" >&2
+            exit 1
+          fi
+          echo "PASS: flavored binary naming correct"
+
+      - name: Shared Dockerfiles do not invoke just bundle
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q "just bundle" "${{ inputs.dockerfile_path }}"; then
+            echo "FAIL: just bundle present in ${{ inputs.dockerfile_path }}" >&2
+            exit 1
+          fi
+          echo "PASS: no just bundle"
+
+      - name: Shared Dockerfiles do not install protobuf-compiler
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -q "protobuf-compiler" "${{ inputs.dockerfile_path }}"; then
+            echo "FAIL: protobuf-compiler present in ${{ inputs.dockerfile_path }}" >&2
+            exit 1
+          fi
+          echo "PASS: no protobuf-compiler"
+
+      - name: Docker workflow avoids QEMU-based runners
+        if: ${{ inputs.validate_workflow_no_qemu }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=".github/workflows/docker.yml"
+          if grep -qiE '(^|[^[:alnum:]_])qemu([^[:alnum:]_]|$)' "$file"; then
+            echo "FAIL: QEMU tooling reference found in $file" >&2
+            exit 1
+          fi
+          if grep -q "setup-qemu-action" "$file"; then
+            echo "FAIL: setup-qemu-action found in $file" >&2
+            exit 1
+          fi
+          echo "PASS: no QEMU tooling references"
+
+      - name: Fly Dockerfile includes UI builder stage
+        if: ${{ inputs.validate_fly_ui_builder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "AS ui-builder" "$file"
+          grep -q "COPY --from=ui-builder" "$file"
+          echo "PASS: ui-builder stage present"
+
+      - name: Llama builder uses shared CMake flags
+        if: ${{ inputs.validate_llama_builder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "DGGML_RPC=ON" "$file"
+          grep -q "DBUILD_SHARED_LIBS=OFF" "$file"
+          grep -q "DLLAMA_OPENSSL=OFF" "$file"
+          grep -q "DCMAKE_BUILD_TYPE=Release" "$file"
+          echo "PASS: shared cmake flags present"
+
+      - name: Runtime apt libraries are present
+        if: ${{ inputs.validate_shared_core }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "ca-certificates" "$file"
+          grep -q "libgomp1" "$file"
+          grep -q "libdbus-1-3" "$file"
+          echo "PASS: runtime apt libs present"
+
+      - name: Entrypoint supports console worker and default modes only
+        if: ${{ inputs.validate_entrypoint_modes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="docker/entrypoint.sh"
+          grep -qE '^\s*console\)' "$file"
+          grep -qE '^\s*worker\)' "$file"
+          grep -qE '^\s*\*\)' "$file"
+          if grep -qE '^\s*api\)' "$file"; then
+            echo "FAIL: api mode present in $file" >&2
+            exit 1
+          fi
+          echo "PASS: console/worker/default only"

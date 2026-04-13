@@ -302,6 +302,10 @@ pub(crate) fn local_ann_to_proto_ann(
         hostname: ann.hostname.clone(),
         is_soc: ann.is_soc,
         gpu_vram: ann.gpu_vram.clone(),
+        gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
+        gpu_mem_bandwidth_gbps: ann.gpu_mem_bandwidth_gbps.clone(),
+        gpu_compute_tflops_fp32: ann.gpu_compute_tflops_fp32.clone(),
+        gpu_compute_tflops_fp16: ann.gpu_compute_tflops_fp16.clone(),
         available_models: ann.available_models.clone(),
         serving_models: ann.serving_models.clone(),
         requested_models: ann.requested_models.clone(),
@@ -333,7 +337,7 @@ pub(crate) fn build_gossip_frame(
     sender_id: EndpointId,
 ) -> crate::proto::node::GossipFrame {
     let peers: Vec<crate::proto::node::PeerAnnouncement> =
-        anns.iter().map(|ann| local_ann_to_proto_ann(ann)).collect();
+        anns.iter().map(local_ann_to_proto_ann).collect();
     crate::proto::node::GossipFrame {
         gen: NODE_PROTOCOL_GENERATION,
         sender_id: sender_id.as_bytes().to_vec(),
@@ -393,7 +397,10 @@ pub(crate) fn proto_ann_to_local(
         hostname: pa.hostname.clone(),
         is_soc: pa.is_soc,
         gpu_vram: pa.gpu_vram.clone(),
-        gpu_bandwidth_gbps: None,
+        gpu_reserved_bytes: pa.gpu_reserved_bytes.clone(),
+        gpu_mem_bandwidth_gbps: pa.gpu_mem_bandwidth_gbps.clone(),
+        gpu_compute_tflops_fp32: pa.gpu_compute_tflops_fp32.clone(),
+        gpu_compute_tflops_fp16: pa.gpu_compute_tflops_fp16.clone(),
         available_model_metadata: Vec::new(),
         experts_summary: pa.experts_summary.clone(),
         available_model_sizes: HashMap::new(),

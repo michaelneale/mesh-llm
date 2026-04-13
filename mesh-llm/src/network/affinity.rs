@@ -224,11 +224,8 @@ impl AffinityState {
     fn prune_expired(&mut self) {
         let now = Instant::now();
 
-        loop {
-            let front_key = match self.lru.front() {
-                Some(key) => key.clone(),
-                None => break,
-            };
+        while let Some(key) = self.lru.front() {
+            let front_key = key.clone();
 
             match self.entries.get(&front_key) {
                 Some(entry) => {

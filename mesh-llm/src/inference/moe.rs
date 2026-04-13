@@ -618,7 +618,7 @@ pub fn compute_snake_draft_assignments(
     for (i, &expert_id) in remaining.iter().enumerate() {
         let round = i / n_nodes;
         let pos = i % n_nodes;
-        let node = if round % 2 == 0 {
+        let node = if round.is_multiple_of(2) {
             pos
         } else {
             n_nodes - 1 - pos

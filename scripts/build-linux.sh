@@ -27,6 +27,7 @@ CLEAN=0
 BACKEND=""
 CUDA_ARCH=""
 ROCM_ARCH=""
+LLAMA_TARGETS="${MESH_LLM_LLAMA_TARGETS:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -391,7 +392,21 @@ if [[ "$BACKEND" == "cuda" ]]; then
     fi
 fi
 
-cmake --build "$BUILD_DIR" --config Release -j"$(nproc)"
+build_args=(
+    --build "$BUILD_DIR"
+    --config Release
+    -j"$(nproc)"
+)
+
+if [[ -n "$LLAMA_TARGETS" ]]; then
+    read -r -a target_array <<< "$LLAMA_TARGETS"
+    if [[ "${#target_array[@]}" -gt 0 ]]; then
+        echo "Limiting llama.cpp build targets to: ${target_array[*]}"
+        build_args+=(--target "${target_array[@]}")
+    fi
+fi
+
+cmake "${build_args[@]}"
 echo "llama.cpp build complete: $BUILD_DIR/bin/"
 
 if [[ -d "$MESH_DIR" ]]; then

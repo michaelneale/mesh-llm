@@ -16,20 +16,22 @@ pub use capabilities::{CapabilityLevel, ModelCapabilities};
 pub use inventory::{scan_local_inventory_snapshot_with_progress, LocalModelInventorySnapshot};
 pub use local::{
     find_mmproj_path, find_model_path, huggingface_hub_cache, huggingface_hub_cache_dir,
-    huggingface_identity_for_path, resolve_mmproj_path, scan_installed_models, scan_local_models,
+    huggingface_identity_for_path, mesh_llm_cache_dir, resolve_mmproj_path, scan_installed_models,
+    scan_local_models,
 };
 pub use maintenance::{run_update, warn_about_updates_for_paths};
+pub(crate) use resolve::resolve_model_spec_with_progress;
 pub use resolve::{
     download_exact_ref, find_catalog_model_exact, installed_model_capabilities,
-    installed_model_display_name, resolve_model_spec, show_exact_model,
-    show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
+    installed_model_display_name, resolve_huggingface_model_identity, resolve_model_spec,
+    show_exact_model, show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
 };
 pub use search::{
     search_catalog_models, search_huggingface, SearchArtifactFilter, SearchHit, SearchProgress,
 };
 pub use topology::{infer_local_model_topology, ModelMoeInfo, ModelTopology};
 
-fn build_hf_api(progress: bool) -> Result<Api> {
+pub(crate) fn build_hf_api(progress: bool) -> Result<Api> {
     let mut builder = ApiBuilder::from_cache(huggingface_hub_cache()).with_progress(progress);
     if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
         let endpoint = endpoint.trim();
@@ -41,7 +43,7 @@ fn build_hf_api(progress: bool) -> Result<Api> {
     builder.build().context("Build Hugging Face API client")
 }
 
-fn build_hf_tokio_api(progress: bool) -> Result<TokioApi> {
+pub(crate) fn build_hf_tokio_api(progress: bool) -> Result<TokioApi> {
     let mut builder = TokioApiBuilder::from_cache(huggingface_hub_cache()).with_progress(progress);
     if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
         let endpoint = endpoint.trim();
@@ -55,7 +57,7 @@ fn build_hf_tokio_api(progress: bool) -> Result<TokioApi> {
         .context("Build Hugging Face async API client")
 }
 
-fn hf_token_override() -> Option<String> {
+pub(crate) fn hf_token_override() -> Option<String> {
     for key in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
         if let Ok(token) = std::env::var(key) {
             let token = token.trim();

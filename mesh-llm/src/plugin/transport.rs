@@ -4,7 +4,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use rand::Rng;
 use rmcp::model::ErrorCode;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -25,115 +27,131 @@ pub(crate) enum LocalListener {
     Pipe(String, tokio::net::windows::named_pipe::NamedPipeServer),
 }
 
-pub(crate) async fn connection_loop(
-    mut stream: LocalStream,
-    mut outbound_rx: mpsc::Receiver<super::proto::Envelope>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Result<super::proto::Envelope>>>>>,
-    mesh_tx: mpsc::Sender<PluginMeshEvent>,
-    plugin_name: String,
-    summary: Arc<Mutex<PluginSummary>>,
-    rpc_bridge: Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
-    runtime: Arc<Mutex<Option<PluginRuntime>>>,
-    outbound_tx: mpsc::Sender<super::proto::Envelope>,
-    generation: u64,
-) {
-    let result: Result<()> = async {
-        loop {
-            tokio::select! {
-                maybe_outbound = outbound_rx.recv() => {
-                    let Some(envelope) = maybe_outbound else {
-                        break;
-                    };
-                    write_envelope(&mut stream, &envelope).await?;
-                }
-                inbound = read_envelope(&mut stream) => {
-                    let envelope = inbound?;
-                    let request_id = envelope.request_id;
-                    let plugin_id_from_env = envelope.plugin_id.clone();
-                    let payload = envelope.payload.clone();
-                    match payload {
-                        Some(super::proto::envelope::Payload::ChannelMessage(message)) => {
-                            let plugin_id = if plugin_id_from_env.is_empty() {
-                                plugin_name.clone()
-                            } else {
-                                plugin_id_from_env
+type ConnectionLoopFn = fn(
+    LocalStream,
+    mpsc::Receiver<super::proto::Envelope>,
+    Arc<Mutex<HashMap<u64, oneshot::Sender<Result<super::proto::Envelope>>>>>,
+    mpsc::Sender<PluginMeshEvent>,
+    String,
+    Arc<Mutex<PluginSummary>>,
+    Arc<Mutex<Option<Arc<dyn PluginRpcBridge>>>>,
+    Arc<Mutex<Option<PluginRuntime>>>,
+    mpsc::Sender<super::proto::Envelope>,
+    u64,
+) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+pub(crate) const CONNECTION_LOOP: ConnectionLoopFn =
+    |mut stream,
+     mut outbound_rx,
+     pending,
+     mesh_tx,
+     plugin_name,
+     summary,
+     rpc_bridge,
+     runtime,
+     outbound_tx,
+     generation| {
+        Box::pin(async move {
+            let result: Result<()> = async {
+                loop {
+                    tokio::select! {
+                        maybe_outbound = outbound_rx.recv() => {
+                            let Some(envelope) = maybe_outbound else {
+                                break;
                             };
-                            let _ = mesh_tx
-                                .send(PluginMeshEvent::Channel { plugin_id, message })
-                                .await;
+                            write_envelope(&mut stream, &envelope).await?;
                         }
-                        Some(super::proto::envelope::Payload::BulkTransferMessage(message)) => {
-                            let plugin_id = if plugin_id_from_env.is_empty() {
-                                plugin_name.clone()
-                            } else {
-                                plugin_id_from_env
-                            };
-                            let _ = mesh_tx
-                                .send(PluginMeshEvent::BulkTransfer {
-                                    plugin_id,
-                                    message,
-                                })
-                                .await;
-                        }
-                        Some(super::proto::envelope::Payload::RpcRequest(request)) => {
-                            forward_plugin_request(
-                                plugin_name.clone(),
-                                request_id,
-                                request,
-                                rpc_bridge.clone(),
-                                outbound_tx.clone(),
-                            );
-                        }
-                        Some(super::proto::envelope::Payload::RpcNotification(notification)) => {
-                            forward_plugin_notification(
-                                plugin_name.clone(),
-                                notification,
-                                rpc_bridge.clone(),
-                            );
-                        }
-                        _ => {
-                            let responder = pending.lock().await.remove(&request_id);
-                            if let Some(responder) = responder {
-                                let _ = responder.send(Ok(envelope));
-                            } else {
-                                tracing::debug!(
-                                    "Plugin '{}' sent an unsolicited response id={}",
-                                    plugin_name,
-                                    request_id
-                                );
+                        inbound = read_envelope(&mut stream) => {
+                            let envelope = inbound?;
+                            let request_id = envelope.request_id;
+                            let plugin_id_from_env = envelope.plugin_id.clone();
+                            let payload = envelope.payload.clone();
+                            match payload {
+                                Some(super::proto::envelope::Payload::ChannelMessage(message)) => {
+                                    let plugin_id = if plugin_id_from_env.is_empty() {
+                                        plugin_name.clone()
+                                    } else {
+                                        plugin_id_from_env
+                                    };
+                                    let _ = mesh_tx
+                                        .send(PluginMeshEvent::Channel { plugin_id, message })
+                                        .await;
+                                }
+                                Some(super::proto::envelope::Payload::BulkTransferMessage(message)) => {
+                                    let plugin_id = if plugin_id_from_env.is_empty() {
+                                        plugin_name.clone()
+                                    } else {
+                                        plugin_id_from_env
+                                    };
+                                    let _ = mesh_tx
+                                        .send(PluginMeshEvent::BulkTransfer {
+                                            plugin_id,
+                                            message,
+                                        })
+                                        .await;
+                                }
+                                Some(super::proto::envelope::Payload::RpcRequest(request)) => {
+                                    forward_plugin_request(
+                                        plugin_name.clone(),
+                                        request_id,
+                                        request,
+                                        rpc_bridge.clone(),
+                                        outbound_tx.clone(),
+                                    );
+                                }
+                                Some(super::proto::envelope::Payload::RpcNotification(notification)) => {
+                                    forward_plugin_notification(
+                                        plugin_name.clone(),
+                                        notification,
+                                        rpc_bridge.clone(),
+                                    );
+                                }
+                                _ => {
+                                    let responder = pending.lock().await.remove(&request_id);
+                                    if let Some(responder) = responder {
+                                        let _ = responder.send(Ok(envelope));
+                                    } else {
+                                        tracing::debug!(
+                                            "Plugin '{}' sent an unsolicited response id={}",
+                                            plugin_name,
+                                            request_id
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                Ok(())
             }
-        }
-        Ok(())
-    }
-    .await;
+            .await;
 
-    if let Err(err) = result {
-        tracing::warn!(
-            plugin = %plugin_name,
-            error = %err,
-            "Plugin connection closed"
-        );
-    }
+            if let Err(err) = result {
+                tracing::warn!(
+                    plugin = %plugin_name,
+                    error = %err,
+                    "Plugin connection closed"
+                );
+            }
 
-    {
-        let mut runtime = runtime.lock().await;
-        if runtime.as_ref().map(|runtime| runtime.generation) == Some(generation) {
-            *runtime = None;
-            let mut summary = summary.lock().await;
-            summary.status = "stopped".into();
-            summary.error = Some(format!("Plugin '{}' disconnected", plugin_name));
-        }
-    }
+            {
+                let mut runtime = runtime.lock().await;
+                if runtime.as_ref().map(|runtime| runtime.generation) == Some(generation) {
+                    *runtime = None;
+                    let mut summary = summary.lock().await;
+                    summary.status = "stopped".into();
+                    summary.error = Some(format!("Plugin '{}' disconnected", plugin_name));
+                }
+            }
 
-    let mut pending = pending.lock().await;
-    for (_, responder) in pending.drain() {
-        let _ = responder.send(Err(anyhow!("Plugin '{}' disconnected", plugin_name)));
-    }
-}
+            let mut pending = pending.lock().await;
+            for (_, responder) in pending.drain() {
+                let _ = responder.send(Err(anyhow!("Plugin '{}' disconnected", plugin_name)));
+            }
+        })
+    };
+
+pub(crate) use CONNECTION_LOOP as connection_loop;
 
 impl LocalListener {
     pub(crate) async fn accept(self) -> Result<LocalStream> {
@@ -243,7 +261,7 @@ pub(crate) async fn bind_local_listener(instance_id: &str, name: &str) -> Result
         }
         let listener = tokio::net::UnixListener::bind(&path)
             .with_context(|| format!("Failed to bind plugin socket {}", path.display()))?;
-        return Ok(LocalListener::Unix(listener, path));
+        Ok(LocalListener::Unix(listener, path))
     }
     #[cfg(windows)]
     {

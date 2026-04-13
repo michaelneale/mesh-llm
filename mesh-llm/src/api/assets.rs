@@ -31,7 +31,7 @@ pub(super) async fn respond_console_asset(
         return Ok(false);
     };
     let content_type = match rel.rsplit('.').next().unwrap_or("") {
-        "js" => "text/javascript; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "svg" => "image/svg+xml",
         "json" => "application/json; charset=utf-8",
@@ -39,6 +39,7 @@ pub(super) async fn respond_console_asset(
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "woff2" => "font/woff2",
+        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     };
     let cache_control = if rel.starts_with("assets/") {

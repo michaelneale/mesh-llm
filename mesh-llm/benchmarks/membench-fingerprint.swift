@@ -73,7 +73,6 @@ func ratedFor(_ deviceName: String) -> (gbps: Double, estimated: Bool)? {
         return (cpuMatches[0].gbps, false)
     }
 
-    // CPU count alone is ambiguous (e.g. M5 Max: both variants are 18-core CPU, differ only in GPU count).
     let lowestVariant = matching.min(by: { $0.gbps < $1.gbps })!
     return (lowestVariant.gbps, true)
 }
@@ -90,6 +89,63 @@ kernel void memread(
     float4 v = src[id];
     if (v.x == 9999999.0f) sink[0] = v.x;
 }
+
+kernel void compute_fp32(
+    device float *sink [[buffer(0)]],
+    constant uint &iters [[buffer(1)]],
+    uint id [[thread_position_in_grid]])
+{
+    float a0 = 1.0f + 0.0001f * float(id + 1);
+    float a1 = a0 + 1.0f;
+    float a2 = a0 + 2.0f;
+    float a3 = a0 + 3.0f;
+    constexpr float b0 = 1.000001f;
+    constexpr float b1 = 0.999991f;
+    constexpr float c0 = 0.500001f;
+    constexpr float c1 = 0.250001f;
+    for (uint i = 0; i < iters; ++i) {
+        a0 = fma(a0, b0, c0);
+        a1 = fma(a1, b1, c1);
+        a2 = fma(a2, b0, c1);
+        a3 = fma(a3, b1, c0);
+        a0 = fma(a0, b1, c1);
+        a1 = fma(a1, b0, c0);
+        a2 = fma(a2, b1, c0);
+        a3 = fma(a3, b0, c1);
+    }
+    sink[id] = a0 + a1 + a2 + a3;
+}
+
+kernel void compute_fp16(
+    device float *sink [[buffer(0)]],
+    constant uint &iters [[buffer(1)]],
+    uint id [[thread_position_in_grid]])
+{
+    half seed = half(1.0f + 0.0001f * float(id + 1));
+    half2 a0 = half2(seed, seed + half(1.0));
+    half2 a1 = half2(seed + half(2.0), seed + half(3.0));
+    half2 a2 = half2(seed + half(4.0), seed + half(5.0));
+    half2 a3 = half2(seed + half(6.0), seed + half(7.0));
+    constexpr half2 b0 = half2(half(1.0009765625), half(0.9990234375));
+    constexpr half2 b1 = half2(half(0.99951171875), half(1.00048828125));
+    constexpr half2 c0 = half2(half(0.1875), half(0.3125));
+    constexpr half2 c1 = half2(half(0.4375), half(0.5625));
+    for (uint i = 0; i < iters; ++i) {
+        a0 = fma(a0, b0, c0);
+        a1 = fma(a1, b1, c1);
+        a2 = fma(a2, b0, c1);
+        a3 = fma(a3, b1, c0);
+        a0 = fma(a0, b1, c1);
+        a1 = fma(a1, b0, c0);
+        a2 = fma(a2, b1, c0);
+        a3 = fma(a3, b0, c1);
+    }
+    float2 s0 = float2(a0);
+    float2 s1 = float2(a1);
+    float2 s2 = float2(a2);
+    float2 s3 = float2(a3);
+    sink[id] = s0.x + s0.y + s1.x + s1.y + s2.x + s2.y + s3.x + s3.y;
+}
 """
 
 let jsonMode = CommandLine.arguments.contains("--json")
@@ -105,10 +161,12 @@ guard let device = MTLCreateSystemDefaultDevice() else {
 
 let library  = try! device.makeLibrary(source: shaderSource, options: nil)
 let pso      = try! device.makeComputePipelineState(function: library.makeFunction(name: "memread")!)
+let psoFp32  = try! device.makeComputePipelineState(function: library.makeFunction(name: "compute_fp32")!)
+let psoFp16  = try! device.makeComputePipelineState(function: library.makeFunction(name: "compute_fp16")!)
 let queue    = device.makeCommandQueue()!
 let sink     = device.makeBuffer(length: 16, options: .storageModeShared)!
 
-let bufferBytes  = 512 * 1024 * 1024  // 512 MB — safely above SLC on all current/near-future Apple Silicon
+let bufferBytes  = 512 * 1024 * 1024
 let float4Bytes  = MemoryLayout<SIMD4<Float>>.stride
 let elementCount = bufferBytes / float4Bytes
 
@@ -120,6 +178,12 @@ for i in stride(from: 0, to: bufferBytes / 4, by: max(1, bufferBytes / 4 / 1024)
 
 let tpg  = MTLSize(width: pso.maxTotalThreadsPerThreadgroup, height: 1, depth: 1)
 let grid = MTLSize(width: elementCount, height: 1, depth: 1)
+let computeIters: UInt32 = 16_384
+let computeThreadCount = 262_144
+let computeSink = device.makeBuffer(length: computeThreadCount * MemoryLayout<Float>.stride, options: .storageModeShared)!
+let computeGrid = MTLSize(width: computeThreadCount, height: 1, depth: 1)
+let computeTpgFp32 = MTLSize(width: psoFp32.maxTotalThreadsPerThreadgroup, height: 1, depth: 1)
+let computeTpgFp16 = MTLSize(width: psoFp16.maxTotalThreadsPerThreadgroup, height: 1, depth: 1)
 
 func dispatch() -> Double {
     let cmd = queue.makeCommandBuffer()!
@@ -136,20 +200,48 @@ func dispatch() -> Double {
     return elapsed
 }
 
+func dispatchCompute(pso: MTLComputePipelineState, grid: MTLSize, tpg: MTLSize, flopsPerThreadPerIter: Double) -> Double {
+    memset(computeSink.contents(), 0, computeThreadCount * MemoryLayout<Float>.stride)
+    let cmd = queue.makeCommandBuffer()!
+    var elapsed = 0.0
+    cmd.addCompletedHandler { b in elapsed = b.gpuEndTime - b.gpuStartTime }
+    let enc = cmd.makeComputeCommandEncoder()!
+    enc.setComputePipelineState(pso)
+    enc.setBuffer(computeSink, offset: 0, index: 0)
+    var iters = computeIters
+    enc.setBytes(&iters, length: MemoryLayout<UInt32>.stride, index: 1)
+    enc.dispatchThreads(grid, threadsPerThreadgroup: tpg)
+    enc.endEncoding()
+    cmd.commit()
+    cmd.waitUntilCompleted()
+    let totalFlops = Double(computeThreadCount) * Double(computeIters) * flopsPerThreadPerIter
+    return totalFlops / elapsed / 1e12
+}
+
 for _ in 0..<3 { _ = dispatch() }
+for _ in 0..<3 {
+    _ = dispatchCompute(pso: psoFp32, grid: computeGrid, tpg: computeTpgFp32, flopsPerThreadPerIter: 16.0)
+    _ = dispatchCompute(pso: psoFp16, grid: computeGrid, tpg: computeTpgFp16, flopsPerThreadPerIter: 32.0)
+}
 
 let runs = 20
 let wallStart = Date()
 var gbps: [Double] = []
+var fp32Samples: [Double] = []
+var fp16Samples: [Double] = []
 for _ in 0..<runs {
     let t = dispatch()
     gbps.append(Double(bufferBytes) / t / 1e9)
+    fp32Samples.append(dispatchCompute(pso: psoFp32, grid: computeGrid, tpg: computeTpgFp32, flopsPerThreadPerIter: 16.0))
+    fp16Samples.append(dispatchCompute(pso: psoFp16, grid: computeGrid, tpg: computeTpgFp16, flopsPerThreadPerIter: 32.0))
 }
 
 let sorted = gbps.sorted()
 let p50    = sorted[runs / 2]
 let p90    = sorted[Int(Double(runs) * 0.90) - 1]
 let noise  = (p90 - p50) / p90 * 100.0
+let fp32Measured = fp32Samples.sorted()[Int(Double(runs) * 0.90) - 1]
+let fp16Measured = fp16Samples.sorted()[Int(Double(runs) * 0.90) - 1]
 
 let deviceName  = device.name
 let ratedResult  = ratedFor(deviceName)
@@ -167,6 +259,8 @@ if jsonMode {
         String(format: #""p90_gbps":%.2f"#, p90),
         String(format: #""noise_pct":%.2f"#, noise),
         String(format: #""runtime_s":%.3f"#, runtimeSecs),
+        String(format: #""compute_tflops_fp32":%.2f"#, fp32Measured),
+        String(format: #""compute_tflops_fp16":%.2f"#, fp16Measured),
     ]
     if let r = rated {
         fields.append(String(format: #""rated_gbps":%.0f"#, r))
@@ -186,6 +280,8 @@ if jsonMode {
     print("Buffer : 512 MB read-only  (\(runs) runs)")
     print(String(format: "p50    : %.1f GB/s", p50))
     print(String(format: "p90    : %.1f GB/s\(effStr)", p90))
+    print(String(format: "tf32   : %.2f TFLOPS", fp32Measured))
+    print(String(format: "tf16   : %.2f TFLOPS", fp16Measured))
     print(String(format: "noise  : %.1f%%  (p90-p50 spread — lower is better)", noise))
     print(String(format: "runtime: %.2fs", runtimeSecs))
 }

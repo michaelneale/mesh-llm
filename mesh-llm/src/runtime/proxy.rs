@@ -52,7 +52,7 @@ pub(super) async fn api_proxy(
                 Ok(request) => {
                     let body_json = request.body_json.as_ref();
                     if proxy::is_models_list_request(&request.method, &request.path) {
-                        let mut models: Vec<String> = targets.targets.keys().cloned().collect();
+                        let mut models = callable_models(&targets);
                         if let Some(plugin_manager) = plugin_manager.as_ref() {
                             if let Ok(mut external_models) = plugin_manager.inference_models().await
                             {
@@ -137,8 +137,7 @@ pub(super) async fn api_proxy(
                     {
                         if let Some(body_json) = body_json {
                             let cl = router::classify(body_json);
-                            let mut available_models: Vec<String> =
-                                targets.targets.keys().cloned().collect();
+                            let mut available_models = callable_models(&targets);
                             if let Some(plugin_manager) = plugin_manager.as_ref() {
                                 if let Ok(external_models) = plugin_manager.inference_models().await
                                 {
@@ -181,7 +180,7 @@ pub(super) async fn api_proxy(
 
                     let use_pipeline = classification
                         .as_ref()
-                        .map(|cl| pipeline::should_pipeline(cl))
+                        .map(pipeline::should_pipeline)
                         .unwrap_or(false)
                         && request.response_adapter == proxy::ResponseAdapter::None;
 
@@ -357,7 +356,6 @@ pub(super) async fn api_proxy(
                 }
                 Err(err) => {
                     let _ = proxy::send_400(tcp_stream, &err.to_string()).await;
-                    return;
                 }
             };
         });
@@ -416,6 +414,22 @@ fn first_available_target(targets: &election::ModelTargets) -> election::Inferen
         }
     }
     election::InferenceTarget::None
+}
+
+fn callable_models(targets: &election::ModelTargets) -> Vec<String> {
+    let mut models: Vec<String> = targets
+        .targets
+        .iter()
+        .filter_map(|(model, candidates)| {
+            candidates
+                .iter()
+                .any(|target| !matches!(target, election::InferenceTarget::None))
+                .then(|| model.clone())
+        })
+        .collect();
+    models.sort();
+    models.dedup();
+    models
 }
 
 #[cfg(test)]

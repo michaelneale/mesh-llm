@@ -115,7 +115,7 @@ pub(crate) fn format_count(value: u64) -> String {
     let text = value.to_string();
     let mut out = String::with_capacity(text.len() + text.len() / 3);
     for (index, ch) in text.chars().enumerate() {
-        if index > 0 && (text.len() - index) % 3 == 0 {
+        if index > 0 && (text.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);

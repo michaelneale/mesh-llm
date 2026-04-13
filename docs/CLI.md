@@ -211,7 +211,7 @@ Switches:
 
 ### `gpus`
 
-Use this to inspect local GPU identity/capacity.
+Use this to inspect local GPU identity and capacity, including per-device VRAM, unified-memory state, and cached benchmark-derived bandwidth when present.
 
 
 ### `load`
@@ -340,6 +340,106 @@ Subcommands:
 
 - `--owner-key <OWNER_KEY>`: keystore path.
 
+### `moe`
+
+Use this to inspect MoE rankings, generate new rankings locally, plan expert placement for a target memory budget, or submit local rankings to the canonical dataset.
+
+Subcommands:
+
+- `moe plan <MODEL>`: resolve a ranking and compute a placement recommendation.
+- `moe analyze full <MODEL>`: run a full local MoE analysis and cache the result.
+- `moe analyze micro <MODEL>`: run the canonical micro analysis and cache the result.
+- `moe share <MODEL>`: validate a local ranking artifact and open a contribution PR to the canonical dataset.
+
+### `moe plan`
+
+Use this when you want to know whether a MoE model is likely to fit on your hardware, how many nodes it needs, and which ranking artifact was used to make that decision.
+
+Usage:
+
+```bash
+mesh-llm moe plan unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S
+mesh-llm moe plan unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S --max-vram 16
+mesh-llm moe plan unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S --max-vram 16 --json
+```
+
+Behavior:
+
+- Checks local mesh-llm ranking cache first.
+- Checks `meshllm/moe-rankings` on Hugging Face and uses it when it provides a stronger ranking than local cache. If local and published rankings have the same analyzer strength, the local cache wins.
+- Keeps Hugging Face dataset files in the normal Hugging Face cache; it does not copy dataset artifacts into `~/.cache/mesh-llm`.
+- Prefers `full-*` rankings over `micro-*` for the same model/distribution.
+- Prints ranking provenance clearly so you can see whether the planner used local cache, Hugging Face, or an explicit override.
+
+Switches:
+
+- `--max-vram <MAX_VRAM>`: target per-node VRAM budget in GB.
+- `--nodes <NODES>`: optional explicit node count to evaluate.
+- `--ranking-file <RANKING_FILE>`: bypass normal ranking resolution and use one specific ranking CSV.
+- `--json`: machine-readable output.
+
+### `moe analyze full`
+
+Use this when you want to produce a full local MoE ranking for a model and cache it for planning or later submission.
+
+Usage:
+
+```bash
+mesh-llm moe analyze full unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S
+```
+
+Behavior:
+
+- Runs `llama-moe-analyze` locally using the full analyzer contract.
+- Shows progress for long-running work.
+- Writes durable logs so failures can be inspected after the command exits.
+- Caches the generated ranking locally for later `moe plan`, `serve`, or `moe share`.
+
+### `moe analyze micro`
+
+Use this when you want a faster local fallback ranking using the canonical micro prompt set.
+
+Usage:
+
+```bash
+mesh-llm moe analyze micro unsloth/gemma-4-26B-A4B-it-GGUF:UD-IQ2_M
+```
+
+Behavior:
+
+- Runs the canonical `micro-v1` analysis locally.
+- Uses the fixed micro prompt set so results are comparable across machines.
+- Caches the generated ranking locally for later planning or submission.
+- Writes a durable log path on success or failure.
+
+### `moe share`
+
+Use this to open a contribution PR for a local ranking artifact on the canonical dataset repo on Hugging Face.
+
+Usage:
+
+```bash
+mesh-llm moe share unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S
+mesh-llm moe share unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S --ranking-file ~/.cache/mesh-llm/moe-rankings/local-gemma-4-26b-a4b-it-ud-q4_k_s.micro-p8-t128-all.csv
+```
+
+Behavior:
+
+- Validates the local artifact and computes its canonical dataset path.
+- Checks `meshllm/moe-rankings` first and exits cleanly when the artifact is already published.
+- Opens a dataset PR instead of writing directly to `main`.
+- Includes `ranking.csv`, `metadata.json`, and `run.log` when available.
+- Uses the same Hugging Face commit API pattern as the Python publisher, with PR creation enabled.
+
+Requirements:
+
+- Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` with write access to the destination dataset repo.
+
+Switches:
+
+- `--ranking-file <RANKING_FILE>`: share one specific local ranking file instead of resolving the default cached artifact.
+- `--dataset-repo <DATASET_REPO>`: override the target dataset repo (default `meshllm/moe-rankings`).
+
 ## Model reference formats
 
 Supported for `models show`, `models download`, and `serve --model`:
@@ -405,7 +505,7 @@ MLX behavior:
 
 ## Machine-readable output (`--json`)
 
-All `models` subcommands support `--json`.
+All `models` subcommands support `--json`. `mesh-llm moe plan` also supports `--json`.
 
 Examples:
 
@@ -416,6 +516,7 @@ mesh-llm models download Qwen3-0.6B-Q4_K_M --json | jq .
 mesh-llm models installed --json | jq .
 mesh-llm models recommended --json | jq .
 mesh-llm models updates --check --json | jq .
+mesh-llm moe plan unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S --max-vram 16 --json | jq .
 ```
 
 Shape summary:
@@ -426,6 +527,7 @@ Shape summary:
 - `installed --json`: `{ cache_dir, results[] }`
 - `recommended --json`: `{ source, results[] }`
 - `updates --json`: check/update results
+- `moe plan --json`: plan result + ranking provenance + sizing summary
 
 Automation tips:
 

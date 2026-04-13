@@ -37,6 +37,10 @@ message PeerAnnouncement {
   repeated ServedModelIdentity served_model_identities = 26;
   repeated ModelRuntimeDescriptor served_model_runtime = 27;
   optional SignedNodeOwnership owner_attestation = 28;
+  optional string gpu_mem_bandwidth_gbps = 29;
+  optional string gpu_compute_tflops_fp32 = 30;
+  optional string gpu_compute_tflops_fp16 = 31;
+  optional string gpu_reserved_bytes = 32;
 }
 
 message SignedNodeOwnership {

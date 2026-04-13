@@ -4,6 +4,7 @@ llama_dir := "llama.cpp"
 build_dir := llama_dir / "build"
 mesh_dir := "mesh-llm"
 ui_dir := mesh_dir / "ui"
+benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")
 hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
@@ -97,6 +98,35 @@ release version:
     git commit -m "$tag: release"
     git tag "$tag"
     git push origin main
+    git push origin "$tag"
+
+# Tag and push a prerelease from the current branch. Bumps version, updates
+# Cargo.lock, commits, tags, and pushes the branch plus prerelease tag.
+prerelease version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current_branch="$(git branch --show-current)"
+    if [[ -z "$current_branch" ]]; then
+        echo "Error: prerelease must be run from a branch, not detached HEAD." >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Error: working tree is not clean. Commit or stash changes before prereleasing." >&2
+        exit 1
+    fi
+    tag="{{ version }}"
+    if [[ "$tag" != v* ]]; then
+        tag="v$tag"
+    fi
+    if [[ "$tag" != *-* ]]; then
+        echo "Error: prerelease tag must include a prerelease suffix such as -rc.1 (got: $tag)" >&2
+        exit 1
+    fi
+    scripts/release-version.sh "$tag"
+    git add -A
+    git commit -m "$tag: prerelease"
+    git tag "$tag"
+    git push origin "$current_branch"
     git push origin "$tag"
 
 # Download the default model (GLM-4.7-Flash Q4_K_M, 17GB)
@@ -213,7 +243,7 @@ bundle output="/tmp/mesh-bundle.tar.gz":
         install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
     done
     # Include Apple Silicon benchmark binary if built
-    BENCH="{{ mesh_dir }}/target/release/membench-fingerprint"
+    BENCH="target/release/membench-fingerprint"
     if [ -f "$BENCH" ]; then
         cp "$BENCH" "$BUNDLE/"
         echo "Included: membench-fingerprint"
@@ -259,37 +289,37 @@ release-bundle-vulkan-windows version output="dist":
 # Build Apple Silicon memory bandwidth benchmark (macOS only)
 [macos]
 benchmark-build-apple:
-    swiftc -O benchmarks/membench-fingerprint.swift -o {{mesh_dir}}/target/release/membench-fingerprint
-    echo "Built: {{mesh_dir}}/target/release/membench-fingerprint"
+    swiftc -O {{ benchmark_src_dir }}/membench-fingerprint.swift -o target/release/membench-fingerprint
+    echo "Built: target/release/membench-fingerprint"
 
 # Build NVIDIA CUDA memory bandwidth benchmark (requires CUDA toolkit)
 benchmark-build-cuda:
-    nvcc -O3 -o {{mesh_dir}}/target/release/membench-fingerprint-cuda benchmarks/membench-fingerprint.cu
-    echo "Built: {{mesh_dir}}/target/release/membench-fingerprint-cuda"
+    nvcc -O3 -o target/release/membench-fingerprint-cuda {{ benchmark_src_dir }}/membench-fingerprint.cu
+    echo "Built: target/release/membench-fingerprint-cuda"
 
 [windows]
 benchmark-build-cuda-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "nvcc -O3 -o '{{mesh_dir}}/target/release/membench-fingerprint-cuda.exe' 'benchmarks/membench-fingerprint.cu'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: {{mesh_dir}}/target/release/membench-fingerprint-cuda.exe'"
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "nvcc -O3 -o 'target/release/membench-fingerprint-cuda.exe' '{{ benchmark_src_dir }}/membench-fingerprint.cu'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-cuda.exe'"
 
 # Build AMD ROCm/HIP memory bandwidth benchmark (requires ROCm)
 benchmark-build-hip:
-    hipcc -O3 -std=c++17 -o {{mesh_dir}}/target/release/membench-fingerprint-hip benchmarks/membench-fingerprint.hip
-    echo "Built: {{mesh_dir}}/target/release/membench-fingerprint-hip"
+    hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip {{ benchmark_src_dir }}/membench-fingerprint.hip
+    echo "Built: target/release/membench-fingerprint-hip"
 
 [windows]
 benchmark-build-hip-windows:
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "hipcc -O3 -std=c++17 -o '{{mesh_dir}}/target/release/membench-fingerprint-hip.exe' 'benchmarks/membench-fingerprint.hip'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: {{mesh_dir}}/target/release/membench-fingerprint-hip.exe'"
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "hipcc -O3 -std=c++17 -o 'target/release/membench-fingerprint-hip.exe' '{{ benchmark_src_dir }}/membench-fingerprint.hip'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-hip.exe'"
 
 # Build Intel Arc SYCL memory bandwidth benchmark (requires Intel oneAPI) — UNVALIDATED
 benchmark-build-intel:
     @echo "WARNING: Intel Arc benchmark is unvalidated — no Intel Arc hardware has been tested"
-    icpx -O3 -fsycl -o {{mesh_dir}}/target/release/membench-fingerprint-intel benchmarks/membench-fingerprint-intel.cpp
-    echo "Built: {{mesh_dir}}/target/release/membench-fingerprint-intel"
+    icpx -O3 -fsycl -o target/release/membench-fingerprint-intel {{ benchmark_src_dir }}/membench-fingerprint-intel.cpp
+    echo "Built: target/release/membench-fingerprint-intel"
 
 [windows]
 benchmark-build-intel-windows:
     @echo "WARNING: Intel Arc benchmark is unvalidated — no Intel Arc hardware has been tested"
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "icpx -O3 -fsycl -o '{{mesh_dir}}/target/release/membench-fingerprint-intel.exe' 'benchmarks/membench-fingerprint-intel.cpp'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: {{mesh_dir}}/target/release/membench-fingerprint-intel.exe'"
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "icpx -O3 -fsycl -o 'target/release/membench-fingerprint-intel.exe' '{{ benchmark_src_dir }}/membench-fingerprint-intel.cpp'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; Write-Host 'Built: target/release/membench-fingerprint-intel.exe'"
 
 # Run the UI with Vite HMR and proxy /api to mesh-llm (default: http://127.0.0.1:3131)
 ui-dev api="http://127.0.0.1:3131" port="5173":
@@ -356,3 +386,62 @@ bench-prefix-affinity:
 # Show the diff from upstream llama.cpp
 diff:
     cd {{ llama_dir }} && git log --oneline master..upstream-latest
+
+# Build the client-only Docker image (no GPU, no llama.cpp)
+[unix]
+docker-build-client tag="mesh-llm:client":
+    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.client -t {{ tag }} .
+
+[windows]
+docker-build-client tag="mesh-llm:client":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.client -t '{{ tag }}' ."
+
+# Build the CPU full-node Docker image
+[unix]
+docker-build-cpu tag="mesh-llm:cpu":
+    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cpu -t {{ tag }} .
+
+[windows]
+docker-build-cpu tag="mesh-llm:cpu":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cpu -t '{{ tag }}' ."
+
+# Build the CUDA full-node Docker image
+[unix]
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;89;90;120":
+    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda \
+        --build-arg CUDA_ARCH="{{ cuda_arch }}" \
+        -t {{ tag }} .
+
+[windows]
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;89;90;120":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cuda --build-arg CUDA_ARCH='{{ cuda_arch }}' -t '{{ tag }}' ."
+
+# Build the ROCm full-node Docker image
+[unix]
+docker-build-rocm tag="mesh-llm:rocm" rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
+    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.rocm \
+        --build-arg ROCM_ARCH="{{ rocm_arch }}" \
+        -t {{ tag }} .
+
+[windows]
+docker-build-rocm tag="mesh-llm:rocm" rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.rocm --build-arg ROCM_ARCH='{{ rocm_arch }}' -t '{{ tag }}' ."
+
+# Build the Vulkan full-node Docker image
+[unix]
+docker-build-vulkan tag="mesh-llm:vulkan":
+    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.vulkan -t {{ tag }} .
+
+[windows]
+docker-build-vulkan tag="mesh-llm:vulkan":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.vulkan -t '{{ tag }}' ."
+
+# Run the client console image locally
+docker-run-client tag="mesh-llm:client":
+    docker run --rm -p 3131:3131 -p 9337:9337 -e APP_MODE=console {{ tag }}
+
+# Run a CPU worker node locally (requires model volume mount)
+docker-run-cpu models=(home_dir / ".models") tag="mesh-llm:cpu":
+    docker run --rm -p 9337:9337 \
+        -v {{ models }}:/root/.models \
+        -e APP_MODE=worker {{ tag }}

@@ -233,7 +233,7 @@ trait Collector {
 | `DefaultCollector` | Linux AMD | `/sys/class/drm`, `rocm-smi` |
 | `TegraCollector` | Jetson / Tegra | sysfs + `tegrastats` |
 
-`survey()` calls all applicable collectors and returns a `HardwareSurvey` with `gpu_name`, `gpu_vram` (per-GPU bytes), `vram_bytes` (total), `hostname`, and `is_soc`.
+`survey()` calls all applicable collectors and returns a `HardwareSurvey` with `gpu_name`, `gpu_vram` (per-GPU bytes), `gpu_reserved` (per-GPU reserved or unavailable bytes when the platform reports a true reserved/unavailable metric), `vram_bytes` (total), `hostname`, `is_soc`, and per-device `GpuFacts` entries. Benchmark-derived memory-bandwidth and compute-throughput hints are attached later when cached or freshly measured results are available. ROCm `rocm-smi --showmeminfo` and Intel `xpu-smi` discovery expose live used-memory counters, so mesh-llm intentionally omits `gpu_reserved` for those backends instead of reinterpreting used bytes as reserved memory.
 
 ### Gossip Fields
 
@@ -245,16 +245,20 @@ trait Collector {
 | `hostname` | `Option<String>` | System hostname |
 | `is_soc` | `Option<bool>` | True for Tegra/Jetson (unified memory) |
 | `gpu_vram` | `Option<String>` | Comma-separated per-GPU VRAM in bytes |
+| `gpu_reserved_bytes` | `Option<String>` | Comma-separated per-GPU reserved bytes when the platform reports a true reserved/unavailable metric |
+| `gpu_mem_bandwidth_gbps` | `Option<String>` | Comma-separated per-GPU memory bandwidth measurements or cached benchmark results |
+| `gpu_compute_tflops_fp32` | `Option<String>` | Comma-separated per-GPU FP32 compute-throughput hints |
+| `gpu_compute_tflops_fp16` | `Option<String>` | Comma-separated per-GPU FP16 compute-throughput hints |
 | `available_model_metadata` | `repeated CompactModelMetadata` | GGUF-derived metadata per available model |
 | `available_model_sizes` | `map<string, uint64>` | File sizes in bytes per model name |
 | `mesh_id` | `optional string` | Stable mesh identity (self entry only) |
 | `demand` | `repeated ModelDemandEntry` | Per-model demand entries (self entry only) |
 
-GGUF-derived metadata (architecture, quantization type, tokenizer, RoPE parameters, expert counts) is transported via `CompactModelMetadata` in the `available_model_metadata` field. This lets peers learn model capabilities without downloading the file. The `ScannedModel` type in the proto schema carries the same information for catalog-level model listings.
+GGUF-derived metadata (architecture, quantization type, tokenizer, RoPE parameters, expert counts) is transported via `CompactModelMetadata` in the `available_model_metadata` field. This lets peers learn model capabilities without downloading the file. The `ScannedModel` type in the proto schema carries the same information for catalog-level model listings. Current gossip sanitization still strips `available_models`, `available_model_metadata`, and `available_model_sizes` before sending announcements on the wire, so these schema fields remain compatibility surface rather than a second transitive model-inventory source.
 
 ### `--enumerate-host` Flag
 
-Controls whether `gpu_name`, `hostname`, and `gpu_vram` appear in gossip. `is_soc` is always sent. Default: `false` (privacy-preserving; peers see VRAM totals but not GPU model or hostname).
+Controls whether the host-identifying inventory fields (`gpu_name`, `hostname`, `gpu_vram`, and `gpu_reserved_bytes`) appear in gossip. `is_soc` is always sent. Benchmark-derived bandwidth and compute hints remain additive optional fields when available. `gpu_reserved_bytes` stays omitted on backends such as ROCm and Intel where the tooling does not report a true reserved/unavailable memory metric. Default: `false` (privacy-preserving; peers see VRAM totals but not GPU model or hostname).
 
 ```
 --enumerate-host    # opt in: peers learn your GPU name and hostname
@@ -267,9 +271,11 @@ Controls whether `gpu_name`, `hostname`, and `gpu_vram` appear in gossip. `is_so
 {
   "my_hostname": "carrack",
   "my_is_soc": false,
-  "gpus": [{"name": "NVIDIA RTX 5090", "vram_bytes": 34359738368}]
+  "gpus": [{"name": "NVIDIA RTX 5090", "vram_bytes": 34359738368, "reserved_bytes": 1073741824, "mem_bandwidth_gbps": 1792.0, "compute_tflops_fp32": 104.8, "compute_tflops_fp16": 209.6}]
 }
 ```
+
+For ROCm and Intel hosts, `reserved_bytes` is omitted because their standard CLI telemetry exposes live used-memory counters rather than a true reserved/system-memory value.
 
 `peers[]` entries (only when peer has `--enumerate-host`):
 ```json

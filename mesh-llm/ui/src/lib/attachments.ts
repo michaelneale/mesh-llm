@@ -11,12 +11,12 @@ type FileLike = {
 
 type AttachmentSupportOptions = {
   /** The *effective* media kinds that still need model support.
-   *  PDFs with extracted text should NOT be included here since
-   *  they will be sent as input_text, not input_file. */
+   *  Images and PDFs are always handled in-browser (Florence-2 / pdf.js)
+   *  so they should NOT appear here. Only audio and generic files need
+   *  model support. */
   pendingKinds: ReadonlySet<AttachmentKind>;
   selectedModel: string;
   warmModels: readonly string[];
-  visionModels: ReadonlySet<string>;
   audioModels: ReadonlySet<string>;
   multimodalModels: ReadonlySet<string>;
 };
@@ -56,28 +56,21 @@ export function getAttachmentSendIssue({
   pendingKinds,
   selectedModel,
   warmModels,
-  visionModels,
   audioModels,
   multimodalModels,
 }: AttachmentSupportOptions): string | null {
+  // Images and PDFs are always handled in the browser (described via
+  // Florence-2 / extracted via pdf.js) so they never require model support.
+  // Only audio and generic file attachments still need a capable model.
   if (!pendingKinds.size) return null;
 
   const modelSupports = (modelName: string) =>
-    (!pendingKinds.has("image") || visionModels.has(modelName)) &&
     (!pendingKinds.has("audio") || audioModels.has(modelName)) &&
     (!pendingKinds.has("file") || multimodalModels.has(modelName));
 
   if (selectedModel && selectedModel !== "auto") {
     if (modelSupports(selectedModel)) return null;
 
-    // Provide a specific hint depending on what's missing.
-    if (pendingKinds.has("image") && !visionModels.has(selectedModel)) {
-      const warmVision = warmModels.filter((m) => visionModels.has(m));
-      if (warmVision.length > 0) {
-        return `${selectedModel} doesn't support images. Switch to ${warmVision[0]} or set model to Auto.`;
-      }
-      return `${selectedModel} doesn't support images. Switch to a vision model (e.g. Qwen2-VL, LLaVA) or set model to Auto.`;
-    }
     if (pendingKinds.has("audio") && !audioModels.has(selectedModel)) {
       return `${selectedModel} doesn't support audio. Choose an audio-capable model or remove the attachment.`;
     }
@@ -87,9 +80,6 @@ export function getAttachmentSendIssue({
   if (warmModels.some(modelSupports)) return null;
 
   // Auto mode but no warm model supports it.
-  if (pendingKinds.has("image")) {
-    return "No warm model supports images. Warm a vision model (e.g. Qwen2-VL, LLaVA) to use image attachments.";
-  }
   if (pendingKinds.has("audio")) {
     return "No warm model supports audio input. Warm an audio-capable model to use audio attachments.";
   }

@@ -6,6 +6,7 @@ REPO="${MESH_LLM_INSTALL_REPO:-michaelneale/mesh-llm}"
 REPO_REF="${MESH_LLM_INSTALL_REF:-main}"
 INSTALL_DIR="${MESH_LLM_INSTALL_DIR:-$HOME/.local/bin}"
 INSTALL_FLAVOR="${MESH_LLM_INSTALL_FLAVOR:-}"
+INSTALL_PRERELEASE="${MESH_LLM_INSTALL_PRERELEASE:-0}"
 INSTALL_SERVICE="${MESH_LLM_INSTALL_SERVICE:-0}"
 INSTALL_SERVICE_ARGS="${MESH_LLM_INSTALL_SERVICE_ARGS:-}"
 INSTALL_SERVICE_START="${MESH_LLM_INSTALL_SERVICE_START:-1}"
@@ -52,9 +53,10 @@ bool_is_true() {
 
 usage() {
     cat <<EOF
-Usage: install.sh [--service] [--no-start-service]
+Usage: install.sh [--pre-release] [--service] [--no-start-service]
 
 Options:
+  --pre-release              Install the latest published GitHub prerelease instead of the latest stable release.
   --service                  Install a per-user background service for this platform.
   --no-start-service         Install the service files but do not start them yet.
   -h, --help                 Show this help text.
@@ -62,6 +64,7 @@ Options:
 Environment overrides:
   MESH_LLM_INSTALL_DIR
   MESH_LLM_INSTALL_FLAVOR
+  MESH_LLM_INSTALL_PRERELEASE=1
   MESH_LLM_INSTALL_REF=main
   MESH_LLM_INSTALL_SERVICE=1
   MESH_LLM_INSTALL_SERVICE_START=0
@@ -71,6 +74,9 @@ EOF
 parse_args() {
     while (($# > 0)); do
         case "$1" in
+            --pre-release)
+                INSTALL_PRERELEASE=1
+                ;;
             --service)
                 INSTALL_SERVICE=1
                 ;;
@@ -283,6 +289,93 @@ asset_name() {
             exit 1
             ;;
     esac
+}
+
+latest_prerelease_tag() {
+    local api_url="https://api.github.com/repos/${REPO}/releases?per_page=20"
+    local releases_page_url="https://github.com/${REPO}/releases"
+    local response
+    local -a curl_args=(
+        -fsSL
+        -H 'Accept: application/vnd.github+json'
+        -H 'X-GitHub-Api-Version: 2022-11-28'
+    )
+
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+    elif [[ -n "${GH_TOKEN:-}" ]]; then
+        curl_args+=(-H "Authorization: Bearer ${GH_TOKEN}")
+    fi
+
+    local tag
+    if response="$(curl "${curl_args[@]}" "$api_url" 2>/dev/null)"; then
+        local compact
+        compact="$(printf '%s' "$response" | tr -d '\n\r\t ')"
+
+        tag="$(
+            printf '%s' "$compact" |
+                sed 's/},{/}\
+{/g' |
+                awk '
+                    /"prerelease":true/ && !/"draft":true/ {
+                        if (match($0, /"tag_name":"[^"]+"/)) {
+                            value = substr($0, RSTART, RLENGTH)
+                            sub(/^"tag_name":"/, "", value)
+                            sub(/"$/, "", value)
+                            print value
+                            exit
+                        }
+                    }
+                '
+        )"
+    fi
+
+    if [[ -z "${tag:-}" ]]; then
+        if ! response="$(curl -fsSL "$releases_page_url" 2>/dev/null)"; then
+            echo "error: could not query GitHub releases for ${REPO}" >&2
+            return 1
+        fi
+
+        tag="$(
+            printf '%s' "$response" |
+                tr '\n' ' ' |
+                sed "s#<a href=\"/${REPO}/releases/tag/#\\
+TAG:#g; s#Pre-release#\\
+PRE-RELEASE#g" |
+                awk '
+                    /TAG:/ {
+                        tag = $0
+                        sub(/^.*TAG:/, "", tag)
+                        sub(/".*$/, "", tag)
+                    }
+                    /PRE-RELEASE/ && tag != "" {
+                        print tag
+                        exit
+                    }
+                '
+        )"
+    fi
+
+    if [[ -z "$tag" ]]; then
+        echo "error: could not find a published prerelease for ${REPO}" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$tag"
+}
+
+release_url() {
+    local asset="$1"
+    if bool_is_true "$INSTALL_PRERELEASE"; then
+        local tag
+        if ! tag="$(latest_prerelease_tag)"; then
+            return 1
+        fi
+        printf 'https://github.com/%s/releases/download/%s/%s\n' "$REPO" "$tag" "$asset"
+        return 0
+    fi
+
+    printf 'https://github.com/%s/releases/latest/download/%s\n' "$REPO" "$asset"
 }
 
 stale_binary_names() {
@@ -564,7 +657,10 @@ main() {
     flavor="$(choose_flavor)"
     local asset
     asset="$(asset_name "$flavor")"
-    local url="https://github.com/${REPO}/releases/latest/download/${asset}"
+    local url
+    if ! url="$(release_url "$asset")"; then
+        exit 1
+    fi
 
     local tmp_dir
     tmp_dir="$(mktemp -d)"
@@ -574,6 +670,11 @@ main() {
 
     local archive="$tmp_dir/$asset"
     echo "Installing flavor: $flavor"
+    if bool_is_true "$INSTALL_PRERELEASE"; then
+        echo "Release channel: prerelease"
+    else
+        echo "Release channel: stable"
+    fi
     echo "Downloading $url"
     curl -fsSL "$url" -o "$archive"
 

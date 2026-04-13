@@ -112,7 +112,7 @@ fn load_or_create_keys_at(path: &std::path::Path) -> Result<Keys> {
 
     if path.exists() {
         ensure_private_nostr_key_file(path)?;
-        let nsec = std::fs::read_to_string(&path)?;
+        let nsec = std::fs::read_to_string(path)?;
         let sk = SecretKey::from_bech32(nsec.trim())?;
         Ok(Keys::new(sk))
     } else {
@@ -469,7 +469,7 @@ pub async fn publish_loop(
         let listing = MeshListing {
             invite_token,
             serving: actually_serving,
-            wanted: wanted,
+            wanted,
             on_disk: available,
             total_vram_bytes: total_vram,
             node_count,
@@ -748,7 +748,7 @@ pub async fn discover(
     }
 
     let mut meshes = Vec::new();
-    for (_, event) in &latest {
+    for event in latest.values() {
         // Check expiration
         let expires_at = event
             .tags

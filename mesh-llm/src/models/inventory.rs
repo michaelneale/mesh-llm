@@ -140,71 +140,24 @@ fn local_gguf_paths() -> Vec<PathBuf> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serial_test::serial;
-
-    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
-        if let Some(value) = value {
-            std::env::set_var(key, value);
-        } else {
-            std::env::remove_var(key);
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn local_gguf_paths_includes_direct_hf_cache_root_files() {
-        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
-        let prev_hf_home = std::env::var_os("HF_HOME");
-        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
-
-        let temp = std::env::temp_dir().join(format!(
-            "mesh-llm-inventory-direct-cache-root-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&temp).unwrap();
-        let model = temp.join("Inventory-Root-Q4_K_M.gguf");
-        std::fs::write(&model, b"gguf").unwrap();
-
-        std::env::set_var("HF_HUB_CACHE", &temp);
-        std::env::remove_var("HF_HOME");
-        std::env::remove_var("XDG_CACHE_HOME");
-
-        let paths = local_gguf_paths();
-        assert!(paths.iter().any(|path| path == &model));
-
-        let _ = std::fs::remove_dir_all(&temp);
-        restore_env("HF_HUB_CACHE", prev_hub_cache);
-        restore_env("HF_HOME", prev_hf_home);
-        restore_env("XDG_CACHE_HOME", prev_xdg);
-    }
-}
-
 pub(crate) fn derive_quantization_type(stem: &str) -> String {
     let parts: Vec<&str> = stem.split('-').collect();
     for &part in parts.iter().rev() {
         let upper = part.to_uppercase();
-        if upper.starts_with('Q')
+        if (upper.starts_with('Q')
             || upper.starts_with("IQ")
             || upper.starts_with('F')
-            || upper.starts_with("BF")
-        {
-            if upper.len() >= 2
+            || upper.starts_with("BF"))
+            && ((upper.len() >= 2
                 && upper
                     .chars()
                     .nth(1)
                     .map(|c| c.is_ascii_digit())
-                    .unwrap_or(false)
+                    .unwrap_or(false))
                 || upper.starts_with("IQ")
-                || upper.starts_with("BF")
-            {
-                return part.to_string();
-            }
+                || upper.starts_with("BF"))
+        {
+            return part.to_string();
         }
     }
     String::new()
@@ -366,4 +319,49 @@ where
         snapshot.metadata_by_name.insert(entry.model_key, meta);
     }
     snapshot
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn local_gguf_paths_includes_direct_hf_cache_root_files() {
+        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = std::env::temp_dir().join(format!(
+            "mesh-llm-inventory-direct-cache-root-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let model = temp.join("Inventory-Root-Q4_K_M.gguf");
+        std::fs::write(&model, b"gguf").unwrap();
+
+        std::env::set_var("HF_HUB_CACHE", &temp);
+        std::env::remove_var("HF_HOME");
+        std::env::remove_var("XDG_CACHE_HOME");
+
+        let paths = local_gguf_paths();
+        assert!(paths.iter().any(|path| path == &model));
+
+        let _ = std::fs::remove_dir_all(&temp);
+        restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
 }

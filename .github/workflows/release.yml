@@ -402,8 +402,16 @@ jobs:
             exit 1
           fi
 
+          release_args=(--repo "$GH_REPO")
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_args+=(--prerelease --latest=false)
+          fi
+
           if gh release view "$GITHUB_REF_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              gh release edit "$GITHUB_REF_NAME" --repo "$GH_REPO" --prerelease --latest=false
+            fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --repo "$GH_REPO" --generate-notes
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" "${release_args[@]}" --generate-notes
           fi

@@ -29,6 +29,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       ui: ${{ steps.filter.outputs.ui }}
+      benchmarks: ${{ steps.filter.outputs.benchmarks }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -50,7 +51,11 @@ jobs:
               - 'Justfile'
               - 'scripts/**'
               - '.github/cache-version.txt'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/smoke.yml'
+            benchmarks:
+              - 'mesh-llm/benchmarks/**'
+              - '.github/workflows/ci.yml'
             ui:
               - 'mesh-llm/ui/**'
 
@@ -175,8 +180,8 @@ jobs:
         run: sccache --show-stats || true
 
   inference_smoke_tests:
-    needs: [changes, linux]
-    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    needs: linux
+    if: ${{ needs.linux.result == 'success' }}
     uses: ./.github/workflows/smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -186,13 +191,25 @@ jobs:
 
   macos:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     runs-on: macos-latest
+    outputs:
+      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
       - uses: actions/checkout@v5
 
+      - name: Benchmark gate
+        id: benchmark_gate
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # ── UI ──
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: npm
@@ -201,37 +218,46 @@ jobs:
             mesh-llm/ui/package-lock.json
 
       - name: Build UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
 
       # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
 
       # See linux job for explanation of `. -> target`.
       - uses: Swatinem/rust-cache@v2
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         with:
           workspaces: . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       # Early-fail gate: runs before expensive compile/test work.
       - name: Check formatting
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm
         run: cargo fmt -- --check
 
       # See linux job for rationale on building in dev/debug, not release.
       - name: Build mesh-llm binary (debug)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: cargo test -p mesh-llm --lib --tests
 
       # ── llama.cpp (Metal + RPC) ──
       - name: Clone llama.cpp fork
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
 
       - name: Build llama.cpp (CPU + RPC)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           CACHE_FLAGS=()
           if command -v sccache >/dev/null 2>&1; then
@@ -251,6 +277,7 @@ jobs:
 
       # ── Download model ──
       - name: Cache model
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         id: cache-model
         uses: actions/cache@v5
         with:
@@ -258,7 +285,7 @@ jobs:
           key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
 
       - name: Download model
-        if: steps.cache-model.outputs.cache-hit != 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-model.outputs.cache-hit != 'true' }}
         run: |
           mkdir -p ~/.models
           curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
@@ -266,6 +293,7 @@ jobs:
 
       # ── Integration smoke test ──
       - name: Smoke test (real inference)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           scripts/ci-smoke-test.sh \
             target/debug/mesh-llm \
@@ -273,6 +301,7 @@ jobs:
             ~/.models/$MODEL_FILE
 
       - name: Split-mode test (host/worker routing)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           scripts/ci-split-test.sh \
             target/debug/mesh-llm \
@@ -281,6 +310,7 @@ jobs:
 
       # ── MoE split test ──
       - name: Cache MoE model
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         id: cache-moe-model
         uses: actions/cache@v5
         with:
@@ -288,19 +318,21 @@ jobs:
           key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
 
       - name: Download MoE model
-        if: steps.cache-moe-model.outputs.cache-hit != 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-moe-model.outputs.cache-hit != 'true' }}
         run: |
           mkdir -p ~/.models
           curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
           ls -lh ~/.models/$MOE_MODEL_FILE
 
       - name: MoE split test (expert sharding)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           scripts/ci-moe-split-test.sh \
             llama.cpp/build/bin \
             ~/.models/$MOE_MODEL_FILE
 
       - name: MoE mesh test (expert sharding end-to-end)
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           scripts/ci-moe-mesh-test.sh \
             target/debug/mesh-llm \
@@ -308,12 +340,28 @@ jobs:
             ~/.models/$MOE_MODEL_FILE
 
       - name: CLI smoke test
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           target/debug/mesh-llm --version
           target/debug/mesh-llm --help | head -5
 
       - name: Client-auto boot test
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
+
+      - name: Build Swift benchmark binary
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        run: |
+          mkdir -p target/release
+          swiftc -O mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
+
+      - name: Upload Swift benchmark artifact
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-benchmark-swift
+          path: target/release/membench-fingerprint
+          if-no-files-found: error
 
       - name: Show sccache stats
         if: always()
@@ -321,11 +369,13 @@ jobs:
 
   linux_cuda:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux CUDA slim
     runs-on: ubuntu-latest
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+    outputs:
+      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
 
     steps:
       - name: Install base packages
@@ -346,9 +396,21 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Benchmark gate
+        id: benchmark_gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: taiki-e/install-action@just
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         with:
           node-version: 24
           cache: npm
@@ -357,6 +419,7 @@ jobs:
             mesh-llm/ui/package-lock.json
 
       - name: Build UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         working-directory: mesh-llm/ui
         shell: bash
         run: |
@@ -364,10 +427,13 @@ jobs:
           npm run build
 
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: Swatinem/rust-cache@v2
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         with:
           workspaces: |
             . -> target
@@ -410,6 +476,7 @@ jobs:
       #     state (`fa-off`), and the CUDA toolkit version pulled from the
       #     container image.
       - name: Resolve llama.cpp upstream SHA
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_sha
         shell: bash
         run: |
@@ -428,6 +495,7 @@ jobs:
       # On cache miss the full llama.cpp build still runs to prove the
       # change works, but the result is discarded at job end.
       - name: Restore llama.cpp CUDA cache
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_cuda_cache
         uses: actions/cache/restore@v5
         with:
@@ -460,17 +528,18 @@ jobs:
       #     at this SHA + flag combo) and run only the mesh-llm cargo build.
       #     This is the warm path every PR hits when main has already run.
       - name: Build Linux CUDA backend (cache miss — full llama.cpp build)
-        if: steps.llama_cuda_cache.outputs.cache-hit != 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_cuda_cache.outputs.cache-hit != 'true' }}
         shell: bash
         env:
           MESH_LLM_BUILD_PROFILE: dev
           MESH_LLM_CUDA_FA_ALL_QUANTS: off
           MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+          MESH_LLM_LLAMA_TARGETS: "rpc-server llama-server llama-moe-analyze llama-moe-split"
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
 
       - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
-        if: steps.llama_cuda_cache.outputs.cache-hit == 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_cuda_cache.outputs.cache-hit == 'true' }}
         shell: bash
         env:
           MESH_LLM_BUILD_PROFILE: dev
@@ -490,10 +559,26 @@ jobs:
           ls -lh target/debug/mesh-llm
 
       - name: CLI smoke test
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         shell: bash
         run: |
           target/debug/mesh-llm --version
           target/debug/mesh-llm --help | head -5
+
+      - name: Build CUDA benchmark binary
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        shell: bash
+        run: |
+          mkdir -p target/release
+          nvcc -O3 -o target/release/membench-fingerprint-cuda mesh-llm/benchmarks/membench-fingerprint.cu
+
+      - name: Upload CUDA benchmark artifact
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-benchmark-cuda
+          path: target/release/membench-fingerprint-cuda
+          if-no-files-found: error
 
       - name: Show sccache stats
         if: always()
@@ -501,11 +586,13 @@ jobs:
 
   linux_rocm:
     needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux ROCm slim
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.0-complete
+    outputs:
+      benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
 
     steps:
       - name: Install base packages
@@ -526,9 +613,21 @@ jobs:
 
       - uses: actions/checkout@v5
 
+      - name: Benchmark gate
+        id: benchmark_gate
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: taiki-e/install-action@just
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: actions/setup-node@v5
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         with:
           node-version: 24
           cache: npm
@@ -537,6 +636,7 @@ jobs:
             mesh-llm/ui/package-lock.json
 
       - name: Build UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         working-directory: mesh-llm/ui
         shell: bash
         run: |
@@ -544,16 +644,20 @@ jobs:
           npm run build
 
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: mozilla-actions/sccache-action@v0.0.9
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
 
       - uses: Swatinem/rust-cache@v2
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         with:
           workspaces: |
             . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       - name: Resolve llama.cpp upstream SHA
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_sha
         shell: bash
         run: |
@@ -567,6 +671,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore llama.cpp ROCm cache
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_rocm_cache
         uses: actions/cache/restore@v5
         with:
@@ -578,7 +683,7 @@ jobs:
       # the build to one representative target instead of compiling the full
       # default AMDGPU target matrix.
       - name: Build Linux ROCm backend (cache miss — full llama.cpp build)
-        if: steps.llama_rocm_cache.outputs.cache-hit != 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_rocm_cache.outputs.cache-hit != 'true' }}
         shell: bash
         env:
           MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
@@ -586,7 +691,7 @@ jobs:
           just --shell bash --shell-arg -lc release-build-rocm gfx1100
 
       - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
-        if: steps.llama_rocm_cache.outputs.cache-hit == 'true'
+        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_rocm_cache.outputs.cache-hit == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -604,14 +709,67 @@ jobs:
           ls -lh target/release/mesh-llm
 
       - name: CLI smoke test
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         shell: bash
         run: |
           target/release/mesh-llm --version
           target/release/mesh-llm --help | head -5
 
+      - name: Build ROCm benchmark binary
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        shell: bash
+        run: |
+          mkdir -p target/release
+          hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip mesh-llm/benchmarks/membench-fingerprint.hip
+
+      - name: Upload ROCm benchmark artifact
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-benchmark-hip
+          path: target/release/membench-fingerprint-hip
+          if-no-files-found: error
+
       - name: Show sccache stats
         if: always()
         run: sccache --show-stats || true
+
+  macos_benchmark_smoke:
+    needs: [macos]
+    if: ${{ needs.macos.result == 'success' && needs.macos.outputs.benchmark_artifact_ready == 'true' }}
+    name: macOS benchmark smoke
+    uses: ./.github/workflows/benchmark-smoke.yml
+    with:
+      artifact_name: ci-benchmark-swift
+      artifact_path: ci-artifacts/swift-benchmark
+      benchmark_binary: membench-fingerprint
+      runs_on: '["macos-latest"]'
+
+  linux_cuda_benchmark_smoke:
+    needs: [linux_cuda]
+    if: ${{ needs.linux_cuda.result == 'success' && needs.linux_cuda.outputs.benchmark_artifact_ready == 'true' && vars.CUDA_BENCHMARK_RUNNER != '' }}
+    name: Linux CUDA benchmark smoke
+    uses: ./.github/workflows/benchmark-smoke.yml
+    with:
+      artifact_name: ci-benchmark-cuda
+      artifact_path: ci-artifacts/cuda-benchmark
+      benchmark_binary: membench-fingerprint-cuda
+      runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
+      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      container_options: --gpus all
+
+  linux_rocm_benchmark_smoke:
+    needs: [linux_rocm]
+    if: ${{ needs.linux_rocm.result == 'success' && needs.linux_rocm.outputs.benchmark_artifact_ready == 'true' && vars.ROCM_BENCHMARK_RUNNER != '' }}
+    name: Linux ROCm benchmark smoke
+    uses: ./.github/workflows/benchmark-smoke.yml
+    with:
+      artifact_name: ci-benchmark-hip
+      artifact_path: ci-artifacts/hip-benchmark
+      benchmark_binary: membench-fingerprint-hip
+      runs_on: ${{ vars.ROCM_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
+      container_image: rocm/dev-ubuntu-24.04:7.0-complete
+      container_options: --device /dev/kfd --device /dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
 
   linux_vulkan:
     needs: changes

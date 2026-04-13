@@ -1,5 +1,6 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::result::Result as StdResult;
 
 use anyhow::{bail, Context, Result};
 use iroh::{EndpointId, SecretKey};
@@ -476,77 +477,91 @@ pub(crate) fn run_verify_node(
     Ok(())
 }
 
-pub(crate) fn run_rotate_node(
-    owner_key: Option<PathBuf>,
-    node_key: Option<PathBuf>,
-    out: Option<PathBuf>,
-    node_label: Option<String>,
-    hostname_hint: Option<String>,
-    expires_in_hours: u64,
-    revoke_current: bool,
-    reason: Option<String>,
-    trust_store: Option<PathBuf>,
-) -> Result<()> {
-    let node_key_path = resolve_node_key_path(node_key)?;
-    let certificate_path = resolve_node_ownership_path(out)?;
-    let trust_store_path = resolve_trust_store_path(trust_store)?;
+type RunRotateNodeFn = fn(
+    Option<PathBuf>,
+    Option<PathBuf>,
+    Option<PathBuf>,
+    Option<String>,
+    Option<String>,
+    u64,
+    bool,
+    Option<String>,
+    Option<PathBuf>,
+) -> StdResult<(), anyhow::Error>;
 
-    let previous_node_key = node_key_path
-        .exists()
-        .then(|| load_node_key_from_path(&node_key_path))
-        .transpose()?;
-    let previous_node_id = previous_node_key
-        .as_ref()
-        .map(|key| hex::encode(EndpointId::from(key.public()).as_bytes()));
-    let previous_ownership = certificate_path
-        .exists()
-        .then(|| load_node_ownership(&certificate_path))
-        .transpose()?;
+pub(crate) const RUN_ROTATE_NODE: RunRotateNodeFn =
+    |owner_key,
+     node_key,
+     out,
+     node_label,
+     hostname_hint,
+     expires_in_hours,
+     revoke_current,
+     reason,
+     trust_store| {
+        let node_key_path = resolve_node_key_path(node_key)?;
+        let certificate_path = resolve_node_ownership_path(out)?;
+        let trust_store_path = resolve_trust_store_path(trust_store)?;
 
-    let mut trust_store = load_effective_trust_store(&trust_store_path)?;
-    if revoke_current {
-        if let Some(ref previous_ownership) = previous_ownership {
-            trust_store.revoke_node_cert(previous_ownership.claim.cert_id.clone(), reason.clone());
+        let previous_node_key = node_key_path
+            .exists()
+            .then(|| load_node_key_from_path(&node_key_path))
+            .transpose()?;
+        let previous_node_id = previous_node_key
+            .as_ref()
+            .map(|key| hex::encode(EndpointId::from(key.public()).as_bytes()));
+        let previous_ownership = certificate_path
+            .exists()
+            .then(|| load_node_ownership(&certificate_path))
+            .transpose()?;
+
+        let mut trust_store = load_effective_trust_store(&trust_store_path)?;
+        if revoke_current {
+            if let Some(ref previous_ownership) = previous_ownership {
+                trust_store
+                    .revoke_node_cert(previous_ownership.claim.cert_id.clone(), reason.clone());
+            }
+            if let Some(ref previous_node_id) = previous_node_id {
+                trust_store.revoke_node_id(previous_node_id.clone(), reason.clone());
+            }
+            save_trust_store(&trust_store_path, &trust_store)?;
         }
-        if let Some(ref previous_node_id) = previous_node_id {
-            trust_store.revoke_node_id(previous_node_id.clone(), reason.clone());
+
+        let new_key = SecretKey::generate(&mut rand::rng());
+        save_node_key_to_path(&node_key_path, &new_key)?;
+
+        eprintln!("Node key rotated at {}", node_key_path.display());
+        if let Some(previous_node_id) = previous_node_id {
+            eprintln!("Previous node ID:{previous_node_id}");
         }
-        save_trust_store(&trust_store_path, &trust_store)?;
-    }
+        let new_node_id = hex::encode(EndpointId::from(new_key.public()).as_bytes());
+        eprintln!("New node ID:     {new_node_id}");
 
-    let new_key = SecretKey::generate(&mut rand::rng());
-    save_node_key_to_path(&node_key_path, &new_key)?;
+        let owner_key_path = resolve_owner_key_path(owner_key)?;
+        if !owner_key_path.exists() {
+            eprintln!("No owner keystore found at {}", owner_key_path.display());
+            eprintln!(
+                "Run `mesh-llm auth init` or `mesh-llm auth sign-node` later to attest this node."
+            );
+            return Ok(());
+        }
 
-    eprintln!("Node key rotated at {}", node_key_path.display());
-    if let Some(previous_node_id) = previous_node_id {
-        eprintln!("Previous node ID:{previous_node_id}");
-    }
-    let new_node_id = hex::encode(EndpointId::from(new_key.public()).as_bytes());
-    eprintln!("New node ID:     {new_node_id}");
+        let owner = load_owner_keypair_from_path(&owner_key_path)?;
+        let ownership = sign_node_certificate(
+            &owner,
+            &new_key,
+            expires_in_hours,
+            node_label,
+            hostname_hint,
+        )?;
+        save_node_ownership(&certificate_path, &ownership)?;
+        eprintln!("New node certificate: {}", certificate_path.display());
+        eprintln!("New cert ID:      {}", ownership.claim.cert_id);
 
-    let owner_key_path = resolve_owner_key_path(owner_key)?;
-    if !owner_key_path.exists() {
-        eprintln!("No owner keystore found at {}", owner_key_path.display());
-        eprintln!(
-            "Run `mesh-llm auth init` or `mesh-llm auth sign-node` later to attest this node."
-        );
-        return Ok(());
-    }
+        Ok(())
+    };
 
-    let owner = load_owner_keypair_from_path(&owner_key_path)?;
-    let ownership = sign_node_certificate(
-        &owner,
-        &new_key,
-        expires_in_hours,
-        node_label,
-        hostname_hint,
-    )?;
-    save_node_ownership(&certificate_path, &ownership)?;
-    eprintln!("New node certificate: {}", certificate_path.display());
-    eprintln!("New cert ID:      {}", ownership.claim.cert_id);
-
-    Ok(())
-}
+pub(crate) use RUN_ROTATE_NODE as run_rotate_node;
 
 pub(crate) fn run_revoke_owner(
     owner_id: String,

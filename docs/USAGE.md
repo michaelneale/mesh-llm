@@ -12,6 +12,12 @@ Install the latest release bundle:
 curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash
 ```
 
+To opt into the latest published prerelease bundle instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --pre-release
+```
+
 The installer probes your machine, recommends a flavor, and asks what to install.
 
 For a non-interactive install, set the flavor explicitly:
@@ -270,9 +276,11 @@ mesh-llm models updates Qwen/Qwen3-8B-GGUF
 
 ```bash
 mesh-llm gpus
+mesh-llm gpus --json
+mesh-llm gpu benchmark --json
 ```
 
-This prints the local GPU inventory with stable IDs, backend device names, VRAM, unified-memory status, and cached bandwidth if a benchmark fingerprint is already present.
+This prints the local GPU inventory with stable IDs, backend device names, VRAM, unified-memory status, and cached bandwidth when a benchmark fingerprint is already present. Add `--json` for machine-readable inventory output, or run `mesh-llm gpu benchmark --json` to refresh the cached fingerprint and print the benchmark summary as JSON.
 
 ## Local runtime control
 

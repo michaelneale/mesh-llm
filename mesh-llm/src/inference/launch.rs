@@ -211,15 +211,13 @@ fn resolve_binary_path(
     }
 }
 
-fn temp_log_path(name: &str) -> PathBuf {
-    let mesh_pid = std::process::id();
-    std::env::temp_dir().join(format!("mesh-llm-{mesh_pid}-{name}"))
-}
-
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct InferenceServerHandle {
     pid: u32,
     expected_exit: Arc<AtomicBool>,
+    expected_comm: String,
+    expected_start_time: Option<i64>,
+    pub(crate) _pidfile_guard: Option<crate::runtime::instance::PidfileGuard>,
 }
 
 impl InferenceServerHandle {
@@ -229,7 +227,80 @@ impl InferenceServerHandle {
 
     pub async fn shutdown(&self) {
         self.expected_exit.store(true, Ordering::Relaxed);
-        terminate_process(self.pid).await;
+        terminate_process_with_wait(
+            self.pid,
+            &self.expected_comm,
+            self.expected_start_time,
+            20,
+            std::time::Duration::from_millis(250),
+        )
+        .await;
+    }
+}
+
+impl Drop for InferenceServerHandle {
+    /// Best-effort termination if the handle is dropped without an explicit
+    /// `shutdown().await` (panic, task abort, or any path that bypasses the
+    /// async cleanup). We can't await in `drop`, so this only issues a single
+    /// SIGTERM — the death-watcher and the cross-runtime reaper handle any
+    /// stragglers. If `expected_exit` is already set, the async shutdown ran
+    /// and there is nothing to do.
+    fn drop(&mut self) {
+        if self.expected_exit.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let _ = send_signal_if_matches(
+            self.pid,
+            &self.expected_comm,
+            self.expected_start_time,
+            ProcessSignal::Terminate,
+        );
+    }
+}
+
+/// Handle for a running rpc-server process.
+///
+/// Symmetric with [`InferenceServerHandle`] for llama-server.
+/// The `_pidfile_guard` field is `None` until T9 wires up pidfile writing.
+#[derive(Debug)]
+pub struct RpcServerHandle {
+    pub pid: u32,
+    pub port: u16,
+    pub expected_exit: Arc<AtomicBool>,
+    pub expected_comm: String,
+    pub expected_start_time: Option<i64>,
+    pub(crate) _pidfile_guard: Option<crate::runtime::instance::PidfileGuard>,
+}
+
+impl Drop for RpcServerHandle {
+    /// Best-effort SIGTERM if the rpc-server handle is dropped without an
+    /// explicit `shutdown().await` (panic / task abort path). Mirrors the
+    /// `InferenceServerHandle::Drop` safety net so a crashed parent does not
+    /// leave an orphan rpc-server holding GPU memory.
+    fn drop(&mut self) {
+        if self.expected_exit.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let _ = send_signal_if_matches(
+            self.pid,
+            &self.expected_comm,
+            self.expected_start_time,
+            ProcessSignal::Terminate,
+        );
+    }
+}
+
+impl RpcServerHandle {
+    pub async fn shutdown(&self) {
+        self.expected_exit.store(true, Ordering::Relaxed);
+        terminate_process_with_wait(
+            self.pid,
+            &self.expected_comm,
+            self.expected_start_time,
+            50,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
     }
 }
 
@@ -256,6 +327,22 @@ pub struct ModelLaunchSpec<'a> {
 }
 
 pub(crate) const GB: u64 = 1_000_000_000;
+
+fn spawned_binary_name(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        path.file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    }
+}
 
 fn compute_context_size(
     ctx_size_override: Option<u32>,
@@ -621,16 +708,18 @@ fn command_has_output(command: &str, args: &[&str]) -> bool {
             .any(|line| !line.trim().is_empty())
 }
 
-/// Start a local rpc-server and return the port it's listening on.
+/// Start a local rpc-server and return a handle holding its PID and port.
 /// Picks an available port automatically.
 /// If `gguf_path` is provided, passes `--gguf` so the server loads weights from the local file.
 pub async fn start_rpc_server(
+    runtime: &crate::runtime::instance::InstanceRuntime,
     bin_dir: &Path,
     binary_flavor: Option<BinaryFlavor>,
     device: Option<&str>,
     gguf_path: Option<&Path>,
-) -> Result<u16> {
+) -> Result<RpcServerHandle> {
     let rpc_server = resolve_binary_path(bin_dir, "rpc-server", binary_flavor)?;
+    let rpc_server_name = spawned_binary_name(&rpc_server.path);
 
     // Find a free port
     let port = find_free_port().await?;
@@ -645,7 +734,11 @@ pub async fn start_rpc_server(
 
     tracing::info!("Starting rpc-server on :{port} (device: {device})");
 
-    let rpc_log = temp_log_path(&format!("rpc-server-{port}.log"));
+    let rpc_log = runtime.log_path(&format!("rpc-server-{port}.log"));
+    eprintln!(
+        "⏳ Starting rpc-server on port {port}... (logs: {})",
+        rpc_log.display()
+    );
     let rpc_log_file = std::fs::File::create(&rpc_log)
         .with_context(|| format!("Failed to create rpc-server log file {}", rpc_log.display()))?;
     let rpc_log_file2 = rpc_log_file.try_clone()?;
@@ -667,6 +760,11 @@ pub async fn start_rpc_server(
 
     let mut child = Command::new(&rpc_server.path)
         .args(&args)
+        .env("MESH_LLM_OWNER_PID", std::process::id().to_string())
+        .env(
+            "MESH_LLM_RUNTIME_DIR",
+            runtime.dir().to_string_lossy().to_string(),
+        )
         .stdout(std::process::Stdio::from(rpc_log_file))
         .stderr(std::process::Stdio::from(rpc_log_file2))
         .spawn()
@@ -677,14 +775,49 @@ pub async fn start_rpc_server(
             )
         })?;
 
+    let pid = child.id().context("rpc-server did not expose a PID")?;
+    if pid == 0 {
+        anyhow::bail!("rpc-server returned PID 0 — refusing to proceed");
+    }
+    let child_started_at =
+        crate::runtime::instance::validate::process_started_at_unix(pid).unwrap_or(None);
+    let owner_started_at: i64 =
+        crate::runtime::instance::validate::current_process_start_time_unix().unwrap_or(0);
+    let metadata = crate::runtime::instance::PidfileMetadata {
+        cmd_name: rpc_server_name.clone(),
+        child_pid: pid,
+        child_started_at_unix: child_started_at.unwrap_or(0),
+        owner_pid: std::process::id(),
+        owner_started_at_unix: owner_started_at,
+        argv_snippet: crate::runtime::instance::PidfileMetadata::cap_argv(
+            &args,
+            crate::runtime::instance::ARGV_SNIPPET_MAX_BYTES,
+        ),
+        runtime_dir: runtime.dir().to_path_buf(),
+    };
+    let pidfile_guard = runtime.write_pidfile(&format!("rpc-server-{port}"), &metadata)?;
+    let expected_exit = Arc::new(AtomicBool::new(false));
+    let expected_exit_clone = expected_exit.clone();
+
     // Wait for it to be listening
     for _ in 0..startup_polls {
         if is_port_open(port).await {
-            // Detach — let it run in the background
+            let pidfile_path = runtime.pidfile_path(&format!("rpc-server-{port}"));
             tokio::spawn(async move {
                 let _ = child.wait().await;
+                let _ = std::fs::remove_file(&pidfile_path);
+                if !expected_exit_clone.load(Ordering::Relaxed) {
+                    eprintln!("⚠️  rpc-server process exited unexpectedly");
+                }
             });
-            return Ok(port);
+            return Ok(RpcServerHandle {
+                pid,
+                port,
+                expected_exit,
+                expected_comm: rpc_server_name.clone(),
+                expected_start_time: child_started_at,
+                _pidfile_guard: Some(pidfile_guard),
+            });
         }
         if let Some(status) = child.try_wait().with_context(|| {
             format!(
@@ -717,115 +850,165 @@ pub async fn start_rpc_server(
     );
 }
 
-/// Kill orphan rpc-server processes from previous mesh-llm runs.
-/// Only kills rpc-servers with PPID 1 (parent died, adopted by init).
-/// Safe to call while a live mesh-llm has its own rpc-server child.
-pub async fn kill_orphan_rpc_servers() {
-    #[cfg(windows)]
-    {
-        return;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProcessSignal {
+    Terminate,
+    Kill,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalOutcome {
+    Sent,
+    AlreadyDead,
+    Skipped,
+    Failed,
+}
+
+fn send_signal_if_matches(
+    pid: u32,
+    expected_comm: &str,
+    expected_start_time: Option<i64>,
+    signal: ProcessSignal,
+) -> SignalOutcome {
+    if !is_safe_kill_target(pid) {
+        tracing::error!("BUG: attempted to signal unsafe pid {pid} — refusing");
+        return SignalOutcome::Failed;
     }
 
     #[cfg(not(windows))]
-    if let Ok(output) = std::process::Command::new("ps")
-        .args(["-eo", "pid,ppid,comm"])
-        .output()
     {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut killed = 0;
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 && parts[2].contains("rpc-server") && parts[1] == "1" {
-                if let Ok(pid) = parts[0].parse::<u32>() {
-                    let _ = std::process::Command::new("kill")
-                        .arg(pid.to_string())
-                        .status();
-                    killed += 1;
-                }
+        if let Some(expected_t) = expected_start_time {
+            if !crate::runtime::instance::validate::validate_pid_matches(
+                pid,
+                expected_comm,
+                expected_t,
+            ) {
+                tracing::warn!("pid {pid} no longer matches expected identity, skipping signal");
+                return SignalOutcome::Skipped;
             }
+        } else if !crate::runtime::instance::validate::process_name_matches(pid, expected_comm) {
+            tracing::warn!("pid {pid} no longer matches {expected_comm}, skipping signal");
+            return SignalOutcome::Skipped;
         }
-        if killed > 0 {
-            eprintln!("🧹 Cleaned up {killed} orphan rpc-server process(es)");
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    #[cfg(windows)]
+    {
+        tracing::debug!(
+            pid,
+            expected_comm,
+            "skipping process identity validation on Windows"
+        );
+    }
+
+    #[cfg(unix)]
+    unsafe {
+        let ret = libc::kill(
+            pid as libc::pid_t,
+            match signal {
+                ProcessSignal::Terminate => libc::SIGTERM,
+                ProcessSignal::Kill => libc::SIGKILL,
+            },
+        );
+        if ret == 0 {
+            return SignalOutcome::Sent;
+        }
+
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return SignalOutcome::AlreadyDead;
+        }
+
+        tracing::warn!(pid, error = %err, ?signal, "failed to signal process");
+        return SignalOutcome::Failed;
+    }
+
+    #[cfg(windows)]
+    {
+        let pid_str = pid.to_string();
+        let mut command = std::process::Command::new("taskkill");
+        command.args(["/PID", &pid_str, "/T"]);
+        if signal == ProcessSignal::Kill {
+            command.arg("/F");
+        }
+        match command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => SignalOutcome::Sent,
+            Ok(status) => {
+                tracing::warn!(pid, exit_code = status.code(), ?signal, "taskkill failed");
+                SignalOutcome::Failed
+            }
+            Err(err) => {
+                tracing::warn!(pid, error = %err, ?signal, "failed to run taskkill");
+                SignalOutcome::Failed
+            }
         }
     }
 }
 
-/// Kill all running llama-server processes.
-pub async fn kill_llama_server() {
-    let _ = terminate_process_by_name("llama-server");
-    // Wait for the process to actually exit and release the port
+pub(crate) fn terminate_process_blocking(
+    pid: u32,
+    expected_comm: &str,
+    expected_start_time: Option<i64>,
+) -> bool {
+    match send_signal_if_matches(
+        pid,
+        expected_comm,
+        expected_start_time,
+        ProcessSignal::Terminate,
+    ) {
+        SignalOutcome::Sent => {}
+        SignalOutcome::AlreadyDead => return true,
+        // Identity mismatch: the PID belongs to a different process; do not
+        // claim a successful stop.
+        SignalOutcome::Skipped | SignalOutcome::Failed => return false,
+    }
+
     for _ in 0..20 {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        if !is_process_running("llama-server") {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if crate::runtime::instance::validate::process_liveness(pid)
+            == crate::runtime::instance::validate::Liveness::Dead
+        {
+            return true;
+        }
+    }
+
+    matches!(
+        send_signal_if_matches(pid, expected_comm, expected_start_time, ProcessSignal::Kill),
+        SignalOutcome::Sent | SignalOutcome::AlreadyDead
+    )
+}
+
+async fn terminate_process_with_wait(
+    pid: u32,
+    expected_comm: &str,
+    expected_start_time: Option<i64>,
+    attempts: usize,
+    interval: std::time::Duration,
+) {
+    match send_signal_if_matches(
+        pid,
+        expected_comm,
+        expected_start_time,
+        ProcessSignal::Terminate,
+    ) {
+        SignalOutcome::Sent => {}
+        SignalOutcome::AlreadyDead | SignalOutcome::Skipped | SignalOutcome::Failed => return,
+    }
+
+    for _ in 0..attempts {
+        tokio::time::sleep(interval).await;
+        if crate::runtime::instance::validate::process_liveness(pid)
+            == crate::runtime::instance::validate::Liveness::Dead
+        {
             return;
         }
     }
-    // Force kill if still alive after 5s
-    let _ = force_kill_process_by_name("llama-server");
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-}
 
-async fn terminate_process(pid: u32) {
-    let pid_str = pid.to_string();
-
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid_str])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            let alive = std::process::Command::new("kill")
-                .args(["-0", &pid_str])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !alive {
-                return;
-            }
-        }
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid_str])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-
-    #[cfg(windows)]
-    {
-        // Graceful termination via taskkill (sends WM_CLOSE to the process tree)
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid_str, "/T"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        for _ in 0..20 {
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            let alive = std::process::Command::new("tasklist")
-                .args(["/FI", &format!("PID eq {pid_str}"), "/NH"])
-                .output()
-                .map(|o| {
-                    o.status.success() && String::from_utf8_lossy(&o.stdout).contains(&pid_str)
-                })
-                .unwrap_or(false);
-            if !alive {
-                return;
-            }
-        }
-        // Force-kill if still alive
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid_str, "/T", "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
+    let _ = send_signal_if_matches(pid, expected_comm, expected_start_time, ProcessSignal::Kill);
 }
 
 /// Start llama-server with the given model, HTTP port, and RPC tunnel ports.
@@ -837,6 +1020,7 @@ async fn terminate_process(pid: u32) {
 ///     than Q8_0/Q8_0 with minimal quality impact)
 ///   - > 50GB: Q4_0 — maximum compression, these models need every byte
 pub async fn start_llama_server(
+    runtime: &crate::runtime::instance::InstanceRuntime,
     bin_dir: &Path,
     binary_flavor: Option<BinaryFlavor>,
     spec: ModelLaunchSpec<'_>,
@@ -870,7 +1054,11 @@ pub async fn start_llama_server(
         rpc_arg
     );
 
-    let llama_log = temp_log_path("llama-server.log");
+    let llama_log = runtime.log_path("llama-server.log");
+    eprintln!(
+        "⏳ Starting llama-server... (logs: {})",
+        llama_log.display()
+    );
     let log_file = std::fs::File::create(&llama_log).with_context(|| {
         format!(
             "Failed to create llama-server log file {}",
@@ -1054,6 +1242,11 @@ pub async fn start_llama_server(
     }
     let mut child = Command::new(&llama_server.path)
         .args(&args)
+        .env("MESH_LLM_OWNER_PID", std::process::id().to_string())
+        .env(
+            "MESH_LLM_RUNTIME_DIR",
+            runtime.dir().to_string_lossy().to_string(),
+        )
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_file2))
         .spawn()
@@ -1113,14 +1306,40 @@ pub async fn start_llama_server(
             let pid = child
                 .id()
                 .context("llama-server started but did not expose a PID")?;
+            if pid == 0 {
+                anyhow::bail!("llama-server returned PID 0 — refusing to proceed");
+            }
+            let child_started_at =
+                crate::runtime::instance::validate::process_started_at_unix(pid).unwrap_or(None);
+            let owner_started_at: i64 =
+                crate::runtime::instance::validate::current_process_start_time_unix().unwrap_or(0);
+            let llama_server_name = spawned_binary_name(&llama_server.path);
+            let metadata = crate::runtime::instance::PidfileMetadata {
+                cmd_name: llama_server_name.clone(),
+                child_pid: pid,
+                child_started_at_unix: child_started_at.unwrap_or(0),
+                owner_pid: std::process::id(),
+                owner_started_at_unix: owner_started_at,
+                argv_snippet: crate::runtime::instance::PidfileMetadata::cap_argv(
+                    &args,
+                    crate::runtime::instance::ARGV_SNIPPET_MAX_BYTES,
+                ),
+                runtime_dir: runtime.dir().to_path_buf(),
+            };
+            let pidfile_guard = runtime.write_pidfile("llama-server", &metadata)?;
             let expected_exit = Arc::new(AtomicBool::new(false));
             let handle = InferenceServerHandle {
                 pid,
                 expected_exit: expected_exit.clone(),
+                expected_comm: llama_server_name,
+                expected_start_time: child_started_at,
+                _pidfile_guard: Some(pidfile_guard),
             };
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
+            let pidfile_path = runtime.pidfile_path("llama-server");
             tokio::spawn(async move {
                 let _ = child.wait().await;
+                let _ = std::fs::remove_file(&pidfile_path);
                 if !expected_exit.load(Ordering::Relaxed) {
                     eprintln!("⚠️  llama-server process exited unexpectedly");
                 }
@@ -1156,61 +1375,71 @@ async fn is_port_open(port: u16) -> bool {
         .is_ok()
 }
 
-pub fn terminate_process_by_name(name: &str) -> bool {
-    kill_process_by_name(name, false)
+/// Returns true only when `pid` is safe to pass to `kill(2)`.
+///
+/// Unsafe values on Unix:
+///   0        → signals every process in the caller's process group
+///   1        → signals init / launchd
+///   >i32::MAX → wraps to a negative pid_t (e.g. u32::MAX → −1, which kills all user processes)
+pub fn is_safe_kill_target(pid: u32) -> bool {
+    pid > 1 && pid <= i32::MAX as u32
 }
 
-pub fn force_kill_process_by_name(name: &str) -> bool {
-    kill_process_by_name(name, true)
+/// Terminate a process by PID, validating comm before signaling.
+/// Returns true if the process is dead or was not ours. Returns false on unexpected error.
+pub async fn terminate_process(
+    pid: u32,
+    expected_comm: &str,
+    expected_start_time: Option<i64>,
+) -> bool {
+    if !is_safe_kill_target(pid) {
+        tracing::error!("BUG: attempted to signal unsafe pid {pid} — refusing");
+        return false;
+    }
+    !matches!(
+        send_signal_if_matches(
+            pid,
+            expected_comm,
+            expected_start_time,
+            ProcessSignal::Terminate
+        ),
+        SignalOutcome::Failed
+    )
 }
 
-fn kill_process_by_name(name: &str, force: bool) -> bool {
-    #[cfg(windows)]
+/// Force-kill a process by PID, validating comm before signaling.
+pub async fn force_kill_process(
+    pid: u32,
+    expected_comm: &str,
+    expected_start_time: Option<i64>,
+) -> bool {
+    if !is_safe_kill_target(pid) {
+        tracing::error!("BUG: attempted to signal unsafe pid {pid} — refusing");
+        return false;
+    }
+    !matches!(
+        send_signal_if_matches(pid, expected_comm, expected_start_time, ProcessSignal::Kill),
+        SignalOutcome::Failed
+    )
+}
+
+/// Poll until process exits or timeout_ms elapses. Returns true if dead within timeout.
+pub async fn wait_for_exit(pid: u32, timeout_ms: u64) -> bool {
+    if crate::runtime::instance::validate::process_liveness(pid)
+        == crate::runtime::instance::validate::Liveness::Dead
     {
-        let image = platform_bin_name(name);
-        let mut cmd = std::process::Command::new("taskkill");
-        if force {
-            cmd.arg("/F");
+        return true;
+    }
+    let steps = timeout_ms / 100;
+    for _ in 0..steps {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if crate::runtime::instance::validate::process_liveness(pid)
+            == crate::runtime::instance::validate::Liveness::Dead
+        {
+            return true;
         }
-        cmd.args(["/IM", &image]);
-        cmd.status().is_ok_and(|status| status.success())
     }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = std::process::Command::new("pkill");
-        if force {
-            cmd.arg("-9");
-        }
-        cmd.args(["-f", name]);
-        cmd.status().is_ok_and(|status| status.success())
-    }
-}
-
-fn is_process_running(name: &str) -> bool {
-    #[cfg(windows)]
-    {
-        let image = platform_bin_name(name);
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("IMAGENAME eq {image}")])
-            .output()
-            .map(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout)
-                        .to_ascii_lowercase()
-                        .contains(&image.to_ascii_lowercase())
-            })
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("pgrep")
-            .args(["-f", name])
-            .output()
-            .map(|output| output.status.success() && !output.stdout.is_empty())
-            .unwrap_or(false)
-    }
+    false
 }
 
 /// Detect the best available compute device
@@ -1310,14 +1539,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_context_size, parse_available_devices, preferred_device, temp_log_path,
-        BinaryFlavor, KvCacheQuant, KvCacheWarning, KvType, SplitMode, GB,
+        compute_context_size, is_safe_kill_target, parse_available_devices, preferred_device,
+        terminate_process, wait_for_exit, BinaryFlavor, KvCacheQuant, KvCacheWarning, KvType,
+        RpcServerHandle, SplitMode, GB,
     };
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn kv_quant_small_model_is_plain_f16() {
-        let quant = KvCacheQuant::for_model_size(1 * GB);
+        let quant = KvCacheQuant::for_model_size(GB);
         assert_eq!(quant.k_type, KvType::F16);
         assert_eq!(quant.v_type, KvType::F16);
         assert!(
@@ -1474,7 +1706,7 @@ mod tests {
     #[test]
     fn kv_quant_append_args_is_silent_for_f16_default() {
         let mut args: Vec<String> = Vec::new();
-        KvCacheQuant::for_model_size(1 * GB).append_args(&mut args, 1 * GB);
+        KvCacheQuant::for_model_size(GB).append_args(&mut args, GB);
         assert!(
             args.is_empty(),
             "f16/f16 must not emit --cache-type-* flags (it's the llama-server default): {args:?}"
@@ -1604,26 +1836,6 @@ No devices found
         );
     }
 
-    #[test]
-    fn temp_log_path_includes_pid_and_suffix() {
-        let suffix = "rpc-server.log";
-        let path = temp_log_path(suffix);
-        let file_name = path
-            .file_name()
-            .expect("temp_log_path should produce a filename")
-            .to_string_lossy();
-        let pid = std::process::id().to_string();
-
-        assert!(
-            file_name.contains(&pid),
-            "expected filename '{file_name}' to contain current pid '{pid}'"
-        );
-        assert!(
-            file_name.contains(suffix),
-            "expected filename '{file_name}' to contain suffix '{suffix}'"
-        );
-    }
-
     // ── SplitMode ──
 
     #[test]
@@ -1634,5 +1846,138 @@ No devices found
     #[test]
     fn split_mode_row_arg() {
         assert_eq!(SplitMode::Row.as_arg(), "row");
+    }
+
+    #[test]
+    fn rpc_handle_has_pid_and_port() {
+        let handle = RpcServerHandle {
+            pid: 12345,
+            port: 8080,
+            expected_exit: Arc::new(AtomicBool::new(false)),
+            expected_comm: "rpc-server".to_string(),
+            expected_start_time: Some(1700000000),
+            _pidfile_guard: None,
+        };
+        assert!(handle.pid > 0);
+        assert!(handle.port > 0);
+    }
+
+    #[test]
+    fn rpc_handle_shutdown_sets_expected_exit() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let handle = RpcServerHandle {
+            pid: 999_999,
+            port: 9999,
+            expected_exit: flag.clone(),
+            expected_comm: "rpc-server".to_string(),
+            expected_start_time: Some(1700000000),
+            _pidfile_guard: None,
+        };
+        assert!(!flag.load(Ordering::Relaxed));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(handle.shutdown());
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn safe_kill_target_rejects_zero() {
+        assert!(!is_safe_kill_target(0));
+    }
+
+    #[test]
+    fn safe_kill_target_rejects_one() {
+        assert!(!is_safe_kill_target(1));
+    }
+
+    #[test]
+    fn safe_kill_target_rejects_u32_max() {
+        assert!(!is_safe_kill_target(u32::MAX));
+    }
+
+    #[test]
+    fn safe_kill_target_rejects_i32_max_plus_one() {
+        assert!(!is_safe_kill_target(i32::MAX as u32 + 1));
+    }
+
+    #[test]
+    fn safe_kill_target_accepts_normal_pid() {
+        assert!(is_safe_kill_target(999_999));
+        assert!(is_safe_kill_target(2));
+        assert!(is_safe_kill_target(i32::MAX as u32));
+    }
+
+    #[tokio::test]
+    async fn terminate_nonexistent_pid_returns_true() {
+        let result = terminate_process(999999, "nonexistent", None).await;
+        assert!(result, "nonexistent PID should return true (already dead)");
+    }
+
+    #[tokio::test]
+    async fn terminate_skips_when_comm_mismatch() {
+        let self_pid = std::process::id();
+        let result = terminate_process(self_pid, "wrong-comm-name", None).await;
+        assert!(
+            result,
+            "mismatched comm should return true (skipped, treated as not our process)"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_unsafe_pid_returns_false() {
+        let result = terminate_process(1, "mesh-llm", None).await;
+        assert!(!result, "unsafe PID should return false");
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_returns_false_for_live_process() {
+        let self_pid = std::process::id();
+        let result = wait_for_exit(self_pid, 50).await;
+        assert!(
+            !result,
+            "live process with short timeout should return false"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_exit_immediately_detects_dead_process() {
+        let result = wait_for_exit(999_999, 0).await;
+        assert!(
+            result,
+            "dead process should be detected before entering the poll loop"
+        );
+    }
+
+    #[test]
+    fn no_pkill_f_in_source_tree() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/inference/launch.rs"
+        ))
+        .unwrap();
+        let forbidden_pattern = ["pkill", "-f", "llama-server"].join(" ");
+        assert!(
+            !src.contains(&forbidden_pattern),
+            "forbidden pattern found in launch.rs"
+        );
+        let kill_func = format!("{}_{}{}", "kill", "llama", "_server");
+        assert!(
+            !src.contains(&kill_func),
+            "legacy function reference still present after removal"
+        );
+        let runtime_src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/runtime/mod.rs"))
+                .unwrap();
+        assert!(
+            !runtime_src.contains(&kill_func),
+            "legacy function reference still present in runtime module"
+        );
+        let orphan_func = format!("{}_{}{}{}", "kill", "orphan", "_rpc", "_servers");
+        assert!(
+            !runtime_src.contains(&orphan_func),
+            "legacy orphan cleanup function reference still present in runtime module"
+        );
     }
 }

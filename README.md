@@ -190,9 +190,11 @@ Different nodes serve different models. The API proxy routes by the `model` fiel
 ### Inspect local GPUs
 ```bash
 mesh-llm gpus
+mesh-llm gpus --json
+mesh-llm gpu benchmark --json
 ```
 
-Prints local GPU entries, backend device names, stable IDs, VRAM, and cached bandwidth if a benchmark fingerprint is already available.
+`mesh-llm gpus` prints local GPU entries, backend device names, stable IDs, VRAM, unified-memory state, and cached bandwidth when a benchmark fingerprint is already available. Add `--json` for machine-readable inventory output, or run `mesh-llm gpu benchmark --json` to refresh the local fingerprint and print the benchmark result as JSON.
 
 ### Startup config
 
@@ -290,7 +292,7 @@ sudo loginctl enable-linger "$USER"
 mesh-llm serve --model Qwen2.5-32B    # dashboard at http://localhost:3131
 ```
 
-Live topology, VRAM bars per node, model picker, built-in chat. Everything comes from `/api/status` (JSON) and `/api/events` (SSE).
+Live topology, per-node GPU capacity, model picker, and built-in chat. Everything comes from `/api/status` (JSON) and `/api/events` (SSE).
 
 ## Multimodal Support
 
@@ -444,6 +446,12 @@ To update a bundle install to the latest release:
 
 ```bash
 mesh-llm update
+```
+
+To install a specific bundled release tag:
+
+```bash
+mesh-llm update --version v0.X.Y
 ```
 
 If you build from source, always use `just`:

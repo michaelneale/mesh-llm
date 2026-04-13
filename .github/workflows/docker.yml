@@ -1,0 +1,555 @@
+name: docker
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.dockerignore'
+      - 'Justfile'
+      - 'docker/**'
+      - 'fly/Dockerfile'
+      - 'mesh-llm/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/docker.yml'
+      - '.github/workflows/docker-precheck.yml'
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/mesh-llm
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker-validate-client:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate client
+      dockerfile_path: docker/Dockerfile.client
+      validate_shared_core: true
+      validate_workflow_no_qemu: true
+      validate_entrypoint_modes: true
+
+  docker-validate-fly-shared:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate fly shared
+      dockerfile_path: fly/Dockerfile
+      validate_shared_core: true
+      validate_fly_ui_builder: true
+      validate_entrypoint_modes: true
+
+  docker-validate-cpu:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate cpu
+      dockerfile_path: docker/Dockerfile.cpu
+      validate_shared_core: true
+      validate_llama_builder: true
+      validate_entrypoint_modes: true
+
+  docker-validate-vulkan:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate vulkan
+      dockerfile_path: docker/Dockerfile.vulkan
+      validate_shared_core: true
+      validate_llama_builder: true
+      validate_entrypoint_modes: true
+
+  docker-validate-cuda:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate cuda
+      dockerfile_path: docker/Dockerfile.cuda
+      validate_shared_core: true
+      validate_llama_builder: true
+      validate_cuda_extra: true
+      validate_entrypoint_modes: true
+
+  docker-validate-rocm:
+    uses: ./.github/workflows/docker-precheck.yml
+    with:
+      job_name: Docker validate rocm
+      dockerfile_path: docker/Dockerfile.rocm
+      validate_shared_core: true
+      validate_llama_builder: true
+      validate_entrypoint_modes: true
+
+  docker-client-amd64:
+    needs: [docker-validate-client, docker-validate-fly-shared]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-amd64,onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-,format=short
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.client
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-amd64
+            type=gha,scope=docker-llama-client-amd64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-amd64
+            type=gha,mode=max,scope=docker-llama-client-amd64
+
+  docker-client-arm64:
+    needs: [docker-validate-client, docker-validate-fly-shared]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-arm64,onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-,format=short
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.client
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-arm64
+            type=gha,scope=docker-llama-client-arm64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-arm64
+            type=gha,mode=max,scope=docker-llama-client-arm64
+
+  docker-client-merge:
+    runs-on: ubuntu-latest
+    needs: [docker-client-amd64, docker-client-arm64]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest
+            type=raw,value=client
+      - name: Create and push multi-arch manifest
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
+          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            if [[ -n "$tag" ]]; then
+              tag_args+=("-t" "$tag")
+            fi
+          done
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-arm64
+
+  docker-cpu-amd64:
+    needs: docker-validate-cpu
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-amd64,onlatest=true
+          tags: |
+            type=ref,event=branch,suffix=-cpu
+            type=ref,event=pr,suffix=-cpu
+            type=semver,pattern={{version}}-cpu
+            type=sha,prefix=sha-,format=short,suffix=-cpu-amd64
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.cpu
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-amd64
+            type=gha,scope=docker-llama-cpu-amd64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-amd64
+            type=gha,mode=max,scope=docker-llama-cpu-amd64
+
+  docker-cpu-arm64:
+    needs: docker-validate-cpu
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-arm64,onlatest=true
+          tags: |
+            type=ref,event=branch,suffix=-cpu
+            type=ref,event=pr,suffix=-cpu
+            type=semver,pattern={{version}}-cpu
+            type=sha,prefix=sha-,format=short,suffix=-cpu-arm64
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.cpu
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-arm64
+            type=gha,scope=docker-llama-cpu-arm64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-arm64
+            type=gha,mode=max,scope=docker-llama-cpu-arm64
+
+  docker-cpu-merge:
+    runs-on: ubuntu-latest
+    needs: [docker-cpu-amd64, docker-cpu-arm64]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-cpu
+            type=semver,pattern={{version}}-cpu
+            type=sha,prefix=sha-,format=short,suffix=-cpu
+            type=raw,value=cpu
+      - name: Create and push multi-arch manifest
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
+          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            if [[ -n "$tag" ]]; then
+              tag_args+=("-t" "$tag")
+            fi
+          done
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-cpu-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-cpu-arm64
+
+  docker-vulkan-amd64:
+    needs: docker-validate-vulkan
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-amd64,onlatest=true
+          tags: |
+            type=ref,event=branch,suffix=-vulkan
+            type=ref,event=pr,suffix=-vulkan
+            type=semver,pattern={{version}}-vulkan
+            type=sha,prefix=sha-,format=short,suffix=-vulkan-amd64
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.vulkan
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-amd64
+            type=gha,scope=docker-llama-vulkan-amd64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-amd64
+            type=gha,mode=max,scope=docker-llama-vulkan-amd64
+
+  docker-vulkan-arm64:
+    needs: docker-validate-vulkan
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-arm64,onlatest=true
+          tags: |
+            type=ref,event=branch,suffix=-vulkan
+            type=ref,event=pr,suffix=-vulkan
+            type=semver,pattern={{version}}-vulkan
+            type=sha,prefix=sha-,format=short,suffix=-vulkan-arm64
+      - name: Build and push (non-PR)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.vulkan
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=docker-rust-deps-arm64
+            type=gha,scope=docker-llama-vulkan-arm64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-arm64
+            type=gha,mode=max,scope=docker-llama-vulkan-arm64
+
+  docker-vulkan-merge:
+    runs-on: ubuntu-latest
+    needs: [docker-vulkan-amd64, docker-vulkan-arm64]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-vulkan
+            type=semver,pattern={{version}}-vulkan
+            type=sha,prefix=sha-,format=short,suffix=-vulkan
+            type=raw,value=vulkan
+      - name: Create and push multi-arch manifest
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | head -c 7)
+          mapfile -t tags <<< "${{ steps.meta.outputs.tags }}"
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            if [[ -n "$tag" ]]; then
+              tag_args+=("-t" "$tag")
+            fi
+          done
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-vulkan-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${SHORT_SHA}-vulkan-arm64
+
+  docker-cuda:
+    needs: docker-validate-cuda
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-cuda
+            type=semver,pattern={{version}}-cuda
+            type=sha,prefix=sha-,format=short,suffix=-cuda
+            type=raw,value=cuda
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.cuda
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CUDA_ARCH=75;80;86;89;90;120
+          cache-from: |
+            type=gha,scope=docker-rust-deps-amd64-cuda
+            type=gha,scope=docker-llama-cuda-amd64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-amd64-cuda
+            type=gha,mode=max,scope=docker-llama-cuda-amd64
+      # GGML_CUDA_FA_ALL_QUANTS=ON is verified inline in docker/Dockerfile.cuda
+      # via `grep CMakeCache.txt`. The Build step above fails fast if the flag
+      # ever drops, so no separate workflow step is needed.
+
+  docker-rocm:
+    needs: docker-validate-rocm
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch,suffix=-rocm
+            type=semver,pattern={{version}}-rocm
+            type=sha,prefix=sha-,format=short,suffix=-rocm
+            type=raw,value=rocm
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.rocm
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            ROCM_ARCH=gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201
+          cache-from: |
+            type=gha,scope=docker-rust-deps-amd64-rocm
+            type=gha,scope=docker-llama-rocm-amd64
+          cache-to: |
+            type=gha,mode=max,scope=docker-rust-deps-amd64-rocm
+            type=gha,mode=max,scope=docker-llama-rocm-amd64

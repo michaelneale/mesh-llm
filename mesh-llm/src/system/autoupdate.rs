@@ -34,6 +34,7 @@ enum PostInstallAction {
 }
 
 struct ReleaseInfo {
+    tag: String,
     version: String,
     assets: Vec<String>,
 }
@@ -119,10 +120,14 @@ pub(crate) async fn maybe_auto_update(cli: &Cli) -> Result<bool> {
 
 pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
     let target = require_update_target(cli)?;
-    let Some(release) = latest_release_info().await else {
-        bail!("Could not check for a new release right now. Try again shortly.");
+    let requested_version = match &cli.command {
+        Some(Command::Update { version }) => version.as_deref(),
+        _ => None,
     };
-    if !version_newer(&release.version, VERSION) {
+    let Some(release) = resolve_release_info(requested_version).await? else {
+        bail!("Could not check for a release right now. Try again shortly.");
+    };
+    if requested_version.is_none() && !version_newer(&release.version, VERSION) {
         eprintln!("mesh-llm is already up to date (v{VERSION}).");
         return Ok(());
     }
@@ -132,7 +137,7 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
         .any(|asset| asset == &target.asset_name)
     {
         bail!(
-            "Latest release v{} does not include {}.",
+            "Release v{} does not include {}.",
             release.version,
             target.asset_name
         );
@@ -142,13 +147,15 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
     }
 
     eprintln!(
-        "⬇️ Updating mesh-llm v{VERSION} -> v{} ({})...",
+        "⬇️ {} mesh-llm v{VERSION} -> v{} ({})...",
+        describe_requested_update(&release.version, requested_version.is_some()),
         release.version,
         target.bundle_flavor.suffix()
     );
     match install_latest_bundle(
         &target.exe,
         &target.install_dir,
+        &release,
         &target.asset_name,
         target.bundle_flavor,
         PostInstallAction::ExitAfterInstall,
@@ -179,47 +186,39 @@ pub(crate) async fn latest_release_version() -> Option<String> {
 }
 
 async fn latest_release_info() -> Option<ReleaseInfo> {
+    fetch_release_info(&latest_release_api_url()).await
+}
+
+async fn release_info_for_tag(tag: &str) -> Option<ReleaseInfo> {
+    fetch_release_info(&release_api_url_for_tag(tag)).await
+}
+
+async fn fetch_release_info(url: &str) -> Option<ReleaseInfo> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .ok()?;
     let resp = client
-        .get(latest_release_api_url())
+        .get(url)
         .header("User-Agent", "mesh-llm")
         .send()
         .await
         .ok()?;
     let body: serde_json::Value = resp.json().await.ok()?;
-    let tag = body["tag_name"].as_str()?;
-    let latest = tag.trim_start_matches('v').trim();
-    if latest.is_empty() {
-        None
-    } else {
-        let assets = body["assets"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| item["name"].as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        Some(ReleaseInfo {
-            version: latest.to_string(),
-            assets,
-        })
-    }
+    release_info_from_json(&body)
 }
 
 pub(crate) fn version_newer(a: &str, b: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
-    parse(a) > parse(b)
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => false,
+    }
 }
 
 fn should_attempt_auto_update(cli: &Cli) -> bool {
     cli.auto_update
         && cli.plugin.is_none()
-        && !matches!(cli.command, Some(Command::Update))
+        && !matches!(cli.command, Some(Command::Update { .. }))
         && std::env::var_os(SELF_UPDATE_ATTEMPTED_ENV).is_none()
 }
 
@@ -297,6 +296,7 @@ async fn apply_update_if_available(
     match install_latest_bundle(
         &target.exe,
         &target.install_dir,
+        &release,
         &target.asset_name,
         target.bundle_flavor,
         action,
@@ -425,11 +425,73 @@ fn latest_release_api_url() -> String {
     )
 }
 
-fn latest_release_asset_url(asset_name: &str) -> String {
+fn release_api_url_for_tag(tag: &str) -> String {
     format!(
-        "https://github.com/{}/releases/latest/download/{asset_name}",
+        "https://api.github.com/repos/{}/releases/tags/{tag}",
         release_repo()
     )
+}
+
+fn release_asset_url(tag: &str, asset_name: &str) -> String {
+    format!(
+        "https://github.com/{}/releases/download/{tag}/{asset_name}",
+        release_repo()
+    )
+}
+
+fn release_info_from_json(body: &serde_json::Value) -> Option<ReleaseInfo> {
+    let tag = body["tag_name"].as_str()?.trim();
+    let version = tag.trim_start_matches('v').trim();
+    if tag.is_empty() || version.is_empty() {
+        return None;
+    }
+
+    let assets = body["assets"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["name"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Some(ReleaseInfo {
+        tag: tag.to_string(),
+        version: version.to_string(),
+        assets,
+    })
+}
+
+async fn resolve_release_info(requested_version: Option<&str>) -> Result<Option<ReleaseInfo>> {
+    let Some(requested_version) = requested_version else {
+        return Ok(latest_release_info().await);
+    };
+    let tag = normalize_release_tag(requested_version)?;
+    Ok(release_info_for_tag(&tag).await)
+}
+
+fn normalize_release_tag(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    anyhow::ensure!(!trimmed.is_empty(), "release version must not be empty");
+    let version = trimmed.trim_start_matches('v');
+    semver::Version::parse(version).with_context(|| format!("Invalid release version: {raw}"))?;
+    Ok(format!("v{version}"))
+}
+
+fn describe_requested_update(target_version: &str, exact: bool) -> &'static str {
+    if !exact {
+        return "Updating";
+    }
+
+    match (
+        semver::Version::parse(target_version),
+        semver::Version::parse(VERSION),
+    ) {
+        (Ok(target), Ok(current)) if target < current => "Downgrading",
+        (Ok(target), Ok(current)) if target == current => "Reinstalling",
+        _ => "Installing",
+    }
 }
 
 fn path_is_writable(path: &Path) -> bool {
@@ -474,6 +536,7 @@ fn bundle_install_dir(
 async fn install_latest_bundle(
     exe: &Path,
     install_dir: &Path,
+    release: &ReleaseInfo,
     asset_name: &str,
     expected_flavor: launch::BinaryFlavor,
     action: PostInstallAction,
@@ -495,8 +558,11 @@ async fn install_latest_bundle(
         .with_context(|| format!("Failed to create update workspace {}", workspace.display()))?;
 
     let result = async {
-        crate::models::catalog::download_url(&latest_release_asset_url(asset_name), &archive)
-            .await?;
+        crate::models::catalog::download_url(
+            &release_asset_url(&release.tag, asset_name),
+            &archive,
+        )
+        .await?;
         extract_bundle_archive(&archive, &extracted)?;
         let staged_files = collect_bundle_files(&extracted, expected_flavor)?;
         finish_bundle_install(
@@ -1026,15 +1092,18 @@ mod tests {
         assert!(version_newer("0.33.1", "0.33.0"));
         assert!(!version_newer("0.33.0", "0.33.0"));
         assert!(!version_newer("0.32.0", "0.33.0"));
+        assert!(version_newer("0.33.0", "0.33.0-rc.1"));
+        assert!(!version_newer("0.33.0-rc.1", "0.33.0"));
+        assert!(version_newer("0.33.0-rc.2", "0.33.0-rc.1"));
     }
 
     #[test]
     #[serial]
-    fn test_latest_release_asset_url() {
+    fn test_release_asset_url() {
         std::env::remove_var(SELF_UPDATE_REPO_ENV);
         assert_eq!(
-            latest_release_asset_url("mesh-llm-aarch64-apple-darwin.tar.gz"),
-            "https://github.com/michaelneale/mesh-llm/releases/latest/download/mesh-llm-aarch64-apple-darwin.tar.gz"
+            release_asset_url("v0.60.0", "mesh-llm-aarch64-apple-darwin.tar.gz"),
+            "https://github.com/michaelneale/mesh-llm/releases/download/v0.60.0/mesh-llm-aarch64-apple-darwin.tar.gz"
         );
     }
 
@@ -1059,10 +1128,32 @@ mod tests {
             "https://api.github.com/repos/jdumay/mesh-llm/releases/latest"
         );
         assert_eq!(
-            latest_release_asset_url("mesh-llm-x86_64-unknown-linux-gnu.tar.gz"),
-            "https://github.com/jdumay/mesh-llm/releases/latest/download/mesh-llm-x86_64-unknown-linux-gnu.tar.gz"
+            release_api_url_for_tag("v0.60.0"),
+            "https://api.github.com/repos/jdumay/mesh-llm/releases/tags/v0.60.0"
+        );
+        assert_eq!(
+            release_asset_url("v0.60.0", "mesh-llm-x86_64-unknown-linux-gnu.tar.gz"),
+            "https://github.com/jdumay/mesh-llm/releases/download/v0.60.0/mesh-llm-x86_64-unknown-linux-gnu.tar.gz"
         );
         std::env::remove_var(SELF_UPDATE_REPO_ENV);
+    }
+
+    #[test]
+    fn test_normalize_release_tag() {
+        assert_eq!(normalize_release_tag("v0.60.0").unwrap(), "v0.60.0");
+        assert_eq!(
+            normalize_release_tag("0.60.0-rc.1").unwrap(),
+            "v0.60.0-rc.1"
+        );
+        assert!(normalize_release_tag("latest").is_err());
+    }
+
+    #[test]
+    fn test_describe_requested_update() {
+        assert_eq!(describe_requested_update("0.60.0", false), "Updating");
+        assert_eq!(describe_requested_update(VERSION, true), "Reinstalling");
+        assert_eq!(describe_requested_update("0.0.1", true), "Downgrading");
+        assert_eq!(describe_requested_update("999.0.0", true), "Installing");
     }
 
     #[test]

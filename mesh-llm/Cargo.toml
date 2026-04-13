@@ -1,6 +1,6 @@
 [package]
 name = "mesh-llm"
-version = "0.59.0"
+version = "0.60.0-rc.2"
 edition = "2021"
 
 [dependencies]
@@ -22,6 +22,7 @@ include_dir = "0.7"
 nostr-sdk = { version = "0.44.1", default-features = false }
 rustls = "0.23.36"
 reqwest = { version = "0.12", features = ["stream", "json"] }
+semver = "1"
 sha2 = "0.10"
 ed25519-dalek = { version = "=3.0.0-pre.1", features = ["rand_core"] }
 crypto_box = "0.9"
@@ -49,6 +50,7 @@ unicode-width = "0.2"
 [dev-dependencies]
 axum = "0.8"
 serial_test = "3"
+tempfile = "3"
 
 [build-dependencies]
 prost-build = "0.14"

@@ -6,3 +6,17 @@ macos/
 iroh-relay/
 evals/
 *.tar.gz
+# Node.js build artefacts (UI)
+**/node_modules/
+**/dist/
+# Local workspace state
+.sisyphus/
+.opencode/
+.claude/
+# Release bundle outputs
+*.bundle.tar.gz
+# Editor/IDE
+.vscode/
+.idea/
+# OS cruft
+.DS_Store

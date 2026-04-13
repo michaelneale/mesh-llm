@@ -10,9 +10,9 @@ fi
 raw_version="$1"
 version="${raw_version#v}"
 
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
     echo "invalid version: $raw_version" >&2
-    echo "expected semantic version like 0.49.0 or v0.49.0" >&2
+    echo "expected semantic version like 0.49.0, 0.49.0-rc.1, v0.49.0, or v0.49.0-rc.1" >&2
     exit 1
 fi
 

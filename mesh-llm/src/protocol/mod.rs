@@ -572,13 +572,17 @@ mod tests {
             available_models: vec![],
             requested_models: vec![],
             last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
             version: None,
             gpu_name: None,
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -628,7 +632,10 @@ mod tests {
             hostname: Some("worker-01".into()),
             is_soc: Some(false),
             gpu_vram: Some("51539607552".into()),
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: Some("1073741824".into()),
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::from([("Qwen".into(), 1234_u64)]),
@@ -1299,7 +1306,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -1387,7 +1397,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -1425,6 +1438,93 @@ mod tests {
         assert_eq!(roundtripped.claim.owner_id, "owner-abc");
         assert_eq!(roundtripped.claim.cert_id, "cert-123");
         assert_eq!(roundtripped.claim.node_label.as_deref(), Some("studio"));
+    }
+
+    #[test]
+    fn test_proto_round_trip_with_bandwidth_and_tflops() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xBC; 32]).public());
+        let ann = super::PeerAnnouncement {
+            addr: EndpointAddr {
+                id: peer_id,
+                addrs: Default::default(),
+            },
+            role: super::NodeRole::Host { http_port: 3131 },
+            models: vec!["Qwen".to_string()],
+            vram_bytes: 48_000_000_000,
+            model_source: Some("Qwen.gguf".to_string()),
+            serving_models: vec!["Qwen".to_string()],
+            hosted_models: Some(vec!["Qwen".to_string()]),
+            available_models: vec![],
+            requested_models: vec![],
+            version: Some("0.52.0".to_string()),
+            model_demand: HashMap::new(),
+            mesh_id: Some("mesh-proto-roundtrip".to_string()),
+            gpu_name: Some("NVIDIA A100".to_string()),
+            hostname: Some("worker-01".to_string()),
+            is_soc: Some(false),
+            gpu_vram: Some("51539607552".to_string()),
+            gpu_reserved_bytes: Some("1073741824".to_string()),
+            gpu_mem_bandwidth_gbps: Some("1948.70".to_string()),
+            gpu_compute_tflops_fp32: Some("19.50".to_string()),
+            gpu_compute_tflops_fp16: Some("312.00".to_string()),
+            available_model_metadata: vec![],
+            experts_summary: None,
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: vec![],
+            served_model_runtime: vec![],
+            owner_attestation: None,
+        };
+
+        let proto_pa = local_ann_to_proto_ann(&ann);
+        assert_eq!(proto_pa.gpu_reserved_bytes.as_deref(), Some("1073741824"));
+        assert_eq!(proto_pa.gpu_mem_bandwidth_gbps.as_deref(), Some("1948.70"));
+        assert_eq!(proto_pa.gpu_compute_tflops_fp32.as_deref(), Some("19.50"));
+        assert_eq!(proto_pa.gpu_compute_tflops_fp16.as_deref(), Some("312.00"));
+
+        let (_, roundtripped) =
+            proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+        assert_eq!(
+            roundtripped.gpu_reserved_bytes.as_deref(),
+            Some("1073741824")
+        );
+        assert_eq!(
+            roundtripped.gpu_mem_bandwidth_gbps.as_deref(),
+            Some("1948.70")
+        );
+        assert_eq!(
+            roundtripped.gpu_compute_tflops_fp32.as_deref(),
+            Some("19.50")
+        );
+        assert_eq!(
+            roundtripped.gpu_compute_tflops_fp16.as_deref(),
+            Some("312.00")
+        );
+    }
+
+    #[test]
+    fn test_proto_backward_compat_missing_tflops() {
+        let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCD; 32]).public());
+        let proto_pa = crate::proto::node::PeerAnnouncement {
+            endpoint_id: peer_id.as_bytes().to_vec(),
+            role: NodeRole::Worker as i32,
+            gpu_name: Some("NVIDIA A100".to_string()),
+            gpu_vram: Some("51539607552".to_string()),
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: Some("1948.70".to_string()),
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            ..Default::default()
+        };
+
+        let (_, roundtripped) =
+            proto_ann_to_local(&proto_pa).expect("proto_ann_to_local must succeed");
+        assert_eq!(roundtripped.gpu_reserved_bytes, None);
+        assert_eq!(
+            roundtripped.gpu_mem_bandwidth_gbps.as_deref(),
+            Some("1948.70")
+        );
+        assert_eq!(roundtripped.gpu_compute_tflops_fp32, None);
+        assert_eq!(roundtripped.gpu_compute_tflops_fp16, None);
     }
 
     #[test]
@@ -1494,7 +1594,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -1552,7 +1655,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -1787,7 +1893,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),
@@ -1845,7 +1954,10 @@ mod tests {
             hostname: None,
             is_soc: None,
             gpu_vram: None,
-            gpu_bandwidth_gbps: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
             available_model_metadata: vec![],
             experts_summary: None,
             available_model_sizes: HashMap::new(),

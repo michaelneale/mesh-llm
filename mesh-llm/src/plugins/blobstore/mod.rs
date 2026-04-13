@@ -564,7 +564,7 @@ fn blobstore_operation_router(store: BlobStore) -> OperationRouter {
         ),
         move |request, _context| {
             let store = put_store.clone();
-            Box::pin(async move { Ok(store.put_request_object(request)?) })
+            Box::pin(async move { store.put_request_object(request) })
         },
     );
 
@@ -576,7 +576,7 @@ fn blobstore_operation_router(store: BlobStore) -> OperationRouter {
         ),
         move |request, _context| {
             let store = get_store.clone();
-            Box::pin(async move { Ok(store.get_request_object(request)?) })
+            Box::pin(async move { store.get_request_object(request) })
         },
     );
 
@@ -588,7 +588,7 @@ fn blobstore_operation_router(store: BlobStore) -> OperationRouter {
         ),
         move |request, _context| {
             let store = complete_store.clone();
-            Box::pin(async move { Ok(store.finish_request(&request.request_id)?) })
+            Box::pin(async move { store.finish_request(&request.request_id) })
         },
     );
 
@@ -599,7 +599,7 @@ fn blobstore_operation_router(store: BlobStore) -> OperationRouter {
         ),
         move |request, _context| {
             let store = store.clone();
-            Box::pin(async move { Ok(store.finish_request(&request.request_id)?) })
+            Box::pin(async move { store.finish_request(&request.request_id) })
         },
     );
 

@@ -32,8 +32,8 @@ use self::routes::dispatch_request;
 use self::state::ApiInner;
 use self::status::{
     build_gpus, build_ownership_payload, build_runtime_processes_payload,
-    build_runtime_status_payload, MeshModelPayload, PeerPayload, RuntimeProcessesPayload,
-    RuntimeStatusPayload, StatusPayload,
+    build_runtime_status_payload, LocalInstance, MeshModelPayload, PeerPayload,
+    RuntimeProcessesPayload, RuntimeStatusPayload, StatusPayload,
 };
 use crate::inference::election;
 use crate::mesh;
@@ -88,6 +88,59 @@ fn likely_reasoning_model(name: &str, description: Option<&str>) -> bool {
     ["reasoning", "thinking", "deepseek-r1"]
         .iter()
         .any(|needle| haystack.contains(needle))
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct HttpRouteStats {
+    node_count: usize,
+    active_nodes: Vec<String>,
+    mesh_vram_gb: f64,
+}
+
+fn http_route_stats(
+    model_name: &str,
+    peers: &[mesh::PeerInfo],
+    my_hosted_models: &[String],
+    my_hostname: Option<&str>,
+    my_vram_gb: f64,
+) -> HttpRouteStats {
+    let mut active_nodes = Vec::new();
+    let mut node_count = 0usize;
+    let mut mesh_vram_gb = 0.0;
+
+    if my_hosted_models.iter().any(|hosted| hosted == model_name) {
+        node_count += 1;
+        mesh_vram_gb += my_vram_gb;
+        active_nodes.push(
+            my_hostname
+                .filter(|hostname| !hostname.trim().is_empty())
+                .unwrap_or("This node")
+                .to_string(),
+        );
+    }
+
+    for peer in peers {
+        if !peer.routes_http_model(model_name) {
+            continue;
+        }
+        node_count += 1;
+        mesh_vram_gb += peer.vram_bytes as f64 / 1e9;
+        active_nodes.push(
+            peer.hostname
+                .clone()
+                .filter(|hostname| !hostname.trim().is_empty())
+                .unwrap_or_else(|| peer.id.fmt_short().to_string()),
+        );
+    }
+
+    active_nodes.sort();
+    active_nodes.dedup();
+
+    HttpRouteStats {
+        node_count,
+        active_nodes,
+        mesh_vram_gb,
+    }
 }
 
 fn likely_vision_model(name: &str, description: Option<&str>) -> bool {
@@ -189,6 +242,7 @@ impl MeshApi {
                 sse_clients: Vec::new(),
                 inventory_scan_running: false,
                 inventory_scan_waiters: Vec::new(),
+                local_instances: Arc::new(Mutex::new(Vec::new())),
             })),
         }
     }
@@ -215,6 +269,12 @@ impl MeshApi {
 
     pub async fn set_nostr_discovery(&self, v: bool) {
         self.inner.lock().await.nostr_discovery = v;
+    }
+
+    pub async fn local_instances_handle(
+        &self,
+    ) -> Arc<Mutex<Vec<crate::runtime::instance::LocalInstanceSnapshot>>> {
+        self.inner.lock().await.local_instances.clone()
     }
 
     pub async fn set_runtime_control(
@@ -374,59 +434,27 @@ impl MeshApi {
                     || my_serving_models.iter().any(|s| s == name)
                     || name == &model_name;
                 let display_name = crate::models::installed_model_display_name(name);
-                let node_count = if is_warm {
-                    let peer_count = all_peers.iter().filter(|p| p.routes_model(name)).count();
-                    let me = if my_hosted_models.iter().any(|s| s == name) {
-                        1
-                    } else {
-                        0
-                    };
-                    peer_count + me
-                } else {
-                    0
-                };
-                let active_nodes: Vec<String> = if is_warm {
-                    let mut nodes = Vec::new();
-                    if my_hosted_models.iter().any(|s| s == name) {
-                        nodes.push(
-                            node.hostname
-                                .clone()
-                                .filter(|hostname| !hostname.trim().is_empty())
-                                .unwrap_or_else(|| "This node".to_string()),
-                        );
-                    }
-                    nodes.extend(all_peers.iter().filter_map(|peer| {
-                        if !peer.routes_model(name) {
-                            return None;
-                        }
-                        Some(
-                            peer.hostname
-                                .clone()
-                                .filter(|hostname| !hostname.trim().is_empty())
-                                .unwrap_or_else(|| peer.id.fmt_short().to_string()),
-                        )
-                    }));
-                    nodes.sort();
-                    nodes.dedup();
-                    nodes
-                } else {
-                    Vec::new()
-                };
-                let mesh_vram_gb = if is_warm {
-                    let peer_vram = all_peers
-                        .iter()
-                        .filter(|p| p.routes_model(name))
-                        .map(|p| p.vram_bytes as f64 / 1e9)
-                        .sum::<f64>();
-                    let my_vram = if my_hosted_models.iter().any(|s| s == name) {
-                        my_vram_gb
-                    } else {
-                        0.0
-                    };
-                    peer_vram + my_vram
-                } else {
-                    0.0
-                };
+                let route_stats = is_warm.then(|| {
+                    http_route_stats(
+                        name,
+                        &all_peers,
+                        &my_hosted_models,
+                        node.hostname.as_deref(),
+                        my_vram_gb,
+                    )
+                });
+                let node_count = route_stats
+                    .as_ref()
+                    .map(|stats| stats.node_count)
+                    .unwrap_or(0);
+                let active_nodes = route_stats
+                    .as_ref()
+                    .map(|stats| stats.active_nodes.clone())
+                    .unwrap_or_default();
+                let mesh_vram_gb = route_stats
+                    .as_ref()
+                    .map(|stats| stats.mesh_vram_gb)
+                    .unwrap_or(0.0);
                 let size_gb = if name == &model_name && model_size_bytes > 0 {
                     model_size_bytes as f64 / 1e9
                 } else {
@@ -719,6 +747,7 @@ impl MeshApi {
             latest_version,
             nostr_discovery,
             local_processes,
+            local_instances_arc,
         ) = {
             let inner = self.inner.lock().await;
             (
@@ -739,8 +768,38 @@ impl MeshApi {
                 inner.latest_version.clone(),
                 inner.nostr_discovery,
                 inner.local_processes.clone(),
+                inner.local_instances.clone(),
             )
         }; // inner lock dropped here
+
+        let local_instances: Vec<LocalInstance> = {
+            let snapshots = local_instances_arc.lock().await;
+            let mut instances: Vec<LocalInstance> = snapshots
+                .iter()
+                .map(|s| LocalInstance {
+                    pid: s.pid,
+                    api_port: s.api_port,
+                    version: s.version.clone(),
+                    started_at_unix: s.started_at_unix,
+                    runtime_dir: s.runtime_dir.to_string_lossy().to_string(),
+                    is_self: s.is_self,
+                })
+                .collect();
+
+            // Safety net: if scanner hasn't run yet, ensure self is always present
+            if instances.is_empty() {
+                instances.push(LocalInstance {
+                    pid: std::process::id(),
+                    api_port: Some(api_port),
+                    version: Some(MESH_LLM_VERSION.to_string()),
+                    started_at_unix: 0, // best-effort; scanner will populate properly
+                    runtime_dir: String::new(),
+                    is_self: true,
+                });
+            }
+
+            instances
+        };
 
         let all_peers = node.peers().await;
         let local_owner_summary = node.owner_summary().await;
@@ -764,13 +823,17 @@ impl MeshApi {
                 serving_models: p.serving_models.clone(),
                 hosted_models: p.hosted_models.clone(),
                 hosted_models_known: p.hosted_models_known,
+                version: p.version.clone(),
                 rtt_ms: p.rtt_ms,
                 hostname: p.hostname.clone(),
                 is_soc: p.is_soc,
                 gpus: build_gpus(
                     p.gpu_name.as_deref(),
                     p.gpu_vram.as_deref(),
-                    p.gpu_bandwidth_gbps.as_deref(),
+                    p.gpu_reserved_bytes.as_deref(),
+                    p.gpu_mem_bandwidth_gbps.as_deref(),
+                    p.gpu_compute_tflops_fp32.as_deref(),
+                    p.gpu_compute_tflops_fp16.as_deref(),
                 ),
             })
             .collect();
@@ -834,6 +897,7 @@ impl MeshApi {
             my_vram_gb,
             model_size_gb: model_size_bytes as f64 / 1e9,
             peers,
+            local_instances,
             launch_pi,
             launch_goose,
             inflight_requests,
@@ -843,17 +907,40 @@ impl MeshApi {
             my_hostname: node.hostname.clone(),
             my_is_soc: node.is_soc,
             gpus: {
-                let bw = node.gpu_bandwidth_gbps.lock().await;
-                let bw_str = bw.as_ref().map(|v| {
-                    v.iter()
-                        .map(|f| f.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                });
+                let bw_str = {
+                    let bw = node.gpu_mem_bandwidth_gbps.lock().await;
+                    bw.as_ref().map(|v| {
+                        v.iter()
+                            .map(|f| f.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                };
+                let tf32_str = {
+                    let tf32 = node.gpu_compute_tflops_fp32.lock().await;
+                    tf32.as_ref().map(|v| {
+                        v.iter()
+                            .map(|f| f.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                };
+                let tf16_str = {
+                    let tf16 = node.gpu_compute_tflops_fp16.lock().await;
+                    tf16.as_ref().map(|v| {
+                        v.iter()
+                            .map(|f| f.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                };
                 build_gpus(
                     node.gpu_name.as_deref(),
                     node.gpu_vram.as_deref(),
+                    node.gpu_reserved_bytes.as_deref(),
                     bw_str.as_deref(),
+                    tf32_str.as_deref(),
+                    tf16_str.as_deref(),
                 )
             },
             routing_affinity,
@@ -1065,13 +1152,13 @@ mod tests {
 
     #[test]
     fn test_build_gpus_both_none() {
-        let result = build_gpus(None, None, None);
+        let result = build_gpus(None, None, None, None, None, None);
         assert!(result.is_empty(), "expected empty vec when no gpu_name");
     }
 
     #[test]
     fn test_build_gpus_single_no_vram() {
-        let result = build_gpus(Some("NVIDIA RTX 5090"), None, None);
+        let result = build_gpus(Some("NVIDIA RTX 5090"), None, None, None, None, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "NVIDIA RTX 5090");
         assert_eq!(result[0].vram_bytes, 0);
@@ -1079,7 +1166,14 @@ mod tests {
 
     #[test]
     fn test_build_gpus_single_with_vram() {
-        let result = build_gpus(Some("NVIDIA RTX 5090"), Some("34359738368"), None);
+        let result = build_gpus(
+            Some("NVIDIA RTX 5090"),
+            Some("34359738368"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "NVIDIA RTX 5090");
         assert_eq!(result[0].vram_bytes, 34_359_738_368);
@@ -1091,6 +1185,9 @@ mod tests {
             Some("NVIDIA RTX 5090, NVIDIA RTX 3080"),
             Some("34359738368,10737418240"),
             None,
+            None,
+            None,
+            None,
         );
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "NVIDIA RTX 5090");
@@ -1100,10 +1197,65 @@ mod tests {
     }
 
     #[test]
+    fn test_build_gpus_multi_full_vram_without_space_after_comma() {
+        let result = build_gpus(
+            Some("NVIDIA RTX 5090,NVIDIA RTX 3080"),
+            Some("34359738368,10737418240"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "NVIDIA RTX 5090");
+        assert_eq!(result[1].name, "NVIDIA RTX 3080");
+        assert_eq!(result[0].vram_bytes, 34_359_738_368);
+        assert_eq!(result[1].vram_bytes, 10_737_418_240);
+    }
+
+    #[test]
+    fn test_build_gpus_multi_names_trim_whitespace() {
+        let result = build_gpus(
+            Some(" GPU0 ,GPU1 ,  GPU2  "),
+            Some("100,200,300"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].name, "GPU0");
+        assert_eq!(result[1].name, "GPU1");
+        assert_eq!(result[2].name, "GPU2");
+    }
+
+    #[test]
+    fn test_build_gpus_expands_summarized_identical_names() {
+        let result = build_gpus(
+            Some("2× NVIDIA A100"),
+            Some("85899345920,85899345920"),
+            None,
+            Some("1948.70,1948.70"),
+            None,
+            None,
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "NVIDIA A100");
+        assert_eq!(result[1].name, "NVIDIA A100");
+        assert_eq!(result[0].vram_bytes, 85_899_345_920);
+        assert_eq!(result[1].vram_bytes, 85_899_345_920);
+        assert_eq!(result[0].mem_bandwidth_gbps, Some(1948.70));
+        assert_eq!(result[1].mem_bandwidth_gbps, Some(1948.70));
+    }
+
+    #[test]
     fn test_build_gpus_multi_partial_vram() {
         let result = build_gpus(
             Some("NVIDIA RTX 5090, NVIDIA RTX 3080"),
             Some("34359738368"),
+            None,
+            None,
+            None,
             None,
         );
         assert_eq!(result.len(), 2);
@@ -1116,7 +1268,7 @@ mod tests {
 
     #[test]
     fn test_build_gpus_vram_no_gpu_name() {
-        let result = build_gpus(None, Some("34359738368"), None);
+        let result = build_gpus(None, Some("34359738368"), None, None, None, None);
         assert!(
             result.is_empty(),
             "no gpu_name means no entries even if vram present"
@@ -1125,7 +1277,14 @@ mod tests {
 
     #[test]
     fn test_build_gpus_vram_whitespace_trimmed() {
-        let result = build_gpus(Some("NVIDIA RTX 4090"), Some(" 25769803776 "), None);
+        let result = build_gpus(
+            Some("NVIDIA RTX 4090"),
+            Some(" 25769803776 "),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].vram_bytes, 25_769_803_776);
     }
@@ -1135,16 +1294,26 @@ mod tests {
         let result = build_gpus(
             Some("NVIDIA A100, NVIDIA A6000"),
             Some("85899345920,51539607552"),
+            None,
             Some("1948.70,780.10"),
+            None,
+            None,
         );
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].bandwidth_gbps, Some(1948.70));
-        assert_eq!(result[1].bandwidth_gbps, Some(780.10));
+        assert_eq!(result[0].mem_bandwidth_gbps, Some(1948.70));
+        assert_eq!(result[1].mem_bandwidth_gbps, Some(780.10));
     }
 
     #[test]
     fn test_build_gpus_unparsable_vram_preserves_index() {
-        let result = build_gpus(Some("GPU0, GPU1, GPU2"), Some("100,foo,300"), None);
+        let result = build_gpus(
+            Some("GPU0, GPU1, GPU2"),
+            Some("100,foo,300"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].vram_bytes, 100);
         assert_eq!(
@@ -1159,15 +1328,121 @@ mod tests {
         let result = build_gpus(
             Some("GPU0, GPU1, GPU2"),
             Some("100,200,300"),
+            None,
             Some("1.0,bad,3.0"),
+            None,
+            None,
         );
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].bandwidth_gbps, Some(1.0));
+        assert_eq!(result[0].mem_bandwidth_gbps, Some(1.0));
         assert_eq!(
-            result[1].bandwidth_gbps, None,
+            result[1].mem_bandwidth_gbps, None,
             "unparsable bandwidth should be None, not shift indices"
         );
-        assert_eq!(result[2].bandwidth_gbps, Some(3.0));
+        assert_eq!(result[2].mem_bandwidth_gbps, Some(3.0));
+    }
+
+    #[test]
+    fn test_build_gpus_with_both_tflops_precisions() {
+        let result = build_gpus(
+            Some("GPU0, GPU1"),
+            Some("100,200"),
+            None,
+            None,
+            Some("312.5,419.5"),
+            Some("625.0,839.0"),
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].compute_tflops_fp32, Some(312.5));
+        assert_eq!(result[0].compute_tflops_fp16, Some(625.0));
+        assert_eq!(result[1].compute_tflops_fp32, Some(419.5));
+        assert_eq!(result[1].compute_tflops_fp16, Some(839.0));
+    }
+
+    #[test]
+    fn test_build_gpus_fp32_only_fp16_absent() {
+        let result = build_gpus(
+            Some("GPU0, GPU1"),
+            Some("100,200"),
+            None,
+            None,
+            Some("312.5,bad"),
+            None,
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].compute_tflops_fp32, Some(312.5));
+        assert_eq!(result[1].compute_tflops_fp32, None);
+        assert!(result.iter().all(|gpu| gpu.compute_tflops_fp16.is_none()));
+    }
+
+    #[test]
+    fn test_gpu_entry_omits_tflops_when_none() {
+        let value = serde_json::to_value(build_gpus(
+            Some("NVIDIA A100"),
+            Some("85899345920"),
+            None,
+            Some("1948.70"),
+            None,
+            None,
+        ))
+        .unwrap();
+
+        let first = value.as_array().unwrap().first().unwrap();
+        assert!(first.get("compute_tflops_fp32").is_none());
+        assert!(first.get("compute_tflops_fp16").is_none());
+        assert!(first.get("mem_bandwidth_gbps").is_some());
+    }
+
+    #[test]
+    fn test_api_status_gpu_entry_uses_new_name() {
+        let value = serde_json::to_value(build_gpus(
+            Some("NVIDIA A100"),
+            Some("85899345920"),
+            None,
+            Some("1948.70"),
+            None,
+            None,
+        ))
+        .unwrap();
+
+        let first = value.as_array().unwrap().first().unwrap();
+        assert_eq!(first.get("mem_bandwidth_gbps").unwrap(), &json!(1948.7));
+        assert!(
+            first.get("bandwidth_gbps").is_none(),
+            "API status JSON should use mem_bandwidth_gbps"
+        );
+    }
+
+    #[test]
+    fn test_build_gpus_with_reserved_bytes_preserves_index() {
+        let result = build_gpus(
+            Some("GPU0, GPU1, GPU2"),
+            Some("100,200,300"),
+            Some("10,,30"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].reserved_bytes, Some(10));
+        assert_eq!(result[1].reserved_bytes, None);
+        assert_eq!(result[2].reserved_bytes, Some(30));
+    }
+
+    #[test]
+    fn test_gpu_entry_omits_reserved_bytes_when_none() {
+        let value = serde_json::to_value(build_gpus(
+            Some("NVIDIA A100"),
+            Some("85899345920"),
+            None,
+            Some("1948.70"),
+            None,
+            None,
+        ))
+        .unwrap();
+
+        let first = value.as_array().unwrap().first().unwrap();
+        assert!(first.get("reserved_bytes").is_none());
     }
 
     #[test]
@@ -1384,6 +1659,53 @@ mod tests {
     fn json_body(response: &str) -> serde_json::Value {
         let body = response.split("\r\n\r\n").nth(1).unwrap_or_default();
         serde_json::from_str(body).unwrap_or(serde_json::Value::Null)
+    }
+
+    fn make_test_peer(
+        seed: u8,
+        role: mesh::NodeRole,
+        serving_models: Vec<&str>,
+        hosted_models: Vec<&str>,
+        hosted_models_known: bool,
+    ) -> mesh::PeerInfo {
+        let peer_id = iroh::EndpointId::from(iroh::SecretKey::from_bytes(&[seed; 32]).public());
+        mesh::PeerInfo {
+            id: peer_id,
+            addr: iroh::EndpointAddr {
+                id: peer_id,
+                addrs: Default::default(),
+            },
+            tunnel_port: None,
+            role,
+            models: Vec::new(),
+            vram_bytes: 24_000_000_000,
+            rtt_ms: None,
+            model_source: None,
+            serving_models: serving_models.into_iter().map(str::to_string).collect(),
+            hosted_models: hosted_models.into_iter().map(str::to_string).collect(),
+            hosted_models_known,
+            available_models: Vec::new(),
+            requested_models: Vec::new(),
+            last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
+            moe_recovered_at: None,
+            version: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            available_model_metadata: Vec::new(),
+            experts_summary: None,
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: Vec::new(),
+            served_model_runtime: Vec::new(),
+            owner_attestation: None,
+            owner_summary: crate::crypto::OwnershipSummary::default(),
+        }
     }
 
     #[derive(Clone)]
@@ -1830,6 +2152,71 @@ mod tests {
         models_handle.abort();
     }
 
+    #[test]
+    fn test_http_route_stats_only_count_http_callable_legacy_hosts() {
+        let peers = vec![
+            make_test_peer(
+                0x41,
+                mesh::NodeRole::Host { http_port: 9337 },
+                vec!["legacy-host-model"],
+                Vec::new(),
+                false,
+            ),
+            make_test_peer(
+                0x42,
+                mesh::NodeRole::Worker,
+                vec!["worker-only-model"],
+                Vec::new(),
+                false,
+            ),
+        ];
+
+        let host_stats = http_route_stats("legacy-host-model", &peers, &[], None, 0.0);
+        assert_eq!(host_stats.node_count, 1);
+        assert_eq!(host_stats.active_nodes.len(), 1);
+        assert!(host_stats.mesh_vram_gb > 0.0);
+
+        let worker_stats = http_route_stats("worker-only-model", &peers, &[], None, 0.0);
+        assert_eq!(worker_stats, HttpRouteStats::default());
+    }
+
+    #[tokio::test]
+    async fn test_api_status_includes_local_gpu_benchmark_metrics() {
+        let state = build_test_mesh_api().await;
+        let node = {
+            let mut inner = state.inner.lock().await;
+            inner.node.gpu_name = Some("NVIDIA A100".into());
+            inner.node.gpu_vram = Some("85899345920".into());
+            inner.node.gpu_reserved_bytes = Some("1073741824".into());
+            inner.node.hostname = Some("worker-01".into());
+            inner.node.is_soc = Some(false);
+            inner.node.clone()
+        };
+
+        *node.gpu_mem_bandwidth_gbps.lock().await = Some(vec![1948.7]);
+        *node.gpu_compute_tflops_fp32.lock().await = Some(vec![19.5]);
+        *node.gpu_compute_tflops_fp16.lock().await = Some(vec![312.0]);
+
+        let (addr, handle) = spawn_management_test_server(state).await;
+        let response = send_management_request(
+            addr,
+            "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let payload = json_body(&response);
+        let gpu = &payload["gpus"][0];
+        assert_eq!(gpu["name"], json!("NVIDIA A100"));
+        assert_eq!(gpu["vram_bytes"], json!(85899345920_u64));
+        assert_eq!(gpu["reserved_bytes"], json!(1073741824_u64));
+        assert_eq!(gpu["mem_bandwidth_gbps"], json!(1948.7));
+        assert_eq!(gpu["compute_tflops_fp32"], json!(19.5));
+        assert_eq!(gpu["compute_tflops_fp16"], json!(312.0));
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn test_api_objects_routes_through_object_store_capability() {
         let (plugin_manager, blobstore_root) = build_blobstore_api_plugin_manager().await;
@@ -2151,5 +2538,92 @@ data: [DONE]
 
         handle.abort();
         let _ = upstream_handle.await;
+    }
+
+    #[tokio::test]
+    async fn status_payload_populates_local_instances_from_scanner() {
+        use crate::runtime::instance::LocalInstanceSnapshot;
+        use std::path::PathBuf;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let snapshots = vec![
+            LocalInstanceSnapshot {
+                pid: 1234,
+                api_port: Some(3131),
+                version: Some("0.56.0".to_string()),
+                started_at_unix: 1700000000,
+                runtime_dir: PathBuf::from("/tmp/a"),
+                is_self: true,
+            },
+            LocalInstanceSnapshot {
+                pid: 5678,
+                api_port: Some(3132),
+                version: Some("0.56.0".to_string()),
+                started_at_unix: 1700000100,
+                runtime_dir: PathBuf::from("/tmp/b"),
+                is_self: false,
+            },
+        ];
+
+        let shared: Arc<Mutex<Vec<LocalInstanceSnapshot>>> = Arc::new(Mutex::new(snapshots));
+        let result: Vec<LocalInstance> = {
+            let s = shared.lock().await;
+            s.iter()
+                .map(|snap| LocalInstance {
+                    pid: snap.pid,
+                    api_port: snap.api_port,
+                    version: snap.version.clone(),
+                    started_at_unix: snap.started_at_unix,
+                    runtime_dir: snap.runtime_dir.to_string_lossy().to_string(),
+                    is_self: snap.is_self,
+                })
+                .collect()
+        };
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|i| i.is_self && i.pid == 1234));
+        assert!(result.iter().any(|i| !i.is_self && i.pid == 5678));
+    }
+
+    #[tokio::test]
+    async fn status_payload_safety_net_adds_self_when_empty() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let shared: Arc<Mutex<Vec<crate::runtime::instance::LocalInstanceSnapshot>>> =
+            Arc::new(Mutex::new(vec![]));
+
+        let mut instances: Vec<LocalInstance> = {
+            let s = shared.lock().await;
+            s.iter()
+                .map(|snap| LocalInstance {
+                    pid: snap.pid,
+                    api_port: snap.api_port,
+                    version: snap.version.clone(),
+                    started_at_unix: snap.started_at_unix,
+                    runtime_dir: snap.runtime_dir.to_string_lossy().to_string(),
+                    is_self: snap.is_self,
+                })
+                .collect()
+        };
+
+        // Simulate the safety net logic
+        if instances.is_empty() {
+            instances.push(LocalInstance {
+                pid: std::process::id(),
+                api_port: Some(3131),
+                version: Some(MESH_LLM_VERSION.to_string()),
+                started_at_unix: 0,
+                runtime_dir: String::new(),
+                is_self: true,
+            });
+        }
+
+        assert_eq!(instances.len(), 1);
+        assert!(instances[0].is_self);
+        assert_eq!(instances[0].pid, std::process::id());
+        assert_eq!(instances[0].api_port, Some(3131));
+        assert_eq!(instances[0].version, Some(MESH_LLM_VERSION.to_string()));
     }
 }

@@ -506,7 +506,7 @@ pub fn pii_check(text: &str) -> Vec<String> {
         });
         if w.contains('@') && w.contains('.') && w.len() > 5 {
             let parts: Vec<&str> = w.split('@').collect();
-            if parts.len() == 2 && parts[1].contains('.') && parts[0].len() > 0 {
+            if parts.len() == 2 && parts[1].contains('.') && !parts[0].is_empty() {
                 issues.push(format!("Possible email: {}", w));
             }
         }

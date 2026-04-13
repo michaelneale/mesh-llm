@@ -131,6 +131,7 @@ jobs:
       build_args: 89
       extra_env: |
         MESH_LLM_CUDA_FA_ALL_QUANTS=off
+        MESH_LLM_LLAMA_TARGETS=rpc-server llama-server llama-moe-analyze llama-moe-split
 
   warm_llama_cuda_fat:
     needs: resolve_llama_sha

@@ -6,6 +6,7 @@ mod download;
 mod gpus;
 mod integrations;
 mod models;
+mod moe;
 mod plugin;
 mod runtime;
 mod update;
@@ -16,9 +17,10 @@ use crate::cli::commands::benchmark::dispatch_benchmark_command;
 use crate::cli::commands::blackboard::{install_skill, run_blackboard};
 use crate::cli::commands::discover::{run_discover, run_stop};
 use crate::cli::commands::download::dispatch_download_command;
-use crate::cli::commands::gpus::run_gpus;
+use crate::cli::commands::gpus::dispatch_gpu_command;
 use crate::cli::commands::integrations::{run_claude, run_goose};
 use crate::cli::commands::models::dispatch_models_command;
+use crate::cli::commands::moe::dispatch_moe_command;
 use crate::cli::commands::plugin::run_plugin_command;
 use crate::cli::commands::runtime::{dispatch_runtime_command, run_drop, run_load, run_status};
 use crate::cli::commands::update::run_update;
@@ -37,11 +39,12 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::Download { name, draft } => {
             dispatch_download_command(name.as_deref(), *draft).await
         }
-        Command::Update => run_update(cli).await,
-        Command::Gpus => {
-            run_gpus()?;
+        Command::Update { .. } => run_update(cli).await,
+        Command::Gpus { json, command } => {
+            dispatch_gpu_command(*json, command.as_ref())?;
             Ok(())
         }
+        Command::Moe { command } => dispatch_moe_command(command, cli).await,
         Command::Runtime { command } => dispatch_runtime_command(command.as_ref()).await,
         Command::Load { name, port } => run_load(name, *port).await,
         Command::Unload { name, port } => run_drop(name, *port).await,
@@ -63,7 +66,7 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
             )
             .await
         }
-        Command::RotateKey => nostr::rotate_keys().map_err(Into::into),
+        Command::RotateKey => nostr::rotate_keys(),
         Command::Goose { model, port } => run_goose(model.clone(), *port).await,
         Command::Claude { model, port } => run_claude(model.clone(), *port).await,
         Command::Blackboard {

@@ -36,9 +36,9 @@ pub struct ModelMoeInfo {
 pub fn infer_catalog_topology(model: &catalog::CatalogModel) -> Option<ModelTopology> {
     model.moe.as_ref().map(|moe| ModelTopology {
         moe: Some(ModelMoeInfo {
-            expert_count: moe.n_expert as u32,
-            used_expert_count: moe.n_expert_used as u32,
-            min_experts_per_node: Some(moe.min_experts_per_node as u32),
+            expert_count: moe.n_expert,
+            used_expert_count: moe.n_expert_used,
+            min_experts_per_node: Some(moe.min_experts_per_node),
             source: Some("catalog".to_string()),
             ranking_source: None,
             ranking_origin: None,

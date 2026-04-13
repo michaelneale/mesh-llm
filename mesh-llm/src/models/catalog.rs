@@ -372,7 +372,11 @@ impl Drop for DownloadHfAssetsOverrideGuard {
     }
 }
 
-async fn download_hf_assets(label: &str, assets: Vec<HfAsset>) -> Result<Vec<PathBuf>> {
+async fn download_hf_assets(
+    label: &str,
+    assets: Vec<HfAsset>,
+    progress: bool,
+) -> Result<Vec<PathBuf>> {
     let label = label.to_string();
     #[cfg(test)]
     {
@@ -385,7 +389,7 @@ async fn download_hf_assets(label: &str, assets: Vec<HfAsset>) -> Result<Vec<Pat
             return func(&label, assets);
         }
     }
-    tokio::task::spawn_blocking(move || download_hf_assets_blocking(&label, assets))
+    tokio::task::spawn_blocking(move || download_hf_assets_blocking(&label, assets, progress))
         .await
         .context("Join Hugging Face download task")?
 }
@@ -468,7 +472,11 @@ fn format_download_bytes(bytes: u64) -> String {
     }
 }
 
-fn download_hf_assets_blocking(label: &str, assets: Vec<HfAsset>) -> Result<Vec<PathBuf>> {
+fn download_hf_assets_blocking(
+    label: &str,
+    assets: Vec<HfAsset>,
+    progress: bool,
+) -> Result<Vec<PathBuf>> {
     let api = super::build_hf_api(false)?;
     let cache = crate::models::huggingface_hub_cache();
     let mut download_plan = std::collections::BTreeSet::new();
@@ -508,7 +516,9 @@ fn download_hf_assets_blocking(label: &str, assets: Vec<HfAsset>) -> Result<Vec<
         ));
     }
 
-    eprintln!("📥 Ensuring {} is available locally...", label);
+    if progress {
+        eprintln!("📥 Ensuring {} is available locally...", label);
+    }
 
     let mut primary_paths = Vec::new();
     for (required, asset) in download_plan {
@@ -517,27 +527,35 @@ fn download_hf_assets_blocking(label: &str, assets: Vec<HfAsset>) -> Result<Vec<
         let api_repo = api.repo(repo_handle);
         let path = match cache_repo.get(&asset.file) {
             Some(path) => {
-                if required {
-                    eprintln!("   ✅ Using cached model {}", asset.file);
-                } else {
-                    eprintln!("   🧾 Using cached model metadata");
+                if progress {
+                    if required {
+                        eprintln!("   ✅ Using cached model {}", asset.file);
+                    } else {
+                        eprintln!("   🧾 Using cached model metadata");
+                    }
                 }
                 path
             }
             None => {
-                if required {
+                if progress && required {
                     eprintln!("   📥 Downloading model {}", asset.file);
                 }
                 match if required {
-                    api_repo.download_with_progress(&asset.file, MeshDownloadProgress::new())
+                    if progress {
+                        api_repo.download_with_progress(&asset.file, MeshDownloadProgress::new())
+                    } else {
+                        api_repo.download(&asset.file)
+                    }
                 } else {
                     api_repo.download(&asset.file)
                 } {
                     Ok(path) => {
-                        if required {
-                            eprintln!("   ✅ Ready {}", asset.file);
-                        } else {
-                            eprintln!("   🧾 Downloaded model metadata");
+                        if progress {
+                            if required {
+                                eprintln!("   ✅ Ready {}", asset.file);
+                            } else {
+                                eprintln!("   🧾 Downloaded model metadata");
+                            }
                         }
                         path
                     }
@@ -568,14 +586,27 @@ pub async fn download_hf_repo_file(
     revision: Option<&str>,
     file: &str,
 ) -> Result<PathBuf> {
+    download_hf_repo_file_with_progress(repo, revision, file, true).await
+}
+
+pub async fn download_hf_repo_file_with_progress(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+    progress: bool,
+) -> Result<PathBuf> {
     let revision = revision.unwrap_or("main").to_string();
     let asset = HfAsset {
         repo: repo.to_string(),
         revision: revision.clone(),
         file: file.to_string(),
     };
-    let mut paths =
-        download_hf_assets(&format!("{repo}/{file}@{revision}"), vec![asset.clone()]).await?;
+    let mut paths = download_hf_assets(
+        &format!("{repo}/{file}@{revision}"),
+        vec![asset.clone()],
+        progress,
+    )
+    .await?;
     paths.sort();
     paths
         .into_iter()
@@ -591,6 +622,10 @@ pub async fn download_hf_repo_file(
 /// Returns the path to the primary downloaded file.
 /// For split GGUFs (extra_files), downloads all parts to the same directory.
 pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
+    download_model_with_progress(model, true).await
+}
+
+pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) -> Result<PathBuf> {
     let hf_assets: Option<Vec<HfAsset>> = std::iter::once(model.url.as_str())
         .chain(model.extra_files.iter().map(|asset| asset.url.as_str()))
         .chain(model.mmproj.iter().map(|asset| asset.url.as_str()))
@@ -598,7 +633,7 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         .collect();
     if let Some(assets) = hf_assets {
         let source = model.source_file().unwrap_or(model.file.as_str());
-        let mut paths = download_hf_assets(&model.name, assets).await?;
+        let mut paths = download_hf_assets(&model.name, assets, progress).await?;
         paths.sort();
         if let Some(path) = paths
             .iter()
@@ -647,17 +682,21 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
     }
 
     if all_present {
-        eprintln!(
-            "✅ {} already exists ({:.1}GB, {} file{})",
-            model.name,
-            total_size as f64 / 1e9,
-            files.len(),
-            if files.len() > 1 { "s" } else { "" },
-        );
+        if progress {
+            eprintln!(
+                "✅ {} already exists ({:.1}GB, {} file{})",
+                model.name,
+                total_size as f64 / 1e9,
+                files.len(),
+                if files.len() > 1 { "s" } else { "" },
+            );
+        }
         return Ok(dest);
     }
 
-    eprintln!("📥 Downloading {} ({})...", model.name, model.size);
+    if progress {
+        eprintln!("📥 Downloading {} ({})...", model.name, model.size);
+    }
 
     // Collect files that still need downloading
     let mut needed: Vec<(String, String)> = Vec::new();
@@ -669,7 +708,9 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
                 .map(|m| m.len())
                 .unwrap_or(0);
             if size > 1_000_000 {
-                eprintln!("  ✅ {file} already exists ({:.1}GB)", size as f64 / 1e9);
+                if progress {
+                    eprintln!("  ✅ {file} already exists ({:.1}GB)", size as f64 / 1e9);
+                }
                 continue;
             }
         }
@@ -678,17 +719,22 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
 
     if needed.len() > 1 {
         // Parallel download of split files
-        eprintln!("  ⚡ Downloading {} files in parallel...", needed.len());
+        if progress {
+            eprintln!("  ⚡ Downloading {} files in parallel...", needed.len());
+        }
         let total = needed.len();
         let completed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut handles = Vec::new();
         for (file, url) in needed {
             let path = dir.join(&file);
+            let progress = progress;
             let completed = completed.clone();
             handles.push(tokio::spawn(async move {
                 download_with_resume(&path, &url).await?;
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                eprintln!("  ✅ {file} [{done}/{total}]");
+                if progress {
+                    eprintln!("  ✅ {file} [{done}/{total}]");
+                }
                 Ok::<(), anyhow::Error>(())
             }));
         }
@@ -701,7 +747,9 @@ pub async fn download_model(model: &CatalogModel) -> Result<PathBuf> {
         download_with_resume(&path, &url).await?;
     }
 
-    eprintln!("✅ Downloaded {} to {}", model.name, dir.display());
+    if progress {
+        eprintln!("✅ Downloaded {} to {}", model.name, dir.display());
+    }
     Ok(dest)
 }
 
@@ -1004,7 +1052,7 @@ fn free_disk_space(path: &Path) -> Option<u64> {
         let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
         if ret == 0 {
             // f_bavail = blocks available to unprivileged users
-            Some(stat.f_bavail as u64 * stat.f_frsize as u64)
+            Some(stat.f_bavail as u64 * stat.f_frsize)
         } else {
             None
         }
@@ -1181,7 +1229,7 @@ mod tests {
         };
         let sidecars = mlx_sidecar_assets(&asset);
         assert_eq!(sidecars.len(), 4);
-        assert_eq!(sidecars[0].0, true);
+        assert!(sidecars[0].0);
         assert_eq!(sidecars[0].1.file, "tokenizer.json");
         assert!(sidecars
             .iter()

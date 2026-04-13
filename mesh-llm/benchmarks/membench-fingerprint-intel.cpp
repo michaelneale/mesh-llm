@@ -34,6 +34,18 @@ static double ratedBandwidthGBps(const sycl::device& dev) {
     }
 }
 
+static double computeTflopsFp32(const sycl::device& dev) {
+    try {
+        auto computeUnits = dev.get_info<sycl::info::device::max_compute_units>();
+        auto clockMhz     = dev.get_info<sycl::info::device::max_clock_frequency>();
+        if (computeUnits <= 0 || clockMhz <= 0) return -1.0;
+        // max_compute_units × 8 (cores per CU) × 2 (FMA) × clock_mhz / 1e6 → TFLOPS
+        return (double)computeUnits * 8.0 * 2.0 * (double)clockMhz / 1e6;
+    } catch (...) {
+        return -1.0;
+    }
+}
+
 static int cmpDouble(const void* a, const void* b) {
     double da = *(const double*)a, db = *(const double*)b;
     return (da > db) - (da < db);
@@ -68,6 +80,9 @@ int main(int argc, char** argv) {
         std::string deviceName = gpus[dev].get_info<sycl::info::device::name>();
         double ratedGBps       = ratedBandwidthGBps(gpus[dev]);
         bool   ratedEstimated  = (ratedGBps < 0);
+        double computeFp32     = computeTflopsFp32(gpus[dev]);
+        double computeFp16     = computeFp32 > 0 ? computeFp32 * 2.0 : -1.0;
+        bool   hasComputeTflops = (computeFp32 > 0);
 
         int elementCount = BUFFER_BYTES / sizeof(sycl::float4);
 
@@ -123,7 +138,12 @@ int main(int argc, char** argv) {
                    "\"noise_pct\":%.2f,"
                    "\"runtime_s\":%.3f,",
                    deviceName.c_str(), timedRuns,
-                   p50, p90, noisePct, runtimeSecs);
+            p50, p90, noisePct, runtimeSecs);
+
+            if (hasComputeTflops) {
+                printf("\"compute_tflops_fp32\":%.2f,\"compute_tflops_fp16\":%.2f,",
+                       computeFp32, computeFp16);
+            }
 
             if (ratedGBps > 0) {
                 double effPct = p90 / ratedGBps * 100.0;

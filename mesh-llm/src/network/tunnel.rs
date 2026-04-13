@@ -526,7 +526,7 @@ mod tests {
         // The key assertion: both tasks must complete (not abort/hang)
         let response_bytes = tokio::time::timeout(Duration::from_secs(5), async {
             // t2 (request direction) will finish first because quic_write was dropped
-            let _ = t2.await.unwrap();
+            t2.await.unwrap();
             // t1 (response direction) must NOT be aborted — it should complete
             t1.await.unwrap()
         })

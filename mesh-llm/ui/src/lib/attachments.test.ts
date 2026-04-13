@@ -47,18 +47,17 @@ describe("validateAttachmentFile", () => {
 });
 
 describe("getAttachmentSendIssue", () => {
-  it("returns selected-model mismatch errors", () => {
+  it("returns selected-model mismatch errors for audio", () => {
     expect(
       getAttachmentSendIssue({
         pendingKinds: new Set(["audio"]),
-        selectedModel: "vision-only",
-        warmModels: ["vision-only"],
-        visionModels: new Set(["vision-only"]),
+        selectedModel: "text-only",
+        warmModels: ["text-only"],
         audioModels: new Set<string>(),
-        multimodalModels: new Set(["vision-only"]),
+        multimodalModels: new Set<string>(),
       }),
     ).toBe(
-      "vision-only doesn't support audio. Choose an audio-capable model or remove the attachment.",
+      "text-only doesn't support audio. Choose an audio-capable model or remove the attachment.",
     );
   });
 
@@ -68,7 +67,6 @@ describe("getAttachmentSendIssue", () => {
         pendingKinds: new Set(["file"]),
         selectedModel: "auto",
         warmModels: ["text-only"],
-        visionModels: new Set<string>(),
         audioModels: new Set<string>(),
         multimodalModels: new Set<string>(),
       }),
@@ -77,15 +75,27 @@ describe("getAttachmentSendIssue", () => {
     );
   });
 
-  it("allows supported attachments", () => {
+  it("returns null when no media kinds need model support", () => {
+    // Images are handled in-browser, so pendingKinds should be empty.
     expect(
       getAttachmentSendIssue({
-        pendingKinds: new Set(["image", "file"]),
+        pendingKinds: new Set(),
         selectedModel: "auto",
-        warmModels: ["multi"],
-        visionModels: new Set(["multi"]),
+        warmModels: ["text-only"],
         audioModels: new Set<string>(),
-        multimodalModels: new Set(["multi"]),
+        multimodalModels: new Set<string>(),
+      }),
+    ).toBeNull();
+  });
+
+  it("allows supported audio attachments", () => {
+    expect(
+      getAttachmentSendIssue({
+        pendingKinds: new Set(["audio"]),
+        selectedModel: "auto",
+        warmModels: ["audio-model"],
+        audioModels: new Set(["audio-model"]),
+        multimodalModels: new Set<string>(),
       }),
     ).toBeNull();
   });

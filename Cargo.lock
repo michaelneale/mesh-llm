@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm"
-version = "0.59.0"
+version = "0.60.0-rc.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2734,10 +2734,12 @@ dependencies = [
  "rpassword",
  "rustls",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2753,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-plugin"
-version = "0.59.0"
+version = "0.60.0-rc.2"
 dependencies = [
  "anyhow",
  "async-trait",

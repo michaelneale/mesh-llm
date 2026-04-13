@@ -48,7 +48,7 @@ The current control plane prefers protocol `mesh-llm/1` with protobuf framing, w
 
 The management API exposes the state the UI uses directly:
 
-- `GET /api/status` for node, peer, and routing state
+- `GET /api/status` for node, peer, and routing state, including enriched `gpus[]` hardware entries with per-device VRAM, optional reserved bytes when the backend reports a true reserved/unavailable metric, memory bandwidth, and compute-throughput hints
 - `GET /api/events` for live updates
 - `GET /api/models` for mesh model inventory and `GET /api/runtime*` for loaded model/process state
 - `GET /api/discover` for mesh discovery results

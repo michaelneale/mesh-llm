@@ -61,4 +61,5 @@ pub(super) struct ApiInner {
     pub(super) inventory_scan_running: bool,
     pub(super) inventory_scan_waiters:
         Vec<tokio::sync::oneshot::Sender<crate::models::LocalModelInventorySnapshot>>,
+    pub(super) local_instances: Arc<Mutex<Vec<crate::runtime::instance::LocalInstanceSnapshot>>>,
 }

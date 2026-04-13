@@ -443,6 +443,15 @@ fn local_targets(entries: &[(&str, u16)]) -> election::ModelTargets {
     targets
 }
 
+fn unavailable_targets(models: &[&str]) -> election::ModelTargets {
+    let mut targets = election::ModelTargets::default();
+    targets.targets = models
+        .iter()
+        .map(|model| ((*model).to_string(), vec![election::InferenceTarget::None]))
+        .collect();
+    targets
+}
+
 fn single_model_targets(model: &str, ports: &[u16]) -> election::ModelTargets {
     let mut targets = election::ModelTargets::default();
     targets.targets.insert(
@@ -610,13 +619,17 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         available_models: vec![],
         requested_models: vec![],
         last_seen: std::time::Instant::now(),
+        last_mentioned: std::time::Instant::now(),
         moe_recovered_at: None,
         version: None,
         gpu_name: None,
         hostname: None,
         is_soc: None,
         gpu_vram: None,
-        gpu_bandwidth_gbps: None,
+        gpu_reserved_bytes: None,
+        gpu_mem_bandwidth_gbps: None,
+        gpu_compute_tflops_fp32: None,
+        gpu_compute_tflops_fp16: None,
         available_model_metadata: vec![],
         experts_summary: None,
         available_model_sizes: HashMap::new(),
@@ -800,6 +813,15 @@ async fn test_api_proxy_lists_registered_inference_models() {
     assert!(entries.iter().any(|entry| entry["id"] == "lemonade-test"));
 
     proxy_handle.abort();
+}
+
+#[test]
+fn test_callable_models_excludes_none_only_targets() {
+    let mut targets = local_targets(&[("ready-model", 1234)]);
+    targets
+        .targets
+        .extend(unavailable_targets(&["warming-model"]).targets);
+    assert_eq!(callable_models(&targets), vec!["ready-model".to_string()]);
 }
 
 #[tokio::test]

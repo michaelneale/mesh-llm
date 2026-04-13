@@ -3,6 +3,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::cli::benchmark::BenchmarkCommand;
+use crate::cli::moe::MoeCommand;
 use crate::cli::runtime::RuntimeCommand;
 use crate::crypto::TrustPolicy;
 
@@ -202,9 +203,20 @@ pub(crate) enum AuthCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub(crate) enum GpuCommand {
+    /// Force a fresh local GPU benchmark and rewrite the cached fingerprint.
+    Benchmark {
+        /// Print machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 pub(crate) mod benchmark;
 pub(crate) mod commands;
 pub mod models;
+pub(crate) mod moe;
 pub(crate) mod runtime;
 
 #[derive(Parser, Debug)]
@@ -399,11 +411,26 @@ pub(crate) enum Command {
         #[arg(long)]
         draft: bool,
     },
-    /// Update mesh-llm to the latest bundled release and exit.
-    Update,
+    /// Update mesh-llm to a bundled release and exit.
+    Update {
+        /// Install this specific release tag or version (e.g. v0.60.0 or 0.60.0-rc.1).
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Inspect local GPUs, stable IDs, and cached bandwidth.
     #[command(alias = "gpu")]
-    Gpus,
+    Gpus {
+        /// Print machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<GpuCommand>,
+    },
+    /// Plan, analyze, and contribute MoE expert rankings.
+    Moe {
+        #[command(subcommand)]
+        command: MoeCommand,
+    },
     /// Inspect and manage local runtime-served models.
     #[command(hide = true)]
     Runtime {
@@ -650,10 +677,7 @@ fn suggested_client_command(original_args: &[OsString]) -> String {
 }
 
 fn shell_join(args: &[OsString]) -> String {
-    args.iter()
-        .map(|arg| shell_display(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
+    args.iter().map(shell_display).collect::<Vec<_>>().join(" ")
 }
 
 fn shell_display(arg: &OsString) -> String {
@@ -797,5 +821,70 @@ mod tests {
 
         let rendered = err.to_string();
         assert!(rendered.contains("--owner-required"));
+    }
+
+    #[test]
+    fn gpus_command_parses_without_subcommand() {
+        let cli = Cli::parse_from(["mesh-llm", "gpus"]);
+
+        match cli.command.expect("gpu command expected") {
+            Command::Gpus { json, command } => {
+                assert!(!json);
+                assert!(command.is_none());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpu_alias_parses_without_subcommand() {
+        let cli = Cli::parse_from(["mesh-llm", "gpu"]);
+
+        match cli.command.expect("gpu command expected") {
+            Command::Gpus { json, command } => {
+                assert!(!json);
+                assert!(command.is_none());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpus_command_accepts_json_flag() {
+        let cli = Cli::parse_from(["mesh-llm", "gpus", "--json"]);
+
+        match cli.command.expect("gpu command expected") {
+            Command::Gpus { json, command } => {
+                assert!(json);
+                assert!(command.is_none());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpu_benchmark_subcommand_parses() {
+        let cli = Cli::parse_from(["mesh-llm", "gpu", "benchmark"]);
+
+        match cli.command.expect("gpu command expected") {
+            Command::Gpus {
+                json: false,
+                command: Some(GpuCommand::Benchmark { json: false }),
+            } => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpu_benchmark_subcommand_accepts_json_flag() {
+        let cli = Cli::parse_from(["mesh-llm", "gpu", "benchmark", "--json"]);
+
+        match cli.command.expect("gpu command expected") {
+            Command::Gpus {
+                json: false,
+                command: Some(GpuCommand::Benchmark { json: true }),
+            } => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

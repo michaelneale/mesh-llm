@@ -94,13 +94,26 @@ pub(crate) async fn run_discover(
 
 /// Drop a model from the mesh by sending a control request to the running instance.
 pub(crate) fn run_stop() -> Result<()> {
+    let root = match crate::runtime::instance::runtime_root() {
+        Ok(root) => root,
+        Err(_) => {
+            eprintln!("Nothing running.");
+            return Ok(());
+        }
+    };
+
     let mut killed = 0u32;
-    for name in &["llama-server", "rpc-server", "mesh-llm"] {
-        if launch::terminate_process_by_name(name) {
-            eprintln!("🧹 Stopped {name}");
+    for target in crate::runtime::instance::collect_runtime_stop_targets(&root)? {
+        if launch::terminate_process_blocking(
+            target.pid,
+            &target.expected_comm,
+            target.expected_start_time,
+        ) {
+            eprintln!("🧹 Stopped {}", target.label);
             killed += 1;
         }
     }
+
     if killed == 0 {
         eprintln!("Nothing running.");
     }

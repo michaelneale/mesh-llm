@@ -1,0 +1,117 @@
+# mesh-llm CUDA full-node image
+# Linux/amd64 ONLY (NVIDIA cuda:*-devel images are amd64-only).
+#
+# Build:  DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda -t mesh-llm:cuda .
+#         (optional) --build-arg CUDA_ARCH="75;80;86;89" for narrower compute list
+# Run (requires NVIDIA Container Toolkit):
+#         docker run --rm --gpus all -p 9337:9337 -v ~/.models:/root/.models -e APP_MODE=worker mesh-llm:cuda
+#
+# IMPORTANT: -DGGML_CUDA_FA_ALL_QUANTS=ON is mandatory for correctness.
+# See ggml-org/llama.cpp#20866. Do NOT remove until fork is rebased past the fix.
+#
+# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-cuda,llama-server-cuda,llama-moe-split}
+
+# syntax=docker/dockerfile:1.7
+
+FROM node:24-alpine AS ui-builder
+WORKDIR /app
+COPY mesh-llm/ui/package.json mesh-llm/ui/package-lock.json ./
+RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
+    npm ci
+COPY mesh-llm/ui/ ./
+RUN npm run build
+# Output: /app/dist
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS rust-deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:$PATH"
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    cargo install cargo-chef --version 0.1.68 --locked
+WORKDIR /src
+COPY Cargo.toml ./
+COPY Cargo.lock ./
+COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
+COPY mesh-llm/build.rs mesh-llm/build.rs
+COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
+COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
+COPY mesh-llm/proto/ mesh-llm/proto/
+COPY mesh-llm/src/ mesh-llm/src/
+COPY mesh-llm/plugin/src/ mesh-llm/plugin/src/
+RUN mkdir -p mesh-llm/ui/dist && echo '<html></html>' > mesh-llm/ui/dist/index.html
+RUN cargo chef prepare --recipe-path recipe.json
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo chef cook --release --locked --recipe-path recipe.json
+
+FROM rust-deps AS rust-builder
+WORKDIR /src
+RUN rm -rf mesh-llm/ui/dist
+COPY --from=ui-builder /app/dist mesh-llm/ui/dist
+# Restore real build scripts (cargo-chef stubs them during cook)
+COPY mesh-llm/build.rs mesh-llm/build.rs
+COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
+COPY mesh-llm/src/ mesh-llm/src/
+COPY mesh-llm/plugin/src/ mesh-llm/plugin/src/
+COPY mesh-llm/skills/ mesh-llm/skills/
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p mesh-llm && \
+    mkdir -p /out && \
+    cp /src/target/release/mesh-llm /out/mesh-llm
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS llama-builder-cuda
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake ninja-build build-essential git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git
+RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
+# CUDA cmake flags:
+# - GGML_CUDA_FA_ALL_QUANTS=ON is MANDATORY for correctness (not perf)
+#   See ggml-org/llama.cpp#20866 — without this, asymmetric K/V quant hits
+#   BEST_FATTN_KERNEL_NONE and crashes rpc-server.
+#   Remove this flag ONLY once the fork is rebased past the upstream fix.
+ARG CUDA_ARCH="75;80;86;89;90;120"
+RUN cd llama.cpp && \
+    cmake -B build -G Ninja \
+      -DGGML_RPC=ON \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DLLAMA_OPENSSL=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DGGML_CUDA=ON \
+      -DGGML_CUDA_FA_ALL_QUANTS=ON \
+      -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+      -DGGML_HIP=OFF \
+      -DGGML_VULKAN=OFF \
+      -DGGML_METAL=OFF \
+      -DGGML_NATIVE=OFF && \
+    grep -q "^GGML_CUDA_FA_ALL_QUANTS:BOOL=ON$" build/CMakeCache.txt || (echo "FAIL: GGML_CUDA_FA_ALL_QUANTS=ON did not take effect (see ggml-org/llama.cpp#20866)"; exit 1) && \
+    echo "OK: GGML_CUDA_FA_ALL_QUANTS:BOOL=ON verified in CMakeCache.txt" && \
+    cmake --build build --target rpc-server llama-server llama-moe-split && \
+    mkdir -p /out && \
+    cp build/bin/rpc-server /out/rpc-server-cuda && \
+    cp build/bin/llama-server /out/llama-server-cuda && \
+    cp build/bin/llama-moe-split /out/llama-moe-split
+
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgomp1 libdbus-1-3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
+COPY --from=llama-builder-cuda /out/rpc-server-cuda /usr/local/lib/mesh-llm/bin/rpc-server-cuda
+COPY --from=llama-builder-cuda /out/llama-server-cuda /usr/local/lib/mesh-llm/bin/llama-server-cuda
+COPY --from=llama-builder-cuda /out/llama-moe-split /usr/local/lib/mesh-llm/bin/llama-moe-split
+COPY --from=llama-builder-cuda /tmp/llama-sha.txt /usr/local/share/mesh-llm/llama-revision.txt
+LABEL io.mesh-llm.llama-revision-file="/usr/local/share/mesh-llm/llama-revision.txt"
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ARG CMD=console
+ENV APP_MODE=${CMD}
+EXPOSE 3131 9337
+ENTRYPOINT ["/entrypoint.sh"]

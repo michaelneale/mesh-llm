@@ -1,3 +1,4 @@
+use super::local::HuggingFaceModelIdentity;
 use super::ModelCapabilities;
 use super::{capabilities, catalog, find_model_path, format_size_bytes};
 use anyhow::{anyhow, bail, Context, Result};
@@ -63,9 +64,15 @@ pub fn find_catalog_model_exact(query: &str) -> Option<&'static catalog::Catalog
 }
 
 pub async fn download_exact_ref(input: &str) -> Result<PathBuf> {
+    download_exact_ref_with_progress(input, true).await
+}
+
+pub async fn download_exact_ref_with_progress(input: &str, progress: bool) -> Result<PathBuf> {
     let input = canonicalize_model_ref_input(input).await?;
     match parse_exact_model_ref(&input)? {
-        ExactModelRef::Catalog(model) => catalog::download_model(model).await,
+        ExactModelRef::Catalog(model) => {
+            catalog::download_model_with_progress(model, progress).await
+        }
         ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -75,25 +82,37 @@ pub async fn download_exact_ref(input: &str) -> Result<PathBuf> {
             if let Some(model) =
                 matching_catalog_primary_for_huggingface(&repo, revision.as_deref(), &file)
             {
-                return catalog::download_model(model).await;
+                return catalog::download_model_with_progress(model, progress).await;
             }
-            catalog::download_hf_repo_file(&repo, revision.as_deref(), &file).await
+            catalog::download_hf_repo_file_with_progress(
+                &repo,
+                revision.as_deref(),
+                &file,
+                progress,
+            )
+            .await
         }
         ExactModelRef::Url { url, filename } => {
             if let Some(model) = matching_catalog_primary_for_url(&url) {
-                return catalog::download_model(model).await;
+                return catalog::download_model_with_progress(model, progress).await;
             }
             let dest = catalog::models_dir().join(&filename);
             if existing_download(&dest).await {
                 return Ok(dest);
             }
-            eprintln!("📥 Downloading {}...", dest.display());
+            if progress {
+                eprintln!("📥 Downloading {}...", dest.display());
+            }
             catalog::download_hf_split_gguf(&url, &filename).await
         }
     }
 }
 
 pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
+    resolve_model_spec_with_progress(input, true).await
+}
+
+pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> Result<PathBuf> {
     let raw = input.to_string_lossy();
 
     if input.exists() {
@@ -107,11 +126,11 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
             return Ok(installed_path);
         }
         if let Some(entry) = catalog::find_model(&raw) {
-            return catalog::download_model(entry).await;
+            return catalog::download_model_with_progress(entry, progress).await;
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {
-                return download_exact_ref(&canonical)
+                return download_exact_ref_with_progress(&canonical, progress)
                     .await
                     .with_context(|| format!("Resolve model spec {raw}"));
             }
@@ -122,7 +141,7 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
         );
     }
 
-    download_exact_ref(&raw)
+    download_exact_ref_with_progress(&raw, progress)
         .await
         .with_context(|| format!("Resolve model spec {raw}"))
 }
@@ -221,6 +240,101 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                     .unwrap_or_default(),
                 moe: catalog.and_then(|model| model.moe.clone()),
             })
+        }
+    }
+}
+
+pub async fn resolve_huggingface_model_identity(
+    input: &str,
+) -> Result<Option<HuggingFaceModelIdentity>> {
+    let input = canonicalize_model_ref_input(input).await?;
+    match parse_exact_model_ref(&input)? {
+        ExactModelRef::Catalog(model) => {
+            let (Some(repo), revision, Some(file)) = (
+                model.source_repo(),
+                model.source_revision(),
+                model.source_file(),
+            ) else {
+                return Ok(None);
+            };
+            let revision = revision.unwrap_or("main");
+            let api = super::build_hf_tokio_api(false)?;
+            let detail = api
+                .repo(Repo::with_revision(
+                    repo.to_string(),
+                    RepoType::Model,
+                    revision.to_string(),
+                ))
+                .info()
+                .await
+                .with_context(|| format!("Fetch Hugging Face repo {repo}@{revision}"))?;
+            return Ok(Some(HuggingFaceModelIdentity {
+                repo_id: repo.to_string(),
+                revision: detail.sha.clone(),
+                file: file.to_string(),
+                canonical_ref: format!("{repo}@{}/{file}", detail.sha),
+                local_file_name: Path::new(file)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(file)
+                    .to_string(),
+            }));
+        }
+        ExactModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        } => {
+            let resolved_file = resolve_huggingface_file(&repo, revision.as_deref(), &file).await?;
+            let revision_ref = revision.as_deref().unwrap_or("main");
+            let api = super::build_hf_tokio_api(false)?;
+            let detail = api
+                .repo(Repo::with_revision(
+                    repo.clone(),
+                    RepoType::Model,
+                    revision_ref.to_string(),
+                ))
+                .info()
+                .await
+                .with_context(|| format!("Fetch Hugging Face repo {repo}@{revision_ref}"))?;
+            return Ok(Some(HuggingFaceModelIdentity {
+                repo_id: repo.clone(),
+                revision: detail.sha.clone(),
+                canonical_ref: format!("{}@{}/{}", repo, detail.sha, resolved_file),
+                local_file_name: Path::new(&resolved_file)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&resolved_file)
+                    .to_string(),
+                file: resolved_file,
+            }));
+        }
+        ExactModelRef::Url { url, .. } => {
+            if let Some((repo, revision, file)) = parse_hf_resolve_url(&url) {
+                let revision_ref = revision.as_deref().unwrap_or("main");
+                let api = super::build_hf_tokio_api(false)?;
+                let detail = api
+                    .repo(Repo::with_revision(
+                        repo.clone(),
+                        RepoType::Model,
+                        revision_ref.to_string(),
+                    ))
+                    .info()
+                    .await
+                    .with_context(|| format!("Fetch Hugging Face repo {repo}@{revision_ref}"))?;
+                return Ok(Some(HuggingFaceModelIdentity {
+                    repo_id: repo.clone(),
+                    revision: detail.sha.clone(),
+                    canonical_ref: format!("{}@{}/{}", repo, detail.sha, file),
+                    local_file_name: Path::new(&file)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(&file)
+                        .to_string(),
+                    file,
+                }));
+            }
+            Ok(None)
         }
     }
 }
@@ -529,498 +643,6 @@ fn matching_catalog_primary_for_url(url: &str) -> Option<&'static catalog::Catal
         Some(model)
     } else {
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::Deserialize;
-    use std::collections::HashMap;
-
-    #[derive(Debug, Deserialize)]
-    struct HfRepoFixture {
-        repo: String,
-        siblings: Vec<String>,
-        size_bytes: HashMap<String, u64>,
-    }
-
-    fn load_gemma_live_fixture() -> HfRepoFixture {
-        serde_json::from_str(include_str!(
-            "testdata/unsloth_gemma_4_31b_it_gguf.live.json"
-        ))
-        .expect("parse live Hugging Face fixture")
-    }
-
-    #[test]
-    fn primary_hf_ref_maps_to_full_catalog_download() {
-        let model = matching_catalog_primary_for_huggingface(
-            "unsloth/Qwen3.5-0.8B-GGUF",
-            Some("main"),
-            "Qwen3.5-0.8B-Q4_K_M.gguf",
-        )
-        .expect("primary model file should map to catalog download");
-        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
-        assert!(model.mmproj.is_some());
-    }
-
-    #[test]
-    fn mmproj_hf_ref_does_not_expand_to_full_catalog_download() {
-        assert!(matching_catalog_primary_for_huggingface(
-            "unsloth/Qwen3.5-0.8B-GGUF",
-            Some("main"),
-            "mmproj-BF16.gguf",
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn primary_url_maps_to_full_catalog_download() {
-        let model = matching_catalog_primary_for_url(
-            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
-        )
-        .expect("primary model url should map to catalog download");
-        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
-        assert!(model.mmproj.is_some());
-    }
-
-    #[test]
-    fn mmproj_url_does_not_expand_to_full_catalog_download() {
-        assert!(matching_catalog_primary_for_url(
-            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf",
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn split_stem_resolves_to_first_part() {
-        let siblings = vec![
-            "zai-org.GLM-5.1.Q2_K-00002-of-00018.gguf".to_string(),
-            "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("zai-org.GLM-5.1.Q2_K", &siblings).unwrap();
-        assert_eq!(resolved, "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf");
-    }
-
-    #[test]
-    fn stem_without_split_resolves_to_gguf() {
-        let siblings = vec![
-            "Qwen3-8B-Q4_K_M.gguf".to_string(),
-            "Qwen3-8B-Q8_0.gguf".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("Qwen3-8B-Q4_K_M", &siblings).unwrap();
-        assert_eq!(resolved, "Qwen3-8B-Q4_K_M.gguf");
-    }
-
-    #[test]
-    fn mlx_stem_resolves_to_model_safetensors() {
-        let siblings = vec![
-            "model.safetensors.index.json".to_string(),
-            "model.safetensors".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("model", &siblings).unwrap();
-        assert_eq!(resolved, "model.safetensors");
-    }
-
-    #[test]
-    fn mlx_stem_resolves_to_first_split_shard() {
-        let siblings = vec![
-            "model-00002-of-00048.safetensors".to_string(),
-            "model-00001-of-00048.safetensors".to_string(),
-            "model.safetensors.index.json".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("model", &siblings).unwrap();
-        assert_eq!(resolved, "model-00001-of-00048.safetensors");
-    }
-
-    #[test]
-    fn repo_only_resolution_prefers_mlx_model_safetensors() {
-        let siblings = vec![
-            "Qwen3-8B-Q4_K_M.gguf".to_string(),
-            "model.safetensors".to_string(),
-            "model.safetensors.index.json".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("", &siblings).unwrap();
-        assert_eq!(resolved, "model.safetensors");
-    }
-
-    #[test]
-    fn repo_only_resolution_falls_back_to_gguf_when_no_mlx_weights() {
-        let siblings = vec![
-            "Qwen3-8B-Q8_0.gguf".to_string(),
-            "Qwen3-8B-Q4_K_M.gguf".to_string(),
-        ];
-        let resolved = resolve_hf_file_from_siblings("", &siblings).unwrap();
-        assert_eq!(resolved, "Qwen3-8B-Q4_K_M.gguf");
-    }
-
-    #[test]
-    fn parse_huggingface_ref_rejects_http_url() {
-        assert!(parse_huggingface_ref("https://example.com/model.gguf").is_none());
-    }
-
-    #[test]
-    fn parse_huggingface_repo_ref_parses_repo_only() {
-        let parsed = parse_huggingface_repo_ref("GreenBitAI/Llama-2-7B-layer-mix-bpw-2.2-mlx");
-        assert_eq!(
-            parsed,
-            Some((
-                "GreenBitAI/Llama-2-7B-layer-mix-bpw-2.2-mlx".to_string(),
-                None,
-                None
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_huggingface_repo_ref_parses_quant_selector() {
-        let parsed = parse_huggingface_repo_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
-        assert_eq!(
-            parsed,
-            Some((
-                "unsloth/gemma-4-31B-it-GGUF".to_string(),
-                None,
-                Some("UD-Q4_K_XL".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn parse_huggingface_repo_url_parses_repo_only() {
-        let parsed =
-            parse_huggingface_repo_url("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF");
-        assert_eq!(
-            parsed,
-            Some(("unsloth/gemma-4-31B-it-GGUF".to_string(), None, None))
-        );
-    }
-
-    #[test]
-    fn parse_huggingface_repo_url_parses_tree_revision() {
-        let parsed = parse_huggingface_repo_url(
-            "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/tree/main",
-        );
-        assert_eq!(
-            parsed,
-            Some((
-                "unsloth/gemma-4-31B-it-GGUF".to_string(),
-                Some("main".to_string()),
-                None
-            ))
-        );
-    }
-
-    #[test]
-    fn quant_selector_resolves_to_first_matching_split_gguf() {
-        let fixture = load_gemma_live_fixture();
-        let resolved = resolve_hf_file_from_siblings("UD-Q4_K_XL", &fixture.siblings).unwrap();
-        assert_eq!(resolved, "gemma-4-31B-it-UD-Q4_K_XL.gguf");
-    }
-
-    #[test]
-    fn fit_aware_gguf_prefers_largest_comfortable_candidate() {
-        let available = 20_000_000_000u64;
-        let ordering = compare_gguf_candidates_by_fit(
-            "repo/model-q4.gguf",
-            Some(12_000_000_000),
-            "repo/model-q5.gguf",
-            Some(17_000_000_000),
-            available,
-        );
-        assert_eq!(ordering, Ordering::Greater);
-    }
-
-    #[test]
-    fn fit_aware_gguf_prefers_smaller_when_both_too_large() {
-        let available = 20_000_000_000u64;
-        let ordering = compare_gguf_candidates_by_fit(
-            "repo/model-q8.gguf",
-            Some(29_000_000_000),
-            "repo/model-bf16.gguf",
-            Some(35_000_000_000),
-            available,
-        );
-        assert_eq!(ordering, Ordering::Less);
-    }
-
-    #[test]
-    fn gemma_repo_default_prefers_q4_over_bf16_at_local_fit_budget() {
-        // Uses captured live HF artifact sizes from the fixture:
-        // at ~19.3GB available, prefer Q4_0 over BF16.
-        let fixture = load_gemma_live_fixture();
-        let q4 = fixture
-            .size_bytes
-            .get("gemma-4-31B-it-Q4_0.gguf")
-            .copied()
-            .expect("fixture Q4_0 size");
-        let bf16 = fixture
-            .size_bytes
-            .get("BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf")
-            .copied()
-            .expect("fixture BF16 size");
-        let available = 19_300_000_000u64;
-        let ordering = compare_gguf_candidates_by_fit(
-            "unsloth/gemma-4-31B-it-GGUF/gemma-4-31B-it-Q4_0.gguf",
-            Some(q4),
-            "unsloth/gemma-4-31B-it-GGUF/BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf",
-            Some(bf16),
-            available,
-        );
-        assert_eq!(ordering, Ordering::Less);
-    }
-
-    #[test]
-    fn repo_name_can_signal_gguf_intent() {
-        assert!(repo_prefers_gguf_only("unsloth/gemma-4-31B-it-GGUF"));
-        assert!(!repo_prefers_gguf_only(
-            "mlx-community/Llama-3.2-3B-Instruct-4bit"
-        ));
-    }
-
-    #[test]
-    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_ref() {
-        let parsed = parse_exact_model_ref("unsloth/gemma-4-31B-it-GGUF").unwrap();
-        match parsed {
-            ExactModelRef::HuggingFace {
-                repo,
-                revision,
-                file,
-            } => {
-                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
-                assert_eq!(revision, None);
-                assert_eq!(file, "");
-            }
-            other => panic!("expected HuggingFace repo ref, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_url() {
-        let parsed =
-            parse_exact_model_ref("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF").unwrap();
-        match parsed {
-            ExactModelRef::HuggingFace {
-                repo,
-                revision,
-                file,
-            } => {
-                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
-                assert_eq!(revision, None);
-                assert_eq!(file, "");
-            }
-            other => panic!("expected HuggingFace repo ref from URL, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_exact_model_ref_accepts_unsloth_gemma_quant_selector() {
-        let parsed = parse_exact_model_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL").unwrap();
-        match parsed {
-            ExactModelRef::HuggingFace {
-                repo,
-                revision,
-                file,
-            } => {
-                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
-                assert_eq!(revision, None);
-                assert_eq!(file, "UD-Q4_K_XL");
-            }
-            other => panic!("expected HuggingFace quant selector ref, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn simulated_name_and_repo_quant_inputs_converge_to_same_ref() {
-        // Replay two user inputs against captured live siblings:
-        // 1) gemma-4-31B-it-GGUF:UD-Q4_K_XL (after repo discovery)
-        // 2) unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
-        let fixture = load_gemma_live_fixture();
-        let discovered_repo = fixture.repo.as_str();
-        let selector = "UD-Q4_K_XL";
-
-        let from_name = format!(
-            "{}/{}",
-            discovered_repo,
-            resolve_hf_file_from_siblings(selector, &fixture.siblings).unwrap()
-        );
-        let from_repo = format!(
-            "{}/{}",
-            discovered_repo,
-            resolve_hf_file_from_siblings(selector, &fixture.siblings).unwrap()
-        );
-
-        assert_eq!(
-            from_name,
-            "unsloth/gemma-4-31B-it-GGUF/gemma-4-31B-it-UD-Q4_K_XL.gguf"
-        );
-        assert_eq!(from_name, from_repo);
-    }
-
-    #[test]
-    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_url_with_quant_selector() {
-        let parsed =
-            parse_exact_model_ref("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL")
-                .unwrap();
-        match parsed {
-            ExactModelRef::HuggingFace {
-                repo,
-                revision,
-                file,
-            } => {
-                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
-                assert_eq!(revision, None);
-                assert_eq!(file, "UD-Q4_K_XL");
-            }
-            other => panic!("expected HuggingFace repo URL quant selector ref, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn split_bare_name_selector_supports_name_quant_shorthand() {
-        assert_eq!(
-            split_bare_name_selector("gemma-4-31B-it-GGUF:UD-Q4_K_XL"),
-            ("gemma-4-31B-it-GGUF", Some("UD-Q4_K_XL"))
-        );
-        assert_eq!(
-            split_bare_name_selector("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"),
-            ("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", None)
-        );
-    }
-
-    #[test]
-    fn select_strong_repo_hit_prefers_exact_leaf_name() {
-        let repos = vec![
-            "ggml-org/gemma-4-31B-it-GGUF".to_string(),
-            "unsloth/gemma-4-31B-it-GGUF".to_string(),
-            "bartowski/google_gemma-4-31B-it-GGUF".to_string(),
-        ];
-        let picked = select_strong_repo_hit("gemma-4-31B-it-GGUF", &repos);
-        assert_eq!(picked, Some("ggml-org/gemma-4-31B-it-GGUF".to_string()));
-    }
-
-    #[test]
-    fn bare_name_quant_can_be_formatted_with_discovered_repo() {
-        let (name, selector) = split_bare_name_selector("gemma-4-31B-it-GGUF:UD-Q4_K_XL");
-        assert_eq!(name, "gemma-4-31B-it-GGUF");
-        let selector = selector.expect("selector");
-        let canonical = format!("{}:{}", "unsloth/gemma-4-31B-it-GGUF", selector);
-        assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
-    }
-
-    #[test]
-    fn quant_selector_from_gguf_file_extracts_expected_forms() {
-        assert_eq!(
-            quant_selector_from_gguf_file("gemma-4-31B-it-UD-Q4_K_XL.gguf"),
-            Some("UD-Q4_K_XL".to_string())
-        );
-        assert_eq!(
-            quant_selector_from_gguf_file("BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf"),
-            Some("BF16".to_string())
-        );
-        assert_eq!(
-            quant_selector_from_gguf_file("gemma-4-31B-it-Q4_0.gguf"),
-            Some("Q4_0".to_string())
-        );
-    }
-
-    #[test]
-    fn format_huggingface_display_ref_prefers_selector_form_for_gguf() {
-        assert_eq!(
-            format_huggingface_display_ref(
-                "unsloth/gemma-4-31B-it-GGUF",
-                None,
-                "gemma-4-31B-it-UD-Q4_K_XL.gguf"
-            ),
-            "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
-        );
-    }
-
-    #[test]
-    fn format_huggingface_display_ref_prefers_repo_form_for_mlx() {
-        assert_eq!(
-            format_huggingface_display_ref(
-                "mlx-community/SmolLM-135M-8bit",
-                None,
-                "model.safetensors"
-            ),
-            "mlx-community/SmolLM-135M-8bit"
-        );
-        assert_eq!(
-            format_huggingface_display_ref(
-                "avlp12/GLM-5.1-Alis-MLX-Dynamic-2.7bpw",
-                None,
-                "model-00001-of-00010.safetensors"
-            ),
-            "avlp12/GLM-5.1-Alis-MLX-Dynamic-2.7bpw"
-        );
-    }
-
-    #[test]
-    fn parse_exact_model_ref_accepts_legacy_mlx_model_path_shape() {
-        let parsed = parse_exact_model_ref("mlx-community/SmolLM-135M-8bit/model").unwrap();
-        match parsed {
-            ExactModelRef::HuggingFace {
-                repo,
-                revision,
-                file,
-            } => {
-                assert_eq!(repo, "mlx-community/SmolLM-135M-8bit");
-                assert_eq!(revision, None);
-                assert_eq!(file, "model");
-            }
-            _ => panic!("expected HuggingFace ref"),
-        }
-    }
-
-    #[test]
-    fn collect_show_gguf_variants_excludes_mmproj_and_nonfirst_split() {
-        let siblings = vec![
-            ("mmproj-BF16.gguf".to_string(), Some(1_200_000_000)),
-            (
-                "gemma-4-26B-A4B-it-UD-Q3_K_S-00002-of-00009.gguf".to_string(),
-                Some(12_500_000_000),
-            ),
-            (
-                "gemma-4-26B-A4B-it-UD-Q3_K_S-00001-of-00009.gguf".to_string(),
-                Some(12_500_000_000),
-            ),
-            (
-                "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf".to_string(),
-                Some(16_900_000_000),
-            ),
-        ];
-        let files: Vec<_> = collect_show_gguf_variants_from_siblings(&siblings, 0)
-            .into_iter()
-            .map(|(file, _)| file)
-            .collect();
-        assert_eq!(
-            files,
-            vec![
-                "gemma-4-26B-A4B-it-UD-Q3_K_S-00001-of-00009.gguf".to_string(),
-                "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn collect_show_gguf_variants_orders_by_fit_when_memory_known() {
-        let siblings = vec![
-            ("model-UD-Q5_K_M.gguf".to_string(), Some(21_200_000_000)),
-            ("model-UD-Q4_K_M.gguf".to_string(), Some(16_900_000_000)),
-            ("model-UD-Q3_K_S.gguf".to_string(), Some(12_500_000_000)),
-        ];
-        let files: Vec<_> = collect_show_gguf_variants_from_siblings(&siblings, 19_300_000_000)
-            .into_iter()
-            .map(|(file, _)| file)
-            .collect();
-        assert_eq!(
-            files,
-            vec![
-                "model-UD-Q4_K_M.gguf".to_string(),
-                "model-UD-Q3_K_S.gguf".to_string(),
-                "model-UD-Q5_K_M.gguf".to_string(),
-            ]
-        );
     }
 }
 
@@ -1656,4 +1278,496 @@ pub(super) async fn remote_hf_size_label_with_api(
 ) -> Option<String> {
     let url = huggingface_resolve_url(repo, revision, file);
     remote_size_label(&url).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Deserialize)]
+    struct HfRepoFixture {
+        repo: String,
+        siblings: Vec<String>,
+        size_bytes: HashMap<String, u64>,
+    }
+
+    fn load_gemma_live_fixture() -> HfRepoFixture {
+        serde_json::from_str(include_str!(
+            "testdata/unsloth_gemma_4_31b_it_gguf.live.json"
+        ))
+        .expect("parse live Hugging Face fixture")
+    }
+
+    #[test]
+    fn primary_hf_ref_maps_to_full_catalog_download() {
+        let model = matching_catalog_primary_for_huggingface(
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            Some("main"),
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+        )
+        .expect("primary model file should map to catalog download");
+        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
+        assert!(model.mmproj.is_some());
+    }
+
+    #[test]
+    fn mmproj_hf_ref_does_not_expand_to_full_catalog_download() {
+        assert!(matching_catalog_primary_for_huggingface(
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            Some("main"),
+            "mmproj-BF16.gguf",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn primary_url_maps_to_full_catalog_download() {
+        let model = matching_catalog_primary_for_url(
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf",
+        )
+        .expect("primary model url should map to catalog download");
+        assert_eq!(model.name, "Qwen3.5-0.8B-Vision-Q4_K_M");
+        assert!(model.mmproj.is_some());
+    }
+
+    #[test]
+    fn mmproj_url_does_not_expand_to_full_catalog_download() {
+        assert!(matching_catalog_primary_for_url(
+            "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-BF16.gguf",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn split_stem_resolves_to_first_part() {
+        let siblings = vec![
+            "zai-org.GLM-5.1.Q2_K-00002-of-00018.gguf".to_string(),
+            "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("zai-org.GLM-5.1.Q2_K", &siblings).unwrap();
+        assert_eq!(resolved, "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf");
+    }
+
+    #[test]
+    fn stem_without_split_resolves_to_gguf() {
+        let siblings = vec![
+            "Qwen3-8B-Q4_K_M.gguf".to_string(),
+            "Qwen3-8B-Q8_0.gguf".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("Qwen3-8B-Q4_K_M", &siblings).unwrap();
+        assert_eq!(resolved, "Qwen3-8B-Q4_K_M.gguf");
+    }
+
+    #[test]
+    fn mlx_stem_resolves_to_model_safetensors() {
+        let siblings = vec![
+            "model.safetensors.index.json".to_string(),
+            "model.safetensors".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("model", &siblings).unwrap();
+        assert_eq!(resolved, "model.safetensors");
+    }
+
+    #[test]
+    fn mlx_stem_resolves_to_first_split_shard() {
+        let siblings = vec![
+            "model-00002-of-00048.safetensors".to_string(),
+            "model-00001-of-00048.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("model", &siblings).unwrap();
+        assert_eq!(resolved, "model-00001-of-00048.safetensors");
+    }
+
+    #[test]
+    fn repo_only_resolution_prefers_mlx_model_safetensors() {
+        let siblings = vec![
+            "Qwen3-8B-Q4_K_M.gguf".to_string(),
+            "model.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("", &siblings).unwrap();
+        assert_eq!(resolved, "model.safetensors");
+    }
+
+    #[test]
+    fn repo_only_resolution_falls_back_to_gguf_when_no_mlx_weights() {
+        let siblings = vec![
+            "Qwen3-8B-Q8_0.gguf".to_string(),
+            "Qwen3-8B-Q4_K_M.gguf".to_string(),
+        ];
+        let resolved = resolve_hf_file_from_siblings("", &siblings).unwrap();
+        assert_eq!(resolved, "Qwen3-8B-Q4_K_M.gguf");
+    }
+
+    #[test]
+    fn parse_huggingface_ref_rejects_http_url() {
+        assert!(parse_huggingface_ref("https://example.com/model.gguf").is_none());
+    }
+
+    #[test]
+    fn parse_huggingface_repo_ref_parses_repo_only() {
+        let parsed = parse_huggingface_repo_ref("GreenBitAI/Llama-2-7B-layer-mix-bpw-2.2-mlx");
+        assert_eq!(
+            parsed,
+            Some((
+                "GreenBitAI/Llama-2-7B-layer-mix-bpw-2.2-mlx".to_string(),
+                None,
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_huggingface_repo_ref_parses_quant_selector() {
+        let parsed = parse_huggingface_repo_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
+        assert_eq!(
+            parsed,
+            Some((
+                "unsloth/gemma-4-31B-it-GGUF".to_string(),
+                None,
+                Some("UD-Q4_K_XL".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_huggingface_repo_url_parses_repo_only() {
+        let parsed =
+            parse_huggingface_repo_url("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF");
+        assert_eq!(
+            parsed,
+            Some(("unsloth/gemma-4-31B-it-GGUF".to_string(), None, None))
+        );
+    }
+
+    #[test]
+    fn parse_huggingface_repo_url_parses_tree_revision() {
+        let parsed = parse_huggingface_repo_url(
+            "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/tree/main",
+        );
+        assert_eq!(
+            parsed,
+            Some((
+                "unsloth/gemma-4-31B-it-GGUF".to_string(),
+                Some("main".to_string()),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn quant_selector_resolves_to_first_matching_split_gguf() {
+        let fixture = load_gemma_live_fixture();
+        let resolved = resolve_hf_file_from_siblings("UD-Q4_K_XL", &fixture.siblings).unwrap();
+        assert_eq!(resolved, "gemma-4-31B-it-UD-Q4_K_XL.gguf");
+    }
+
+    #[test]
+    fn fit_aware_gguf_prefers_largest_comfortable_candidate() {
+        let available = 20_000_000_000u64;
+        let ordering = compare_gguf_candidates_by_fit(
+            "repo/model-q4.gguf",
+            Some(12_000_000_000),
+            "repo/model-q5.gguf",
+            Some(17_000_000_000),
+            available,
+        );
+        assert_eq!(ordering, Ordering::Greater);
+    }
+
+    #[test]
+    fn fit_aware_gguf_prefers_smaller_when_both_too_large() {
+        let available = 20_000_000_000u64;
+        let ordering = compare_gguf_candidates_by_fit(
+            "repo/model-q8.gguf",
+            Some(29_000_000_000),
+            "repo/model-bf16.gguf",
+            Some(35_000_000_000),
+            available,
+        );
+        assert_eq!(ordering, Ordering::Less);
+    }
+
+    #[test]
+    fn gemma_repo_default_prefers_q4_over_bf16_at_local_fit_budget() {
+        // Uses captured live HF artifact sizes from the fixture:
+        // at ~19.3GB available, prefer Q4_0 over BF16.
+        let fixture = load_gemma_live_fixture();
+        let q4 = fixture
+            .size_bytes
+            .get("gemma-4-31B-it-Q4_0.gguf")
+            .copied()
+            .expect("fixture Q4_0 size");
+        let bf16 = fixture
+            .size_bytes
+            .get("BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf")
+            .copied()
+            .expect("fixture BF16 size");
+        let available = 19_300_000_000u64;
+        let ordering = compare_gguf_candidates_by_fit(
+            "unsloth/gemma-4-31B-it-GGUF/gemma-4-31B-it-Q4_0.gguf",
+            Some(q4),
+            "unsloth/gemma-4-31B-it-GGUF/BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf",
+            Some(bf16),
+            available,
+        );
+        assert_eq!(ordering, Ordering::Less);
+    }
+
+    #[test]
+    fn repo_name_can_signal_gguf_intent() {
+        assert!(repo_prefers_gguf_only("unsloth/gemma-4-31B-it-GGUF"));
+        assert!(!repo_prefers_gguf_only(
+            "mlx-community/Llama-3.2-3B-Instruct-4bit"
+        ));
+    }
+
+    #[test]
+    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_ref() {
+        let parsed = parse_exact_model_ref("unsloth/gemma-4-31B-it-GGUF").unwrap();
+        match parsed {
+            ExactModelRef::HuggingFace {
+                repo,
+                revision,
+                file,
+            } => {
+                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
+                assert_eq!(revision, None);
+                assert_eq!(file, "");
+            }
+            other => panic!("expected HuggingFace repo ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_url() {
+        let parsed =
+            parse_exact_model_ref("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF").unwrap();
+        match parsed {
+            ExactModelRef::HuggingFace {
+                repo,
+                revision,
+                file,
+            } => {
+                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
+                assert_eq!(revision, None);
+                assert_eq!(file, "");
+            }
+            other => panic!("expected HuggingFace repo ref from URL, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_exact_model_ref_accepts_unsloth_gemma_quant_selector() {
+        let parsed = parse_exact_model_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL").unwrap();
+        match parsed {
+            ExactModelRef::HuggingFace {
+                repo,
+                revision,
+                file,
+            } => {
+                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
+                assert_eq!(revision, None);
+                assert_eq!(file, "UD-Q4_K_XL");
+            }
+            other => panic!("expected HuggingFace quant selector ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn simulated_name_and_repo_quant_inputs_converge_to_same_ref() {
+        // Replay two user inputs against captured live siblings:
+        // 1) gemma-4-31B-it-GGUF:UD-Q4_K_XL (after repo discovery)
+        // 2) unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL
+        let fixture = load_gemma_live_fixture();
+        let discovered_repo = fixture.repo.as_str();
+        let selector = "UD-Q4_K_XL";
+
+        let from_name = format!(
+            "{}/{}",
+            discovered_repo,
+            resolve_hf_file_from_siblings(selector, &fixture.siblings).unwrap()
+        );
+        let from_repo = format!(
+            "{}/{}",
+            discovered_repo,
+            resolve_hf_file_from_siblings(selector, &fixture.siblings).unwrap()
+        );
+
+        assert_eq!(
+            from_name,
+            "unsloth/gemma-4-31B-it-GGUF/gemma-4-31B-it-UD-Q4_K_XL.gguf"
+        );
+        assert_eq!(from_name, from_repo);
+    }
+
+    #[test]
+    fn parse_exact_model_ref_accepts_unsloth_gemma_repo_url_with_quant_selector() {
+        let parsed =
+            parse_exact_model_ref("https://huggingface.co/unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL")
+                .unwrap();
+        match parsed {
+            ExactModelRef::HuggingFace {
+                repo,
+                revision,
+                file,
+            } => {
+                assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
+                assert_eq!(revision, None);
+                assert_eq!(file, "UD-Q4_K_XL");
+            }
+            other => panic!("expected HuggingFace repo URL quant selector ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn split_bare_name_selector_supports_name_quant_shorthand() {
+        assert_eq!(
+            split_bare_name_selector("gemma-4-31B-it-GGUF:UD-Q4_K_XL"),
+            ("gemma-4-31B-it-GGUF", Some("UD-Q4_K_XL"))
+        );
+        assert_eq!(
+            split_bare_name_selector("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"),
+            ("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL", None)
+        );
+    }
+
+    #[test]
+    fn select_strong_repo_hit_prefers_exact_leaf_name() {
+        let repos = vec![
+            "ggml-org/gemma-4-31B-it-GGUF".to_string(),
+            "unsloth/gemma-4-31B-it-GGUF".to_string(),
+            "bartowski/google_gemma-4-31B-it-GGUF".to_string(),
+        ];
+        let picked = select_strong_repo_hit("gemma-4-31B-it-GGUF", &repos);
+        assert_eq!(picked, Some("ggml-org/gemma-4-31B-it-GGUF".to_string()));
+    }
+
+    #[test]
+    fn bare_name_quant_can_be_formatted_with_discovered_repo() {
+        let (name, selector) = split_bare_name_selector("gemma-4-31B-it-GGUF:UD-Q4_K_XL");
+        assert_eq!(name, "gemma-4-31B-it-GGUF");
+        let selector = selector.expect("selector");
+        let canonical = format!("{}:{}", "unsloth/gemma-4-31B-it-GGUF", selector);
+        assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
+    }
+
+    #[test]
+    fn quant_selector_from_gguf_file_extracts_expected_forms() {
+        assert_eq!(
+            quant_selector_from_gguf_file("gemma-4-31B-it-UD-Q4_K_XL.gguf"),
+            Some("UD-Q4_K_XL".to_string())
+        );
+        assert_eq!(
+            quant_selector_from_gguf_file("BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf"),
+            Some("BF16".to_string())
+        );
+        assert_eq!(
+            quant_selector_from_gguf_file("gemma-4-31B-it-Q4_0.gguf"),
+            Some("Q4_0".to_string())
+        );
+    }
+
+    #[test]
+    fn format_huggingface_display_ref_prefers_selector_form_for_gguf() {
+        assert_eq!(
+            format_huggingface_display_ref(
+                "unsloth/gemma-4-31B-it-GGUF",
+                None,
+                "gemma-4-31B-it-UD-Q4_K_XL.gguf"
+            ),
+            "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL"
+        );
+    }
+
+    #[test]
+    fn format_huggingface_display_ref_prefers_repo_form_for_mlx() {
+        assert_eq!(
+            format_huggingface_display_ref(
+                "mlx-community/SmolLM-135M-8bit",
+                None,
+                "model.safetensors"
+            ),
+            "mlx-community/SmolLM-135M-8bit"
+        );
+        assert_eq!(
+            format_huggingface_display_ref(
+                "avlp12/GLM-5.1-Alis-MLX-Dynamic-2.7bpw",
+                None,
+                "model-00001-of-00010.safetensors"
+            ),
+            "avlp12/GLM-5.1-Alis-MLX-Dynamic-2.7bpw"
+        );
+    }
+
+    #[test]
+    fn parse_exact_model_ref_accepts_legacy_mlx_model_path_shape() {
+        let parsed = parse_exact_model_ref("mlx-community/SmolLM-135M-8bit/model").unwrap();
+        match parsed {
+            ExactModelRef::HuggingFace {
+                repo,
+                revision,
+                file,
+            } => {
+                assert_eq!(repo, "mlx-community/SmolLM-135M-8bit");
+                assert_eq!(revision, None);
+                assert_eq!(file, "model");
+            }
+            _ => panic!("expected HuggingFace ref"),
+        }
+    }
+
+    #[test]
+    fn collect_show_gguf_variants_excludes_mmproj_and_nonfirst_split() {
+        let siblings = vec![
+            ("mmproj-BF16.gguf".to_string(), Some(1_200_000_000)),
+            (
+                "gemma-4-26B-A4B-it-UD-Q3_K_S-00002-of-00009.gguf".to_string(),
+                Some(12_500_000_000),
+            ),
+            (
+                "gemma-4-26B-A4B-it-UD-Q3_K_S-00001-of-00009.gguf".to_string(),
+                Some(12_500_000_000),
+            ),
+            (
+                "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf".to_string(),
+                Some(16_900_000_000),
+            ),
+        ];
+        let files: Vec<_> = collect_show_gguf_variants_from_siblings(&siblings, 0)
+            .into_iter()
+            .map(|(file, _)| file)
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                "gemma-4-26B-A4B-it-UD-Q3_K_S-00001-of-00009.gguf".to_string(),
+                "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_show_gguf_variants_orders_by_fit_when_memory_known() {
+        let siblings = vec![
+            ("model-UD-Q5_K_M.gguf".to_string(), Some(21_200_000_000)),
+            ("model-UD-Q4_K_M.gguf".to_string(), Some(16_900_000_000)),
+            ("model-UD-Q3_K_S.gguf".to_string(), Some(12_500_000_000)),
+        ];
+        let files: Vec<_> = collect_show_gguf_variants_from_siblings(&siblings, 19_300_000_000)
+            .into_iter()
+            .map(|(file, _)| file)
+            .collect();
+        assert_eq!(
+            files,
+            vec![
+                "model-UD-Q4_K_M.gguf".to_string(),
+                "model-UD-Q3_K_S.gguf".to_string(),
+                "model-UD-Q5_K_M.gguf".to_string(),
+            ]
+        );
+    }
 }

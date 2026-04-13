@@ -146,7 +146,7 @@ pub async fn bind_side_stream(plugin_id: &str, stream_id: &str) -> Result<LocalL
         }
         let listener = tokio::net::UnixListener::bind(&path)
             .with_context(|| format!("Failed to bind side stream socket {}", path.display()))?;
-        return Ok(LocalListener::Unix(listener, path));
+        Ok(LocalListener::Unix(listener, path))
     }
     #[cfg(windows)]
     {

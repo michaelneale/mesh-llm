@@ -13,6 +13,7 @@ use crate::system::hardware;
 use launch::{BinaryFlavor, SplitMode};
 use mesh::NodeRole;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -104,6 +105,100 @@ pub fn should_be_host_for_model(
         }
     }
     true
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DenseLaunchPlan {
+    Solo,
+    Split {
+        worker_ids: Vec<iroh::EndpointId>,
+        total_group_vram: u64,
+    },
+    WaitingForCapacity {
+        worker_ids: Vec<iroh::EndpointId>,
+        total_group_vram: u64,
+        min_vram: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DenseRunningPlan {
+    Solo,
+    Split { worker_ids: Vec<iroh::EndpointId> },
+}
+
+impl DenseLaunchPlan {
+    fn running_plan(&self) -> Option<DenseRunningPlan> {
+        match self {
+            DenseLaunchPlan::Solo => Some(DenseRunningPlan::Solo),
+            DenseLaunchPlan::Split { worker_ids, .. } => Some(DenseRunningPlan::Split {
+                worker_ids: worker_ids.clone(),
+            }),
+            DenseLaunchPlan::WaitingForCapacity { .. } => None,
+        }
+    }
+}
+
+fn split_peer_vram_bytes(peer: &mesh::PeerInfo, my_vram: u64) -> u64 {
+    if peer.vram_bytes > 0 {
+        peer.vram_bytes
+    } else {
+        my_vram
+    }
+}
+
+fn build_dense_launch_plan(
+    my_vram: u64,
+    model_bytes: u64,
+    force_split: bool,
+    model_name: &str,
+    model_peers: &[mesh::PeerInfo],
+) -> DenseLaunchPlan {
+    let min_vram = (model_bytes as f64 * 1.1) as u64;
+    if !force_split && my_vram >= min_vram {
+        return DenseLaunchPlan::Solo;
+    }
+
+    let mut candidates: Vec<_> = model_peers
+        .iter()
+        .filter(|p| matches!(p.role, NodeRole::Worker) || p.is_assigned_model(model_name))
+        .filter(|p| !matches!(p.role, NodeRole::Client))
+        .filter(|p| !matches!(p.rtt_ms, Some(rtt) if rtt > mesh::MAX_SPLIT_RTT_MS))
+        .collect();
+    candidates.sort_by_key(|p| (p.rtt_ms.unwrap_or(u32::MAX), p.id));
+
+    let mut total_group_vram = my_vram;
+    let mut worker_ids = Vec::new();
+    for peer in candidates {
+        if total_group_vram >= min_vram && !(force_split && worker_ids.is_empty()) {
+            break;
+        }
+        total_group_vram += split_peer_vram_bytes(peer, my_vram);
+        worker_ids.push(peer.id);
+    }
+
+    if total_group_vram >= min_vram && (!force_split || !worker_ids.is_empty()) {
+        DenseLaunchPlan::Split {
+            worker_ids,
+            total_group_vram,
+        }
+    } else {
+        DenseLaunchPlan::WaitingForCapacity {
+            worker_ids,
+            total_group_vram,
+            min_vram,
+        }
+    }
+}
+
+fn rpc_ports_for_worker_ids(
+    all_ports: &HashMap<iroh::EndpointId, u16>,
+    worker_ids: &[iroh::EndpointId],
+) -> Option<Vec<u16>> {
+    worker_ids
+        .iter()
+        .map(|id| all_ports.get(id).copied())
+        .collect()
 }
 
 /// The current state of llama-server as managed by the election loop.
@@ -400,10 +495,10 @@ impl MoePlacementPlan {
     }
 }
 
-fn running_plan_state<'a>(
-    last_plan: Option<&'a MoePlacementPlan>,
+fn running_plan_state(
+    last_plan: Option<&MoePlacementPlan>,
     currently_running: bool,
-) -> (&'a [iroh::EndpointId], &'a [iroh::EndpointId]) {
+) -> (&[iroh::EndpointId], &[iroh::EndpointId]) {
     if currently_running {
         let active_ids = last_plan
             .map(|plan| plan.active_ids.as_slice())
@@ -585,25 +680,69 @@ fn resolve_runtime_moe_config(
     let started = std::time::Instant::now();
     let (ranking, ranking_source, ranking_origin) = match options.ranking_strategy {
         moe::MoeRankingStrategy::Auto => {
-            if let Some(artifact) = moe::best_shared_ranking_artifact(model_path) {
-                let cached = moe::shared_ranking_cache_path(model_path, &artifact);
+            let model_path_for_ranking = model_path.to_path_buf();
+            let resolved_ranking_result: anyhow::Result<
+                Option<crate::system::moe_planner::ResolvedRanking>,
+            > = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => match tokio::task::block_in_place(|| {
+                    handle.block_on(tokio::task::spawn_blocking(move || {
+                        crate::system::moe_planner::resolve_runtime_ranking(
+                            &model_path_for_ranking,
+                            crate::system::moe_planner::DEFAULT_MOE_RANKINGS_DATASET,
+                        )
+                    }))
+                }) {
+                    Ok(Ok(resolved)) => Ok(resolved),
+                    Ok(Err(err)) => {
+                        eprintln!(
+                            "⚠ [{model_name}] Failed to resolve shared MoE ranking ({err}); falling back to local analysis or sequential expert order"
+                        );
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "⚠ [{model_name}] Failed to join shared MoE ranking resolver ({err}); falling back to local analysis or sequential expert order"
+                        );
+                        Ok(None)
+                    }
+                },
+                Err(_) => crate::system::moe_planner::resolve_runtime_ranking(
+                    model_path,
+                    crate::system::moe_planner::DEFAULT_MOE_RANKINGS_DATASET,
+                ),
+            };
+            let resolved_ranking = match resolved_ranking_result {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    eprintln!(
+                        "⚠ [{model_name}] Failed to resolve shared MoE ranking ({err}); falling back to local analysis or sequential expert order"
+                    );
+                    None
+                }
+            };
+            if let Some(resolved) = resolved_ranking {
                 eprintln!(
-                    "🧩 [{model_name}] Using cached MoE ranking mode={} origin={} cache={}",
-                    artifact.kind.label(),
-                    artifact.origin.label(),
-                    cached.display()
+                    "🧩 [{model_name}] Using {} MoE ranking mode={} path={}",
+                    resolved.source.label(),
+                    resolved.analyzer_id,
+                    resolved.path.display()
                 );
                 (
-                    artifact.ranking,
-                    artifact.kind.label().to_string(),
-                    artifact.origin.label().to_string(),
+                    moe::load_cached_ranking(&resolved.path).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Failed to load resolved ranking {}",
+                            resolved.path.display()
+                        )
+                    })?,
+                    resolved.analyzer_id,
+                    resolved.source.label().to_string(),
                 )
             } else {
                 if should_attempt_local_micro_analyze(model_path, model_name, local_vram_budget) {
                     match ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options) {
                         Ok(artifact) => (
                             artifact.ranking,
-                            artifact.kind.label().to_string(),
+                            "micro-v1".to_string(),
                             artifact.origin.label().to_string(),
                         ),
                         Err(err) => {
@@ -634,7 +773,7 @@ fn resolve_runtime_moe_config(
             let artifact = ensure_full_analyze_ranking(bin_dir, model_name, model_path, &cached)?;
             (
                 artifact.ranking,
-                artifact.kind.label().to_string(),
+                "full-v1".to_string(),
                 artifact.origin.label().to_string(),
             )
         }
@@ -642,16 +781,17 @@ fn resolve_runtime_moe_config(
             let artifact = ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options)?;
             (
                 artifact.ranking,
-                artifact.kind.label().to_string(),
+                "micro-v1".to_string(),
                 artifact.origin.label().to_string(),
             )
         }
     };
 
     eprintln!(
-        "🧩 [{}] MoE ranking={} resolved in {:.1}s",
+        "🧩 [{}] MoE ranking={} origin={} resolved in {:.1}s",
         model_name,
-        format!("{ranking_source} origin={ranking_origin}"),
+        ranking_source,
+        ranking_origin,
         started.elapsed().as_secs_f64()
     );
 
@@ -674,22 +814,56 @@ fn refresh_auto_moe_config_from_cache(
     let Some(artifact) = moe::best_shared_ranking_artifact(model_path) else {
         return false;
     };
-    if cfg.config.ranking == artifact.ranking
-        && cfg.ranking_source == artifact.kind.label()
-        && cfg.ranking_origin == artifact.origin.label()
+    let resolved = crate::system::moe_planner::ResolvedRanking {
+        path: moe::shared_ranking_cache_path(model_path, &artifact),
+        metadata_path: None,
+        analyzer_id: match artifact.kind {
+            moe::SharedRankingKind::Analyze => "full-v1",
+            moe::SharedRankingKind::MicroAnalyze => "micro-v1",
+        }
+        .to_string(),
+        source: crate::system::moe_planner::RankingSource::LocalCache,
+        reason: "local ranking refresh".to_string(),
+    };
+    let Some(ranking) = moe::load_cached_ranking(&resolved.path) else {
+        return false;
+    };
+    if cfg.config.ranking == ranking
+        && cfg.ranking_source == resolved.analyzer_id
+        && cfg.ranking_origin == resolved.source.label()
     {
         return false;
     }
 
     eprintln!(
-        "🧩 [{model_name}] Switching to better cached MoE ranking mode={} origin={}",
-        artifact.kind.label(),
-        artifact.origin.label()
+        "🧩 [{model_name}] Switching to better {} MoE ranking mode={}",
+        resolved.source.label(),
+        resolved.analyzer_id
     );
-    cfg.config.ranking = artifact.ranking;
-    cfg.ranking_source = artifact.kind.label().to_string();
-    cfg.ranking_origin = artifact.origin.label().to_string();
+    cfg.config.ranking = ranking;
+    cfg.ranking_source = resolved.analyzer_id;
+    cfg.ranking_origin = resolved.source.label().to_string();
     true
+}
+
+fn print_runtime_submit_suggestion(model_name: &str, model_path: &Path, ranking_path: &Path) {
+    let Some(identity) = crate::models::huggingface_identity_for_path(model_path) else {
+        return;
+    };
+    eprintln!("🧠 [{model_name}] Generated a local MoE ranking");
+    eprintln!(
+        "📍 [{model_name}] Ranking cache: {}",
+        ranking_path.display()
+    );
+    eprintln!(
+        "☁️  [{model_name}] Published source: {}",
+        crate::system::moe_planner::DEFAULT_MOE_RANKINGS_DATASET
+    );
+    eprintln!("⚠️  [{model_name}] This run did not use a published ranking.");
+    eprintln!(
+        "📤 [{model_name}] Contribute it with: mesh-llm moe share '{}'",
+        identity.canonical_ref
+    );
 }
 
 fn resolve_analyze_binary(bin_dir: &Path) -> anyhow::Result<std::path::PathBuf> {
@@ -742,6 +916,7 @@ fn format_moe_analysis_progress_line(
     total: Option<usize>,
     elapsed: std::time::Duration,
 ) -> String {
+    let mode_label = format!("MoE {mode}");
     let progress = match total {
         Some(total) if total > 0 => format!(
             "{:>5.1}%  {}/{}",
@@ -752,13 +927,67 @@ fn format_moe_analysis_progress_line(
         Some(total) => format!("       0/{}", total),
         None => "starting".to_string(),
     };
+    let spinner_progress = format!("{spinner} {progress}");
     format!(
         "🧩 [{}] {:<17} {}  {:>3}s",
         model_name,
-        format!("MoE {mode}"),
-        format!("{spinner} {progress}"),
+        mode_label,
+        spinner_progress,
         elapsed.as_secs()
     )
+}
+
+struct MoeElectionParams {
+    runtime: Arc<crate::runtime::instance::InstanceRuntime>,
+    node: mesh::Node,
+    tunnel_mgr: tunnel::Manager,
+    ingress_http_port: u16,
+    bin_dir: std::path::PathBuf,
+    model: std::path::PathBuf,
+    model_name: String,
+    moe_cfg: ResolvedMoeConfig,
+    my_vram: u64,
+    model_bytes: u64,
+    binary_flavor: Option<launch::BinaryFlavor>,
+    ctx_size_override: Option<u32>,
+    target_tx: Arc<watch::Sender<ModelTargets>>,
+    stop_rx: watch::Receiver<bool>,
+}
+
+struct StartLlamaParams<'a> {
+    runtime: &'a crate::runtime::instance::InstanceRuntime,
+    node: &'a mesh::Node,
+    tunnel_mgr: &'a tunnel::Manager,
+    bin_dir: &'a Path,
+    model: &'a Path,
+    model_name: &'a str,
+    model_peers: &'a [mesh::PeerInfo],
+    explicit_mmproj: Option<&'a Path>,
+    draft: Option<&'a Path>,
+    draft_max: u16,
+    force_split: bool,
+    binary_flavor: Option<launch::BinaryFlavor>,
+    ctx_size_override: Option<u32>,
+}
+
+pub struct ElectionLoopParams {
+    pub runtime: Arc<crate::runtime::instance::InstanceRuntime>,
+    pub node: mesh::Node,
+    pub tunnel_mgr: tunnel::Manager,
+    pub ingress_http_port: u16,
+    pub rpc_port: u16,
+    pub bin_dir: std::path::PathBuf,
+    pub model: std::path::PathBuf,
+    pub model_name: String,
+    pub explicit_mmproj: Option<std::path::PathBuf>,
+    pub draft: Option<std::path::PathBuf>,
+    pub draft_max: u16,
+    pub force_split: bool,
+    pub binary_flavor: Option<launch::BinaryFlavor>,
+    pub ctx_size_override: Option<u32>,
+    pub moe_runtime_options: moe::MoeRuntimeOptions,
+    pub target_tx: Arc<watch::Sender<ModelTargets>>,
+    pub stop_rx: watch::Receiver<bool>,
 }
 
 fn spawn_moe_analysis_spinner(
@@ -870,6 +1099,14 @@ fn ensure_full_analyze_ranking(
     }
     let analyze_bin = resolve_analyze_binary(bin_dir)?;
     let started = std::time::Instant::now();
+    let temp_output = std::env::temp_dir().join(format!(
+        "mesh-llm-full-live-{}-{}.csv",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    ));
     eprintln!(
         "🧩 [{model_name}] MoE analysis mode=full-analyze cache={}",
         cached_path.display()
@@ -887,7 +1124,7 @@ fn ensure_full_analyze_ranking(
             &model_path.to_string_lossy(),
             "--all-layers",
             "--export-ranking",
-            &cached_path.to_string_lossy(),
+            &temp_output.to_string_lossy(),
             "-n",
             "32",
             "-c",
@@ -919,10 +1156,10 @@ fn ensure_full_analyze_ranking(
     }
     let _ = spinner.join();
     anyhow::ensure!(status.success(), "llama-moe-analyze exited with {status}");
-    let ranking = moe::load_cached_ranking(cached_path).ok_or_else(|| {
+    let ranking = moe::load_cached_ranking(&temp_output).ok_or_else(|| {
         anyhow::anyhow!(
             "No ranking produced by full analyze at {}",
-            cached_path.display()
+            temp_output.display()
         )
     })?;
     let artifact = moe::SharedRankingArtifact {
@@ -933,13 +1170,21 @@ fn ensure_full_analyze_ranking(
         micro_tokens: None,
         micro_layer_scope: None,
     };
-    moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+    let wrote_cache = moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+    std::fs::copy(&temp_output, cached_path)?;
+    let _ = std::fs::remove_file(&temp_output);
     eprintln!(
         "  Full moe-analyze cached at {} in {:.1}s (origin={})",
         cached_path.display(),
         started.elapsed().as_secs_f64(),
         artifact.origin.label()
     );
+    if !wrote_cache {
+        eprintln!(
+            "  A stronger or equivalent shared ranking already exists, so this full-v1 result was not promoted as the preferred shared artifact"
+        );
+    }
+    print_runtime_submit_suggestion(model_name, model_path, cached_path);
     Ok(artifact)
 }
 
@@ -970,21 +1215,33 @@ fn ensure_micro_analyze_ranking(
         );
         return Ok(artifact);
     }
-    let ranking = run_micro_analyze_ranking(bin_dir, model_name, model_path, options)?;
+    let analyze = run_micro_analyze_ranking(bin_dir, model_name, model_path, options)?;
     let artifact = moe::SharedRankingArtifact {
         kind: moe::SharedRankingKind::MicroAnalyze,
         origin: moe::SharedRankingOrigin::LocalMicroAnalyze,
-        ranking,
+        ranking: analyze.ranking,
         micro_prompt_count: Some(options.micro_prompt_count),
         micro_tokens: Some(options.micro_tokens),
         micro_layer_scope: Some(options.micro_layer_scope),
     };
-    moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+    let wrote_cache = moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
+    write_runtime_canonical_micro_ranking(
+        &cached_path,
+        &artifact,
+        &analyze.rows,
+        analyze.rows.iter().map(|(_, values)| values.0).sum::<f64>(),
+    )?;
     eprintln!(
         "  Micro moe-analyze cached at {} (origin={})",
         cached_path.display(),
         artifact.origin.label()
     );
+    if !wrote_cache {
+        eprintln!(
+            "  A stronger or equivalent shared ranking already exists, so this micro-v1 result was not promoted as the preferred shared artifact"
+        );
+    }
+    print_runtime_submit_suggestion(model_name, model_path, &cached_path);
     Ok(artifact)
 }
 
@@ -992,6 +1249,12 @@ fn ensure_micro_analyze_ranking(
 struct AnalyzeMassRow {
     expert_id: u32,
     gate_mass: f64,
+    selection_count: u64,
+}
+
+struct RuntimeMicroAnalyzeResult {
+    ranking: Vec<u32>,
+    rows: Vec<(u32, (f64, u64))>,
 }
 
 fn run_micro_analyze_ranking(
@@ -999,7 +1262,7 @@ fn run_micro_analyze_ranking(
     model_name: &str,
     model_path: &Path,
     options: &moe::MoeRuntimeOptions,
-) -> anyhow::Result<Vec<u32>> {
+) -> anyhow::Result<RuntimeMicroAnalyzeResult> {
     let prompts = default_micro_prompts();
     let prompt_count = options.micro_prompt_count.max(1).min(prompts.len());
     let analyze_bin = resolve_analyze_binary(bin_dir)?;
@@ -1014,7 +1277,7 @@ fn run_micro_analyze_ranking(
     ));
     std::fs::create_dir_all(&tmp_dir)?;
     let started = std::time::Instant::now();
-    let mut mass_by_expert: HashMap<u32, f64> = HashMap::new();
+    let mut mass_by_expert: HashMap<u32, (f64, u64)> = HashMap::new();
     eprintln!(
         "🧩 [{model_name}] MoE analysis mode=micro-analyze prompts={} tokens={} layers={} cache=pending",
         prompt_count,
@@ -1084,7 +1347,9 @@ fn run_micro_analyze_ranking(
             );
         }
         for row in load_analyze_mass_rows(&output_path)? {
-            *mass_by_expert.entry(row.expert_id).or_insert(0.0) += row.gate_mass;
+            let entry = mass_by_expert.entry(row.expert_id).or_insert((0.0, 0));
+            entry.0 += row.gate_mass;
+            entry.1 += row.selection_count;
         }
         if let Ok(mut state) = progress.lock() {
             state.current_prompt = idx + 1;
@@ -1098,11 +1363,12 @@ fn run_micro_analyze_ranking(
 
     let mut rows = mass_by_expert.into_iter().collect::<Vec<_>>();
     rows.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.1 .0
+            .partial_cmp(&a.1 .0)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.cmp(&b.0))
     });
-    let ranking = rows.into_iter().map(|(expert_id, _)| expert_id).collect();
+    let ranking = rows.iter().map(|(expert_id, _)| *expert_id).collect();
     let _ = std::fs::remove_dir_all(&tmp_dir);
     eprintln!(
         "  Micro moe-analyze used {} prompt(s), {} token(s), {} in {:.1}s",
@@ -1114,7 +1380,7 @@ fn run_micro_analyze_ranking(
         },
         started.elapsed().as_secs_f64()
     );
-    Ok(ranking)
+    Ok(RuntimeMicroAnalyzeResult { ranking, rows })
 }
 
 fn load_analyze_mass_rows(path: &Path) -> anyhow::Result<Vec<AnalyzeMassRow>> {
@@ -1132,9 +1398,57 @@ fn load_analyze_mass_rows(path: &Path) -> anyhow::Result<Vec<AnalyzeMassRow>> {
         rows.push(AnalyzeMassRow {
             expert_id: parts[0].parse()?,
             gate_mass: parts[1].parse()?,
+            selection_count: parts[3].parse()?,
         });
     }
     Ok(rows)
+}
+
+fn write_runtime_canonical_micro_ranking(
+    path: &Path,
+    artifact: &moe::SharedRankingArtifact,
+    ranking: &[(u32, (f64, u64))],
+    total_mass_sum: f64,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut output = String::new();
+    writeln!(&mut output, "# mesh-llm-moe-ranking=v1").ok();
+    writeln!(&mut output, "# ranking_kind={}", artifact.kind.label()).ok();
+    writeln!(&mut output, "# ranking_origin={}", artifact.origin.label()).ok();
+    if let Some(prompt_count) = artifact.micro_prompt_count {
+        writeln!(&mut output, "# micro_prompt_count={prompt_count}").ok();
+    }
+    if let Some(tokens) = artifact.micro_tokens {
+        writeln!(&mut output, "# micro_tokens={tokens}").ok();
+    }
+    if let Some(layer_scope) = artifact.micro_layer_scope {
+        let scope = match layer_scope {
+            moe::MoeMicroLayerScope::All => "all",
+            moe::MoeMicroLayerScope::First => "first",
+        };
+        writeln!(&mut output, "# micro_layer_scope={scope}").ok();
+    }
+    writeln!(
+        &mut output,
+        "expert_id,total_mass,mass_fraction,selection_count"
+    )
+    .ok();
+    for (expert_id, (gate_mass, selection_count)) in ranking {
+        let mass_fraction = if total_mass_sum > 0.0 {
+            gate_mass / total_mass_sum
+        } else {
+            0.0
+        };
+        writeln!(
+            &mut output,
+            "{expert_id},{gate_mass:.12},{mass_fraction:.12},{selection_count}"
+        )
+        .ok();
+    }
+    std::fs::write(path, output)?;
+    Ok(())
 }
 
 fn default_micro_prompts() -> &'static [&'static str] {
@@ -1156,30 +1470,35 @@ fn default_micro_prompts() -> &'static [&'static str] {
 ///
 /// Publishes the current ModelTargets via the watch channel so the
 /// API proxy knows where to forward requests.
+#[allow(clippy::too_many_arguments)]
 pub async fn election_loop(
-    node: mesh::Node,
-    tunnel_mgr: tunnel::Manager,
-    ingress_http_port: u16,
-    rpc_port: u16,
-    bin_dir: std::path::PathBuf,
-    model: std::path::PathBuf,
-    model_name: String,
-    explicit_mmproj: Option<std::path::PathBuf>,
-    draft: Option<std::path::PathBuf>,
-    draft_max: u16,
-    force_split: bool,
-    binary_flavor: Option<launch::BinaryFlavor>,
-    ctx_size_override: Option<u32>,
-    moe_runtime_options: moe::MoeRuntimeOptions,
-    target_tx: Arc<watch::Sender<ModelTargets>>,
-    mut stop_rx: watch::Receiver<bool>,
+    params: ElectionLoopParams,
     mut on_change: impl FnMut(bool, bool) + Send,
     mut on_process: impl FnMut(Option<LocalProcessInfo>) + Send,
 ) {
+    let ElectionLoopParams {
+        runtime,
+        node,
+        tunnel_mgr,
+        ingress_http_port,
+        rpc_port: _rpc_port,
+        bin_dir,
+        model,
+        model_name,
+        explicit_mmproj,
+        draft,
+        draft_max,
+        force_split,
+        binary_flavor,
+        ctx_size_override,
+        moe_runtime_options,
+        target_tx,
+        mut stop_rx,
+    } = params;
     let mut peer_rx = node.peer_change_rx.clone();
 
-    // Track the set of model-group worker IDs to detect when we actually need to restart
-    let mut last_worker_set: Vec<iroh::EndpointId> = vec![];
+    // Track the actual running launch topology so we only restart on real split changes.
+    let mut last_running_plan: Option<DenseRunningPlan> = None;
     let mut currently_host = false;
     let mut current_local_port: Option<u16> = None;
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
@@ -1193,12 +1512,10 @@ pub async fn election_loop(
 
     // Check if this is a MoE model with enough metadata to plan expert routing.
     let moe_config = lookup_moe_config(&model_name, &model);
-    if moe_config.is_some() {
+    if let Some(moe_config) = &moe_config {
         eprintln!(
             "🧩 [{}] MoE model detected ({} experts, top-{})",
-            model_name,
-            moe_config.as_ref().unwrap().n_expert,
-            moe_config.as_ref().unwrap().n_expert_used
+            model_name, moe_config.n_expert, moe_config.n_expert_used
         );
     }
 
@@ -1243,19 +1560,22 @@ pub async fn election_loop(
                 }
             };
             moe_election_loop(
-                node,
-                tunnel_mgr,
-                ingress_http_port,
-                bin_dir,
-                model,
-                model_name,
-                resolved_moe_cfg,
-                my_vram,
-                model_bytes as u64,
-                binary_flavor,
-                ctx_size_override,
-                target_tx,
-                stop_rx,
+                MoeElectionParams {
+                    runtime: runtime.clone(),
+                    node,
+                    tunnel_mgr,
+                    ingress_http_port,
+                    bin_dir,
+                    model,
+                    model_name,
+                    moe_cfg: resolved_moe_cfg,
+                    my_vram,
+                    model_bytes,
+                    binary_flavor,
+                    ctx_size_override,
+                    target_tx,
+                    stop_rx,
+                },
                 &mut on_change,
                 &mut on_process,
             )
@@ -1283,14 +1603,16 @@ pub async fn election_loop(
             .filter(|p| p.is_assigned_model(&model_name))
             .cloned()
             .collect();
+        let desired_launch =
+            build_dense_launch_plan(my_vram, model_bytes, force_split, &model_name, &model_peers);
 
         // Splitting decision: only split when forced OR when the model
         // genuinely doesn't fit on this node alone. If it fits, every
         // node serving this model runs its own independent llama-server
         // (no election needed — everyone is a host).
-        let need_split = force_split || !model_fits_locally;
+        let requires_split = force_split || !model_fits_locally;
 
-        let i_am_host = if need_split {
+        let i_am_host = if requires_split {
             // Distributed mode: elect one host from the model group
             should_be_host_for_model(node.id(), my_vram, &model_peers)
         } else if model_peers.is_empty() {
@@ -1332,27 +1654,8 @@ pub async fn election_loop(
             should_dup
         };
 
-        // Compute the worker set (only relevant in split mode).
-        // Only include RTT-eligible peers so that when a peer's RTT drops
-        // below the split threshold (e.g. relay → direct), the worker set
-        // changes and triggers a restart with --rpc.
-        let mut new_worker_set: Vec<iroh::EndpointId> = if need_split {
-            model_peers
-                .iter()
-                .filter(|p| !matches!(p.role, NodeRole::Client))
-                .filter(|p| match p.rtt_ms {
-                    Some(rtt) if rtt > mesh::MAX_SPLIT_RTT_MS => false,
-                    _ => true,
-                })
-                .map(|p| p.id)
-                .collect()
-        } else {
-            vec![] // solo mode — no workers
-        };
-        new_worker_set.sort();
-
         // If we're already host and nothing changed, skip restart
-        if currently_host && i_am_host && new_worker_set == last_worker_set {
+        if currently_host && i_am_host && desired_launch.running_plan() == last_running_plan {
             // Just update the target map (in case other models' hosts changed)
             if let Some(local_port) = current_local_port {
                 update_targets(
@@ -1382,6 +1685,7 @@ pub async fn election_loop(
                     llama_process = None;
                     currently_host = false;
                     current_local_port = None;
+                    last_running_plan = None;
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                     on_process(None);
                     on_change(false, false);
@@ -1404,6 +1708,7 @@ pub async fn election_loop(
             tunnel_mgr.set_http_port(0);
             node.set_role(NodeRole::Worker).await;
             current_local_port = None;
+            last_running_plan = None;
             update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
             on_process(None);
             on_change(false, false);
@@ -1415,73 +1720,75 @@ pub async fn election_loop(
         }
 
         if i_am_host {
-            if need_split {
-                // Distributed mode: check total group VRAM
-                let peer_vram: u64 = model_peers
-                    .iter()
-                    .filter(|p| !matches!(p.role, NodeRole::Client))
-                    .map(|p| p.vram_bytes)
-                    .sum();
-                let total_vram = my_vram + peer_vram;
-                let min_vram = (model_bytes as f64 * 1.1) as u64;
-
-                if total_vram < min_vram {
+            match &desired_launch {
+                DenseLaunchPlan::WaitingForCapacity {
+                    total_group_vram,
+                    min_vram,
+                    ..
+                } => {
                     eprintln!(
-                        "⏳ [{}] Waiting for more peers — need {:.1}GB capacity, have {:.1}GB",
+                        "⏳ [{}] Waiting for more peers — need {:.1}GB capacity, have {:.1}GB across eligible split workers",
                         model_name,
-                        min_vram as f64 / 1e9,
-                        total_vram as f64 / 1e9
+                        *min_vram as f64 / 1e9,
+                        *total_group_vram as f64 / 1e9
                     );
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                     on_change(false, false);
-                    last_worker_set = new_worker_set;
                     if peer_rx.changed().await.is_err() {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     continue;
                 }
-
-                eprintln!(
-                    "🗳 [{}] Elected as host ({:.1}GB capacity for {:.1}GB model, {} node(s), split)",
-                    model_name,
-                    total_vram as f64 / 1e9,
-                    model_bytes as f64 / 1e9,
-                    model_peers.len() + 1
-                );
-            } else {
-                eprintln!(
-                    "🗳 [{}] Running as host ({:.1}GB capacity for {:.1}GB model, serving entirely)",
-                    model_name,
-                    my_vram as f64 / 1e9,
-                    model_bytes as f64 / 1e9
-                );
+                DenseLaunchPlan::Split {
+                    total_group_vram,
+                    worker_ids,
+                } => {
+                    eprintln!(
+                        "🗳 [{}] Elected as host ({:.1}GB capacity for {:.1}GB model, {} node(s), split)",
+                        model_name,
+                        *total_group_vram as f64 / 1e9,
+                        model_bytes as f64 / 1e9,
+                        worker_ids.len() + 1
+                    );
+                }
+                DenseLaunchPlan::Solo => {
+                    eprintln!(
+                        "🗳 [{}] Running as host ({:.1}GB capacity for {:.1}GB model, serving entirely)",
+                        model_name,
+                        my_vram as f64 / 1e9,
+                        model_bytes as f64 / 1e9
+                    );
+                }
             }
             on_change(true, false);
 
             // In solo mode, pass empty model_peers so start_llama won't use any workers
-            let peers_for_launch = if need_split { &model_peers[..] } else { &[] };
-            let (llama_port, process) = match start_llama(
-                &node,
-                &tunnel_mgr,
-                rpc_port,
-                &bin_dir,
-                &model,
-                &model_name,
-                peers_for_launch,
-                explicit_mmproj.as_deref(),
-                draft.as_deref(),
+            let peers_for_launch = if matches!(desired_launch, DenseLaunchPlan::Split { .. }) {
+                &model_peers[..]
+            } else {
+                &[]
+            };
+            let (llama_port, process) = match start_llama(StartLlamaParams {
+                runtime: &runtime,
+                node: &node,
+                tunnel_mgr: &tunnel_mgr,
+                bin_dir: &bin_dir,
+                model: &model,
+                model_name: &model_name,
+                model_peers: peers_for_launch,
+                explicit_mmproj: explicit_mmproj.as_deref(),
+                draft: draft.as_deref(),
                 draft_max,
                 force_split,
                 binary_flavor,
                 ctx_size_override,
-            )
+            })
             .await
             {
                 Some((port, death_rx)) => (port, death_rx),
                 None => {
                     on_change(true, false);
-                    last_worker_set = new_worker_set;
                     let _ = peer_rx.changed().await;
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     continue;
@@ -1498,7 +1805,7 @@ pub async fn election_loop(
             tunnel_mgr.set_http_port(llama_port);
             currently_host = true;
             current_local_port = Some(llama_port);
-            last_worker_set = new_worker_set;
+            last_running_plan = desired_launch.running_plan();
             // Re-gossip so peers learn we're the host for this model
             node.regossip().await;
             update_targets(
@@ -1526,7 +1833,7 @@ pub async fn election_loop(
             // We're a worker in split mode. Find who the host is.
             node.set_role(NodeRole::Worker).await;
             currently_host = false;
-            last_worker_set = new_worker_set;
+            last_running_plan = None;
 
             let host_peer = model_peers
                 .iter()
@@ -1572,6 +1879,8 @@ pub async fn election_loop(
                 eprintln!("🔄 [{}] llama-server died — restarting...", model_name);
                 llama_process = None;
                 currently_host = false;
+                current_local_port = None;
+                last_running_plan = None;
                 update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                 on_change(false, false);
             }
@@ -1606,23 +1915,28 @@ pub async fn election_loop(
 /// - Each node runs moe-split locally to produce its shard (cached)
 /// - Each node starts its own llama-server with its shard GGUF
 /// - The proxy routes sessions to nodes via hash-based affinity
+#[allow(clippy::too_many_arguments)]
 async fn moe_election_loop(
-    node: mesh::Node,
-    tunnel_mgr: tunnel::Manager,
-    ingress_http_port: u16,
-    bin_dir: std::path::PathBuf,
-    model: std::path::PathBuf,
-    model_name: String,
-    mut moe_cfg: ResolvedMoeConfig,
-    my_vram: u64,
-    model_bytes: u64,
-    binary_flavor: Option<launch::BinaryFlavor>,
-    ctx_size_override: Option<u32>,
-    target_tx: Arc<watch::Sender<ModelTargets>>,
-    mut stop_rx: watch::Receiver<bool>,
+    params: MoeElectionParams,
     on_change: &mut impl FnMut(bool, bool),
     on_process: &mut impl FnMut(Option<LocalProcessInfo>),
 ) {
+    let MoeElectionParams {
+        runtime,
+        node,
+        tunnel_mgr,
+        ingress_http_port,
+        bin_dir,
+        model,
+        model_name,
+        mut moe_cfg,
+        my_vram,
+        model_bytes,
+        binary_flavor,
+        ctx_size_override,
+        target_tx,
+        mut stop_rx,
+    } = params;
     let mut peer_rx = node.peer_change_rx.clone();
     let mut currently_running = false;
     let mut last_plan: Option<MoePlacementPlan> = None;
@@ -1855,6 +2169,7 @@ async fn moe_election_loop(
             };
 
             match launch::start_llama_server(
+                &runtime,
                 &bin_dir,
                 binary_flavor,
                 launch::ModelLaunchSpec {
@@ -1938,6 +2253,7 @@ async fn moe_election_loop(
 
                 let mb = total_model_bytes(&model);
                 match launch::start_llama_server(
+                    &runtime,
                     &bin_dir,
                     binary_flavor,
                     launch::ModelLaunchSpec {
@@ -2079,6 +2395,7 @@ async fn moe_election_loop(
 
             let shard_bytes = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
             match launch::start_llama_server(
+                &runtime,
                 &bin_dir,
                 binary_flavor,
                 launch::ModelLaunchSpec {
@@ -2274,97 +2591,64 @@ async fn update_targets(
 
 /// Start llama-server with --rpc pointing at model-group nodes (self + workers).
 /// Returns the ephemeral port and a death notification receiver, or None on failure.
+#[allow(clippy::too_many_arguments)]
 async fn start_llama(
-    node: &mesh::Node,
-    tunnel_mgr: &tunnel::Manager,
-    _my_rpc_port: u16,
-    bin_dir: &Path,
-    model: &Path,
-    model_name: &str,
-    model_peers: &[mesh::PeerInfo],
-    explicit_mmproj: Option<&Path>,
-    draft: Option<&Path>,
-    draft_max: u16,
-    force_split: bool,
-    binary_flavor: Option<launch::BinaryFlavor>,
-    ctx_size_override: Option<u32>,
+    params: StartLlamaParams<'_>,
 ) -> Option<(u16, launch::InferenceServerProcess)> {
+    let StartLlamaParams {
+        runtime,
+        node,
+        tunnel_mgr,
+        bin_dir,
+        model,
+        model_name,
+        model_peers,
+        explicit_mmproj,
+        draft,
+        draft_max,
+        force_split,
+        binary_flavor,
+        ctx_size_override,
+    } = params;
     let my_vram = node.vram_bytes();
     let model_bytes = total_model_bytes(model);
-    let min_vram = (model_bytes as f64 * 1.1) as u64;
-
-    // Decide whether to split: only if model doesn't fit on host alone, or --split forced
-    let need_split = force_split || my_vram < min_vram;
-
-    // Only use workers from our model group, preferring lowest-latency peers.
-    // Take just enough to cover the VRAM shortfall, sorted by RTT.
-    let worker_ids: Vec<_> = if need_split {
-        let mut candidates: Vec<_> = model_peers
-            .iter()
-            .filter(|p| matches!(p.role, NodeRole::Worker) || p.is_assigned_model(model_name))
-            .filter(|p| !matches!(p.role, NodeRole::Client))
-            .filter(|p| match p.rtt_ms {
-                Some(rtt) if rtt > mesh::MAX_SPLIT_RTT_MS => {
-                    eprintln!(
-                        "  ⚠ Skipping {} — RTT {}ms exceeds {}ms limit",
-                        p.id.fmt_short(),
-                        rtt,
-                        mesh::MAX_SPLIT_RTT_MS
-                    );
-                    false
-                }
-                _ => true,
-            })
-            .collect();
-
-        // Sort by RTT ascending (unknown RTT sorts last)
-        candidates.sort_by_key(|p| p.rtt_ms.unwrap_or(u32::MAX));
-
-        // Take just enough peers to cover the VRAM gap.
-        // When --split is forced, always include at least one worker.
-        let mut accumulated_vram = my_vram;
-        let mut selected = Vec::new();
-        for p in &candidates {
-            if accumulated_vram >= min_vram && !(force_split && selected.is_empty()) {
-                break; // we have enough VRAM already (but force at least 1 if --split)
+    let launch_plan =
+        build_dense_launch_plan(my_vram, model_bytes, force_split, model_name, model_peers);
+    let worker_ids = match launch_plan {
+        DenseLaunchPlan::Solo => {
+            let worker_count = model_peers
+                .iter()
+                .filter(|p| !matches!(p.role, NodeRole::Client))
+                .count();
+            if worker_count > 0 {
+                eprintln!(
+                    "  Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely",
+                    my_vram as f64 / 1e9,
+                    model_bytes as f64 / 1e9
+                );
+                eprintln!("  Use --split to force distributed mode");
             }
-            accumulated_vram += p.vram_bytes;
-            let rtt_str = p
-                .rtt_ms
-                .map(|r| format!("{}ms", r))
-                .unwrap_or("?ms".to_string());
-            eprintln!(
-                "  ✓ Adding {} — {:.1}GB capacity, RTT {rtt_str}",
-                p.id.fmt_short(),
-                p.vram_bytes as f64 / 1e9
-            );
-            selected.push(p.id);
+            Vec::new()
         }
-        if accumulated_vram < min_vram {
-            eprintln!(
-                "  ⚠ Total capacity {:.1}GB still short of {:.1}GB — using all {} candidates",
-                accumulated_vram as f64 / 1e9,
-                min_vram as f64 / 1e9,
-                candidates.len()
-            );
-            // Fall back to all candidates if we can't cover it
-            selected = candidates.iter().map(|p| p.id).collect();
+        DenseLaunchPlan::Split { worker_ids, .. } => {
+            for id in &worker_ids {
+                if let Some(peer) = model_peers.iter().find(|peer| peer.id == *id) {
+                    let rtt_str = peer
+                        .rtt_ms
+                        .map(|r| format!("{}ms", r))
+                        .unwrap_or("?ms".to_string());
+                    eprintln!(
+                        "  ✓ Adding {} — {:.1}GB capacity, RTT {rtt_str}",
+                        peer.id.fmt_short(),
+                        split_peer_vram_bytes(peer, my_vram) as f64 / 1e9
+                    );
+                }
+            }
+            worker_ids.clone()
         }
-        selected
-    } else {
-        let worker_count = model_peers
-            .iter()
-            .filter(|p| !matches!(p.role, NodeRole::Client))
-            .count();
-        if worker_count > 0 {
-            eprintln!(
-                "  Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely",
-                my_vram as f64 / 1e9,
-                model_bytes as f64 / 1e9
-            );
-            eprintln!("  Use --split to force distributed mode");
+        DenseLaunchPlan::WaitingForCapacity { .. } => {
+            return None;
         }
-        vec![]
     };
 
     // Wait for tunnels to workers
@@ -2391,12 +2675,17 @@ async fn start_llama(
     // The host's own GPU is used directly on the local backend — no need to route
     // through the local rpc-server (which would add unnecessary TCP round trips).
     let all_ports = tunnel_mgr.peer_ports_map().await;
-    let mut rpc_ports: Vec<u16> = Vec::new();
-    for id in &worker_ids {
-        if let Some(&port) = all_ports.get(id) {
-            rpc_ports.push(port);
-        }
-    }
+    let Some(rpc_ports) = rpc_ports_for_worker_ids(&all_ports, &worker_ids) else {
+        eprintln!(
+            "  Waiting for selected worker tunnels ({}/{} ready)",
+            all_ports
+                .keys()
+                .filter(|id| worker_ids.contains(id))
+                .count(),
+            worker_ids.len()
+        );
+        return None;
+    };
 
     // Calculate tensor split from VRAM.
     // Device order: RPC workers first (matching --rpc order), then the local host device last.
@@ -2404,11 +2693,7 @@ async fn start_llama(
     let mut all_vrams: Vec<f64> = Vec::new();
     for id in &worker_ids {
         if let Some(peer) = model_peers.iter().find(|p| p.id == *id) {
-            all_vrams.push(if peer.vram_bytes > 0 {
-                peer.vram_bytes as f64
-            } else {
-                my_vram_f
-            });
+            all_vrams.push(split_peer_vram_bytes(peer, my_vram) as f64);
         }
     }
     all_vrams.push(my_vram_f); // Host device is last
@@ -2440,8 +2725,7 @@ async fn start_llama(
     };
 
     // Look up mmproj for vision models
-    let mmproj_path =
-        crate::models::resolve_mmproj_path(model_name, model, explicit_mmproj.as_deref());
+    let mmproj_path = crate::models::resolve_mmproj_path(model_name, model, explicit_mmproj);
 
     // In split mode (pipeline parallel), pass total group VRAM so context size
     // accounts for the host only holding its share of layers. KV cache is also
@@ -2453,6 +2737,7 @@ async fn start_llama(
     };
 
     match launch::start_llama_server(
+        runtime,
         bin_dir,
         binary_flavor,
         launch::ModelLaunchSpec {
@@ -2496,6 +2781,7 @@ async fn find_free_port() -> anyhow::Result<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::EndpointAddr;
     use iroh::SecretKey;
 
     /// Create a deterministic EndpointId from a byte seed.
@@ -2503,6 +2789,174 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[0] = seed;
         SecretKey::from_bytes(&bytes).public()
+    }
+
+    fn make_dense_peer(
+        id: iroh::EndpointId,
+        vram_bytes: u64,
+        rtt_ms: Option<u32>,
+        serving_model: &str,
+    ) -> mesh::PeerInfo {
+        mesh::PeerInfo {
+            id,
+            addr: EndpointAddr {
+                id,
+                addrs: Default::default(),
+            },
+            tunnel_port: None,
+            role: NodeRole::Worker,
+            models: vec![],
+            vram_bytes,
+            rtt_ms,
+            model_source: None,
+            serving_models: vec![serving_model.to_string()],
+            hosted_models: vec![],
+            hosted_models_known: false,
+            available_models: vec![],
+            requested_models: vec![],
+            last_seen: std::time::Instant::now(),
+            last_mentioned: std::time::Instant::now(),
+            moe_recovered_at: None,
+            version: None,
+            gpu_name: None,
+            hostname: None,
+            is_soc: None,
+            gpu_vram: None,
+            gpu_reserved_bytes: None,
+            gpu_mem_bandwidth_gbps: None,
+            gpu_compute_tflops_fp32: None,
+            gpu_compute_tflops_fp16: None,
+            available_model_metadata: vec![],
+            experts_summary: None,
+            available_model_sizes: HashMap::new(),
+            served_model_descriptors: vec![],
+            served_model_runtime: vec![],
+            owner_attestation: None,
+            owner_summary: crate::crypto::OwnershipSummary::default(),
+        }
+    }
+
+    #[test]
+    fn dense_launch_plan_prefers_lowest_rtt_workers_needed_for_capacity() {
+        let model = "dense";
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let id_d = make_id(4);
+        let peers = vec![
+            make_dense_peer(id_b, 30, Some(60), model),
+            make_dense_peer(id_c, 30, Some(20), model),
+            make_dense_peer(id_d, 30, Some(40), model),
+        ];
+
+        let plan = build_dense_launch_plan(60, 100, false, model, &peers);
+        assert_eq!(
+            plan,
+            DenseLaunchPlan::Split {
+                worker_ids: vec![id_c, id_d],
+                total_group_vram: 120,
+            }
+        );
+
+        assert!(should_be_host_for_model(id_a, 60, &peers));
+    }
+
+    #[test]
+    fn dense_launch_plan_ignores_unselected_spare_worker_churn() {
+        let model = "dense";
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let id_d = make_id(4);
+        let base = vec![
+            make_dense_peer(id_b, 30, Some(10), model),
+            make_dense_peer(id_c, 30, Some(20), model),
+        ];
+        let mut with_spare = base.clone();
+        with_spare.push(make_dense_peer(id_d, 50, Some(70), model));
+
+        let base_plan = build_dense_launch_plan(60, 100, false, model, &base);
+        let spare_plan = build_dense_launch_plan(60, 100, false, model, &with_spare);
+
+        assert_eq!(base_plan.running_plan(), spare_plan.running_plan());
+        assert_eq!(
+            base_plan.running_plan(),
+            Some(DenseRunningPlan::Split {
+                worker_ids: vec![id_b, id_c],
+            })
+        );
+    }
+
+    #[test]
+    fn dense_launch_plan_replans_across_surviving_workers_after_peer_loss() {
+        let model = "dense";
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let id_d = make_id(4);
+        let initial = vec![
+            make_dense_peer(id_b, 30, Some(10), model),
+            make_dense_peer(id_c, 30, Some(20), model),
+            make_dense_peer(id_d, 30, Some(30), model),
+        ];
+        let survivors = vec![
+            make_dense_peer(id_c, 30, Some(20), model),
+            make_dense_peer(id_d, 30, Some(30), model),
+        ];
+
+        let initial_plan = build_dense_launch_plan(50, 100, false, model, &initial);
+        let survivor_plan = build_dense_launch_plan(50, 100, false, model, &survivors);
+
+        assert_eq!(
+            initial_plan.running_plan(),
+            Some(DenseRunningPlan::Split {
+                worker_ids: vec![id_b, id_c],
+            })
+        );
+        assert_eq!(
+            survivor_plan.running_plan(),
+            Some(DenseRunningPlan::Split {
+                worker_ids: vec![id_c, id_d],
+            })
+        );
+    }
+
+    #[test]
+    fn dense_launch_plan_waits_when_only_ineligible_capacity_remains() {
+        let model = "dense";
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let peers = vec![
+            make_dense_peer(id_b, 30, Some(10), model),
+            make_dense_peer(id_c, 40, Some(mesh::MAX_SPLIT_RTT_MS + 1), model),
+        ];
+
+        let plan = build_dense_launch_plan(50, 100, false, model, &peers);
+        assert_eq!(
+            plan,
+            DenseLaunchPlan::WaitingForCapacity {
+                worker_ids: vec![id_b],
+                total_group_vram: 80,
+                min_vram: 110,
+            }
+        );
+    }
+
+    #[test]
+    fn selected_worker_ids_require_complete_rpc_port_map() {
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let mut complete = HashMap::new();
+        complete.insert(id_b, 9001);
+        complete.insert(id_c, 9002);
+
+        let ports =
+            rpc_ports_for_worker_ids(&complete, &[id_b, id_c]).expect("all selected workers ready");
+        assert_eq!(ports, vec![9001, 9002]);
+
+        complete.remove(&id_c);
+        assert!(
+            rpc_ports_for_worker_ids(&complete, &[id_b, id_c]).is_none(),
+            "launch must wait until every selected worker has a resolved RPC port"
+        );
     }
 
     // ── Shard index computation ──

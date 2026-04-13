@@ -167,8 +167,7 @@ where
 }
 
 fn rpc_payload_deadline(payload_size: u64) -> Duration {
-    let throughput_seconds =
-        (payload_size + RPC_PAYLOAD_RATE_BYTES_PER_SEC - 1) / RPC_PAYLOAD_RATE_BYTES_PER_SEC;
+    let throughput_seconds = payload_size.div_ceil(RPC_PAYLOAD_RATE_BYTES_PER_SEC);
     Duration::from_secs((RPC_PAYLOAD_GRACE_SECS + throughput_seconds).min(RPC_PAYLOAD_MAX_SECS))
 }
 
@@ -271,7 +270,7 @@ mod tests {
         let sender = tokio::spawn(async move {
             let mut frame = vec![RPC_CMD_REGISTER_PEER];
             frame.extend_from_slice(&131u64.to_le_bytes());
-            frame.extend_from_slice(&vec![0u8; 131]);
+            frame.extend_from_slice(&[0u8; 131]);
             source_write.write_all(&frame).await.unwrap();
         });
 

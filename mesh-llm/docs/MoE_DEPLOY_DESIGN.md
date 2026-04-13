@@ -94,10 +94,14 @@ else:
 ```
 
 `lookup_moe_config()` checks the current ranking sources in descending quality:
-1. **cached full analyze**
-2. **cached/imported micro-analyze**
-3. **peer-first micro-analyze on cold start**
-4. **sequential fallback**
+1. **published full analyze** from `meshllm/moe-rankings`
+2. **cached full analyze**
+3. **published micro-analyze** from `meshllm/moe-rankings`
+4. **cached/imported micro-analyze**
+5. **peer-first micro-analyze on cold start**
+6. **sequential fallback**
+
+Published rankings are downloaded through the normal Hugging Face cache and remain there. mesh-llm does not copy dataset artifacts into its own cache.
 
 ### Step 3: Compute assignments (`moe.rs`)
 
@@ -144,14 +148,20 @@ As mesh-llm moves toward protocol-level `ServedModelDescriptor` objects, MoE sho
 
 Planned source priority:
 
-1. precomputed MoE data in this repo
-2. Hugging Face metadata for exact `repository + revision + artifact`
-3. GGUF header fallback
-4. later, cached `moe-analyze` output for that exact descriptor identity
+1. published `moe-analyze` data in `meshllm/moe-rankings`
+2. local cached `moe-analyze` output for that exact descriptor identity
+3. Hugging Face metadata for exact `repository + revision + artifact`
+4. GGUF header fallback
 
 This gives us two important properties:
 
 - **revision-aware grouping**: nodes can confirm they are serving the same exact MoE snapshot before coordinating
 - **clean future analysis flow**: `moe-analyze` can improve topology later without changing the contract for how topology is identified
+
+Contribution flow:
+
+- use `mesh-llm moe analyze full` or `mesh-llm moe analyze micro` to generate local rankings
+- use `mesh-llm moe share` to open contribution PRs against `meshllm/moe-rankings`
+- when `serve` had to generate a local ranking because no published one was available, it should suggest `mesh-llm moe share <model>`
 
 Longer term, we may also use lighter-weight local signals such as short warm-up inference or recent router statistics to improve unknown models. That data should remain explicitly lower-confidence than `moe-analyze`, and should be treated as a hinting/calibration layer rather than the canonical topology source.

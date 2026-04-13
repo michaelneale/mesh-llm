@@ -12,6 +12,8 @@ use crate::network::router;
 use crate::plugin;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -1962,7 +1964,7 @@ pub async fn handle_mesh_request(
     let routed_model =
         if request.model_name.is_none() || request.model_name.as_deref() == Some("auto") {
             if let Some(body_json) = request.body_json.as_ref() {
-                let cl = router::classify(&body_json);
+                let cl = router::classify(body_json);
                 let served = node.models_being_served().await;
                 let media = router::media_requirements(body_json);
                 let available: Vec<(&str, f64)> = served
@@ -2205,127 +2207,136 @@ async fn route_attempt_for_target(
     }
 }
 
-pub async fn route_model_request(
-    node: mesh::Node,
-    tcp_stream: TcpStream,
-    targets: &election::ModelTargets,
-    model: &str,
-    parsed_body: Option<&serde_json::Value>,
-    prefetched: &[u8],
-    response_adapter: ResponseAdapter,
-    affinity: &AffinityRouter,
-) -> bool {
-    let mut tcp_stream = tcp_stream;
-    let ordered_candidates =
-        order_targets_by_context(&node, model, parsed_body, &targets.candidates(model)).await;
-    if ordered_candidates.is_empty() {
-        return false;
-    }
+type RouteModelRequestFn = for<'a> fn(
+    mesh::Node,
+    TcpStream,
+    &'a election::ModelTargets,
+    &'a str,
+    Option<&'a serde_json::Value>,
+    &'a [u8],
+    ResponseAdapter,
+    &'a AffinityRouter,
+) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
-    let selection = crate::network::affinity::select_model_target_from_candidates(
-        targets,
-        &ordered_candidates,
-        model,
-        parsed_body,
-        affinity,
-    );
-    if matches!(selection.target, election::InferenceTarget::None) {
-        let _ = send_503(
-            tcp_stream,
-            &format!(
-                "target for model '{model}' resolved to None (election in progress or host down)"
-            ),
-        )
-        .await;
-        return true;
-    }
-
-    if let (Some(prefix_hash), Some(cached_target)) = (
-        selection.learn_prefix_hash,
-        selection.cached_target.as_ref(),
-    ) {
-        let required_tokens = parsed_body.and_then(request_budget_tokens);
-        let cached_context = match cached_target {
-            election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
-                node.local_model_context_length(model).await
+pub const ROUTE_MODEL_REQUEST: RouteModelRequestFn =
+    |node, tcp_stream, targets, model, parsed_body, prefetched, response_adapter, affinity| {
+        Box::pin(async move {
+            let mut tcp_stream = tcp_stream;
+            let ordered_candidates =
+                order_targets_by_context(&node, model, parsed_body, &targets.candidates(model))
+                    .await;
+            if ordered_candidates.is_empty() {
+                return false;
             }
-            election::InferenceTarget::Remote(peer_id)
-            | election::InferenceTarget::MoeRemote(peer_id) => {
-                node.peer_model_context_length(*peer_id, model).await
-            }
-            election::InferenceTarget::None => None,
-        };
-        if matches!(
-            (required_tokens, cached_context),
-            (Some(required), Some(context)) if context < required
-        ) {
-            affinity.forget_target(model, prefix_hash, cached_target);
-        }
-    }
 
-    let mut ordered = ordered_candidates;
-    move_target_first(&mut ordered, &selection.target);
-    let total_targets = ordered.len();
-    let mut refreshed = false;
-    for (idx, target) in ordered.into_iter().enumerate() {
-        let retry_context_overflow = idx + 1 < total_targets;
-        match route_attempt_for_target(
-            &node,
-            &mut tcp_stream,
-            &target,
-            prefetched,
-            retry_context_overflow,
-            response_adapter,
-        )
-        .await
-        {
-            RouteAttemptResult::Delivered { status_code } => {
-                if should_learn_affinity(status_code) {
-                    if let Some(prefix_hash) = selection.learn_prefix_hash {
-                        affinity.learn_target(model, prefix_hash, &target);
-                    }
-                }
+            let selection = crate::network::affinity::select_model_target_from_candidates(
+                targets,
+                &ordered_candidates,
+                model,
+                parsed_body,
+                affinity,
+            );
+            if matches!(selection.target, election::InferenceTarget::None) {
+                let _ = send_503(
+                    tcp_stream,
+                    &format!(
+                        "target for model '{model}' resolved to None (election in progress or host down)"
+                    ),
+                )
+                .await;
                 return true;
             }
-            RouteAttemptResult::RetryableContextOverflow => {
-                if let (Some(prefix_hash), Some(cached_target)) = (
-                    selection.learn_prefix_hash,
-                    selection.cached_target.as_ref(),
-                ) {
-                    if cached_target == &target {
-                        affinity.forget_target(model, prefix_hash, &target);
-                    }
-                }
-                tracing::warn!("Target {target:?} rejected request with context overflow-style 400, trying next");
-            }
-            RouteAttemptResult::RetryableUnavailable => {
-                if let (Some(prefix_hash), Some(cached_target)) = (
-                    selection.learn_prefix_hash,
-                    selection.cached_target.as_ref(),
-                ) {
-                    if cached_target == &target {
-                        affinity.forget_target(model, prefix_hash, &target);
-                    }
-                }
-                if !refreshed {
-                    let refresh_node = node.clone();
-                    tokio::spawn(async move {
-                        refresh_node.gossip_one_peer().await;
-                    });
-                    refreshed = true;
-                }
-                tracing::warn!("Target {target:?} unavailable, trying next");
-            }
-        }
-    }
 
-    let _ = send_503(
-        tcp_stream,
-        &format!("all {} target(s) for model '{model}' failed", total_targets),
-    )
-    .await;
-    true
-}
+            if let (Some(prefix_hash), Some(cached_target)) = (
+                selection.learn_prefix_hash,
+                selection.cached_target.as_ref(),
+            ) {
+                let required_tokens = parsed_body.and_then(request_budget_tokens);
+                let cached_context = match cached_target {
+                    election::InferenceTarget::Local(_)
+                    | election::InferenceTarget::MoeLocal(_) => {
+                        node.local_model_context_length(model).await
+                    }
+                    election::InferenceTarget::Remote(peer_id)
+                    | election::InferenceTarget::MoeRemote(peer_id) => {
+                        node.peer_model_context_length(*peer_id, model).await
+                    }
+                    election::InferenceTarget::None => None,
+                };
+                if matches!(
+                    (required_tokens, cached_context),
+                    (Some(required), Some(context)) if context < required
+                ) {
+                    affinity.forget_target(model, prefix_hash, cached_target);
+                }
+            }
+
+            let mut ordered = ordered_candidates;
+            move_target_first(&mut ordered, &selection.target);
+            let total_targets = ordered.len();
+            let mut refreshed = false;
+            for (idx, target) in ordered.into_iter().enumerate() {
+                let retry_context_overflow = idx + 1 < total_targets;
+                match route_attempt_for_target(
+                    &node,
+                    &mut tcp_stream,
+                    &target,
+                    prefetched,
+                    retry_context_overflow,
+                    response_adapter,
+                )
+                .await
+                {
+                    RouteAttemptResult::Delivered { status_code } => {
+                        if should_learn_affinity(status_code) {
+                            if let Some(prefix_hash) = selection.learn_prefix_hash {
+                                affinity.learn_target(model, prefix_hash, &target);
+                            }
+                        }
+                        return true;
+                    }
+                    RouteAttemptResult::RetryableContextOverflow => {
+                        if let (Some(prefix_hash), Some(cached_target)) = (
+                            selection.learn_prefix_hash,
+                            selection.cached_target.as_ref(),
+                        ) {
+                            if cached_target == &target {
+                                affinity.forget_target(model, prefix_hash, &target);
+                            }
+                        }
+                        tracing::warn!("Target {target:?} rejected request with context overflow-style 400, trying next");
+                    }
+                    RouteAttemptResult::RetryableUnavailable => {
+                        if let (Some(prefix_hash), Some(cached_target)) = (
+                            selection.learn_prefix_hash,
+                            selection.cached_target.as_ref(),
+                        ) {
+                            if cached_target == &target {
+                                affinity.forget_target(model, prefix_hash, &target);
+                            }
+                        }
+                        if !refreshed {
+                            let refresh_node = node.clone();
+                            tokio::spawn(async move {
+                                refresh_node.gossip_one_peer().await;
+                            });
+                            refreshed = true;
+                        }
+                        tracing::warn!("Target {target:?} unavailable, trying next");
+                    }
+                }
+            }
+
+            let _ = send_503(
+                tcp_stream,
+                &format!("all {} target(s) for model '{model}' failed", total_targets),
+            )
+            .await;
+            true
+        })
+    };
+
+pub use ROUTE_MODEL_REQUEST as route_model_request;
 
 pub async fn route_moe_request(
     node: mesh::Node,

@@ -8,7 +8,7 @@ mod network;
 mod plugin;
 mod plugins;
 mod protocol;
-pub(crate) mod runtime;
+mod runtime;
 mod system;
 
 pub mod proto {
@@ -21,7 +21,7 @@ pub(crate) use plugins::blackboard;
 
 use anyhow::Result;
 
-pub const VERSION: &str = "0.59.0";
+pub const VERSION: &str = "0.60.0-rc.2";
 
 pub async fn run() -> Result<()> {
     runtime::run().await
