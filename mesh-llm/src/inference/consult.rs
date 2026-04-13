@@ -147,6 +147,10 @@ async fn chat_completion_inner(
         "max_tokens": max_tokens,
         "temperature": 0.3,
         "stream": false,
+        // Disable hooks on the peer — prevent recursive consultation loops.
+        // Without this, the peer could consult another peer about our request,
+        // which could consult another, etc.
+        "mesh_hooks": false,
     });
     let body_bytes = serde_json::to_vec(&request_body)?;
 
