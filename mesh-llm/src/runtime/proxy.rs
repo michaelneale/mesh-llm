@@ -66,33 +66,6 @@ pub(super) async fn api_proxy(
                     }
 
                     let path = request.path.split('?').next().unwrap_or(&request.path);
-
-                    // Mesh hook callbacks from llama-server — handle directly in proxy
-                    // since the management API may share this port.
-                    if request.method == "POST" && path == "/mesh/hook" {
-                        use crate::inference::virtual_llm;
-                        let body = String::from_utf8_lossy(&request.raw);
-                        // Extract JSON body after headers
-                        let body_str = body.find("\r\n\r\n").map(|i| &body[i + 4..]).unwrap_or("");
-                        let payload: serde_json::Value =
-                            serde_json::from_str(body_str).unwrap_or_default();
-                        let hook = payload["hook"].as_str().unwrap_or("unknown");
-                        let response = match hook {
-                            "pre_inference" => {
-                                virtual_llm::handle_pre_inference(&node, &payload).await
-                            }
-                            "post_prefill" | "mid_generation" => {
-                                virtual_llm::handle_post_prefill(&node, &payload).await
-                            }
-                            "pre_response" => {
-                                virtual_llm::handle_pre_response(&node, &payload).await
-                            }
-                            _ => serde_json::json!({ "action": "none" }),
-                        };
-                        let _ = proxy::send_json_ok(tcp_stream, &response).await;
-                        return;
-                    }
-
                     if request.method == "POST" && path == "/mesh/load" {
                         if let Some(ref spec) = request.model_name {
                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
