@@ -1763,9 +1763,17 @@ impl Node {
         });
     }
 
+    /// Decode an invite token into an [`EndpointAddr`] without connecting.
+    /// Returns `Err` if the token is not valid base64 or not valid JSON.
+    pub fn decode_invite_token(invite_token: &str) -> Result<EndpointAddr> {
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(invite_token)
+            .context("invalid invite token encoding")?;
+        serde_json::from_slice(&json).context("invalid invite token JSON")
+    }
+
     pub async fn join(&self, invite_token: &str) -> Result<()> {
-        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(invite_token)?;
-        let addr: EndpointAddr = serde_json::from_slice(&json)?;
+        let addr = Self::decode_invite_token(invite_token)?;
         // Clear dead status — explicit join should always attempt connection
         self.state.lock().await.dead_peers.remove(&addr.id);
         self.connect_to_peer(addr).await

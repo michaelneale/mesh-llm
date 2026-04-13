@@ -765,8 +765,24 @@ pub async fn discover(
 
         let listing: MeshListing = match serde_json::from_str(&event.content) {
             Ok(l) => l,
-            Err(_) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "Skipping Nostr listing from {}: bad JSON: {err}",
+                    event.pubkey.to_bech32().unwrap_or_default()
+                );
+                continue;
+            }
         };
+
+        // Reject listings with invalid invite tokens before they enter the
+        // candidate pool — a bad token here would poison the entire auto-join.
+        if let Err(err) = crate::mesh::Node::decode_invite_token(&listing.invite_token) {
+            tracing::warn!(
+                "Skipping Nostr listing from {}: {err}",
+                event.pubkey.to_bech32().unwrap_or_default()
+            );
+            continue;
+        }
 
         let publisher_npub = event.pubkey.to_bech32().unwrap_or_default();
         let discovered = DiscoveredMesh {
@@ -1762,6 +1778,27 @@ mod key_file_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use base64::Engine;
+
+    fn fake_invite_token() -> String {
+        // Build a syntactically valid invite token by encoding a minimal
+        // EndpointAddr JSON. We use Node::invite_token indirectly by just
+        // crafting the JSON that decode_invite_token expects.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // EndpointAddr serialises as {"id":"<base32>","addrs":[]}
+        // We need a valid 32-byte public key. Use a deterministic one.
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&n.to_le_bytes());
+        let key = iroh::SecretKey::from_bytes(&seed);
+        let addr = iroh::EndpointAddr {
+            id: iroh::EndpointId::from(key.public()),
+            addrs: Default::default(),
+        };
+        let json = serde_json::to_vec(&addr).expect("serialize");
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    }
 
     /// End-to-end: two publishers advertise the same mesh, a reusable
     /// DiscoveryClient finds both listings, and fields round-trip correctly.
@@ -1777,8 +1814,10 @@ mod integration_tests {
         let pub_a = Publisher::new(keys_a.clone(), &relays)
             .await
             .expect("pub_a");
+        let token_a = fake_invite_token();
+        let token_b = fake_invite_token();
         let listing_a = MeshListing {
-            invite_token: "invite-a".into(),
+            invite_token: token_a.clone(),
             serving: vec!["Qwen3-8B-Q4_K_M".into()],
             wanted: vec![],
             on_disk: vec![],
@@ -1798,7 +1837,7 @@ mod integration_tests {
             .await
             .expect("pub_b");
         let mut listing_b = listing_a.clone();
-        listing_b.invite_token = "invite-b".into();
+        listing_b.invite_token = token_b.clone();
         pub_b.publish(&listing_b, 120).await.expect("publish B");
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1832,12 +1871,12 @@ mod integration_tests {
             .map(|m| m.listing.invite_token.as_str())
             .collect();
         assert!(
-            tokens.contains(&"invite-a"),
-            "missing invite-a in {tokens:?}"
+            tokens.contains(&token_a.as_str()),
+            "missing token_a in {tokens:?}"
         );
         assert!(
-            tokens.contains(&"invite-b"),
-            "missing invite-b in {tokens:?}"
+            tokens.contains(&token_b.as_str()),
+            "missing token_b in {tokens:?}"
         );
 
         // Second discover with same client still works
