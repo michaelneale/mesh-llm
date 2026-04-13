@@ -76,7 +76,7 @@ After prompt evaluation, before first token. Fires when the model looks uncertai
 }
 ```
 
-Only fires if Hook 1 set an `entropy_threshold`.
+Always armed with a default `entropy_threshold` of 5.0. Hook 1 can override the threshold if it fires (e.g. lower it for specific request types).
 
 **Response options:**
 - `{"action": "inject", "text": "The relevant code is in auth.rs: ..."}` — text is tokenized and decoded into the KV cache. The model processes the injected context as if it were part of the original prompt, then generates from that informed state. This is the key mechanism: a small uncertain model receives context from a stronger model and generates a correct response.
@@ -181,8 +181,7 @@ Prompt is 3500 tokens in a 4096 context.
 
 User asks a factual question. Small model finishes prefill but is uncertain how to start.
 
-1. Hook 1 fires: sets `entropy_threshold: 3.0` to arm Hook 2.
-2. Prefill completes. First-token entropy is 6.8, margin is 0.02 — Hook 2 fires.
+1. Prefill completes. First-token entropy is 6.8, margin is 0.02 — exceeds default threshold of 5.0, Hook 2 fires.
 3. mesh-llm sees the model is uncertain, looks up the original request, sends it to a stronger model in the mesh.
 4. Stronger model returns a concise answer: "The auth flow uses JWT tokens validated in auth.rs."
 5. mesh-llm returns `{"action": "inject", "text": "The auth flow uses JWT tokens validated in auth.rs."}`.

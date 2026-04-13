@@ -98,7 +98,7 @@ struct mesh_hook_ctx {
     std::string request_id;
 
     // configured by Hook 1 response
-    float entropy_threshold = -1.0f;  // <0 = skip Hook 2
+    float entropy_threshold = 5.0f;   // default: fire Hook 2 when entropy > 5.0
     bool  verify            = false;  // false = Hook 3 only on triggers
 
     // pre-inference trigger state (computed from request)
@@ -124,7 +124,7 @@ struct mesh_hook_ctx {
 
     void reset() {
         request_id.clear();
-        entropy_threshold = -1.0f;
+        entropy_threshold = 5.0f;
         verify = false;
         has_images_no_multimodal = false;
         has_audio_no_support = false;
