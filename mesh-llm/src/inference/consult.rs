@@ -92,6 +92,10 @@ pub async fn find_different_model_peers(
         .collect();
 
     candidates.sort_by_key(|(_, _, score)| *score);
+    // Deduplicate by model name — two nodes running the same model
+    // don't give diversity, just redundancy. Keep the best-scored one.
+    let mut seen_models = std::collections::HashSet::new();
+    candidates.retain(|(_, model, _)| seen_models.insert(model.clone()));
     candidates.truncate(n);
     candidates.into_iter().map(|(id, m, _)| (id, m)).collect()
 }
