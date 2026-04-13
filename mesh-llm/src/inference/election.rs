@@ -2544,6 +2544,67 @@ async fn moe_election_loop(
     }
 }
 
+/// Minimum minor-version gap before a peer is considered "too old" to route to
+/// when newer alternatives exist for the same model.  A gap of 5 minor versions
+/// (e.g. 0.55 vs 0.60) means the older node is likely missing important routing,
+/// protocol, or inference improvements.
+const OLD_NODE_MINOR_VERSION_GAP: u64 = 5;
+
+/// Remove remote targets whose mesh-llm version is OLD_NODE_MINOR_VERSION_GAP+
+/// minor versions behind the newest peer serving the same model — but only when
+/// at least one non-old target remains.  Local targets and unknown-version peers
+/// are never removed.
+fn filter_old_node_targets(
+    targets: &mut HashMap<String, Vec<InferenceTarget>>,
+    peer_versions: &HashMap<iroh::EndpointId, Option<semver::Version>>,
+) {
+    for model_targets in targets.values_mut() {
+        if model_targets.len() < 2 {
+            continue;
+        }
+
+        // Find the newest version among remote targets for this model.
+        let newest = model_targets
+            .iter()
+            .filter_map(|t| match t {
+                InferenceTarget::Remote(id) | InferenceTarget::MoeRemote(id) => {
+                    peer_versions.get(id).and_then(|v| v.as_ref())
+                }
+                _ => None,
+            })
+            .max();
+
+        let Some(newest) = newest else {
+            continue;
+        };
+        let newest_minor = newest.minor;
+
+        // Partition into kept and old.  A target is "old" when:
+        //   1. It's Remote/MoeRemote (never filter locals).
+        //   2. Its version is known AND at least OLD_NODE_MINOR_VERSION_GAP minor
+        //      versions behind the newest.
+        //
+        // Unknown-version peers are kept — they could be dev builds.
+        let (kept, old): (Vec<_>, Vec<_>) = model_targets.iter().cloned().partition(|t| {
+            match t {
+                InferenceTarget::Remote(id) | InferenceTarget::MoeRemote(id) => {
+                    let Some(Some(v)) = peer_versions.get(id) else {
+                        return true; // unknown version → keep
+                    };
+                    newest_minor.saturating_sub(v.minor) < OLD_NODE_MINOR_VERSION_GAP
+                }
+                _ => true, // local → always keep
+            }
+        });
+
+        // Only apply the filter if at least one target survives.
+        if !kept.is_empty() && !old.is_empty() {
+            eprintln!("⚠ Skipping {} old node(s) (newest v{newest})", old.len());
+            *model_targets = kept;
+        }
+    }
+}
+
 /// Update the model targets map — sets our model's target and includes
 /// targets for other models we know about from peers.
 /// When multiple nodes serve the same model, all are included for load balancing.
@@ -2607,10 +2668,23 @@ async fn update_targets(
     }
 
     // All peers — group by model (multi-model aware)
+    // Build peer_id → version map for old-node filtering.
+    let mut peer_versions: HashMap<iroh::EndpointId, Option<semver::Version>> = HashMap::new();
     for p in &peers {
         let peer_models = p.routable_models();
         extend_targets_from_peer(&mut targets, &peer_models, &p.role, p.id);
+        let parsed = p
+            .version
+            .as_deref()
+            .and_then(|v| semver::Version::parse(v).ok());
+        peer_versions.insert(p.id, parsed);
     }
+
+    // Deprioritize old nodes: for each model served by multiple peers, find the
+    // newest peer version.  If a peer is OLD_NODE_MINOR_VERSION_GAP+ minor versions
+    // behind, remove it — but only when at least one newer alternative remains.
+    // Unknown-version peers are never filtered (could be dev builds).
+    filter_old_node_targets(&mut targets, &peer_versions);
 
     let count: usize = targets.values().map(|v| v.len()).sum();
     if count > 1 {
@@ -3627,5 +3701,111 @@ mod tests {
         assert!(!should_use_row_split(Some(BinaryFlavor::Metal), 8));
         assert!(!should_use_row_split(Some(BinaryFlavor::Vulkan), 4));
         assert!(!should_use_row_split(Some(BinaryFlavor::Cpu), 4));
+    }
+
+    #[test]
+    fn filter_old_node_targets_removes_stale_peers() {
+        let id_new = make_id(1);
+        let id_old = make_id(2);
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            "qwen3-32b".to_string(),
+            vec![
+                InferenceTarget::Remote(id_new),
+                InferenceTarget::Remote(id_old),
+            ],
+        );
+
+        let mut versions = HashMap::new();
+        versions.insert(id_new, Some(semver::Version::new(0, 60, 0)));
+        versions.insert(id_old, Some(semver::Version::new(0, 50, 0)));
+
+        filter_old_node_targets(&mut targets, &versions);
+        assert_eq!(targets["qwen3-32b"].len(), 1);
+        assert_eq!(targets["qwen3-32b"][0], InferenceTarget::Remote(id_new));
+    }
+
+    #[test]
+    fn filter_old_node_targets_keeps_close_versions() {
+        let id_a = make_id(1);
+        let id_b = make_id(2);
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            "qwen3-32b".to_string(),
+            vec![InferenceTarget::Remote(id_a), InferenceTarget::Remote(id_b)],
+        );
+
+        let mut versions = HashMap::new();
+        versions.insert(id_a, Some(semver::Version::new(0, 60, 0)));
+        versions.insert(id_b, Some(semver::Version::new(0, 56, 0)));
+
+        filter_old_node_targets(&mut targets, &versions);
+        // Gap is 4, threshold is 5 — both kept.
+        assert_eq!(targets["qwen3-32b"].len(), 2);
+    }
+
+    #[test]
+    fn filter_old_node_targets_keeps_unknown_versions() {
+        let id_new = make_id(1);
+        let id_unknown = make_id(2);
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            "qwen3-32b".to_string(),
+            vec![
+                InferenceTarget::Remote(id_new),
+                InferenceTarget::Remote(id_unknown),
+            ],
+        );
+
+        let mut versions = HashMap::new();
+        versions.insert(id_new, Some(semver::Version::new(0, 60, 0)));
+        versions.insert(id_unknown, None); // dev build, no version
+
+        filter_old_node_targets(&mut targets, &versions);
+        // Unknown version is never filtered.
+        assert_eq!(targets["qwen3-32b"].len(), 2);
+    }
+
+    #[test]
+    fn filter_old_node_targets_never_removes_local() {
+        let id_old = make_id(1);
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            "qwen3-32b".to_string(),
+            vec![
+                InferenceTarget::Local(8080),
+                InferenceTarget::Remote(id_old),
+            ],
+        );
+
+        let mut versions = HashMap::new();
+        versions.insert(id_old, Some(semver::Version::new(0, 50, 0)));
+        // No "new" remote peer — the local target has no version entry.
+
+        filter_old_node_targets(&mut targets, &versions);
+        // Only one remote (old) + local — no newer remote exists, so nothing filtered.
+        assert_eq!(targets["qwen3-32b"].len(), 2);
+    }
+
+    #[test]
+    fn filter_old_node_targets_does_not_remove_sole_target() {
+        let id_old = make_id(1);
+
+        let mut targets = HashMap::new();
+        targets.insert(
+            "qwen3-32b".to_string(),
+            vec![InferenceTarget::Remote(id_old)],
+        );
+
+        let mut versions = HashMap::new();
+        versions.insert(id_old, Some(semver::Version::new(0, 50, 0)));
+
+        filter_old_node_targets(&mut targets, &versions);
+        // Single target — never removed.
+        assert_eq!(targets["qwen3-32b"].len(), 1);
     }
 }
