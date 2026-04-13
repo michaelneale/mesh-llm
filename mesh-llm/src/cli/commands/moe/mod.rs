@@ -751,3 +751,5 @@ fn shell_join(command: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+#[cfg(test)]
+pub(crate) use hf_jobs::{release_target_job_image_for, release_target_versioned_linux_asset_name};

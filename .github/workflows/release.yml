@@ -94,6 +94,53 @@ jobs:
       cache_key_prefix: 'release-'
       workflow_cache_file: .github/workflows/release.yml
 
+  build_linux_arm64:
+    name: Build Linux ARM64 CPU
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - name: Install system dependencies (Linux ARM64)
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Build ARM64 CPU release bundle
+        shell: bash
+        run: |
+          just --shell bash --shell-arg -lc release-build-arm64
+          just --shell bash --shell-arg -lc release-bundle-arm64 "${GITHUB_REF_NAME}" dist
+
+      - name: Upload ARM64 CPU release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-arm64
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
   build_linux_cuda:
     name: Build Linux CUDA
     runs-on: ubuntu-latest
@@ -375,6 +422,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
+      - build_linux_arm64
       - build_linux_cuda
       - build_linux_rocm
       - build_linux_vulkan

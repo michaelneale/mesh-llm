@@ -5,7 +5,9 @@ use serde_json::json;
 use std::path::Path;
 
 use crate::cli::moe::{HfJobArgs, HfJobReleaseTarget};
+use crate::inference::launch::BinaryFlavor;
 use crate::models;
+use crate::system::release_target::{CanonicalArch, CanonicalOs, ReleaseTarget};
 
 const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
 const CPU_JOB_IMAGE: &str = "ghcr.io/astral-sh/uv:python3.12-bookworm";
@@ -432,18 +434,43 @@ fn estimate_cost_usd(unit_cost_usd: f64, unit_label: &str, timeout_seconds: u64)
     Ok(max_cost)
 }
 
-fn release_asset_name(release_tag: &str, release_target: HfJobReleaseTarget) -> String {
-    let target_suffix = match release_target {
-        HfJobReleaseTarget::Cpu => "x86_64-unknown-linux-gnu".to_string(),
-        HfJobReleaseTarget::Cuda => "x86_64-unknown-linux-gnu-cuda".to_string(),
-        HfJobReleaseTarget::Rocm => "x86_64-unknown-linux-gnu-rocm".to_string(),
-        HfJobReleaseTarget::Vulkan => "x86_64-unknown-linux-gnu-vulkan".to_string(),
-    };
-    if release_tag == "latest" {
-        format!("mesh-llm-{target_suffix}.tar.gz")
-    } else {
-        format!("mesh-llm-{release_tag}-{target_suffix}.tar.gz")
+fn hf_job_binary_flavor(release_target: HfJobReleaseTarget) -> BinaryFlavor {
+    match release_target {
+        HfJobReleaseTarget::Cpu => BinaryFlavor::Cpu,
+        HfJobReleaseTarget::Cuda => BinaryFlavor::Cuda,
+        HfJobReleaseTarget::Rocm => BinaryFlavor::Rocm,
+        HfJobReleaseTarget::Vulkan => BinaryFlavor::Vulkan,
     }
+}
+
+fn linux_x86_64_release_target(flavor: BinaryFlavor) -> ReleaseTarget {
+    ReleaseTarget::new(CanonicalOs::Linux, CanonicalArch::X86_64, flavor)
+}
+
+fn release_asset_name(release_tag: &str, release_target: HfJobReleaseTarget) -> String {
+    let target = linux_x86_64_release_target(hf_job_binary_flavor(release_target));
+    if release_tag == "latest" {
+        target
+            .stable_asset_name()
+            .expect("linux x86_64 HF job targets must have a stable release asset")
+    } else {
+        target
+            .versioned_asset_name(release_tag)
+            .expect("linux x86_64 HF job targets must have a versioned release asset")
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_versioned_linux_asset_name(
+    release_tag: &str,
+    flavor: BinaryFlavor,
+) -> Option<String> {
+    linux_x86_64_release_target(flavor).versioned_asset_name(release_tag)
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_job_image_for(release_target: HfJobReleaseTarget) -> &'static str {
+    job_image(release_target)
 }
 
 fn release_download_url(release_repo: &str, release_tag: &str, asset_name: &str) -> String {
@@ -508,6 +535,14 @@ mod tests {
             release_asset_name("v0.1.0", HfJobReleaseTarget::Cuda),
             "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-cuda.tar.gz"
         );
+        assert_eq!(
+            release_asset_name("v0.1.0", HfJobReleaseTarget::Rocm),
+            "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-rocm.tar.gz"
+        );
+        assert_eq!(
+            release_asset_name("v0.1.0", HfJobReleaseTarget::Vulkan),
+            "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-vulkan.tar.gz"
+        );
     }
 
     #[test]
@@ -520,6 +555,29 @@ mod tests {
             job_image(HfJobReleaseTarget::Cuda),
             "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
         );
+        assert_eq!(
+            job_image(HfJobReleaseTarget::Rocm),
+            "rocm/pytorch:rocm6.3_ubuntu24.04_py3.12_pytorch_release_2.4.0"
+        );
+        assert_eq!(
+            job_image(HfJobReleaseTarget::Vulkan),
+            "ghcr.io/astral-sh/uv:python3.12-bookworm"
+        );
+    }
+
+    #[test]
+    fn release_target_hf_jobs_parity() {
+        for (release_target, flavor) in [
+            (HfJobReleaseTarget::Cpu, BinaryFlavor::Cpu),
+            (HfJobReleaseTarget::Cuda, BinaryFlavor::Cuda),
+            (HfJobReleaseTarget::Rocm, BinaryFlavor::Rocm),
+            (HfJobReleaseTarget::Vulkan, BinaryFlavor::Vulkan),
+        ] {
+            assert_eq!(
+                release_asset_name("v0.60.0", release_target),
+                release_target_versioned_linux_asset_name("v0.60.0", flavor).unwrap()
+            );
+        }
     }
 
     #[test]

@@ -202,3 +202,5 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
     }?;
     Ok(true)
 }
+#[cfg(test)]
+pub(crate) use moe::{release_target_job_image_for, release_target_versioned_linux_asset_name};

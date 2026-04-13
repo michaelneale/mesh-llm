@@ -84,7 +84,7 @@ just release-build-cuda-windows
 just release-bundle-cuda-windows v0.X.0
 ```
 
-GitHub Actions uses hosted `windows-2022` runners for compile-only Windows CI and release packaging. The workflow installs CUDA, HIP SDK, and Vulkan SDK on demand before invoking the same `just` recipes.
+GitHub Actions uses hosted `windows-2022` runners for compile-only Windows CI. The release workflow keeps the Windows release build/publish block commented out for now, so Windows release packaging is currently local-only via the `*-windows` `just` recipes above.
 
 Create a portable bundle:
 
@@ -140,6 +140,7 @@ just ui-dev http://127.0.0.1:3131 5174
 ```bash
 just stop             # stop mesh/rpc/llama processes
 just test             # quick test against :9337
+just check-release    # release-target/docs/workflow parity check
 just compat-smoke ~/.cache/huggingface/hub/<model>.gguf   # optional 2-node + 1-client Python/Node/LiteLLM smoke
 just --list           # list all recipes
 ```

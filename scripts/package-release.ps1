@@ -69,6 +69,27 @@ function Get-BinaryFlavor {
     return "cpu"
 }
 
+function Get-FlavorSuffix {
+    param([string]$BinaryFlavor)
+
+    if (-not $BinaryFlavor -or $BinaryFlavor -in @("cpu", "metal")) {
+        return ""
+    }
+
+    return "-$BinaryFlavor"
+}
+
+function New-ReleaseAssetName {
+    param(
+        [string]$Prefix,
+        [string]$TargetTriple,
+        [string]$ArchiveExt,
+        [string]$BinaryFlavor
+    )
+
+    return "$Prefix-$TargetTriple$(Get-FlavorSuffix $BinaryFlavor).$ArchiveExt"
+}
+
 function Get-BundleBinaryName {
     param(
         [string]$BaseName,
@@ -140,14 +161,8 @@ $Flavor = Normalize-RecipeArgument $Flavor @("flavor", "backend")
 $binaryFlavor = Get-BinaryFlavor $Flavor
 $targetTriple = "x86_64-pc-windows-msvc"
 $archiveExt = "zip"
-$stableAsset = "mesh-llm-$targetTriple.$archiveExt"
-
-if ($Flavor) {
-    $targetTriple = "$targetTriple-$binaryFlavor"
-    $stableAsset = "mesh-llm-$targetTriple.$archiveExt"
-}
-
-$versionedAsset = "mesh-llm-$Version-$targetTriple.$archiveExt"
+$stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
+$versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
 
 $meshBinary = Join-Path $releaseBinDir "mesh-llm.exe"
 $rpcBinary = Join-Path $buildBinDir "rpc-server.exe"

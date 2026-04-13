@@ -44,6 +44,7 @@ jobs:
               - 'mesh-llm/plugin/**'
               - 'mesh-llm/tests/**'
               - 'mesh-llm/proto/**'
+              - 'xtask/**'
               - 'mesh-llm/Cargo.toml'
               - 'mesh-llm/Cargo.lock'
               - 'Cargo.toml'
@@ -111,8 +112,10 @@ jobs:
 
       # Early-fail gate: runs before expensive compile/test work.
       - name: Check formatting
-        working-directory: mesh-llm
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
+
+      - name: Check release-target repo consistency
+        run: cargo run -p xtask -- repo-consistency release-targets
 
       # Build in dev/debug profile, NOT release. Two reasons:
       #  1. Build + Unit tests steps share one target/ subdir and one
@@ -239,8 +242,7 @@ jobs:
       # Early-fail gate: runs before expensive compile/test work.
       - name: Check formatting
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm
-        run: cargo fmt -- --check
+        run: cargo fmt --all -- --check
 
       # See linux job for rationale on building in dev/debug, not release.
       - name: Build mesh-llm binary (debug)

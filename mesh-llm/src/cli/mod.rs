@@ -888,3 +888,7 @@ mod tests {
         }
     }
 }
+#[cfg(test)]
+pub(crate) use self::commands::{
+    release_target_job_image_for, release_target_versioned_linux_asset_name,
+};

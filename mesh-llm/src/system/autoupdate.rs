@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{Cli, Command};
 use crate::inference::launch;
+use crate::system::release_target::{CanonicalArch, CanonicalOs, ReleaseTarget};
 use crate::VERSION;
 
 const DEFAULT_RELEASE_REPO: &str = "Mesh-LLM/mesh-llm";
@@ -42,8 +43,14 @@ struct ReleaseInfo {
 struct UpdateTarget {
     exe: PathBuf,
     install_dir: PathBuf,
-    asset_name: String,
+    release_target: ReleaseTarget,
     bundle_flavor: launch::BinaryFlavor,
+}
+
+#[derive(Clone, Copy)]
+enum ReleaseAssetPreference {
+    StableFirst,
+    VersionedFirst,
 }
 
 pub(crate) async fn check_for_update() {
@@ -58,7 +65,9 @@ pub(crate) async fn check_for_update() {
         // specific installed flavor's asset is present in the new release.
         let bundle_asset = std::env::current_exe().ok().and_then(|exe| {
             let (_, flavor) = bundle_install_dir(&exe, None)?;
-            stable_release_asset_name(flavor)
+            current_release_target(flavor).and_then(|target| {
+                resolve_release_asset_name(&release, target, ReleaseAssetPreference::StableFirst)
+            })
         });
         match bundle_asset {
             Some(ref asset) if release.assets.iter().any(|a| a == asset) => {
@@ -72,7 +81,7 @@ pub(crate) async fn check_for_update() {
                 // is not published in the new release — fall back to generic guidance.
                 #[cfg(not(windows))]
                 if release_has_any_platform_asset(
-                    &release.assets,
+                    &release,
                     std::env::consts::OS,
                     std::env::consts::ARCH,
                 ) {
@@ -83,7 +92,7 @@ pub(crate) async fn check_for_update() {
                 }
                 #[cfg(windows)]
                 if release_has_any_platform_asset(
-                    &release.assets,
+                    &release,
                     std::env::consts::OS,
                     std::env::consts::ARCH,
                 ) {
@@ -101,11 +110,38 @@ fn platform_has_release_assets() -> bool {
     platform_has_release_assets_for(std::env::consts::OS, std::env::consts::ARCH)
 }
 
+#[cfg(test)]
+fn platform_is_recognized_unsupported(os: &str, arch: &str) -> bool {
+    ReleaseTarget::from_raw(os, arch, launch::BinaryFlavor::Cpu)
+        .map(|target| target.support_status().is_recognized_unsupported())
+        .unwrap_or(false)
+}
+
 fn platform_has_release_assets_for(os: &str, arch: &str) -> bool {
-    matches!(
-        (os, arch),
-        ("macos", "aarch64") | ("linux", "x86_64") | ("windows", "x86_64")
-    )
+    launch::BinaryFlavor::ALL.into_iter().any(|flavor| {
+        ReleaseTarget::from_raw(os, arch, flavor)
+            .map(|target| target.support_status().is_supported())
+            .unwrap_or(false)
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_has_release_assets_for(os: &str, arch: &str) -> bool {
+    platform_has_release_assets_for(os, arch)
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_recognizes_unsupported_for(os: &str, arch: &str) -> bool {
+    platform_is_recognized_unsupported(os, arch)
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_stable_asset_name_for(
+    os: &str,
+    arch: &str,
+    flavor: launch::BinaryFlavor,
+) -> Option<String> {
+    stable_release_asset_name_for(os, arch, flavor)
 }
 
 pub(crate) async fn maybe_auto_update(cli: &Cli) -> Result<bool> {
@@ -131,17 +167,21 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
         eprintln!("mesh-llm is already up to date (v{VERSION}).");
         return Ok(());
     }
-    if !release
-        .assets
-        .iter()
-        .any(|asset| asset == &target.asset_name)
-    {
+    let asset_preference = if requested_version.is_some() {
+        ReleaseAssetPreference::VersionedFirst
+    } else {
+        ReleaseAssetPreference::StableFirst
+    };
+    let Some(asset_name) =
+        resolve_release_asset_name(&release, target.release_target, asset_preference)
+    else {
         bail!(
-            "Release v{} does not include {}.",
+            "Release v{} does not include a bundle for this install (tried: {}).",
             release.version,
-            target.asset_name
+            release_asset_candidates(target.release_target, &release.tag, asset_preference)
+                .join(", ")
         );
-    }
+    };
     if !path_is_writable(&target.exe) {
         bail!("{} is not writable.", target.exe.display());
     }
@@ -156,7 +196,7 @@ pub(crate) async fn run_update_command(cli: &Cli) -> Result<()> {
         &target.exe,
         &target.install_dir,
         &release,
-        &target.asset_name,
+        &asset_name,
         target.bundle_flavor,
         PostInstallAction::ExitAfterInstall,
     )
@@ -225,11 +265,11 @@ fn should_attempt_auto_update(cli: &Cli) -> bool {
 fn discover_update_target(cli: &Cli) -> Option<UpdateTarget> {
     let exe = std::env::current_exe().ok()?;
     let (install_dir, bundle_flavor) = bundle_install_dir(&exe, cli.llama_flavor)?;
-    let asset_name = stable_release_asset_name(bundle_flavor)?;
+    let release_target = current_release_target(bundle_flavor)?;
     Some(UpdateTarget {
         exe,
         install_dir,
-        asset_name,
+        release_target,
         bundle_flavor,
     })
 }
@@ -248,7 +288,7 @@ fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
             exe.display()
         );
     };
-    let Some(asset_name) = stable_release_asset_name(bundle_flavor) else {
+    let Some(release_target) = current_release_target(bundle_flavor) else {
         #[cfg(not(windows))]
         bail!("No published release bundle matches this install. Reinstall with {INSTALL_SCRIPT_URL}.");
         #[cfg(windows)]
@@ -258,7 +298,7 @@ fn require_update_target(cli: &Cli) -> Result<UpdateTarget> {
     Ok(UpdateTarget {
         exe,
         install_dir,
-        asset_name,
+        release_target,
         bundle_flavor,
     })
 }
@@ -273,13 +313,13 @@ async fn apply_update_if_available(
     if !version_newer(&release.version, VERSION) {
         return Ok(true);
     }
-    if !release
-        .assets
-        .iter()
-        .any(|asset| asset == &target.asset_name)
-    {
+    let Some(asset_name) = resolve_release_asset_name(
+        &release,
+        target.release_target,
+        ReleaseAssetPreference::StableFirst,
+    ) else {
         return Ok(false);
-    }
+    };
     if !path_is_writable(&target.exe) {
         eprintln!(
             "⚠️  Auto-update skipped: {} is not writable",
@@ -297,7 +337,7 @@ async fn apply_update_if_available(
         &target.exe,
         &target.install_dir,
         &release,
-        &target.asset_name,
+        &asset_name,
         target.bundle_flavor,
         action,
     )
@@ -323,53 +363,107 @@ async fn apply_update_if_available(
     Ok(true)
 }
 
-fn stable_release_asset_name(flavor: launch::BinaryFlavor) -> Option<String> {
-    stable_release_asset_name_for(std::env::consts::OS, std::env::consts::ARCH, flavor)
+fn current_release_target(flavor: launch::BinaryFlavor) -> Option<ReleaseTarget> {
+    ReleaseTarget::from_raw(std::env::consts::OS, std::env::consts::ARCH, flavor).ok()
 }
 
+#[cfg(test)]
 fn stable_release_asset_name_for(
     os: &str,
     arch: &str,
     flavor: launch::BinaryFlavor,
 ) -> Option<String> {
-    match (os, arch, flavor) {
-        ("macos", "aarch64", launch::BinaryFlavor::Metal) => {
-            Some("mesh-llm-aarch64-apple-darwin.tar.gz".to_string())
-        }
-        ("linux", "x86_64", launch::BinaryFlavor::Cpu) => {
-            Some("mesh-llm-x86_64-unknown-linux-gnu.tar.gz".to_string())
-        }
-        ("linux", "x86_64", launch::BinaryFlavor::Cuda) => {
-            Some("mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz".to_string())
-        }
-        ("linux", "x86_64", launch::BinaryFlavor::Rocm) => {
-            Some("mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz".to_string())
-        }
-        ("linux", "x86_64", launch::BinaryFlavor::Vulkan) => {
-            Some("mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz".to_string())
-        }
-        ("windows", "x86_64", launch::BinaryFlavor::Cpu) => {
-            Some("mesh-llm-x86_64-pc-windows-msvc.zip".to_string())
-        }
-        ("windows", "x86_64", launch::BinaryFlavor::Cuda) => {
-            Some("mesh-llm-x86_64-pc-windows-msvc-cuda.zip".to_string())
-        }
-        ("windows", "x86_64", launch::BinaryFlavor::Rocm) => {
-            Some("mesh-llm-x86_64-pc-windows-msvc-rocm.zip".to_string())
-        }
-        ("windows", "x86_64", launch::BinaryFlavor::Vulkan) => {
-            Some("mesh-llm-x86_64-pc-windows-msvc-vulkan.zip".to_string())
-        }
-        _ => None,
+    ReleaseTarget::from_raw(os, arch, flavor)
+        .ok()
+        .and_then(ReleaseTarget::stable_asset_name)
+}
+
+fn legacy_release_asset_name(target: ReleaseTarget) -> Option<String> {
+    (target
+        == ReleaseTarget::new(
+            CanonicalOs::Macos,
+            CanonicalArch::Aarch64,
+            launch::BinaryFlavor::Metal,
+        ))
+    .then_some("mesh-bundle.tar.gz".to_string())
+}
+
+fn push_release_asset_candidate(candidates: &mut Vec<String>, asset_name: Option<String>) {
+    let Some(asset_name) = asset_name else {
+        return;
+    };
+    if !candidates.iter().any(|candidate| candidate == &asset_name) {
+        candidates.push(asset_name);
     }
 }
 
-fn release_has_any_platform_asset(assets: &[String], os: &str, arch: &str) -> bool {
+fn release_asset_candidates(
+    target: ReleaseTarget,
+    release_tag: &str,
+    preference: ReleaseAssetPreference,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    match preference {
+        ReleaseAssetPreference::StableFirst => {
+            push_release_asset_candidate(&mut candidates, target.stable_asset_name());
+            push_release_asset_candidate(&mut candidates, target.versioned_asset_name(release_tag));
+        }
+        ReleaseAssetPreference::VersionedFirst => {
+            push_release_asset_candidate(&mut candidates, target.versioned_asset_name(release_tag));
+            push_release_asset_candidate(&mut candidates, target.stable_asset_name());
+        }
+    }
+    push_release_asset_candidate(&mut candidates, legacy_release_asset_name(target));
+    candidates
+}
+
+fn resolve_release_asset_name(
+    release: &ReleaseInfo,
+    target: ReleaseTarget,
+    preference: ReleaseAssetPreference,
+) -> Option<String> {
+    release_asset_candidates(target, &release.tag, preference)
+        .into_iter()
+        .find(|asset_name| {
+            release
+                .assets
+                .iter()
+                .any(|candidate| candidate == asset_name)
+        })
+}
+
+fn release_has_any_platform_asset(release: &ReleaseInfo, os: &str, arch: &str) -> bool {
     launch::BinaryFlavor::ALL.into_iter().any(|flavor| {
-        stable_release_asset_name_for(os, arch, flavor)
-            .as_ref()
-            .is_some_and(|asset| assets.iter().any(|candidate| candidate == asset))
+        ReleaseTarget::from_raw(os, arch, flavor)
+            .ok()
+            .and_then(|target| {
+                resolve_release_asset_name(release, target, ReleaseAssetPreference::StableFirst)
+            })
+            .is_some()
     })
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_platform_asset_published_for(
+    os: &str,
+    arch: &str,
+    release_tag: &str,
+    assets: &[String],
+) -> bool {
+    let release = ReleaseInfo {
+        tag: release_tag.to_string(),
+        version: release_tag.trim_start_matches('v').to_string(),
+        assets: assets.to_vec(),
+    };
+    release_has_any_platform_asset(&release, os, arch)
+}
+
+#[cfg(test)]
+pub(crate) fn release_target_bundle_install_dir_for(
+    exe: &Path,
+    requested_flavor: Option<launch::BinaryFlavor>,
+) -> Option<(PathBuf, launch::BinaryFlavor)> {
+    bundle_install_dir(exe, requested_flavor)
 }
 
 fn mesh_binary_name() -> String {
@@ -1173,7 +1267,10 @@ mod tests {
         let Some((flavor, asset)) = expected else {
             return;
         };
-        assert_eq!(stable_release_asset_name(flavor), Some(asset.to_string()));
+        assert_eq!(
+            stable_release_asset_name_for(std::env::consts::OS, std::env::consts::ARCH, flavor),
+            Some(asset.to_string())
+        );
     }
 
     #[test]
@@ -1195,12 +1292,78 @@ mod tests {
             stable_release_asset_name_for("windows", "x86_64", launch::BinaryFlavor::Vulkan),
             Some("mesh-llm-x86_64-pc-windows-msvc-vulkan.zip".to_string())
         );
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec!["mesh-llm-v0.60.0-x86_64-pc-windows-msvc.zip".to_string()],
+        };
         assert!(release_has_any_platform_asset(
-            &["mesh-llm-x86_64-pc-windows-msvc.zip".to_string()],
+            &release, "windows", "x86_64"
+        ));
+        let empty_release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: Vec::new(),
+        };
+        assert!(!release_has_any_platform_asset(
+            &empty_release,
             "windows",
             "x86_64"
         ));
-        assert!(!release_has_any_platform_asset(&[], "windows", "x86_64"));
+    }
+
+    #[test]
+    fn test_linux_arm64_release_asset_names() {
+        let stable_asset = "mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string();
+        assert!(platform_has_release_assets_for("linux", "aarch64"));
+        assert_eq!(
+            stable_release_asset_name_for("linux", "aarch64", launch::BinaryFlavor::Cpu),
+            Some(stable_asset.clone())
+        );
+
+        let published_release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec![stable_asset],
+        };
+        assert!(release_has_any_platform_asset(
+            &published_release,
+            "linux",
+            "aarch64"
+        ));
+
+        let missing_release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: Vec::new(),
+        };
+        assert!(!release_has_any_platform_asset(
+            &missing_release,
+            "linux",
+            "aarch64"
+        ));
+    }
+
+    #[test]
+    fn test_macos_legacy_bundle_asset_remains_compatible() {
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec!["mesh-bundle.tar.gz".to_string()],
+        };
+
+        assert_eq!(
+            resolve_release_asset_name(
+                &release,
+                ReleaseTarget::new(
+                    CanonicalOs::Macos,
+                    CanonicalArch::Aarch64,
+                    launch::BinaryFlavor::Metal,
+                ),
+                ReleaseAssetPreference::StableFirst,
+            ),
+            Some("mesh-bundle.tar.gz".to_string())
+        );
     }
 
     #[test]

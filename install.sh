@@ -103,8 +103,66 @@ parse_args() {
     done
 }
 
+platform_os() {
+    if [[ -n "${MESH_LLM_TEST_UNAME_S:-}" ]]; then
+        printf '%s\n' "$MESH_LLM_TEST_UNAME_S"
+        return 0
+    fi
+
+    uname -s
+}
+
+platform_arch() {
+    local os
+    local arch
+
+    os="$(platform_os)"
+    if [[ -n "${MESH_LLM_TEST_UNAME_M:-}" ]]; then
+        arch="$MESH_LLM_TEST_UNAME_M"
+    else
+        arch="$(uname -m)"
+    fi
+
+    case "$os/$arch" in
+        Linux/arm64|Linux/aarch64)
+            printf 'aarch64\n'
+            ;;
+        Linux/arm|Linux/armv6l|Linux/armv6hf|Linux/armv7l|Linux/armv7hf)
+            printf 'arm\n'
+            ;;
+        *)
+            printf '%s\n' "$arch"
+            ;;
+    esac
+}
+
 platform_id() {
-    printf "%s/%s\n" "$(uname -s)" "$(uname -m)"
+    printf "%s/%s\n" "$(platform_os)" "$(platform_arch)"
+}
+
+platform_support_status() {
+    case "$(platform_id)" in
+        Darwin/arm64|Linux/aarch64|Linux/x86_64)
+            printf 'supported\n'
+            ;;
+        Linux/arm)
+            printf 'recognized-unsupported\n'
+            ;;
+        *)
+            printf 'unsupported\n'
+            ;;
+    esac
+}
+
+platform_error_message() {
+    case "$(platform_support_status)" in
+        recognized-unsupported)
+            printf 'error: recognized but unsupported platform: %s (32-bit ARM release bundles are not published)\n' "$(platform_id)"
+            ;;
+        *)
+            printf 'error: unsupported platform: %s\n' "$(platform_id)"
+            ;;
+    esac
 }
 
 probe_nvidia() {
@@ -140,24 +198,40 @@ probe_vulkan() {
 }
 
 supported_flavors() {
-    case "$(platform_id)" in
+    case "$(platform_support_status)" in
+        supported)
+            case "$(platform_id)" in
         Darwin/arm64)
             echo "metal"
+            ;;
+        Linux/aarch64)
+            echo "cpu"
             ;;
         Linux/x86_64)
             echo "cpu cuda rocm vulkan"
             ;;
         *)
-            echo "error: unsupported platform: $(platform_id)" >&2
+                platform_error_message >&2
+                exit 1
+                ;;
+            esac
+            ;;
+        *)
+            platform_error_message >&2
             exit 1
             ;;
     esac
 }
 
 recommended_flavor() {
-    case "$(platform_id)" in
+    case "$(platform_support_status)" in
+        supported)
+            case "$(platform_id)" in
         Darwin/arm64)
             echo "metal"
+            ;;
+        Linux/aarch64)
+            echo "cpu"
             ;;
         Linux/x86_64)
             if probe_nvidia; then
@@ -171,7 +245,13 @@ recommended_flavor() {
             fi
             ;;
         *)
-            echo "error: unsupported platform: $(platform_id)" >&2
+                platform_error_message >&2
+                exit 1
+                ;;
+            esac
+            ;;
+        *)
+            platform_error_message >&2
             exit 1
             ;;
     esac
@@ -268,9 +348,14 @@ choose_flavor() {
 
 asset_name() {
     local flavor="$1"
-    case "$(platform_id)" in
+    case "$(platform_support_status)" in
+        supported)
+            case "$(platform_id)" in
         Darwin/arm64)
             echo "mesh-llm-aarch64-apple-darwin.tar.gz"
+            ;;
+        Linux/aarch64)
+            echo "mesh-llm-aarch64-unknown-linux-gnu.tar.gz"
             ;;
         Linux/x86_64)
             case "$flavor" in
@@ -285,7 +370,13 @@ asset_name() {
             esac
             ;;
         *)
-            echo "error: unsupported platform: $(platform_id)" >&2
+                platform_error_message >&2
+                exit 1
+                ;;
+            esac
+            ;;
+        *)
+            platform_error_message >&2
             exit 1
             ;;
     esac

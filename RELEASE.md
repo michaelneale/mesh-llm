@@ -16,7 +16,7 @@
 just build
 ```
 
-On macOS, this clones/updates the llama.cpp fork if needed, builds with `-DGGML_METAL=ON -DGGML_RPC=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_OPENSSL=OFF`, and builds the Rust mesh-llm binary. Linux release workflows build CPU, CUDA, ROCm, and Vulkan variants separately.
+On macOS, this clones/updates the llama.cpp fork if needed, builds with `-DGGML_METAL=ON -DGGML_RPC=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_OPENSSL=OFF`, and builds the Rust mesh-llm binary. Linux release workflows build CPU, ARM64 CPU, CUDA, ROCm, and Vulkan variants separately. The Linux ARM64 CPU bundle is `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`, and `arm64` and `aarch64` mean the same 64-bit ARM target in release and install docs.
 
 On Windows, use the release-specific recipes directly:
 
@@ -96,17 +96,15 @@ Run this from a clean branch. It bumps the version in source + Cargo manifests, 
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which:
 
-- builds release bundles on macOS, Linux CPU, Linux CUDA, Linux ROCm, Linux Vulkan, and Windows CPU/CUDA/ROCm/Vulkan
-- uses hosted `windows-2022` runners for Windows and installs the needed SDKs during the workflow
+- builds release bundles on macOS, Linux CPU, Linux ARM64 CPU, Linux CUDA, Linux ROCm, and Linux Vulkan
+- keeps the Windows publish block commented out for now, so GitHub release publishing does not currently upload Windows bundles
+- still leaves the local Windows bundle recipes available in `Justfile` for manual builds
 - uploads versioned assets such as `mesh-llm-v0.X.0-aarch64-apple-darwin.tar.gz`
+- uploads the Linux ARM64 CPU asset as `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`
 - uploads stable `latest` assets such as `mesh-llm-x86_64-unknown-linux-gnu.tar.gz`
 - uploads CUDA-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz`
 - uploads ROCm-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz`
 - uploads Vulkan-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz`
-- uploads Windows CPU assets such as `mesh-llm-x86_64-pc-windows-msvc.zip`
-- uploads Windows CUDA assets such as `mesh-llm-x86_64-pc-windows-msvc-cuda.zip`
-- uploads Windows ROCm assets such as `mesh-llm-x86_64-pc-windows-msvc-rocm.zip`
-- uploads Windows Vulkan assets such as `mesh-llm-x86_64-pc-windows-msvc-vulkan.zip`
 - keeps the legacy macOS `mesh-bundle.tar.gz` asset available for direct archive installs
 - creates the GitHub release automatically with generated notes
 - marks hyphenated tags such as `v0.X.0-rc.1` as GitHub prereleases
@@ -125,25 +123,22 @@ After the workflow finishes, verify:
 
 - `mesh-bundle.tar.gz` still exists for direct macOS archive installs
 - `mesh-llm-aarch64-apple-darwin.tar.gz` exists
+- `mesh-llm-aarch64-unknown-linux-gnu.tar.gz` exists
 - `mesh-llm-x86_64-unknown-linux-gnu.tar.gz` exists
 - `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz` exists
 - `mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz` exists
 - `mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz` exists
-- `mesh-llm-x86_64-pc-windows-msvc.zip` exists
-- `mesh-llm-x86_64-pc-windows-msvc-cuda.zip` exists
-- `mesh-llm-x86_64-pc-windows-msvc-rocm.zip` exists
-- `mesh-llm-x86_64-pc-windows-msvc-vulkan.zip` exists
+- Windows release bundles are not expected from the current GitHub Actions workflow while the publish block stays commented out
 
 ## Notes
 
 - The unversioned asset name `mesh-bundle.tar.gz` is still kept for compatibility with direct archive installs.
 - The default Linux release bundle is a generic CPU build.
-- Windows source builds exist, and tagged releases now publish Windows CPU/CUDA/ROCm/Vulkan `.zip` assets.
-- Windows release artifacts can still be generated locally with the `*-windows` release recipes in `Justfile`.
+- Windows source builds exist, and the `*-windows` release recipes in `Justfile` still generate local `.zip` artifacts.
+- Tagged GitHub releases do not currently publish Windows bundles because the Windows release job remains commented out in `.github/workflows/release.yml`.
 - Release bundles use flavor-specific `rpc-server-<flavor>` and `llama-server-<flavor>` names so multiple flavors can coexist in one install directory. Use `mesh-llm --llama-flavor <flavor>` to force a specific pair.
 - The CUDA Linux release bundle is built in CI with an explicit multi-arch `CMAKE_CUDA_ARCHITECTURES` list and is not runtime-tested during the workflow.
 - The ROCm and Vulkan Linux release bundles are compile-tested in CI, but not runtime-tested against real GPUs during the workflow.
-- The Windows release workflows are compile-and-package only. They do not run inference tests against real GPUs during the workflow.
 - `codesign` and `xattr` may be needed on the receiving machine if macOS Gatekeeper blocks unsigned binaries:
   ```bash
   codesign -s - /usr/local/bin/mesh-llm /usr/local/bin/rpc-server-metal /usr/local/bin/llama-server-metal /usr/local/bin/llama-moe-analyze /usr/local/bin/llama-moe-split

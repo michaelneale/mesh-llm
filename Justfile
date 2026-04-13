@@ -47,6 +47,10 @@ build-linux backend="" cuda_arch="" rocm_arch="":
 release-build:
     @scripts/build-release.sh
 
+# Build a Linux ARM64 CPU release artifact on a native ARM64 runner.
+release-build-arm64:
+    @scripts/build-release.sh
+
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
@@ -89,6 +93,7 @@ release version:
         echo "Error: working tree is not clean. Commit or stash changes before releasing." >&2
         exit 1
     fi
+    just check-release
     tag="{{ version }}"
     if [[ "$tag" != v* ]]; then
         tag="v$tag"
@@ -259,6 +264,14 @@ bundle output="/tmp/mesh-bundle.tar.gz":
 # `version` should be a tag like v0.30.0.
 release-bundle version output="dist":
     @scripts/package-release.sh "{{ version }}" "{{ output }}"
+
+# Create a Linux ARM64 CPU release archive on a native ARM64 runner.
+release-bundle-arm64 version output="dist":
+    @scripts/package-release.sh "{{ version }}" "{{ output }}"
+
+# Run repo-level release-target consistency checks.
+check-release:
+    cargo run -p xtask -- repo-consistency release-targets
 
 release-bundle-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}"
