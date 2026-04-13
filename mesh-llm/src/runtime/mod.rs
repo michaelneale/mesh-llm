@@ -371,8 +371,8 @@ pub(crate) async fn run() -> Result<()> {
             nostr::AutoDecision::Join { candidates } => {
                 if cli.client {
                     // Clients skip health probe — joining itself is the test.
-                    // Use the best candidate.
-                    let (token, mesh) = &candidates[0];
+                    // Queue all candidates so we can fall back if the top one is unreachable.
+                    let (_, mesh) = &candidates[0];
                     if cli.mesh_name.is_none() {
                         if let Some(ref name) = mesh.listing.name {
                             cli.mesh_name = Some(name.clone());
@@ -389,7 +389,9 @@ pub(crate) async fn run() -> Result<()> {
                             .map(|r| format!(", region: {r}"))
                             .unwrap_or_default()
                     );
-                    cli.join.push(token.clone());
+                    for (token, _) in &candidates {
+                        cli.join.push(token.clone());
+                    }
                 } else {
                     // GPU nodes: try to join each candidate directly.
                     // No ephemeral probe — it fails when the target has a firewall
@@ -427,7 +429,7 @@ pub(crate) async fn run() -> Result<()> {
                             if let nostr::AutoDecision::Join { candidates } =
                                 nostr::smart_auto(&retry_meshes, my_vram_gb, target_name)
                             {
-                                let (token, mesh) = &candidates[0];
+                                let (_, mesh) = &candidates[0];
                                 if cli.mesh_name.is_none() {
                                     if let Some(ref name) = mesh.listing.name {
                                         cli.mesh_name = Some(name.clone());
@@ -439,7 +441,9 @@ pub(crate) async fn run() -> Result<()> {
                                     mesh.listing.node_count,
                                     mesh.listing.serving.len()
                                 );
-                                cli.join.push(token.clone());
+                                for (token, _) in &candidates {
+                                    cli.join.push(token.clone());
+                                }
                                 found = true;
                                 break;
                             }
@@ -1117,19 +1121,33 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
         let meshes = nostr::discover(&relays, &filter, None).await?;
         match nostr::smart_auto(&meshes, 0.0, target_name) {
             nostr::AutoDecision::Join { candidates } => {
-                let (token, mesh) = &candidates[0];
-                eprintln!(
-                    "✅ Joining: {} ({} nodes, {} models{})",
-                    mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                    mesh.listing.node_count,
-                    mesh.listing.serving.len(),
-                    mesh.listing
-                        .region
-                        .as_ref()
-                        .map(|r| format!(", region: {r}"))
-                        .unwrap_or_default()
-                );
-                node.join(token).await?;
+                let mut last_err: Option<anyhow::Error> = None;
+                for (token, mesh) in &candidates {
+                    eprintln!(
+                        "✅ Joining: {} ({} nodes, {} models{})",
+                        mesh.listing.name.as_deref().unwrap_or("unnamed"),
+                        mesh.listing.node_count,
+                        mesh.listing.serving.len(),
+                        mesh.listing
+                            .region
+                            .as_ref()
+                            .map(|r| format!(", region: {r}"))
+                            .unwrap_or_default()
+                    );
+                    match node.join(token).await {
+                        Ok(()) => {
+                            last_err = None;
+                            break;
+                        }
+                        Err(err) => {
+                            tracing::warn!("Failed to join mesh candidate: {err}");
+                            last_err = Some(err);
+                        }
+                    }
+                }
+                if let Some(err) = last_err {
+                    return Err(err);
+                }
             }
             nostr::AutoDecision::StartNew { .. } => {
                 anyhow::bail!("No mesh found for MCP mode. Pass --join or start a mesh first.");
