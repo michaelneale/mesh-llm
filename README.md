@@ -467,18 +467,21 @@ MLX is available on macOS as an experimental local backend for supported text mo
 
 ### Backend support matrix
 
-This is the practical support snapshot for the backends in this branch. The `🦙 GGUF / llama` column reflects the families we currently document, catalog, or smoke through the llama.cpp path here, not every model llama.cpp may support upstream.
+This is the practical local validation snapshot for the backends in this branch.
+The `🦙 GGUF / llama` and `🍎 MLX` columns reflect the families we have actually
+run through the checked-in validation matrix here, not every family the upstream
+runtimes may support in theory.
 
-| Family | Example `🦙 GGUF / llama` model | `🦙 GGUF / llama` | Example `🍎 MLX` model | `🍎 MLX` | Notes |
+| Family | Example tested `🦙 GGUF / llama` model | `🦙 GGUF / llama` | Example tested `🍎 MLX` model | `🍎 MLX` | Notes |
 |---|---|---:|---|---:|---|
 | Llama | `Llama-3.2-3B-Instruct-Q4_K_M` | ✅ | `Llama-3.2-3B-Instruct-MLX` | ✅ | Dense text |
 | Qwen2 | `Qwen2.5-3B-Instruct-Q4_K_M` | ✅ | `Qwen2.5-3B-Instruct-MLX` | ✅ | Dense text |
-| Qwen3 | `Qwen3-8B-Q4_K_M` | ✅ | `Qwen3-4B-MLX` | ✅ | Reasoning and non-thinking flows |
+| Qwen3 | `qwen3-8b-q8_0.gguf` | ✅ | `meshllm/qwen3-8b-parity-8bit-mlx` | ✅ | Exact and MLX behavior are green on the current 8B parity pair; GGUF tagged-thinking remains a known llama-side limitation |
 | Gemma 2 | `gemma-2-2b-it-Q4_K_M` | ✅ | `Gemma-2-2B-it-MLX` | ✅ | Dense text |
-| Gemma 3 | `Gemma-3-12B-it-Q4_K_M` | ✅ | `mlx-community/gemma-3-1b-it-qat-4bit` | ✅ | Text path only on MLX |
-| Gemma 4 | `gemma-4-E4B-it-Q4_K_M` | ✅ | `Gemma-4-E4B-it-MLX` | ✅ | Text path only on MLX |
+| Gemma 3 | `gemma-3-1b-it-f16.gguf` | ✅ | `meshllm/gemma-3-1b-it-parity-bf16-mlx` | ✅ | Exact and behavior are green after the Gemma3 MLX config and stop-sequence fixes |
+| Gemma 4 | `gemma-4-e4b-it-q8_0.gguf` | ✅ | `meshllm/gemma-4-e4b-it-parity-8bit-mlx` | ✅ | Exact and behavior are green after the Gemma4 MLX replay/termination fixes |
 | GLM4 | `GLM-4.7-Flash-Q4_K_M` | ✅ | `GLM-4-9B-0414-MLX` | ✅ | Dense text |
-| LFM2 | — | — | `LFM2-350M-MLX` | ✅ | MLX-only today in this repo |
+| LFM2 | `lfm2-350m-q4_k_m.gguf` | ✅ | `meshllm/lfm2-350m-parity-4bit-mlx` | ✅ | Exact, behavior, and thinking are green on the current parity pair |
 | gpt-oss | — | — | `openai/gpt-oss` MLX repos | ✅ | Implemented on MLX, not in live smoke matrix |
 
 Current MLX limitations:
@@ -486,8 +489,22 @@ Current MLX limitations:
 - experimental
 - macOS only
 - text only
+- the accepted full matrix still has one known GGUF-side limitation: `qwen3-gguf` does not surface tagged reasoning markers in the thinking suite
 - larger families like `gpt-oss` are implemented but not yet part of the live macOS smoke matrix
 - distributed/split MLX serving is still future work
+
+Tested MLX families in the current local matrix:
+
+- `Llama`
+- `Qwen2.5`
+- `Qwen3`
+- `Gemma 2`
+- `Gemma 3`
+- `Gemma 4`
+- `GLM4`
+- `LFM2`
+- `OLMo2`
+- `Mistral`
 
 Useful commands:
 
