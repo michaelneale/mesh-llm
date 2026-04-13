@@ -95,15 +95,14 @@ async fn caption_image(node: &mesh::Node, current_model: &str, payload: &Value) 
 // ===========================================================================
 
 /// Model doesn't know how to start its answer — first token has high
-/// entropy after prefill. Races 2 different-architecture peers with the
-/// last user message ("answer briefly in 2-3 sentences"), injects the
-/// winner's answer so the model reads it before generating.
+/// entropy after prefill. Asks a different-architecture peer the same
+/// question and injects the answer so the model reads it before generating.
 ///
 /// `entropy`: first token entropy (higher = more uncertain)
 /// `margin`: gap between top two token probabilities (lower = more uncertain)
 ///
 /// Returns `{"action": "inject", "text": "\n[Context: ...]\n\n"}` or
-/// `{"action": "none"}` if no peers available or all fail within 10s.
+/// `{"action": "none"}` if no peers available or consultation fails.
 pub async fn handle_uncertain(
     node: &mesh::Node,
     model: &str,
@@ -128,9 +127,8 @@ pub async fn handle_uncertain(
 // ===========================================================================
 
 /// Model is losing coherence mid-generation — sustained entropy spike
-/// over the last 16 tokens. Same approach as handle_uncertain: races 2
-/// peers with the original question, injects the answer at the current
-/// KV position so the model reads it and course-corrects.
+/// over the last 16 tokens. Asks a peer the original question and injects
+/// the answer at the current KV position so the model course-corrects.
 ///
 /// `n_decoded`: tokens generated so far (for logging)
 ///
