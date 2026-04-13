@@ -328,11 +328,19 @@ pub async fn handle_pre_response(node: &mesh::Node, payload: &Value) -> Value {
 
     match trigger {
         "max_tokens" => {
-            tracing::info!("virtual: response truncated at {n_decoded} tokens");
-            json!({
-                "action": "inject",
-                "text": "\n\n[Note: This response was truncated due to length limits.]"
-            })
+            // Only annotate if the response actually looks cut off mid-thought.
+            // If it ends cleanly (period, closing bracket, etc.), the truncation
+            // is likely intentional or the model finished naturally at the limit.
+            if looks_truncated(generated_text) {
+                tracing::info!("virtual: response truncated mid-sentence at {n_decoded} tokens");
+                json!({
+                    "action": "inject",
+                    "text": "\n\n[Note: This response was cut short by the token limit.]"
+                })
+            } else {
+                tracing::debug!("virtual: hit max_tokens but response ends cleanly, no action");
+                json!({ "action": "none" })
+            }
         }
         "very_short" => {
             tracing::info!("virtual: suspiciously short response ({n_decoded} tokens)");
@@ -419,6 +427,21 @@ async fn handle_tail_verification(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Check if generated text looks like it was cut off mid-thought.
+/// Returns true if the text ends mid-sentence (no sentence-ending punctuation).
+fn looks_truncated(text: &str) -> bool {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let last_char = trimmed.chars().last().unwrap_or(' ');
+    // These endings suggest the model finished a thought
+    !matches!(
+        last_char,
+        '.' | '!' | '?' | ')' | ']' | '}' | '"' | '`' | '*'
+    )
+}
 
 /// Extract the first image URL and accompanying text from a hook payload's messages.
 fn extract_image_from_payload(payload: &Value) -> (String, String) {
