@@ -97,26 +97,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          cuda_hash=$(sha256sum \
-            scripts/build-linux.sh \
-            Justfile \
-            .github/workflows/ci.yml \
-            .github/workflows/warm-caches.yml \
-            .github/workflows/gpu-warm-cache-job.yml \
-            .github/cache-version.txt \
-            | sha256sum | cut -d' ' -f1)
-
-          rocm_hash=$(sha256sum \
-            scripts/build-linux-rocm.sh \
-            Justfile \
-            .github/workflows/ci.yml \
-            .github/workflows/warm-caches.yml \
-            .github/workflows/gpu-warm-cache-job.yml \
-            .github/cache-version.txt \
-            | sha256sum | cut -d' ' -f1)
-
-          echo "cuda_hash=$cuda_hash" >> "$GITHUB_OUTPUT"
-          echo "rocm_hash=$rocm_hash" >> "$GITHUB_OUTPUT"
+          echo "cuda_hash=${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "rocm_hash=${{ hashFiles('scripts/build-linux-rocm.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
 
   warm_llama_cuda_slim:
     needs: resolve_llama_sha
