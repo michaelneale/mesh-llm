@@ -1,5 +1,6 @@
 import {
   type ReactNode,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -161,13 +162,24 @@ export function DashboardPage({
     detailPanelStack,
     goBackDetailPanel,
     openModelDetail,
-    openNodeDetail,
+    openNodeDetail: openNodeDetailFromStack,
   } = useDashboardDetailStack({
     isMeshOverviewFullscreen,
     meshModelByName,
   });
 
-  const topologyDiagramNodes = useMemo(() => topologyNodes, [topologyNodes]);
+  const openNodeDetail = useCallback(
+    (nodeId: string) => {
+      setSelectedTopologyNodeId(nodeId);
+      openNodeDetailFromStack(nodeId);
+    },
+    [openNodeDetailFromStack],
+  );
+
+  const highlightedNodeId =
+    activeDetail?.kind === "node" ? activeDetail.nodeId : selectedTopologyNodeId;
+
+  const topologyDiagramNodes = topologyNodes;
   const filteredModels = useMemo(() => {
     const models = meshModels;
     return [...models]
@@ -520,7 +532,7 @@ export function DashboardPage({
                   layoutMode={meshTopologyLayoutMode}
                   themeMode={themeMode}
                   onOpenNode={openNodeDetail}
-                  highlightedNodeId={selectedTopologyNodeId}
+                  highlightedNodeId={highlightedNodeId}
                   fullscreen={false}
                   heightClass="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]"
                 />
@@ -677,7 +689,7 @@ export function DashboardPage({
                         tabIndex={0}
                         className={cn(
                           "cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                          peer.id === selectedTopologyNodeId && "bg-muted/50 hover:bg-muted/60",
+                          peer.id === highlightedNodeId && "bg-muted/50 hover:bg-muted/60",
                         )}
                         onClick={() => setSelectedTopologyNodeId(peer.id)}
                         onKeyDown={(event) => {
@@ -765,7 +777,7 @@ export function DashboardPage({
                       layoutMode={meshTopologyLayoutMode}
                       themeMode={themeMode}
                       onOpenNode={openNodeDetail}
-                      highlightedNodeId={selectedTopologyNodeId}
+                      highlightedNodeId={highlightedNodeId}
                       fullscreen
                       heightClass="min-h-[420px]"
                       containerStyle={{

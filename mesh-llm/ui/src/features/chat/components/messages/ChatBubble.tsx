@@ -7,6 +7,7 @@ import {
   AccordionTrigger,
 } from "../../../../components/ui/accordion";
 import { ScrollArea } from "../../../../components/ui/scroll-area";
+import { shortName } from "../../../app-shell/lib/status-helpers";
 import { cn } from "../../../../lib/utils";
 import { MarkdownMessage } from "./MarkdownMessage";
 
@@ -67,10 +68,6 @@ function messageAttachments(message: ChatMessage): ChatAttachment[] {
     });
   }
   return attachments;
-}
-
-function shortName(name: string) {
-  return (name || "").replace(/-Q\w+$/, "").replace(/-Instruct/, "");
 }
 
 export function ChatBubble({
@@ -180,7 +177,9 @@ export function ChatBubble({
                     <FileAudio className="h-3.5 w-3.5" />
                     <span>{attachment.fileName || "Audio attachment"}</span>
                   </div>
-                  <audio controls className="w-full" src={attachment.dataUrl} />
+                  <audio controls className="w-full" src={attachment.dataUrl}>
+                    <track kind="captions" />
+                  </audio>
                 </div>
               ) : (
                 <div

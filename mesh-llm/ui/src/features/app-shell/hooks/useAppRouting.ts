@@ -20,9 +20,10 @@ export function useAppRouting() {
     if (typeof window === "undefined") return;
     const current = sectionFromPathname(window.location.pathname);
     if (current == null) {
-      replaceRoute({ section: "dashboard", chatId: null });
-      setSection("dashboard");
-      setRoutedChatId(null);
+      const route = readRouteFromLocation();
+      replaceRoute(route);
+      setSection(route.section);
+      setRoutedChatId(route.chatId);
     }
 
     const onPopState = () => {

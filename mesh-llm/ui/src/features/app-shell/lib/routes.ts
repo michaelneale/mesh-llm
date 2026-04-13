@@ -41,7 +41,7 @@ export function readRouteFromLocation(): AppRoute {
     return { section: "chat", chatId };
   }
 
-  return { section: isMobileViewport() ? "chat" : "dashboard", chatId: null };
+  return { section: "dashboard", chatId: null };
 }
 
 export function pathnameForRoute(route: AppRoute): string {

@@ -112,7 +112,8 @@ export async function buildAttachmentBlocks(
   onStatusChange?: (attachmentId: string, patch: AttachmentStatePatch) => void,
 ) {
   const contentBlocks: Array<Record<string, unknown>> = [];
-  for (const attachment of attachments) {
+  for (const sourceAttachment of attachments) {
+    const attachment = { ...sourceAttachment };
     const extractedText = attachment.extractedText;
     if (extractedText) {
       const label = attachment.fileName

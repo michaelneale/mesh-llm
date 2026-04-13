@@ -594,12 +594,37 @@ function MeshTopologyFlow({
     [topologyLayoutNodes],
   );
   const layoutReady = positioned.length > 0 && positionedIdsKey === expectedPositionIdsKey;
-  const flowColorMode =
-    themeMode === "auto"
-      ? typeof document !== "undefined" && document.documentElement.classList.contains("dark")
-        ? "dark"
-        : "light"
-      : themeMode;
+  const [resolvedColorMode, setResolvedColorMode] = useState<"light" | "dark">(() =>
+    themeMode === "dark" ? "dark" : "light",
+  );
+
+  useEffect(() => {
+    if (themeMode !== "auto") {
+      setResolvedColorMode(themeMode);
+      return;
+    }
+    if (typeof document === "undefined") {
+      setResolvedColorMode("light");
+      return;
+    }
+
+    const root = document.documentElement;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const updateColorMode = () => {
+      setResolvedColorMode(root.classList.contains("dark") ? "dark" : "light");
+    };
+
+    updateColorMode();
+    const observer = new MutationObserver(updateColorMode);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    media.addEventListener("change", updateColorMode);
+
+    return () => {
+      observer.disconnect();
+      media.removeEventListener("change", updateColorMode);
+    };
+  }, [themeMode]);
+
   const layoutFitSignature = useMemo(
     () => `${fullscreen ? "fs" : "std"}:${layoutMode}:${positionedTopologySignature(positioned)}`,
     [fullscreen, layoutMode, positioned],
@@ -759,7 +784,7 @@ function MeshTopologyFlow({
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={topologyNodeTypes}
-          colorMode={flowColorMode}
+          colorMode={resolvedColorMode}
           minZoom={0.2}
           maxZoom={1.6}
           zoomOnScroll={false}

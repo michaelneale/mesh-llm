@@ -22,7 +22,7 @@ export function ModelMetaLinkItem({
       <a
         href={href}
         target="_blank"
-        rel="noreferrer"
+        rel="noopener noreferrer"
         className="mt-1 inline-flex items-center gap-1.5 text-sm font-medium underline-offset-4 hover:text-foreground hover:underline [overflow-wrap:anywhere]"
       >
         <span>{text}</span>

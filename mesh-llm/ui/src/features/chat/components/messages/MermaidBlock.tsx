@@ -7,19 +7,15 @@ let mermaidPromise: Promise<MermaidApi | null> | null = null;
 
 function loadMermaid() {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid")
-      .then((module) => {
-        module.default.initialize({
-          startOnLoad: false,
-          theme: "dark",
-          securityLevel: "strict",
-        });
-        return module.default;
-      })
-      .catch(() => null);
+    mermaidPromise = import("mermaid").then((module) => module.default).catch(() => null);
   }
 
   return mermaidPromise;
+}
+
+function readResolvedTheme(): "light" | "dark" {
+  if (typeof document === "undefined") return "light";
+  return document.documentElement.classList.contains("dark") ? "dark" : "light";
 }
 
 export function MermaidBlock({ code }: { code: string }) {
@@ -27,6 +23,27 @@ export function MermaidBlock({ code }: { code: string }) {
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [error, setError] = useState<string | null>(null);
   const [rendered, setRendered] = useState(false);
+  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
+    readResolvedTheme(),
+  );
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    const root = document.documentElement;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const updateTheme = () => setResolvedTheme(readResolvedTheme());
+
+    updateTheme();
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    media.addEventListener("change", updateTheme);
+
+    return () => {
+      observer.disconnect();
+      media.removeEventListener("change", updateTheme);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +60,11 @@ export function MermaidBlock({ code }: { code: string }) {
       }
 
       try {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: resolvedTheme === "dark" ? "dark" : "default",
+          securityLevel: "strict",
+        });
         const { svg } = await mermaid.render(`mermaid-${renderId}`, code);
         if (cancelled || !container) return;
 
@@ -69,7 +91,7 @@ export function MermaidBlock({ code }: { code: string }) {
       cancelled = true;
       container?.replaceChildren();
     };
-  }, [code, renderId]);
+  }, [code, renderId, resolvedTheme]);
 
   if (error)
     return (
