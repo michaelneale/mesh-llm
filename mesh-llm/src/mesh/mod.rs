@@ -135,6 +135,9 @@ fn peer_supports_pinned_gpu_config(peer_version: Option<&str>) -> bool {
     };
 
     peer_version >= min_version
+        || (peer_version.major == min_version.major
+            && peer_version.minor == min_version.minor
+            && peer_version.patch == min_version.patch)
 }
 
 fn pinned_gpu_config_peer_error(peer_version: Option<&str>) -> String {

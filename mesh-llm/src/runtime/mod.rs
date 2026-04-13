@@ -612,8 +612,16 @@ fn preflight_config_owned_startup_models(
         return Ok(());
     }
 
-    let survey = hardware::query(&[hardware::Metric::GpuName, hardware::Metric::GpuFacts]);
+    let survey = hardware::query(pinned_startup_preflight_metrics());
     preflight_config_owned_startup_models_with_gpus(config, specs, plans, &survey.gpus)
+}
+
+fn pinned_startup_preflight_metrics() -> &'static [hardware::Metric] {
+    &[
+        hardware::Metric::GpuName,
+        hardware::Metric::GpuFacts,
+        hardware::Metric::VramBytes,
+    ]
 }
 
 fn preflight_config_owned_startup_models_with_gpus(
@@ -693,6 +701,25 @@ fn should_show_serve_config_help(
         && !cli.auto
         && cli.join.is_empty()
         && cli.discover.is_none()
+}
+
+fn startup_rpc_backend_device<'a>(
+    cli_device: Option<&'a str>,
+    primary_startup_model: Option<&'a StartupModelPlan>,
+) -> Result<Option<&'a str>> {
+    let pinned_device = primary_startup_model
+        .and_then(|model| model.pinned_gpu.as_ref())
+        .map(|gpu| gpu.backend_device.as_str());
+
+    if let (Some(cli_device), Some(pinned_device)) = (cli_device, pinned_device) {
+        anyhow::ensure!(
+            cli_device == pinned_device,
+            "explicit --device '{cli_device}' conflicts with pinned startup GPU backend device '{pinned_device}'"
+        );
+        return Ok(Some(cli_device));
+    }
+
+    Ok(cli_device.or(pinned_device))
 }
 
 /// Look up the model filename in the catalog and check if its draft model exists on disk.
@@ -1561,11 +1588,7 @@ async fn run_auto(
         &runtime_arc,
         &bin_dir,
         cli.llama_flavor,
-        primary_startup_model
-            .as_ref()
-            .and_then(|model| model.pinned_gpu.as_ref())
-            .map(|gpu| gpu.backend_device.as_str())
-            .or(cli.device.as_deref()),
+        startup_rpc_backend_device(cli.device.as_deref(), primary_startup_model.as_ref())?,
         Some(&model),
     )
     .await?;
@@ -2825,6 +2848,16 @@ mod tests {
     }
 
     #[test]
+    fn pinned_gpu_startup_preflight_requests_per_gpu_vram_metrics() {
+        let metrics = pinned_startup_preflight_metrics();
+
+        assert_eq!(metrics.len(), 3);
+        assert!(metrics.contains(&hardware::Metric::GpuName));
+        assert!(metrics.contains(&hardware::Metric::GpuFacts));
+        assert!(metrics.contains(&hardware::Metric::VramBytes));
+    }
+
+    #[test]
     fn pinned_gpu_startup_preflight_cli_models_bypass_config_gpu_id() {
         let cli = Cli::parse_from(["mesh-llm", "--model", "Qwen3-8B-Q4_K_M"]);
         let config = plugin::MeshConfig {
@@ -2994,6 +3027,80 @@ mod tests {
 
         assert!(message.contains("failed pinned GPU preflight"));
         assert!(message.contains("did not match any available pinnable GPU"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_rpc_device_uses_explicit_cli_device_without_pinned_target() {
+        let device = startup_rpc_backend_device(Some("CUDA3"), None).unwrap();
+
+        assert_eq!(device, Some("CUDA3"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_rpc_device_allows_matching_explicit_and_pinned_device() {
+        let primary_startup_model = StartupModelPlan {
+            declared_ref: "Qwen3-8B-Q4_K_M".into(),
+            resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(8192),
+            gpu_id: Some("pci:0000:65:00.0".into()),
+            pinned_gpu: Some(StartupPinnedGpuTarget {
+                index: 0,
+                stable_id: "pci:0000:65:00.0".into(),
+                backend_device: "CUDA0".into(),
+                vram_bytes: 24_000_000_000,
+            }),
+        };
+
+        let device =
+            startup_rpc_backend_device(Some("CUDA0"), Some(&primary_startup_model)).unwrap();
+
+        assert_eq!(device, Some("CUDA0"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_rpc_device_falls_back_to_pinned_backend_device() {
+        let primary_startup_model = StartupModelPlan {
+            declared_ref: "Qwen3-8B-Q4_K_M".into(),
+            resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(8192),
+            gpu_id: Some("pci:0000:65:00.0".into()),
+            pinned_gpu: Some(StartupPinnedGpuTarget {
+                index: 0,
+                stable_id: "pci:0000:65:00.0".into(),
+                backend_device: "CUDA0".into(),
+                vram_bytes: 24_000_000_000,
+            }),
+        };
+
+        let device = startup_rpc_backend_device(None, Some(&primary_startup_model)).unwrap();
+
+        assert_eq!(device, Some("CUDA0"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_rpc_device_rejects_conflicting_explicit_and_pinned_device() {
+        let primary_startup_model = StartupModelPlan {
+            declared_ref: "Qwen3-8B-Q4_K_M".into(),
+            resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(8192),
+            gpu_id: Some("pci:0000:65:00.0".into()),
+            pinned_gpu: Some(StartupPinnedGpuTarget {
+                index: 0,
+                stable_id: "pci:0000:65:00.0".into(),
+                backend_device: "CUDA0".into(),
+                vram_bytes: 24_000_000_000,
+            }),
+        };
+
+        let err =
+            startup_rpc_backend_device(Some("CUDA3"), Some(&primary_startup_model)).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("conflicts with pinned startup GPU backend device"));
     }
 
     #[test]
