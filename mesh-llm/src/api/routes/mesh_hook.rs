@@ -7,12 +7,12 @@ use tokio::net::TcpStream;
 ///
 /// POST /mesh/hook — hook callback (pre_inference, post_prefill, pre_response)
 ///
-/// All hooks are synchronous. mesh-llm may start background work on Hook 1
-/// and collect results on Hook 3 — but from the C++ side, each hook is just
-/// a POST that blocks until mesh-llm responds.
+/// All hooks are synchronous from the C++ side — each is a blocking POST.
+/// But mesh-llm can do async work (consulting peers over QUIC) before
+/// responding. The hook blocks llama-server's slot until we reply.
 pub async fn handle(
     stream: &mut TcpStream,
-    _state: &MeshApi,
+    state: &MeshApi,
     _method: &str,
     _path: &str,
     body: &str,
@@ -27,11 +27,12 @@ pub async fn handle(
     };
 
     let hook = payload["hook"].as_str().unwrap_or("unknown");
+    let node = state.node().await;
 
     let response = match hook {
-        "pre_inference" => virtual_llm::handle_pre_inference(&payload),
-        "post_prefill" => virtual_llm::handle_post_prefill(&payload),
-        "pre_response" => virtual_llm::handle_pre_response(&payload),
+        "pre_inference" => virtual_llm::handle_pre_inference(&node, &payload).await,
+        "post_prefill" => virtual_llm::handle_post_prefill(&node, &payload).await,
+        "pre_response" => virtual_llm::handle_pre_response(&node, &payload).await,
         _ => {
             tracing::warn!("mesh hook: unknown hook type: {hook}");
             serde_json::json!({ "action": "none" })

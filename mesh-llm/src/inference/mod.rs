@@ -1,3 +1,4 @@
+pub(crate) mod consult;
 pub(crate) mod election;
 pub(crate) mod launch;
 pub(crate) mod moe;

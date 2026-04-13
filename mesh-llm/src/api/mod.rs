@@ -247,6 +247,10 @@ impl MeshApi {
         }
     }
 
+    pub async fn node(&self) -> mesh::Node {
+        self.inner.lock().await.node.clone()
+    }
+
     pub async fn set_primary_backend(&self, backend: String) {
         self.inner.lock().await.primary_backend = Some(backend);
     }
