@@ -75,6 +75,15 @@ Core multimodal is shipped: capability model, gossip advertisement, vision/audio
 - [ ] **Audio transcription shim**: Optional `/v1/audio/transcriptions` compatibility layer.
 - [ ] **Realtime shim**: Optional `v1/realtime` compatibility layer for text and media session orchestration.
 
+## Virtual LLM — Remaining
+
+Core virtual LLM hooks are working: Hook 1 (media), Hook 2 (post-prefill uncertainty), Hook 2b (mid-gen drift). See [VIRTUAL_LLM.md](docs/VIRTUAL_LLM.md), PR #225.
+
+- [ ] **Investigate slow peer consultations**: MiniMax peers have low QUIC RTT but hang for 60s+ on actual inference. Need to understand why — is it model load time, queue depth, or something else? Track actual consultation response times per peer and deprioritize slow responders.
+- [ ] **Peer responsiveness tracking**: Currently picks peers by tier + RTT. Should track historical consultation latencies and exclude peers that consistently timeout.
+- [ ] **Wire audio extraction**: `find_audio_peer` works but extracting audio data from the request payload isn't implemented.
+- [ ] **Non-thinking model testing**: Current entropy gating doesn't work well for thinking models (first token is always `<think>`, very confident). Test with non-thinking models where Hook 2 fires on genuine first-token uncertainty.
+
 ## Resilience
 - [ ] **Multi-node tensor split recovery**: If one split peer dies, re-split across remaining.
 
