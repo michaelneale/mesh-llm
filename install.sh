@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-REPO="${MESH_LLM_INSTALL_REPO:-michaelneale/mesh-llm}"
+REPO="${MESH_LLM_INSTALL_REPO:-Mesh-LLM/mesh-llm}"
 REPO_REF="${MESH_LLM_INSTALL_REF:-main}"
 INSTALL_DIR="${MESH_LLM_INSTALL_DIR:-$HOME/.local/bin}"
 INSTALL_FLAVOR="${MESH_LLM_INSTALL_FLAVOR:-}"

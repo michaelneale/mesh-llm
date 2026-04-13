@@ -36,6 +36,7 @@ pub(crate) async fn submit_full_analyze_job(
         release_target: options.hf_job_release_target,
         source_repo: identity.repo_id.clone(),
         source_revision: identity.revision.clone(),
+        source_file: identity.file.clone(),
         distribution_id: crate::system::moe_planner::normalize_distribution_id(
             &identity.local_file_name,
         ),
@@ -69,6 +70,7 @@ pub(crate) async fn submit_micro_analyze_job(
         release_target: options.hf_job_release_target,
         source_repo: identity.repo_id.clone(),
         source_revision: identity.revision.clone(),
+        source_file: identity.file.clone(),
         distribution_id: crate::system::moe_planner::normalize_distribution_id(
             &identity.local_file_name,
         ),
@@ -89,6 +91,7 @@ struct JobSubmissionSpec {
     release_target: HfJobReleaseTarget,
     source_repo: String,
     source_revision: String,
+    source_file: String,
     distribution_id: String,
 }
 
@@ -165,14 +168,43 @@ struct JobStatus {
 #[serde(rename_all = "camelCase")]
 struct HardwareFlavor {
     name: String,
-    pretty_name: String,
-    unit_cost_usd: f64,
-    unit_label: String,
+    #[serde(default)]
+    pretty_name: Option<String>,
+    #[serde(default, rename = "unitCostUSD")]
+    unit_cost_usd: Option<f64>,
+    #[serde(default, rename = "unitCostMicroUSD")]
+    unit_cost_micro_usd: Option<u64>,
+    #[serde(default)]
+    unit_label: Option<String>,
+}
+
+impl HardwareFlavor {
+    fn pretty_name(&self) -> &str {
+        self.pretty_name.as_deref().unwrap_or(&self.name)
+    }
+
+    fn unit_label(&self) -> &str {
+        self.unit_label.as_deref().unwrap_or("minute")
+    }
+
+    fn resolved_unit_cost_usd(&self) -> Result<f64> {
+        if let Some(unit_cost_usd) = self.unit_cost_usd {
+            return Ok(unit_cost_usd);
+        }
+        if let Some(unit_cost_micro_usd) = self.unit_cost_micro_usd {
+            return Ok(unit_cost_micro_usd as f64 / 1_000_000.0);
+        }
+        bail!(
+            "Hugging Face hardware flavor {} is missing both unitCostUSD and unitCostMicroUSD",
+            self.name
+        );
+    }
 }
 
 #[derive(Clone, Debug)]
 struct PricingEstimate {
     flavor: HardwareFlavor,
+    unit_cost_usd: f64,
     max_cost_usd: f64,
 }
 
@@ -203,11 +235,14 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
         "environment": {
             "MESH_LLM_RELEASE_URL": release_url,
             "MODEL_REF": spec.model_ref,
+            "SOURCE_REPO": spec.source_repo,
+            "SOURCE_REVISION": spec.source_revision,
+            "SOURCE_FILE": spec.source_file,
             "DATASET_REPO": spec.dataset_repo,
             "HF_JOB_FLAVOR": pricing.flavor.name,
-            "HF_JOB_FLAVOR_PRETTY": pricing.flavor.pretty_name,
-            "HF_JOB_UNIT_COST_USD": format!("{:.6}", pricing.flavor.unit_cost_usd),
-            "HF_JOB_UNIT_LABEL": pricing.flavor.unit_label,
+            "HF_JOB_FLAVOR_PRETTY": pricing.flavor.pretty_name(),
+            "HF_JOB_UNIT_COST_USD": format!("{:.6}", pricing.unit_cost_usd),
+            "HF_JOB_UNIT_LABEL": pricing.flavor.unit_label(),
             "HF_JOB_TIMEOUT_SECONDS": timeout_seconds.to_string(),
             "HF_JOB_MAX_COST_USD": format!("{:.2}", pricing.max_cost_usd),
         },
@@ -236,7 +271,9 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
     println!("📥 Release: {} {}", spec.release_repo, spec.release_tag);
     println!(
         "💵 Pricing: {} @ ${:.6}/{}",
-        pricing.flavor.pretty_name, pricing.flavor.unit_cost_usd, pricing.flavor.unit_label
+        pricing.flavor.pretty_name(),
+        pricing.unit_cost_usd,
+        pricing.flavor.unit_label()
     );
     println!("🧮 Max cost: ${:.2} USD", pricing.max_cost_usd);
 
@@ -297,10 +334,11 @@ async fn fetch_pricing_estimate(
         .into_iter()
         .find(|candidate| candidate.name == flavor)
         .ok_or_else(|| anyhow::anyhow!("Unknown Hugging Face Jobs flavor: {flavor}"))?;
-    let max_cost_usd =
-        estimate_cost_usd(flavor.unit_cost_usd, &flavor.unit_label, timeout_seconds)?;
+    let unit_cost_usd = flavor.resolved_unit_cost_usd()?;
+    let max_cost_usd = estimate_cost_usd(unit_cost_usd, flavor.unit_label(), timeout_seconds)?;
     Ok(PricingEstimate {
         flavor,
+        unit_cost_usd,
         max_cost_usd,
     })
 }
@@ -508,5 +546,31 @@ mod tests {
     fn estimate_cost_supports_hour_pricing() {
         let cost = estimate_cost_usd(1.80, "hour", 7200).unwrap();
         assert!((cost - 3.60).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hardware_pricing_supports_unit_cost_usd() {
+        let flavor: HardwareFlavor = serde_json::from_value(json!({
+            "name": "l40sx1",
+            "prettyName": "1x Nvidia L40S",
+            "unitCostUSD": 0.03,
+            "unitLabel": "minute"
+        }))
+        .unwrap();
+        assert_eq!(flavor.pretty_name(), "1x Nvidia L40S");
+        assert_eq!(flavor.unit_label(), "minute");
+        assert!((flavor.resolved_unit_cost_usd().unwrap() - 0.03).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hardware_pricing_falls_back_to_micro_usd() {
+        let flavor: HardwareFlavor = serde_json::from_value(json!({
+            "name": "l40sx1",
+            "unitCostMicroUSD": 30000
+        }))
+        .unwrap();
+        assert_eq!(flavor.pretty_name(), "l40sx1");
+        assert_eq!(flavor.unit_label(), "minute");
+        assert!((flavor.resolved_unit_cost_usd().unwrap() - 0.03).abs() < 1e-9);
     }
 }

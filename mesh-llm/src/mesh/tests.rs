@@ -1,3 +1,8 @@
+use super::heartbeat::{
+    relay_reconnect_reason, should_remove_connection, HeartbeatFailurePolicy, RelayPathSnapshot,
+    RelayPeerHealth, RelayReconnectReason, SelectedPathKind, RELAY_DEGRADED_RTT_MS,
+    RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
+};
 use super::*;
 use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
 use tokio::sync::watch;
@@ -1071,6 +1076,165 @@ fn make_test_endpoint_id(seed: u8) -> EndpointId {
     let mut bytes = [0u8; 32];
     bytes[0] = seed;
     EndpointId::from(SecretKey::from_bytes(&bytes).public())
+}
+
+#[test]
+fn relay_health_prefers_direct_paths_and_clears_relay_age() {
+    let now = std::time::Instant::now();
+    let mut health = RelayPeerHealth::default();
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Relay,
+            rtt_ms: Some(240),
+        },
+        now - std::time::Duration::from_secs(RELAY_ONLY_RECONNECT_SECS + 5),
+    );
+    assert!(
+        health.relay_since.is_some(),
+        "relay age should start on relay path"
+    );
+
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Direct,
+            rtt_ms: Some(18),
+        },
+        now,
+    );
+    assert!(
+        health.relay_since.is_none(),
+        "direct path should clear relay-only aging"
+    );
+}
+
+#[test]
+fn relay_health_reconnects_degraded_relay_paths() {
+    let now = std::time::Instant::now();
+    let mut health = RelayPeerHealth::default();
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Relay,
+            rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 50),
+        },
+        now - std::time::Duration::from_secs(30),
+    );
+
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 50),
+            },
+            now,
+            0,
+            true,
+        ),
+        Some(RelayReconnectReason::RelayRttDegraded)
+    );
+}
+
+#[test]
+fn relay_health_reconnects_long_lived_relay_paths() {
+    let now = std::time::Instant::now();
+    let mut health = RelayPeerHealth::default();
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Relay,
+            rtt_ms: Some(260),
+        },
+        now - std::time::Duration::from_secs(RELAY_ONLY_RECONNECT_SECS + 5),
+    );
+
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(260),
+            },
+            now,
+            0,
+            true,
+        ),
+        Some(RelayReconnectReason::RelayOnlyTooLong)
+    );
+}
+
+#[test]
+fn relay_health_respects_cooldown_and_inflight_requests() {
+    let now = std::time::Instant::now();
+    let mut health = RelayPeerHealth::default();
+    health.observe(
+        RelayPathSnapshot {
+            kind: SelectedPathKind::Relay,
+            rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+        },
+        now - std::time::Duration::from_secs(30),
+    );
+    health.last_reconnect_at =
+        Some(now - std::time::Duration::from_secs(RELAY_RECONNECT_COOLDOWN_SECS - 1));
+
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+            },
+            now,
+            0,
+            true,
+        ),
+        None,
+        "cooldown should suppress immediate retry"
+    );
+
+    health.last_reconnect_at = None;
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+            },
+            now,
+            1,
+            true,
+        ),
+        None,
+        "active requests should suppress relay refresh"
+    );
+    assert_eq!(
+        relay_reconnect_reason(
+            &health,
+            RelayPathSnapshot {
+                kind: SelectedPathKind::Relay,
+                rtt_ms: Some(RELAY_DEGRADED_RTT_MS + 10),
+            },
+            now,
+            0,
+            false,
+        ),
+        None,
+        "missing home relay should suppress churn"
+    );
+}
+
+#[test]
+fn stale_dispatcher_cannot_remove_replacement_connection() {
+    assert!(
+        should_remove_connection(Some(7), 7),
+        "matching stable id should remove tracked connection"
+    );
+    assert!(
+        !should_remove_connection(Some(8), 7),
+        "stale dispatcher must not remove a newer replacement connection"
+    );
+    assert!(
+        !should_remove_connection(None, 7),
+        "missing connection slot should be a no-op"
+    );
 }
 
 #[test]

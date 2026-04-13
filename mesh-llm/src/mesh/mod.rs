@@ -2899,21 +2899,43 @@ impl Node {
 
     async fn _dispatch_streams(&self, conn: Connection, remote: EndpointId) {
         let protocol = connection_protocol(&conn);
+        let connection_stable_id = conn.stable_id();
         loop {
             let (send, mut recv) = match conn.accept_bi().await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::info!("Connection to {} closed: {e}", remote.fmt_short());
-                    // Remove the stale connection
+                    // Remove the stale connection only if it still owns the
+                    // tracked slot. A newer connection may already have
+                    // replaced it.
                     {
                         let mut state = self.state.lock().await;
-                        state.connections.remove(&remote);
+                        if should_remove_connection(
+                            state.connections.get(&remote).map(|conn| conn.stable_id()),
+                            connection_stable_id,
+                        ) {
+                            state.connections.remove(&remote);
+                        }
                     }
                     // Try to reconnect — if the peer is still alive, re-learn their role
-                    let addr = {
+                    let (addr, replaced_by_newer_conn) = {
                         let state = self.state.lock().await;
-                        state.peers.get(&remote).map(|p| p.addr.clone())
+                        (
+                            state.peers.get(&remote).map(|p| p.addr.clone()),
+                            state
+                                .connections
+                                .get(&remote)
+                                .map(|tracked| tracked.stable_id())
+                                .is_some_and(|tracked| tracked != connection_stable_id),
+                        )
                     };
+                    if replaced_by_newer_conn {
+                        tracing::debug!(
+                            "Connection to {} already replaced by a newer stream dispatcher",
+                            remote.fmt_short()
+                        );
+                        break;
+                    }
                     if let Some(addr) = addr {
                         tracing::info!("Attempting reconnect to {}...", remote.fmt_short());
                         match tokio::time::timeout(
@@ -4183,7 +4205,8 @@ use gossip::{apply_transitive_ann, peer_meaningfully_changed};
 pub use gossip::{backfill_legacy_descriptors, merge_demand};
 #[allow(unused_imports)]
 use heartbeat::{
-    heartbeat_failure_policy_for_peer, HeartbeatFailurePolicy, MOE_RECOVERY_PROBATION_SECS,
+    heartbeat_failure_policy_for_peer, should_remove_connection, HeartbeatFailurePolicy,
+    MOE_RECOVERY_PROBATION_SECS,
 };
 pub(crate) use heartbeat::{
     moe_recovery_ready_at, peer_is_eligible_for_active_moe, resolve_peer_down,

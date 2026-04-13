@@ -168,9 +168,9 @@ These plugins should validate:
 
 The llama pluginization work should move the current local llama-style serving path behind the new plugin-hosted inference endpoint contract.
 
-The MLX plugin should then take inspiration from the in-process inference-server work in [PR #103](https://github.com/michaelneale/mesh-llm/pull/103), but implemented using the new plugin endpoint registration architecture rather than direct built-in runtime ownership in core.
+The MLX plugin should then take inspiration from the in-process inference-server work in [PR #103](https://github.com/Mesh-LLM/mesh-llm/pull/103), but implemented using the new plugin endpoint registration architecture rather than direct built-in runtime ownership in core.
 
-After that, add an attached external inference plugin, with Lemonade as the first target for that mode. That should take inspiration from [PR #150](https://github.com/michaelneale/mesh-llm/pull/150), but implemented using endpoint registration rather than ad hoc `inference/register` notifications in the transport layer.
+After that, add an attached external inference plugin, with Lemonade as the first target for that mode. That should take inspiration from [PR #150](https://github.com/Mesh-LLM/mesh-llm/pull/150), but implemented using endpoint registration rather than ad hoc `inference/register` notifications in the transport layer.
 
 ### Phase 9: Host-Owned Plugin Crypto API
 
@@ -252,7 +252,7 @@ The pluginized llama backend should prove that the current built-in serving path
 
 The MLX plugin should then prove that a second plugin-hosted backend can use the same contract while owning its own runtime behavior.
 
-Take implementation cues from the current llama runtime behavior first, and then from [PR #103](https://github.com/michaelneale/mesh-llm/pull/103):
+Take implementation cues from the current llama runtime behavior first, and then from [PR #103](https://github.com/Mesh-LLM/mesh-llm/pull/103):
 
 - plugin-hosted local model serving with llama semantics
 - plugin-hosted local inference serving

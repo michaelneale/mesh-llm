@@ -10,11 +10,11 @@ use crate::cli::{Cli, Command};
 use crate::inference::launch;
 use crate::VERSION;
 
-const DEFAULT_RELEASE_REPO: &str = "michaelneale/mesh-llm";
+const DEFAULT_RELEASE_REPO: &str = "Mesh-LLM/mesh-llm";
 #[cfg(not(windows))]
 const INSTALL_SCRIPT_URL: &str =
-    "https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh";
-const RELEASES_URL: &str = "https://github.com/michaelneale/mesh-llm/releases/latest";
+    "https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh";
+const RELEASES_URL: &str = "https://github.com/Mesh-LLM/mesh-llm/releases/latest";
 const SELF_UPDATE_ATTEMPTED_ENV: &str = "MESH_LLM_SELF_UPDATE_ATTEMPTED";
 const SELF_UPDATE_REPO_ENV: &str = "MESH_LLM_SELF_UPDATE_REPO";
 
@@ -1103,7 +1103,7 @@ mod tests {
         std::env::remove_var(SELF_UPDATE_REPO_ENV);
         assert_eq!(
             release_asset_url("v0.60.0", "mesh-llm-aarch64-apple-darwin.tar.gz"),
-            "https://github.com/michaelneale/mesh-llm/releases/download/v0.60.0/mesh-llm-aarch64-apple-darwin.tar.gz"
+            "https://github.com/Mesh-LLM/mesh-llm/releases/download/v0.60.0/mesh-llm-aarch64-apple-darwin.tar.gz"
         );
     }
 
@@ -1111,10 +1111,10 @@ mod tests {
     #[serial]
     fn test_release_repo_defaults_to_main_repo() {
         std::env::remove_var(SELF_UPDATE_REPO_ENV);
-        assert_eq!(release_repo(), "michaelneale/mesh-llm");
+        assert_eq!(release_repo(), "Mesh-LLM/mesh-llm");
         assert_eq!(
             latest_release_api_url(),
-            "https://api.github.com/repos/michaelneale/mesh-llm/releases/latest"
+            "https://api.github.com/repos/Mesh-LLM/mesh-llm/releases/latest"
         );
     }
 

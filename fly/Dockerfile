@@ -6,7 +6,7 @@
 #
 # If you modify this file, also update docker/Dockerfile.client and vice versa.
 # They should be structurally identical to avoid drift between the Fly deploy
-# and the published ghcr.io/michaelneale/mesh-llm:client image.
+# and the published ghcr.io/mesh-llm/mesh-llm:client image.
 #
 # Deploy:
 #   fly deploy --config fly/console/fly.toml --dockerfile fly/Dockerfile

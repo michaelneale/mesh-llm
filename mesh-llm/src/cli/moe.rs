@@ -96,7 +96,7 @@ pub(crate) struct HfJobArgs {
     #[arg(long)]
     pub(crate) hf_job_namespace: Option<String>,
     /// GitHub repo that hosts the mesh-llm release bundle used by the remote job.
-    #[arg(long, default_value = "michaelneale/mesh-llm")]
+    #[arg(long, default_value = "Mesh-LLM/mesh-llm")]
     pub(crate) hf_job_release_repo: String,
     /// Release tag to download inside the remote job. Use `latest` for the latest GitHub release.
     #[arg(long, default_value = "latest")]

@@ -1,6 +1,6 @@
 # Issue #115 Spec Compliance Tracker
 
-**Issue**: https://github.com/michaelneale/mesh-llm/issues/115
+**Issue**: https://github.com/Mesh-LLM/mesh-llm/issues/115
 
 This file is the human-readable counterpart to `.github/workflows/docker-precheck.yml`. Both must agree. If they disagree, the reusable workflow is authoritative.
 

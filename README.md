@@ -24,7 +24,7 @@ If a model fits on one machine, it runs there. If it does not, Mesh LLM automati
 Install the latest release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash
 ```
 
 Then start a node:
@@ -82,7 +82,7 @@ This starts serving a model, opens the local API and console, and prints an invi
 ### 3. Build from source
 
 ```bash
-git clone https://github.com/michaelneale/mesh-llm
+git clone https://github.com/Mesh-LLM/mesh-llm
 cd mesh-llm
 just build
 ```
@@ -250,7 +250,7 @@ Does not start the console or bind any ports. Use the CLI flags shown in `--help
 To install it as a per-user background service:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | bash -s -- --service
+curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | bash -s -- --service
 ```
 
 Service installs are user-scoped:
@@ -434,7 +434,7 @@ The installer currently targets macOS and Linux release bundles. Windows coming 
 To force a specific bundled flavor during install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/michaelneale/mesh-llm/main/install.sh | MESH_LLM_INSTALL_FLAVOR=vulkan bash
+curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh | MESH_LLM_INSTALL_FLAVOR=vulkan bash
 ```
 
 Installed release bundles use flavor-specific llama.cpp binaries:
@@ -457,7 +457,7 @@ mesh-llm update --version v0.X.Y
 If you build from source, always use `just`:
 
 ```bash
-git clone https://github.com/michaelneale/mesh-llm
+git clone https://github.com/Mesh-LLM/mesh-llm
 cd mesh-llm
 just build
 ```

@@ -24,7 +24,7 @@ pub(crate) async fn run_blackboard(
         eprintln!("  Join a mesh:   mesh-llm client --join <token>");
         eprintln!("  Public mesh:   mesh-llm client --auto");
         eprintln!();
-        eprintln!("See https://github.com/michaelneale/mesh-llm for setup guide.");
+        eprintln!("See https://github.com/Mesh-LLM/mesh-llm for setup guide.");
         std::process::exit(1);
     }
 
