@@ -452,7 +452,7 @@ Installed release bundles use flavor-specific llama.cpp binaries:
 
 - macOS: `metal`
 - Linux: `cpu`, `cuda`, `rocm`, `vulkan`
-- Linux ARM64 CPU: `aarch64-unknown-linux-gnu`
+- Linux ARM64 CPU: `cpu` (asset triple: `aarch64-unknown-linux-gnu`)
 
 For release and install naming, `arm64` and `aarch64` both refer to the same 64-bit ARM target. Generic 32-bit ARM is not a published release target.
 
