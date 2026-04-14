@@ -41,6 +41,8 @@ COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
 COPY mesh-llm/proto/ mesh-llm/proto/
 COPY mesh-llm/src/ mesh-llm/src/
 COPY mesh-llm/plugin/src/ mesh-llm/plugin/src/
+COPY tools/xtask/Cargo.toml tools/xtask/Cargo.toml
+COPY tools/xtask/src/ tools/xtask/src/
 RUN mkdir -p mesh-llm/ui/dist && echo '<html></html>' > mesh-llm/ui/dist/index.html
 RUN cargo chef prepare --recipe-path recipe.json
 RUN --mount=type=cache,target=/root/.cargo/registry \
