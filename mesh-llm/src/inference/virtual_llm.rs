@@ -164,7 +164,7 @@ pub async fn handle_uncertain(
     }
 
     // Pre-generation: user is waiting for first token anyway, can afford longer timeout
-    get_peer_hint(node, model, messages, consult::TIMEOUT_PRE_GENERATION).await
+    get_peer_hint(node, model, messages, consult::TIMEOUT_CONSULTATION).await
 }
 
 // ===========================================================================
@@ -192,7 +192,7 @@ pub async fn handle_drift(
     }
 
     // Mid-generation: user sees a stall, keep it short
-    get_peer_hint(node, model, messages, consult::TIMEOUT_MID_GENERATION).await
+    get_peer_hint(node, model, messages, consult::TIMEOUT_CONSULTATION).await
 }
 
 // ===========================================================================

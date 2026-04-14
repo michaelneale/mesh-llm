@@ -104,15 +104,9 @@ pub async fn find_different_model_peers(
 // Consultation requests
 // ---------------------------------------------------------------------------
 
-/// Hook 2 timeout: before generation starts, user is waiting for first token
-/// anyway. Can afford to wait longer for a good answer.
-pub const TIMEOUT_PRE_GENERATION: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Hook 2b timeout: mid-generation, user sees a stall. Keep it short.
-pub const TIMEOUT_MID_GENERATION: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Hook 1 timeout: media captioning before generation. Similar to Hook 2.
-pub const TIMEOUT_MEDIA: std::time::Duration = std::time::Duration::from_secs(15);
+/// Consultation timeout — 20s for all hooks. Triggers are rare enough that
+/// a pause is acceptable, and mesh peers often need 6-10s to respond.
+pub const TIMEOUT_CONSULTATION: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Send a chat completion request to a peer over the mesh QUIC tunnel.
 /// Returns the assistant message content, or an error.
@@ -224,7 +218,7 @@ pub async fn caption_image(
         ]
     })];
 
-    chat_completion(node, peer_id, model, messages, 256, TIMEOUT_MEDIA).await
+    chat_completion(node, peer_id, model, messages, 256, TIMEOUT_CONSULTATION).await
 }
 
 /// Ask a peer for a second opinion on the user's question.
