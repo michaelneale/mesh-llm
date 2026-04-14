@@ -18,7 +18,7 @@ use crate::cli::commands::blackboard::{install_skill, run_blackboard};
 use crate::cli::commands::discover::{run_discover, run_stop};
 use crate::cli::commands::download::dispatch_download_command;
 use crate::cli::commands::gpus::dispatch_gpu_command;
-use crate::cli::commands::integrations::{run_claude, run_goose};
+use crate::cli::commands::integrations::{run_claude, run_goose, run_opencode};
 use crate::cli::commands::models::dispatch_models_command;
 use crate::cli::commands::moe::dispatch_moe_command;
 use crate::cli::commands::plugin::run_plugin_command;
@@ -69,6 +69,7 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::RotateKey => nostr::rotate_keys(),
         Command::Goose { model, port } => run_goose(model.clone(), *port).await,
         Command::Claude { model, port } => run_claude(model.clone(), *port).await,
+        Command::Opencode { model, port } => run_opencode(model.clone(), *port).await,
         Command::Blackboard {
             text,
             search,

@@ -6,7 +6,7 @@ Mesh LLM exposes an OpenAI-compatible API on `http://localhost:9337/v1`, so most
 
 ## Built-in launcher integrations
 
-For built-in launcher commands such as `goose` and `claude`:
+For built-in launcher commands such as `goose`, `claude`, and `opencode`:
 
 - if a mesh is already running locally on the chosen port, it is reused
 - otherwise Mesh LLM starts a background client node and auto-joins a mesh
@@ -41,6 +41,45 @@ Use a specific model:
 
 ```bash
 mesh-llm claude --model MiniMax-M2.5-Q4_K_M
+```
+
+## OpenCode
+
+Launch OpenCode directly through Mesh LLM:
+
+```bash
+mesh-llm opencode
+```
+
+Use a specific model:
+
+```bash
+mesh-llm opencode --model MiniMax-M2.5-Q4_K_M
+```
+
+Mesh LLM injects a temporary OpenCode config with `OPENCODE_CONFIG_CONTENT` when it launches OpenCode, so it does not edit your persistent OpenCode config files.
+
+If you want to rerun OpenCode manually, use the same config contract Mesh LLM generates:
+
+```bash
+OPENCODE_CONFIG_CONTENT='{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "mesh": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "mesh-llm",
+      "options": {
+        "baseURL": "http://127.0.0.1:9337/v1",
+        "apiKey": "{env:OPENAI_API_KEY}"
+      },
+      "models": {
+        "MiniMax-M2.5-Q4_K_M": {
+          "name": "MiniMax-M2.5-Q4_K_M"
+        }
+      }
+    }
+  }
+}' OPENAI_API_KEY=dummy opencode -m mesh/MiniMax-M2.5-Q4_K_M
 ```
 
 ## pi
@@ -93,12 +132,6 @@ pi --model mesh/MiniMax-M2.5-Q4_K_M
 ```
 
 You can switch models interactively with `Ctrl+M` inside pi.
-
-## OpenCode
-
-```bash
-OPENAI_API_KEY=dummy OPENAI_BASE_URL=http://localhost:9337/v1 opencode -m openai/GLM-4.7-Flash-Q4_K_M
-```
 
 ## curl or any OpenAI client
 

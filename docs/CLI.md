@@ -274,6 +274,17 @@ Switches:
 - `--model <MODEL>`: model id from `/v1/models`.
 - `--port <PORT>`: mesh-llm API port (default `9337`).
 
+### `opencode`
+
+Use this to launch OpenCode already wired to mesh-llm’s OpenAI-compatible endpoint.
+
+It injects a temporary OpenCode config through `OPENCODE_CONFIG_CONTENT` at launch time, so it does not edit persistent OpenCode config files.
+
+Switches:
+
+- `--model <MODEL>`: model id from `/v1/models`.
+- `--port <PORT>`: mesh-llm API port (default `9337`).
+
 ### `stop`
 
 Use this to stop local `mesh-llm`, `llama-server`, and `rpc-server` processes.

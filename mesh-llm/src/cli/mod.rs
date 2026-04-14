@@ -505,6 +505,18 @@ pub(crate) enum Command {
         #[arg(long, default_value = "9337")]
         port: u16,
     },
+    /// Launch OpenCode with mesh-llm as the inference provider.
+    ///
+    /// If no mesh is running on --port, this auto-joins the mesh as a client.
+    #[command(name = "opencode")]
+    Opencode {
+        /// Model id to use from /v1/models (default: auto = mesh picks best)
+        #[arg(long)]
+        model: Option<String>,
+        /// API port for mesh-llm (default: 9337)
+        #[arg(long, default_value = "9337")]
+        port: u16,
+    },
     /// Stop all running mesh-llm, llama-server, and rpc-server processes.
     Stop,
     /// Blackboard — post, search, and read messages shared across the mesh.

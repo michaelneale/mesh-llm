@@ -46,6 +46,9 @@ type AppHeaderSection = {
   label: string;
 };
 
+const PUBLIC_AGENT_LAUNCHERS = ["claude", "goose", "opencode"] as const;
+const PRIVATE_AGENT_LAUNCHERS = ["claude", "goose"] as const;
+
 function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>) {
   return (
     event.button === 0 &&
@@ -83,6 +86,9 @@ export function AppHeader({
   apiDirectUrl: string;
   isPublicMesh: boolean;
 }) {
+  const agentLaunchers = isPublicMesh
+    ? PUBLIC_AGENT_LAUNCHERS
+    : PRIVATE_AGENT_LAUNCHERS;
   const [inviteWithModelCopied, setInviteWithModelCopied] = useState(false);
   const [inviteClientCopied, setInviteClientCopied] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -266,7 +272,7 @@ export function AppHeader({
               <div className="space-y-2 pt-1">
                 <div className="text-xs font-medium">Use with agents</div>
                 <div className="space-y-1">
-                  {["claude", "goose"].map((agent) => {
+                  {agentLaunchers.map((agent) => {
                     const cmd = isPublicMesh
                       ? `mesh-llm ${agent}`
                       : `mesh-llm ${agent} --join ${inviteToken || "(token)"}`;

@@ -348,7 +348,7 @@ Build-from-source and UI development instructions are in [CONTRIBUTING.md](CONTR
 
 mesh-llm exposes an OpenAI-compatible API on `localhost:9337`. Any tool that supports custom OpenAI endpoints works. `/v1/models` lists available models; the `model` field in requests routes to the right node.
 
-For built-in launcher integrations (`goose`, `claude`):
+For built-in launcher integrations (`goose`, `claude`, `opencode`):
 
 - If a mesh is already running locally on `--port`, it is reused.
 - If not, `mesh-llm` auto-starts a background client node that auto-joins the mesh.
@@ -370,6 +370,20 @@ mesh-llm goose --model MiniMax-M2.5-Q4_K_M
 ```
 
 This command writes/updates `~/.config/goose/custom_providers/mesh.json` and launches Goose.
+
+### opencode
+
+OpenCode uses a temporary provider config injected by Mesh, so you don't need to edit local config files by hand. For the full advanced or manual setup, see [docs/AGENTS.md](docs/AGENTS.md).
+
+```bash
+mesh-llm opencode
+```
+
+Use a specific model (example: MiniMax):
+
+```bash
+mesh-llm opencode --model MiniMax-M2.5-Q4_K_M
+```
 
 ### pi
 
