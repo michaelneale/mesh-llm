@@ -8,6 +8,10 @@ use tokio::net::TcpStream;
 ///
 /// Parses the JSON payload once, dispatches to typed handler functions.
 /// Each hook blocks the C++ slot until we respond.
+///
+/// Only accepts connections from loopback — llama-server is always on localhost.
+/// This prevents remote callers from triggering costly peer consultations even
+/// when the management API is bound to 0.0.0.0 via `--listen-all`.
 pub async fn handle(
     stream: &mut TcpStream,
     state: &MeshApi,
@@ -15,6 +19,18 @@ pub async fn handle(
     _path: &str,
     body: &str,
 ) -> anyhow::Result<()> {
+    if let Ok(addr) = stream.peer_addr() {
+        if !addr.ip().is_loopback() {
+            tracing::warn!("mesh hook: rejected non-loopback caller {addr}");
+            return http::respond_json(
+                stream,
+                403,
+                &serde_json::json!({"error": "mesh hooks only accept localhost connections"}),
+            )
+            .await;
+        }
+    }
+
     let payload: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {

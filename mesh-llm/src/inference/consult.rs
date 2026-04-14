@@ -171,12 +171,31 @@ async fn chat_completion_inner(
     let response_bytes = recv.read_to_end(64 * 1024).await?;
     let response_str = String::from_utf8_lossy(&response_bytes);
 
-    // Parse HTTP response — find the body after \r\n\r\n
-    let body_start = response_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
-    let body = &response_str[body_start..];
+    // Parse HTTP status line
+    let header_end = response_str
+        .find("\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("malformed HTTP response: no header terminator"))?;
+    let headers = &response_str[..header_end];
+    let status_line = headers.lines().next().unwrap_or("");
+    let status_code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if status_code != 200 {
+        anyhow::bail!(
+            "peer returned HTTP {status_code}: {}",
+            &response_str[..response_str.len().min(200)]
+        );
+    }
 
-    let parsed: Value = serde_json::from_str(body)
-        .map_err(|e| anyhow::anyhow!("failed to parse peer response: {e}"))?;
+    let body = &response_str[header_end + 4..];
+    let parsed: Value = serde_json::from_str(body).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to parse peer response body: {e}\nraw: {}",
+            &body[..body.len().min(200)]
+        )
+    })?;
 
     // Extract the assistant message content
     let content = parsed["choices"][0]["message"]["content"]
