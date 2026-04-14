@@ -71,7 +71,7 @@ build_llamacpp() {
     log "Building llama.cpp with RPC support..."
 
     if [[ ! -d "$PROJECT_DIR/llama.cpp" ]]; then
-        git clone https://github.com/michaelneale/llama.cpp.git "$PROJECT_DIR/llama.cpp"
+        git clone https://github.com/Mesh-LLM/llama.cpp.git "$PROJECT_DIR/llama.cpp"
         cd "$PROJECT_DIR/llama.cpp" && git checkout rpc-local-gguf && cd -
     fi
 

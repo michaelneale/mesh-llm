@@ -246,28 +246,28 @@ esac
 # cmake will silently rebuild things.
 #
 # When unset (the default for local `just build`), behaviour is unchanged:
-# clone-or-pull `upstream-latest` HEAD as before.
+# clone-or-pull `master` HEAD as before.
 LLAMA_PIN_SHA="${MESH_LLM_LLAMA_PIN_SHA:-}"
 
 if [[ ! -d "$LLAMA_DIR" ]]; then
     if [[ -n "$LLAMA_PIN_SHA" ]]; then
-        echo "Cloning michaelneale/llama.cpp pinned to $LLAMA_PIN_SHA..."
-        # Shallow clone of upstream-latest first (the common case is that
-        # $LLAMA_PIN_SHA == upstream-latest HEAD because ci.yml resolves it
-        # via `git ls-remote ... refs/heads/upstream-latest`). If the branch
+        echo "Cloning Mesh-LLM/llama.cpp pinned to $LLAMA_PIN_SHA..."
+        # Shallow clone of master first (the common case is that
+        # $LLAMA_PIN_SHA == master HEAD because ci.yml resolves it
+        # via `git ls-remote ... refs/heads/master`). If the branch
         # has moved between resolve and clone, fall back to fetching the
         # specific commit.
-        git clone -b upstream-latest --depth 1 \
-            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        git clone -b master --depth 1 \
+            https://github.com/Mesh-LLM/llama.cpp.git "$LLAMA_DIR"
         if ! (cd "$LLAMA_DIR" && git cat-file -e "${LLAMA_PIN_SHA}^{commit}" 2>/dev/null); then
-            echo "Pinned SHA not on upstream-latest tip, fetching explicitly..."
+            echo "Pinned SHA not on master tip, fetching explicitly..."
             (cd "$LLAMA_DIR" && git fetch --depth 1 origin "$LLAMA_PIN_SHA")
         fi
         (cd "$LLAMA_DIR" && git checkout --detach "$LLAMA_PIN_SHA")
     else
-        echo "Cloning michaelneale/llama.cpp (upstream-latest)..."
-        git clone -b upstream-latest \
-            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        echo "Cloning Mesh-LLM/llama.cpp (master)..."
+        git clone -b master \
+            https://github.com/Mesh-LLM/llama.cpp.git "$LLAMA_DIR"
     fi
 else
     cd "$LLAMA_DIR"
@@ -289,12 +289,12 @@ else
         fi
     else
         CURRENT_BRANCH=$(git branch --show-current)
-        if [[ "$CURRENT_BRANCH" != "upstream-latest" ]]; then
-            echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to upstream-latest..."
-            git checkout upstream-latest
+        if [[ "$CURRENT_BRANCH" != "master" ]]; then
+            echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to master..."
+            git checkout master
         fi
-        echo "Pulling latest upstream-latest from origin..."
-        git pull --ff-only origin upstream-latest
+        echo "Pulling latest master from origin..."
+        git pull --ff-only origin master
     fi
     cd "$REPO_ROOT"
 fi

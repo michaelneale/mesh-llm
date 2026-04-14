@@ -134,7 +134,15 @@ jobs:
 
       # ── llama.cpp (CPU-only for CI) ──
       - name: Clone llama.cpp fork
-        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: |
+          git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git llama.cpp
+          if [[ -f LLAMA_CPP_SHA ]]; then
+            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
+            cd llama.cpp
+            git fetch --depth 1 origin "$SHA" 2>/dev/null || true
+            git checkout "$SHA" 2>/dev/null || echo "SHA $SHA not found, using master HEAD"
+            cd ..
+          fi
 
       - name: Build llama.cpp (CPU + RPC)
         run: |
@@ -254,7 +262,15 @@ jobs:
       # ── llama.cpp (Metal + RPC) ──
       - name: Clone llama.cpp fork
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git llama.cpp
+        run: |
+          git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git llama.cpp
+          if [[ -f LLAMA_CPP_SHA ]]; then
+            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
+            cd llama.cpp
+            git fetch --depth 1 origin "$SHA" 2>/dev/null || true
+            git checkout "$SHA" 2>/dev/null || echo "SHA $SHA not found, using master HEAD"
+            cd ..
+          fi
 
       - name: Build llama.cpp (CPU + RPC)
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
@@ -475,18 +491,25 @@ jobs:
       #   - the CUDA arch literal (`arch89`), the GGML_CUDA_FA_ALL_QUANTS
       #     state (`fa-off`), and the CUDA toolkit version pulled from the
       #     container image.
-      - name: Resolve llama.cpp upstream SHA
+      - name: Resolve llama.cpp SHA
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_sha
         shell: bash
         run: |
           set -euo pipefail
-          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          # Read pinned SHA from LLAMA_CPP_SHA (single source of truth).
+          # Falls back to ls-remote if the file is missing.
+          if [[ -f LLAMA_CPP_SHA ]]; then
+            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
+            echo "Using pinned llama.cpp SHA from LLAMA_CPP_SHA: $SHA"
+          else
+            SHA=$(git ls-remote https://github.com/Mesh-LLM/llama.cpp.git refs/heads/master | cut -f1)
+            echo "LLAMA_CPP_SHA not found, resolved from remote: $SHA"
+          fi
           if [[ -z "$SHA" ]]; then
-            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            echo "Failed to resolve llama.cpp SHA" >&2
             exit 1
           fi
-          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       # `actions/cache/restore@v5` (NOT `actions/cache@v5`): restore-only,
@@ -517,7 +540,7 @@ jobs:
       #   4. MESH_LLM_LLAMA_PIN_SHA — pin the llama.cpp checkout to the SHA
       #      embedded in the artifact cache key (above). NEVER set this in
       #      release.yml; release artifacts must build the current
-      #      upstream-latest tip.
+      #      master tip.
       #
       # Split into two mutually exclusive steps keyed off the artifact cache:
       #
@@ -656,18 +679,23 @@ jobs:
             . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
-      - name: Resolve llama.cpp upstream SHA
+      - name: Resolve llama.cpp SHA
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_sha
         shell: bash
         run: |
           set -euo pipefail
-          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
+          if [[ -f LLAMA_CPP_SHA ]]; then
+            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
+            echo "Using pinned llama.cpp SHA from LLAMA_CPP_SHA: $SHA"
+          else
+            SHA=$(git ls-remote https://github.com/Mesh-LLM/llama.cpp.git refs/heads/master | cut -f1)
+            echo "LLAMA_CPP_SHA not found, resolved from remote: $SHA"
+          fi
           if [[ -z "$SHA" ]]; then
-            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
+            echo "Failed to resolve llama.cpp SHA" >&2
             exit 1
           fi
-          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore llama.cpp ROCm cache

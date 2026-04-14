@@ -500,6 +500,7 @@ You can also try the hosted demo:
 - [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
 - [PLUGINS.md](PLUGINS.md) for the plugin system and blackboard internals
 - [mesh-llm/docs/VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md) for inter-model collaboration design
+- [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md) for llama.cpp fork maintenance
 - [mesh-llm/README.md](mesh-llm/README.md) for Rust crate structure
 - [ROADMAP.md](ROADMAP.md) for future work
 

@@ -29,7 +29,7 @@ brew install cmake
 
 ```bash
 cd /Users/micn/Documents/code/deez
-git clone https://github.com/michaelneale/llama.cpp.git
+git clone https://github.com/Mesh-LLM/llama.cpp.git
 cd llama.cpp
 git checkout rpc-local-gguf
 ```

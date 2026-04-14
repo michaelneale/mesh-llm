@@ -69,7 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build build-essential git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git
+RUN git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git
 RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
 ARG ROCM_ARCH="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201"
 # HIPCXX/HIP_PATH exports match scripts/build-linux.sh ROCm path

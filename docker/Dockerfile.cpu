@@ -10,7 +10,7 @@
 #   llama-moe-split (unsuffixed — same across flavors)
 #
 # llama.cpp revision: tracked at /usr/local/share/mesh-llm/llama-revision.txt
-# Upstream branch: michaelneale/llama.cpp@upstream-latest (moving target)
+# Upstream branch: Mesh-LLM/llama.cpp@master (moving target)
 
 # syntax=docker/dockerfile:1.7
 
@@ -71,7 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build build-essential git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git
+RUN git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git
 RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
 RUN cd llama.cpp && \
     cmake -B build -G Ninja \

@@ -383,9 +383,9 @@ moe-live-smoke model api_url console_url expected_nodes="2" timeout="120":
 bench-prefix-affinity:
     @scripts/benchmark-prefix-affinity.sh
 
-# Show the diff from upstream llama.cpp
+# Show our custom commits on top of upstream llama.cpp
 diff:
-    cd {{ llama_dir }} && git log --oneline master..upstream-latest
+    cd {{ llama_dir }} && git log --oneline --ancestry-path $(git merge-base HEAD upstream/master 2>/dev/null || echo HEAD~8)..HEAD
 
 # Build the client-only Docker image (no GPU, no llama.cpp)
 [unix]

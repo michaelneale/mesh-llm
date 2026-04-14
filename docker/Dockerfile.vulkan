@@ -66,7 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build build-essential git ca-certificates \
     libvulkan-dev glslc pkg-config \
     && rm -rf /var/lib/apt/lists/*
-# Debian Bookworm ships libvulkan-dev 1.3.239 — too old for llama.cpp upstream-latest
+# Debian Bookworm ships libvulkan-dev 1.3.239 — too old for llama.cpp master
 # which requires VK_EXT_layer_settings (added in Vulkan headers 1.3.261+).
 # Install just the newer C/C++ headers from Khronos into /usr/local (compiler prefers them).
 RUN git clone --depth 1 -b v1.3.296 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/Vulkan-Headers && \
@@ -74,7 +74,7 @@ RUN git clone --depth 1 -b v1.3.296 https://github.com/KhronosGroup/Vulkan-Heade
     cmake --install /tmp/Vulkan-Headers/build && \
     rm -rf /tmp/Vulkan-Headers
 WORKDIR /src
-RUN git clone -b upstream-latest --depth 1 https://github.com/michaelneale/llama.cpp.git
+RUN git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git
 RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
 RUN cd llama.cpp && \
     cmake -B build -G Ninja \

@@ -54,18 +54,18 @@ configure_compiler_cache() {
 
 if [[ ! -d "$LLAMA_DIR" ]]; then
     if [[ -n "$LLAMA_PIN_SHA" ]]; then
-        echo "Cloning michaelneale/llama.cpp pinned to $LLAMA_PIN_SHA..."
-        git clone -b upstream-latest --depth 1 \
-            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        echo "Cloning Mesh-LLM/llama.cpp pinned to $LLAMA_PIN_SHA..."
+        git clone -b master --depth 1 \
+            https://github.com/Mesh-LLM/llama.cpp.git "$LLAMA_DIR"
         if ! (cd "$LLAMA_DIR" && git cat-file -e "${LLAMA_PIN_SHA}^{commit}" 2>/dev/null); then
-            echo "Pinned SHA not on upstream-latest tip, fetching explicitly..."
+            echo "Pinned SHA not on master tip, fetching explicitly..."
             (cd "$LLAMA_DIR" && git fetch --depth 1 origin "$LLAMA_PIN_SHA")
         fi
         (cd "$LLAMA_DIR" && git checkout --detach "$LLAMA_PIN_SHA")
     else
-        echo "Cloning michaelneale/llama.cpp (upstream-latest)..."
-        git clone -b upstream-latest \
-            https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        echo "Cloning Mesh-LLM/llama.cpp (master)..."
+        git clone -b master \
+            https://github.com/Mesh-LLM/llama.cpp.git "$LLAMA_DIR"
     fi
 else
     cd "$LLAMA_DIR"
@@ -83,12 +83,12 @@ else
         fi
     else
         CURRENT_BRANCH=$(git branch --show-current)
-        if [[ "$CURRENT_BRANCH" != "upstream-latest" ]]; then
-            echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to upstream-latest..."
-            git checkout upstream-latest
+        if [[ "$CURRENT_BRANCH" != "master" ]]; then
+            echo "⚠️  llama.cpp is on branch '$CURRENT_BRANCH', switching to master..."
+            git checkout master
         fi
-        echo "Pulling latest upstream-latest from origin..."
-        git pull --ff-only origin upstream-latest
+        echo "Pulling latest master from origin..."
+        git pull --ff-only origin master
     fi
     cd "$REPO_ROOT"
 fi

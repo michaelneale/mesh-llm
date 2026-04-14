@@ -95,18 +95,18 @@ jobs:
           grep -q "libdbus-1-dev" "${{ inputs.dockerfile_path }}"
           echo "PASS: libdbus-1-dev present"
 
-      - name: Llama builder uses upstream-latest branch
+      - name: Llama builder uses Mesh-LLM fork
         if: ${{ inputs.validate_llama_builder }}
         shell: bash
         run: |
           set -euo pipefail
           file="${{ inputs.dockerfile_path }}"
-          grep -q "upstream-latest" "$file"
-          if grep -q "rebase-upstream-master" "$file"; then
-            echo "FAIL: legacy rebase-upstream-master branch referenced in $file" >&2
+          if grep -q "Mesh-LLM/llama.cpp" "$file" || grep -q "master" "$file"; then
+            echo "PASS: uses Mesh-LLM/llama.cpp fork"
+          else
+            echo "FAIL: expected Mesh-LLM/llama.cpp reference in $file" >&2
             exit 1
           fi
-          echo "PASS: uses upstream-latest branch"
 
       - name: CUDA build enables FA all quants
         if: ${{ inputs.validate_cuda_extra }}

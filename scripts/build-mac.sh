@@ -43,12 +43,14 @@ configure_compiler_cache() {
     fi
 }
 
-LLAMA_BRANCH="${LLAMA_BRANCH:-upstream-latest}"
+LLAMA_BRANCH="${LLAMA_BRANCH:-master}"
+
+LLAMA_REPO="https://github.com/Mesh-LLM/llama.cpp.git"
 
 clone_or_update_llama() {
     if [[ ! -d "$LLAMA_DIR" ]]; then
-        echo "Cloning michaelneale/llama.cpp ($LLAMA_BRANCH branch)..."
-        git clone -b "$LLAMA_BRANCH" https://github.com/michaelneale/llama.cpp.git "$LLAMA_DIR"
+        echo "Cloning Mesh-LLM/llama.cpp ($LLAMA_BRANCH branch)..."
+        git clone -b "$LLAMA_BRANCH" "$LLAMA_REPO" "$LLAMA_DIR"
         return
     fi
 
@@ -65,18 +67,6 @@ clone_or_update_llama() {
 }
 
 clone_or_update_llama
-
-# =======================================================================
-# TEMPORARY: mesh hook C++ patches — overlay onto llama.cpp after pull.
-# This exists ONLY for the micn/virtual-llm branch so we can iterate on
-# C++ and Rust in one repo/PR. Remove this block (and llama-patches/)
-# when the C++ code moves to the mesh-hooks branch on the llama.cpp fork.
-# =======================================================================
-PATCHES_DIR="$REPO_ROOT/mesh-llm/llama-patches"
-if [[ -x "$PATCHES_DIR/sync.sh" ]]; then
-    echo "⚠️  TEMPORARY: Syncing mesh hook C++ patches into llama.cpp..."
-    "$PATCHES_DIR/sync.sh"
-fi
 
 configure_compiler_cache
 
