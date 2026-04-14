@@ -24,9 +24,11 @@ fn join_optional_csv(values: &[Option<String>]) -> Option<String> {
         return None;
     }
 
-    let has_present_value = values
-        .iter()
-        .any(|value| value.as_deref().is_some_and(|value| !value.trim().is_empty()));
+    let has_present_value = values.iter().any(|value| {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    });
 
     if !has_present_value {
         return None;
@@ -473,6 +475,10 @@ pub(crate) fn local_ann_to_proto_ann(
             .owner_attestation
             .as_ref()
             .and_then(local_owner_attestation_to_proto),
+        gpu_mem_bandwidth_gbps: ann.gpu_mem_bandwidth_gbps.clone(),
+        gpu_compute_tflops_fp32: ann.gpu_compute_tflops_fp32.clone(),
+        gpu_compute_tflops_fp16: ann.gpu_compute_tflops_fp16.clone(),
+        gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
     }
 }
@@ -557,10 +563,11 @@ pub(crate) fn proto_ann_to_local(
             .or_else(|| pa.hostname.clone()),
         is_soc: hardware.and_then(|hardware| hardware.is_soc).or(pa.is_soc),
         gpu_vram: gpu_vram_from_gpus.or_else(|| pa.gpu_vram.clone()),
-        gpu_reserved_bytes: gpu_reserved_from_gpus,
-        gpu_mem_bandwidth_gbps: gpu_mem_bandwidth_from_gpus,
-        gpu_compute_tflops_fp32: gpu_fp32_from_gpus,
-        gpu_compute_tflops_fp16: gpu_fp16_from_gpus,
+        gpu_reserved_bytes: gpu_reserved_from_gpus.or_else(|| pa.gpu_reserved_bytes.clone()),
+        gpu_mem_bandwidth_gbps: gpu_mem_bandwidth_from_gpus
+            .or_else(|| pa.gpu_mem_bandwidth_gbps.clone()),
+        gpu_compute_tflops_fp32: gpu_fp32_from_gpus.or_else(|| pa.gpu_compute_tflops_fp32.clone()),
+        gpu_compute_tflops_fp16: gpu_fp16_from_gpus.or_else(|| pa.gpu_compute_tflops_fp16.clone()),
         available_model_metadata: Vec::new(),
         experts_summary: pa.experts_summary.clone(),
         available_model_sizes: HashMap::new(),

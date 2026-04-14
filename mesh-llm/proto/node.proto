@@ -37,7 +37,11 @@ message PeerAnnouncement {
   repeated ServedModelIdentity served_model_identities = 26;
   repeated ModelRuntimeDescriptor served_model_runtime = 27;
   optional SignedNodeOwnership owner_attestation = 28;
-  optional HardwareInfo hardware = 29;              // Introduced in v0.60.0; preferred structured hardware inventory
+  optional string gpu_mem_bandwidth_gbps = 29;      // Deprecated in v0.60.0: prefer hardware.gpus[].mem_bandwidth_gbps
+  optional string gpu_compute_tflops_fp32 = 30;     // Deprecated in v0.60.0: prefer hardware.gpus[].compute_tflops_fp32
+  optional string gpu_compute_tflops_fp16 = 31;     // Deprecated in v0.60.0: prefer hardware.gpus[].compute_tflops_fp16
+  optional string gpu_reserved_bytes = 32;          // Deprecated in v0.60.0: prefer hardware.gpus[].reserved_bytes
+  optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
 }
 
 message HardwareInfo {
