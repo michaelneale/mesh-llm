@@ -1296,6 +1296,97 @@ mod tests {
     }
 
     #[test]
+    fn test_linux_arm64_aliases_resolve_identical_release_assets() {
+        let arm64_asset =
+            stable_release_asset_name_for("linux", "arm64", launch::BinaryFlavor::Cpu);
+        let aarch64_asset =
+            stable_release_asset_name_for("linux", "aarch64", launch::BinaryFlavor::Cpu);
+        assert_eq!(arm64_asset, aarch64_asset);
+        assert_eq!(
+            arm64_asset,
+            Some("mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_release_asset_name_prefers_stable_linux_arm64_asset() {
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec![
+                "mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string(),
+                "mesh-llm-v0.60.0-aarch64-unknown-linux-gnu.tar.gz".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            resolve_release_asset_name(
+                &release,
+                ReleaseTarget::from_raw("linux", "arm64", launch::BinaryFlavor::Cpu).unwrap(),
+                ReleaseAssetPreference::StableFirst,
+            ),
+            Some("mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_release_asset_name_falls_back_to_versioned_linux_arm64_asset() {
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec!["mesh-llm-v0.60.0-aarch64-unknown-linux-gnu.tar.gz".to_string()],
+        };
+
+        assert_eq!(
+            resolve_release_asset_name(
+                &release,
+                ReleaseTarget::from_raw("linux", "aarch64", launch::BinaryFlavor::Cpu).unwrap(),
+                ReleaseAssetPreference::StableFirst,
+            ),
+            Some("mesh-llm-v0.60.0-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_release_asset_name_prefers_versioned_for_explicit_install() {
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec![
+                "mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string(),
+                "mesh-llm-v0.60.0-aarch64-unknown-linux-gnu.tar.gz".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            resolve_release_asset_name(
+                &release,
+                ReleaseTarget::from_raw("linux", "aarch64", launch::BinaryFlavor::Cpu).unwrap(),
+                ReleaseAssetPreference::VersionedFirst,
+            ),
+            Some("mesh-llm-v0.60.0-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_release_asset_name_versioned_first_falls_back_to_stable() {
+        let release = ReleaseInfo {
+            tag: "v0.60.0".to_string(),
+            version: "0.60.0".to_string(),
+            assets: vec!["mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string()],
+        };
+
+        assert_eq!(
+            resolve_release_asset_name(
+                &release,
+                ReleaseTarget::from_raw("linux", "arm64", launch::BinaryFlavor::Cpu).unwrap(),
+                ReleaseAssetPreference::VersionedFirst,
+            ),
+            Some("mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
     fn test_macos_legacy_bundle_asset_remains_compatible() {
         let release = ReleaseInfo {
             tag: "v0.60.0".to_string(),

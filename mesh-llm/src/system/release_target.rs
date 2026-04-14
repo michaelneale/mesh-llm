@@ -277,6 +277,23 @@ mod tests {
     }
 
     #[test]
+    fn release_target_arm64_aliases_have_identical_linux_assets() {
+        let arm64 = ReleaseTarget::from_raw("linux", "arm64", BinaryFlavor::Cpu).unwrap();
+        let aarch64 = ReleaseTarget::from_raw("linux", "aarch64", BinaryFlavor::Cpu).unwrap();
+
+        assert_eq!(arm64.support_status(), aarch64.support_status());
+        assert_eq!(arm64.stable_asset_name(), aarch64.stable_asset_name());
+        assert_eq!(
+            arm64.versioned_asset_name(FIXTURE_RELEASE_TAG),
+            aarch64.versioned_asset_name(FIXTURE_RELEASE_TAG)
+        );
+        assert_eq!(
+            arm64.stable_asset_name(),
+            Some("mesh-llm-aarch64-unknown-linux-gnu.tar.gz".to_string())
+        );
+    }
+
+    #[test]
     fn release_target_rejects_unknown_arch() {
         assert_eq!(
             ReleaseTarget::from_raw("linux", "mips64", BinaryFlavor::Cpu),

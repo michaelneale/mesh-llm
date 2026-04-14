@@ -235,56 +235,63 @@ fn check_package_release_assets(
             continue;
         }
 
-        let (raw_os, raw_arch) = raw_target(row)?;
-        let mut envs = vec![("MESH_RELEASE_OS", raw_os), ("MESH_RELEASE_ARCH", raw_arch)];
-        if row.flavor != "cpu" && row.flavor != "metal" {
-            envs.push(("MESH_RELEASE_FLAVOR", row.flavor.as_str()));
+        for raw_case in raw_targets(row)? {
+            let mut envs = vec![
+                ("MESH_RELEASE_OS", raw_case.raw_os),
+                ("MESH_RELEASE_ARCH", raw_case.raw_arch),
+            ];
+            if row.flavor != "cpu" && row.flavor != "metal" {
+                envs.push(("MESH_RELEASE_FLAVOR", row.flavor.as_str()));
+            }
+
+            let actual_support = sourced_script_stdout(
+                repo_root,
+                "scripts/package-release.sh",
+                "release_target_support",
+                &envs,
+                &[],
+            )?;
+            ensure_eq(
+                &row.support,
+                &actual_support,
+                &format!(
+                    "{}/{}/{} package support ({})",
+                    row.os, row.arch, row.flavor, raw_case.label
+                ),
+            )?;
+
+            let actual_stable = sourced_script_stdout(
+                repo_root,
+                "scripts/package-release.sh",
+                "resolve_release_target; printf '%s\\n' \"$STABLE_ASSET\"",
+                &envs,
+                &[],
+            )?;
+            ensure_eq_option(
+                row.stable_asset.as_deref(),
+                Some(actual_stable.as_str()),
+                &format!(
+                    "{}/{}/{} package stable asset ({})",
+                    row.os, row.arch, row.flavor, raw_case.label
+                ),
+            )?;
+
+            let actual_versioned = sourced_script_stdout(
+                repo_root,
+                "scripts/package-release.sh",
+                "versioned_asset_name \"$2\"",
+                &envs,
+                &[fixture_version],
+            )?;
+            ensure_eq_option(
+                row.versioned_asset.as_deref(),
+                Some(actual_versioned.as_str()),
+                &format!(
+                    "{}/{}/{} package versioned asset ({})",
+                    row.os, row.arch, row.flavor, raw_case.label
+                ),
+            )?;
         }
-
-        let actual_support = sourced_script_stdout(
-            repo_root,
-            "scripts/package-release.sh",
-            "release_target_support",
-            &envs,
-            &[],
-        )?;
-        ensure_eq(
-            &row.support,
-            &actual_support,
-            &format!("{}/{}/{} package support", row.os, row.arch, row.flavor),
-        )?;
-
-        let actual_stable = sourced_script_stdout(
-            repo_root,
-            "scripts/package-release.sh",
-            "resolve_release_target; printf '%s\\n' \"$STABLE_ASSET\"",
-            &envs,
-            &[],
-        )?;
-        ensure_eq_option(
-            row.stable_asset.as_deref(),
-            Some(actual_stable.as_str()),
-            &format!(
-                "{}/{}/{} package stable asset",
-                row.os, row.arch, row.flavor
-            ),
-        )?;
-
-        let actual_versioned = sourced_script_stdout(
-            repo_root,
-            "scripts/package-release.sh",
-            "versioned_asset_name \"$2\"",
-            &envs,
-            &[fixture_version],
-        )?;
-        ensure_eq_option(
-            row.versioned_asset.as_deref(),
-            Some(actual_versioned.as_str()),
-            &format!(
-                "{}/{}/{} package versioned asset",
-                row.os, row.arch, row.flavor
-            ),
-        )?;
     }
 
     let arm_row = fixture_row(rows, "linux", "arm", "cpu")?;
@@ -328,11 +335,36 @@ fn check_package_release_assets(
     Ok(())
 }
 
-fn raw_target(row: &FixtureRow) -> DynResult<(&'static str, &'static str)> {
+struct RawTargetCase {
+    raw_os: &'static str,
+    raw_arch: &'static str,
+    label: &'static str,
+}
+
+fn raw_targets(row: &FixtureRow) -> DynResult<Vec<RawTargetCase>> {
     match (row.os.as_str(), row.arch.as_str()) {
-        ("macos", "aarch64") => Ok(("Darwin", "arm64")),
-        ("linux", "x86_64") => Ok(("Linux", "x86_64")),
-        ("linux", "aarch64") => Ok(("Linux", "arm64")),
+        ("macos", "aarch64") => Ok(vec![RawTargetCase {
+            raw_os: "Darwin",
+            raw_arch: "arm64",
+            label: "Darwin/arm64",
+        }]),
+        ("linux", "x86_64") => Ok(vec![RawTargetCase {
+            raw_os: "Linux",
+            raw_arch: "x86_64",
+            label: "Linux/x86_64",
+        }]),
+        ("linux", "aarch64") => Ok(vec![
+            RawTargetCase {
+                raw_os: "Linux",
+                raw_arch: "arm64",
+                label: "Linux/arm64",
+            },
+            RawTargetCase {
+                raw_os: "Linux",
+                raw_arch: "aarch64",
+                label: "Linux/aarch64",
+            },
+        ]),
         _ => Err(format!("unsupported raw target mapping for {}/{}", row.os, row.arch).into()),
     }
 }
