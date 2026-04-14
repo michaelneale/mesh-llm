@@ -19,6 +19,8 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `mesh-llm/docs/MULTI_MODAL.md` | Multimodal design: capability model, blob plugin, console, routing |
 | `mesh-llm/docs/MoE_PLAN.md` | MoE expert sharding design |
 | `mesh-llm/docs/MoE_DEPLOY_DESIGN.md` | MoE auto-deploy UX |
+| `mesh-llm/docs/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
+| `mesh-llm/docs/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
 | `relay/README.md` | Self-hosted iroh relay on Fly |
 
@@ -48,6 +50,19 @@ just build
 This is an npm bug that surfaces when `node_modules` gets into a bad state (e.g. after branch switches that change `package-lock.json`). Nuking `node_modules` and letting `npm ci` reinstall from scratch fixes it.
 
 See `CONTRIBUTING.md` for full dev workflow.
+
+## llama.cpp Fork
+
+mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.cpp](https://github.com/Mesh-LLM/llama.cpp)** (`master` branch). The fork carries 8 commits on top of upstream: RPC optimizations, MoE expert splitting, and mesh hooks for inter-model collaboration.
+
+**Be careful with this fork.** It is a separate repo with its own history. Breaking the fork breaks all builds.
+
+- The pinned commit SHA lives in `LLAMA_CPP_SHA` at the repo root. All build scripts and CI read from this file.
+- `just build` clones/pulls the fork automatically. You do not need to touch it for normal Rust or UI work.
+- **Do not update the fork to upstream HEAD unless explicitly asked.** Upstream llama.cpp changes frequently and rebasing our patches can introduce conflicts.
+- If you need to update the fork, read `mesh-llm/docs/LLAMA_CPP_FORK.md` first. It has the full procedure: rebase, resolve conflicts, push, bump SHA, rebuild, test.
+- If you need to add a new C++ patch, work in the fork checkout, commit, push, then bump `LLAMA_CPP_SHA`.
+- The fork's `master` is always: upstream HEAD + our patches rebased on top. Linear history, never merge commits.
 
 ## Project Structure
 
