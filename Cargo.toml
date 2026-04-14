@@ -7,6 +7,5 @@ members = [
 default-members = [
     "mesh-llm",
     "mesh-llm/plugin",
-    "xtask",
 ]
 resolver = "2"
