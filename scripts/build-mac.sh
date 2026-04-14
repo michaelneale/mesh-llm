@@ -44,26 +44,45 @@ configure_compiler_cache() {
 }
 
 LLAMA_BRANCH="${LLAMA_BRANCH:-master}"
-
 LLAMA_REPO="https://github.com/Mesh-LLM/llama.cpp.git"
+
+# Read pinned SHA from LLAMA_CPP_SHA if it exists
+LLAMA_PIN_SHA=""
+if [[ -f "$REPO_ROOT/LLAMA_CPP_SHA" ]]; then
+    LLAMA_PIN_SHA="$(tr -d '[:space:]' < "$REPO_ROOT/LLAMA_CPP_SHA")"
+fi
 
 clone_or_update_llama() {
     if [[ ! -d "$LLAMA_DIR" ]]; then
         echo "Cloning Mesh-LLM/llama.cpp ($LLAMA_BRANCH branch)..."
         git clone -b "$LLAMA_BRANCH" "$LLAMA_REPO" "$LLAMA_DIR"
-        return
+    else
+        pushd "$LLAMA_DIR" >/dev/null
+        local current_branch
+        current_branch="$(git branch --show-current 2>/dev/null || true)"
+        if [[ -n "$current_branch" && "$current_branch" != "$LLAMA_BRANCH" ]]; then
+            echo "⚠️  llama.cpp is on branch '$current_branch', switching to $LLAMA_BRANCH..."
+            git checkout "$LLAMA_BRANCH"
+        fi
+        echo "Pulling latest $LLAMA_BRANCH from origin..."
+        git pull --ff-only origin "$LLAMA_BRANCH" || true
+        popd >/dev/null
     fi
 
-    pushd "$LLAMA_DIR" >/dev/null
-    local current_branch
-    current_branch="$(git branch --show-current)"
-    if [[ "$current_branch" != "$LLAMA_BRANCH" ]]; then
-        echo "⚠️  llama.cpp is on branch '$current_branch', switching to $LLAMA_BRANCH..."
-        git checkout "$LLAMA_BRANCH"
+    # Pin to exact SHA if LLAMA_CPP_SHA exists
+    if [[ -n "$LLAMA_PIN_SHA" ]]; then
+        pushd "$LLAMA_DIR" >/dev/null
+        local current_sha
+        current_sha="$(git rev-parse HEAD)"
+        if [[ "$current_sha" != "$LLAMA_PIN_SHA" ]]; then
+            echo "Pinning llama.cpp to SHA $LLAMA_PIN_SHA (was ${current_sha:0:12})..."
+            git fetch origin "$LLAMA_PIN_SHA" 2>/dev/null || git fetch origin
+            git checkout "$LLAMA_PIN_SHA" --detach
+        else
+            echo "llama.cpp already at pinned SHA ${LLAMA_PIN_SHA:0:12}"
+        fi
+        popd >/dev/null
     fi
-    echo "Pulling latest $LLAMA_BRANCH from origin..."
-    git pull --ff-only origin "$LLAMA_BRANCH"
-    popd >/dev/null
 }
 
 clone_or_update_llama
