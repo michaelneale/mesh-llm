@@ -3048,16 +3048,23 @@ private:
                     float margin  = probs.size() >= 2 ? probs[0].p - probs[1].p : 1.0f;
                     slot.mesh_hook.signals.push(entropy, margin);
 
+                    // Find chosen token's probability for surprise tracking
+                    float p_chosen = 0.0f;
+                    for (const auto & p : probs) {
+                        if (p.id == id) { p_chosen = p.p; break; }
+                    }
+                    slot.mesh_hook.signals.push_token(id, p_chosen);
+
                     // --- Mesh Hook 2b: mid-generation ---
-                    // Sustained entropy spike = model is lost. Fire hook with
-                    // generated text so far, get context injection to course-correct.
+                    // Three independent triggers: entropy spike, repetition loop, surprise break.
                     // Cooldown prevents spamming (min 32 tokens between fires, 8 in debug).
                     if (slot.mesh_hook.should_fire_midgen()) {
+                        std::string trigger = slot.mesh_hook.midgen_trigger_name();
                         slot.mesh_hook.last_midgen_token = slot.mesh_hook.signals.count;
 
                         json midgen_payload = {
                             {"hook",            "mid_generation"},
-                            {"trigger",         "sustained_entropy_spike"},
+                            {"trigger",         trigger},
                             {"request_id",      slot.mesh_hook.request_id},
                             {"model",           slot.task->params.oaicompat_model},
                             {"generated_text",  slot.generated_text},
@@ -3066,9 +3073,10 @@ private:
                             {"signals",         slot.mesh_hook.signals.to_json()},
                         };
 
-                        SLT_INF(slot, "mesh hook 2b: mid_generation, n_decoded=%d tail_entropy=%.2f mean=%.2f\n",
-                                slot.n_decoded, slot.mesh_hook.signals.tail_entropy_mean(),
-                                slot.mesh_hook.signals.entropy_mean);
+                        SLT_INF(slot, "mesh hook 2b: %s, n_decoded=%d tail_entropy=%.2f rep=%.2f\n",
+                                trigger.c_str(), slot.n_decoded,
+                                slot.mesh_hook.signals.tail_entropy_mean(),
+                                slot.mesh_hook.signals.repetition_ratio());
 
                         auto resp = slot.mesh_hook.call_hook(midgen_payload);
                         auto inject_text = slot.mesh_hook.process_response(resp);

@@ -23,8 +23,14 @@
 
 using json = nlohmann::ordered_json;
 
-// Rolling window of per-token signal stats (entropy, margin).
+// Rolling window of per-token signal stats.
 // Updated every token during generation — just cheap arithmetic.
+//
+// Tracks three independent trigger signals:
+//   1. Entropy spike  — sustained high entropy (original Hook 2b)
+//   2. Repetition     — 3-gram loops in generated token IDs
+//   3. Surprise break — sudden NLL spike after a calm generation run
+//
 struct mesh_signal_window {
     static constexpr int SIZE = 16;
     float entropy[SIZE] = {};
@@ -37,6 +43,22 @@ struct mesh_signal_window {
     float margin_min    = 1;
     int   uncertain_count = 0;  // total tokens with entropy > 4.0
 
+    // --- Repetition detection ---
+    // Track last 32 token IDs and count repeated 3-grams.
+    static constexpr int REP_WINDOW = 32;
+    int   token_ids[REP_WINDOW] = {};
+    int   token_pos = 0;
+    int   token_count = 0;
+
+    // --- Surprise break detection ---
+    // EWMA of -log(p_chosen) with z-score spike detection.
+    float surprise_ewma   = 0;     // exponential weighted moving average
+    float surprise_ewma_sq = 0;    // EWMA of squared surprise (for variance)
+    static constexpr float SURPRISE_ALPHA = 0.15f;  // smoothing factor
+    static constexpr int   SURPRISE_WARMUP = 8;     // tokens before z-scores are meaningful
+    int   recent_spike_count = 0;  // spikes in last 8 tokens
+    int   recent_calm_count  = 0;  // calm tokens before last 8
+
     void push(float e, float m) {
         entropy[pos] = e;
         margin[pos]  = m;
@@ -47,6 +69,40 @@ struct mesh_signal_window {
         entropy_mean = ((entropy_mean * (count - 1)) + e) / count;
         if (e > 4.0f) {
             uncertain_count++;
+        }
+    }
+
+    // Call after sampling to record the chosen token ID and its probability.
+    void push_token(int token_id, float p_chosen) {
+        // --- Repetition ---
+        token_ids[token_pos] = token_id;
+        token_pos = (token_pos + 1) % REP_WINDOW;
+        token_count++;
+
+        // --- Surprise break ---
+        float surprise = (p_chosen > 1e-10f) ? -std::log2(p_chosen) : 20.0f;
+
+        if (count <= 1) {
+            // first token: init EWMA
+            surprise_ewma    = surprise;
+            surprise_ewma_sq = surprise * surprise;
+        } else {
+            surprise_ewma    = SURPRISE_ALPHA * surprise + (1.0f - SURPRISE_ALPHA) * surprise_ewma;
+            surprise_ewma_sq = SURPRISE_ALPHA * (surprise * surprise) + (1.0f - SURPRISE_ALPHA) * surprise_ewma_sq;
+        }
+
+        // Track recent spikes for surprise_break()
+        float var = surprise_ewma_sq - surprise_ewma * surprise_ewma;
+        float std_dev = (var > 1e-6f) ? std::sqrt(var) : 1.0f;
+        float z = (count > SURPRISE_WARMUP) ? (surprise - surprise_ewma) / std_dev : 0.0f;
+
+        // Shift spike/calm tracking (simple 8-token lookback)
+        if (z > 2.5f) {
+            recent_spike_count++;
+        }
+        // "calm" = low z-score tokens before current 8-token window
+        if (count > 8 && z < 0.5f) {
+            recent_calm_count++;
         }
     }
 
@@ -72,12 +128,44 @@ struct mesh_signal_window {
     // Used for mid-generation Hook 2b: sustained spike = model is lost.
     bool sustained_spike(float spike_ratio) const {
         if (count < SIZE) return false;
-        // Check how many of the last SIZE tokens had entropy > 4.0
         int high_count = 0;
         for (int i = 0; i < SIZE; i++) {
             if (entropy[i] > 4.0f) high_count++;
         }
         return (float)high_count / SIZE >= spike_ratio;
+    }
+
+    // Repetition detection: fraction of repeated 3-grams in the token window.
+    // Returns ratio in [0,1]. >0.18 suggests looping/degenerate output.
+    float repetition_ratio() const {
+        int n = std::min(token_count, REP_WINDOW);
+        if (n < 6) return 0;  // need at least 2 trigrams
+
+        int n_trigrams = n - 2;
+        int repeats = 0;
+
+        // Brute force O(n^2) over tiny window — 32 tokens max = ~900 comparisons
+        for (int i = 0; i < n_trigrams; i++) {
+            for (int j = i + 1; j < n_trigrams; j++) {
+                int ai = (token_pos - n + i + REP_WINDOW) % REP_WINDOW;
+                int bi = (token_pos - n + j + REP_WINDOW) % REP_WINDOW;
+                if (token_ids[ai] == token_ids[bi] &&
+                    token_ids[(ai + 1) % REP_WINDOW] == token_ids[(bi + 1) % REP_WINDOW] &&
+                    token_ids[(ai + 2) % REP_WINDOW] == token_ids[(bi + 2) % REP_WINDOW]) {
+                    repeats++;
+                    break;  // count each source trigram at most once
+                }
+            }
+        }
+        return (float)repeats / n_trigrams;
+    }
+
+    // Surprise break: was the model calm, then suddenly spiked?
+    // True when 2+ recent tokens had z-score >2.5 AND the preceding run was calm.
+    bool surprise_break() const {
+        if (count < SURPRISE_WARMUP + 8) return false;
+        // Need at least 2 spikes in recent generation after a calm run
+        return recent_spike_count >= 2 && recent_calm_count >= 4;
     }
 
     void reset() {
@@ -91,6 +179,17 @@ struct mesh_signal_window {
             entropy[i] = 0;
             margin[i] = 0;
         }
+        // repetition
+        token_pos = 0;
+        token_count = 0;
+        for (int i = 0; i < REP_WINDOW; i++) {
+            token_ids[i] = 0;
+        }
+        // surprise
+        surprise_ewma = 0;
+        surprise_ewma_sq = 0;
+        recent_spike_count = 0;
+        recent_calm_count = 0;
     }
 
     json to_json() const {
@@ -101,6 +200,9 @@ struct mesh_signal_window {
             {"uncertain_token_count", uncertain_count},
             {"tail_entropy_mean",     tail_entropy_mean()},
             {"total_tokens",          count},
+            {"repetition_ratio",      repetition_ratio()},
+            {"surprise_ewma",         surprise_ewma},
+            {"surprise_break",        surprise_break()},
         };
     }
 };
@@ -165,12 +267,43 @@ struct mesh_hook_ctx {
     }
 
     // Check if mid-generation hook should fire.
-    // Requires: sustained spike in rolling window + cooldown elapsed.
+    // Any of three independent signals can trigger:
+    //   1. Sustained entropy spike (original) — model is lost/incoherent
+    //   2. Repetition loop — model is degenerating into 3-gram repeats
+    //   3. Surprise break — model was calm then suddenly spiked (hallucination onset)
+    // All require cooldown to have elapsed and warmup period to have passed.
     bool should_fire_midgen() const {
         float ratio = debug ? 0.25f : MIDGEN_SPIKE_RATIO;
         int cooldown = debug ? 8 : MIDGEN_COOLDOWN;
-        return signals.sustained_spike(ratio)
-            && (signals.count - last_midgen_token) >= cooldown;
+        float rep_threshold = debug ? 0.10f : 0.18f;
+
+        // Cooldown check — shared across all triggers
+        if ((signals.count - last_midgen_token) < cooldown) return false;
+
+        // Must be past warmup (skip <think> region on thinking models)
+        if (signals.count < 12) return false;
+
+        // Trigger 1: sustained entropy spike
+        if (signals.sustained_spike(ratio)) return true;
+
+        // Trigger 2: repetition loop
+        if (signals.repetition_ratio() >= rep_threshold) return true;
+
+        // Trigger 3: surprise break (calm then suddenly spiked)
+        if (signals.surprise_break()) return true;
+
+        return false;
+    }
+
+    // Return the name of the trigger that caused should_fire_midgen() to be true.
+    // Call only when should_fire_midgen() returned true.
+    std::string midgen_trigger_name() const {
+        float ratio = debug ? 0.25f : MIDGEN_SPIKE_RATIO;
+        float rep_threshold = debug ? 0.10f : 0.18f;
+        if (signals.sustained_spike(ratio)) return "sustained_entropy_spike";
+        if (signals.repetition_ratio() >= rep_threshold) return "repetition_loop";
+        if (signals.surprise_break()) return "surprise_break";
+        return "unknown";
     }
 
     // --- Hook helpers ---

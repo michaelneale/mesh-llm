@@ -46,7 +46,9 @@ pub async fn handle(
             virtual_llm::handle_uncertain(&node, &model, &messages, entropy, margin).await
         }
         "mid_generation" => {
+            let trigger = payload["trigger"].as_str().unwrap_or("unknown");
             let n_decoded = payload["n_decoded"].as_i64().unwrap_or(0);
+            tracing::info!("mesh hook 2b: trigger={trigger} n_decoded={n_decoded} model={model}");
             virtual_llm::handle_drift(&node, &model, &messages, n_decoded).await
         }
         _ => {
