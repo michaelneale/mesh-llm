@@ -77,11 +77,13 @@ Core multimodal is shipped: capability model, gossip advertisement, vision/audio
 
 ## Virtual LLM — Remaining
 
-Core virtual LLM hooks are working: Hook 1 (media), Hook 2 (post-prefill uncertainty), Hook 2b (mid-gen drift). See [VIRTUAL_LLM.md](docs/VIRTUAL_LLM.md), PR #225.
+Core virtual LLM hooks working end-to-end: Hook 1 (image captioning on text-only models), Hook 2 (post-prefill uncertainty), Hook 2b (mid-gen triggers: repetition loop, entropy spike, surprise break). See [VIRTUAL_LLM.md](docs/VIRTUAL_LLM.md), PR #225.
 
 - [ ] **Use TTFT perf data for peer selection**: PR #271 adds `InferenceTracker` with per-model per-target TTFT ring buffers. Use `best_ttft_for_target()` in `consult::find_different_model_peers()` to score candidates by observed inference speed instead of QUIC RTT. Peers like MiniMax that have low RTT but take 7-10s for actual inference would get deprioritized naturally.
-- [ ] **Wire audio extraction**: `find_audio_peer` works but extracting audio data from the request payload isn't implemented.
-- [ ] **Non-thinking model testing**: Current entropy gating doesn't work well for thinking models (first token is always `<think>`, very confident). Test with non-thinking models where Hook 2 fires on genuine first-token uncertainty.
+- [ ] **Wire audio extraction**: `find_audio_peer` works but extracting audio data from the request payload isn't implemented. Same approach as image: strip in content parser, preserve original data, hook consults audio peer.
+- [ ] **Test Hook 1 with real vision peer**: Image captioning plumbing works end-to-end with mock server. Needs testing with an actual vision model on the mesh (e.g. Gemma-3 with mmproj).
+- [ ] **Push C++ to fork**: When stable, apply patches to `mesh-hooks` branch on `michaelneale/llama.cpp`, delete `llama-patches/`, fix CI.
+- [ ] **Image caption caching**: Same image sent multiple times shouldn't re-consult. Hash the data URL, cache the caption.
 
 ## Resilience
 - [ ] **Multi-node tensor split recovery**: If one split peer dies, re-split across remaining.
