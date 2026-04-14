@@ -113,6 +113,7 @@
             <span class="tag">OpenAI-compatible API</span>
             <span class="tag">Pipeline + expert parallelism</span>
             <span class="tag">Multi-model routing</span>
+            <span class="tag">Inter-model collaboration</span>
             <span class="tag">Demand-aware rebalancing</span>
             <span class="tag">Nostr discovery</span>
             <span class="tag">Agent gossip</span>
@@ -174,6 +175,11 @@
                 <div class="feature-icon">💻</div>
                 <h3>Web console</h3>
                 <p>Live topology, VRAM bars, model picker, built-in chat. API-driven — everything the console shows comes from JSON endpoints.</p>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🧠</div>
+                <h3>Inter-model collaboration</h3>
+                <p>Models help each other during inference. Text-only model gets an image? A vision peer captions it silently. Small model uncertain? Peers race a second opinion. Repetition loop? Another model nudges it out. The caller sees one seamless response. Inspired by <a href="https://arxiv.org/pdf/2601.16863">Mixture of Models</a> — the mesh is the ensemble.</p>
             </div>
             <div class="feature">
                 <div class="feature-icon">🤖</div>
@@ -403,7 +409,7 @@
 
     <section style="max-width:640px; margin:0 auto; padding:2rem 1.5rem 3rem; font-size:0.82rem; color:var(--text3); line-height:1.7;">
         <h3 style="font-size:0.85rem; color:var(--text2); margin-bottom:1rem;">Research &amp; roadmap</h3>
-        <p>We're exploring how to scale mesh inference with mixtures of models — routing and combining responses from heterogeneous LLMs. Two papers informing this work:</p>
+        <p>We're exploring how to scale mesh inference with mixtures of models — routing and combining responses from heterogeneous LLMs. Inter-model collaboration is live: models consult each other during inference for image captioning, uncertainty resolution, and loop recovery. Papers informing this work:</p>
         <ul style="margin:0.8rem 0; padding-left:1.2rem;">
             <li><a href="https://arxiv.org/html/2507.00507v1" style="color:#646cff;">LLM-Mesh</a> — resource-efficient serverless LLM inference across heterogeneous hardware</li>
             <li><a href="https://arxiv.org/pdf/2601.16863" style="color:#646cff;">Mixture of Models / NSED</a> — self-evaluating deliberation across models (Peeramid Labs)</li>
