@@ -28,38 +28,6 @@ pub async fn run() -> Result<()> {
 }
 
 #[cfg(test)]
-use inference::launch::BinaryFlavor;
-#[cfg(test)]
-use serde::Deserialize;
-#[cfg(test)]
-use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::time::{SystemTime, UNIX_EPOCH};
-
-#[cfg(test)]
-const FIXTURE_RELEASE_TAG: &str = "v0.60.0";
-
-#[cfg(test)]
-#[derive(Debug, Deserialize)]
-struct ReleaseTargetRow {
-    os: String,
-    arch: String,
-    flavor: String,
-    support: String,
-    stable_asset: Option<String>,
-    versioned_asset: Option<String>,
-}
-
-#[cfg(test)]
-fn fixture_rows() -> Vec<ReleaseTargetRow> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("release-target-matrix.json");
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
-
-#[cfg(test)]
 fn fixture_flavor(name: &str) -> BinaryFlavor {
     match name {
         "cpu" => BinaryFlavor::Cpu,
@@ -208,22 +176,23 @@ fn release_assets_match_expected_linux_names() {
 #[cfg(test)]
 #[test]
 fn job_images_match_runtime_targets() {
+    use crate::cli::commands::moe::hf_jobs::release_target_job_image_for;
     use cli::moe::HfJobReleaseTarget;
 
     assert_eq!(
-        cli::release_target_job_image_for(HfJobReleaseTarget::Cpu),
+        release_target_job_image_for(HfJobReleaseTarget::Cpu),
         "ghcr.io/astral-sh/uv:python3.12-bookworm"
     );
     assert_eq!(
-        cli::release_target_job_image_for(HfJobReleaseTarget::Cuda),
+        release_target_job_image_for(HfJobReleaseTarget::Cuda),
         "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
     );
     assert_eq!(
-        cli::release_target_job_image_for(HfJobReleaseTarget::Rocm),
+        release_target_job_image_for(HfJobReleaseTarget::Rocm),
         "rocm/pytorch:rocm6.3_ubuntu24.04_py3.12_pytorch_release_2.4.0"
     );
     assert_eq!(
-        cli::release_target_job_image_for(HfJobReleaseTarget::Vulkan),
+        release_target_job_image_for(HfJobReleaseTarget::Vulkan),
         "ghcr.io/astral-sh/uv:python3.12-bookworm"
     );
 }
