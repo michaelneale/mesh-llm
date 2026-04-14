@@ -66,13 +66,6 @@ flavor_suffix() {
     esac
 }
 
-render_asset_name() {
-    local triple="$1"
-    local archive_ext="$2"
-    local prefix="${3:-mesh-llm}"
-    printf '%s-%s%s.%s\n' "$prefix" "$triple" "$(flavor_suffix "$RELEASE_FLAVOR")" "$archive_ext"
-}
-
 copy_runtime_libs() {
     local bundle_dir="$1"
     shopt -s nullglob
