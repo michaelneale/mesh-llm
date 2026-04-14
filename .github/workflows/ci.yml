@@ -355,6 +355,11 @@ jobs:
             llama.cpp/build/bin \
             ~/.models/$MOE_MODEL_FILE
 
+      - name: Virtual LLM hook test
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+        run: cargo test -p mesh-llm --test virtual_llm_injection -- --nocapture
+        timeout-minutes: 5
+
       - name: CLI smoke test
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |

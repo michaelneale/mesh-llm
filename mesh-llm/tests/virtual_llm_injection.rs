@@ -35,9 +35,17 @@ fn find_llama_server() -> Option<PathBuf> {
 
 fn find_small_model() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let hub = PathBuf::from(format!("{home}/.cache/huggingface/hub"));
 
-    // Try smallest models first
+    // CI puts models here
+    for name in &["SmolLM2-135M-Instruct-Q8_0.gguf"] {
+        let p = PathBuf::from(format!("{home}/.models/{name}"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    // Local dev — check HuggingFace cache
+    let hub = PathBuf::from(format!("{home}/.cache/huggingface/hub"));
     let candidates = [
         ("models--unsloth--Qwen3-0.6B-GGUF", "Qwen3-0.6B-Q4_K_M.gguf"),
         (
