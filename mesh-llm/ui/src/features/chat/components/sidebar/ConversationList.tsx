@@ -4,20 +4,7 @@ import { Check, MessageSquarePlus, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
 import { ScrollArea } from "../../../../components/ui/scroll-area";
 import { cn } from "../../../../lib/utils";
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-};
-
-type ChatConversation = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: ChatMessage[];
-};
+import type { ChatConversation } from "../../lib/chat-types";
 
 export function ConversationList({
   conversations,

@@ -27,6 +27,7 @@ import {
 import {
   formatGpuMemory,
   modelDisplayName,
+  modelStatusTooltip,
   ownershipStatusLabel,
   shortName,
   topologyStatusTone,
@@ -392,16 +393,6 @@ function nodeRoleTone(role: string): "good" | "info" | "neutral" {
   if (role === "Host") return "good";
   if (role === "Worker" || role === "Client") return "info";
   return "neutral";
-}
-
-function modelStatusTooltip(status?: string) {
-  if (status === "warm") {
-    return "Loaded and serving in the mesh.";
-  }
-  if (status === "cold") {
-    return "Downloaded locally, but not currently serving.";
-  }
-  return "Current model availability in the mesh.";
 }
 
 function nodeRoleTooltip(role: string) {

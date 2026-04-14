@@ -6,20 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "../../../../components/ui/tooltip";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-type ChatAttachmentStatus = "pending" | "uploading" | "failed";
-
-type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-  status?: ChatAttachmentStatus;
-  error?: string;
-  extractionSummary?: string;
-};
+import type { ChatAttachment } from "../../lib/chat-types";
 
 export function PendingAttachmentList({
   pendingAttachments,
@@ -63,7 +50,9 @@ export function PendingAttachmentList({
               </div>
             ) : attachment.status === "failed" ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-md bg-background/80 text-xs">
-                <span>Upload failed</span>
+                <span className="px-2 text-center">
+                  {attachment.error || "Attachment failed"}
+                </span>
                 <Button
                   type="button"
                   variant="outline"
@@ -116,7 +105,7 @@ export function PendingAttachmentList({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs">
-                  {attachment.error || "Upload failed"}
+                  {attachment.error || "Attachment failed"}
                 </TooltipContent>
               </Tooltip>
             ) : null}

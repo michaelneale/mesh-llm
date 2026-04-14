@@ -5,10 +5,6 @@ export type AppRoute = {
   chatId: string | null;
 };
 
-function isMobileViewport(): boolean {
-  return typeof window !== "undefined" && window.innerWidth < 768;
-}
-
 export function sectionFromPathname(pathname: string): TopSection | null {
   if (pathname === "/dashboard" || pathname === "/dashboard/") {
     return "dashboard";

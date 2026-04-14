@@ -2,75 +2,8 @@ import {
   describeImageAttachmentForPrompt,
   describeRenderedPagesAsText,
 } from "./vision-describe";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-type ChatAttachmentStatus = "pending" | "uploading" | "failed";
-
-type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-  status?: ChatAttachmentStatus;
-  error?: string;
-  extractedText?: string;
-  extractionSummary?: string;
-  renderedPageImages?: string[];
-  imageDescription?: string;
-};
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  image?: string;
-  audio?: {
-    dataUrl: string;
-    mimeType: string;
-    fileName?: string;
-  };
-  attachments?: ChatAttachment[];
-};
-
-type AttachmentStatePatch = Partial<
-  Pick<
-    ChatAttachment,
-    "status" | "error" | "extractionSummary" | "imageDescription" | "renderedPageImages"
-  >
->;
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return { mimeType: match[1], base64: match[2] };
-}
-
-function messageAttachments(message: ChatMessage): ChatAttachment[] {
-  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
-    return message.attachments;
-  }
-  const attachments: ChatAttachment[] = [];
-  if (message.image) {
-    attachments.push({
-      id: `${message.id}-image`,
-      kind: "image",
-      dataUrl: message.image,
-      mimeType: parseDataUrl(message.image)?.mimeType || "image/jpeg",
-      fileName: "image.jpg",
-    });
-  }
-  if (message.audio) {
-    attachments.push({
-      id: `${message.id}-audio`,
-      kind: "audio",
-      dataUrl: message.audio.dataUrl,
-      mimeType: message.audio.mimeType,
-      fileName: message.audio.fileName,
-    });
-  }
-  return attachments;
-}
+import { messageAttachments, parseDataUrl } from "./chat-attachments";
+import type { AttachmentStatePatch, ChatAttachment, ChatMessage } from "./chat-types";
 
 async function uploadRequestObject(params: {
   requestId: string;

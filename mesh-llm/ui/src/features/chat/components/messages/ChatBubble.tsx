@@ -9,66 +9,9 @@ import {
 import { ScrollArea } from "../../../../components/ui/scroll-area";
 import { shortName } from "../../../app-shell/lib/status-helpers";
 import { cn } from "../../../../lib/utils";
+import { messageAttachments } from "../../lib/chat-attachments";
+import type { ChatMessage } from "../../lib/chat-types";
 import { MarkdownMessage } from "./MarkdownMessage";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-
-type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-};
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  model?: string;
-  stats?: string;
-  error?: boolean;
-  image?: string;
-  audio?: {
-    dataUrl: string;
-    mimeType: string;
-    fileName?: string;
-  };
-  attachments?: ChatAttachment[];
-};
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return { mimeType: match[1], base64: match[2] };
-}
-
-function messageAttachments(message: ChatMessage): ChatAttachment[] {
-  if (Array.isArray(message.attachments) && message.attachments.length > 0) {
-    return message.attachments;
-  }
-  const attachments: ChatAttachment[] = [];
-  if (message.image) {
-    attachments.push({
-      id: `${message.id}-image`,
-      kind: "image",
-      dataUrl: message.image,
-      mimeType: parseDataUrl(message.image)?.mimeType || "image/jpeg",
-      fileName: "image.jpg",
-    });
-  }
-  if (message.audio) {
-    attachments.push({
-      id: `${message.id}-audio`,
-      kind: "audio",
-      dataUrl: message.audio.dataUrl,
-      mimeType: message.audio.mimeType,
-      fileName: message.audio.fileName,
-    });
-  }
-  return attachments;
-}
 
 export function ChatBubble({
   message,

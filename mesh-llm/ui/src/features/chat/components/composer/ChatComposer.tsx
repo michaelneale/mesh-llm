@@ -4,21 +4,8 @@ import { File, FileAudio, ImagePlus, Loader2, Paperclip, RotateCcw, Send, Square
 import { Alert, AlertDescription, AlertTitle } from "../../../../components/ui/alert";
 import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
+import type { ChatAttachment } from "../../lib/chat-types";
 import { PendingAttachmentList } from "./PendingAttachmentList";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-type ChatAttachmentStatus = "pending" | "uploading" | "failed";
-
-type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-  status?: ChatAttachmentStatus;
-  error?: string;
-  extractionSummary?: string;
-};
 
 export function ChatComposer({
   pendingAttachments,

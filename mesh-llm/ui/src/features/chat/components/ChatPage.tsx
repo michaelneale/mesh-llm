@@ -53,74 +53,20 @@ import type {
   ModelServingStat,
   StatusPayload,
 } from "../../app-shell/lib/status-types";
+import { parseDataUrl } from "../lib/chat-attachments";
+import { createChatId } from "../lib/chat-id";
+import type {
+  AttachmentStatePatch,
+  ChatAttachment,
+  ChatConversation,
+  ChatMessage,
+} from "../lib/chat-types";
 import { describeImageAttachmentForPrompt, describeRenderedPagesAsText } from "../lib/vision-describe";
 import { ChatComposer } from "./composer/ChatComposer";
 import { ChatBubble } from "./messages/ChatBubble";
 import { ConversationList } from "./sidebar/ConversationList";
 
 const DOCS_URL = "https://docs.anarchai.org";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-type ChatAttachmentStatus = "pending" | "uploading" | "failed";
-
-type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-  status?: ChatAttachmentStatus;
-  error?: string;
-  extractedText?: string;
-  extractionSummary?: string;
-  renderedPageImages?: string[];
-  imageDescription?: string;
-};
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  model?: string;
-  stats?: string;
-  error?: boolean;
-  image?: string;
-  audio?: {
-    dataUrl: string;
-    mimeType: string;
-    fileName?: string;
-  };
-  attachments?: ChatAttachment[];
-};
-
-type ChatConversation = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: ChatMessage[];
-};
-
-type AttachmentStatePatch = Partial<
-  Pick<
-    ChatAttachment,
-    "status" | "error" | "extractionSummary" | "imageDescription" | "renderedPageImages"
-  >
->;
-
-function randomId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return { mimeType: match[1], base64: match[2] };
-}
 
 function visionBadge(model?: MeshModel | null) {
   if (!model) return null;
@@ -444,7 +390,7 @@ export function ChatPage(props: {
     setPendingAttachments((prev) => [
       ...prev,
       {
-        id: randomId(),
+        id: createChatId(),
         status: "pending",
         ...attachment,
       },
@@ -480,7 +426,7 @@ export function ChatPage(props: {
   }
 
   function addImageAttachment(attachment: Omit<ChatAttachment, "id" | "status" | "error">) {
-    const attachmentId = randomId();
+    const attachmentId = createChatId();
     setPendingAttachments((prev) => [
       ...prev,
       {
@@ -633,7 +579,7 @@ export function ChatPage(props: {
   }
 
   async function handlePdfAttachment(dataUrl: string, fileName: string) {
-    const attachmentId = randomId();
+    const attachmentId = createChatId();
     setPendingAttachments((prev) => [
       ...prev,
       {

@@ -9,6 +9,8 @@ import {
 } from "../../../lib/streaming";
 import type { TopSection } from "../../app-shell/lib/routes";
 import type { MeshModel, StatusPayload } from "../../app-shell/hooks/useStatusStream";
+import { parseDataUrl } from "../lib/chat-attachments";
+import { createChatId } from "../lib/chat-id";
 import {
   attachmentForMessage,
   buildAttachmentBlocks,
@@ -20,60 +22,13 @@ import {
   findLastUserMessageIndex,
   loadPersistedChatState as loadPersistedChatStateFromStorage,
 } from "../lib/chat-storage";
-
-type ChatAttachmentKind = "image" | "audio" | "file";
-type ChatAttachmentStatus = "pending" | "uploading" | "failed";
-
-export type ChatAttachment = {
-  id: string;
-  kind: ChatAttachmentKind;
-  dataUrl: string;
-  mimeType: string;
-  fileName?: string;
-  status?: ChatAttachmentStatus;
-  error?: string;
-  extractedText?: string;
-  extractionSummary?: string;
-  renderedPageImages?: string[];
-  imageDescription?: string;
-};
-
-export type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  reasoning?: string;
-  model?: string;
-  stats?: string;
-  error?: boolean;
-  image?: string;
-  audio?: {
-    dataUrl: string;
-    mimeType: string;
-    fileName?: string;
-  };
-  attachments?: ChatAttachment[];
-};
-
-export type ChatConversation = {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: ChatMessage[];
-};
-
-type ChatState = {
-  conversations: ChatConversation[];
-  activeConversationId: string;
-};
-
-type AttachmentStatePatch = Partial<
-  Pick<
-    ChatAttachment,
-    "status" | "error" | "extractionSummary" | "imageDescription" | "renderedPageImages"
-  >
->;
+import type {
+  AttachmentStatePatch,
+  ChatAttachment,
+  ChatConversation,
+  ChatMessage,
+  ChatState,
+} from "../lib/chat-types";
 
 const CHAT_CLIENT_ID_STORAGE_KEY = "mesh-llm-chat-client-id";
 const DEFAULT_CHAT_TITLE = "New chat";
@@ -85,18 +40,11 @@ const CHAT_MAX_CONVERSATIONS = 80;
 const CHAT_MAX_MESSAGES_PER_CONVERSATION = 240;
 const CHAT_MAX_TEXT_CHARS = 12000;
 
-function randomId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function readOrCreateChatClientId(): string {
-  if (typeof window === "undefined") return randomId();
+  if (typeof window === "undefined") return createChatId();
   const stored = window.localStorage.getItem(CHAT_CLIENT_ID_STORAGE_KEY);
   if (stored && stored.trim()) return stored;
-  const created = randomId();
+  const created = createChatId();
   window.localStorage.setItem(CHAT_CLIENT_ID_STORAGE_KEY, created);
   return created;
 }
@@ -118,12 +66,6 @@ function clampText(
     : text;
 }
 
-function parseDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
-  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
-  if (!match) return null;
-  return { mimeType: match[1], base64: match[2] };
-}
-
 function sanitizeAttachment(raw: unknown): ChatAttachment | null {
   if (!raw || typeof raw !== "object") return null;
   const item = raw as Record<string, unknown>;
@@ -138,7 +80,7 @@ function sanitizeAttachment(raw: unknown): ChatAttachment | null {
     return null;
   }
   return {
-    id: typeof item.id === "string" && item.id ? item.id : randomId(),
+    id: typeof item.id === "string" && item.id ? item.id : createChatId(),
     kind,
     dataUrl,
     mimeType,
@@ -205,7 +147,7 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
     if (attachments.length === 0) {
       if (legacyImage) {
         attachments.push({
-          id: randomId(),
+          id: createChatId(),
           kind: "image",
           dataUrl: legacyImage,
           mimeType: parseDataUrl(legacyImage)?.mimeType || "image/jpeg",
@@ -214,7 +156,7 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
       }
       if (legacyAudio) {
         attachments.push({
-          id: randomId(),
+          id: createChatId(),
           kind: "audio",
           dataUrl: legacyAudio.dataUrl,
           mimeType: legacyAudio.mimeType,
@@ -227,7 +169,7 @@ function sanitizeMessages(raw: unknown): ChatMessage[] {
         id:
           typeof (item as { id?: unknown }).id === "string"
             ? (item as { id: string }).id
-            : randomId(),
+            : createChatId(),
         role: safeRole,
         content: clampText(content, CHAT_MAX_TEXT_CHARS) ?? "",
         reasoning: clampText(
@@ -272,7 +214,7 @@ function sanitizeChatState(raw: unknown): ChatState {
     .flatMap((item) => {
       if (!item || typeof item !== "object") return [];
       const obj = item as Record<string, unknown>;
-      const id = typeof obj.id === "string" && obj.id ? obj.id : randomId();
+      const id = typeof obj.id === "string" && obj.id ? obj.id : createChatId();
       const titleRaw =
         typeof obj.title === "string" && obj.title.trim()
           ? obj.title
@@ -627,7 +569,7 @@ export function useChatSession({
       let batcher: ReturnType<typeof createRafBatcher> | null = null;
 
       try {
-        const requestId = providedRequestId ?? randomId();
+        const requestId = providedRequestId ?? createChatId();
         const clientId = chatClientIdRef.current;
         const requestInput = await buildResponsesInput(
           historyForRequest,
@@ -874,12 +816,12 @@ export function useChatSession({
       }
 
       setComposerError(null);
-      const conversationId = activeConversation?.id ?? randomId();
+      const conversationId = activeConversation?.id ?? createChatId();
       const normalizedPendingAttachments = pendingAttachments.map((attachment) => ({
         ...attachment,
       }));
-      const userMessageId = randomId();
-      const requestId = randomId();
+      const userMessageId = createChatId();
+      const requestId = createChatId();
       const clientId = chatClientIdRef.current;
       let prebuiltContentByMessageId:
         | Record<string, Array<Record<string, unknown>>>
@@ -896,7 +838,7 @@ export function useChatSession({
           prebuiltContentByMessageId = { [userMessageId]: blocks };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          setComposerError(`Attachment upload failed: ${message}`);
+          setComposerError(message);
           return;
         }
       }
@@ -911,7 +853,7 @@ export function useChatSession({
             ? normalizedPendingAttachments.map(attachmentForMessage)
             : undefined,
       };
-      const assistantId = randomId();
+      const assistantId = createChatId();
       const assistantMessage: ChatMessage = {
         id: assistantId,
         role: "assistant",
@@ -1008,7 +950,7 @@ export function useChatSession({
     if (lastUserIndex < 0) return;
 
     const historyForRequest = activeConversation.messages.slice(0, lastUserIndex + 1);
-    const assistantId = randomId();
+    const assistantId = createChatId();
     const assistantMessage: ChatMessage = {
       id: assistantId,
       role: "assistant",

@@ -303,6 +303,9 @@ describe("ChatPage", () => {
 
     expect(screen.getByText("Retry")).toBeInTheDocument();
     expect(
+      screen.getByText("Image description failed: model init failed"),
+    ).toBeInTheDocument();
+    expect(
       screen.getByText("Image description failed — retry or send placeholder text"),
     ).toBeInTheDocument();
   });
