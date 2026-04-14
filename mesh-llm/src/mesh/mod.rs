@@ -43,6 +43,68 @@ fn current_time_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn preflight_pushed_config_for_current_node(config: &crate::plugin::MeshConfig) -> Result<()> {
+    let survey = crate::system::hardware::query(&[
+        crate::system::hardware::Metric::GpuName,
+        crate::system::hardware::Metric::GpuFacts,
+    ]);
+    preflight_pushed_config_for_current_node_with_gpus(config, &survey.gpus)
+}
+
+fn preflight_pushed_config_for_current_node_with_gpus(
+    config: &crate::plugin::MeshConfig,
+    gpus: &[crate::system::hardware::GpuFacts],
+) -> Result<()> {
+    if config.gpu.assignment != crate::plugin::GpuAssignment::Pinned {
+        return Ok(());
+    }
+
+    for model in &config.models {
+        let gpu = crate::system::hardware::resolve_pinned_gpu(model.gpu_id.as_deref(), gpus)
+            .map_err(anyhow::Error::new)
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            })?;
+
+        let stable_id = gpu
+            .stable_id
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "pushed config model '{}' resolved pinned GPU at index {} without a stable_id",
+                    model.model,
+                    gpu.index
+                )
+            })
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            })?;
+
+        if gpu.backend_device.is_none() {
+            return Err(anyhow::anyhow!(
+                "pushed config model '{}' resolved pinned GPU '{}' at index {} without a backend_device",
+                model.model,
+                stable_id,
+                gpu.index
+            ))
+            .with_context(|| {
+                format!(
+                    "pushed config model '{}' failed pinned GPU preflight",
+                    model.model
+                )
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn endpoint_id_hex(id: EndpointId) -> String {
     hex::encode(id.as_bytes())
 }
@@ -3529,19 +3591,27 @@ impl Node {
         };
         let mesh_config = proto_config_to_mesh(config_snapshot);
 
-        // 6. Apply via CAS — use spawn_blocking so synchronous disk I/O in apply()
-        //    does not block the Tokio async runtime while the mutex is held.
+        // 6. Preflight + apply via CAS — use spawn_blocking so blocking hardware
+        //    probes and synchronous disk I/O do not run on the Tokio async runtime.
         let config_state = Arc::clone(&self.config_state);
         let expected_revision = push.expected_revision;
-        let (result, current_revision, current_hash) = tokio::task::spawn_blocking(move || {
+        let apply_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            preflight_pushed_config_for_current_node(&mesh_config)?;
             let mut state = config_state.blocking_lock();
             let result = state.apply(mesh_config, expected_revision);
             let current_revision = state.revision();
             let current_hash = *state.config_hash();
-            (result, current_revision, current_hash)
+            Ok((result, current_revision, current_hash))
         })
         .await
         .map_err(|e| anyhow::anyhow!("config apply task panicked: {e}"))?;
+        let (result, current_revision, current_hash) = match apply_result {
+            Ok(values) => values,
+            Err(err) => {
+                send_push_error(&mut send, &err.to_string()).await?;
+                return Ok(());
+            }
+        };
 
         // 7. Build + send response
         use crate::proto::node::ConfigApplyMode as ProtoApplyMode;
