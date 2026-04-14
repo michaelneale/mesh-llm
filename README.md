@@ -10,6 +10,7 @@ If a model fits on one machine, it runs there. If it does not, Mesh LLM automati
 
 - Dense models use pipeline parallelism.
 - MoE models use expert sharding with zero cross-node inference traffic.
+- Models collaborate during inference — a text-only model consults a vision peer, an uncertain model gets a second opinion from a different architecture.
 - Every node gets the same local API at `http://localhost:9337/v1`.
 
 ## Why people use it

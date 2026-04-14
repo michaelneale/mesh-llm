@@ -85,25 +85,6 @@ Only supports Qwen3.5-397B for now (hardcoded architecture). That's fine — it'
 
 Implemented. Shared ephemeral text messages across the mesh — agents post status, findings, questions, and answers. Multi-term OR search, convention prefixes (STATUS/QUESTION/FINDING/TIP/DONE), PII auto-scrub, flood-fill propagation with digest sync. Works on any node with or without models. MCP server (`mesh-llm blackboard --mcp`) exposes tools for agent integration. Agent skill installable via `mesh-llm blackboard install-skill`.
 
-## Inter-model collaboration (Virtual LLM) — in progress
-
-Models on the mesh help each other during inference. Callback hooks from llama-server's generation loop into mesh-llm on localhost — the serving model can silently consult other models in the mesh without the caller knowing.
-
-**Working now (PR #225):**
-- **Image captioning on text-only models:** User sends an image to a model with no vision support. The model consults a vision peer for a caption, injects it into the prompt, and generates a correct text answer. The caller has no idea the model can't see images.
-- **Post-prefill uncertainty:** When first-token entropy is high (model doesn't know how to start), race two peers for a second opinion. The winner's answer is injected as context via KV cache.
-- **Mid-generation recovery:** Three triggers detect problems during generation — repetition loops (3-gram ratio), sustained entropy spikes, and surprise breaks. When detected, consult a peer and inject a course correction.
-- **Fan-out racing:** Up to 2 peers raced in parallel, first response wins.
-- **Recursion guard:** Outgoing consultations include `mesh_hooks: false` to prevent infinite consultation chains.
-
-**Key insight:** The value is *diversity*, not strength. A different architecture's perspective helps even between same-tier models. Gemma helps Qwen, Llama helps Gemma — different training data, different failure modes.
-
-Inspired by [Mixture of Models (NSED)](https://arxiv.org/pdf/2601.16863) — the mesh is the ensemble, and collaboration happens at inference time rather than at the routing layer.
-
-**Next:** TTFT-based peer selection (prefer fast responders over low-RTT-but-slow-inference peers), audio extraction, consultation caching.
-
-See [VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md) for the full design.
-
 ## Demand-based rebalancing
 
 Partially done. Unified demand map via gossip, standby nodes promote to serve. Next: large-VRAM hosts auto-upgrade models when demand warrants it.
