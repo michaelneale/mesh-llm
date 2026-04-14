@@ -100,62 +100,65 @@ jobs:
           echo "cuda_hash=${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
           echo "rocm_hash=${{ hashFiles('scripts/build-linux-rocm.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
 
-  warm_llama_cuda_slim:
+  warm_llama_gpu_caches:
     needs: resolve_llama_sha
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: Warm Linux CUDA fat cache
+            cache_label: CUDA fat
+            container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+            cache_key_prefix: llama-cuda-fat
+            cache_key_suffix: arch75-80-86-89-90-120-fa-on-cuda12.8
+            cache_inputs_hash_kind: cuda
+            build_recipe: release-build-cuda
+            build_args: ''
+            extra_env: ''
+          - job_name: Warm Linux CUDA slim cache
+            cache_label: CUDA slim
+            container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+            cache_key_prefix: llama-cuda-slim
+            cache_key_suffix: arch89-fa-off-cuda12.8
+            cache_inputs_hash_kind: cuda
+            build_recipe: release-build-cuda
+            build_args: '89'
+            extra_env: |
+              MESH_LLM_CUDA_FA_ALL_QUANTS=off
+              MESH_LLM_LLAMA_TARGETS=rpc-server llama-server llama-moe-analyze llama-moe-split
+          - job_name: Warm Linux ROCm slim cache
+            cache_label: ROCm slim
+            container_image: rocm/dev-ubuntu-24.04:7.0-complete
+            cache_key_prefix: llama-rocm-slim
+            cache_key_suffix: gfx1100-rocm7.0
+            cache_inputs_hash_kind: rocm
+            build_recipe: release-build-rocm
+            build_args: 'gfx1100'
+            extra_env: ''
+          - job_name: Warm Linux ROCm fat cache
+            cache_label: ROCm fat
+            container_image: rocm/dev-ubuntu-24.04:7.0-complete
+            cache_key_prefix: llama-rocm-fat
+            cache_key_suffix: gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0
+            cache_inputs_hash_kind: rocm
+            build_recipe: release-build-rocm
+            build_args: ''
+            extra_env: ''
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
-      job_name: Warm Linux CUDA slim cache
-      cache_label: CUDA slim
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      job_name: ${{ matrix.job_name }}
+      cache_label: ${{ matrix.cache_label }}
+      container_image: ${{ matrix.container_image }}
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
-      build_recipe: release-build-cuda
-      build_args: 89
-      extra_env: |
-        MESH_LLM_CUDA_FA_ALL_QUANTS=off
-        MESH_LLM_LLAMA_TARGETS=rpc-server llama-server llama-moe-analyze llama-moe-split
-
-  warm_llama_cuda_fat:
-    needs: resolve_llama_sha
-    uses: ./.github/workflows/gpu-warm-cache-job.yml
-    with:
-      job_name: Warm Linux CUDA fat cache
-      cache_label: CUDA fat
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
-      build_recipe: release-build-cuda
-
-  warm_llama_rocm_slim:
-    needs: resolve_llama_sha
-    uses: ./.github/workflows/gpu-warm-cache-job.yml
-    with:
-      job_name: Warm Linux ROCm slim cache
-      cache_label: ROCm slim
-      container_image: rocm/dev-ubuntu-24.04:7.0-complete
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-rocm-slim-{1}-{2}-gfx1100-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
-      build_recipe: release-build-rocm
-      build_args: gfx1100
-
-  warm_llama_rocm_fat:
-    needs: resolve_llama_sha
-    uses: ./.github/workflows/gpu-warm-cache-job.yml
-    with:
-      job_name: Warm Linux ROCm fat cache
-      cache_label: ROCm fat
-      container_image: rocm/dev-ubuntu-24.04:7.0-complete
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
-      cache_key: ${{ format('{0}-llama-rocm-fat-{1}-{2}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
-      build_recipe: release-build-rocm
+      cache_key: ${{ format('{0}-{1}-{2}-{3}-{4}', needs.resolve_llama_sha.outputs.cache_namespace, matrix.cache_key_prefix, needs.resolve_llama_sha.outputs.sha, fromJSON(format('{{"cuda":"{0}","rocm":"{1}"}}', needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash))[matrix.cache_inputs_hash_kind], matrix.cache_key_suffix) }}
+      build_recipe: ${{ matrix.build_recipe }}
+      build_args: ${{ matrix.build_args }}
+      extra_env: ${{ matrix.extra_env }}
 
   prune_llama_gpu_caches:
     name: Prune old GPU caches
     needs:
-      - warm_llama_cuda_slim
-      - warm_llama_cuda_fat
-      - warm_llama_rocm_slim
-      - warm_llama_rocm_fat
+      - warm_llama_gpu_caches
     if: always()
     runs-on: ubuntu-latest
     steps:
