@@ -41,7 +41,7 @@ update_lib_version() {
         echo "failed to update VERSION constant in $file" >&2
         exit 1
     fi
-    printf '%s' "$after" >"$file"
+    printf '%s\n' "$after" >"$file"
 }
 
 update_manifest_version() {
@@ -58,7 +58,7 @@ update_manifest_version() {
         echo "failed to update [package].version in $file" >&2
         exit 1
     fi
-    printf '%s' "$after" >"$file"
+    printf '%s\n' "$after" >"$file"
 }
 
 manifests=()

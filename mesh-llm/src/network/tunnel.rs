@@ -106,16 +106,14 @@ impl Manager {
         });
 
         // Handle inbound HTTP tunnel streams.
-        // These connect directly to llama-server, bypassing the API proxy.
-        // The client proxy has already normalized the request — the host
-        // doesn't need to re-parse or re-route.
+        // These connect to the local OpenAI backend proxy for the elected model.
         let http_port_ref = mgr.http_port.clone();
         let http_node = mgr.node.clone();
         tokio::spawn(async move {
             while let Some((send, recv)) = tunnel_http_rx.recv().await {
                 let port = http_port_ref.load(Ordering::Relaxed);
                 if port == 0 {
-                    tracing::warn!("Inbound HTTP tunnel but no llama-server running, dropping");
+                    tracing::warn!("Inbound HTTP tunnel but no backend proxy running, dropping");
                     continue;
                 }
                 let node = http_node.clone();
@@ -131,8 +129,7 @@ impl Manager {
     }
 
     /// Update the local serving port for inbound HTTP tunnel streams.
-    /// This should be the llama-server port (not the API proxy port) so
-    /// tunneled requests bypass the proxy and go directly to the backend.
+    /// This should be the per-model internal OpenAI backend proxy port.
     /// Set to 0 to disable.
     pub fn set_http_port(&self, port: u16) {
         self.http_port.store(port, Ordering::Relaxed);
@@ -323,15 +320,14 @@ async fn handle_inbound_stream(
     Ok(())
 }
 
-/// Handle an inbound HTTP tunnel bi-stream: connect directly to the local llama-server and relay.
-/// Plain byte relay — the client proxy already normalized the request before tunneling.
+/// Handle an inbound HTTP tunnel bi-stream: connect to the local backend proxy and relay.
 async fn handle_inbound_http_stream(
     node: Node,
     quic_send: iroh::endpoint::SendStream,
     quic_recv: iroh::endpoint::RecvStream,
     http_port: u16,
 ) -> Result<()> {
-    tracing::info!("Inbound HTTP tunnel stream → llama-server :{http_port}");
+    tracing::info!("Inbound HTTP tunnel stream → backend proxy :{http_port}");
     let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
     tcp_stream.set_nodelay(true)?;
     let _inflight = node.begin_inflight_request();

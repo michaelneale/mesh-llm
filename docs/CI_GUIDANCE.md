@@ -41,6 +41,7 @@ This workflow is the single writer for warmed GPU caches.
 - Keep explicit cache input hashing and pruning.
 - Preserve both slim and fat warming where needed.
 - Do not move warmed GPU cache writes back into PR CI.
+- Treat "save succeeded" as insufficient by itself. The warm path must fail if a newly written GPU cache never becomes visible on `refs/heads/main`.
 
 ### `.github/workflows/gpu-warm-cache-job.yml`
 
@@ -48,6 +49,14 @@ This reusable job is cache warm plumbing, not a PR CI artifact producer.
 
 - Preserve the restore, short-circuit, build, save flow.
 - Keep verification of restored and saved binaries.
+- Keep a post-save visibility check against the Actions cache inventory for `refs/heads/main` so cache disappearance is caught during warming, not later by a PR consumer.
+
+### `.github/workflows/reset-caches.yml`
+
+Cache reset is destructive and must repopulate the real writers, not the restore-only consumers.
+
+- After deleting repository caches, dispatch `warm-caches.yml`, not `ci.yml`.
+- Do not treat restore-only CI as a cache repopulation mechanism.
 
 ### `.github/workflows/release.yml`
 
@@ -77,6 +86,15 @@ GPU cache behavior is intentionally asymmetric.
 - `warm-caches.yml` writes warmed GPU caches for `main`.
 - Cache keys and pruning rules should stay explicit and deterministic.
 - CI cache tuning in scripts and workflows should not be weakened just to make packaging easier.
+
+The operational finding from the slim CUDA cache incident is that the historical miss was not caused by a bad key and not by PR jobs being unable to restore from `main`. The real failure mode was cache availability under repository cache pressure: large PR-scoped Rust and model caches crowded the shared cache budget, while the old reset workflow repopulated the wrong path.
+
+Keep these follow-on rules in place:
+
+- PR merge refs should not save the large shared Rust caches.
+- PR merge refs should not save the large model caches.
+- Main remains the place where shared caches are written and refreshed.
+- If a main GPU cache cannot stay visible after save, treat that as a warm failure that needs investigation.
 
 ## Build shape rules
 

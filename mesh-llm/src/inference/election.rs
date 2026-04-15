@@ -1533,6 +1533,7 @@ pub async fn election_loop(
     let mut currently_host = false;
     let mut current_local_port: Option<u16> = None;
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
+    let mut backend_proxy: Option<crate::network::openai::backend::BackendProxyHandle> = None;
 
     // Initial settle
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1722,8 +1723,13 @@ pub async fn election_loop(
                 } => {
                     eprintln!("🔄 [{}] llama-server died — restarting...", model_name);
                     llama_process = None;
+                    if let Some(proxy) = backend_proxy.take() {
+                        proxy.shutdown().await;
+                    }
+                    tunnel_mgr.set_http_port(0);
                     currently_host = false;
                     current_local_port = None;
+                    node.set_role(NodeRole::Worker).await;
                     last_running_plan = None;
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                     on_process(None);
@@ -1743,6 +1749,9 @@ pub async fn election_loop(
         if currently_host {
             if let Some(process) = llama_process.take() {
                 process.handle.shutdown().await;
+            }
+            if let Some(proxy) = backend_proxy.take() {
+                proxy.shutdown().await;
             }
             tunnel_mgr.set_http_port(0);
             node.set_role(NodeRole::Worker).await;
@@ -1835,23 +1844,35 @@ pub async fn election_loop(
                 }
             };
 
+            let proxy = match crate::network::openai::backend::start_backend_proxy(llama_port).await
+            {
+                Ok(proxy) => proxy,
+                Err(err) => {
+                    eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                    process.handle.shutdown().await;
+                    on_change(true, false);
+                    let _ = peer_rx.changed().await;
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
+            let local_proxy_port = proxy.port();
+            backend_proxy = Some(proxy);
+
             node.set_role(NodeRole::Host {
                 http_port: ingress_http_port,
             })
             .await;
-            // Point tunnel directly at llama-server, bypassing the API proxy.
-            // The client proxy has already normalized the request; the host
-            // doesn't need to re-parse or re-route it.
-            tunnel_mgr.set_http_port(llama_port);
+            tunnel_mgr.set_http_port(local_proxy_port);
             currently_host = true;
-            current_local_port = Some(llama_port);
+            current_local_port = Some(local_proxy_port);
             last_running_plan = desired_launch.running_plan();
             // Re-gossip so peers learn we're the host for this model
             node.regossip().await;
             update_targets(
                 &node,
                 &model_name,
-                InferenceTarget::Local(llama_port),
+                InferenceTarget::Local(local_proxy_port),
                 &target_tx,
             )
             .await;
@@ -1924,8 +1945,12 @@ pub async fn election_loop(
             } => {
                 eprintln!("🔄 [{}] llama-server died — restarting...", model_name);
                 llama_process = None;
+                if let Some(proxy) = backend_proxy.take() {
+                    proxy.shutdown().await;
+                }
                 currently_host = false;
                 current_local_port = None;
+                tunnel_mgr.set_http_port(0);
                 last_running_plan = None;
                 update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                 on_change(false, false);
@@ -1945,6 +1970,9 @@ pub async fn election_loop(
     if currently_host {
         if let Some(process) = llama_process.take() {
             process.handle.shutdown().await;
+        }
+        if let Some(proxy) = backend_proxy.take() {
+            proxy.shutdown().await;
         }
         tunnel_mgr.set_http_port(0);
         node.set_role(NodeRole::Worker).await;
@@ -1988,6 +2016,7 @@ async fn moe_election_loop(
     let mut currently_running = false;
     let mut last_plan: Option<MoePlacementPlan> = None;
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
+    let mut backend_proxy: Option<crate::network::openai::backend::BackendProxyHandle> = None;
     let mut current_local_port: Option<u16> = None;
     let mut last_plan_change_at = tokio::time::Instant::now();
 
@@ -2169,6 +2198,9 @@ async fn moe_election_loop(
             if let Some(process) = llama_process.take() {
                 process.handle.shutdown().await;
             }
+            if let Some(proxy) = backend_proxy.take() {
+                proxy.shutdown().await;
+            }
             tunnel_mgr.set_http_port(0);
             currently_running = false;
             current_local_port = None;
@@ -2241,13 +2273,32 @@ async fn moe_election_loop(
             .await
             {
                 Ok(process) => {
+                    let proxy = match crate::network::openai::backend::start_backend_proxy(
+                        llama_port,
+                    )
+                    .await
+                    {
+                        Ok(proxy) => proxy,
+                        Err(err) => {
+                            eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                            process.handle.shutdown().await;
+                            if peer_rx.changed().await.is_err() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            continue;
+                        }
+                    };
+                    let local_proxy_port = proxy.port();
+                    backend_proxy = Some(proxy);
+
                     node.set_role(NodeRole::Host {
                         http_port: ingress_http_port,
                     })
                     .await;
-                    tunnel_mgr.set_http_port(llama_port);
+                    tunnel_mgr.set_http_port(local_proxy_port);
                     currently_running = true;
-                    current_local_port = Some(llama_port);
+                    current_local_port = Some(local_proxy_port);
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         let backend = if local_backend_name(&model) == "MLX server" {
@@ -2268,7 +2319,7 @@ async fn moe_election_loop(
                         &plan.fallback_ids,
                         my_id,
                         None,
-                        Some(llama_port),
+                        Some(local_proxy_port),
                         &model_name,
                     );
                     target_tx.send_replace(targets);
@@ -2334,13 +2385,29 @@ async fn moe_election_loop(
                 .await
                 {
                     Ok(process) => {
+                        let proxy =
+                            match crate::network::openai::backend::start_backend_proxy(llama_port)
+                                .await
+                            {
+                                Ok(proxy) => proxy,
+                                Err(err) => {
+                                    eprintln!(
+                                        "  Failed to start local OpenAI backend proxy: {err}"
+                                    );
+                                    process.handle.shutdown().await;
+                                    continue;
+                                }
+                            };
+                        let local_proxy_port = proxy.port();
+                        backend_proxy = Some(proxy);
+
                         node.set_role(NodeRole::Host {
                             http_port: ingress_http_port,
                         })
                         .await;
-                        tunnel_mgr.set_http_port(llama_port);
+                        tunnel_mgr.set_http_port(local_proxy_port);
                         currently_running = true;
-                        current_local_port = Some(llama_port);
+                        current_local_port = Some(local_proxy_port);
                         llama_process = Some(process);
                         if let Some(ref process) = llama_process {
                             let backend = if local_backend_name(&model) == "MLX server" {
@@ -2358,7 +2425,7 @@ async fn moe_election_loop(
                         update_targets(
                             &node,
                             &model_name,
-                            InferenceTarget::Local(llama_port),
+                            InferenceTarget::Local(local_proxy_port),
                             &target_tx,
                         )
                         .await;
@@ -2485,13 +2552,28 @@ async fn moe_election_loop(
             .await
             {
                 Ok(process) => {
+                    let proxy = match crate::network::openai::backend::start_backend_proxy(
+                        llama_port,
+                    )
+                    .await
+                    {
+                        Ok(proxy) => proxy,
+                        Err(err) => {
+                            eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                            process.handle.shutdown().await;
+                            continue;
+                        }
+                    };
+                    let local_proxy_port = proxy.port();
+                    backend_proxy = Some(proxy);
+
                     node.set_role(NodeRole::Host {
                         http_port: ingress_http_port,
                     })
                     .await;
-                    tunnel_mgr.set_http_port(llama_port);
+                    tunnel_mgr.set_http_port(local_proxy_port);
                     currently_running = true;
-                    current_local_port = Some(llama_port);
+                    current_local_port = Some(local_proxy_port);
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         let backend = if local_backend_name(&shard_path) == "MLX server" {
@@ -2512,7 +2594,7 @@ async fn moe_election_loop(
                         &plan.active_ids,
                         &plan.fallback_ids,
                         my_id,
-                        Some(llama_port),
+                        Some(local_proxy_port),
                         None,
                         &model_name,
                     );
@@ -2566,6 +2648,9 @@ async fn moe_election_loop(
     if currently_running {
         if let Some(process) = llama_process.take() {
             process.handle.shutdown().await;
+        }
+        if let Some(proxy) = backend_proxy.take() {
+            proxy.shutdown().await;
         }
         tunnel_mgr.set_http_port(0);
         node.set_role(NodeRole::Worker).await;

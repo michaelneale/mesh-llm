@@ -3,6 +3,8 @@
 set -euo pipefail
 
 RELEASE_FLAVOR="${MESH_RELEASE_FLAVOR:-}"
+_STAGING_DIR=""
+trap 'rm -rf "$_STAGING_DIR"' EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -345,7 +347,6 @@ main() {
     local version="$1"
     local output_dir="${2:-dist}"
     local os_name
-    local staging_dir
     local bundle_dir
     local versioned_asset
 
@@ -358,10 +359,9 @@ main() {
     os_name="$(release_os_name)"
 
     mkdir -p "$output_dir"
-    staging_dir="$(mktemp -d)"
-    trap 'rm -rf "$staging_dir"' EXIT
+    _STAGING_DIR="$(mktemp -d)"
 
-    bundle_dir="$staging_dir/mesh-bundle"
+    bundle_dir="$_STAGING_DIR/mesh-bundle"
     mkdir -p "$bundle_dir"
 
     cp "$RELEASE_BIN_DIR/mesh-llm${BIN_EXT}" "$bundle_dir/$(bundle_bin_name mesh-llm)"
