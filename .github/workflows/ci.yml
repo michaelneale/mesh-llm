@@ -393,7 +393,8 @@ jobs:
     container:
       # CUDA_VERSION is a repository Actions variable and the single source of truth
       # for both workflow CUDA image tags and warm-cache key suffixes.
-      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8' }}.0-devel-ubuntu22.04
+      # It should contain the full CUDA version (for example, 12.8.0).
+      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
 
@@ -777,7 +778,7 @@ jobs:
       artifact_path: ci-artifacts/cuda-benchmark
       benchmark_binary: membench-fingerprint-cuda
       runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
-      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8' }}.0-devel-ubuntu22.04
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
       container_options: --gpus all
 
   linux_rocm_benchmark_smoke:
