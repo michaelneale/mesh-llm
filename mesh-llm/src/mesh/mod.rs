@@ -1386,12 +1386,12 @@ impl Node {
             let urls: Vec<String> = if relay_urls.is_empty() {
                 vec![
                     "https://usw1-2.relay.michaelneale.mesh-llm.iroh.link./".into(),
-                    "https://mesh-llm-relay.fly.dev./".into(),
+                    "https://aps1-1.relay.michaelneale.mesh-llm.iroh.link./".into(),
                 ]
             } else {
                 relay_urls.to_vec()
             };
-            // Two relays: dedicated iroh relay (proper QUIC + STUN) and Fly relay (fallback).
+            // Two iroh relays: US West (primary) and Asia-Pacific South (fallback).
             let configs: Vec<RelayConfig> = urls
                 .iter()
                 .map(|url| RelayConfig {
