@@ -65,7 +65,9 @@ clone_or_update_llama() {
             git checkout "$LLAMA_BRANCH"
         fi
         echo "Pulling latest $LLAMA_BRANCH from origin..."
-        git pull --ff-only origin "$LLAMA_BRANCH" || true
+        if ! git pull --ff-only origin "$LLAMA_BRANCH" 2>/dev/null; then
+            echo "⚠️  git pull failed (detached HEAD or offline) — will pin to SHA if available"
+        fi
         popd >/dev/null
     fi
 

@@ -101,10 +101,10 @@ jobs:
         run: |
           set -euo pipefail
           file="${{ inputs.dockerfile_path }}"
-          if grep -q "Mesh-LLM/llama.cpp" "$file" || grep -q "master" "$file"; then
+          if grep -q "Mesh-LLM/llama.cpp" "$file"; then
             echo "PASS: uses Mesh-LLM/llama.cpp fork"
           else
-            echo "FAIL: expected Mesh-LLM/llama.cpp reference in $file" >&2
+            echo "FAIL: expected Mesh-LLM/llama.cpp clone URL in $file" >&2
             exit 1
           fi
 
