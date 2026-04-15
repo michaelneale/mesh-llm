@@ -47,7 +47,12 @@ pub(super) async fn respond_json<T: serde::Serialize>(
         201 => "Created",
         202 => "Accepted",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let resp = format!(

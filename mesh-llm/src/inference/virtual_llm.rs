@@ -228,7 +228,11 @@ async fn get_peer_hint(
     match consult::race_second_opinion(node, &peers, messages, timeout).await {
         Some((opinion, winner_id, winner_model)) => {
             let trimmed = if opinion.len() > 512 {
-                let end = opinion[..512].char_indices().last().map_or(0, |(i, _)| i);
+                let end = opinion
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 512)
+                    .last()
+                    .map_or(0, |(i, c)| i + c.len_utf8());
                 format!("{}...", &opinion[..end])
             } else {
                 opinion

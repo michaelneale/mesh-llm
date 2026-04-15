@@ -10,7 +10,7 @@ Related: [#183](https://github.com/michaelneale/mesh-llm/issues/183), [#165](htt
 
 llama-server detects when it might need help and calls mesh-llm on localhost. mesh-llm consults other models in the mesh and replies with context to inject. The caller sees one seamless response.
 
-Two hook points, all synchronous — each is a blocking POST to `http://localhost:{mesh_port}/mesh/hook`.
+Three hook points (Hook 1, Hook 2, Hook 2b), all synchronous — each is a blocking POST to `http://localhost:{mesh_port}/mesh/hook`.
 
 ---
 
