@@ -53,12 +53,20 @@ jobs:
               - 'scripts/**'
               - '.github/cache-version.txt'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/warm-caches.yml'
+              - '.github/workflows/gpu-warm-cache-job.yml'
+              - '.github/workflows/llama-cache-keys.yml'
               - '.github/workflows/smoke.yml'
             benchmarks:
               - 'mesh-llm/benchmarks/**'
               - '.github/workflows/ci.yml'
             ui:
               - 'mesh-llm/ui/**'
+
+  resolve_llama_cache_keys:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
+    uses: ./.github/workflows/llama-cache-keys.yml
 
   linux:
     needs: changes
@@ -386,12 +394,15 @@ jobs:
         run: sccache --show-stats || true
 
   linux_cuda:
-    needs: changes
+    needs: [changes, resolve_llama_cache_keys]
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux CUDA slim
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      # CUDA_VERSION is a repository Actions variable and the single source of truth
+      # for both workflow CUDA image tags and warm-cache key suffixes.
+      # It should contain the exact CUDA tag version fragment to use.
+      image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
 
@@ -474,10 +485,11 @@ jobs:
       # entry on every push, and lets the warmup workflow prune old
       # versions (see warm-caches.yml for the retention policy).
       #
-      # The cache key MUST stay byte-identical to the one in
-      # warm-caches.yml or PRs will never hit the main-warmed entry.
-      # Any change to the hashFiles() list or literal suffix must be
-      # mirrored in both files in the same commit.
+      # This restore step consumes the exact key rendered by
+      # .github/workflows/llama-cache-keys.yml via
+      # `needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key`.
+      # That reusable workflow is the single source of truth for key
+      # composition, and warm-caches.yml consumes the same shared outputs.
       #
       # Cross-branch read: pushes to `main` write the cache under
       # `refs/heads/main`. PR runs on `refs/pull/<N>/merge` automatically
@@ -485,29 +497,10 @@ jobs:
       # main-warmed cache without needing any cache to exist on the PR
       # ref itself.
       #
-      # The cache key embeds EVERY input that affects the produced binaries:
-      #   - llama.cpp upstream commit SHA, resolved at workflow time below
-      #     via `git ls-remote`.
-      #   - hash of the build inputs in this repo: scripts/build-linux.sh,
-      #     Justfile, ci.yml, warm-caches.yml, gpu-warm-cache-job.yml,
-      #     cache-version.txt.
-      #   - the CUDA arch literal (`arch89`), the GGML_CUDA_FA_ALL_QUANTS
-      #     state (`fa-off`), and the CUDA toolkit version pulled from the
-      #     container image.
-      - name: Resolve llama.cpp upstream SHA
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        id: llama_sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
-          if [[ -z "$SHA" ]]; then
-            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
-            exit 1
-          fi
-          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
+      # The shared workflow resolves the upstream llama.cpp SHA, computes the
+      # relevant hashFiles() inputs, and renders the CUDA/ROCm slim/fat keys.
+      # If cache-key inputs change, update llama-cache-keys.yml rather than
+      # re-inlining key construction in this caller.
       # `actions/cache/restore@v5` (NOT `actions/cache@v5`): restore-only,
       # never saves. PR runs on `refs/pull/<N>/merge` never write anything
       # to PR-scoped cache storage. The only writer is warm-caches.yml.
@@ -519,7 +512,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: llama.cpp/build/bin
-          key: ${{ env.CACHE_NAMESPACE }}-llama-cuda-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}-arch89-fa-off-cuda12.8
+          key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key }}
 
       # CI is a validation build only: we only need to prove CUDA compiles
       # and the Rust binary runs. User-facing release artifacts are produced
@@ -552,7 +545,7 @@ jobs:
         env:
           MESH_LLM_BUILD_PROFILE: dev
           MESH_LLM_CUDA_FA_ALL_QUANTS: off
-          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+          MESH_LLM_LLAMA_PIN_SHA: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
           MESH_LLM_LLAMA_TARGETS: "rpc-server llama-server llama-moe-analyze llama-moe-split"
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
@@ -564,7 +557,7 @@ jobs:
           MESH_LLM_BUILD_PROFILE: dev
         run: |
           set -euo pipefail
-          echo "✓ llama.cpp CUDA build restored from cache (SHA ${{ steps.llama_sha.outputs.sha }})"
+          echo "✓ llama.cpp CUDA build restored from cache (SHA ${{ needs.resolve_llama_cache_keys.outputs.sha }})"
           if [[ ! -d llama.cpp/build/bin ]]; then
             echo "ERROR: cache hit but llama.cpp/build/bin is missing" >&2
             exit 1
@@ -604,7 +597,7 @@ jobs:
         run: sccache --show-stats || true
 
   linux_rocm:
-    needs: changes
+    needs: [changes, resolve_llama_cache_keys]
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     name: Linux ROCm slim
     runs-on: ubuntu-latest
@@ -676,27 +669,13 @@ jobs:
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Resolve llama.cpp upstream SHA
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        id: llama_sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
-          if [[ -z "$SHA" ]]; then
-            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
-            exit 1
-          fi
-          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
       - name: Restore llama.cpp ROCm cache
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
         id: llama_rocm_cache
         uses: actions/cache/restore@v5
         with:
           path: llama.cpp/build/bin
-          key: ${{ env.CACHE_NAMESPACE }}-llama-rocm-slim-${{ steps.llama_sha.outputs.sha }}-${{ hashFiles('scripts/build-linux-rocm.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}-gfx1100-rocm7.0
+          key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_slim_cache_key }}
 
       # This lane is compile-only plus a CLI smoke check (`--version`/`--help`).
       # It does not exercise ROCm inference on real AMD hardware, so restrict
@@ -706,7 +685,7 @@ jobs:
         if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_rocm_cache.outputs.cache-hit != 'true' }}
         shell: bash
         env:
-          MESH_LLM_LLAMA_PIN_SHA: ${{ steps.llama_sha.outputs.sha }}
+          MESH_LLM_LLAMA_PIN_SHA: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
         run: |
           just --shell bash --shell-arg -lc release-build-rocm gfx1100
 
@@ -715,7 +694,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "✓ llama.cpp ROCm build restored from cache (SHA ${{ steps.llama_sha.outputs.sha }})"
+          echo "✓ llama.cpp ROCm build restored from cache (SHA ${{ needs.resolve_llama_cache_keys.outputs.sha }})"
           if [[ ! -d llama.cpp/build/bin ]]; then
             echo "ERROR: cache hit but llama.cpp/build/bin is missing" >&2
             exit 1
@@ -775,7 +754,7 @@ jobs:
       artifact_path: ci-artifacts/cuda-benchmark
       benchmark_binary: membench-fingerprint-cuda
       runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
       container_options: --gpus all
 
   linux_rocm_benchmark_smoke:

@@ -17,8 +17,8 @@ name: Warm GPU CI caches
 #   - The fat jobs warm the full default arch matrices for CUDA and ROCm so the
 #     heavier artifact shapes have stable main-scoped cache entries too.
 #   - The repeated warm-job body lives in `gpu-warm-cache-job.yml`; this file
-#     stays responsible for top-level triggers, SHA resolution, explicit key
-#     composition, and cache pruning.
+#     stays responsible for top-level triggers and cache pruning, while
+#     `llama-cache-keys.yml` owns SHA resolution and explicit key composition.
 #
 # Retention policy precedence:
 #   1. workflow_dispatch input `retention` (one-off manual override)
@@ -40,6 +40,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/workflows/warm-caches.yml'
       - '.github/workflows/gpu-warm-cache-job.yml'
+      - '.github/workflows/llama-cache-keys.yml'
       - '.github/cache-version.txt'
   workflow_dispatch:
     inputs:
@@ -61,55 +62,19 @@ env:
   LLAMA_GPU_CACHE_RETENTION: ${{ github.event.inputs.retention || vars.LLAMA_GPU_CACHE_RETENTION || '2' }}
 
 jobs:
-  resolve_llama_sha:
-    name: Resolve llama.cpp upstream SHA
-    runs-on: ubuntu-latest
-    outputs:
-      cache_namespace: ${{ steps.cache_namespace.outputs.value }}
-      sha: ${{ steps.resolve.outputs.sha }}
-      cuda_cache_inputs_hash: ${{ steps.cache_inputs.outputs.cuda_hash }}
-      rocm_cache_inputs_hash: ${{ steps.cache_inputs.outputs.rocm_hash }}
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Expose cache namespace
-        id: cache_namespace
-        shell: bash
-        run: echo "value=${CACHE_NAMESPACE}" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve llama.cpp upstream SHA
-        id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          SHA=$(git ls-remote https://github.com/michaelneale/llama.cpp.git refs/heads/upstream-latest | cut -f1)
-          if [[ -z "$SHA" ]]; then
-            echo "Failed to resolve llama.cpp upstream-latest SHA" >&2
-            exit 1
-          fi
-          echo "Resolved llama.cpp upstream-latest SHA: $SHA"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Hash cache-key inputs
-        id: cache_inputs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "cuda_hash=${{ hashFiles('scripts/build-linux.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
-          echo "rocm_hash=${{ hashFiles('scripts/build-linux-rocm.sh', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
+  resolve_llama_cache_keys:
+    uses: ./.github/workflows/llama-cache-keys.yml
 
   warm_llama_cuda_slim:
-    needs: resolve_llama_sha
+    needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
       job_name: Warm Linux CUDA slim cache
       cache_label: CUDA slim
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
+      container_image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
+      llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
-      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key }}
       build_recipe: release-build-cuda
       build_args: 89
       extra_env: |
@@ -117,40 +82,40 @@ jobs:
         MESH_LLM_LLAMA_TARGETS=rpc-server llama-server llama-moe-analyze llama-moe-split
 
   warm_llama_cuda_fat:
-    needs: resolve_llama_sha
+    needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
       job_name: Warm Linux CUDA fat cache
       cache_label: CUDA fat
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
+      container_image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
+      llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
-      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_fat_cache_key }}
       build_recipe: release-build-cuda
 
   warm_llama_rocm_slim:
-    needs: resolve_llama_sha
+    needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
       job_name: Warm Linux ROCm slim cache
       cache_label: ROCm slim
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
+      llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: '"ubuntu-latest"'
-      cache_key: ${{ format('{0}-llama-rocm-slim-{1}-{2}-gfx1100-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
+      cache_key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_slim_cache_key }}
       build_recipe: release-build-rocm
       build_args: gfx1100
 
   warm_llama_rocm_fat:
-    needs: resolve_llama_sha
+    needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
       job_name: Warm Linux ROCm fat cache
       cache_label: ROCm fat
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
-      llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
+      llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: '"ubuntu-latest"'
-      cache_key: ${{ format('{0}-llama-rocm-fat-{1}-{2}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.rocm_cache_inputs_hash) }}
+      cache_key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_fat_cache_key }}
       build_recipe: release-build-rocm
 
   prune_llama_gpu_caches:

@@ -145,7 +145,7 @@ jobs:
     name: Build Linux CUDA
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
 
     steps:
       - name: Install base packages
