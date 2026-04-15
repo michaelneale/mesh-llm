@@ -42,8 +42,6 @@ on:
       - '.github/workflows/gpu-warm-cache-job.yml'
       - '.github/workflows/llama-cache-keys.yml'
       - '.github/cache-version.txt'
-  schedule:
-    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       retention:

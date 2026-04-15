@@ -34,6 +34,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CACHE_NAMESPACE: mesh-llm
+
 jobs:
   resolve:
     name: Resolve llama.cpp cache keys
@@ -55,7 +58,8 @@ jobs:
       - name: Expose cache namespace
         id: cache_namespace
         shell: bash
-        run: echo "value=mesh-llm" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "value=${CACHE_NAMESPACE}" >> "$GITHUB_OUTPUT"
 
       - name: Expose CUDA version
         id: cuda_version

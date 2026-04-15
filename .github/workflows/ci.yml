@@ -64,6 +64,8 @@ jobs:
               - 'mesh-llm/ui/**'
 
   resolve_llama_cache_keys:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.benchmarks == 'true' }}
     uses: ./.github/workflows/llama-cache-keys.yml
 
   linux:
