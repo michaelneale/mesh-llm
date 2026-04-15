@@ -11,7 +11,7 @@ use super::local::{
 pub struct LocalModelInventorySnapshot {
     pub model_names: HashSet<String>,
     pub size_by_name: HashMap<String, u64>,
-    pub metadata_by_name: HashMap<String, crate::proto::node::CompactModelMetadata>,
+    pub metadata_by_name: HashMap<String, crate::proto::mesh::CompactModelMetadata>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
@@ -52,8 +52,8 @@ struct InventoryScanEntry {
 }
 
 impl CachedCompactModelMetadata {
-    fn into_proto(self) -> crate::proto::node::CompactModelMetadata {
-        crate::proto::node::CompactModelMetadata {
+    fn into_proto(self) -> crate::proto::mesh::CompactModelMetadata {
+        crate::proto::mesh::CompactModelMetadata {
             model_key: self.model_key,
             context_length: self.context_length,
             vocab_size: self.vocab_size,
@@ -75,7 +75,7 @@ impl CachedCompactModelMetadata {
         }
     }
 
-    fn from_proto(meta: &crate::proto::node::CompactModelMetadata) -> Self {
+    fn from_proto(meta: &crate::proto::mesh::CompactModelMetadata) -> Self {
         Self {
             model_key: meta.model_key.clone(),
             context_length: meta.context_length,
@@ -181,9 +181,9 @@ fn compact_metadata_from_gguf(
     path: &Path,
     model_key: String,
     quantization_type: String,
-) -> crate::proto::node::CompactModelMetadata {
+) -> crate::proto::mesh::CompactModelMetadata {
     if let Some(m) = crate::models::gguf::scan_gguf_compact_meta(path) {
-        crate::proto::node::CompactModelMetadata {
+        crate::proto::mesh::CompactModelMetadata {
             model_key: model_key.clone(),
             context_length: m.context_length,
             vocab_size: m.vocab_size,
@@ -204,7 +204,7 @@ fn compact_metadata_from_gguf(
             quantization_type,
         }
     } else {
-        crate::proto::node::CompactModelMetadata {
+        crate::proto::mesh::CompactModelMetadata {
             model_key,
             quantization_type,
             ..Default::default()
@@ -216,7 +216,7 @@ fn cached_compact_metadata_for_path(
     path: &Path,
     model_key: String,
     quantization_type: String,
-) -> crate::proto::node::CompactModelMetadata {
+) -> crate::proto::mesh::CompactModelMetadata {
     let computed =
         || compact_metadata_from_gguf(path, model_key.clone(), quantization_type.clone());
     let Some(cache_path) = gguf_metadata_cache_path(path) else {

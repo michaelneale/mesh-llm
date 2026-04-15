@@ -149,7 +149,7 @@ pub(crate) trait ValidateControlFrame: prost::Message + Default + Sized {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::GossipFrame {
+impl ValidateControlFrame for crate::proto::mesh::GossipFrame {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -166,7 +166,7 @@ impl ValidateControlFrame for crate::proto::node::GossipFrame {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::TunnelMap {
+impl ValidateControlFrame for crate::proto::mesh::TunnelMap {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.owner_peer_id.len() != 32 {
             return Err(ControlFrameError::InvalidEndpointId {
@@ -183,7 +183,7 @@ impl ValidateControlFrame for crate::proto::node::TunnelMap {
         Ok(())
     }
 }
-impl ValidateControlFrame for crate::proto::node::RouteTableRequest {
+impl ValidateControlFrame for crate::proto::mesh::RouteTableRequest {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -196,7 +196,7 @@ impl ValidateControlFrame for crate::proto::node::RouteTableRequest {
         Ok(())
     }
 }
-impl ValidateControlFrame for crate::proto::node::RouteTable {
+impl ValidateControlFrame for crate::proto::mesh::RouteTable {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -211,7 +211,7 @@ impl ValidateControlFrame for crate::proto::node::RouteTable {
         Ok(())
     }
 }
-impl ValidateControlFrame for crate::proto::node::PeerDown {
+impl ValidateControlFrame for crate::proto::mesh::PeerDown {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -224,7 +224,7 @@ impl ValidateControlFrame for crate::proto::node::PeerDown {
         Ok(())
     }
 }
-impl ValidateControlFrame for crate::proto::node::PeerLeaving {
+impl ValidateControlFrame for crate::proto::mesh::PeerLeaving {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -238,7 +238,7 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
+impl ValidateControlFrame for crate::proto::config::ConfigSubscribe {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -248,7 +248,7 @@ impl ValidateControlFrame for crate::proto::node::ConfigSubscribe {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
+impl ValidateControlFrame for crate::proto::config::ConfigSnapshotResponse {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -265,7 +265,7 @@ impl ValidateControlFrame for crate::proto::node::ConfigSnapshotResponse {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
+impl ValidateControlFrame for crate::proto::config::ConfigUpdateNotification {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -279,7 +279,7 @@ impl ValidateControlFrame for crate::proto::node::ConfigUpdateNotification {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigPush {
+impl ValidateControlFrame for crate::proto::config::ConfigPush {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -302,7 +302,7 @@ impl ValidateControlFrame for crate::proto::node::ConfigPush {
     }
 }
 
-impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
+impl ValidateControlFrame for crate::proto::config::ConfigPushResponse {
     fn validate_frame(&self) -> Result<(), ControlFrameError> {
         if self.gen != NODE_PROTOCOL_GENERATION {
             return Err(ControlFrameError::BadGeneration { got: self.gen });
@@ -315,14 +315,14 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
 }
 
 pub(crate) fn validate_peer_announcement(
-    pa: &crate::proto::node::PeerAnnouncement,
+    pa: &crate::proto::mesh::PeerAnnouncement,
 ) -> Result<(), ControlFrameError> {
     if pa.endpoint_id.len() != 32 {
         return Err(ControlFrameError::InvalidEndpointId {
             got: pa.endpoint_id.len(),
         });
     }
-    if pa.role == crate::proto::node::NodeRole::Host as i32 && pa.http_port.is_none() {
+    if pa.role == crate::proto::mesh::NodeRole::Host as i32 && pa.http_port.is_none() {
         return Err(ControlFrameError::MissingHttpPort);
     }
     Ok(())
@@ -420,7 +420,7 @@ pub(crate) fn decode_gossip_payload(
 ) -> Result<Vec<(EndpointAddr, PeerAnnouncement)>> {
     match protocol {
         ControlProtocol::ProtoV1 => {
-            let frame = crate::proto::node::GossipFrame::decode(buf)
+            let frame = crate::proto::mesh::GossipFrame::decode(buf)
                 .map_err(|e| anyhow::anyhow!("gossip decode from {}: {e}", remote.fmt_short()))?;
             frame.validate_frame().map_err(|e| {
                 anyhow::anyhow!("invalid gossip frame from {}: {e}", remote.fmt_short())
@@ -506,12 +506,12 @@ mod tests {
     use super::*;
     use crate::crypto::OwnershipSummary;
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, ModelDemand, PeerInfo};
-    use crate::proto::node::{
+    use crate::proto::config::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
-        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
-        RouteTableRequest,
+        ConfigUpdateNotification, ConfiguredModelRef, NodeConfigSnapshot, NodeGpuConfig,
+        NodeModelEntry, NodePluginEntry,
     };
+    use crate::proto::mesh::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
 
@@ -531,7 +531,7 @@ mod tests {
         NodeConfigSnapshot {
             version: 1,
             gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                assignment: crate::proto::config::GpuAssignment::Auto as i32,
             }),
             models: vec![NodeModelEntry {
                 model: "Qwen3-8B".to_string(),
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     fn config_push_response_error_shape_passes_validation() {
         // Error responses from send_push_error have an empty config_hash.
-        let error_response = crate::proto::node::ConfigPushResponse {
+        let error_response = crate::proto::config::ConfigPushResponse {
             gen: NODE_PROTOCOL_GENERATION,
             success: false,
             current_revision: 0,
@@ -898,7 +898,7 @@ mod tests {
             apply_mode: 0,
         };
         let encoded = encode_control_frame(STREAM_CONFIG_PUSH, &error_response);
-        decode_control_frame::<crate::proto::node::ConfigPushResponse>(
+        decode_control_frame::<crate::proto::config::ConfigPushResponse>(
             STREAM_CONFIG_PUSH,
             &encoded,
         )
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn proto_v1_route_table_rejects_bad_generation_or_legacy_payload() {
-        use crate::proto::node::RouteTable;
+        use crate::proto::mesh::RouteTable;
 
         let zero_gen_req = RouteTableRequest {
             requester_id: vec![0u8; 32],
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn peer_lifecycle_messages_roundtrip() {
-        use crate::proto::node::{PeerDown, PeerLeaving};
+        use crate::proto::mesh::{PeerDown, PeerLeaving};
 
         let leaving_id = EndpointId::from(SecretKey::from_bytes(&[0x55; 32]).public());
 
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn peer_lifecycle_rejects_forged_sender_or_unverified_down() {
-        use crate::proto::node::{PeerDown, PeerLeaving};
+        use crate::proto::mesh::{PeerDown, PeerLeaving};
 
         let valid_peer_bytes = EndpointId::from(SecretKey::from_bytes(&[0x77; 32]).public())
             .as_bytes()
@@ -1186,7 +1186,7 @@ mod tests {
 
     #[test]
     fn proto_v1_control_frames_reject_legacy_json_and_wrong_gen() {
-        use crate::proto::node::{PeerDown, PeerLeaving};
+        use crate::proto::mesh::{PeerDown, PeerLeaving};
 
         // JSON bytes that look plausible for the old wire format on each stream
         let json_gossip = b"[{\"addr\":{\"id\":\"aabbcc\",\"addrs\":[]}}]";
@@ -1537,15 +1537,15 @@ mod tests {
     #[test]
     fn test_proto_backward_compat_missing_tflops() {
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCD; 32]).public());
-        let proto_pa = crate::proto::node::PeerAnnouncement {
+        let proto_pa = crate::proto::mesh::PeerAnnouncement {
             endpoint_id: peer_id.as_bytes().to_vec(),
             role: NodeRole::Worker as i32,
             gpu_name: Some("NVIDIA A100".to_string()),
             gpu_vram: Some("51539607552".to_string()),
-            hardware: Some(crate::proto::node::HardwareInfo {
+            hardware: Some(crate::proto::mesh::HardwareInfo {
                 is_soc: Some(false),
                 hostname: None,
-                gpus: vec![crate::proto::node::GpuInfo {
+                gpus: vec![crate::proto::mesh::GpuInfo {
                     name: Some("NVIDIA A100".to_string()),
                     vram_bytes: Some("51539607552".to_string()),
                     reserved_bytes: None,
@@ -1571,14 +1571,14 @@ mod tests {
     #[test]
     fn test_proto_gpu_info_preserves_legacy_fields_for_old_consumers() {
         let peer_id = EndpointId::from(SecretKey::from_bytes(&[0xCE; 32]).public());
-        let proto_pa = crate::proto::node::PeerAnnouncement {
+        let proto_pa = crate::proto::mesh::PeerAnnouncement {
             endpoint_id: peer_id.as_bytes().to_vec(),
             role: NodeRole::Worker as i32,
-            hardware: Some(crate::proto::node::HardwareInfo {
+            hardware: Some(crate::proto::mesh::HardwareInfo {
                 is_soc: Some(false),
                 hostname: Some("worker-01".to_string()),
                 gpus: vec![
-                    crate::proto::node::GpuInfo {
+                    crate::proto::mesh::GpuInfo {
                         name: Some("NVIDIA A100".to_string()),
                         vram_bytes: Some("51539607552".to_string()),
                         reserved_bytes: Some("1073741824".to_string()),
@@ -1586,7 +1586,7 @@ mod tests {
                         compute_tflops_fp32: Some("19.50".to_string()),
                         compute_tflops_fp16: Some("312.00".to_string()),
                     },
-                    crate::proto::node::GpuInfo {
+                    crate::proto::mesh::GpuInfo {
                         name: Some("NVIDIA A100".to_string()),
                         vram_bytes: Some("51539607552".to_string()),
                         reserved_bytes: None,
@@ -1644,7 +1644,7 @@ mod tests {
         assert_eq!(roundtripped.version, snapshot.version);
         assert_eq!(
             roundtripped.gpu.as_ref().map(|g| g.assignment),
-            Some(crate::proto::node::GpuAssignment::Auto as i32)
+            Some(crate::proto::config::GpuAssignment::Auto as i32)
         );
         assert_eq!(roundtripped.models.len(), snapshot.models.len());
         assert_eq!(roundtripped.models[0].model, snapshot.models[0].model);
@@ -1668,7 +1668,7 @@ mod tests {
         let snapshot = NodeConfigSnapshot {
             version: 1,
             gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                assignment: crate::proto::config::GpuAssignment::Auto as i32,
             }),
             models: vec![NodeModelEntry {
                 model: "legacy.gguf".to_string(),
@@ -1703,7 +1703,7 @@ mod tests {
         let snapshot = NodeConfigSnapshot {
             version: 1,
             gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                assignment: crate::proto::config::GpuAssignment::Auto as i32,
             }),
             models: vec![NodeModelEntry {
                 model: "legacy.gguf".to_string(),
@@ -1999,7 +1999,7 @@ mod tests {
         let snapshot = mesh_config_to_proto(&config);
         assert_eq!(
             snapshot.gpu.as_ref().map(|gpu| gpu.assignment),
-            Some(crate::proto::node::GpuAssignment::Pinned as i32),
+            Some(crate::proto::config::GpuAssignment::Pinned as i32),
             "pinned snapshots must not be downgraded to auto"
         );
         assert_eq!(
@@ -2018,7 +2018,7 @@ mod tests {
         let roundtripped = mesh_config_to_proto(&restored);
         assert_eq!(
             roundtripped.gpu.as_ref().map(|gpu| gpu.assignment),
-            Some(crate::proto::node::GpuAssignment::Pinned as i32),
+            Some(crate::proto::config::GpuAssignment::Pinned as i32),
             "re-encoded snapshot must keep pinned assignment"
         );
         assert_eq!(
@@ -2048,7 +2048,7 @@ mod tests {
         let snapshot = NodeConfigSnapshot {
             version: 1,
             gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Pinned as i32,
+                assignment: crate::proto::config::GpuAssignment::Pinned as i32,
             }),
             models: vec![NodeModelEntry {
                 model: "Qwen3-8B-Q4_K_M".to_string(),
@@ -2282,7 +2282,7 @@ mod tests {
 
     #[test]
     fn config_sync_push_validates_signature_length_too_short() {
-        use crate::proto::node::ConfigPush;
+        use crate::proto::config::ConfigPush;
         let push = ConfigPush {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
@@ -2304,7 +2304,7 @@ mod tests {
 
     #[test]
     fn config_sync_push_validates_signature_length_empty() {
-        use crate::proto::node::ConfigPush;
+        use crate::proto::config::ConfigPush;
         let push = ConfigPush {
             gen: NODE_PROTOCOL_GENERATION,
             requester_id: vec![0x01; 32],
@@ -2326,7 +2326,7 @@ mod tests {
 
     #[test]
     fn config_sync_snapshot_response_validates_config_present() {
-        use crate::proto::node::ConfigSnapshotResponse;
+        use crate::proto::config::ConfigSnapshotResponse;
         let response = ConfigSnapshotResponse {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0x01; 32],
@@ -2348,7 +2348,7 @@ mod tests {
 
     #[test]
     fn config_sync_update_notification_validates_config_present() {
-        use crate::proto::node::ConfigUpdateNotification;
+        use crate::proto::config::ConfigUpdateNotification;
         let notification = ConfigUpdateNotification {
             gen: NODE_PROTOCOL_GENERATION,
             node_id: vec![0x01; 32],

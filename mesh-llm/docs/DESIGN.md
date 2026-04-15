@@ -49,13 +49,13 @@ enum NodeRole {
 }
 ```
 
-Roles are exchanged via gossip. Preferred peers use `meshllm.node.v1` protobuf on QUIC ALPN `mesh-llm/1`; legacy peers may still negotiate `mesh-llm/0` and use the older JSON gossip payloads. A node transitions Worker → Host when elected.
+Roles are exchanged via gossip. Preferred peers use protobuf on QUIC ALPN `mesh-llm/1`, with `meshllm.node.v1` for mesh state and `meshllm.config.v1` for owner-gated config sync; legacy peers may still negotiate `mesh-llm/0` and use the older JSON gossip payloads. A node transitions Worker → Host when elected.
 
 A newly connected peer is quarantined until it sends a valid `GossipFrame` with `gen = 1` (quarantine-until-gossip admission model). Only streams 0x01 (GOSSIP) and 0x05 (ROUTE_REQUEST) are accepted before admission. All other streams are rejected until the peer is admitted.
 
 ## Control-Plane Protocol
 
-The control plane prefers QUIC ALPN `mesh-llm/1` using the `meshllm.node.v1` protobuf schema. Scoped control-plane streams on `/1` use 4-byte LE framing followed by protobuf bytes. For backward compatibility, peers may also negotiate `mesh-llm/0`, which preserves the legacy JSON/raw payloads on those same streams.
+The control plane prefers QUIC ALPN `mesh-llm/1` using split protobuf schemas: `meshllm.node.v1` for mesh state and `meshllm.config.v1` for config sync. Scoped control-plane streams on `/1` use 4-byte LE framing followed by protobuf bytes. For backward compatibility, peers may also negotiate `mesh-llm/0`, which preserves the legacy JSON/raw payloads on those same streams.
 
 Mixed meshes containing both `/0` and `/1` nodes are supported. `/0` links are compatibility mode only, so they do not carry protobuf-only fields.
 

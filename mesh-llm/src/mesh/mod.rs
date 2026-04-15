@@ -855,8 +855,8 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) gpu_mem_bandwidth_gbps: Option<String>,
     pub(crate) gpu_compute_tflops_fp32: Option<String>,
     pub(crate) gpu_compute_tflops_fp16: Option<String>,
-    pub(crate) available_model_metadata: Vec<crate::proto::node::CompactModelMetadata>,
-    pub(crate) experts_summary: Option<crate::proto::node::ExpertsSummary>,
+    pub(crate) available_model_metadata: Vec<crate::proto::mesh::CompactModelMetadata>,
+    pub(crate) experts_summary: Option<crate::proto::mesh::ExpertsSummary>,
     pub(crate) available_model_sizes: HashMap<String, u64>,
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
@@ -908,8 +908,8 @@ pub struct PeerInfo {
     pub gpu_mem_bandwidth_gbps: Option<String>,
     pub gpu_compute_tflops_fp32: Option<String>,
     pub gpu_compute_tflops_fp16: Option<String>,
-    pub available_model_metadata: Vec<crate::proto::node::CompactModelMetadata>,
-    pub experts_summary: Option<crate::proto::node::ExpertsSummary>,
+    pub available_model_metadata: Vec<crate::proto::mesh::CompactModelMetadata>,
+    pub experts_summary: Option<crate::proto::mesh::ExpertsSummary>,
     pub available_model_sizes: HashMap<String, u64>,
     pub served_model_descriptors: Vec<ServedModelDescriptor>,
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
@@ -1234,7 +1234,7 @@ pub(crate) fn stream_allowed_before_admission(stream_type: u8) -> bool {
 
 pub(crate) fn ingest_tunnel_map(
     remote: EndpointId,
-    frame: &crate::proto::node::TunnelMap,
+    frame: &crate::proto::mesh::TunnelMap,
     remote_tunnel_maps: &mut HashMap<EndpointId, HashMap<EndpointId, u16>>,
 ) -> Result<()> {
     if frame.owner_peer_id.as_slice() != remote.as_bytes() {
@@ -1277,7 +1277,7 @@ pub(crate) fn ingest_tunnel_map(
 /// Returns `Err(ForgedSender)` if `frame.peer_id != remote` — no peer should be removed.
 pub(crate) fn resolve_peer_leaving(
     remote: EndpointId,
-    frame: &crate::proto::node::PeerLeaving,
+    frame: &crate::proto::mesh::PeerLeaving,
 ) -> Result<EndpointId, ControlFrameError> {
     if frame.peer_id.as_slice() != remote.as_bytes() {
         return Err(ControlFrameError::ForgedSender);
@@ -2797,7 +2797,7 @@ impl Node {
         let (mut send, mut recv) = conn.open_bi().await?;
         send.write_all(&[STREAM_ROUTE_REQUEST]).await?;
         if protocol == ControlProtocol::ProtoV1 {
-            let req = crate::proto::node::RouteTableRequest {
+            let req = crate::proto::mesh::RouteTableRequest {
                 requester_id: self.endpoint.id().as_bytes().to_vec(),
                 gen: NODE_PROTOCOL_GENERATION,
             };
@@ -2807,7 +2807,7 @@ impl Node {
         match protocol {
             ControlProtocol::ProtoV1 => {
                 let buf = read_len_prefixed(&mut recv).await?;
-                let proto_table = crate::proto::node::RouteTable::decode(buf.as_slice())
+                let proto_table = crate::proto::mesh::RouteTable::decode(buf.as_slice())
                     .map_err(|e| anyhow::anyhow!("route table decode failed: {e}"))?;
                 proto_table
                     .validate_frame()
@@ -2906,16 +2906,16 @@ impl Node {
             .collect();
         let legacy_bytes = serde_json::to_vec(&legacy_json)?;
         let owner_peer_id = self.endpoint.id().as_bytes().to_vec();
-        let entries: Vec<crate::proto::node::TunnelEntry> = my_tunnel_map
+        let entries: Vec<crate::proto::mesh::TunnelEntry> = my_tunnel_map
             .iter()
-            .map(|(id, &port)| crate::proto::node::TunnelEntry {
+            .map(|(id, &port)| crate::proto::mesh::TunnelEntry {
                 target_peer_id: id.as_bytes().to_vec(),
                 tunnel_port: port as u32,
                 relay_peer_id: None,
             })
             .collect();
 
-        let proto_msg = crate::proto::node::TunnelMap {
+        let proto_msg = crate::proto::mesh::TunnelMap {
             owner_peer_id,
             entries,
         };
@@ -3241,7 +3241,7 @@ impl Node {
                                     return;
                                 }
                             };
-                            let req = match crate::proto::node::RouteTableRequest::decode(
+                            let req = match crate::proto::mesh::RouteTableRequest::decode(
                                 proto_buf.as_slice(),
                             ) {
                                 Ok(r) => r,
@@ -3291,7 +3291,7 @@ impl Node {
                                         return;
                                     }
                                 };
-                                let frame = match crate::proto::node::PeerDown::decode(
+                                let frame = match crate::proto::mesh::PeerDown::decode(
                                     proto_buf.as_slice(),
                                 ) {
                                     Ok(f) => f,
@@ -3451,7 +3451,7 @@ impl Node {
                                         return;
                                     }
                                 };
-                                let frame = match crate::proto::node::PeerLeaving::decode(
+                                let frame = match crate::proto::mesh::PeerLeaving::decode(
                                     proto_buf.as_slice(),
                                 ) {
                                     Ok(f) => f,
@@ -3575,12 +3575,12 @@ impl Node {
         mut send: iroh::endpoint::SendStream,
         mut recv: iroh::endpoint::RecvStream,
     ) -> anyhow::Result<()> {
-        use crate::proto::node::{ConfigSnapshotResponse, ConfigUpdateNotification};
+        use crate::proto::config::{ConfigSnapshotResponse, ConfigUpdateNotification};
         use crate::protocol::convert::mesh_config_to_proto;
         use prost::Message as _;
 
         let buf = read_len_prefixed(&mut recv).await?;
-        let frame = crate::proto::node::ConfigSubscribe::decode(buf.as_slice())
+        let frame = crate::proto::config::ConfigSubscribe::decode(buf.as_slice())
             .map_err(|e| anyhow::anyhow!("ConfigSubscribe decode error: {e}"))?;
         frame
             .validate_frame()
@@ -3589,7 +3589,7 @@ impl Node {
         let local_owner_id = match self.local_verified_owner_id().await {
             Some(id) => id,
             None => {
-                let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+                let error_snapshot = crate::proto::config::ConfigSnapshotResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     node_id: vec![],
                     revision: 0,
@@ -3608,7 +3608,7 @@ impl Node {
                 "config subscribe from {}: subscriber_id does not match connection identity",
                 remote.fmt_short()
             );
-            let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+            let error_snapshot = crate::proto::config::ConfigSnapshotResponse {
                 gen: NODE_PROTOCOL_GENERATION,
                 node_id: vec![],
                 revision: 0,
@@ -3624,7 +3624,7 @@ impl Node {
         let (subscriber_owner_id, _) = match self.peer_verified_owner(remote).await {
             Some(owner) => owner,
             None => {
-                let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+                let error_snapshot = crate::proto::config::ConfigSnapshotResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     node_id: vec![],
                     revision: 0,
@@ -3645,7 +3645,7 @@ impl Node {
                 local_owner_id,
                 subscriber_owner_id
             );
-            let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+            let error_snapshot = crate::proto::config::ConfigSnapshotResponse {
                 gen: NODE_PROTOCOL_GENERATION,
                 node_id: vec![],
                 revision: 0,
@@ -3671,7 +3671,7 @@ impl Node {
             if config_uses_pinned_gpu(state.config())
                 && !peer_supports_pinned_gpu_config(subscriber_version.as_deref())
             {
-                let error_snapshot = crate::proto::node::ConfigSnapshotResponse {
+                let error_snapshot = crate::proto::config::ConfigSnapshotResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     node_id: vec![],
                     revision: 0,
@@ -3803,7 +3803,7 @@ impl Node {
 
         // 1. Read + decode + validate ConfigPush
         let buf = read_len_prefixed(&mut recv).await?;
-        let push = crate::proto::node::ConfigPush::decode(buf.as_slice())?;
+        let push = crate::proto::config::ConfigPush::decode(buf.as_slice())?;
         push.validate_frame()
             .map_err(|e| anyhow::anyhow!("invalid push frame: {e}"))?;
 
@@ -3910,7 +3910,7 @@ impl Node {
         };
 
         // 7. Build + send response
-        use crate::proto::node::ConfigApplyMode as ProtoApplyMode;
+        use crate::proto::config::ConfigApplyMode as ProtoApplyMode;
         use crate::runtime::config_state::{ApplyResult, ConfigApplyMode};
         let response = match result {
             ApplyResult::Applied {
@@ -3921,7 +3921,7 @@ impl Node {
                 if apply_mode == ConfigApplyMode::Staged {
                     let _ = self.config_revision_tx.send(revision);
                 }
-                crate::proto::node::ConfigPushResponse {
+                crate::proto::config::ConfigPushResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     success: true,
                     current_revision: revision,
@@ -3934,7 +3934,7 @@ impl Node {
                 }
             }
             ApplyResult::RevisionConflict { current_revision } => {
-                crate::proto::node::ConfigPushResponse {
+                crate::proto::config::ConfigPushResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     success: false,
                     current_revision,
@@ -3951,7 +3951,7 @@ impl Node {
                 error,
             } => {
                 let _ = self.config_revision_tx.send(revision);
-                crate::proto::node::ConfigPushResponse {
+                crate::proto::config::ConfigPushResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     success: false,
                     current_revision: revision,
@@ -3961,7 +3961,7 @@ impl Node {
                 }
             }
             ApplyResult::ValidationError(msg) | ApplyResult::PersistError(msg) => {
-                crate::proto::node::ConfigPushResponse {
+                crate::proto::config::ConfigPushResponse {
                     gen: NODE_PROTOCOL_GENERATION,
                     success: false,
                     current_revision,
@@ -3986,10 +3986,10 @@ impl Node {
         &self,
         conn: &iroh::endpoint::Connection,
     ) -> anyhow::Result<(
-        crate::proto::node::ConfigSnapshotResponse,
-        tokio::sync::watch::Receiver<crate::proto::node::ConfigUpdateNotification>,
+        crate::proto::config::ConfigSnapshotResponse,
+        tokio::sync::watch::Receiver<crate::proto::config::ConfigUpdateNotification>,
     )> {
-        use crate::proto::node::{
+        use crate::proto::config::{
             ConfigSnapshotResponse, ConfigSubscribe, ConfigUpdateNotification,
         };
 
@@ -4148,7 +4148,7 @@ impl Node {
 
         let buf = read_len_prefixed(&mut recv).await?;
         let frame = match protocol {
-            ControlProtocol::ProtoV1 => crate::proto::node::TunnelMap::decode(buf.as_slice())
+            ControlProtocol::ProtoV1 => crate::proto::mesh::TunnelMap::decode(buf.as_slice())
                 .map_err(|e| anyhow::anyhow!("TunnelMap decode error: {e}"))?,
             ControlProtocol::JsonV0 => {
                 let mut frame = decode_legacy_tunnel_map_frame(&buf)?;
@@ -4177,7 +4177,7 @@ impl Node {
     }
 }
 
-pub(crate) fn config_push_signature_payload(push: &crate::proto::node::ConfigPush) -> Vec<u8> {
+pub(crate) fn config_push_signature_payload(push: &crate::proto::config::ConfigPush) -> Vec<u8> {
     use prost::Message as _;
     let mut unsigned = push.clone();
     unsigned.signature.clear();
@@ -4187,13 +4187,13 @@ pub(crate) fn config_push_signature_payload(push: &crate::proto::node::ConfigPus
 async fn send_push_error(send: &mut iroh::endpoint::SendStream, msg: &str) -> anyhow::Result<()> {
     use crate::protocol::write_len_prefixed;
     use prost::Message as _;
-    let response = crate::proto::node::ConfigPushResponse {
+    let response = crate::proto::config::ConfigPushResponse {
         gen: NODE_PROTOCOL_GENERATION,
         success: false,
         current_revision: 0,
         config_hash: vec![],
         error: Some(msg.to_string()),
-        apply_mode: crate::proto::node::ConfigApplyMode::Unspecified as i32,
+        apply_mode: crate::proto::config::ConfigApplyMode::Unspecified as i32,
     };
     write_len_prefixed(send, &response.encode_to_vec()).await?;
     Ok(())

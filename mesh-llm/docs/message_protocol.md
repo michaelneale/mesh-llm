@@ -1,6 +1,6 @@
 # mesh-llm Message Protocol
 
-This document describes the wire protocol for control-plane communication between mesh-llm nodes. Control-plane traffic prefers the `meshllm.node.v1` protobuf schema on QUIC ALPN `mesh-llm/1`, with backward-compatible support for the legacy `mesh-llm/0` JSON/raw payloads.
+This document describes the wire protocol for control-plane communication between mesh-llm nodes. Control-plane traffic on QUIC ALPN `mesh-llm/1` uses protobuf, split between `meshllm.node.v1` for mesh state and `meshllm.config.v1` for owner-gated config sync, with backward-compatible support for the legacy `mesh-llm/0` JSON/raw payloads.
 
 ## ALPN
 
@@ -24,12 +24,14 @@ Each QUIC connection carries multiple logical streams, distinguished by a 1-byte
 | 0x08 | BLACKBOARD | bidirectional | admission-gated auxiliary channel |
 | 0x09 | PLUGIN_CHANNEL | bidirectional | plugin protocol (see Out-of-Scope) |
 | 0x0a | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data (see Out-of-Scope) |
+| 0x0b | CONFIG_SUBSCRIBE | bidirectional | protobuf `ConfigSubscribe` / `ConfigSnapshotResponse` / `ConfigUpdateNotification` |
+| 0x0c | CONFIG_PUSH | bidirectional | protobuf `ConfigPush` / `ConfigPushResponse` |
 
 Streams 0x02 and 0x04 are raw TCP relay tunnels. They carry llama.cpp RPC and HTTP traffic respectively and are not subject to protobuf framing or generation validation.
 
 ## Framing
 
-All protobuf control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07) use the same framing:
+All protobuf control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07, 0x0b, 0x0c) use the same framing:
 
 ```
 [1 byte stream type][4 bytes LE length][N bytes protobuf body]
@@ -48,13 +50,18 @@ Every protobuf message that carries a `gen` field must have `gen == 1`. Frames w
 - `RouteTable.gen`
 - `PeerDown.gen`
 - `PeerLeaving.gen`
+- `ConfigSubscribe.gen`
+- `ConfigSnapshotResponse.gen`
+- `ConfigUpdateNotification.gen`
+- `ConfigPush.gen`
+- `ConfigPushResponse.gen`
 
 ## Admission (Quarantine-Until-Gossip)
 
 A newly connected peer is quarantined until it sends a valid `GossipFrame` with `gen = 1`. Until admission:
 
 - Only stream 0x01 (GOSSIP) and 0x05 (ROUTE_REQUEST) are accepted.
-- All other streams (0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0a) are rejected and the stream is closed.
+- All other streams (0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c) are rejected and the stream is closed.
 - The QUIC connection itself stays open so gossip can complete.
 
 A peer is admitted when its negotiated gossip payload decodes successfully and passes validation checks. On `/1` this is a protobuf `GossipFrame`; on `/0` this is the legacy JSON gossip payload.

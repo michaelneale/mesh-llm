@@ -12,7 +12,11 @@ mod runtime;
 mod system;
 
 pub mod proto {
-    pub mod node {
+    pub mod config {
+        include!(concat!(env!("OUT_DIR"), "/meshllm.config.v1.rs"));
+    }
+
+    pub mod mesh {
         include!(concat!(env!("OUT_DIR"), "/meshllm.node.v1.rs"));
     }
 }

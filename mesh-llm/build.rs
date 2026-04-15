@@ -27,6 +27,6 @@ fn compile_node_proto() {
     std::env::set_var("PROTOC", protoc);
 
     prost_build::Config::new()
-        .compile_protos(&["proto/node.proto"], &["proto"])
-        .expect("compile node proto");
+        .compile_protos(&["proto/node.proto", "proto/config.proto"], &["proto"])
+        .expect("compile mesh and config proto");
 }

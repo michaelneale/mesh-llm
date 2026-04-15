@@ -45,7 +45,7 @@ fn join_optional_csv(values: &[Option<String>]) -> Option<String> {
 
 fn local_owner_attestation_to_proto(
     attestation: &crate::crypto::SignedNodeOwnership,
-) -> Option<crate::proto::node::SignedNodeOwnership> {
+) -> Option<crate::proto::mesh::SignedNodeOwnership> {
     let owner_sign_public_key = match hex::decode(&attestation.claim.owner_sign_public_key) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -73,7 +73,7 @@ fn local_owner_attestation_to_proto(
             return None;
         }
     };
-    Some(crate::proto::node::SignedNodeOwnership {
+    Some(crate::proto::mesh::SignedNodeOwnership {
         version: attestation.claim.version,
         cert_id: attestation.claim.cert_id.clone(),
         owner_id: attestation.claim.owner_id.clone(),
@@ -88,7 +88,7 @@ fn local_owner_attestation_to_proto(
 }
 
 fn proto_owner_attestation_to_local(
-    attestation: &crate::proto::node::SignedNodeOwnership,
+    attestation: &crate::proto::mesh::SignedNodeOwnership,
 ) -> crate::crypto::SignedNodeOwnership {
     crate::crypto::SignedNodeOwnership {
         claim: crate::crypto::NodeOwnershipClaim {
@@ -109,65 +109,65 @@ fn proto_owner_attestation_to_local(
 fn local_source_kind_to_proto(kind: crate::mesh::ModelSourceKind) -> i32 {
     match kind {
         crate::mesh::ModelSourceKind::Catalog => {
-            crate::proto::node::ModelSourceKind::Catalog as i32
+            crate::proto::mesh::ModelSourceKind::Catalog as i32
         }
         crate::mesh::ModelSourceKind::HuggingFace => {
-            crate::proto::node::ModelSourceKind::HuggingFace as i32
+            crate::proto::mesh::ModelSourceKind::HuggingFace as i32
         }
         crate::mesh::ModelSourceKind::LocalGguf => {
-            crate::proto::node::ModelSourceKind::LocalGguf as i32
+            crate::proto::mesh::ModelSourceKind::LocalGguf as i32
         }
         crate::mesh::ModelSourceKind::DirectUrl => {
-            crate::proto::node::ModelSourceKind::DirectUrl as i32
+            crate::proto::mesh::ModelSourceKind::DirectUrl as i32
         }
         crate::mesh::ModelSourceKind::Unknown => {
-            crate::proto::node::ModelSourceKind::Unknown as i32
+            crate::proto::mesh::ModelSourceKind::Unknown as i32
         }
     }
 }
 
 fn proto_source_kind_to_local(kind: i32) -> crate::mesh::ModelSourceKind {
-    match crate::proto::node::ModelSourceKind::try_from(kind)
-        .unwrap_or(crate::proto::node::ModelSourceKind::Unknown)
+    match crate::proto::mesh::ModelSourceKind::try_from(kind)
+        .unwrap_or(crate::proto::mesh::ModelSourceKind::Unknown)
     {
-        crate::proto::node::ModelSourceKind::Catalog => crate::mesh::ModelSourceKind::Catalog,
-        crate::proto::node::ModelSourceKind::HuggingFace => {
+        crate::proto::mesh::ModelSourceKind::Catalog => crate::mesh::ModelSourceKind::Catalog,
+        crate::proto::mesh::ModelSourceKind::HuggingFace => {
             crate::mesh::ModelSourceKind::HuggingFace
         }
-        crate::proto::node::ModelSourceKind::LocalGguf => crate::mesh::ModelSourceKind::LocalGguf,
-        crate::proto::node::ModelSourceKind::DirectUrl => crate::mesh::ModelSourceKind::DirectUrl,
-        crate::proto::node::ModelSourceKind::Unknown
-        | crate::proto::node::ModelSourceKind::Unspecified => crate::mesh::ModelSourceKind::Unknown,
+        crate::proto::mesh::ModelSourceKind::LocalGguf => crate::mesh::ModelSourceKind::LocalGguf,
+        crate::proto::mesh::ModelSourceKind::DirectUrl => crate::mesh::ModelSourceKind::DirectUrl,
+        crate::proto::mesh::ModelSourceKind::Unknown
+        | crate::proto::mesh::ModelSourceKind::Unspecified => crate::mesh::ModelSourceKind::Unknown,
     }
 }
 
 fn local_capability_level_to_proto(level: crate::models::CapabilityLevel) -> i32 {
     match level {
-        crate::models::CapabilityLevel::None => crate::proto::node::CapabilityLevel::None as i32,
+        crate::models::CapabilityLevel::None => crate::proto::mesh::CapabilityLevel::None as i32,
         crate::models::CapabilityLevel::Likely => {
-            crate::proto::node::CapabilityLevel::Likely as i32
+            crate::proto::mesh::CapabilityLevel::Likely as i32
         }
         crate::models::CapabilityLevel::Supported => {
-            crate::proto::node::CapabilityLevel::Supported as i32
+            crate::proto::mesh::CapabilityLevel::Supported as i32
         }
     }
 }
 
 fn proto_capability_level_to_local(level: i32) -> crate::models::CapabilityLevel {
-    match crate::proto::node::CapabilityLevel::try_from(level)
-        .unwrap_or(crate::proto::node::CapabilityLevel::None)
+    match crate::proto::mesh::CapabilityLevel::try_from(level)
+        .unwrap_or(crate::proto::mesh::CapabilityLevel::None)
     {
-        crate::proto::node::CapabilityLevel::Likely => crate::models::CapabilityLevel::Likely,
-        crate::proto::node::CapabilityLevel::Supported => crate::models::CapabilityLevel::Supported,
-        crate::proto::node::CapabilityLevel::None
-        | crate::proto::node::CapabilityLevel::Unspecified => crate::models::CapabilityLevel::None,
+        crate::proto::mesh::CapabilityLevel::Likely => crate::models::CapabilityLevel::Likely,
+        crate::proto::mesh::CapabilityLevel::Supported => crate::models::CapabilityLevel::Supported,
+        crate::proto::mesh::CapabilityLevel::None
+        | crate::proto::mesh::CapabilityLevel::Unspecified => crate::models::CapabilityLevel::None,
     }
 }
 
 fn descriptor_identity_to_proto(
     identity: &crate::mesh::ServedModelIdentity,
-) -> crate::proto::node::ServedModelIdentity {
-    crate::proto::node::ServedModelIdentity {
+) -> crate::proto::mesh::ServedModelIdentity {
+    crate::proto::mesh::ServedModelIdentity {
         model_name: identity.model_name.clone(),
         is_primary: identity.is_primary,
         source_kind: local_source_kind_to_proto(identity.source_kind),
@@ -181,7 +181,7 @@ fn descriptor_identity_to_proto(
 }
 
 fn proto_identity_to_local(
-    identity: &crate::proto::node::ServedModelIdentity,
+    identity: &crate::proto::mesh::ServedModelIdentity,
 ) -> crate::mesh::ServedModelIdentity {
     crate::mesh::ServedModelIdentity {
         model_name: identity.model_name.clone(),
@@ -197,7 +197,7 @@ fn proto_identity_to_local(
 }
 
 fn legacy_descriptor_from_identity(
-    identity: &crate::proto::node::ServedModelIdentity,
+    identity: &crate::proto::mesh::ServedModelIdentity,
 ) -> crate::mesh::ServedModelDescriptor {
     crate::mesh::ServedModelDescriptor {
         identity: proto_identity_to_local(identity),
@@ -208,8 +208,8 @@ fn legacy_descriptor_from_identity(
 
 fn runtime_descriptor_to_proto(
     descriptor: &crate::mesh::ModelRuntimeDescriptor,
-) -> crate::proto::node::ModelRuntimeDescriptor {
-    crate::proto::node::ModelRuntimeDescriptor {
+) -> crate::proto::mesh::ModelRuntimeDescriptor {
+    crate::proto::mesh::ModelRuntimeDescriptor {
         model_name: descriptor.model_name.clone(),
         identity_hash: descriptor.identity_hash.clone(),
         context_length: descriptor.context_length,
@@ -218,7 +218,7 @@ fn runtime_descriptor_to_proto(
 }
 
 fn proto_runtime_descriptor_to_local(
-    descriptor: &crate::proto::node::ModelRuntimeDescriptor,
+    descriptor: &crate::proto::mesh::ModelRuntimeDescriptor,
 ) -> crate::mesh::ModelRuntimeDescriptor {
     crate::mesh::ModelRuntimeDescriptor {
         model_name: descriptor.model_name.clone(),
@@ -228,7 +228,7 @@ fn proto_runtime_descriptor_to_local(
     }
 }
 
-fn local_gpu_info_to_proto(ann: &PeerAnnouncement) -> Vec<crate::proto::node::GpuInfo> {
+fn local_gpu_info_to_proto(ann: &PeerAnnouncement) -> Vec<crate::proto::mesh::GpuInfo> {
     let legacy_field_count = [
         split_optional_csv(ann.gpu_vram.as_deref()).len(),
         split_optional_csv(ann.gpu_reserved_bytes.as_deref()).len(),
@@ -260,7 +260,7 @@ fn local_gpu_info_to_proto(ann: &PeerAnnouncement) -> Vec<crate::proto::node::Gp
     .unwrap_or(0);
 
     (0..count)
-        .map(|index| crate::proto::node::GpuInfo {
+        .map(|index| crate::proto::mesh::GpuInfo {
             name: names.get(index).cloned(),
             vram_bytes: vram.get(index).cloned().flatten(),
             reserved_bytes: reserved.get(index).cloned().flatten(),
@@ -273,12 +273,12 @@ fn local_gpu_info_to_proto(ann: &PeerAnnouncement) -> Vec<crate::proto::node::Gp
 
 fn local_hardware_info_to_proto(
     ann: &PeerAnnouncement,
-) -> Option<crate::proto::node::HardwareInfo> {
+) -> Option<crate::proto::mesh::HardwareInfo> {
     let gpus = local_gpu_info_to_proto(ann);
     if ann.hostname.is_none() && ann.is_soc.is_none() && gpus.is_empty() {
         None
     } else {
-        Some(crate::proto::node::HardwareInfo {
+        Some(crate::proto::mesh::HardwareInfo {
             is_soc: ann.is_soc,
             hostname: ann.hostname.clone(),
             gpus,
@@ -287,7 +287,7 @@ fn local_hardware_info_to_proto(
 }
 
 fn proto_gpu_info_to_legacy_fields(
-    gpus: &[crate::proto::node::GpuInfo],
+    gpus: &[crate::proto::mesh::GpuInfo],
 ) -> (
     Option<String>,
     Option<String>,
@@ -343,7 +343,7 @@ fn proto_gpu_info_to_legacy_fields(
 /// Descriptors without a valid identity are discarded so a partial list
 /// cannot suppress the legacy-identity backfill fallback.
 fn proto_descriptor_has_valid_identity(
-    descriptor: &crate::proto::node::ServedModelDescriptor,
+    descriptor: &crate::proto::mesh::ServedModelDescriptor,
 ) -> bool {
     descriptor
         .identity
@@ -362,36 +362,36 @@ pub(crate) fn sanitize_gossip_announcement_for_wire(ann: &PeerAnnouncement) -> P
 
 pub(crate) fn local_role_to_proto(role: &NodeRole) -> (i32, Option<u32>) {
     match role {
-        NodeRole::Worker => (crate::proto::node::NodeRole::Worker as i32, None),
+        NodeRole::Worker => (crate::proto::mesh::NodeRole::Worker as i32, None),
         NodeRole::Host { http_port } => (
-            crate::proto::node::NodeRole::Host as i32,
+            crate::proto::mesh::NodeRole::Host as i32,
             Some(*http_port as u32),
         ),
-        NodeRole::Client => (crate::proto::node::NodeRole::Client as i32, None),
+        NodeRole::Client => (crate::proto::mesh::NodeRole::Client as i32, None),
     }
 }
 
 pub(crate) fn proto_role_to_local(role_int: i32, http_port: Option<u32>) -> NodeRole {
-    match crate::proto::node::NodeRole::try_from(role_int).unwrap_or_default() {
-        crate::proto::node::NodeRole::Host => NodeRole::Host {
+    match crate::proto::mesh::NodeRole::try_from(role_int).unwrap_or_default() {
+        crate::proto::mesh::NodeRole::Host => NodeRole::Host {
             http_port: http_port.unwrap_or(0) as u16,
         },
-        crate::proto::node::NodeRole::Client => NodeRole::Client,
+        crate::proto::mesh::NodeRole::Client => NodeRole::Client,
         _ => NodeRole::Worker,
     }
 }
 
 pub(crate) fn local_ann_to_proto_ann(
     ann: &PeerAnnouncement,
-) -> crate::proto::node::PeerAnnouncement {
+) -> crate::proto::mesh::PeerAnnouncement {
     let ann = sanitize_gossip_announcement_for_wire(ann);
     let (role_int, http_port) = local_role_to_proto(&ann.role);
     let serialized_addr = serde_json::to_vec(&ann.addr).unwrap_or_default();
-    let demand: Vec<crate::proto::node::ModelDemandEntry> = ann
+    let demand: Vec<crate::proto::mesh::ModelDemandEntry> = ann
         .model_demand
         .iter()
         .map(
-            |(name, d): (&String, &ModelDemand)| crate::proto::node::ModelDemandEntry {
+            |(name, d): (&String, &ModelDemand)| crate::proto::mesh::ModelDemandEntry {
                 model_name: name.clone(),
                 last_active: d.last_active,
                 request_count: d.request_count,
@@ -406,9 +406,9 @@ pub(crate) fn local_ann_to_proto_ann(
     let served_model_descriptors = ann
         .served_model_descriptors
         .iter()
-        .map(|descriptor| crate::proto::node::ServedModelDescriptor {
+        .map(|descriptor| crate::proto::mesh::ServedModelDescriptor {
             identity: Some(descriptor_identity_to_proto(&descriptor.identity)),
-            capabilities: Some(crate::proto::node::ModelCapabilities {
+            capabilities: Some(crate::proto::mesh::ModelCapabilities {
                 vision: local_capability_level_to_proto(descriptor.capabilities.vision),
                 reasoning: local_capability_level_to_proto(descriptor.capabilities.reasoning),
                 tool_use: local_capability_level_to_proto(descriptor.capabilities.tool_use),
@@ -417,11 +417,11 @@ pub(crate) fn local_ann_to_proto_ann(
                 audio: local_capability_level_to_proto(descriptor.capabilities.audio),
             }),
             topology: descriptor.topology.as_ref().map(|topology| {
-                crate::proto::node::ModelTopology {
+                crate::proto::mesh::ModelTopology {
                     moe: topology
                         .moe
                         .as_ref()
-                        .map(|moe| crate::proto::node::ModelMoeInfo {
+                        .map(|moe| crate::proto::mesh::ModelMoeInfo {
                             expert_count: moe.expert_count,
                             used_expert_count: moe.used_expert_count,
                             min_experts_per_node: moe.min_experts_per_node,
@@ -443,7 +443,7 @@ pub(crate) fn local_ann_to_proto_ann(
         .map(runtime_descriptor_to_proto)
         .collect();
     let hardware = local_hardware_info_to_proto(&ann);
-    crate::proto::node::PeerAnnouncement {
+    crate::proto::mesh::PeerAnnouncement {
         endpoint_id: ann.addr.id.as_bytes().to_vec(),
         role: role_int,
         http_port,
@@ -489,10 +489,10 @@ pub(crate) fn local_ann_to_proto_ann(
 pub(crate) fn build_gossip_frame(
     anns: &[PeerAnnouncement],
     sender_id: EndpointId,
-) -> crate::proto::node::GossipFrame {
-    let peers: Vec<crate::proto::node::PeerAnnouncement> =
+) -> crate::proto::mesh::GossipFrame {
+    let peers: Vec<crate::proto::mesh::PeerAnnouncement> =
         anns.iter().map(local_ann_to_proto_ann).collect();
-    crate::proto::node::GossipFrame {
+    crate::proto::mesh::GossipFrame {
         gen: NODE_PROTOCOL_GENERATION,
         sender_id: sender_id.as_bytes().to_vec(),
         peers,
@@ -500,7 +500,7 @@ pub(crate) fn build_gossip_frame(
 }
 
 pub(crate) fn proto_ann_to_local(
-    pa: &crate::proto::node::PeerAnnouncement,
+    pa: &crate::proto::mesh::PeerAnnouncement,
 ) -> Option<(EndpointAddr, PeerAnnouncement)> {
     let id_arr: [u8; 32] = pa.endpoint_id.as_slice().try_into().ok()?;
     let pk = iroh::PublicKey::from_bytes(&id_arr).ok()?;
@@ -647,16 +647,16 @@ pub(crate) fn proto_ann_to_local(
     Some((addr, ann))
 }
 
-pub(crate) fn routing_table_to_proto(table: &RoutingTable) -> crate::proto::node::RouteTable {
+pub(crate) fn routing_table_to_proto(table: &RoutingTable) -> crate::proto::mesh::RouteTable {
     let entries = table
         .hosts
         .iter()
-        .map(|e| crate::proto::node::RouteEntry {
+        .map(|e| crate::proto::mesh::RouteEntry {
             endpoint_id: e.endpoint_id.as_bytes().to_vec(),
             model: e.model.clone(),
         })
         .collect();
-    crate::proto::node::RouteTable {
+    crate::proto::mesh::RouteTable {
         entries,
         mesh_id: table.mesh_id.clone(),
         gen: NODE_PROTOCOL_GENERATION,
@@ -665,10 +665,10 @@ pub(crate) fn routing_table_to_proto(table: &RoutingTable) -> crate::proto::node
 
 pub(crate) fn mesh_config_to_proto(
     config: &crate::plugin::MeshConfig,
-) -> crate::proto::node::NodeConfigSnapshot {
+) -> crate::proto::config::NodeConfigSnapshot {
     use crate::plugin::GpuAssignment;
-    fn configured_model_ref(declared_ref: &str) -> crate::proto::node::ConfiguredModelRef {
-        crate::proto::node::ConfiguredModelRef {
+    fn configured_model_ref(declared_ref: &str) -> crate::proto::config::ConfiguredModelRef {
+        crate::proto::config::ConfiguredModelRef {
             declared_ref: declared_ref.to_string(),
             source_kind: None,
             revision: None,
@@ -676,13 +676,13 @@ pub(crate) fn mesh_config_to_proto(
     }
 
     let assignment = match config.gpu.assignment {
-        GpuAssignment::Auto => crate::proto::node::GpuAssignment::Auto as i32,
-        GpuAssignment::Pinned => crate::proto::node::GpuAssignment::Pinned as i32,
+        GpuAssignment::Auto => crate::proto::config::GpuAssignment::Auto as i32,
+        GpuAssignment::Pinned => crate::proto::config::GpuAssignment::Pinned as i32,
     };
     let models = config
         .models
         .iter()
-        .map(|m| crate::proto::node::NodeModelEntry {
+        .map(|m| crate::proto::config::NodeModelEntry {
             model: m.model.clone(),
             mmproj: m.mmproj.clone(),
             ctx_size: m.ctx_size,
@@ -694,29 +694,29 @@ pub(crate) fn mesh_config_to_proto(
     let plugins = config
         .plugins
         .iter()
-        .map(|p| crate::proto::node::NodePluginEntry {
+        .map(|p| crate::proto::config::NodePluginEntry {
             name: p.name.clone(),
             enabled: p.enabled,
             command: p.command.clone(),
             args: p.args.clone(),
         })
         .collect();
-    crate::proto::node::NodeConfigSnapshot {
+    crate::proto::config::NodeConfigSnapshot {
         version: config.version.unwrap_or(1),
-        gpu: Some(crate::proto::node::NodeGpuConfig { assignment }),
+        gpu: Some(crate::proto::config::NodeGpuConfig { assignment }),
         models,
         plugins,
     }
 }
 
 pub(crate) fn proto_config_to_mesh(
-    snapshot: &crate::proto::node::NodeConfigSnapshot,
+    snapshot: &crate::proto::config::NodeConfigSnapshot,
 ) -> crate::plugin::MeshConfig {
     use crate::plugin::{
         GpuAssignment, GpuConfig, MeshConfig, ModelConfigEntry, PluginConfigEntry,
     };
     fn declared_ref_or_none(
-        configured: Option<&crate::proto::node::ConfiguredModelRef>,
+        configured: Option<&crate::proto::config::ConfiguredModelRef>,
     ) -> Option<String> {
         configured.and_then(|configured| {
             let declared_ref = configured.declared_ref.trim();
@@ -729,7 +729,7 @@ pub(crate) fn proto_config_to_mesh(
     }
 
     let assignment = match snapshot.gpu.as_ref().map(|g| g.assignment) {
-        Some(v) if v == crate::proto::node::GpuAssignment::Pinned as i32 => GpuAssignment::Pinned,
+        Some(v) if v == crate::proto::config::GpuAssignment::Pinned as i32 => GpuAssignment::Pinned,
         _ => GpuAssignment::Auto,
     };
     let models = snapshot
@@ -760,7 +760,9 @@ pub(crate) fn proto_config_to_mesh(
     }
 }
 
-pub(crate) fn canonical_config_hash(snapshot: &crate::proto::node::NodeConfigSnapshot) -> [u8; 32] {
+pub(crate) fn canonical_config_hash(
+    snapshot: &crate::proto::config::NodeConfigSnapshot,
+) -> [u8; 32] {
     use prost::Message as _;
     use sha2::{Digest, Sha256};
     let bytes = snapshot.encode_to_vec();
@@ -769,7 +771,7 @@ pub(crate) fn canonical_config_hash(snapshot: &crate::proto::node::NodeConfigSna
 }
 
 #[cfg(test)]
-pub(crate) fn proto_route_table_to_local(table: &crate::proto::node::RouteTable) -> RoutingTable {
+pub(crate) fn proto_route_table_to_local(table: &crate::proto::mesh::RouteTable) -> RoutingTable {
     let hosts = table
         .entries
         .iter()

@@ -4,7 +4,7 @@ use super::heartbeat::{
     RELAY_ONLY_RECONNECT_SECS, RELAY_RECONNECT_COOLDOWN_SECS,
 };
 use super::*;
-use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
+use crate::proto::mesh::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequest};
 use std::collections::HashSet;
 use tokio::sync::watch;
 
@@ -1614,7 +1614,7 @@ fn control_frame_rejects_oversize_or_bad_generation() {
 
 #[test]
 fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
-    use crate::proto::node::{CompactModelMetadata, ExpertsSummary};
+    use crate::proto::mesh::{CompactModelMetadata, ExpertsSummary};
 
     let peer_id = EndpointId::from(SecretKey::from_bytes(&[0x01; 32]).public());
     let peer_id_bytes = peer_id.as_bytes().to_vec();
@@ -1855,7 +1855,7 @@ fn gossip_rejects_sender_id_mismatch_or_invalid_endpoint_len() {
 
 #[test]
 fn transitive_peer_update_refreshes_metadata_fields() {
-    use crate::proto::node::CompactModelMetadata;
+    use crate::proto::mesh::CompactModelMetadata;
 
     let peer_id = EndpointId::from(SecretKey::from_bytes(&[0x10; 32]).public());
     let mut existing = make_test_peer_info(peer_id);
@@ -2051,7 +2051,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
 
 #[test]
 fn tunnel_map_roundtrip_updates_remote_map() {
-    use crate::proto::node::{TunnelEntry, TunnelMap};
+    use crate::proto::mesh::{TunnelEntry, TunnelMap};
 
     let owner_key = SecretKey::from_bytes(&[0x10; 32]);
     let owner_id = EndpointId::from(owner_key.public());
@@ -2096,7 +2096,7 @@ fn tunnel_map_roundtrip_updates_remote_map() {
 
 #[test]
 fn tunnel_map_rejects_owner_mismatch_or_bad_target_id() {
-    use crate::proto::node::{TunnelEntry, TunnelMap};
+    use crate::proto::mesh::{TunnelEntry, TunnelMap};
 
     let owner_key = SecretKey::from_bytes(&[0x30; 32]);
     let owner_id = EndpointId::from(owner_key.public());
@@ -2178,7 +2178,7 @@ fn tunnel_map_rejects_owner_mismatch_or_bad_target_id() {
 
 #[test]
 fn route_table_request_roundtrip() {
-    use crate::proto::node::{RouteEntry as ProtoRouteEntry, RouteTable};
+    use crate::proto::mesh::{RouteEntry as ProtoRouteEntry, RouteTable};
 
     let peer_key = SecretKey::from_bytes(&[0x60; 32]);
     let peer_id = EndpointId::from(peer_key.public());
@@ -2234,7 +2234,7 @@ fn route_table_request_roundtrip() {
 /// Verifies that remote passive inventory metadata is ignored on ingest.
 #[test]
 fn proto_v1_route_table_rejects_bad_generation_or_legacy_payload() {
-    use crate::proto::node::RouteTable;
+    use crate::proto::mesh::RouteTable;
 
     let zero_gen_req = RouteTableRequest {
         requester_id: vec![0u8; 32],
@@ -2305,7 +2305,7 @@ fn proto_v1_route_table_rejects_bad_generation_or_legacy_payload() {
 
 #[test]
 fn peer_lifecycle_messages_roundtrip() {
-    use crate::proto::node::{PeerDown, PeerLeaving};
+    use crate::proto::mesh::{PeerDown, PeerLeaving};
 
     let leaving_id = EndpointId::from(SecretKey::from_bytes(&[0x55; 32]).public());
 
@@ -2379,7 +2379,7 @@ fn peer_lifecycle_messages_roundtrip() {
 
 #[test]
 fn peer_lifecycle_rejects_forged_sender_or_unverified_down() {
-    use crate::proto::node::{PeerDown, PeerLeaving};
+    use crate::proto::mesh::{PeerDown, PeerLeaving};
 
     let valid_peer_bytes = EndpointId::from(SecretKey::from_bytes(&[0x77; 32]).public())
         .as_bytes()
@@ -2669,7 +2669,7 @@ fn direct_peer_survives_with_stale_last_mentioned() {
 /// gen=0 / wrong-gen frames. Legacy JSON/raw compatibility is only carried on `/0`.
 #[test]
 fn proto_v1_control_frames_reject_legacy_json_and_wrong_gen() {
-    use crate::proto::node::{PeerDown, PeerLeaving};
+    use crate::proto::mesh::{PeerDown, PeerLeaving};
 
     // JSON bytes that look plausible for the old wire format on each stream
     let json_gossip = b"[{\"addr\":{\"id\":\"aabbcc\",\"addrs\":[]}}]";
@@ -2780,7 +2780,7 @@ fn proto_v1_control_frames_reject_legacy_json_and_wrong_gen() {
 /// this is the unit-level proof of what `/api/status` exposes for remote `model_scans`.
 #[test]
 fn remote_model_scans_are_ignored_after_gossip() {
-    use crate::proto::node::{CompactModelMetadata, GossipFrame, PeerAnnouncement as ProtoPA};
+    use crate::proto::mesh::{CompactModelMetadata, GossipFrame, PeerAnnouncement as ProtoPA};
 
     let peer_key = SecretKey::from_bytes(&[0xC0; 32]);
     let peer_id = EndpointId::from(peer_key.public());
@@ -2868,7 +2868,7 @@ fn remote_model_scans_are_ignored_after_gossip() {
 /// correctly from protobuf RouteTable entries, and that mesh_id propagates through.
 #[test]
 fn passive_client_route_table_models_and_mesh_id_populated() {
-    use crate::proto::node::{RouteEntry as ProtoRouteEntry, RouteTable};
+    use crate::proto::mesh::{RouteEntry as ProtoRouteEntry, RouteTable};
 
     let host_key = SecretKey::from_bytes(&[0xD0; 32]);
     let host_id = EndpointId::from(host_key.public());
@@ -2994,7 +2994,7 @@ fn worker_only_legacy_models_are_excluded_from_http_routes() {
 /// no longer in peers set).
 #[test]
 fn dead_peer_cleanup_prevents_readmission() {
-    use crate::proto::node::PeerLeaving;
+    use crate::proto::mesh::PeerLeaving;
 
     let peer_key = SecretKey::from_bytes(&[0xE0; 32]);
     let peer_id = EndpointId::from(peer_key.public());
@@ -4053,7 +4053,7 @@ async fn test_connect_to_peer_skips_known_peer_without_connection() -> Result<()
 
 #[test]
 fn config_sync_subscribe_snapshot_encode_decode() {
-    use crate::proto::node::{ConfigSnapshotResponse, NodeConfigSnapshot, NodeGpuConfig};
+    use crate::proto::config::{ConfigSnapshotResponse, NodeConfigSnapshot, NodeGpuConfig};
 
     let snapshot = ConfigSnapshotResponse {
         gen: NODE_PROTOCOL_GENERATION,
@@ -4063,7 +4063,7 @@ fn config_sync_subscribe_snapshot_encode_decode() {
         config: Some(NodeConfigSnapshot {
             version: 1,
             gpu: Some(NodeGpuConfig {
-                assignment: crate::proto::node::GpuAssignment::Auto as i32,
+                assignment: crate::proto::config::GpuAssignment::Auto as i32,
             }),
             models: vec![],
             plugins: vec![],
@@ -4086,7 +4086,7 @@ fn config_sync_subscribe_snapshot_encode_decode() {
     let gpu = cfg.gpu.expect("gpu must be present");
     assert_eq!(
         gpu.assignment,
-        crate::proto::node::GpuAssignment::Auto as i32
+        crate::proto::config::GpuAssignment::Auto as i32
     );
 }
 
@@ -4107,7 +4107,7 @@ fn test_signing_key() -> (ed25519_dalek::SigningKey, String) {
 
 #[test]
 fn config_sync_push_signature_payload_deterministic() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
+    use crate::proto::config::{ConfigPush, NodeConfigSnapshot};
 
     let push = ConfigPush {
         gen: NODE_PROTOCOL_GENERATION,
@@ -4150,7 +4150,7 @@ fn config_sync_push_bad_signature_bytes_length() {
 
 #[test]
 fn config_sync_push_roundtrip_encode_decode() {
-    use crate::proto::node::{ConfigApplyMode, ConfigPushResponse};
+    use crate::proto::config::{ConfigApplyMode, ConfigPushResponse};
     use prost::Message as _;
 
     let response = ConfigPushResponse {
@@ -4176,7 +4176,7 @@ fn config_sync_push_roundtrip_encode_decode() {
 
 #[test]
 fn config_sync_sign_and_verify_roundtrip() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
+    use crate::proto::config::{ConfigPush, NodeConfigSnapshot};
     use ed25519_dalek::Signer as _;
 
     let (signing_key, owner_id) = test_signing_key();
@@ -4217,7 +4217,7 @@ fn config_sync_sign_and_verify_roundtrip() {
 
 #[test]
 fn config_sync_signature_payload_excludes_signature_field() {
-    use crate::proto::node::{ConfigPush, NodeConfigSnapshot};
+    use crate::proto::config::{ConfigPush, NodeConfigSnapshot};
 
     let mut push = ConfigPush {
         gen: NODE_PROTOCOL_GENERATION,
@@ -4380,13 +4380,13 @@ fn build_signed_config_push(
     requester_id: &EndpointId,
     target_node_id: &EndpointId,
     expected_revision: u64,
-    config: crate::proto::node::NodeConfigSnapshot,
-) -> crate::proto::node::ConfigPush {
+    config: crate::proto::config::NodeConfigSnapshot,
+) -> crate::proto::config::ConfigPush {
     use ed25519_dalek::Signer as _;
 
     let vk = owner_keypair.signing.verifying_key();
 
-    let mut push = crate::proto::node::ConfigPush {
+    let mut push = crate::proto::config::ConfigPush {
         gen: NODE_PROTOCOL_GENERATION,
         requester_id: requester_id.as_bytes().to_vec(),
         target_node_id: target_node_id.as_bytes().to_vec(),
@@ -5240,7 +5240,7 @@ async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_sam
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_push_valid_signature_accepted() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
+    use crate::proto::config::{NodeConfigSnapshot, NodeGpuConfig};
     use crate::protocol::write_len_prefixed;
     use prost::Message as _;
 
@@ -5287,7 +5287,7 @@ async fn config_push_valid_signature_accepted() -> Result<()> {
     let new_config = NodeConfigSnapshot {
         version: 1,
         gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            assignment: crate::proto::config::GpuAssignment::Auto as i32,
         }),
         models: vec![],
         plugins: vec![],
@@ -5301,7 +5301,7 @@ async fn config_push_valid_signature_accepted() -> Result<()> {
     send.finish()?;
 
     let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let response = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
+    let response = crate::proto::config::ConfigPushResponse::decode(buf.as_slice())?;
 
     assert!(
         response.success,
@@ -5319,7 +5319,7 @@ async fn config_push_valid_signature_accepted() -> Result<()> {
     );
     assert_eq!(
         response.apply_mode,
-        crate::proto::node::ConfigApplyMode::Staged as i32,
+        crate::proto::config::ConfigApplyMode::Staged as i32,
         "config push should report staged apply mode"
     );
 
@@ -5329,7 +5329,7 @@ async fn config_push_valid_signature_accepted() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_push_revision_conflict_rejected() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
+    use crate::proto::config::{NodeConfigSnapshot, NodeGpuConfig};
     use crate::protocol::write_len_prefixed;
     use prost::Message as _;
 
@@ -5376,7 +5376,7 @@ async fn config_push_revision_conflict_rejected() -> Result<()> {
     let good_config = NodeConfigSnapshot {
         version: 1,
         gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            assignment: crate::proto::config::GpuAssignment::Auto as i32,
         }),
         models: vec![],
         plugins: vec![],
@@ -5395,7 +5395,7 @@ async fn config_push_revision_conflict_rejected() -> Result<()> {
     write_len_prefixed(&mut send1, &push1.encode_to_vec()).await?;
     send1.finish()?;
     let buf1 = crate::protocol::read_len_prefixed(&mut recv1).await?;
-    let resp1 = crate::proto::node::ConfigPushResponse::decode(buf1.as_slice())?;
+    let resp1 = crate::proto::config::ConfigPushResponse::decode(buf1.as_slice())?;
     assert!(resp1.success, "first push must succeed: {:?}", resp1.error);
 
     // Second push with stale expected_revision=0 — must be rejected
@@ -5405,7 +5405,7 @@ async fn config_push_revision_conflict_rejected() -> Result<()> {
     write_len_prefixed(&mut send2, &push2.encode_to_vec()).await?;
     send2.finish()?;
     let buf2 = crate::protocol::read_len_prefixed(&mut recv2).await?;
-    let resp2 = crate::proto::node::ConfigPushResponse::decode(buf2.as_slice())?;
+    let resp2 = crate::proto::config::ConfigPushResponse::decode(buf2.as_slice())?;
 
     assert!(!resp2.success, "push with stale revision must be rejected");
     assert_eq!(
@@ -5424,7 +5424,7 @@ async fn config_push_revision_conflict_rejected() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_push_bad_signature_rejected() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
+    use crate::proto::config::{NodeConfigSnapshot, NodeGpuConfig};
     use crate::protocol::write_len_prefixed;
     use prost::Message as _;
 
@@ -5471,7 +5471,7 @@ async fn config_push_bad_signature_rejected() -> Result<()> {
     let config = NodeConfigSnapshot {
         version: 1,
         gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            assignment: crate::proto::config::GpuAssignment::Auto as i32,
         }),
         models: vec![],
         plugins: vec![],
@@ -5487,7 +5487,7 @@ async fn config_push_bad_signature_rejected() -> Result<()> {
     send.finish()?;
 
     let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let response = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
+    let response = crate::proto::config::ConfigPushResponse::decode(buf.as_slice())?;
 
     assert!(
         !response.success,
@@ -5505,7 +5505,7 @@ async fn config_push_bad_signature_rejected() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_subscribe_delivers_update_notification_after_push() -> Result<()> {
-    use crate::proto::node::{NodeConfigSnapshot, NodeGpuConfig};
+    use crate::proto::config::{NodeConfigSnapshot, NodeGpuConfig};
     use crate::protocol::write_len_prefixed;
     use prost::Message as _;
 
@@ -5557,9 +5557,9 @@ async fn config_subscribe_delivers_update_notification_after_push() -> Result<()
     let new_config = NodeConfigSnapshot {
         version: 1,
         gpu: Some(NodeGpuConfig {
-            assignment: crate::proto::node::GpuAssignment::Auto as i32,
+            assignment: crate::proto::config::GpuAssignment::Auto as i32,
         }),
-        models: vec![crate::proto::node::NodeModelEntry {
+        models: vec![crate::proto::config::NodeModelEntry {
             model: "test-model.gguf".to_string(),
             mmproj: None,
             ctx_size: None,
@@ -5581,7 +5581,7 @@ async fn config_subscribe_delivers_update_notification_after_push() -> Result<()
     write_len_prefixed(&mut send, &push.encode_to_vec()).await?;
     send.finish()?;
     let buf = crate::protocol::read_len_prefixed(&mut recv).await?;
-    let push_resp = crate::proto::node::ConfigPushResponse::decode(buf.as_slice())?;
+    let push_resp = crate::proto::config::ConfigPushResponse::decode(buf.as_slice())?;
     assert!(
         push_resp.success,
         "push must be accepted for notification test: {:?}",

@@ -671,7 +671,7 @@ impl Node {
                     send.write_all(&[STREAM_PEER_DOWN]).await?;
                     match protocol {
                         ControlProtocol::ProtoV1 => {
-                            let proto_msg = crate::proto::node::PeerDown {
+                            let proto_msg = crate::proto::mesh::PeerDown {
                                 peer_id: bytes,
                                 gen: NODE_PROTOCOL_GENERATION,
                             };
@@ -715,7 +715,7 @@ impl Node {
                     send.write_all(&[STREAM_PEER_LEAVING]).await?;
                     match protocol {
                         ControlProtocol::ProtoV1 => {
-                            let proto_msg = crate::proto::node::PeerLeaving {
+                            let proto_msg = crate::proto::mesh::PeerLeaving {
                                 peer_id: bytes,
                                 gen: NODE_PROTOCOL_GENERATION,
                             };

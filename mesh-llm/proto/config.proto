@@ -1,0 +1,90 @@
+syntax = "proto3";
+package meshllm.config.v1;
+
+message NodeConfigSnapshot {
+  uint32 version = 1;                     // config schema version (currently 1)
+  NodeGpuConfig gpu = 2;
+  repeated NodeModelEntry models = 3;
+  repeated NodePluginEntry plugins = 4;
+}
+
+enum GpuAssignment {
+  GPU_ASSIGNMENT_UNSPECIFIED = 0;
+  GPU_ASSIGNMENT_AUTO = 1;
+  GPU_ASSIGNMENT_PINNED = 2;
+}
+
+message NodeGpuConfig {
+  GpuAssignment assignment = 1;
+}
+
+message ConfiguredModelRef {
+  string declared_ref = 1;
+  optional string source_kind = 2;
+  optional string revision = 3;
+}
+
+message NodeModelEntry {
+  string model = 1;
+  optional string mmproj = 2;
+  optional uint32 ctx_size = 3;
+  optional string gpu_id = 4;
+  ConfiguredModelRef model_ref = 5;
+  ConfiguredModelRef mmproj_ref = 6;
+}
+
+message NodePluginEntry {
+  string name = 1;
+  optional bool enabled = 2;
+  optional string command = 3;
+  repeated string args = 4;
+}
+
+message ConfigSubscribe {
+  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
+  bytes subscriber_id = 2;               // 32 bytes — subscribing node's endpoint id
+}
+
+message ConfigSnapshotResponse {
+  uint32 gen = 1;                         // must equal NODE_PROTOCOL_GENERATION
+  bytes node_id = 2;                      // 32 bytes — the node this config belongs to
+  uint64 revision = 4;
+  bytes config_hash = 5;                  // SHA-256 of canonical proto bytes (32 bytes)
+  NodeConfigSnapshot config = 6;
+  optional string hostname = 7;           // convenience: node hostname for display
+  optional string error = 8;             // set when an error occurred; config/hash/node_id may be empty
+}
+
+message ConfigUpdateNotification {
+  uint32 gen = 1;
+  bytes node_id = 2;
+  uint64 revision = 4;
+  bytes config_hash = 5;
+  NodeConfigSnapshot config = 6;
+}
+
+message ConfigPush {
+  uint32 gen = 1;
+  bytes requester_id = 2;
+  bytes target_node_id = 3;
+  uint64 expected_revision = 5;
+  NodeConfigSnapshot config = 6;
+  bytes owner_signing_public_key = 7;
+  bytes signature = 8;
+}
+
+enum ConfigApplyMode {
+  CONFIG_APPLY_MODE_UNSPECIFIED = 0;
+  CONFIG_APPLY_MODE_STAGED = 1;
+  CONFIG_APPLY_MODE_LIVE = 2;
+  CONFIG_APPLY_MODE_NOOP = 3;
+}
+
+message ConfigPushResponse {
+  uint32 gen = 1;
+  bool success = 2;
+  uint64 current_revision = 3;
+  bytes config_hash = 4;
+  optional string error = 5;
+  ConfigApplyMode apply_mode = 8;
+}
