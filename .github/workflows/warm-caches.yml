@@ -106,10 +106,10 @@ jobs:
     with:
       job_name: Warm Linux CUDA slim cache
       cache_label: CUDA slim
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
-      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-cuda-slim-{1}-{2}-arch89-fa-off-cuda{3}', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash, vars.CUDA_VERSION || '12.8.0') }}
       build_recipe: release-build-cuda
       build_args: 89
       extra_env: |
@@ -122,10 +122,10 @@ jobs:
     with:
       job_name: Warm Linux CUDA fat cache
       cache_label: CUDA fat
-      container_image: nvidia/cuda:12.8.0-devel-ubuntu22.04
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_sha.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
-      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda12.8', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash) }}
+      cache_key: ${{ format('{0}-llama-cuda-fat-{1}-{2}-arch75-80-86-89-90-120-fa-on-cuda{3}', needs.resolve_llama_sha.outputs.cache_namespace, needs.resolve_llama_sha.outputs.sha, needs.resolve_llama_sha.outputs.cuda_cache_inputs_hash, vars.CUDA_VERSION || '12.8.0') }}
       build_recipe: release-build-cuda
 
   warm_llama_rocm_slim:
