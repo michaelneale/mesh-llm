@@ -2,6 +2,7 @@ use crate::api;
 use crate::inference::{election, launch};
 use crate::mesh;
 use crate::models;
+use crate::network::openai::backend;
 use crate::network::router;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,15 @@ pub(super) struct LocalRuntimeModelHandle {
     pub(super) port: u16,
     pub(super) backend: String,
     pub(super) process: launch::InferenceServerHandle,
+    pub(super) backend_proxy: backend::BackendProxyHandle,
     pub(super) context_length: u32,
+}
+
+impl LocalRuntimeModelHandle {
+    pub(super) async fn shutdown(self) {
+        self.backend_proxy.shutdown().await;
+        self.process.shutdown().await;
+    }
 }
 
 pub(super) struct ManagedModelController {
@@ -173,7 +182,7 @@ pub(super) async fn start_runtime_local_model(
         "runtime load only supports models that fit locally on this node"
     );
 
-    let port = alloc_local_port().await?;
+    let llama_port = alloc_local_port().await?;
     let mmproj_path = mmproj_override
         .map(Path::to_path_buf)
         .or_else(|| mmproj_path_for_model(&model_name));
@@ -183,7 +192,7 @@ pub(super) async fn start_runtime_local_model(
         binary_flavor,
         launch::ModelLaunchSpec {
             model: model_path,
-            http_port: port,
+            http_port: llama_port,
             tunnel_ports: &[],
             tensor_split: None,
             split_mode: election::local_multi_gpu_split_mode(binary_flavor),
@@ -198,6 +207,8 @@ pub(super) async fn start_runtime_local_model(
         },
     )
     .await?;
+    let backend_proxy = backend::start_backend_proxy(llama_port).await?;
+    let port = backend_proxy.port();
 
     Ok((
         model_name,
@@ -205,6 +216,7 @@ pub(super) async fn start_runtime_local_model(
             port,
             backend: "llama".into(),
             process: process.handle,
+            backend_proxy,
             context_length: process.context_length,
         },
         process.death_rx,

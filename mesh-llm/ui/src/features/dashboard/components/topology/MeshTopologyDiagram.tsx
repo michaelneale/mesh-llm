@@ -46,8 +46,6 @@ type ScreenNode = RenderNode & {
   px: number;
   py: number;
 };
-
-type ResolvedTheme = "light" | "dark";
 type EntryAnimation = {
   fromX: number;
   fromY: number;
@@ -158,6 +156,17 @@ function normalizedLatency(node: TopologyNode, minLatency: number, maxLatency: n
   return clamp((node.latencyMs - minLatency) / (maxLatency - minLatency), 0, 1);
 }
 
+function radiusMixFromLatencyMs(
+  node: TopologyNode,
+  minLatency: number,
+  maxLatency: number,
+  radiusSeed: number,
+  radialBias: number,
+) {
+  const latencyNorm = Math.pow(normalizedLatency(node, minLatency, maxLatency), 0.9);
+  return clamp(latencyNorm * 0.78 + radiusSeed * 0.22 + radialBias, 0, 1);
+}
+
 function distributeLatencyBand(
   nodes: TopologyNode[],
   minLatency: number,
@@ -168,35 +177,44 @@ function distributeLatencyBand(
   outerRadiusX: number,
   innerRadiusY: number,
   outerRadiusY: number,
+  armCount = 3,
+  radialBias = 0,
+  curveLimit = 0.7,
 ) {
-  const placed: Array<{ x: number; y: number }> = [];
+  const angleSpan = angleEnd - angleStart;
 
   return nodes.map((node) => {
-    const t = normalizedLatency(node, minLatency, maxLatency);
-    const angleBase = angleStart + hashString(`${node.id}:angle`) * (angleEnd - angleStart);
-    const angle = angleBase + (hashString(`${node.id}:angle-jitter`) - 0.5) * 0.16;
-    const radiusX = innerRadiusX + (outerRadiusX - innerRadiusX) * t;
-    const radiusY = innerRadiusY + (outerRadiusY - innerRadiusY) * t;
-    const driftX = (hashString(`${node.id}:drift-x`) - 0.5) * 0.03;
-    const driftY = (hashString(`${node.id}:drift-y`) - 0.5) * 0.03;
-    let x = clamp(0.5 + Math.cos(angle) * radiusX + driftX, 0.12, 0.88);
-    let y = clamp(0.52 + Math.sin(angle) * radiusY + driftY, 0.16, 0.84);
-
-    for (const prior of placed) {
-      const dx = x - prior.x;
-      const dy = y - prior.y;
-      const distance = Math.hypot(dx, dy);
-      if (distance > 0 && distance < 0.05) {
-        const push = (0.05 - distance) * 0.5;
-        x = clamp(x + (dx / distance) * push, 0.12, 0.88);
-        y = clamp(y + (dy / distance) * push, 0.16, 0.84);
-      }
-    }
-    placed.push({ x, y });
+    const latencyNorm = normalizedLatency(node, minLatency, maxLatency);
+    const identity = `${node.id}:${node.hostname ?? ""}:${node.serving}`;
+    const armSeed = hashString(`${identity}:arm`);
+    const armIndex = Math.floor(armSeed * armCount) % armCount;
+    const armBandStart = angleStart + (armIndex / armCount) * angleSpan;
+    const armBandEnd = angleStart + ((armIndex + 1) / armCount) * angleSpan;
+    const angleSeed = hashString(`${identity}:angle`);
+    const angle = armBandStart + angleSeed * (armBandEnd - armBandStart);
+    const radiusSeed = hashString(`${identity}:radius`);
+    const radiusMix = radiusMixFromLatencyMs(
+      node,
+      minLatency,
+      maxLatency,
+      radiusSeed,
+      radialBias,
+    );
+    const radiusX = innerRadiusX + (outerRadiusX - innerRadiusX) * radiusMix;
+    const radiusY = innerRadiusY + (outerRadiusY - innerRadiusY) * radiusMix;
+    const tangentAngle = angle + Math.PI / 2;
+    const tangentDrift = (hashString(`${identity}:tangent-drift`) - 0.5) * Math.min(0.05, curveLimit * 0.08);
+    const radialDrift = (hashString(`${identity}:radial-drift`) - 0.5) * 0.024;
+    const driftX =
+      Math.cos(tangentAngle) * tangentDrift + Math.cos(angle) * radialDrift;
+    const driftY =
+      Math.sin(tangentAngle) * tangentDrift + Math.sin(angle) * radialDrift;
+    const x = clamp(0.5 + Math.cos(angle) * radiusX + driftX, 0.12, 0.88);
+    const y = clamp(0.52 + Math.sin(angle) * radiusY + driftY, 0.16, 0.84);
 
     return {
       node,
-      latencyNorm: t,
+      latencyNorm,
       x,
       y,
     };
@@ -207,6 +225,38 @@ function nodeSize(node: TopologyNode, emphasis: number) {
   const base = node.client ? 8 : 10;
   const vramBoost = node.client ? 0 : Math.sqrt(Math.max(0, node.vram)) * 1.55;
   return clamp(base + vramBoost + emphasis, node.client ? 6 : 10, 38);
+}
+
+function resolveNodeOverlap(nodes: RenderNode[], fixedNode?: RenderNode) {
+  const movableNodes = nodes
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const placed: Array<{ x: number; y: number; size: number }> = fixedNode
+    ? [{ x: fixedNode.x, y: fixedNode.y, size: fixedNode.size }]
+    : [];
+
+  const resolved = movableNodes.map((node) => {
+    const baseRadius = 0.02 + node.size * 0.0012;
+
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      const angle = hashString(`${node.id}:resolve-angle:${attempt}`) * TAU;
+      const offset = attempt === 0 ? 0 : baseRadius * (0.55 + attempt * 0.22);
+      const candidateX = clamp(node.x + Math.cos(angle) * offset, 0.08, 0.92);
+      const candidateY = clamp(node.y + Math.sin(angle) * offset, 0.1, 0.9);
+      const overlaps = placed.some((prior) => {
+        const minDistance = 0.012 + (node.size + prior.size) * 0.0014;
+        return Math.hypot(candidateX - prior.x, candidateY - prior.y) < minDistance;
+      });
+      if (!overlaps) {
+        placed.push({ x: candidateX, y: candidateY, size: node.size });
+        return { ...node, x: candidateX, y: candidateY };
+      }
+    }
+
+    placed.push({ x: node.x, y: node.y, size: node.size });
+    return node;
+  });
+
+  return resolved;
 }
 
 function nodeUpdateSignature(node: TopologyNode) {
@@ -335,35 +385,44 @@ function useRadarFieldNodes(nodes: TopologyNode[], selectedModel: string, fallba
       selectedServing,
       minLatency,
       maxLatency,
-      -0.5,
-      0.95,
-      0.13,
-      0.25,
-      0.12,
-      0.2,
+      0,
+      TAU,
+      0.08,
+      0.18,
+      0.07,
+      0.15,
+      3,
+      -0.1,
+      0.42,
     );
     const workerNodes = distributeLatencyBand(
       workers,
       minLatency,
       maxLatency,
-      1.9,
-      4.15,
-      0.14,
-      0.3,
-      0.12,
-      0.24,
+      0,
+      TAU,
+      0.18,
+      0.34,
+      0.15,
+      0.28,
+      3,
+      0.08,
+      0.7,
     );
     const clientNodes = distributePerimeterClients(clients);
     const activeNodes = distributeLatencyBand(
       serving,
       minLatency,
       maxLatency,
-      0.4,
-      1.85,
-      0.13,
-      0.24,
-      0.12,
-      0.2,
+      0,
+      TAU,
+      0.19,
+      0.32,
+      0.15,
+      0.25,
+      2,
+      0.14,
+      0.6,
     );
 
     const output: RenderNode[] = [];
@@ -481,7 +540,7 @@ function useRadarFieldNodes(nodes: TopologyNode[], selectedModel: string, fallba
       });
     }
 
-    output.push({
+    const selfRenderNode: RenderNode = {
       id: selfNode.id,
       label: selfNode.hostname || (selfNode.client ? "this client" : "this node"),
       subtitle: selfNode.client ? "This client" : "This node",
@@ -518,9 +577,12 @@ function useRadarFieldNodes(nodes: TopologyNode[], selectedModel: string, fallba
       selectedModelMatch:
         !!focusModel && selfNode.servingModels.some((model) => model === focusModel),
       z: 5,
-    });
+    };
 
-    return output.sort((left, right) => left.z - right.z || left.size - right.size);
+    const resolvedOutput = resolveNodeOverlap(output, selfRenderNode);
+    resolvedOutput.push(selfRenderNode);
+
+    return resolvedOutput.sort((left, right) => left.z - right.z || left.size - right.size);
   }, [fallbackModel, nodes, selectedModel]);
 }
 
@@ -636,41 +698,6 @@ function createTravelAnimation(
     meanderPhase: hashString(`${randomSource}:phase`) * Math.PI,
     startedAt,
   };
-}
-
-function useResolvedTheme(themeMode: "light" | "dark" | "auto"): ResolvedTheme {
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(
-    themeMode === "dark" ? "dark" : "light",
-  );
-
-  useEffect(() => {
-    if (themeMode !== "auto") {
-      setResolvedTheme(themeMode);
-      return;
-    }
-    if (typeof document === "undefined") {
-      setResolvedTheme("light");
-      return;
-    }
-
-    const root = document.documentElement;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const updateTheme = () => {
-      setResolvedTheme(root.classList.contains("dark") ? "dark" : "light");
-    };
-
-    updateTheme();
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
-    media.addEventListener("change", updateTheme);
-
-    return () => {
-      observer.disconnect();
-      media.removeEventListener("change", updateTheme);
-    };
-  }, [themeMode]);
-
-  return resolvedTheme;
 }
 
 const POINT_VERTEX_SHADER = `
@@ -810,7 +837,7 @@ function MeshRadarField({
   status,
   nodes,
   selectedModel,
-  themeMode,
+  themeMode: _themeMode,
   onOpenNode,
   highlightedNodeId,
   fullscreen,
@@ -851,8 +878,6 @@ function MeshRadarField({
   const selfNode = useMemo(() => nodes.find((node) => node.self) ?? nodes[0], [nodes]);
   const [tooltipStyle, setTooltipStyle] = useState<CSSProperties | null>(null);
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
-  const resolvedTheme = useResolvedTheme(themeMode);
-  const isDark = resolvedTheme === "dark";
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const zoomRef = useRef(1);
@@ -1440,25 +1465,29 @@ function MeshRadarField({
     onOpenNode?.(hoveredNode.id);
   };
 
+  const zoomAroundPoint = (nextZoom: number, anchorX: number, anchorY: number) => {
+    const currentZoom = zoomRef.current;
+    const currentPan = panRef.current;
+    const worldX = (anchorX - currentPan.x) / currentZoom;
+    const worldY = (anchorY - currentPan.y) / currentZoom;
+    const nextPan = {
+      x: anchorX - worldX * nextZoom,
+      y: anchorY - worldY * nextZoom,
+    };
+    zoomRef.current = nextZoom;
+    panRef.current = nextPan;
+    setZoom(nextZoom);
+    setPan(nextPan);
+  };
+
   const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     if (!hostRef.current) return;
     const rect = hostRef.current.getBoundingClientRect();
     const pointerX = event.clientX - rect.left;
     const pointerY = event.clientY - rect.top;
-    const currentZoom = zoomRef.current;
-    const currentPan = panRef.current;
-    const nextZoom = clamp(currentZoom * (event.deltaY > 0 ? 0.92 : 1.08), 0.7, 2.4);
-    const worldX = (pointerX - currentPan.x) / currentZoom;
-    const worldY = (pointerY - currentPan.y) / currentZoom;
-    const nextPan = {
-      x: pointerX - worldX * nextZoom,
-      y: pointerY - worldY * nextZoom,
-    };
-    zoomRef.current = nextZoom;
-    panRef.current = nextPan;
-    setZoom(nextZoom);
-    setPan(nextPan);
+    const nextZoom = clamp(zoomRef.current * (event.deltaY > 0 ? 0.92 : 1.08), 0.7, 2.4);
+    zoomAroundPoint(nextZoom, pointerX, pointerY);
   };
 
   const resetView = () => {
@@ -1468,17 +1497,29 @@ function MeshRadarField({
     setPan({ x: 0, y: 0 });
   };
 
+  const selfRenderNode =
+    renderNodes.find((node) => node.id === selfNode?.id) ?? renderNodes[renderNodes.length - 1];
+  const selfScreenX = selfRenderNode
+    ? selfRenderNode.x * hostSize.width * zoom + pan.x
+    : 0.5 * hostSize.width * zoom + pan.x;
+  const selfScreenY = selfRenderNode
+    ? selfRenderNode.y * hostSize.height * zoom + pan.y
+    : 0.52 * hostSize.height * zoom + pan.y;
+  const focalPoint = `${selfScreenX}px ${selfScreenY}px`;
+  const gridSize = fullscreen ? 64 : 56;
+
   const selfLabelStyle: CSSProperties = {
-    left: `${0.5 * hostSize.width * zoom + pan.x}px`,
-    top: `${0.52 * hostSize.height * zoom + pan.y}px`,
+    left: `${selfScreenX}px`,
+    top: `${selfScreenY}px`,
     transform: "translate(-50%, -50%)",
   };
   const nebulaStyle: CSSProperties = {
+    transformOrigin: focalPoint,
     transform: `translate(${pan.x * 0.06}px, ${pan.y * 0.06}px) scale(${1 + (zoom - 1) * 0.04})`,
   };
   const selfHaloStyle: CSSProperties = {
-    left: `${0.5 * hostSize.width * zoom + pan.x}px`,
-    top: `${0.52 * hostSize.height * zoom + pan.y}px`,
+    left: `${selfScreenX}px`,
+    top: `${selfScreenY}px`,
     transform: `translate(-50%, -50%) scale(${0.92 + zoom * 0.08})`,
   };
   const showDebugControls = import.meta.env.DEV;
@@ -1512,9 +1553,7 @@ function MeshRadarField({
       ref={hostRef}
       className={cn(
         "relative overflow-hidden rounded-[20px] border",
-        isDark
-          ? "border-white/10 bg-[#06111f] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.28)]"
-          : "border-slate-300/70 bg-[#f2f6fb] shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_16px_42px_rgba(148,163,184,0.18)]",
+        "border-white/10 bg-[#06111f] shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_20px_60px_rgba(0,0,0,0.28)]",
         heightClass ?? "h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]",
         onOpenNode ? "cursor-crosshair" : undefined,
       )}
@@ -1529,53 +1568,37 @@ function MeshRadarField({
       <div
         className="pointer-events-none absolute inset-0 opacity-95"
         style={{
-          background: isDark
-            ? `
-                radial-gradient(circle at 50% 52%, rgba(59,130,246,0.12), transparent 22%),
-                radial-gradient(circle at 72% 34%, rgba(250,204,21,0.10), transparent 26%),
-                radial-gradient(circle at 30% 58%, rgba(56,189,248,0.08), transparent 32%),
-                radial-gradient(circle at 50% 52%, rgba(255,255,255,0.035) 0, transparent 38%),
-                linear-gradient(180deg, rgba(12,24,40,0.98), rgba(6,17,31,1))
-              `
-            : `
-                radial-gradient(circle at 50% 52%, rgba(59,130,246,0.12), transparent 24%),
-                radial-gradient(circle at 72% 34%, rgba(250,204,21,0.08), transparent 28%),
-                radial-gradient(circle at 30% 58%, rgba(56,189,248,0.07), transparent 34%),
-                radial-gradient(circle at 50% 52%, rgba(255,255,255,0.46) 0, transparent 42%),
-                linear-gradient(180deg, rgba(245,248,252,0.98), rgba(234,240,247,1))
-              `,
+          background: `
+            radial-gradient(circle at ${focalPoint}, rgba(59,130,246,0.12), transparent 22%),
+            radial-gradient(circle at 72% 34%, rgba(250,204,21,0.10), transparent 26%),
+            radial-gradient(circle at 30% 58%, rgba(56,189,248,0.08), transparent 32%),
+            radial-gradient(circle at ${focalPoint}, rgba(255,255,255,0.035) 0, transparent 38%),
+            linear-gradient(180deg, rgba(12,24,40,0.98), rgba(6,17,31,1))
+          `,
         }}
       />
       <div
         className="pointer-events-none absolute inset-[-8%] mix-blend-screen"
         style={{
           ...nebulaStyle,
-          opacity: isDark ? 0.48 : 0.32,
-          background: isDark
-            ? `
-                radial-gradient(40% 28% at 28% 60%, rgba(56,189,248,0.11), transparent 72%),
-                radial-gradient(34% 26% at 72% 32%, rgba(250,204,21,0.1), transparent 74%),
-                radial-gradient(46% 32% at 50% 54%, rgba(99,102,241,0.08), transparent 78%)
-              `
-            : `
-                radial-gradient(40% 28% at 28% 60%, rgba(56,189,248,0.08), transparent 72%),
-                radial-gradient(34% 26% at 72% 32%, rgba(245,158,11,0.07), transparent 74%),
-                radial-gradient(46% 32% at 50% 54%, rgba(59,130,246,0.06), transparent 78%)
-              `,
+          opacity: 0.48,
+          background: `
+            radial-gradient(40% 28% at 28% 60%, rgba(56,189,248,0.11), transparent 72%),
+            radial-gradient(34% 26% at 72% 32%, rgba(250,204,21,0.1), transparent 74%),
+            radial-gradient(46% 32% at 50% 54%, rgba(99,102,241,0.08), transparent 78%)
+          `,
           filter: "blur(16px)",
         }}
       />
       <div
-        className={cn(
-          "pointer-events-none absolute inset-0",
-          isDark ? "opacity-[0.1]" : "opacity-[0.08]",
-        )}
+        className="pointer-events-none absolute inset-0 opacity-[0.1]"
         style={{
           backgroundImage: `
-            linear-gradient(${isDark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.05)"} 1px, transparent 1px),
-            linear-gradient(90deg, ${isDark ? "rgba(255,255,255,0.04)" : "rgba(15,23,42,0.05)"} 1px, transparent 1px)
+            linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)
           `,
-          backgroundSize: fullscreen ? "64px 64px" : "56px 56px",
+          backgroundPosition: `${pan.x}px ${pan.y}px`,
+          backgroundSize: `${gridSize}px ${gridSize}px`,
           maskImage: "radial-gradient(circle at center, black 20%, transparent 82%)",
         }}
       />
@@ -1583,9 +1606,8 @@ function MeshRadarField({
         className="pointer-events-none absolute h-28 w-28 rounded-full"
         style={{
           ...selfHaloStyle,
-          background: isDark
-            ? "radial-gradient(circle, rgba(255,255,255,0.18) 0%, rgba(192,132,252,0.14) 18%, rgba(59,130,246,0.08) 42%, transparent 72%)"
-            : "radial-gradient(circle, rgba(255,255,255,0.38) 0%, rgba(192,132,252,0.16) 18%, rgba(59,130,246,0.08) 42%, transparent 72%)",
+          background:
+            "radial-gradient(circle, rgba(255,255,255,0.18) 0%, rgba(192,132,252,0.14) 18%, rgba(59,130,246,0.08) 42%, transparent 72%)",
           filter: "blur(10px)",
         }}
       />
@@ -1595,16 +1617,13 @@ function MeshRadarField({
           type="button"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
-            isDark
-              ? "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80"
-              : "border-slate-300 bg-white/85 text-slate-700 hover:bg-white",
+            "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80",
           )}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             const nextZoom = clamp(zoomRef.current * 1.12, 0.7, 2.4);
-            zoomRef.current = nextZoom;
-            setZoom(nextZoom);
+            zoomAroundPoint(nextZoom, hostSize.width * 0.5, hostSize.height * 0.5);
           }}
         >
           <Plus className="h-4 w-4" />
@@ -1613,16 +1632,13 @@ function MeshRadarField({
           type="button"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
-            isDark
-              ? "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80"
-              : "border-slate-300 bg-white/85 text-slate-700 hover:bg-white",
+            "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80",
           )}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
             const nextZoom = clamp(zoomRef.current * 0.88, 0.7, 2.4);
-            zoomRef.current = nextZoom;
-            setZoom(nextZoom);
+            zoomAroundPoint(nextZoom, hostSize.width * 0.5, hostSize.height * 0.5);
           }}
         >
           <Minus className="h-4 w-4" />
@@ -1631,9 +1647,7 @@ function MeshRadarField({
           type="button"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
-            isDark
-              ? "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80"
-              : "border-slate-300 bg-white/85 text-slate-700 hover:bg-white",
+            "border-white/10 bg-slate-950/70 text-slate-100 hover:bg-slate-900/80",
           )}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1650,9 +1664,7 @@ function MeshRadarField({
             type="button"
             className={cn(
               "rounded-full border px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] backdrop-blur",
-              isDark
-                ? "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80"
-                : "border-slate-300 bg-white/86 text-slate-700 hover:bg-white",
+              "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80",
             )}
             onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => {
@@ -1666,9 +1678,7 @@ function MeshRadarField({
             type="button"
             className={cn(
               "rounded-full border px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] backdrop-blur disabled:cursor-not-allowed disabled:opacity-45",
-              isDark
-                ? "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80"
-                : "border-slate-300 bg-white/86 text-slate-700 hover:bg-white",
+              "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80",
             )}
             disabled={displayNodes.length <= 1}
             onPointerDown={(event) => event.stopPropagation()}
@@ -1683,9 +1693,7 @@ function MeshRadarField({
             type="button"
             className={cn(
               "rounded-full border px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.16em] backdrop-blur disabled:cursor-not-allowed disabled:opacity-45",
-              isDark
-                ? "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80"
-                : "border-slate-300 bg-white/86 text-slate-700 hover:bg-white",
+              "border-white/10 bg-slate-950/72 text-slate-100 hover:bg-slate-900/80",
             )}
             disabled={debugNodes.length === 0}
             onPointerDown={(event) => event.stopPropagation()}
@@ -1709,18 +1717,14 @@ function MeshRadarField({
         style={selfLabelStyle}
       >
         <div
-          className={cn(
-            "text-[11px] font-medium uppercase tracking-[0.28em]",
-            isDark ? "text-white/88" : "text-slate-900/78",
-          )}
+          className="text-[11px] font-medium uppercase tracking-[0.28em] text-white"
+          style={{ textShadow: "0 1px 10px rgba(0,0,0,0.72)" }}
         >
           {selfNode?.hostname || "you / host"}
         </div>
         <div
-          className={cn(
-            "mt-1 text-[10px] uppercase tracking-[0.22em]",
-            isDark ? "text-slate-400" : "text-slate-500",
-          )}
+          className="mt-1 text-[10px] uppercase tracking-[0.22em] text-slate-200"
+          style={{ textShadow: "0 1px 10px rgba(0,0,0,0.72)" }}
         >
           {selfNode?.statusLabel || "connected"}
         </div>
@@ -1730,42 +1734,40 @@ function MeshRadarField({
           ref={tooltipRef}
           className={cn(
             "pointer-events-none absolute w-[9rem] rounded-xl border px-3 py-2 shadow-2xl backdrop-blur",
-            isDark
-              ? "border-white/10 bg-slate-950/88 text-white"
-              : "border-slate-300/85 bg-white/88 text-slate-950 shadow-slate-300/60",
+            "border-white/10 bg-slate-950/88 text-white",
           )}
           style={tooltipStyle ?? { opacity: 0 }}
         >
           <div className="max-w-[16rem] text-xs font-medium">
             {hoveredNode.label}
           </div>
-          <div className={cn("mt-0.5 text-[11px]", isDark ? "text-slate-300" : "text-slate-600")}>
+          <div className="mt-0.5 text-[11px] text-slate-300">
             {hoveredNode.subtitle}
           </div>
-          <div className={cn("mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]", isDark ? "text-slate-300" : "text-slate-700")}>
-            <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>Role</div>
+          <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-slate-300">
+            <div className="text-slate-500">Role</div>
             <div>{hoveredNode.role}</div>
-            <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>Status</div>
+            <div className="text-slate-500">Status</div>
             <div>{hoveredNode.statusLabel}</div>
-            <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>VRAM</div>
+            <div className="text-slate-500">VRAM</div>
             <div>{hoveredNode.vramLabel}</div>
-            <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>Latency</div>
+            <div className="text-slate-500">Latency</div>
             <div>{hoveredNode.latencyLabel}</div>
             {!(hoveredNode.role === "Client" && hoveredNode.modelLabel === "API-only") ? (
               <>
-                <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>Model</div>
+                <div className="text-slate-500">Model</div>
                 <div className="truncate" title={hoveredNode.modelLabel}>
                   {hoveredNode.modelLabel}
                 </div>
               </>
             ) : null}
-            <div className={cn(isDark ? "text-slate-500" : "text-slate-500")}>Compute</div>
+            <div className="text-slate-500">Compute</div>
             <div>{hoveredNode.gpuLabel}</div>
           </div>
           <div
             className={cn(
               "mt-2 border-t pt-2 text-[10px]",
-              isDark ? "border-white/10 text-slate-400" : "border-slate-200 text-slate-500",
+              "border-white/10 text-slate-400",
             )}
           >
             <div className="truncate" title={hoveredNode.id}>

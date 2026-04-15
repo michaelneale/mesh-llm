@@ -29,6 +29,10 @@ on:
         required: false
         type: string
         default: ''
+      runs_on:
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
 
 permissions:
   actions: read
@@ -40,7 +44,7 @@ env:
 jobs:
   warm_cache:
     name: ${{ inputs.job_name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJson(inputs.runs_on) }}
     container:
       image: ${{ inputs.container_image }}
 
