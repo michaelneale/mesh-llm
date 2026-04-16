@@ -2,7 +2,7 @@
 # Linux/amd64 ONLY (NVIDIA cuda:*-devel images are amd64-only).
 #
 # Build:  DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda -t mesh-llm:cuda .
-#         (optional) --build-arg CUDA_ARCH="75;80;86;89" for narrower compute list
+#         (optional) --build-arg CUDA_ARCH="75;80;86;87;89" for narrower compute list
 # Run (requires NVIDIA Container Toolkit):
 #         docker run --rm --gpus all -p 9337:9337 -v ~/.models:/root/.models -e APP_MODE=worker mesh-llm:cuda
 #
@@ -79,7 +79,7 @@ RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
 #   See ggml-org/llama.cpp#20866 — without this, asymmetric K/V quant hits
 #   BEST_FATTN_KERNEL_NONE and crashes rpc-server.
 #   Remove this flag ONLY once the fork is rebased past the upstream fix.
-ARG CUDA_ARCH="75;80;86;89;90;120"
+ARG CUDA_ARCH="75;80;86;87;89;90;100;103;120"
 RUN cd llama.cpp && \
     cmake -B build -G Ninja \
       -DGGML_RPC=ON \

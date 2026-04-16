@@ -55,10 +55,10 @@ release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
 # Build a Linux CUDA release artifact with an explicit architecture list.
-release-build-cuda cuda_arch="75;80;86;89;90;120":
+release-build-cuda cuda_arch="75;80;86;87;89;90;100;103;120":
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-release-build-cuda-windows cuda_arch="75;80;86;89;90;120":
+release-build-cuda-windows cuda_arch="75;80;86;87;89;90;100;103;120":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
 # Build a Linux ROCm release artifact with an explicit architecture list.
@@ -425,13 +425,13 @@ docker-build-cpu tag="mesh-llm:cpu":
 
 # Build the CUDA full-node Docker image
 [unix]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;89;90;120":
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90;100;103;120":
     DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda \
         --build-arg CUDA_ARCH="{{ cuda_arch }}" \
         -t {{ tag }} .
 
 [windows]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;89;90;120":
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90;100;103;120":
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cuda --build-arg CUDA_ARCH='{{ cuda_arch }}' -t '{{ tag }}' ."
 
 # Build the ROCm full-node Docker image

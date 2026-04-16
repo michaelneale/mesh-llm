@@ -349,11 +349,21 @@ type DownloadHfAssetsOverrideFn =
     Arc<dyn Fn(&str, Vec<HfAsset>) -> Result<Vec<PathBuf>> + Send + Sync>;
 
 #[cfg(test)]
+type DownloadPlanObserverFn = Arc<dyn Fn(&str, Vec<(bool, String)>) + Send + Sync>;
+
+#[cfg(test)]
 static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
-struct DownloadHfAssetsOverrideGuard(String);
+static DOWNLOAD_PLAN_OBSERVER: LazyLock<Mutex<Option<DownloadPlanObserverFn>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+pub(crate) struct DownloadHfAssetsOverrideGuard(String);
+
+#[cfg(test)]
+pub(crate) struct DownloadPlanObserverGuard;
 
 #[cfg(test)]
 impl DownloadHfAssetsOverrideGuard {
@@ -365,10 +375,49 @@ impl DownloadHfAssetsOverrideGuard {
 }
 
 #[cfg(test)]
+pub(crate) fn set_download_hf_assets_label_override(
+    label: String,
+    func: Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>,
+) -> DownloadHfAssetsOverrideGuard {
+    DownloadHfAssetsOverrideGuard::set(
+        label,
+        Arc::new(move |label, assets| {
+            if let Some(observer) = DOWNLOAD_PLAN_OBSERVER.lock().unwrap().clone() {
+                let plan = initial_download_plan_for_assets(assets)?;
+                observer(
+                    label,
+                    plan.into_iter()
+                        .map(|(required, asset)| (required, asset.file))
+                        .collect(),
+                );
+            }
+            func(label)
+        }),
+    )
+}
+
+#[cfg(test)]
+impl DownloadPlanObserverGuard {
+    pub(crate) fn set(func: DownloadPlanObserverFn) -> Self {
+        let mut slot = DOWNLOAD_PLAN_OBSERVER.lock().unwrap();
+        *slot = Some(func);
+        Self
+    }
+}
+
+#[cfg(test)]
 impl Drop for DownloadHfAssetsOverrideGuard {
     fn drop(&mut self) {
         let mut map = DOWNLOAD_HF_ASSETS_OVERRIDE.lock().unwrap();
         map.remove(&self.0);
+    }
+}
+
+#[cfg(test)]
+impl Drop for DownloadPlanObserverGuard {
+    fn drop(&mut self) {
+        let mut slot = DOWNLOAD_PLAN_OBSERVER.lock().unwrap();
+        *slot = None;
     }
 }
 
@@ -479,15 +528,7 @@ fn download_hf_assets_blocking(
 ) -> Result<Vec<PathBuf>> {
     let api = super::build_hf_api(false)?;
     let cache = crate::models::huggingface_hub_cache();
-    let mut download_plan = std::collections::BTreeSet::new();
-    let mut config_repos = std::collections::BTreeSet::new();
-
-    for asset in assets {
-        for expanded in expand_split_asset(&asset)? {
-            config_repos.insert((expanded.repo.clone(), expanded.revision.clone()));
-            download_plan.insert((true, expanded));
-        }
-    }
+    let mut download_plan = initial_download_plan_for_assets(assets)?;
     let current_plan: Vec<(bool, HfAsset)> = download_plan.iter().cloned().collect();
     for (_, asset) in current_plan {
         if !is_mlx_primary_asset(&asset.file) {
@@ -505,19 +546,22 @@ fn download_hf_assets_blocking(
             download_plan.insert((true, shard));
         }
     }
-    for (repo, revision) in config_repos {
-        download_plan.insert((
-            false,
-            HfAsset {
-                repo,
-                revision,
-                file: "config.json".to_string(),
-            },
-        ));
-    }
 
     if progress {
         eprintln!("📥 Ensuring {} is available locally...", label);
+    }
+
+    #[cfg(test)]
+    {
+        if let Some(observer) = DOWNLOAD_PLAN_OBSERVER.lock().unwrap().clone() {
+            observer(
+                label,
+                download_plan
+                    .iter()
+                    .map(|(required, asset)| (*required, asset.file.clone()))
+                    .collect(),
+            );
+        }
     }
 
     let mut primary_paths = Vec::new();
@@ -581,6 +625,33 @@ fn download_hf_assets_blocking(
     Ok(primary_paths)
 }
 
+fn initial_download_plan_for_assets(
+    assets: Vec<HfAsset>,
+) -> Result<std::collections::BTreeSet<(bool, HfAsset)>> {
+    let mut download_plan = std::collections::BTreeSet::new();
+    let mut config_repos = std::collections::BTreeSet::new();
+
+    for asset in assets {
+        for expanded in expand_split_asset(&asset)? {
+            config_repos.insert((expanded.repo.clone(), expanded.revision.clone()));
+            download_plan.insert((true, expanded));
+        }
+    }
+
+    for (repo, revision) in config_repos {
+        download_plan.insert((
+            false,
+            HfAsset {
+                repo,
+                revision,
+                file: "config.json".to_string(),
+            },
+        ));
+    }
+
+    Ok(download_plan)
+}
+
 pub async fn download_hf_repo_file(
     repo: &str,
     revision: Option<&str>,
@@ -595,18 +666,30 @@ pub async fn download_hf_repo_file_with_progress(
     file: &str,
     progress: bool,
 ) -> Result<PathBuf> {
+    download_hf_repo_file_with_progress_label(
+        repo,
+        revision,
+        file,
+        &format!("{repo}/{file}@{}", revision.unwrap_or("main")),
+        progress,
+    )
+    .await
+}
+
+pub async fn download_hf_repo_file_with_progress_label(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+    label: &str,
+    progress: bool,
+) -> Result<PathBuf> {
     let revision = revision.unwrap_or("main").to_string();
     let asset = HfAsset {
         repo: repo.to_string(),
         revision: revision.clone(),
         file: file.to_string(),
     };
-    let mut paths = download_hf_assets(
-        &format!("{repo}/{file}@{revision}"),
-        vec![asset.clone()],
-        progress,
-    )
-    .await?;
+    let mut paths = download_hf_assets(label, vec![asset.clone()], progress).await?;
     paths.sort();
     paths
         .into_iter()
@@ -1469,6 +1552,36 @@ mod tests {
         };
         let shards = expand_split_mlx_first_shard(&asset);
         assert!(shards.is_empty());
+    }
+
+    #[test]
+    fn gemma_bf16_first_shard_plans_full_split_download() {
+        let plan = initial_download_plan_for_assets(vec![HfAsset {
+            repo: "unsloth/gemma-4-31B-it-GGUF".to_string(),
+            revision: "main".to_string(),
+            file: "BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf".to_string(),
+        }])
+        .unwrap();
+
+        let files: Vec<_> = plan
+            .into_iter()
+            .map(|(required, asset)| (required, asset.file))
+            .collect();
+
+        assert_eq!(
+            files,
+            vec![
+                (false, "config.json".to_string()),
+                (
+                    true,
+                    "BF16/gemma-4-31B-it-BF16-00001-of-00002.gguf".to_string()
+                ),
+                (
+                    true,
+                    "BF16/gemma-4-31B-it-BF16-00002-of-00002.gguf".to_string()
+                ),
+            ]
+        );
     }
 
     #[test]
