@@ -4,7 +4,7 @@ use std::path::Path;
 fn main() {
     println!("cargo:rerun-if-changed=ui/dist");
     watch_path(Path::new("proto"));
-    compile_node_proto();
+    compile_proto_schemas();
 }
 
 fn watch_path(path: &Path) {
@@ -22,11 +22,11 @@ fn watch_path(path: &Path) {
     }
 }
 
-fn compile_node_proto() {
+fn compile_proto_schemas() {
     let protoc = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc");
     std::env::set_var("PROTOC", protoc);
 
     prost_build::Config::new()
-        .compile_protos(&["proto/node.proto", "proto/config.proto"], &["proto"])
+        .compile_protos(&["proto/mesh.proto", "proto/config.proto"], &["proto"])
         .expect("compile mesh and config proto");
 }
