@@ -9,6 +9,11 @@ import {
 } from "react";
 import { Minus, Plus, RotateCcw } from "lucide-react";
 
+import {
+  useResolvedTheme,
+  type ResolvedTheme,
+  type ThemeMode,
+} from "../../../../lib/resolved-theme";
 import { cn } from "../../../../lib/utils";
 import {
   formatLatency,
@@ -21,8 +26,7 @@ type TopologyStatusPayload = {
   model_name?: string | null;
 };
 
-type TopologyThemeMode = "light" | "dark" | "auto";
-type ResolvedTheme = "light" | "dark";
+type TopologyThemeMode = ThemeMode;
 
 type NodePalette = {
   fill: string;
@@ -140,42 +144,6 @@ function color(hex: string, alpha = 1): [number, number, number, number] {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
-}
-
-function readResolvedTheme(themeMode: TopologyThemeMode): ResolvedTheme {
-  if (themeMode === "light" || themeMode === "dark") return themeMode;
-  if (typeof document === "undefined") return "light";
-  return document.documentElement.classList.contains("dark") ? "dark" : "light";
-}
-
-function useResolvedTheme(themeMode: TopologyThemeMode) {
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
-    readResolvedTheme(themeMode),
-  );
-
-  useEffect(() => {
-    if (themeMode === "light" || themeMode === "dark") {
-      setResolvedTheme(themeMode);
-      return;
-    }
-    if (typeof document === "undefined") return;
-
-    const root = document.documentElement;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const updateTheme = () => setResolvedTheme(readResolvedTheme(themeMode));
-
-    updateTheme();
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
-    media.addEventListener("change", updateTheme);
-
-    return () => {
-      observer.disconnect();
-      media.removeEventListener("change", updateTheme);
-    };
-  }, [themeMode]);
-
-  return resolvedTheme;
 }
 
 const SCENE_PALETTES: Record<ResolvedTheme, ScenePalette> = {

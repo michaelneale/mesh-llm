@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
+import { useResolvedTheme } from "../../../../lib/resolved-theme";
+
 type MermaidApi = (typeof import("mermaid"))["default"];
 
 let mermaidPromise: Promise<MermaidApi | null> | null = null;
@@ -13,37 +15,12 @@ function loadMermaid() {
   return mermaidPromise;
 }
 
-function readResolvedTheme(): "light" | "dark" {
-  if (typeof document === "undefined") return "light";
-  return document.documentElement.classList.contains("dark") ? "dark" : "light";
-}
-
 export function MermaidBlock({ code }: { code: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [error, setError] = useState<string | null>(null);
   const [rendered, setRendered] = useState(false);
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() =>
-    readResolvedTheme(),
-  );
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-
-    const root = document.documentElement;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const updateTheme = () => setResolvedTheme(readResolvedTheme());
-
-    updateTheme();
-    const observer = new MutationObserver(updateTheme);
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
-    media.addEventListener("change", updateTheme);
-
-    return () => {
-      observer.disconnect();
-      media.removeEventListener("change", updateTheme);
-    };
-  }, []);
+  const resolvedTheme = useResolvedTheme();
 
   useEffect(() => {
     let cancelled = false;
