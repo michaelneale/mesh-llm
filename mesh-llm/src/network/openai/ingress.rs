@@ -135,7 +135,6 @@ pub(crate) async fn api_proxy(
 
                     let (effective_model, classification) = if request.model_name.is_none()
                         || request.model_name.as_deref() == Some("auto")
-                        || request.model_name.as_deref() == Some("mesh")
                     {
                         request.ensure_body_json();
                         if let Some(body_json) = request.body_json.as_ref() {
@@ -176,10 +175,13 @@ pub(crate) async fn api_proxy(
                     } else {
                         (request.model_name.clone(), None)
                     };
-                    // Enable mesh hooks only when the user explicitly requests
-                    // the virtual "mesh" model. Non-mesh requests are not
-                    // mutated at all — no body injection, no extra fields.
-                    if request.model_name.as_deref() == Some("mesh") {
+                    // Enable mesh hooks for auto-routed requests. When the
+                    // smart router picks the model, hooks allow the local
+                    // model to consult peers during inference (e.g. caption
+                    // images via a vision peer, get a second opinion on
+                    // uncertain answers).
+                    if request.model_name.is_none() || request.model_name.as_deref() == Some("auto")
+                    {
                         proxy::inject_mesh_hooks_flag(&mut request.raw, true);
                     }
 

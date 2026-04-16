@@ -1783,56 +1783,54 @@ pub async fn handle_mesh_request(
     // Demand tracking for rebalancing (done after routing so we track the actual model used)
     // We'll track below after routing resolves the effective model
 
-    // Smart routing: if no model specified (or model="auto"/"mesh"), classify and pick
-    let routed_model = if request.model_name.is_none()
-        || request.model_name.as_deref() == Some("auto")
-        || request.model_name.as_deref() == Some("mesh")
-    {
-        request.ensure_body_json();
-        if let Some(body_json) = request.body_json.as_ref() {
-            let cl = router::classify(&body_json);
-            let served = node.models_being_served().await;
-            let media = router::media_requirements(body_json);
-            let available: Vec<(&str, f64)> = served
-                .iter()
-                .filter(|name| {
-                    let caps = crate::models::installed_model_capabilities(name);
-                    (!media.needs_vision || caps.vision_label().is_some())
-                        && (!media.needs_audio || caps.audio_label().is_some())
-                })
-                .map(|name| (name.as_str(), 0.0))
-                .collect();
-            let available: Vec<(&str, f64)> = if available.is_empty() {
-                served.iter().map(|name| (name.as_str(), 0.0)).collect()
-            } else {
-                available
-            };
-            let picked = router::pick_model_classified(&cl, &available);
-            if let Some(name) = picked {
-                tracing::info!(
-                    "router: {:?}/{:?} tools={} media={} → {name}",
-                    cl.category,
-                    cl.complexity,
-                    cl.needs_tools,
-                    cl.has_media_inputs
-                );
-                Some(name.to_string())
+    // Smart routing: if no model specified (or model="auto"), classify and pick
+    let routed_model =
+        if request.model_name.is_none() || request.model_name.as_deref() == Some("auto") {
+            request.ensure_body_json();
+            if let Some(body_json) = request.body_json.as_ref() {
+                let cl = router::classify(&body_json);
+                let served = node.models_being_served().await;
+                let media = router::media_requirements(body_json);
+                let available: Vec<(&str, f64)> = served
+                    .iter()
+                    .filter(|name| {
+                        let caps = crate::models::installed_model_capabilities(name);
+                        (!media.needs_vision || caps.vision_label().is_some())
+                            && (!media.needs_audio || caps.audio_label().is_some())
+                    })
+                    .map(|name| (name.as_str(), 0.0))
+                    .collect();
+                let available: Vec<(&str, f64)> = if available.is_empty() {
+                    served.iter().map(|name| (name.as_str(), 0.0)).collect()
+                } else {
+                    available
+                };
+                let picked = router::pick_model_classified(&cl, &available);
+                if let Some(name) = picked {
+                    tracing::info!(
+                        "router: {:?}/{:?} tools={} media={} → {name}",
+                        cl.category,
+                        cl.complexity,
+                        cl.needs_tools,
+                        cl.has_media_inputs
+                    );
+                    Some(name.to_string())
+                } else {
+                    None
+                }
             } else {
                 None
             }
         } else {
             None
-        }
-    } else {
-        None
-    };
+        };
     let effective_model = routed_model.or(request.model_name.clone());
 
-    // Enable mesh hooks only when the user explicitly requests the virtual model.
-    // Other model values (auto, explicit names, None) pass through without hooks.
-    // Enable mesh hooks only for the virtual "mesh" model. Non-mesh
-    // requests are not mutated — no body injection, no extra fields.
-    if request.model_name.as_deref() == Some("mesh") {
+    // Enable mesh hooks for auto-routed requests. When the smart router
+    // picks the model, hooks allow the local model to consult peers during
+    // inference (e.g. caption images via a vision peer, get a second opinion
+    // on uncertain answers). Explicit model names pass through without hooks.
+    if request.model_name.is_none() || request.model_name.as_deref() == Some("auto") {
         inject_mesh_hooks_flag(&mut request.raw, true);
     }
 
@@ -2418,7 +2416,7 @@ pub async fn route_http_endpoint_request(
 // ── Response helpers ──
 
 pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::io::Result<()> {
-    let mut data: Vec<serde_json::Value> = models
+    let data: Vec<serde_json::Value> = models
         .iter()
         .map(|m| {
             let capabilities = crate::models::installed_model_capabilities(m);
@@ -2452,18 +2450,6 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
             })
         })
         .collect();
-
-    // Add the virtual "mesh" model — auto-routes like "auto" but with inter-model
-    // collaboration hooks enabled. Only shown when at least one real model is served.
-    if !models.is_empty() {
-        data.push(serde_json::json!({
-            "id": "mesh",
-            "display_name": "Mesh (inter-model collaboration)",
-            "object": "model",
-            "owned_by": "mesh-llm",
-            "capabilities": ["text"],
-        }));
-    }
 
     let body = serde_json::json!({ "object": "list", "data": data }).to_string();
     let resp = format!(
@@ -3215,7 +3201,7 @@ mod tests {
 
     #[test]
     fn test_inject_mesh_hooks_enabled() {
-        let mut raw = b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 25\r\n\r\n{\"model\":\"mesh\",\"n\":1}".to_vec();
+        let mut raw = b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 25\r\n\r\n{\"model\":\"auto\",\"n\":1}".to_vec();
         inject_mesh_hooks_flag(&mut raw, true);
         let body_start = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
         let body = std::str::from_utf8(&raw[body_start..]).unwrap();

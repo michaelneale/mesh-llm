@@ -127,27 +127,28 @@ fi
 
 echo "✅ Inference response: $CONTENT"
 
-# Test "mesh" virtual model — routes through smart router with hooks enabled.
-# No peers available so hooks return action:none, model generates normally.
-echo "Testing model=mesh (virtual LLM)..."
-MESH_RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
+# Test model=auto with hooks — routes through smart router with inter-model
+# collaboration hooks enabled. No peers available so hooks return action:none,
+# model generates normally.
+echo "Testing model=auto (virtual LLM hooks)..."
+AUTO_HOOK_RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{
-        "model": "mesh",
+        "model": "auto",
         "messages": [{"role": "user", "content": "Say hi."}],
         "max_tokens": 16,
         "temperature": 0
     }' 2>&1)
 
-MESH_CONTENT=$(echo "$MESH_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null || echo "")
-if [ -z "$MESH_CONTENT" ]; then
-    echo "❌ model=mesh returned empty response"
-    echo "Raw: $MESH_RESPONSE"
+AUTO_HOOK_CONTENT=$(echo "$AUTO_HOOK_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null || echo "")
+if [ -z "$AUTO_HOOK_CONTENT" ]; then
+    echo "❌ model=auto returned empty response"
+    echo "Raw: $AUTO_HOOK_RESPONSE"
     echo "--- Log tail ---"
     tail -30 "$LOG" || true
     exit 1
 fi
-echo "✅ model=mesh response: $MESH_CONTENT"
+echo "✅ model=auto response: $AUTO_HOOK_CONTENT"
 
 # Test /v1/models endpoint
 echo "Testing /v1/models..."
@@ -160,14 +161,7 @@ if [ "$MODEL_COUNT" -eq 0 ]; then
 fi
 echo "✅ /v1/models returned $MODEL_COUNT model(s)"
 
-# Verify "mesh" virtual model appears in models list
-HAS_MESH=$(echo "$MODELS" | python3 -c "import sys,json; ids=[m['id'] for m in json.load(sys.stdin).get('data',[])]; print('mesh' in ids)" 2>/dev/null || echo "False")
-if [ "$HAS_MESH" != "True" ]; then
-    echo "❌ 'mesh' model not in /v1/models"
-    echo "$MODELS"
-    exit 1
-fi
-echo "✅ 'mesh' virtual model listed in /v1/models"
+
 
 echo ""
 echo "=== All smoke tests passed ==="
