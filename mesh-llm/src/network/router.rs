@@ -475,28 +475,6 @@ pub fn pick_model_classified<'a>(
 }
 
 /// Legacy wrapper for tests that have category + tools but no complexity.
-/// Assigns default (empty) capabilities to all models.
-#[cfg(test)]
-pub fn pick_model_with_tools<'a>(
-    category: Category,
-    available_models: &[(&'a str, f64)],
-    tools_required: bool,
-) -> Option<&'a str> {
-    let with_caps: Vec<(&str, f64, crate::models::ModelCapabilities)> = available_models
-        .iter()
-        .map(|(name, speed)| (*name, *speed, crate::models::ModelCapabilities::default()))
-        .collect();
-    pick_model_classified(
-        &Classification {
-            category,
-            complexity: Complexity::Moderate,
-            needs_tools: tools_required,
-            has_media_inputs: false,
-        },
-        &with_caps,
-    )
-}
-
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]

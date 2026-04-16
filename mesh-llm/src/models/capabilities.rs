@@ -250,6 +250,10 @@ pub fn merge_name_signals(mut caps: ModelCapabilities, values: &[&str]) -> Model
         .any(|value| likely_tool_use_name_signal(value))
     {
         caps.upgrade_tool_use(CapabilityLevel::Likely);
+    } else if caps.tool_use == CapabilityLevel::None
+        && values.iter().any(|value| known_tool_capable_family(value))
+    {
+        caps.upgrade_tool_use(CapabilityLevel::Likely);
     }
 
     caps.normalize()
@@ -580,6 +584,22 @@ fn likely_tool_use_name_signal(value: &str) -> bool {
         .any(|needle| value.contains(needle))
 }
 
+/// Known model families that support tool calling even when their config
+/// files don't contain standard tool tokens. Checked as a last-resort
+/// fallback when detection finds nothing.
+///
+/// Matches against any segment of the value (split on `/`, `-`, `_`, `.`)
+/// so repo paths like "Qwen/Qwen3-32B" and filenames both work.
+fn known_tool_capable_family(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    let prefixes = ["qwen3", "minimax", "hermes", "gemma"];
+    // Check if any segment of the value starts with a known prefix.
+    // Segments are split on common separators in model names/paths.
+    lower
+        .split(&['/', '-', '_', '.'][..])
+        .any(|seg| prefixes.iter().any(|p| seg.starts_with(p)))
+}
+
 fn json_contains_reasoning_tokens(value: &Value) -> bool {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => false,
@@ -686,5 +706,48 @@ mod tests {
         );
         assert_eq!(caps.vision, CapabilityLevel::Supported);
         assert!(caps.multimodal);
+    }
+
+    #[test]
+    fn known_families_get_tool_use_likely() {
+        for name in [
+            "Qwen3-8B-Q4_K_M",
+            "Qwen3.5-9B-Q4_K_M",
+            "MiniMax-M2.5-Q4_K_M",
+            "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+            "gemma-4-31B-it-Q8_0",
+            "gemma-4-26B-A4B-it-UD-Q4_K_M",
+        ] {
+            let caps = merge_name_signals(Default::default(), &[name]);
+            assert_ne!(
+                caps.tool_use,
+                CapabilityLevel::None,
+                "{name} should have tool_use from known family"
+            );
+        }
+    }
+
+    #[test]
+    fn known_families_match_repo_paths() {
+        // Repo-style values like "Qwen/Qwen3-32B" should also match
+        for value in [
+            "Qwen/Qwen3-32B-Instruct-GGUF",
+            "MiniMax/MiniMax-M2.5-GGUF",
+            "google/gemma-4-27B-it-GGUF",
+            "NousResearch/Hermes-2-Pro-Mistral-7B-GGUF",
+        ] {
+            let caps = merge_name_signals(Default::default(), &[value]);
+            assert_ne!(
+                caps.tool_use,
+                CapabilityLevel::None,
+                "{value} should match known family via repo path"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_model_no_tool_use() {
+        let caps = merge_name_signals(Default::default(), &["SomeRandomModel-7B"]);
+        assert_eq!(caps.tool_use, CapabilityLevel::None);
     }
 }
