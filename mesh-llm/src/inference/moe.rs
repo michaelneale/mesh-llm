@@ -652,11 +652,39 @@ pub fn expert_list_arg(assignment: &NodeAssignment) -> String {
         .join(",")
 }
 
+/// Strip the `-NNNNN-of-NNNNN` split-file suffix from a GGUF stem so that the
+/// cache directory name doesn't accidentally trigger llama.cpp's split-file
+/// detection when loading per-node MoE shards.  Multi-file GGUFs from
+/// HuggingFace (e.g. `Model-00001-of-00013.gguf`) include this suffix in the
+/// filename; without stripping it the resulting cache path
+/// `.../splits/Model-00001-of-00013/N-nodes/node-K.gguf` causes
+/// `invalid split file name` at load time.
+fn strip_split_suffix(stem: &str) -> String {
+    // Match trailing `-DDDDD-of-DDDDD` where D is a digit.
+    // Example: "Kimi-K2.5-Q4_K_M-00001-of-00013" → "Kimi-K2.5-Q4_K_M"
+    if let Some(pos) = stem.rfind("-of-") {
+        let after = &stem[pos + 4..];
+        let before_dash = stem[..pos].rfind('-');
+        if let Some(dash_pos) = before_dash {
+            let shard_num = &stem[dash_pos + 1..pos];
+            if shard_num.chars().all(|c| c.is_ascii_digit())
+                && after.chars().all(|c| c.is_ascii_digit())
+                && !shard_num.is_empty()
+                && !after.is_empty()
+            {
+                return stem[..dash_pos].to_string();
+            }
+        }
+    }
+    stem.to_string()
+}
+
 /// Path to the cached split GGUF for a given model + node count + node index.
 pub fn split_path(model_path: &Path, n_nodes: usize, node_index: usize) -> PathBuf {
     let stem = model_path.file_stem().unwrap_or_default().to_string_lossy();
+    let clean_stem = strip_split_suffix(&stem);
     let new_path = split_cache_root()
-        .join(format!("{stem}"))
+        .join(&clean_stem)
         .join(format!("{n_nodes}-nodes"))
         .join(format!("node-{node_index}.gguf"));
     migrate_legacy_split_if_present(model_path, n_nodes, node_index, &new_path);
@@ -665,9 +693,10 @@ pub fn split_path(model_path: &Path, n_nodes: usize, node_index: usize) -> PathB
 
 fn legacy_split_path(model_path: &Path, n_nodes: usize, node_index: usize) -> PathBuf {
     let stem = model_path.file_stem().unwrap_or_default().to_string_lossy();
+    let clean_stem = strip_split_suffix(&stem);
     let dir = model_path.parent().unwrap_or(Path::new("."));
     dir.join("moe-splits")
-        .join(format!("{stem}"))
+        .join(format!("{clean_stem}"))
         .join(format!("{n_nodes}-nodes"))
         .join(format!("node-{node_index}.gguf"))
 }
@@ -923,6 +952,51 @@ mod tests {
                 .join("Qwen3-30B-A3B-Q4_K_M")
                 .join("3-nodes")
                 .join("node-1.gguf")
+        );
+
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    fn strip_split_suffix_removes_huggingface_shard_pattern() {
+        assert_eq!(
+            strip_split_suffix("Kimi-K2.5-Q4_K_M-00001-of-00013"),
+            "Kimi-K2.5-Q4_K_M"
+        );
+        assert_eq!(
+            strip_split_suffix("DeepSeek-V3-BF16-00001-of-00163"),
+            "DeepSeek-V3-BF16"
+        );
+        // Single-file GGUFs should pass through unchanged
+        assert_eq!(
+            strip_split_suffix("Qwen3-30B-A3B-Q4_K_M"),
+            "Qwen3-30B-A3B-Q4_K_M"
+        );
+        // Don't strip if the pattern doesn't look like digits
+        assert_eq!(
+            strip_split_suffix("model-name-of-something"),
+            "model-name-of-something"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn split_path_strips_multifile_suffix() {
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", "/tmp/mesh-llm-cache-root");
+
+        // Multi-file GGUF: the -00001-of-00013 should be stripped from the cache dir
+        let model = Path::new("/models/Kimi-K2.5-Q4_K_M-00001-of-00013.gguf");
+        let path = split_path(model, 29, 22);
+
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/mesh-llm-cache-root")
+                .join("mesh-llm")
+                .join("splits")
+                .join("Kimi-K2.5-Q4_K_M")
+                .join("29-nodes")
+                .join("node-22.gguf")
         );
 
         restore_env("XDG_CACHE_HOME", prev_xdg);
