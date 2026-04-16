@@ -284,7 +284,6 @@ pub(crate) async fn api_proxy(
                                 &targets,
                                 name,
                                 &session_hint,
-                                request.body_json.as_ref(),
                                 required_tokens,
                                 &request.raw,
                             )
@@ -354,10 +353,8 @@ pub(crate) async fn api_proxy(
                                 tcp_stream,
                                 &targets,
                                 name,
-                                request.body_json.as_ref(),
+                                &request,
                                 required_tokens,
-                                &request.raw,
-                                request.response_adapter,
                                 &affinity,
                             )
                             .await;

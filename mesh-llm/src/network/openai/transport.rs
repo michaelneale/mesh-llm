@@ -2140,10 +2140,8 @@ pub async fn route_model_request(
     tcp_stream: TcpStream,
     targets: &election::ModelTargets,
     model: &str,
-    parsed_body: Option<&serde_json::Value>,
+    request: &BufferedHttpRequest,
     required_tokens: Option<u32>,
-    prefetched: &[u8],
-    response_adapter: ResponseAdapter,
     affinity: &AffinityRouter,
 ) -> bool {
     let route_started = Instant::now();
@@ -2158,7 +2156,7 @@ pub async fn route_model_request(
         targets,
         &ordered_candidates,
         model,
-        parsed_body,
+        request.body_json.as_ref(),
         affinity,
     );
     if matches!(selection.target, election::InferenceTarget::None) {
@@ -2207,9 +2205,9 @@ pub async fn route_model_request(
             &node,
             &mut tcp_stream,
             &target,
-            prefetched,
+            &request.raw,
             retry_context_overflow,
-            response_adapter,
+            request.response_adapter,
         )
         .await;
         tracing::info!(
@@ -2300,7 +2298,6 @@ pub async fn route_moe_request(
     targets: &election::ModelTargets,
     model: &str,
     session_hint: &str,
-    _parsed_body: Option<&serde_json::Value>,
     required_tokens: Option<u32>,
     prefetched: &[u8],
 ) -> bool {

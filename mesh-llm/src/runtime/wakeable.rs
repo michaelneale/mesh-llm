@@ -52,7 +52,10 @@ mod tests {
 
     #[test]
     fn wakeable_state_rejects_unknown_values() {
-        assert_eq!(WakeableState::try_from("sleeping"), Ok(WakeableState::Sleeping));
+        assert_eq!(
+            WakeableState::try_from("sleeping"),
+            Ok(WakeableState::Sleeping)
+        );
         assert_eq!(WakeableState::try_from("waking"), Ok(WakeableState::Waking));
         assert_eq!(
             WakeableState::try_from("invalid-state"),
