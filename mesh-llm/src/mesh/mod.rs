@@ -1173,6 +1173,7 @@ pub struct Node {
     pub peer_change_rx: watch::Receiver<usize>,
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
+    routing_metrics: crate::network::metrics::RoutingMetrics,
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
     tunnel_http_tx:
         tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
@@ -1326,10 +1327,11 @@ impl Node {
     pub fn begin_inflight_request(&self) -> InflightRequestGuard {
         self.inflight_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.inflight_change_tx.send(
-            self.inflight_requests
-                .load(std::sync::atomic::Ordering::Relaxed) as u64,
-        );
+        let current = self
+            .inflight_requests
+            .load(std::sync::atomic::Ordering::Relaxed) as u64;
+        let _ = self.inflight_change_tx.send(current);
+        self.routing_metrics.observe_inflight(current);
         InflightRequestGuard {
             inflight_requests: self.inflight_requests.clone(),
             inflight_change_tx: self.inflight_change_tx.clone(),
@@ -1343,6 +1345,78 @@ impl Node {
 
     pub fn inflight_change_rx(&self) -> watch::Receiver<u64> {
         self.inflight_change_tx.subscribe()
+    }
+
+    pub fn record_inference_attempt(
+        &self,
+        model: Option<&str>,
+        target: &crate::inference::election::InferenceTarget,
+        queue_wait: std::time::Duration,
+        attempt_time: std::time::Duration,
+        outcome: crate::network::metrics::AttemptOutcome,
+        completion_tokens: Option<u64>,
+    ) {
+        let attempt_target = match target {
+            crate::inference::election::InferenceTarget::Local(port)
+            | crate::inference::election::InferenceTarget::MoeLocal(port) => {
+                crate::network::metrics::AttemptTarget::Local(format!("127.0.0.1:{port}"))
+            }
+            crate::inference::election::InferenceTarget::Remote(peer_id)
+            | crate::inference::election::InferenceTarget::MoeRemote(peer_id) => {
+                crate::network::metrics::AttemptTarget::Remote(peer_id.fmt_short().to_string())
+            }
+            crate::inference::election::InferenceTarget::None => return,
+        };
+        self.routing_metrics.record_attempt(
+            model,
+            attempt_target,
+            queue_wait,
+            attempt_time,
+            outcome,
+            completion_tokens,
+        );
+    }
+
+    pub fn record_endpoint_attempt(
+        &self,
+        model: Option<&str>,
+        endpoint: &str,
+        queue_wait: std::time::Duration,
+        attempt_time: std::time::Duration,
+        outcome: crate::network::metrics::AttemptOutcome,
+        completion_tokens: Option<u64>,
+    ) {
+        self.routing_metrics.record_attempt(
+            model,
+            crate::network::metrics::AttemptTarget::Endpoint(endpoint.to_string()),
+            queue_wait,
+            attempt_time,
+            outcome,
+            completion_tokens,
+        );
+    }
+
+    pub fn record_routed_request(
+        &self,
+        model: Option<&str>,
+        attempts: usize,
+        outcome: crate::network::metrics::RequestOutcome,
+    ) {
+        self.routing_metrics
+            .record_request(model, attempts, outcome);
+    }
+
+    pub fn routing_metrics_snapshot(
+        &self,
+    ) -> crate::network::metrics::RoutingMetricsStatusSnapshot {
+        self.routing_metrics
+            .status_snapshot(self.inflight_requests())
+    }
+
+    pub fn model_routing_metrics(
+        &self,
+    ) -> HashMap<String, crate::network::metrics::ModelRoutingMetricsSnapshot> {
+        self.routing_metrics.model_snapshots()
     }
 
     pub async fn owner_summary(&self) -> OwnershipSummary {
@@ -1547,6 +1621,7 @@ impl Node {
             peer_change_rx,
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
+            routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             tunnel_tx,
             tunnel_http_tx,
             plugin_manager: Arc::new(Mutex::new(None)),
@@ -1645,6 +1720,7 @@ impl Node {
             peer_change_rx,
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
+            routing_metrics: crate::network::metrics::RoutingMetrics::default(),
             tunnel_tx,
             tunnel_http_tx,
             plugin_manager: Arc::new(Mutex::new(None)),

@@ -649,6 +649,7 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
     let routed = crate::network::proxy::route_to_target(
         node.clone(),
         client,
+        None,
         election::InferenceTarget::MoeRemote(peer_id),
         request,
         crate::network::proxy::ResponseAdapter::None,
@@ -660,6 +661,9 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         !node.has_test_peer(peer_id).await,
         "failed MoE shard should be removed so election can fail down"
     );
+    let metrics = node.routing_metrics_snapshot();
+    assert_eq!(metrics.request_count, 1);
+    assert_eq!(metrics.attempt_unavailable_count, 1);
 
     let mut response = Vec::new();
     observer.read_to_end(&mut response).await.unwrap();

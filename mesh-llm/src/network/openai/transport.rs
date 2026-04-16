@@ -99,7 +99,11 @@ pub enum PipelineProxyResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAttemptResult {
-    Delivered { status_code: u16 },
+    Delivered {
+        status_code: u16,
+        completion_tokens: Option<u64>,
+    },
+    RetryableTimeout,
     RetryableUnavailable,
     RetryableContextOverflow,
     ClientDisconnected,
@@ -108,6 +112,7 @@ enum RouteAttemptResult {
 fn route_attempt_result_label(result: &RouteAttemptResult) -> &'static str {
     match result {
         RouteAttemptResult::Delivered { .. } => "delivered",
+        RouteAttemptResult::RetryableTimeout => "retryable_timeout",
         RouteAttemptResult::RetryableUnavailable => "retryable_unavailable",
         RouteAttemptResult::RetryableContextOverflow => "retryable_context_overflow",
         RouteAttemptResult::ClientDisconnected => "client_disconnected",
@@ -131,6 +136,16 @@ fn is_client_disconnect_error(err: &anyhow::Error) -> bool {
             .downcast_ref::<std::io::Error>()
             .map(|io_err| is_disconnect_kind(io_err.kind()))
             .unwrap_or(false)
+    })
+}
+
+fn is_timeout_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .map(|io_err| io_err.kind() == std::io::ErrorKind::TimedOut)
+            .unwrap_or(false)
+            || cause.is::<tokio::time::error::Elapsed>()
     })
 }
 
@@ -940,6 +955,34 @@ fn is_retryable_context_overflow_response(body: &[u8]) -> bool {
     mentions_context && mentions_limit
 }
 
+fn parse_completion_tokens_from_json_body(body: &[u8]) -> Option<u64> {
+    let json = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let usage = json.get("usage")?;
+    usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(|value| value.as_u64())
+}
+
+fn delivered_attempt_outcome(status_code: u16) -> crate::network::metrics::AttemptOutcome {
+    match status_code {
+        200..=299 => crate::network::metrics::AttemptOutcome::Success,
+        400..=499 => crate::network::metrics::AttemptOutcome::Rejected,
+        500..=599 => crate::network::metrics::AttemptOutcome::Unavailable,
+        _ => crate::network::metrics::AttemptOutcome::Rejected,
+    }
+}
+
+fn request_outcome_for_status(
+    status_code: u16,
+    service: crate::network::metrics::RequestService,
+) -> crate::network::metrics::RequestOutcome {
+    match status_code {
+        200..=299 => crate::network::metrics::RequestOutcome::Success(service),
+        _ => crate::network::metrics::RequestOutcome::Rejected(service),
+    }
+}
+
 async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
     tcp_stream: &mut TcpStream,
     reader: &mut R,
@@ -974,6 +1017,7 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
     let mut model = String::new();
     let mut output_text = String::new();
     let mut usage = None;
+    let mut observed_completion_tokens = None;
     let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
     tcp_stream.write_all(header.as_bytes()).await?;
 
@@ -1047,6 +1091,12 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
                     .as_ref()
                     .map(response_adapter::stream_usage_to_responses_usage);
             }
+            if observed_completion_tokens.is_none() {
+                observed_completion_tokens = chunk
+                    .usage
+                    .as_ref()
+                    .and_then(|value| value.completion_tokens);
+            }
         }
         if processed > 0 {
             carry = carry[processed..].to_string();
@@ -1106,6 +1156,7 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
     let _ = tcp_stream.shutdown().await;
     Ok(RouteAttemptResult::Delivered {
         status_code: probe.status_code,
+        completion_tokens: observed_completion_tokens,
     })
 }
 
@@ -1129,6 +1180,7 @@ async fn relay_translated_responses_json<R: AsyncRead + Unpin>(
         .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
     let translated_body =
         response_adapter::translate_chat_completion_to_responses(&buffered[parsed.header_end..])?;
+    let completion_tokens = parse_completion_tokens_from_json_body(&translated_body);
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         translated_body.len()
@@ -1138,6 +1190,7 @@ async fn relay_translated_responses_json<R: AsyncRead + Unpin>(
     let _ = tcp_stream.shutdown().await;
     Ok(RouteAttemptResult::Delivered {
         status_code: probe.status_code,
+        completion_tokens,
     })
 }
 
@@ -1409,7 +1462,10 @@ async fn relay_error_response<R: AsyncRead + Unpin>(
     };
     tcp_stream.write_all(&outgoing).await?;
     let _ = tcp_stream.shutdown().await;
-    Ok(RouteAttemptResult::Delivered { status_code })
+    Ok(RouteAttemptResult::Delivered {
+        status_code,
+        completion_tokens: None,
+    })
 }
 
 async fn relay_probed_response<R: AsyncRead + Unpin>(
@@ -1440,6 +1496,26 @@ async fn relay_probed_response<R: AsyncRead + Unpin>(
         return relay_error_response(tcp_stream, reader, probe).await;
     }
 
+    let parsed = try_parse_response_headers(&probe.buffered)?
+        .ok_or_else(|| anyhow!("incomplete HTTP response"))?;
+    if let Some(content_length) = parsed.content_length {
+        const MAX_SUCCESS_METRICS_BODY_BYTES: usize = 1024 * 1024;
+        if content_length <= MAX_SUCCESS_METRICS_BODY_BYTES {
+            let mut buffered = probe.buffered;
+            while buffered.len() < parsed.header_end + content_length {
+                read_response_chunk(reader, &mut buffered).await?;
+            }
+            let completion_tokens =
+                parse_completion_tokens_from_json_body(&buffered[parsed.header_end..]);
+            tcp_stream.write_all(&buffered).await?;
+            let _ = tcp_stream.shutdown().await;
+            return Ok(RouteAttemptResult::Delivered {
+                status_code: probe.status_code,
+                completion_tokens,
+            });
+        }
+    }
+
     tcp_stream.write_all(&probe.buffered).await?;
     if let Err(err) = tokio::io::copy(reader, &mut tcp_stream).await {
         tracing::debug!("response relay ended after headers were committed: {err}");
@@ -1447,6 +1523,7 @@ async fn relay_probed_response<R: AsyncRead + Unpin>(
     let _ = tcp_stream.shutdown().await;
     Ok(RouteAttemptResult::Delivered {
         status_code: probe.status_code,
+        completion_tokens: None,
     })
 }
 
@@ -1490,7 +1567,10 @@ async fn route_local_attempt(
                                 return RouteAttemptResult::ClientDisconnected;
                             }
                             tracing::debug!("API proxy (local) ended after commit: {err}");
-                            RouteAttemptResult::Delivered { status_code }
+                            RouteAttemptResult::Delivered {
+                                status_code,
+                                completion_tokens: None,
+                            }
                         }
                     }
                 }
@@ -1498,7 +1578,11 @@ async fn route_local_attempt(
                     tracing::warn!(
                         "API proxy: failed to read local response from backend proxy on {port}: {err}"
                     );
-                    RouteAttemptResult::RetryableUnavailable
+                    if is_timeout_error(&err) {
+                        RouteAttemptResult::RetryableTimeout
+                    } else {
+                        RouteAttemptResult::RetryableUnavailable
+                    }
                 }
             }
         }
@@ -1547,7 +1631,10 @@ async fn route_remote_attempt(
                                 return RouteAttemptResult::ClientDisconnected;
                             }
                             tracing::debug!("API proxy (remote) ended after commit: {err}");
-                            RouteAttemptResult::Delivered { status_code }
+                            RouteAttemptResult::Delivered {
+                                status_code,
+                                completion_tokens: None,
+                            }
                         }
                     }
                 }
@@ -1556,7 +1643,11 @@ async fn route_remote_attempt(
                         "API proxy: failed to read response from host {}: {err}",
                         host_id.fmt_short()
                     );
-                    RouteAttemptResult::RetryableUnavailable
+                    if is_timeout_error(&err) {
+                        RouteAttemptResult::RetryableTimeout
+                    } else {
+                        RouteAttemptResult::RetryableUnavailable
+                    }
                 }
             }
         }
@@ -1565,7 +1656,11 @@ async fn route_remote_attempt(
                 "API proxy: can't tunnel to host {}: {err}",
                 host_id.fmt_short()
             );
-            RouteAttemptResult::RetryableUnavailable
+            if is_timeout_error(&err) {
+                RouteAttemptResult::RetryableTimeout
+            } else {
+                RouteAttemptResult::RetryableUnavailable
+            }
         }
     }
 }
@@ -1650,7 +1745,10 @@ async fn route_http_endpoint_attempt(
                             tracing::debug!(
                                 "API proxy (external endpoint) ended after commit: {err}"
                             );
-                            RouteAttemptResult::Delivered { status_code }
+                            RouteAttemptResult::Delivered {
+                                status_code,
+                                completion_tokens: None,
+                            }
                         }
                     }
                 }
@@ -1660,7 +1758,11 @@ async fn route_http_endpoint_attempt(
                         base_url,
                         err
                     );
-                    RouteAttemptResult::RetryableUnavailable
+                    if is_timeout_error(&err) {
+                        RouteAttemptResult::RetryableTimeout
+                    } else {
+                        RouteAttemptResult::RetryableUnavailable
+                    }
                 }
             }
         }
@@ -1670,7 +1772,11 @@ async fn route_http_endpoint_attempt(
                 base_url,
                 err
             );
-            RouteAttemptResult::RetryableUnavailable
+            if err.kind() == std::io::ErrorKind::TimedOut {
+                RouteAttemptResult::RetryableTimeout
+            } else {
+                RouteAttemptResult::RetryableUnavailable
+            }
         }
     }
 }
@@ -1856,6 +1962,11 @@ pub async fn handle_mesh_request(
     let target_hosts = if target_hosts.is_empty() && effective_model.is_some() {
         // Named model requested but no host serves it — tell the agent to retry.
         let model = effective_model.as_deref().unwrap();
+        node.record_routed_request(
+            Some(model),
+            0,
+            crate::network::metrics::RequestOutcome::Unavailable,
+        );
         tracing::warn!("API proxy: model {model:?} not available, no hosts serving it");
         let _ = send_error(
             tcp_stream,
@@ -1870,6 +1981,11 @@ pub async fn handle_mesh_request(
         match node.any_host().await {
             Some(p) => vec![p.id],
             None => {
+                node.record_routed_request(
+                    None,
+                    0,
+                    crate::network::metrics::RequestOutcome::Unavailable,
+                );
                 let _ = send_503(
                     tcp_stream,
                     "no peers serving any model (mesh empty or gossip stale)",
@@ -1932,12 +2048,16 @@ pub async fn handle_mesh_request(
     // Try each host in order — if tunnel fails, retry with next.
     // On first failure, trigger background gossip refresh so future requests
     // have a fresh routing table (doesn't block the retry loop).
+    let route_started = Instant::now();
     let mut last_retryable = false;
     let mut refreshed = false;
+    let mut attempts = 0usize;
     let total_targets = target_hosts.len();
     for (idx, target_host) in target_hosts.iter().enumerate() {
+        attempts += 1;
+        let attempt_started = Instant::now();
         let retry_context_overflow = idx + 1 < total_targets;
-        match route_remote_attempt(
+        let attempt_result = route_remote_attempt(
             &node,
             &mut tcp_stream,
             *target_host,
@@ -1945,9 +2065,53 @@ pub async fn handle_mesh_request(
             retry_context_overflow,
             request.response_adapter,
         )
-        .await
-        {
-            RouteAttemptResult::Delivered { status_code } => {
+        .await;
+        let attempt_target = election::InferenceTarget::Remote(*target_host);
+        let queue_wait = attempt_started.duration_since(route_started);
+        let attempt_time = attempt_started.elapsed();
+        match &attempt_result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens,
+            } => node.record_inference_attempt(
+                effective_model.as_deref(),
+                &attempt_target,
+                queue_wait,
+                attempt_time,
+                delivered_attempt_outcome(*status_code),
+                *completion_tokens,
+            ),
+            RouteAttemptResult::RetryableTimeout => node.record_inference_attempt(
+                effective_model.as_deref(),
+                &attempt_target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Timeout,
+                None,
+            ),
+            RouteAttemptResult::RetryableUnavailable => node.record_inference_attempt(
+                effective_model.as_deref(),
+                &attempt_target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Unavailable,
+                None,
+            ),
+            RouteAttemptResult::RetryableContextOverflow => node.record_inference_attempt(
+                effective_model.as_deref(),
+                &attempt_target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::ContextOverflow,
+                None,
+            ),
+            RouteAttemptResult::ClientDisconnected => {}
+        }
+        match attempt_result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens: _,
+            } => {
                 if should_learn_affinity(status_code) {
                     if let (Some(name), Some(prefix_hash)) =
                         (effective_model.as_ref(), prepared.learn_prefix_hash)
@@ -1956,6 +2120,14 @@ pub async fn handle_mesh_request(
                         affinity.learn_target(name, prefix_hash, &target);
                     }
                 }
+                node.record_routed_request(
+                    effective_model.as_deref(),
+                    attempts,
+                    request_outcome_for_status(
+                        status_code,
+                        crate::network::metrics::RequestService::Remote,
+                    ),
+                );
                 release_request_objects(&node, &request.request_object_request_ids).await;
                 return;
             }
@@ -1975,6 +2147,17 @@ pub async fn handle_mesh_request(
                     target_host.fmt_short()
                 );
                 last_retryable = true;
+            }
+            RouteAttemptResult::RetryableTimeout => {
+                tracing::warn!("Host {} timed out, trying next", target_host.fmt_short());
+                last_retryable = true;
+                if !refreshed {
+                    let refresh_node = node.clone();
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
+                    refreshed = true;
+                }
             }
             RouteAttemptResult::RetryableUnavailable => {
                 if let (Some(name), Some(prefix_hash), Some(cached_target)) = (
@@ -2018,6 +2201,11 @@ pub async fn handle_mesh_request(
     let reason = format!(
         "all {} tunnel(s) to hosts for {:?} failed (mesh request)",
         total_targets, effective_model,
+    );
+    node.record_routed_request(
+        effective_model.as_deref(),
+        attempts,
+        crate::network::metrics::RequestOutcome::Unavailable,
     );
     let _ = send_503(tcp_stream, &reason).await;
     release_request_objects(&node, &request.request_object_request_ids).await;
@@ -2075,6 +2263,11 @@ pub async fn route_model_request(
     let ordered_candidates =
         order_targets_by_context(&node, model, required_tokens, &targets.candidates(model)).await;
     if ordered_candidates.is_empty() {
+        node.record_routed_request(
+            Some(model),
+            0,
+            crate::network::metrics::RequestOutcome::Unavailable,
+        );
         return false;
     }
 
@@ -2086,6 +2279,11 @@ pub async fn route_model_request(
         affinity,
     );
     if matches!(selection.target, election::InferenceTarget::None) {
+        node.record_routed_request(
+            Some(model),
+            0,
+            crate::network::metrics::RequestOutcome::Unavailable,
+        );
         let _ = send_503(
             tcp_stream,
             &format!(
@@ -2136,6 +2334,46 @@ pub async fn route_model_request(
             response_adapter,
         )
         .await;
+        let queue_wait = attempt_started.duration_since(route_started);
+        let attempt_time = attempt_started.elapsed();
+        match &attempt_result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens,
+            } => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                delivered_attempt_outcome(*status_code),
+                *completion_tokens,
+            ),
+            RouteAttemptResult::RetryableTimeout => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Timeout,
+                None,
+            ),
+            RouteAttemptResult::RetryableUnavailable => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Unavailable,
+                None,
+            ),
+            RouteAttemptResult::RetryableContextOverflow => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::ContextOverflow,
+                None,
+            ),
+            RouteAttemptResult::ClientDisconnected => {}
+        }
         tracing::info!(
             model = model,
             target = ?target,
@@ -2147,12 +2385,33 @@ pub async fn route_model_request(
             "openai route_model_request attempt"
         );
         match attempt_result {
-            RouteAttemptResult::Delivered { status_code } => {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens: _,
+            } => {
                 if should_learn_affinity(status_code) {
                     if let Some(prefix_hash) = selection.learn_prefix_hash {
                         affinity.learn_target(model, prefix_hash, &target);
                     }
                 }
+                let service = match target {
+                    election::InferenceTarget::Local(_)
+                    | election::InferenceTarget::MoeLocal(_) => {
+                        crate::network::metrics::RequestService::Local
+                    }
+                    election::InferenceTarget::Remote(_)
+                    | election::InferenceTarget::MoeRemote(_) => {
+                        crate::network::metrics::RequestService::Remote
+                    }
+                    election::InferenceTarget::None => {
+                        crate::network::metrics::RequestService::Remote
+                    }
+                };
+                node.record_routed_request(
+                    Some(model),
+                    attempts,
+                    request_outcome_for_status(status_code, service),
+                );
                 tracing::info!(
                     model = model,
                     attempts = attempts,
@@ -2172,6 +2431,24 @@ pub async fn route_model_request(
                     }
                 }
                 tracing::warn!("Target {target:?} rejected request with context overflow-style 400, trying next");
+            }
+            RouteAttemptResult::RetryableTimeout => {
+                if let (Some(prefix_hash), Some(cached_target)) = (
+                    selection.learn_prefix_hash,
+                    selection.cached_target.as_ref(),
+                ) {
+                    if cached_target == &target {
+                        affinity.forget_target(model, prefix_hash, &target);
+                    }
+                }
+                if !refreshed {
+                    let refresh_node = node.clone();
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
+                    refreshed = true;
+                }
+                tracing::warn!("Target {target:?} timed out, trying next");
             }
             RouteAttemptResult::RetryableUnavailable => {
                 if let (Some(prefix_hash), Some(cached_target)) = (
@@ -2208,6 +2485,11 @@ pub async fn route_model_request(
         &format!("all {} target(s) for model '{model}' failed", total_targets),
     )
     .await;
+    node.record_routed_request(
+        Some(model),
+        attempts,
+        crate::network::metrics::RequestOutcome::Unavailable,
+    );
     tracing::warn!(
         model = model,
         attempts = attempts,
@@ -2230,6 +2512,11 @@ pub async fn route_moe_request(
     let route_started = Instant::now();
     let mut tcp_stream = tcp_stream;
     let Some(primary_target) = targets.get_moe_target(session_hint) else {
+        node.record_routed_request(
+            Some(model),
+            0,
+            crate::network::metrics::RequestOutcome::Unavailable,
+        );
         let _ = send_503(
             tcp_stream,
             &format!("no MoE target for model '{model}' session '{session_hint}'"),
@@ -2245,6 +2532,11 @@ pub async fn route_moe_request(
     )
     .await;
     if ordered.is_empty() {
+        node.record_routed_request(
+            Some(model),
+            0,
+            crate::network::metrics::RequestOutcome::Unavailable,
+        );
         let _ = send_503(
             tcp_stream,
             &format!("no MoE failover targets for model '{model}'"),
@@ -2270,6 +2562,46 @@ pub async fn route_moe_request(
             ResponseAdapter::None,
         )
         .await;
+        let queue_wait = attempt_started.duration_since(route_started);
+        let attempt_time = attempt_started.elapsed();
+        match &attempt_result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens,
+            } => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                delivered_attempt_outcome(*status_code),
+                *completion_tokens,
+            ),
+            RouteAttemptResult::RetryableTimeout => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Timeout,
+                None,
+            ),
+            RouteAttemptResult::RetryableUnavailable => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::Unavailable,
+                None,
+            ),
+            RouteAttemptResult::RetryableContextOverflow => node.record_inference_attempt(
+                Some(model),
+                &target,
+                queue_wait,
+                attempt_time,
+                crate::network::metrics::AttemptOutcome::ContextOverflow,
+                None,
+            ),
+            RouteAttemptResult::ClientDisconnected => {}
+        }
         tracing::info!(
             model = model,
             session_hint = session_hint,
@@ -2282,7 +2614,28 @@ pub async fn route_moe_request(
             "openai route_moe_request attempt"
         );
         match attempt_result {
-            RouteAttemptResult::Delivered { status_code } => {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens: _,
+            } => {
+                let service = match target {
+                    election::InferenceTarget::Local(_)
+                    | election::InferenceTarget::MoeLocal(_) => {
+                        crate::network::metrics::RequestService::Local
+                    }
+                    election::InferenceTarget::Remote(_)
+                    | election::InferenceTarget::MoeRemote(_) => {
+                        crate::network::metrics::RequestService::Remote
+                    }
+                    election::InferenceTarget::None => {
+                        crate::network::metrics::RequestService::Remote
+                    }
+                };
+                node.record_routed_request(
+                    Some(model),
+                    attempts,
+                    request_outcome_for_status(status_code, service),
+                );
                 tracing::info!(
                     model = model,
                     session_hint = session_hint,
@@ -2295,6 +2648,16 @@ pub async fn route_moe_request(
             }
             RouteAttemptResult::RetryableContextOverflow => {
                 tracing::warn!("MoE target {target:?} rejected request with context overflow-style 400, trying next");
+            }
+            RouteAttemptResult::RetryableTimeout => {
+                if !refreshed {
+                    let refresh_node = node.clone();
+                    tokio::spawn(async move {
+                        refresh_node.gossip_one_peer().await;
+                    });
+                    refreshed = true;
+                }
+                tracing::warn!("MoE target {target:?} timed out, trying next");
             }
             RouteAttemptResult::RetryableUnavailable => {
                 if let election::InferenceTarget::MoeRemote(peer_id) = &target {
@@ -2327,6 +2690,11 @@ pub async fn route_moe_request(
         &format!("all MoE targets for model '{model}' failed"),
     )
     .await;
+    node.record_routed_request(
+        Some(model),
+        attempts,
+        crate::network::metrics::RequestOutcome::Unavailable,
+    );
     tracing::warn!(
         model = model,
         session_hint = session_hint,
@@ -2343,6 +2711,7 @@ pub async fn route_moe_request(
 pub async fn route_to_target(
     node: mesh::Node,
     tcp_stream: TcpStream,
+    model: Option<&str>,
     target: election::InferenceTarget,
     prefetched: &[u8],
     response_adapter: ResponseAdapter,
@@ -2363,6 +2732,36 @@ pub async fn route_to_target(
         response_adapter,
     )
     .await;
+    node.record_inference_attempt(
+        model,
+        &target,
+        Duration::ZERO,
+        route_started.elapsed(),
+        match &result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens: _,
+            } => delivered_attempt_outcome(*status_code),
+            RouteAttemptResult::RetryableTimeout => {
+                crate::network::metrics::AttemptOutcome::Timeout
+            }
+            RouteAttemptResult::RetryableUnavailable => {
+                crate::network::metrics::AttemptOutcome::Unavailable
+            }
+            RouteAttemptResult::RetryableContextOverflow => {
+                crate::network::metrics::AttemptOutcome::ContextOverflow
+            }
+            RouteAttemptResult::ClientDisconnected => {
+                crate::network::metrics::AttemptOutcome::Unavailable
+            }
+        },
+        match &result {
+            RouteAttemptResult::Delivered {
+                completion_tokens, ..
+            } => *completion_tokens,
+            _ => None,
+        },
+    );
     tracing::info!(
         target = ?target,
         outcome = route_attempt_result_label(&result),
@@ -2370,11 +2769,33 @@ pub async fn route_to_target(
         "openai route_to_target result"
     );
     match result {
-        RouteAttemptResult::Delivered { .. } => true,
-        RouteAttemptResult::RetryableContextOverflow | RouteAttemptResult::RetryableUnavailable => {
+        RouteAttemptResult::Delivered {
+            status_code,
+            completion_tokens: _,
+        } => {
+            let service = match target {
+                election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
+                    crate::network::metrics::RequestService::Local
+                }
+                election::InferenceTarget::Remote(_) | election::InferenceTarget::MoeRemote(_) => {
+                    crate::network::metrics::RequestService::Remote
+                }
+                election::InferenceTarget::None => crate::network::metrics::RequestService::Remote,
+            };
+            node.record_routed_request(model, 1, request_outcome_for_status(status_code, service));
+            true
+        }
+        RouteAttemptResult::RetryableTimeout
+        | RouteAttemptResult::RetryableContextOverflow
+        | RouteAttemptResult::RetryableUnavailable => {
             if let Some(moe_host_id) = moe_remote_id {
                 node.handle_peer_death(moe_host_id).await;
             }
+            node.record_routed_request(
+                model,
+                1,
+                crate::network::metrics::RequestOutcome::Unavailable,
+            );
             let _ = send_503(
                 tcp_stream,
                 &format!("single target {target:?} unavailable (route_to_target)"),
@@ -2387,6 +2808,8 @@ pub async fn route_to_target(
 }
 
 pub async fn route_http_endpoint_request(
+    node: &mesh::Node,
+    model: Option<&str>,
     tcp_stream: &mut TcpStream,
     base_url: &str,
     prefetched: &[u8],
@@ -2403,6 +2826,36 @@ pub async fn route_http_endpoint_request(
         response_adapter,
     )
     .await;
+    node.record_endpoint_attempt(
+        model,
+        base_url,
+        Duration::ZERO,
+        started.elapsed(),
+        match &result {
+            RouteAttemptResult::Delivered {
+                status_code,
+                completion_tokens: _,
+            } => delivered_attempt_outcome(*status_code),
+            RouteAttemptResult::RetryableTimeout => {
+                crate::network::metrics::AttemptOutcome::Timeout
+            }
+            RouteAttemptResult::RetryableUnavailable => {
+                crate::network::metrics::AttemptOutcome::Unavailable
+            }
+            RouteAttemptResult::RetryableContextOverflow => {
+                crate::network::metrics::AttemptOutcome::ContextOverflow
+            }
+            RouteAttemptResult::ClientDisconnected => {
+                crate::network::metrics::AttemptOutcome::Unavailable
+            }
+        },
+        match &result {
+            RouteAttemptResult::Delivered {
+                completion_tokens, ..
+            } => *completion_tokens,
+            _ => None,
+        },
+    );
     tracing::info!(
         endpoint = base_url,
         path = request_path,
@@ -2411,8 +2864,28 @@ pub async fn route_http_endpoint_request(
         "openai route_http_endpoint_request result"
     );
     match result {
-        RouteAttemptResult::Delivered { .. } => true,
-        RouteAttemptResult::RetryableContextOverflow | RouteAttemptResult::RetryableUnavailable => {
+        RouteAttemptResult::Delivered {
+            status_code,
+            completion_tokens: _,
+        } => {
+            node.record_routed_request(
+                model,
+                1,
+                request_outcome_for_status(
+                    status_code,
+                    crate::network::metrics::RequestService::Endpoint,
+                ),
+            );
+            true
+        }
+        RouteAttemptResult::RetryableTimeout
+        | RouteAttemptResult::RetryableContextOverflow
+        | RouteAttemptResult::RetryableUnavailable => {
+            node.record_routed_request(
+                model,
+                1,
+                crate::network::metrics::RequestOutcome::Unavailable,
+            );
             false
         }
         RouteAttemptResult::ClientDisconnected => true,
@@ -2768,8 +3241,15 @@ mod tests {
     #[test]
     fn test_route_attempt_result_label_values() {
         assert_eq!(
-            route_attempt_result_label(&RouteAttemptResult::Delivered { status_code: 200 }),
+            route_attempt_result_label(&RouteAttemptResult::Delivered {
+                status_code: 200,
+                completion_tokens: None,
+            }),
             "delivered"
+        );
+        assert_eq!(
+            route_attempt_result_label(&RouteAttemptResult::RetryableTimeout),
+            "retryable_timeout"
         );
         assert_eq!(
             route_attempt_result_label(&RouteAttemptResult::RetryableUnavailable),
@@ -2783,6 +3263,45 @@ mod tests {
             route_attempt_result_label(&RouteAttemptResult::ClientDisconnected),
             "client_disconnected"
         );
+    }
+
+    #[test]
+    fn test_parse_completion_tokens_from_json_body_supports_chat_and_responses_shapes() {
+        let chat = serde_json::json!({
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        });
+        let responses = serde_json::json!({
+            "usage": {"input_tokens": 5, "output_tokens": 4, "total_tokens": 9}
+        });
+
+        assert_eq!(
+            parse_completion_tokens_from_json_body(chat.to_string().as_bytes()),
+            Some(3)
+        );
+        assert_eq!(
+            parse_completion_tokens_from_json_body(responses.to_string().as_bytes()),
+            Some(4)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_is_timeout_error_accepts_concrete_timeout_types_only() {
+        let io_timeout = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "socket timed out",
+        ));
+        let elapsed_timeout = anyhow::Error::from(
+            tokio::time::timeout(Duration::from_millis(0), async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            })
+            .await
+            .unwrap_err(),
+        );
+        let generic_timeout_text = anyhow::anyhow!("context timeout budget exceeded");
+
+        assert!(is_timeout_error(&io_timeout));
+        assert!(is_timeout_error(&elapsed_timeout));
+        assert!(!is_timeout_error(&generic_timeout_text));
     }
 
     #[test]

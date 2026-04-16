@@ -299,6 +299,8 @@ pub(crate) async fn api_proxy(
                                 match plugin_manager.inference_endpoint_for_model(name).await {
                                     Ok(Some(endpoint)) => {
                                         let routed = proxy::route_http_endpoint_request(
+                                            &node,
+                                            Some(name),
                                             &mut tcp_stream,
                                             &endpoint.address,
                                             &request.raw,
@@ -376,6 +378,7 @@ pub(crate) async fn api_proxy(
                     let _ = proxy::route_to_target(
                         node.clone(),
                         tcp_stream,
+                        effective_model.as_deref(),
                         target,
                         &request.raw,
                         request.response_adapter,

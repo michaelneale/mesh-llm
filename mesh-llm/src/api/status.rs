@@ -1,6 +1,6 @@
 use super::{RuntimeModelPayload, RuntimeProcessPayload};
 use crate::crypto::{OwnershipStatus, OwnershipSummary};
-use crate::network::affinity;
+use crate::network::{affinity, metrics};
 use crate::system::hardware::expand_gpu_names;
 use serde::Serialize;
 
@@ -140,6 +140,7 @@ pub(super) struct StatusPayload {
     pub(super) my_is_soc: Option<bool>,
     pub(super) gpus: Vec<GpuEntry>,
     pub(super) routing_affinity: affinity::AffinityStatsSnapshot,
+    pub(super) routing_metrics: metrics::RoutingMetricsStatusSnapshot,
 }
 
 #[derive(Serialize)]
@@ -263,6 +264,8 @@ pub(super) struct MeshModelPayload {
     pub(super) request_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) last_active_secs_ago: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) routing_metrics: Option<metrics::ModelRoutingMetricsSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) source_page_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
