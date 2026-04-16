@@ -35,6 +35,7 @@ import {
   TooltipTrigger,
 } from "../../../components/ui/tooltip";
 import { cn } from "../../../lib/utils";
+import { useCommandBar } from "./command-bar/useCommandBar";
 import type { TopSection } from "../lib/routes";
 
 const DOCS_URL = "https://docs.anarchai.org";
@@ -94,6 +95,7 @@ export function AppHeader({
   const [tokenCopied, setTokenCopied] = useState(false);
   const [apiDirectCopied, setApiDirectCopied] = useState(false);
   const [isThemePopoverOpen, setIsThemePopoverOpen] = useState(false);
+  const { openCommandBar } = useCommandBar();
 
   async function copyInviteWithModelCommand() {
     if (!inviteWithModelCommand) return;
@@ -181,6 +183,16 @@ export function AppHeader({
           </NavigationMenuList>
         </NavigationMenu>
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-9 gap-2"
+            onClick={() => openCommandBar("models")}
+          >
+            <Sparkles className="h-4 w-4" />
+            <span>Models</span>
+          </Button>
           <Popover>
             <Tooltip>
               <TooltipTrigger asChild>

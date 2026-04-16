@@ -1,5 +1,89 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+vi.mock("./components/ui/select", async () => {
+  const React = await import("react");
+
+  function MockSelectItem(_props: { value: string; children: React.ReactNode }) {
+    return null;
+  }
+
+  function collectItems(children: React.ReactNode): Array<{ value: string; label: string }> {
+    const items: Array<{ value: string; label: string }> = [];
+
+    React.Children.forEach(children, (child) => {
+      if (!React.isValidElement(child)) return;
+
+      if (child.type === MockSelectItem) {
+        items.push({
+          value: child.props.value as string,
+          label: String(child.props.children),
+        });
+        return;
+      }
+
+      if (child.props && "children" in child.props) {
+        items.push(...collectItems(child.props.children));
+      }
+    });
+
+    return items;
+  }
+
+  const SelectContext = React.createContext<{
+    value?: string;
+    onValueChange?: (value: string) => void;
+    items: Array<{ value: string; label: string }>;
+  } | null>(null);
+
+  function Select({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value?: string;
+    onValueChange?: (value: string) => void;
+    children: React.ReactNode;
+  }) {
+    const items = collectItems(children);
+
+    return (
+      <SelectContext.Provider value={{ value, onValueChange, items }}>
+        {children}
+      </SelectContext.Provider>
+    );
+  }
+
+  function SelectTrigger({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+    const context = React.useContext(SelectContext);
+
+    return (
+      <select
+        {...props}
+        className={className}
+        value={context?.value ?? ""}
+        onChange={(event) => context?.onValueChange?.(event.target.value)}
+      >
+        {context?.items.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return {
+    Select,
+    SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectItem: MockSelectItem,
+    SelectLabel: () => null,
+    SelectSeparator: () => null,
+    SelectTrigger,
+    SelectValue: () => null,
+  };
+});
 
 import {
   App,
@@ -197,6 +281,19 @@ beforeAll(() => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    value: vi.fn(() => false),
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+    configurable: true,
+    value: vi.fn(),
   });
 });
 
@@ -475,6 +572,165 @@ describe("App routing and status", () => {
     expect(input).toBeDisabled();
     expect(input).toHaveAttribute("placeholder", "Waiting for a warm model...");
     expect(screen.getByTestId("chat-send")).toBeDisabled();
+  });
+
+  it("renders the model filter bar, narrows results with capability and status filters, and still selects from the filtered subset", async () => {
+    statusPayload = {
+      ...createStatusPayload(),
+      model_name: "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+      models: [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+        "Qwen2.5-VL-72B-Explorer-Q4_K_M",
+        "GLM-4.7-Flash-Q4_K_M",
+      ],
+      available_models: [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+        "Qwen2.5-VL-72B-Explorer-Q4_K_M",
+        "GLM-4.7-Flash-Q4_K_M",
+      ],
+      serving_models: [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+        "Qwen2.5-VL-72B-Explorer-Q4_K_M",
+        "GLM-4.7-Flash-Q4_K_M",
+      ],
+      hosted_models: [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+        "Qwen2.5-VL-72B-Explorer-Q4_K_M",
+        "GLM-4.7-Flash-Q4_K_M",
+      ],
+    };
+    modelsPayload = {
+      mesh_models: [
+        {
+          name: "Qwen2.5-VL-7B-Instruct-Q4_K_M",
+          display_name: "Vision Scout",
+          status: "warm",
+          node_count: 2,
+          size_gb: 7.2,
+          multimodal: true,
+          vision: true,
+        },
+        {
+          name: "Qwen2.5-VL-72B-Explorer-Q4_K_M",
+          display_name: "Night Watch",
+          status: "cold",
+          node_count: 1,
+          size_gb: 8.1,
+          vision: true,
+        },
+        {
+          name: "GLM-4.7-Flash-Q4_K_M",
+          display_name: "Operator Flash",
+          status: "warm",
+          node_count: 3,
+          size_gb: 4.7,
+          reasoning: true,
+          moe: true,
+        },
+      ],
+    };
+    setPath("/dashboard");
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Switch models" });
+    expect(within(dialog).getByRole("button", { name: "Multimodal" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Vision" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Audio" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Reasoning" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "MoE" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Tool use" })).toBeInTheDocument();
+
+    const statusTrigger = within(dialog).getByRole("combobox", {
+      name: "Model status filter",
+    });
+    expect(statusTrigger).toHaveValue("all");
+
+    const listbox = within(dialog).getByRole("listbox", { name: "Command bar results" });
+    const visionToggle = within(dialog).getByRole("button", { name: "Vision" });
+
+    fireEvent.click(visionToggle);
+
+    await waitFor(() => {
+      expect(within(listbox).getByText("Qwen2.5-VL-7B-Instruct-Q4_K_M")).toBeInTheDocument();
+    });
+    expect(within(listbox).getByText("Qwen2.5-VL-72B-Explorer-Q4_K_M")).toBeInTheDocument();
+    expect(within(listbox).queryByText("GLM-4.7-Flash-Q4_K_M")).not.toBeInTheDocument();
+
+    fireEvent.change(statusTrigger, { target: { value: "warm" } });
+
+    await waitFor(() => {
+      expect(within(listbox).getByText("Qwen2.5-VL-7B-Instruct-Q4_K_M")).toBeInTheDocument();
+    });
+    expect(within(listbox).queryByText("Qwen2.5-VL-72B-Explorer-Q4_K_M")).not.toBeInTheDocument();
+
+    const input = within(dialog).getByRole("textbox", { name: "Command bar search" });
+    fireEvent.change(input, { target: { value: "night" } });
+
+    await waitFor(() => {
+      expect(listbox).toHaveTextContent("No models match this search.");
+    });
+    expect(within(listbox).queryByText("Qwen2.5-VL-72B-Explorer-Q4_K_M")).not.toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "scout" } });
+
+    await waitFor(() => {
+      expect(within(listbox).getByText("Qwen2.5-VL-7B-Instruct-Q4_K_M")).toBeInTheDocument();
+    });
+
+    const filteredOption = within(listbox)
+      .getByText("Qwen2.5-VL-7B-Instruct-Q4_K_M")
+      .closest('[role="option"]');
+
+    expect(filteredOption).not.toBeNull();
+    fireEvent.click(filteredOption!);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Switch models" })).not.toBeInTheDocument();
+    });
+    expect(window.location.pathname).toBe("/dashboard");
+    expect(await screen.findByRole("link", { name: "Network" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Invite" }));
+
+    await screen.findByText("mesh-llm --join token-123 --model Qwen2.5-VL-7B-Instruct-Q4_K_M");
+  });
+
+  it("keeps the app model picker single-mode and shows an explicit empty state when the catalog is empty", async () => {
+    statusPayload = createStatusPayload();
+    modelsPayload = { mesh_models: [] };
+    setPath("/dashboard");
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Models" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Switch models" });
+    const listbox = within(dialog).getByRole("listbox", { name: "Command bar results" });
+
+    expect(within(dialog).queryByRole("button", { name: /Models Ctrl\+1/i })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Modes")).not.toBeInTheDocument();
+    expect(listbox).toHaveTextContent("No model catalog data yet.");
+  });
+
+  it("ignores the global command-bar shortcut when focus is inside the chat input", async () => {
+    statusPayload = createStatusPayload();
+    setPath("/chat");
+
+    render(<App />);
+
+    const chatInput = await screen.findByTestId("chat-input");
+    chatInput.focus();
+
+    fireEvent.keyDown(chatInput, { key: "k", metaKey: true });
+
+    expect(screen.queryByRole("dialog", { name: "Switch models" })).not.toBeInTheDocument();
+    expect(chatInput).toHaveFocus();
   });
 });
 
