@@ -182,9 +182,21 @@ async fn run_migrate(args: MigrateArgs) -> Result<()> {
             }
         }
     }
-    if storage.trunk_path.is_none() || storage.experts_path.is_none() {
+    // Point at exactly what is missing so users can self-heal.
+    let trunk_missing = storage.trunk_path.is_none();
+    let experts_missing = storage.experts_path.is_none();
+    if trunk_missing || experts_missing {
+        let missing = match (trunk_missing, experts_missing) {
+            (true, true) => "both trunk and experts paths are unset",
+            (true, false) => "trunk path is unset",
+            (false, true) => "experts path is unset",
+            (false, false) => unreachable!(),
+        };
         bail!(
-            "--nas-root, moe.storage.trunk_path+experts_path, or MESH_LLM_NAS_ROOT must be set"
+            "{missing}. Fix by ONE of:\n  \
+             1. pass --nas-root <absolute-path> (derives <root>/mesh-llm/trunks and /experts),\n  \
+             2. set moe.storage.trunk_path + moe.storage.experts_path in ~/.mesh-llm/config.toml,\n  \
+             3. export MESH_LLM_NAS_ROOT=<absolute-path>"
         );
     }
 
@@ -295,9 +307,47 @@ async fn run_migrate(args: MigrateArgs) -> Result<()> {
         trunk_path_final = Some(resolved.trunk);
     }
 
-    if let Some(trunk) = trunk_path_final {
-        let t_size = fs::metadata(&trunk).map(|m| m.len()).unwrap_or(0);
+    if let Some(trunk) = trunk_path_final.as_ref() {
+        let t_size = fs::metadata(trunk).map(|m| m.len()).unwrap_or(0);
         eprintln!("✅ Trunk: {} ({:.2} GB)", trunk.display(), t_size as f64 / 1e9);
+    }
+
+    // Item #2: compute the full source-model SHA-256 and store it in the
+    // manifest. Migrate is an offline batch operation so the one-time cost
+    // (~10-30 min on 600 GB at NAS speeds) is acceptable; at runtime we
+    // stay on the cheap `source_fingerprint` for version derivation and
+    // only rely on trunk/experts hashes for integrity. Populate the
+    // manifest after the split so we don't re-hash on idempotent re-runs.
+    if let Some(trunk) = trunk_path_final.as_ref() {
+        // trunk path layout: <root>/trunks/<stem>/<version>/trunk.gguf
+        // — the parent directory name is the manifest version id.
+        let version = trunk
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let manifest_path = moe::manifest_file_path(&storage, &args.source_model, &version);
+        if let Some(mp) = manifest_path {
+            if let Ok(mut manifest) = moe::load_manifest(&mp) {
+                if manifest.source_model_sha256.is_empty() {
+                    eprintln!(
+                        "🔎 Computing source model SHA-256 ({:.1} GB, one-time; stored in manifest)...",
+                        source_size as f64 / 1e9
+                    );
+                    let t0 = std::time::Instant::now();
+                    let sha = moe::sha256_file(&args.source_model)
+                        .with_context(|| "hashing source model")?;
+                    eprintln!(
+                        "   source_model_sha256 = {}… ({:.1}s)",
+                        &sha[..16],
+                        t0.elapsed().as_secs_f64()
+                    );
+                    manifest.source_model_sha256 = sha;
+                    moe::write_manifest_atomic(&mp, &manifest)
+                        .with_context(|| "re-writing manifest with source_model_sha256")?;
+                }
+            }
+        }
     }
 
     // Legacy cleanup hint: if the old per-node cache has entries for this

@@ -1316,29 +1316,37 @@ pub fn ensure_trunk_and_expert(
     let manifest_path = manifest_file_path(cfg, &opts.model_path, &version)
         .ok_or_else(|| anyhow::anyhow!("moe.storage.trunk_path not configured"))?;
 
-    // Fast path: manifest already exists → size-verify shards and return.
+    // Fast path: manifest exists AND already contains our node's expert
+    // entry → size-verify and return. If the manifest exists but is missing
+    // our entry (e.g. a sibling node published first), fall through so a
+    // leader run can *extend* it.
     if let Ok(manifest) = load_manifest(&manifest_path) {
-        let resolved = ResolvedShards {
-            trunk: trunk.clone(),
-            experts: experts.clone(),
-            manifest_version: version.clone(),
-        };
-        verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
-        return Ok(resolved);
+        if manifest.experts.contains_key(&opts.node_index) {
+            let resolved = ResolvedShards {
+                trunk: trunk.clone(),
+                experts: experts.clone(),
+                manifest_version: version.clone(),
+            };
+            verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
+            return Ok(resolved);
+        }
     }
 
     if !opts.is_leader {
-        // Followers never build — they wait for the leader to publish.
+        // Followers never build — they wait for the leader to publish a
+        // manifest that includes this node's expert entry.
         let deadline = std::time::Instant::now() + opts.follower_timeout;
         loop {
             if let Ok(manifest) = load_manifest(&manifest_path) {
-                let resolved = ResolvedShards {
-                    trunk: trunk.clone(),
-                    experts: experts.clone(),
-                    manifest_version: version.clone(),
-                };
-                verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
-                return Ok(resolved);
+                if manifest.experts.contains_key(&opts.node_index) {
+                    let resolved = ResolvedShards {
+                        trunk: trunk.clone(),
+                        experts: experts.clone(),
+                        manifest_version: version.clone(),
+                    };
+                    verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
+                    return Ok(resolved);
+                }
             }
             if std::time::Instant::now() >= deadline {
                 return Err(MoeStorageError::ManifestMissing(manifest_path.clone()).into());
@@ -1348,18 +1356,20 @@ pub fn ensure_trunk_and_expert(
     }
 
     // Leader path: hold the trunk build lock, produce THIS node's shards
-    // (other nodes will produce their own experts shards under the same
-    // trunk path with --reuse-trunk), and publish the manifest.
+    // (other nodes produce their own experts shards under the same trunk
+    // path with --reuse-trunk), and publish (or extend) the manifest.
     let lock_path = trunk
         .parent()
         .map(|p| p.join(".trunk.build.lock"))
         .unwrap_or_else(|| PathBuf::from("/tmp/.mesh-llm-trunk.build.lock"));
 
     with_trunk_build_lock(&lock_path, || -> anyhow::Result<()> {
-        // Race check: another process may have published the manifest while
-        // we waited for the lock. Bail out early in that case.
-        if manifest_path.exists() {
-            return Ok(());
+        // Re-check under the lock: another process may have added our entry
+        // while we waited. Idempotent early-exit.
+        if let Ok(m) = load_manifest(&manifest_path) {
+            if m.experts.contains_key(&opts.node_index) {
+                return Ok(());
+            }
         }
 
         // Produce trunk + experts for this node.
@@ -1388,31 +1398,40 @@ pub fn ensure_trunk_and_expert(
             reuse,
         )?;
 
-        // Build the manifest with trunk + THIS node's experts only. Other
-        // nodes will call ensure_trunk_and_expert separately; they'll find
-        // a manifest that mentions only node_index=leader initially and
-        // extend it on their own leader pass.
-        //
-        // For MVP we require the leader to be node 0 AND to call
-        // ensure_trunk_and_expert once per node before any follower starts.
-        // A richer design (shard-by-shard manifest append with flock) is
-        // future work tracked in the storage plan.
+        // If a manifest already exists for this version, append our node
+        // to its experts map; otherwise create a fresh manifest.
         let trunk_meta = std::fs::metadata(&trunk)?;
         let experts_meta = std::fs::metadata(&experts)?;
-        let trunk_sha = sha256_file(&trunk)?;
         let experts_sha = sha256_file(&experts)?;
+        let this_entry = ExpertEntry {
+            path: experts.clone(),
+            sha256: experts_sha,
+            size_bytes: experts_meta.len(),
+        };
 
-        let mut experts_map = BTreeMap::new();
-        experts_map.insert(
-            opts.node_index,
-            ExpertEntry {
-                path: experts.clone(),
-                sha256: experts_sha,
-                size_bytes: experts_meta.len(),
-            },
-        );
+        // If there's already a manifest, inherit its trunk entry (we keep
+        // the first leader's trunk hash — trunk is shared and identical
+        // across nodes by design, so every leader writes the same bits).
+        // Otherwise compute the trunk hash ourselves. This keeps the
+        // append-a-node case cheap: no 150 GB re-hash per late joiner.
+        let (experts_map_base, trunk_entry) = match load_manifest(&manifest_path) {
+            Ok(existing) => (existing.experts, existing.trunk),
+            Err(_) => {
+                let trunk_sha = sha256_file(&trunk)?;
+                (
+                    BTreeMap::new(),
+                    TrunkEntry {
+                        path: trunk.clone(),
+                        sha256: trunk_sha,
+                        size_bytes: trunk_meta.len(),
+                    },
+                )
+            }
+        };
+        let mut experts_map = experts_map_base;
+        experts_map.insert(opts.node_index, this_entry);
 
-        // Full source hash is expensive on 600GB models; we compute it
+        // Full source hash is expensive on 600 GB models; we compute it
         // lazily only when the caller has a cached value or asks for it.
         // For MVP we skip it (empty string means "not computed") — the
         // fingerprint already handled version identity, and integrity
@@ -1423,11 +1442,7 @@ pub fn ensure_trunk_and_expert(
             splitter_version: splitter_version.clone(),
             n_nodes,
             assignments: assignments_sorted.clone(),
-            trunk: TrunkEntry {
-                path: trunk.clone(),
-                sha256: trunk_sha,
-                size_bytes: trunk_meta.len(),
-            },
+            trunk: trunk_entry,
             experts: experts_map,
             created_at: Utc::now(),
         };
