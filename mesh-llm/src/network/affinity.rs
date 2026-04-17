@@ -925,4 +925,19 @@ mod tests {
         affinity.remember_auto_model(1, "model");
         assert_eq!(affinity.lookup_auto_model(1), None);
     }
+
+    #[test]
+    fn auto_model_cache_survives_forget_target_calls() {
+        // forget_target operates on prefix affinity, not the auto-model
+        // memo. A transient per-host prefix miss shouldn't flush the
+        // session's model choice.
+        let affinity = AffinityRouter::new();
+        affinity.remember_auto_model(7, "chat-model");
+        let target = election::InferenceTarget::Remote(make_id(5));
+        affinity.forget_target("chat-model", 0xdead_beef, &target);
+        assert_eq!(
+            affinity.lookup_auto_model(7),
+            Some("chat-model".to_string())
+        );
+    }
 }

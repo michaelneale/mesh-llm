@@ -2008,6 +2008,18 @@ pub async fn handle_mesh_request(
                         let target = election::InferenceTarget::Remote(*target_host);
                         affinity.learn_target(name, prefix_hash, &target);
                     }
+                } else if (500..600).contains(&status_code) {
+                    // Upstream returned a server error. The model+host we
+                    // stuck to isn't healthy right now — drop the
+                    // auto-routing memo so the next turn reclassifies and
+                    // gets a chance at a different model/host instead of
+                    // repeatedly hitting the same unhappy peer.
+                    if let Some(key) = auto_session_key {
+                        tracing::debug!(
+                            "auto: upstream returned {status_code}, forgetting cached model for session {key:016x}"
+                        );
+                        affinity.forget_auto_model(key);
+                    }
                 }
                 release_request_objects(&node, &request.request_object_request_ids).await;
                 return;
@@ -2067,6 +2079,16 @@ pub async fn handle_mesh_request(
     // All hosts failed
     if last_retryable {
         tracing::warn!("All hosts failed for model {:?}", effective_model);
+        // Every host serving the cached auto-model was unreachable or
+        // returned a retryable error. The memo is worthless — drop it so
+        // the next request reclassifies against whatever the mesh looks
+        // like then.
+        if let Some(key) = auto_session_key {
+            tracing::debug!(
+                "auto: all hosts failed for cached model, forgetting session {key:016x}"
+            );
+            affinity.forget_auto_model(key);
+        }
     }
     let reason = format!(
         "all {} tunnel(s) to hosts for {:?} failed (mesh request)",
