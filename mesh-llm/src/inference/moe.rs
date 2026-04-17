@@ -87,6 +87,7 @@ pub struct MoeRuntimeOptions {
     pub micro_prompt_count: usize,
     pub micro_tokens: u32,
     pub micro_layer_scope: MoeMicroLayerScope,
+    pub floor_strategy: crate::system::moe_planner::MoeFloorStrategy,
 }
 
 impl Default for MoeRuntimeOptions {
@@ -96,6 +97,7 @@ impl Default for MoeRuntimeOptions {
             micro_prompt_count: 1,
             micro_tokens: 8,
             micro_layer_scope: MoeMicroLayerScope::All,
+            floor_strategy: crate::system::moe_planner::MoeFloorStrategy::default(),
         }
     }
 }

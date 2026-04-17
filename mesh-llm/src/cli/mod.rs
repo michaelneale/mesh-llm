@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::cli::benchmark::BenchmarkCommand;
-use crate::cli::moe::MoeCommand;
+use crate::cli::moe::{ExperimentalMoeFloorMode, MoeCommand};
 use crate::cli::runtime::RuntimeCommand;
 use crate::crypto::TrustPolicy;
 
@@ -323,6 +323,31 @@ pub(crate) struct Cli {
     /// Cap VRAM used for planning, local-fit decisions, and mesh advertisement (GB).
     #[arg(long)]
     pub(crate) max_vram: Option<f64>,
+
+    /// Experimental shared-core floor strategy used by `serve` MoE preflight.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ExperimentalMoeFloorMode::Fixed50Pct,
+        hide = true
+    )]
+    pub(crate) experimental_moe_floor_mode: ExperimentalMoeFloorMode,
+
+    /// Experimental multiplier applied to active top-k experts for `topk_multiplier` and `hybrid`.
+    #[arg(long, hide = true)]
+    pub(crate) experimental_moe_topk_multiplier: Option<u32>,
+
+    /// Experimental cumulative mass threshold in [0, 1] for `mass_threshold` and `hybrid`.
+    #[arg(long, hide = true)]
+    pub(crate) experimental_moe_mass_threshold: Option<f64>,
+
+    /// Optional lower clamp for the derived shared-core floor during `serve` preflight.
+    #[arg(long, hide = true)]
+    pub(crate) experimental_moe_floor_min: Option<u32>,
+
+    /// Optional upper clamp for the derived shared-core floor during `serve` preflight.
+    #[arg(long, hide = true)]
+    pub(crate) experimental_moe_floor_max: Option<u32>,
 
     /// Enumerate host hardware (GPU name, hostname) at startup.
     #[arg(long, hide = true)]

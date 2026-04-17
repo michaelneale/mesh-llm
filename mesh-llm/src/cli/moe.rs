@@ -22,6 +22,21 @@ pub(crate) enum MoeCommand {
         /// Published dataset repo used for MoE ranking lookup.
         #[arg(long, default_value = "meshllm/moe-rankings")]
         dataset_repo: String,
+        /// Experimental shared-core floor strategy used by `moe plan`.
+        #[arg(long, value_enum, default_value_t = ExperimentalMoeFloorMode::Fixed50Pct)]
+        experimental_moe_floor_mode: ExperimentalMoeFloorMode,
+        /// Experimental multiplier applied to active top-k experts for `topk_multiplier` and `hybrid`.
+        #[arg(long)]
+        experimental_moe_topk_multiplier: Option<u32>,
+        /// Experimental cumulative mass threshold in [0, 1] for `mass_threshold` and `hybrid`.
+        #[arg(long)]
+        experimental_moe_mass_threshold: Option<f64>,
+        /// Optional lower clamp for the derived shared-core floor.
+        #[arg(long)]
+        experimental_moe_floor_min: Option<u32>,
+        /// Optional upper clamp for the derived shared-core floor.
+        #[arg(long)]
+        experimental_moe_floor_max: Option<u32>,
     },
     /// Run local MoE analysis and cache the result.
     Analyze {
@@ -112,4 +127,27 @@ pub(crate) enum HfJobReleaseTarget {
     Cuda,
     Rocm,
     Vulkan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ExperimentalMoeFloorMode {
+    #[value(name = "fixed_50pct")]
+    Fixed50Pct,
+    #[value(name = "topk_multiplier")]
+    TopkMultiplier,
+    #[value(name = "mass_threshold")]
+    MassThreshold,
+    #[value(name = "hybrid")]
+    Hybrid,
+}
+
+impl From<ExperimentalMoeFloorMode> for crate::system::moe_planner::MoeFloorMode {
+    fn from(value: ExperimentalMoeFloorMode) -> Self {
+        match value {
+            ExperimentalMoeFloorMode::Fixed50Pct => Self::Fixed50Pct,
+            ExperimentalMoeFloorMode::TopkMultiplier => Self::TopkMultiplier,
+            ExperimentalMoeFloorMode::MassThreshold => Self::MassThreshold,
+            ExperimentalMoeFloorMode::Hybrid => Self::Hybrid,
+        }
+    }
 }

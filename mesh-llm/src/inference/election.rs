@@ -695,7 +695,7 @@ fn resolve_runtime_moe_config(
     };
 
     let started = std::time::Instant::now();
-    let (ranking, ranking_source, ranking_origin) = match options.ranking_strategy {
+    let (ranking, ranking_path, ranking_source, ranking_origin) = match options.ranking_strategy {
         moe::MoeRankingStrategy::Auto => {
             let model_path_for_ranking = model_path.to_path_buf();
             let resolved_ranking_result: anyhow::Result<
@@ -744,6 +744,7 @@ fn resolve_runtime_moe_config(
                     resolved.analyzer_id,
                     resolved.path.display()
                 );
+                let ranking_path = resolved.path.clone();
                 (
                     moe::load_cached_ranking(&resolved.path).ok_or_else(|| {
                         anyhow::anyhow!(
@@ -751,23 +752,34 @@ fn resolve_runtime_moe_config(
                             resolved.path.display()
                         )
                     })?,
+                    Some(ranking_path),
                     resolved.analyzer_id,
                     resolved.source.label().to_string(),
                 )
             } else {
                 if should_attempt_local_micro_analyze(model_path, model_name, local_vram_budget) {
                     match ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options) {
-                        Ok(artifact) => (
-                            artifact.ranking,
-                            "micro-v1".to_string(),
-                            artifact.origin.label().to_string(),
-                        ),
+                        Ok(artifact) => {
+                            let cached_path = moe::micro_ranking_cache_path(
+                                model_path,
+                                options.micro_prompt_count,
+                                options.micro_tokens,
+                                options.micro_layer_scope,
+                            );
+                            (
+                                artifact.ranking,
+                                Some(cached_path),
+                                "micro-v1".to_string(),
+                                artifact.origin.label().to_string(),
+                            )
+                        }
                         Err(err) => {
                             eprintln!(
                                 "⚠ [{model_name}] micro-analyze failed ({err}); falling back to sequential expert order"
                             );
                             (
                                 (0..base.n_expert).collect(),
+                                None,
                                 "sequential-fallback".to_string(),
                                 "fallback".to_string(),
                             )
@@ -779,6 +791,7 @@ fn resolve_runtime_moe_config(
                     );
                     (
                         (0..base.n_expert).collect(),
+                        None,
                         "sequential-fallback".to_string(),
                         "fallback".to_string(),
                     )
@@ -790,14 +803,22 @@ fn resolve_runtime_moe_config(
             let artifact = ensure_full_analyze_ranking(bin_dir, model_name, model_path, &cached)?;
             (
                 artifact.ranking,
+                Some(cached),
                 "full-v1".to_string(),
                 artifact.origin.label().to_string(),
             )
         }
         moe::MoeRankingStrategy::MicroAnalyze => {
             let artifact = ensure_micro_analyze_ranking(bin_dir, model_name, model_path, options)?;
+            let cached_path = moe::micro_ranking_cache_path(
+                model_path,
+                options.micro_prompt_count,
+                options.micro_tokens,
+                options.micro_layer_scope,
+            );
             (
                 artifact.ranking,
+                Some(cached_path),
                 "micro-v1".to_string(),
                 artifact.origin.label().to_string(),
             )
@@ -812,8 +833,11 @@ fn resolve_runtime_moe_config(
         started.elapsed().as_secs_f64()
     );
 
+    let mut config = crate::models::catalog::MoeConfig { ranking, ..base };
+    apply_runtime_floor_strategy(model_name, options, ranking_path.as_deref(), &mut config)?;
+
     Ok(Some(ResolvedMoeConfig {
-        config: crate::models::catalog::MoeConfig { ranking, ..base },
+        config,
         ranking_strategy: options.ranking_strategy,
         ranking_source,
         ranking_origin,
@@ -823,6 +847,7 @@ fn resolve_runtime_moe_config(
 fn refresh_auto_moe_config_from_cache(
     model_name: &str,
     model_path: &Path,
+    options: &moe::MoeRuntimeOptions,
     cfg: &mut ResolvedMoeConfig,
 ) -> bool {
     if !matches!(cfg.ranking_strategy, moe::MoeRankingStrategy::Auto) {
@@ -846,7 +871,19 @@ fn refresh_auto_moe_config_from_cache(
     let Some(ranking) = moe::load_cached_ranking(&resolved.path) else {
         return false;
     };
-    if cfg.config.ranking == ranking
+    let mut next_config = cfg.config.clone();
+    next_config.ranking = ranking;
+    if let Err(err) =
+        apply_runtime_floor_strategy(model_name, options, Some(&resolved.path), &mut next_config)
+    {
+        eprintln!(
+            "⚠ [{model_name}] Failed to refresh MoE floor from cached ranking ({}): {err}",
+            resolved.path.display()
+        );
+        return false;
+    }
+    if cfg.config.ranking == next_config.ranking
+        && cfg.config.min_experts_per_node == next_config.min_experts_per_node
         && cfg.ranking_source == resolved.analyzer_id
         && cfg.ranking_origin == resolved.source.label()
     {
@@ -858,10 +895,33 @@ fn refresh_auto_moe_config_from_cache(
         resolved.source.label(),
         resolved.analyzer_id
     );
-    cfg.config.ranking = ranking;
+    cfg.config = next_config;
     cfg.ranking_source = resolved.analyzer_id;
     cfg.ranking_origin = resolved.source.label().to_string();
     true
+}
+
+fn apply_runtime_floor_strategy(
+    model_name: &str,
+    options: &moe::MoeRuntimeOptions,
+    ranking_path: Option<&Path>,
+    config: &mut crate::models::catalog::MoeConfig,
+) -> anyhow::Result<()> {
+    let required_experts_per_node = crate::system::moe_planner::resolve_required_experts_per_node(
+        &options.floor_strategy,
+        config.n_expert,
+        config.n_expert_used,
+        ranking_path,
+    )?;
+    if config.min_experts_per_node != required_experts_per_node {
+        eprintln!(
+            "🧩 [{model_name}] MoE floor={} -> {} shared experts per node",
+            options.floor_strategy.mode_label(),
+            required_experts_per_node
+        );
+        config.min_experts_per_node = required_experts_per_node;
+    }
+    Ok(())
 }
 
 fn print_runtime_submit_suggestion(model_name: &str, model_path: &Path, ranking_path: &Path) {
@@ -969,6 +1029,7 @@ struct MoeElectionParams {
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
     pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
+    moe_runtime_options: moe::MoeRuntimeOptions,
     target_tx: Arc<watch::Sender<ModelTargets>>,
     stop_rx: watch::Receiver<bool>,
 }
@@ -1598,6 +1659,7 @@ pub async fn election_loop(
                     binary_flavor,
                     ctx_size_override,
                     pinned_gpu: pinned_gpu.clone(),
+                    moe_runtime_options: moe_runtime_options.clone(),
                     target_tx,
                     stop_rx,
                 },
@@ -1994,6 +2056,7 @@ async fn moe_election_loop(
         binary_flavor,
         ctx_size_override,
         pinned_gpu,
+        moe_runtime_options,
         target_tx,
         mut stop_rx,
     } = params;
@@ -2011,7 +2074,12 @@ async fn moe_election_loop(
         }
 
         if !currently_running {
-            let _ = refresh_auto_moe_config_from_cache(&model_name, &model, &mut moe_cfg);
+            let _ = refresh_auto_moe_config_from_cache(
+                &model_name,
+                &model,
+                &moe_runtime_options,
+                &mut moe_cfg,
+            );
         }
 
         let peers = node.peers().await;
@@ -2920,6 +2988,7 @@ mod tests {
     use super::*;
     use iroh::EndpointAddr;
     use iroh::SecretKey;
+    use std::path::{Path, PathBuf};
 
     /// Create a deterministic EndpointId from a byte seed.
     fn make_id(seed: u8) -> iroh::EndpointId {
@@ -2971,6 +3040,25 @@ mod tests {
             owner_attestation: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
         }
+    }
+
+    fn temp_case_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("mesh-llm-election-{name}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_test_ranking(path: &Path, rows: &[(u32, f64)]) {
+        let mut content = String::from("expert,gate_mass,selection_count\n");
+        for (expert, gate_mass) in rows {
+            let selection_count = (*gate_mass * 10.0).round() as u64;
+            content.push_str(&format!("{expert},{gate_mass:.6},{selection_count}\n"));
+        }
+        std::fs::write(path, content).unwrap();
     }
 
     #[test]
@@ -3713,5 +3801,64 @@ mod tests {
         assert!(!should_use_row_split(Some(BinaryFlavor::Metal), 8));
         assert!(!should_use_row_split(Some(BinaryFlavor::Vulkan), 4));
         assert!(!should_use_row_split(Some(BinaryFlavor::Cpu), 4));
+    }
+
+    #[test]
+    fn runtime_floor_strategy_updates_shared_expert_floor() {
+        let mut config = crate::models::catalog::MoeConfig {
+            n_expert: 8,
+            n_expert_used: 2,
+            min_experts_per_node: 4,
+            ranking: (0..8).collect(),
+        };
+        let options = moe::MoeRuntimeOptions {
+            floor_strategy: crate::system::moe_planner::MoeFloorStrategy {
+                mode: crate::system::moe_planner::MoeFloorMode::TopkMultiplier,
+                topk_multiplier: Some(3),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        apply_runtime_floor_strategy("test-model", &options, None, &mut config).unwrap();
+
+        assert_eq!(config.min_experts_per_node, 6);
+    }
+
+    #[test]
+    fn runtime_floor_strategy_uses_ranking_mass_data() {
+        let dir = temp_case_dir("runtime-floor-mass");
+        let ranking_path = dir.join("ranking.csv");
+        write_test_ranking(
+            &ranking_path,
+            &[
+                (0, 40.0),
+                (1, 20.0),
+                (2, 10.0),
+                (3, 10.0),
+                (4, 10.0),
+                (5, 5.0),
+            ],
+        );
+        let mut config = crate::models::catalog::MoeConfig {
+            n_expert: 6,
+            n_expert_used: 2,
+            min_experts_per_node: 4,
+            ranking: (0..6).collect(),
+        };
+        let options = moe::MoeRuntimeOptions {
+            floor_strategy: crate::system::moe_planner::MoeFloorStrategy {
+                mode: crate::system::moe_planner::MoeFloorMode::MassThreshold,
+                mass_threshold: Some(0.70),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        apply_runtime_floor_strategy("test-model", &options, Some(&ranking_path), &mut config)
+            .unwrap();
+
+        assert_eq!(config.min_experts_per_node, 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -29,6 +29,7 @@ pub(crate) struct MoePlanArgs {
     pub nodes: Option<usize>,
     pub dataset_repo: String,
     pub progress: bool,
+    pub floor_strategy: MoeFloorStrategy,
 }
 
 #[derive(Clone, Debug)]
@@ -131,6 +132,55 @@ pub(crate) struct MoeStartupFitEstimate {
     pub predicted_max_shard_launch_bytes: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MoeFloorMode {
+    Fixed50Pct,
+    TopkMultiplier,
+    MassThreshold,
+    Hybrid,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MoeFloorStrategy {
+    pub mode: MoeFloorMode,
+    pub topk_multiplier: Option<u32>,
+    pub mass_threshold: Option<f64>,
+    pub floor_min: Option<u32>,
+    pub floor_max: Option<u32>,
+}
+
+impl Default for MoeFloorStrategy {
+    fn default() -> Self {
+        Self {
+            mode: MoeFloorMode::Fixed50Pct,
+            topk_multiplier: None,
+            mass_threshold: None,
+            floor_min: None,
+            floor_max: None,
+        }
+    }
+}
+
+impl MoeFloorStrategy {
+    pub(crate) fn mode_label(&self) -> &'static str {
+        match self.mode {
+            MoeFloorMode::Fixed50Pct => "fixed_50pct",
+            MoeFloorMode::TopkMultiplier => "topk_multiplier",
+            MoeFloorMode::MassThreshold => "mass_threshold",
+            MoeFloorMode::Hybrid => "hybrid",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MoeFloorDecision {
+    required_experts_per_node: u32,
+    unclamped_required_experts_per_node: u32,
+    topk_floor: Option<u32>,
+    mass_floor: Option<u32>,
+    strategy: MoeFloorStrategy,
+}
+
 impl MoeStartupFitEstimate {
     pub(crate) fn full_model_fits(&self) -> bool {
         self.full_model_launch_bytes <= self.target_vram_bytes
@@ -179,6 +229,7 @@ struct AggregatedTensorByteProfile {
 }
 
 pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
+    validate_floor_strategy(&args.floor_strategy)?;
     if let Some(nodes) = args.nodes {
         if nodes == 0 {
             bail!("--nodes must be at least 1");
@@ -199,6 +250,13 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
     let heuristic_recommended_nodes = ((model.total_model_bytes as f64) / target_vram_bytes as f64)
         .ceil()
         .max(1.0) as usize;
+    let floor_decision = derive_floor_decision(
+        &args.floor_strategy,
+        model.expert_count,
+        model.used_expert_count,
+        Some(&ranking.path),
+    )?;
+    model.min_experts_per_node = floor_decision.required_experts_per_node;
     let analysis = ranking
         .analysis_path
         .as_deref()
@@ -215,9 +273,9 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
             target_vram_bytes,
             &ranking.analyzer_id,
             ranking.source.label(),
+            floor_decision.required_experts_per_node,
         )?;
         let required_experts_per_node = fit.required_experts_per_node;
-        model.min_experts_per_node = required_experts_per_node;
         let max_supported_nodes =
             (model.expert_count / required_experts_per_node.max(1)).max(1) as usize;
         let recommended_nodes = args
@@ -243,11 +301,13 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
                 fit.full_model_launch_bytes as f64 / 1e9,
                 target_vram_bytes as f64 / 1e9
             ),
-            format!(
-                "Shared core uses the current 50% planning heuristic: {} / {} experts per node",
-                required_experts_per_node, model.expert_count
-            ),
+            format!("{}", floor_decision.summary_line(model.expert_count)),
         ];
+        assumptions.extend(
+            floor_decision
+                .detail_lines(model.expert_count, model.used_expert_count)
+                .into_iter(),
+        );
         if recommended_nodes > 1 {
             let (_, predicted_max_shard_bytes, predicted_max_shard_launch_bytes) =
                 predict_plan_fit_for_nodes(
@@ -286,19 +346,21 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
         let max_supported_nodes =
             (model.expert_count / model.min_experts_per_node.max(1)).max(1) as usize;
         let feasible = recommended_nodes <= max_supported_nodes;
-        let assumptions = vec![
+        let mut assumptions = vec![
             format!(
                 "Minimum nodes estimated from total model bytes / target VRAM: {:.1}GB / {:.1}GB",
                 model.total_model_bytes as f64 / 1e9,
                 target_vram_bytes as f64 / 1e9
             ),
-            format!(
-                "Minimum experts per node falls back to local planner state: {}",
-                model.min_experts_per_node
-            ),
+            floor_decision.summary_line(model.expert_count),
             "No analysis.json was available, so shard byte fit uses the legacy heuristic."
                 .to_string(),
         ];
+        assumptions.extend(
+            floor_decision
+                .detail_lines(model.expert_count, model.used_expert_count)
+                .into_iter(),
+        );
         (
             recommended_nodes,
             max_supported_nodes,
@@ -1029,6 +1091,7 @@ pub(crate) fn estimate_startup_fit_from_analysis(
     target_vram_bytes: u64,
     analyzer_id: &str,
     ranking_source: &'static str,
+    required_experts_per_node: u32,
 ) -> Result<MoeStartupFitEstimate> {
     let ranking = moe::load_cached_ranking(ranking_path)
         .ok_or_else(|| anyhow::anyhow!("Could not parse ranking {}", ranking_path.display()))?;
@@ -1041,7 +1104,6 @@ pub(crate) fn estimate_startup_fit_from_analysis(
         );
     }
 
-    let required_experts_per_node = default_required_experts_per_node(analysis.model.expert_count);
     let full_model_launch_bytes = apply_model_load_headroom(analysis.memory.full_model_bytes);
     let mut estimate = MoeStartupFitEstimate {
         analyzer_id: analyzer_id.to_string(),
@@ -1103,7 +1165,9 @@ pub(crate) fn fetch_remote_startup_fit(
     distribution_id: &str,
     target_vram_bytes: u64,
     progress: bool,
+    floor_strategy: &MoeFloorStrategy,
 ) -> Result<Option<MoeStartupFitEstimate>> {
+    validate_floor_strategy(floor_strategy)?;
     let Some(ranking) = fetch_remote_ranking(
         dataset_repo_name,
         source_repo,
@@ -1118,12 +1182,19 @@ pub(crate) fn fetch_remote_startup_fit(
         return Ok(None);
     };
     let analysis = read_analysis_json(analysis_path)?;
+    let floor_decision = derive_floor_decision(
+        floor_strategy,
+        analysis.model.expert_count,
+        analysis.model.expert_used_count,
+        Some(&ranking.path),
+    )?;
     let estimate = estimate_startup_fit_from_analysis(
         &ranking.path,
         &analysis,
         target_vram_bytes,
         &ranking.analyzer_id,
         ranking.source.label(),
+        floor_decision.required_experts_per_node,
     )?;
     Ok(Some(estimate))
 }
@@ -1204,6 +1275,191 @@ fn expert_bytes_json(expert_tensor_bytes: u64, expert_count: u32) -> Result<Valu
         "kind": "dense_per_expert",
         "values": values,
     }))
+}
+
+impl MoeFloorDecision {
+    fn summary_line(&self, expert_count: u32) -> String {
+        match self.strategy.mode {
+            MoeFloorMode::Fixed50Pct => format!(
+                "Shared core heuristic: fixed_50pct -> {} / {} experts per node",
+                self.required_experts_per_node, expert_count
+            ),
+            MoeFloorMode::TopkMultiplier => format!(
+                "Shared core heuristic: topk_multiplier -> {} experts per node",
+                self.required_experts_per_node
+            ),
+            MoeFloorMode::MassThreshold => format!(
+                "Shared core heuristic: mass_threshold -> {} experts per node",
+                self.required_experts_per_node
+            ),
+            MoeFloorMode::Hybrid => format!(
+                "Shared core heuristic: hybrid -> {} experts per node",
+                self.required_experts_per_node
+            ),
+        }
+    }
+
+    fn detail_lines(&self, expert_count: u32, used_expert_count: u32) -> Vec<String> {
+        let mut lines = Vec::new();
+        match self.strategy.mode {
+            MoeFloorMode::Fixed50Pct => {
+                lines.push(format!(
+                    "Fixed floor uses ceil(50% of total experts): {} / {}",
+                    self.required_experts_per_node, expert_count
+                ));
+            }
+            MoeFloorMode::TopkMultiplier => {
+                lines.push(format!(
+                    "Top-k floor uses active experts * multiplier: top-{} * {} = {}",
+                    used_expert_count,
+                    self.strategy
+                        .topk_multiplier
+                        .unwrap_or(DEFAULT_TOPK_MULTIPLIER),
+                    self.unclamped_required_experts_per_node
+                ));
+            }
+            MoeFloorMode::MassThreshold => {
+                lines.push(format!(
+                    "Mass floor uses smallest top-N reaching {:.1}% cumulative routing mass: {}",
+                    self.strategy
+                        .mass_threshold
+                        .unwrap_or(DEFAULT_MASS_THRESHOLD)
+                        * 100.0,
+                    self.unclamped_required_experts_per_node
+                ));
+            }
+            MoeFloorMode::Hybrid => {
+                lines.push(format!(
+                    "Hybrid floor uses max(top-k floor, mass floor): max({}, {}) = {}",
+                    self.topk_floor.unwrap_or_default(),
+                    self.mass_floor.unwrap_or_default(),
+                    self.unclamped_required_experts_per_node
+                ));
+                lines.push(format!(
+                    "Top-k floor: top-{} * {} = {}",
+                    used_expert_count,
+                    self.strategy
+                        .topk_multiplier
+                        .unwrap_or(DEFAULT_TOPK_MULTIPLIER),
+                    self.topk_floor.unwrap_or_default()
+                ));
+                lines.push(format!(
+                    "Mass floor: smallest top-N reaching {:.1}% cumulative routing mass = {}",
+                    self.strategy
+                        .mass_threshold
+                        .unwrap_or(DEFAULT_MASS_THRESHOLD)
+                        * 100.0,
+                    self.mass_floor.unwrap_or_default()
+                ));
+            }
+        }
+        if self.required_experts_per_node != self.unclamped_required_experts_per_node {
+            lines.push(format!(
+                "Applied floor clamps: raw {} -> final {} (min={:?}, max={:?})",
+                self.unclamped_required_experts_per_node,
+                self.required_experts_per_node,
+                self.strategy.floor_min,
+                self.strategy.floor_max
+            ));
+        }
+        lines
+    }
+}
+
+const DEFAULT_TOPK_MULTIPLIER: u32 = 4;
+const DEFAULT_MASS_THRESHOLD: f64 = 0.70;
+
+pub(crate) fn validate_floor_strategy(strategy: &MoeFloorStrategy) -> Result<()> {
+    if strategy.topk_multiplier.unwrap_or(DEFAULT_TOPK_MULTIPLIER) == 0 {
+        bail!("--experimental-moe-topk-multiplier must be at least 1");
+    }
+    let mass_threshold = strategy.mass_threshold.unwrap_or(DEFAULT_MASS_THRESHOLD);
+    if !(0.0..=1.0).contains(&mass_threshold) || mass_threshold <= 0.0 {
+        bail!("--experimental-moe-mass-threshold must be in the range (0, 1]");
+    }
+    if let (Some(min), Some(max)) = (strategy.floor_min, strategy.floor_max) {
+        if min > max {
+            bail!(
+                "--experimental-moe-floor-min cannot be greater than --experimental-moe-floor-max"
+            );
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_required_experts_per_node(
+    strategy: &MoeFloorStrategy,
+    expert_count: u32,
+    used_expert_count: u32,
+    ranking_path: Option<&Path>,
+) -> Result<u32> {
+    Ok(
+        derive_floor_decision(strategy, expert_count, used_expert_count, ranking_path)?
+            .required_experts_per_node,
+    )
+}
+
+fn derive_floor_decision(
+    strategy: &MoeFloorStrategy,
+    expert_count: u32,
+    used_expert_count: u32,
+    ranking_path: Option<&Path>,
+) -> Result<MoeFloorDecision> {
+    let topk_multiplier = strategy.topk_multiplier.unwrap_or(DEFAULT_TOPK_MULTIPLIER);
+    let mass_threshold = strategy.mass_threshold.unwrap_or(DEFAULT_MASS_THRESHOLD);
+    let topk_floor = used_expert_count
+        .saturating_mul(topk_multiplier)
+        .clamp(1, expert_count.max(1));
+    let mass_floor = || -> Result<u32> {
+        let ranking_path = ranking_path.ok_or_else(|| {
+            anyhow::anyhow!(
+                "`{}` shared-core floor requires ranking mass data, but no runtime ranking file is available",
+                strategy.mode_label()
+            )
+        })?;
+        let profile = load_analyze_mass_profile(ranking_path)?;
+        let target_mass = profile.total_mass * mass_threshold;
+        let mut cumulative = 0.0;
+        for (index, (_, gate_mass)) in profile.masses.iter().enumerate() {
+            cumulative += *gate_mass;
+            if cumulative + f64::EPSILON >= target_mass {
+                return Ok((index + 1) as u32);
+            }
+        }
+        Ok(expert_count.max(1))
+    };
+
+    let unclamped = match strategy.mode {
+        MoeFloorMode::Fixed50Pct => default_required_experts_per_node(expert_count),
+        MoeFloorMode::TopkMultiplier => topk_floor,
+        MoeFloorMode::MassThreshold => mass_floor()?,
+        MoeFloorMode::Hybrid => topk_floor.max(mass_floor()?),
+    };
+
+    let mut required = unclamped.clamp(1, expert_count.max(1));
+    if let Some(min) = strategy.floor_min {
+        required = required.max(min.clamp(1, expert_count.max(1)));
+    }
+    if let Some(max) = strategy.floor_max {
+        required = required.min(max.clamp(1, expert_count.max(1)));
+    }
+
+    Ok(MoeFloorDecision {
+        required_experts_per_node: required,
+        unclamped_required_experts_per_node: unclamped,
+        topk_floor: matches!(
+            strategy.mode,
+            MoeFloorMode::TopkMultiplier | MoeFloorMode::Hybrid
+        )
+        .then_some(topk_floor),
+        mass_floor: matches!(
+            strategy.mode,
+            MoeFloorMode::MassThreshold | MoeFloorMode::Hybrid
+        )
+        .then(|| mass_floor())
+        .transpose()?,
+        strategy: strategy.clone(),
+    })
 }
 
 fn default_required_experts_per_node(expert_count: u32) -> u32 {
@@ -1654,6 +1910,115 @@ mod tests {
     }
 
     #[test]
+    fn derive_floor_decision_uses_topk_multiplier() {
+        let dir = temp_case_dir("floor-topk");
+        let ranking_path = dir.join("ranking.csv");
+        write_test_ranking(
+            &ranking_path,
+            &[
+                (0, 40.0),
+                (1, 20.0),
+                (2, 10.0),
+                (3, 10.0),
+                (4, 10.0),
+                (5, 5.0),
+                (6, 3.0),
+                (7, 2.0),
+            ],
+        );
+
+        let decision = derive_floor_decision(
+            &MoeFloorStrategy {
+                mode: MoeFloorMode::TopkMultiplier,
+                topk_multiplier: Some(2),
+                ..Default::default()
+            },
+            8,
+            2,
+            Some(&ranking_path),
+        )
+        .unwrap();
+
+        assert_eq!(decision.required_experts_per_node, 4);
+        assert_eq!(decision.topk_floor, Some(4));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn derive_floor_decision_uses_mass_threshold() {
+        let dir = temp_case_dir("floor-mass");
+        let ranking_path = dir.join("ranking.csv");
+        write_test_ranking(
+            &ranking_path,
+            &[
+                (0, 40.0),
+                (1, 20.0),
+                (2, 10.0),
+                (3, 10.0),
+                (4, 10.0),
+                (5, 5.0),
+                (6, 3.0),
+                (7, 2.0),
+            ],
+        );
+
+        let decision = derive_floor_decision(
+            &MoeFloorStrategy {
+                mode: MoeFloorMode::MassThreshold,
+                mass_threshold: Some(0.70),
+                ..Default::default()
+            },
+            8,
+            2,
+            Some(&ranking_path),
+        )
+        .unwrap();
+
+        assert_eq!(decision.required_experts_per_node, 3);
+        assert_eq!(decision.mass_floor, Some(3));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn derive_floor_decision_hybrid_takes_max_and_applies_clamps() {
+        let dir = temp_case_dir("floor-hybrid");
+        let ranking_path = dir.join("ranking.csv");
+        write_test_ranking(
+            &ranking_path,
+            &[
+                (0, 40.0),
+                (1, 20.0),
+                (2, 10.0),
+                (3, 10.0),
+                (4, 10.0),
+                (5, 5.0),
+                (6, 3.0),
+                (7, 2.0),
+            ],
+        );
+
+        let decision = derive_floor_decision(
+            &MoeFloorStrategy {
+                mode: MoeFloorMode::Hybrid,
+                topk_multiplier: Some(2),
+                mass_threshold: Some(0.70),
+                floor_max: Some(3),
+                ..Default::default()
+            },
+            8,
+            2,
+            Some(&ranking_path),
+        )
+        .unwrap();
+
+        assert_eq!(decision.topk_floor, Some(4));
+        assert_eq!(decision.mass_floor, Some(3));
+        assert_eq!(decision.unclamped_required_experts_per_node, 4);
+        assert_eq!(decision.required_experts_per_node, 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn estimate_startup_fit_reports_full_model_fit() {
         let dir = temp_case_dir("startup-fit-full");
         let ranking_path = dir.join("ranking.csv");
@@ -1665,6 +2030,7 @@ mod tests {
             9_000_000_000,
             "full-v1",
             "Hugging Face dataset",
+            2,
         )
         .unwrap();
 
@@ -1686,6 +2052,7 @@ mod tests {
             4_000_000_000,
             "full-v1",
             "Hugging Face dataset",
+            2,
         )
         .unwrap();
 
@@ -1708,6 +2075,7 @@ mod tests {
             3_800_000_000,
             "full-v1",
             "Hugging Face dataset",
+            2,
         )
         .unwrap();
 

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::cli::moe::{HfJobArgs, MoeAnalyzeCommand, MoeCommand};
+use crate::cli::moe::{ExperimentalMoeFloorMode, HfJobArgs, MoeAnalyzeCommand, MoeCommand};
 use crate::cli::terminal_progress::start_spinner;
 use crate::cli::Cli;
 use crate::inference::moe;
@@ -52,6 +52,11 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
             max_vram,
             nodes,
             dataset_repo,
+            experimental_moe_floor_mode,
+            experimental_moe_topk_multiplier,
+            experimental_moe_mass_threshold,
+            experimental_moe_floor_min,
+            experimental_moe_floor_max,
         } => {
             run_plan(
                 model,
@@ -60,6 +65,11 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
                 max_vram.or(cli.max_vram),
                 *nodes,
                 dataset_repo,
+                *experimental_moe_floor_mode,
+                *experimental_moe_topk_multiplier,
+                *experimental_moe_mass_threshold,
+                *experimental_moe_floor_min,
+                *experimental_moe_floor_max,
             )
             .await
         }
@@ -104,6 +114,11 @@ async fn run_plan(
     max_vram: Option<f64>,
     nodes: Option<usize>,
     dataset_repo: &str,
+    floor_mode: ExperimentalMoeFloorMode,
+    topk_multiplier: Option<u32>,
+    mass_threshold: Option<f64>,
+    floor_min: Option<u32>,
+    floor_max: Option<u32>,
 ) -> Result<()> {
     if !json_output {
         eprintln!("📍 Resolving MoE model: {model}");
@@ -121,6 +136,13 @@ async fn run_plan(
         nodes,
         dataset_repo: dataset_repo.to_string(),
         progress: !json_output,
+        floor_strategy: moe_planner::MoeFloorStrategy {
+            mode: floor_mode.into(),
+            topk_multiplier,
+            mass_threshold,
+            floor_min,
+            floor_max,
+        },
     })
     .await?;
     moe_plan_formatter(json_output).render(&report)

@@ -13,6 +13,7 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
+use crate::cli::moe::ExperimentalMoeFloorMode;
 use crate::cli::terminal_progress::start_spinner;
 use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::crypto::{
@@ -492,7 +493,10 @@ pub(crate) async fn run() -> Result<()> {
         eprintln!();
         return Ok(());
     }
-    let mut startup_models = resolve_startup_models(&startup_specs, cli.max_vram).await?;
+    let startup_floor_strategy = serve_moe_floor_strategy(&cli);
+    moe_planner::validate_floor_strategy(&startup_floor_strategy)?;
+    let mut startup_models =
+        resolve_startup_models(&startup_specs, cli.max_vram, &startup_floor_strategy).await?;
     preflight_config_owned_startup_models(&config, &startup_specs, &mut startup_models)?;
     let resolved_models: Vec<PathBuf> = startup_models
         .iter()
@@ -603,12 +607,14 @@ fn build_startup_model_specs(
 async fn resolve_startup_models(
     specs: &[StartupModelSpec],
     max_vram_gb: Option<f64>,
+    floor_strategy: &moe_planner::MoeFloorStrategy,
 ) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     let mut preflight_cache: HashMap<String, Option<moe_planner::MoeStartupFitEstimate>> =
         HashMap::new();
     for spec in specs {
-        preflight_remote_startup_model(spec, max_vram_gb, &mut preflight_cache).await?;
+        preflight_remote_startup_model(spec, max_vram_gb, floor_strategy, &mut preflight_cache)
+            .await?;
         let resolved_path = resolve_model(&spec.model_ref).await?;
         let mmproj_path = match spec.mmproj_ref.as_ref() {
             Some(mmproj) => Some(resolve_model(mmproj).await?),
@@ -629,6 +635,7 @@ async fn resolve_startup_models(
 async fn preflight_remote_startup_model(
     spec: &StartupModelSpec,
     max_vram_gb: Option<f64>,
+    floor_strategy: &moe_planner::MoeFloorStrategy,
     cache: &mut HashMap<String, Option<moe_planner::MoeStartupFitEstimate>>,
 ) -> Result<()> {
     if spec.model_ref.exists() {
@@ -643,7 +650,10 @@ async fn preflight_remote_startup_model(
         }
     }
 
-    let mut spinner = start_spinner(&format!("Checking published MoE fit for {declared_ref}"));
+    let mut spinner = start_spinner(&format!(
+        "Checking published MoE fit for {declared_ref} ({})",
+        floor_strategy.mode_label()
+    ));
     let identity = models::resolve_huggingface_model_identity(&declared_ref)
         .await
         .with_context(|| format!("Resolve model identity for {declared_ref}"))?;
@@ -652,9 +662,15 @@ async fn preflight_remote_startup_model(
         return Ok(());
     };
 
-    if let Some(cached) = cache.get(&identity.canonical_ref).cloned() {
+    let cache_key = remote_startup_preflight_cache_key(&identity.canonical_ref, floor_strategy);
+    if let Some(cached) = cache.get(&cache_key).cloned() {
         spinner.finish();
-        return apply_remote_startup_preflight(&declared_ref, &identity.local_file_name, cached);
+        return apply_remote_startup_preflight(
+            &declared_ref,
+            &identity.local_file_name,
+            floor_strategy,
+            cached,
+        );
     }
 
     spinner.set_message(format!(
@@ -666,6 +682,8 @@ async fn preflight_remote_startup_model(
     let source_revision = identity.revision.clone();
     let distribution_id = moe_planner::normalize_distribution_id(&identity.local_file_name);
     let target_vram_bytes = mesh::detect_vram_bytes_capped(max_vram_gb);
+    let floor_strategy = floor_strategy.clone();
+    let task_floor_strategy = floor_strategy.clone();
     let fetched = tokio::task::spawn_blocking(move || {
         moe_planner::fetch_remote_startup_fit(
             &dataset_repo,
@@ -674,6 +692,7 @@ async fn preflight_remote_startup_model(
             &distribution_id,
             target_vram_bytes,
             false,
+            &task_floor_strategy,
         )
     })
     .await;
@@ -694,13 +713,19 @@ async fn preflight_remote_startup_model(
             None
         }
     };
-    cache.insert(identity.canonical_ref.clone(), fit.clone());
-    apply_remote_startup_preflight(&declared_ref, &identity.local_file_name, fit)
+    cache.insert(cache_key, fit.clone());
+    apply_remote_startup_preflight(
+        &declared_ref,
+        &identity.local_file_name,
+        &floor_strategy,
+        fit,
+    )
 }
 
 fn apply_remote_startup_preflight(
     declared_ref: &str,
     model_label: &str,
+    floor_strategy: &moe_planner::MoeFloorStrategy,
     fit: Option<moe_planner::MoeStartupFitEstimate>,
 ) -> Result<()> {
     let Some(fit) = fit else {
@@ -708,12 +733,13 @@ fn apply_remote_startup_preflight(
     };
     if !fit.any_fit_exists() {
         anyhow::bail!(
-            "Published MoE preflight says '{}' will not fit locally before download: full model needs about {}, and the smallest conservative split still needs about {} per node with a 50% shared core ({} shared experts). Local budget is {}.",
+            "Published MoE preflight says '{}' will not fit locally before download: full model needs about {}, and the smallest conservative split still needs about {} per node with the `{}` shared-core floor ({} shared experts). Local budget is {}.",
             declared_ref,
             format_vram_gb(fit.full_model_launch_bytes),
             fit.predicted_max_shard_launch_bytes
                 .map(format_vram_gb)
                 .unwrap_or_else(|| "unknown".to_string()),
+            floor_strategy.mode_label(),
             fit.required_experts_per_node,
             format_vram_gb(fit.target_vram_bytes),
         );
@@ -721,10 +747,12 @@ fn apply_remote_startup_preflight(
 
     if fit.full_model_fits() {
         eprintln!(
-            "🧩 [{}] Published MoE preflight: full model should fit locally (~{} <= {}, mode={}, source={})",
+            "🧩 [{}] Published MoE preflight: full model should fit locally (~{} <= {}, floor={} with {} shared experts, mode={}, source={})",
             model_label,
             format_vram_gb(fit.full_model_launch_bytes),
             format_vram_gb(fit.target_vram_bytes),
+            floor_strategy.mode_label(),
+            fit.required_experts_per_node,
             fit.analyzer_id,
             fit.ranking_source,
         );
@@ -733,11 +761,13 @@ fn apply_remote_startup_preflight(
 
     if fit.shard_plan_fits() {
         eprintln!(
-            "🧩 [{}] Published MoE preflight: full model needs ~{}, but a conservative {}-node shard should fit here (~{}/node, mode={}, source={})",
+            "🧩 [{}] Published MoE preflight: full model needs ~{}, but a conservative {}-node shard should fit here (~{}/node, floor={} with {} shared experts, mode={}, source={})",
             model_label,
             format_vram_gb(fit.full_model_launch_bytes),
             fit.recommended_nodes.unwrap_or(1),
             format_vram_gb(fit.predicted_max_shard_launch_bytes.unwrap_or_default()),
+            floor_strategy.mode_label(),
+            fit.required_experts_per_node,
             fit.analyzer_id,
             fit.ranking_source,
         );
@@ -748,6 +778,36 @@ fn apply_remote_startup_preflight(
 
 fn format_vram_gb(bytes: u64) -> String {
     format!("{:.1}GB", bytes as f64 / 1e9)
+}
+
+fn serve_moe_floor_strategy(cli: &Cli) -> moe_planner::MoeFloorStrategy {
+    moe_planner::MoeFloorStrategy {
+        mode: match cli.experimental_moe_floor_mode {
+            ExperimentalMoeFloorMode::Fixed50Pct => moe_planner::MoeFloorMode::Fixed50Pct,
+            ExperimentalMoeFloorMode::TopkMultiplier => moe_planner::MoeFloorMode::TopkMultiplier,
+            ExperimentalMoeFloorMode::MassThreshold => moe_planner::MoeFloorMode::MassThreshold,
+            ExperimentalMoeFloorMode::Hybrid => moe_planner::MoeFloorMode::Hybrid,
+        },
+        topk_multiplier: cli.experimental_moe_topk_multiplier,
+        mass_threshold: cli.experimental_moe_mass_threshold,
+        floor_min: cli.experimental_moe_floor_min,
+        floor_max: cli.experimental_moe_floor_max,
+    }
+}
+
+fn remote_startup_preflight_cache_key(
+    canonical_ref: &str,
+    floor_strategy: &moe_planner::MoeFloorStrategy,
+) -> String {
+    format!(
+        "{}|{}|{:?}|{:?}|{:?}|{:?}",
+        canonical_ref,
+        floor_strategy.mode_label(),
+        floor_strategy.topk_multiplier,
+        floor_strategy.mass_threshold,
+        floor_strategy.floor_min,
+        floor_strategy.floor_max
+    )
 }
 
 fn preflight_config_owned_startup_models(
@@ -1358,6 +1418,7 @@ async fn run_auto(
     auto_join_candidates: Vec<(String, Option<String>)>,
 ) -> Result<()> {
     let resolved_plugins = resolve_plugins_from_config(&config, &cli)?;
+    let startup_floor_strategy = serve_moe_floor_strategy(&cli);
     let api_port = cli.port;
     // Export management API port for llama-server mesh hook callbacks.
     // Must be the console/management port (default 3131), NOT the proxy port
@@ -1898,7 +1959,10 @@ async fn run_auto(
     let console_state_for_primary_process = console_state.clone();
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
-    let moe_runtime_options = moe::MoeRuntimeOptions::default();
+    let moe_runtime_options = moe::MoeRuntimeOptions {
+        floor_strategy: startup_floor_strategy.clone(),
+        ..Default::default()
+    };
     let primary_mmproj = primary_startup_model
         .as_ref()
         .and_then(|model| model.mmproj_path.clone());
@@ -2054,7 +2118,10 @@ async fn run_auto(
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
             let extra_llama_flavor = cli.llama_flavor;
-            let extra_moe_runtime_options = moe::MoeRuntimeOptions::default();
+            let extra_moe_runtime_options = moe::MoeRuntimeOptions {
+                floor_strategy: startup_floor_strategy.clone(),
+                ..Default::default()
+            };
             let extra_console_state = console_state.clone();
             let extra_model_name_for_status = extra_model_name.clone();
             let extra_model_name_for_process = extra_model_name.clone();
