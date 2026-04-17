@@ -19,7 +19,10 @@ fun main(args: Array<String>) = runBlocking {
     }
 
     NativeLibrary.getInstance("mesh_ffi")
-    val handle = createClient("", inviteToken!!)
+    // Generate an ephemeral owner keypair for the example. In a real app this
+    // must be persisted across launches — see mesh-api-ffi::create_client docs.
+    val ownerKeypairHex = uniffi.mesh_ffi.generateOwnerKeypairHex()
+    val handle = createClient(ownerKeypairHex, inviteToken!!)
     val client = MeshClient(handle)
 
     client.join()

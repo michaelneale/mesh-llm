@@ -1089,6 +1089,8 @@ public enum FfiError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErro
     
     case InvalidInviteToken(message: String)
     
+    case InvalidOwnerKeypair(message: String)
+    
     case JoinFailed(message: String)
     
     case DiscoveryFailed(message: String)
@@ -1134,27 +1136,31 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 2: return .JoinFailed(
+        case 2: return .InvalidOwnerKeypair(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 3: return .DiscoveryFailed(
+        case 3: return .JoinFailed(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 4: return .StreamFailed(
+        case 4: return .DiscoveryFailed(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 5: return .Cancelled(
+        case 5: return .StreamFailed(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 6: return .ReconnectFailed(
+        case 6: return .Cancelled(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 7: return .HostUnavailable(
+        case 7: return .ReconnectFailed(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 8: return .HostUnavailable(
             message: try FfiConverterString.read(from: &buf)
         )
         
@@ -1171,18 +1177,20 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
         
         case .InvalidInviteToken(_ /* message is ignored*/):
             writeInt(&buf, Int32(1))
-        case .JoinFailed(_ /* message is ignored*/):
+        case .InvalidOwnerKeypair(_ /* message is ignored*/):
             writeInt(&buf, Int32(2))
-        case .DiscoveryFailed(_ /* message is ignored*/):
+        case .JoinFailed(_ /* message is ignored*/):
             writeInt(&buf, Int32(3))
-        case .StreamFailed(_ /* message is ignored*/):
+        case .DiscoveryFailed(_ /* message is ignored*/):
             writeInt(&buf, Int32(4))
-        case .Cancelled(_ /* message is ignored*/):
+        case .StreamFailed(_ /* message is ignored*/):
             writeInt(&buf, Int32(5))
-        case .ReconnectFailed(_ /* message is ignored*/):
+        case .Cancelled(_ /* message is ignored*/):
             writeInt(&buf, Int32(6))
-        case .HostUnavailable(_ /* message is ignored*/):
+        case .ReconnectFailed(_ /* message is ignored*/):
             writeInt(&buf, Int32(7))
+        case .HostUnavailable(_ /* message is ignored*/):
+            writeInt(&buf, Int32(8))
 
         
         }
@@ -1385,6 +1393,12 @@ public func createClient(ownerKeypairBytesHex: String, inviteToken: String)throw
     )
 })
 }
+public func generateOwnerKeypairHex() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_mesh_ffi_fn_func_generate_owner_keypair_hex($0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -1401,34 +1415,37 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_mesh_ffi_checksum_func_create_client() != 44334) {
+    if (uniffi_mesh_ffi_checksum_func_create_client() != 22190) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_cancel() != 27338) {
+    if (uniffi_mesh_ffi_checksum_func_generate_owner_keypair_hex() != 23190) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_chat() != 32798) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_cancel() != 54410) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_disconnect() != 49378) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_chat() != 32610) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_join() != 60918) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_disconnect() != 31650) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_list_models() != 47189) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_join() != 59965) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_reconnect() != 11257) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_list_models() != 40439) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_responses() != 13271) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_reconnect() != 31942) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_status() != 11480) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_responses() != 343) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_eventlistener_on_event() != 46383) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_status() != 38366) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mesh_ffi_checksum_method_eventlistener_on_event() != 25585) {
         return InitializationResult.apiChecksumMismatch
     }
 

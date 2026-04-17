@@ -106,6 +106,17 @@ pub struct MeshClientHandle {
     inner: Mutex<MeshClient>,
 }
 
+/// Generate a fresh owner keypair, returning its hex-encoded form.
+///
+/// Callers should persist this value on first run and pass it back to
+/// `create_client` on subsequent launches so the embedded client keeps a
+/// stable identity. Generating a new keypair on every launch will make the
+/// app look like a different owner to the mesh each time.
+#[uniffi::export]
+pub fn generate_owner_keypair_hex() -> String {
+    OwnerKeypair::generate().to_hex()
+}
+
 #[uniffi::export]
 pub fn create_client(
     owner_keypair_bytes_hex: String,

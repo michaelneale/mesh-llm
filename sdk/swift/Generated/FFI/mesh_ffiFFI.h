@@ -319,6 +319,12 @@ void uniffi_mesh_ffi_fn_init_callback_vtable_eventlistener(const UniffiVTableCal
 uint64_t uniffi_mesh_ffi_fn_func_create_client(RustBuffer owner_keypair_bytes_hex, RustBuffer invite_token, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MESH_FFI_FN_FUNC_GENERATE_OWNER_KEYPAIR_HEX
+#define UNIFFI_FFIDEF_UNIFFI_MESH_FFI_FN_FUNC_GENERATE_OWNER_KEYPAIR_HEX
+RustBuffer uniffi_mesh_ffi_fn_func_generate_owner_keypair_hex(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_MESH_FFI_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_MESH_FFI_RUSTBUFFER_ALLOC
 RustBuffer ffi_mesh_ffi_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -582,6 +588,12 @@ void ffi_mesh_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *_No
 #ifndef UNIFFI_FFIDEF_UNIFFI_MESH_FFI_CHECKSUM_FUNC_CREATE_CLIENT
 #define UNIFFI_FFIDEF_UNIFFI_MESH_FFI_CHECKSUM_FUNC_CREATE_CLIENT
 uint16_t uniffi_mesh_ffi_checksum_func_create_client(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MESH_FFI_CHECKSUM_FUNC_GENERATE_OWNER_KEYPAIR_HEX
+#define UNIFFI_FFIDEF_UNIFFI_MESH_FFI_CHECKSUM_FUNC_GENERATE_OWNER_KEYPAIR_HEX
+uint16_t uniffi_mesh_ffi_checksum_func_generate_owner_keypair_hex(void
     
 );
 #endif

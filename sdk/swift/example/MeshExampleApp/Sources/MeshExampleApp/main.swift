@@ -15,7 +15,10 @@ guard let token = inviteTokenArg else {
     exit(1)
 }
 
-let client = MeshClient(inviteToken: InviteToken(token))
+// Generate an ephemeral owner keypair for the example. In a real app this
+// must be persisted across launches — see mesh-api-ffi::create_client docs.
+let ownerKeypairHex = generateOwnerKeypairHex()
+let client = MeshClient(inviteToken: InviteToken(token), ownerKeypairBytesHex: ownerKeypairHex)
 
 Task {
     do {

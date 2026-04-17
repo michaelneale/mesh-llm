@@ -1,6 +1,8 @@
 namespace mesh_ffi {
     [Throws=FfiError]
     MeshClientHandle create_client(string owner_keypair_bytes_hex, string invite_token);
+
+    string generate_owner_keypair_hex();
 };
 
 [Error]

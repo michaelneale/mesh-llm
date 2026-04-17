@@ -3,7 +3,7 @@ import XCTest
 
 final class EventStreamTests: XCTestCase {
     func testChatStreamEmitsCompletedEvent() async throws {
-        let client = MeshClient(inviteToken: InviteToken("test-token"))
+        let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: generateOwnerKeypairHex())
         let request = ChatRequest(model: "test", messages: [])
 
         var events: [MeshEvent] = []
@@ -17,7 +17,7 @@ final class EventStreamTests: XCTestCase {
     }
 
     func testResponsesStreamEmitsCompletedEvent() async throws {
-        let client = MeshClient(inviteToken: InviteToken("test-token"))
+        let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: generateOwnerKeypairHex())
         let request = ResponsesRequest(model: "test", input: "hello")
 
         var events: [MeshEvent] = []
@@ -31,7 +31,7 @@ final class EventStreamTests: XCTestCase {
     }
 
     func testCancelOnTermination() async throws {
-        let client = MeshClient(inviteToken: InviteToken("test-token"))
+        let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: generateOwnerKeypairHex())
         let request = ChatRequest(model: "test", messages: [])
 
         for try await _ in client.chatStream(request) {
