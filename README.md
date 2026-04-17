@@ -181,6 +181,15 @@ mesh-llm discover                          # browse available meshes
 mesh-llm gpus                              # inspect local GPUs and stable IDs
 ```
 
+### Inspect and clean the shared model cache
+```bash
+mesh-llm models installed
+mesh-llm models cleanup --unused-since 30d
+mesh-llm models cleanup --unused-since 30d --yes
+```
+
+`models installed` now shows whether a cached model is mesh-managed or external plus the last time mesh-llm used it. `models cleanup` only removes model files that mesh-llm explicitly marked as mesh-managed; by default it prints a dry run preview and requires `--yes` to delete anything.
+
 ### Multi-model
 ```bash
 mesh-llm serve --model Qwen2.5-32B --model GLM-4.7-Flash

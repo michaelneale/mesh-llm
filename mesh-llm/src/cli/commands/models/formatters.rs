@@ -4,6 +4,7 @@ use crate::models::{
 };
 use crate::system::hardware;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -46,6 +47,8 @@ pub(crate) struct InstalledRow {
     pub(crate) size: Option<u64>,
     pub(crate) catalog_model: Option<&'static catalog::CatalogModel>,
     pub(crate) capabilities: ModelCapabilities,
+    pub(crate) managed_by_mesh: bool,
+    pub(crate) last_used_at: Option<String>,
 }
 
 pub(crate) trait ModelsFormatter: SearchFormatter {
@@ -137,6 +140,22 @@ pub(crate) fn format_installed_size(bytes: u64) -> String {
     } else {
         format!("{}B", bytes)
     }
+}
+
+pub(crate) fn format_relative_timestamp(value: &str) -> Option<String> {
+    let parsed = DateTime::parse_from_rfc3339(value).ok()?;
+    let parsed = parsed.with_timezone(&Utc);
+    let age = Utc::now().signed_duration_since(parsed);
+    let age_label = if age.num_days() >= 1 {
+        format!("{}d ago", age.num_days())
+    } else if age.num_hours() >= 1 {
+        format!("{}h ago", age.num_hours())
+    } else if age.num_minutes() >= 1 {
+        format!("{}m ago", age.num_minutes())
+    } else {
+        "just now".to_string()
+    };
+    Some(format!("{value} ({age_label})"))
 }
 
 pub(crate) fn installed_model_kind(path: &Path) -> &'static str {

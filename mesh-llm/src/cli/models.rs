@@ -25,6 +25,18 @@ pub enum ModelsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Preview or remove mesh-managed models from the Hugging Face cache.
+    Cleanup {
+        /// Only include models that mesh-llm has not used for the given age (for example 30d or 12h).
+        #[arg(long)]
+        unused_since: Option<String>,
+        /// Remove the selected files instead of printing a dry run preview.
+        #[arg(long)]
+        yes: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     /// List built-in catalog models.
     #[command(hide = true)]
     List {

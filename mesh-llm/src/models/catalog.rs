@@ -1,5 +1,6 @@
 //! Built-in model catalog plus managed acquisition helpers.
 
+use super::track_managed_model_usage;
 use crate::cli::terminal_progress::{start_spinner, SpinnerHandle};
 use anyhow::{Context, Result};
 use hf_hub::{DownloadEvent, Progress, ProgressEvent, ProgressHandler, RepoDownloadFileParams};
@@ -770,14 +771,32 @@ pub async fn download_hf_repo_file_with_progress_label(
     };
     let mut paths = download_hf_assets(label, vec![asset.clone()], progress).await?;
     paths.sort();
-    paths
+    let path = paths
         .into_iter()
         .find(|path| path_suffix_matches_ignore_case(path, &asset.file))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Downloaded Hugging Face asset not found in cache: {repo}/{file}@{revision}"
             )
-        })
+        })?;
+    let display_name = Path::new(&asset.file)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&asset.file);
+    let model_ref = format!("{repo}@{revision}/{file}");
+    if let Err(err) = track_managed_model_usage(
+        &path,
+        std::slice::from_ref(&path),
+        display_name,
+        Some(&model_ref),
+        "huggingface",
+    ) {
+        tracing::warn!(
+            "failed to record managed model usage for {}: {err}",
+            path.display()
+        );
+    }
+    Ok(path)
 }
 
 /// Download a model into the managed model store with resume support.
@@ -797,14 +816,27 @@ pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) 
         let source = model.source_file().unwrap_or(model.file.as_str());
         let mut paths = download_hf_assets(&model.name, assets, progress).await?;
         paths.sort();
+        let managed_paths = paths.clone();
         if let Some(path) = paths
             .iter()
             .find(|path| path_suffix_matches_ignore_case(path, source))
             .cloned()
         {
+            if let Err(err) = track_managed_model_usage(
+                &path,
+                &managed_paths,
+                &model.name,
+                Some(&model.name),
+                "catalog",
+            ) {
+                tracing::warn!(
+                    "failed to record managed model usage for {}: {err}",
+                    path.display()
+                );
+            }
             return Ok(path);
         }
-        return paths
+        let path = paths
             .into_iter()
             .find(|path| path_suffix_matches_ignore_case(path, &model.file))
             .ok_or_else(|| {
@@ -812,7 +844,20 @@ pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) 
                     "Downloaded model path not found in cache for {}",
                     model.name
                 )
-            });
+            })?;
+        if let Err(err) = track_managed_model_usage(
+            &path,
+            &managed_paths,
+            &model.name,
+            Some(&model.name),
+            "catalog",
+        ) {
+            tracing::warn!(
+                "failed to record managed model usage for {}: {err}",
+                path.display()
+            );
+        }
+        return Ok(path);
     }
 
     let dir = models_dir();
@@ -827,6 +872,7 @@ pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) 
     if let Some(asset) = &model.mmproj {
         files.push((asset.file.as_str(), asset.url.as_str()));
     }
+    let all_paths: Vec<PathBuf> = files.iter().map(|(file, _)| dir.join(file)).collect();
 
     let mut all_present = true;
     let mut total_size: u64 = 0;
@@ -851,6 +897,14 @@ pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) 
                 total_size as f64 / 1e9,
                 files.len(),
                 if files.len() > 1 { "s" } else { "" },
+            );
+        }
+        if let Err(err) =
+            track_managed_model_usage(&dest, &all_paths, &model.name, Some(&model.name), "catalog")
+        {
+            tracing::warn!(
+                "failed to record managed model usage for {}: {err}",
+                dest.display()
             );
         }
         return Ok(dest);
@@ -910,6 +964,14 @@ pub async fn download_model_with_progress(model: &CatalogModel, progress: bool) 
 
     if progress {
         eprintln!("✅ Downloaded {} to {}", model.name, dir.display());
+    }
+    if let Err(err) =
+        track_managed_model_usage(&dest, &all_paths, &model.name, Some(&model.name), "catalog")
+    {
+        tracing::warn!(
+            "failed to record managed model usage for {}: {err}",
+            dest.display()
+        );
     }
     Ok(dest)
 }
@@ -1008,8 +1070,21 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
                 handle.await??;
             }
         }
-
-        return Ok(dir.join(filename));
+        let primary = dir.join(filename);
+        let all_paths: Vec<PathBuf> = files.iter().map(|(file, _)| dir.join(file)).collect();
+        let display_name = Path::new(filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(filename);
+        if let Err(err) =
+            track_managed_model_usage(&primary, &all_paths, display_name, Some(url), "url")
+        {
+            tracing::warn!(
+                "failed to record managed model usage for {}: {err}",
+                primary.display()
+            );
+        }
+        return Ok(primary);
     }
 
     // Not a split file — single download
@@ -1022,11 +1097,43 @@ pub async fn download_hf_split_gguf(url: &str, filename: &str) -> Result<PathBuf
                 filename,
                 size as f64 / 1e9
             );
+            let display_name = Path::new(filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(filename);
+            if let Err(err) = track_managed_model_usage(
+                &dest,
+                std::slice::from_ref(&dest),
+                display_name,
+                Some(url),
+                "url",
+            ) {
+                tracing::warn!(
+                    "failed to record managed model usage for {}: {err}",
+                    dest.display()
+                );
+            }
             return Ok(dest);
         }
     }
     eprintln!("📥 Downloading {filename}...");
     download_with_resume(&dest, url).await?;
+    let display_name = Path::new(filename)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(filename);
+    if let Err(err) = track_managed_model_usage(
+        &dest,
+        std::slice::from_ref(&dest),
+        display_name,
+        Some(url),
+        "url",
+    ) {
+        tracing::warn!(
+            "failed to record managed model usage for {}: {err}",
+            dest.display()
+        );
+    }
     Ok(dest)
 }
 

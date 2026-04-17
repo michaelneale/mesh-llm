@@ -1,6 +1,9 @@
 use super::local::HuggingFaceModelIdentity;
 use super::ModelCapabilities;
-use super::{capabilities, catalog, find_model_path, format_size_bytes};
+use super::{
+    capabilities, catalog, find_model_path, format_size_bytes, huggingface_identity_for_path,
+    track_model_usage,
+};
 use crate::cli::terminal_progress::start_spinner;
 use anyhow::{anyhow, bail, Context, Result};
 use hf_hub::{ListModelsParams, RepoInfo, RepoInfoParams};
@@ -137,6 +140,7 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
     let raw = input.to_string_lossy();
 
     if input.exists() {
+        record_resolved_model_usage(input, Some(raw.as_ref()));
         return Ok(input.to_path_buf());
     }
 
@@ -144,6 +148,10 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         let installed_name = raw.strip_suffix(".gguf").unwrap_or(&raw);
         let installed_path = find_model_path(installed_name);
         if installed_path.exists() {
+            let model_ref = huggingface_identity_for_path(&installed_path)
+                .map(|identity| identity.canonical_ref)
+                .unwrap_or_else(|| installed_name.to_string());
+            record_resolved_model_usage(&installed_path, Some(&model_ref));
             return Ok(installed_path);
         }
         if let Some(entry) = catalog::find_model(&raw) {
@@ -166,6 +174,12 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         .await
         .with_context(|| format!("Resolve model spec {raw}"))?;
     Ok(path)
+}
+
+fn record_resolved_model_usage(path: &Path, model_ref: Option<&str>) {
+    if let Err(err) = track_model_usage(path, None, model_ref, Some("resolve")) {
+        tracing::warn!("failed to record model usage for {}: {err}", path.display());
+    }
 }
 
 pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {

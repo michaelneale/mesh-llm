@@ -1,8 +1,8 @@
 use super::formatters::{
     catalog_model_capabilities, filter_label, fit_hint_for_size_label, format_count,
-    format_installed_size, format_source_label, huggingface_cache_dir, huggingface_repo_url,
-    installed_model_kind, model_kind_code, sort_label, variant_selector_label, ConsoleFormatter,
-    InstalledRow, ModelsFormatter, SearchFormatter,
+    format_installed_size, format_relative_timestamp, format_source_label, huggingface_cache_dir,
+    huggingface_repo_url, installed_model_kind, model_kind_code, sort_label,
+    variant_selector_label, ConsoleFormatter, InstalledRow, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{catalog, ModelDetails, SearchArtifactFilter, SearchHit, SearchSort};
 use anyhow::Result;
@@ -184,6 +184,19 @@ impl ModelsFormatter for ConsoleFormatter {
             println!("   type: {}", installed_model_kind(&row.path));
             if let Some(bytes) = row.size {
                 println!("   size: {} 📏", format_installed_size(bytes));
+            }
+            println!(
+                "   owner: {}",
+                if row.managed_by_mesh {
+                    "mesh-managed"
+                } else {
+                    "external"
+                }
+            );
+            if let Some(last_used_at) = row.last_used_at.as_deref() {
+                if let Some(label) = format_relative_timestamp(last_used_at) {
+                    println!("   last used: {}", label);
+                }
             }
             let mut caps = vec!["💬 text".to_string()];
             if row.capabilities.multimodal_label().is_some() {

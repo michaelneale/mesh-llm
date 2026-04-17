@@ -164,6 +164,8 @@ impl ModelsFormatter for JsonFormatter {
                     "type": installed_model_kind_code(&row.path),
                     "size_bytes": row.size,
                     "size": row.size.map(super::formatters::format_installed_size),
+                    "mesh_managed": row.managed_by_mesh,
+                    "last_used_at": row.last_used_at,
                     "capabilities": capabilities_json(row.capabilities),
                     "ref": row.model_ref,
                     "show": format!("mesh-llm models show {}", row.model_ref),

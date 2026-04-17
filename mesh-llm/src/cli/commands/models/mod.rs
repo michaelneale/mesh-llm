@@ -7,16 +7,20 @@ use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
 use crate::models::{
     catalog, download_model_ref_with_progress_details, find_catalog_model_exact,
-    installed_model_capabilities, scan_installed_models, search_catalog_models, search_huggingface,
-    show_exact_model, show_model_variants_with_progress, SearchArtifactFilter, SearchProgress,
-    SearchSort, ShowVariantsProgress,
+    installed_model_capabilities, load_model_usage_record_for_path, model_usage_cache_dir,
+    plan_model_cleanup, scan_installed_models, search_catalog_models, search_huggingface,
+    show_exact_model, show_model_variants_with_progress, ModelCleanupPlan, ModelCleanupResult,
+    SearchArtifactFilter, SearchProgress, SearchSort, ShowVariantsProgress,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
+use serde_json::json;
 use std::io::IsTerminal;
+use std::time::Duration;
 use std::time::Instant;
 
 use formatters::{
-    catalog_model_is_mlx, model_kind_code, models_formatter, search_formatter, InstalledRow,
+    catalog_model_is_mlx, format_installed_size, format_relative_timestamp, model_kind_code,
+    models_formatter, search_formatter, InstalledRow,
 };
 
 pub async fn run_model_search(
@@ -129,9 +133,8 @@ pub fn run_model_recommended(json_output: bool) -> Result<()> {
     formatter.render_recommended(&models)
 }
 
-pub fn run_model_installed(json_output: bool) -> Result<()> {
-    let formatter = models_formatter(json_output);
-    let rows: Vec<InstalledRow> = scan_installed_models()
+fn build_installed_rows() -> Vec<InstalledRow> {
+    scan_installed_models()
         .into_iter()
         .map(|name| {
             let path = crate::models::find_model_path(&name);
@@ -154,6 +157,7 @@ pub fn run_model_installed(json_output: bool) -> Result<()> {
                 std::fs::metadata(&path).map(|meta| meta.len()).ok()
             };
             let capabilities = installed_model_capabilities(&name);
+            let usage = load_model_usage_record_for_path(&path);
             InstalledRow {
                 name: display_name,
                 model_ref,
@@ -161,10 +165,35 @@ pub fn run_model_installed(json_output: bool) -> Result<()> {
                 size,
                 catalog_model,
                 capabilities,
+                managed_by_mesh: usage.as_ref().is_some_and(|record| record.mesh_managed),
+                last_used_at: usage.and_then(|record| Some(record.last_used_at)),
             }
         })
-        .collect();
+        .collect()
+}
+
+pub fn run_model_installed(json_output: bool) -> Result<()> {
+    let formatter = models_formatter(json_output);
+    let rows = build_installed_rows();
     formatter.render_installed(&rows)
+}
+
+pub fn run_model_cleanup(unused_since: Option<&str>, yes: bool, json_output: bool) -> Result<()> {
+    let unused_duration = unused_since.map(parse_cleanup_age).transpose()?;
+    let plan = plan_model_cleanup(unused_duration)?;
+    if yes {
+        let result = crate::models::execute_model_cleanup(unused_duration)?;
+        if json_output {
+            render_cleanup_json(unused_since, &plan, Some(&result))?;
+        } else {
+            render_cleanup_console(unused_since, &plan, Some(&result))?;
+        }
+    } else if json_output {
+        render_cleanup_json(unused_since, &plan, None)?;
+    } else {
+        render_cleanup_console(unused_since, &plan, None)?;
+    }
+    Ok(())
 }
 
 pub async fn run_model_show(model_ref: &str, json_output: bool) -> Result<()> {
@@ -271,6 +300,11 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
             run_model_recommended(*json)?
         }
         ModelsCommand::Installed { json } => run_model_installed(*json)?,
+        ModelsCommand::Cleanup {
+            unused_since,
+            yes,
+            json,
+        } => run_model_cleanup(unused_since.as_deref(), *yes, *json)?,
         ModelsCommand::Search {
             query,
             gguf,
@@ -306,6 +340,175 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_cleanup_age(value: &str) -> Result<Duration> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("Cleanup age must not be empty");
+    }
+    let split_index = value
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(value.len());
+    if split_index == 0 || split_index == value.len() {
+        bail!("Use a cleanup age like 12h, 7d, or 30m");
+    }
+    let amount: u64 = value[..split_index]
+        .parse()
+        .map_err(|_| anyhow!("Invalid cleanup age: {value}"))?;
+    let unit = value[split_index..].to_ascii_lowercase();
+    let seconds = match unit.as_str() {
+        "m" | "min" | "mins" | "minute" | "minutes" => amount.saturating_mul(60),
+        "h" | "hr" | "hrs" | "hour" | "hours" => amount.saturating_mul(60 * 60),
+        "d" | "day" | "days" => amount.saturating_mul(60 * 60 * 24),
+        "w" | "week" | "weeks" => amount.saturating_mul(60 * 60 * 24 * 7),
+        _ => bail!("Unsupported cleanup age unit '{unit}'. Use m, h, d, or w."),
+    };
+    Ok(Duration::from_secs(seconds))
+}
+
+fn render_cleanup_console(
+    unused_since: Option<&str>,
+    plan: &ModelCleanupPlan,
+    result: Option<&ModelCleanupResult>,
+) -> Result<()> {
+    let executed = result.is_some();
+    if executed {
+        println!("✅ Model cleanup complete");
+    } else {
+        println!("🧹 Model cleanup preview");
+    }
+    println!(
+        "📁 HF cache: {}",
+        crate::models::huggingface_hub_cache_dir().display()
+    );
+    println!("📁 Mesh cache: {}", model_usage_cache_dir().display());
+    println!("🛡️ Scope: mesh-managed records only");
+    if let Some(unused_since) = unused_since {
+        println!("⏱️ Filter: unused for at least {}", unused_since);
+    }
+    println!();
+
+    if plan.candidates.is_empty() {
+        println!("No mesh-managed models matched the cleanup filters.");
+    } else {
+        for candidate in &plan.candidates {
+            println!("📦 {}", candidate.display_name);
+            if candidate.stale_record_only {
+                println!("   would remove: stale usage record only");
+            } else {
+                println!(
+                    "   would remove: {} across {} file{}",
+                    format_installed_size(candidate.total_bytes),
+                    candidate.file_count,
+                    if candidate.file_count == 1 { "" } else { "s" }
+                );
+            }
+            if let Some(model_ref) = candidate.model_ref.as_deref() {
+                println!("   ref: {}", model_ref);
+            }
+            println!("   source: {}", candidate.source);
+            if let Some(label) = format_relative_timestamp(&candidate.last_used_at) {
+                println!("   last used: {}", label);
+            }
+            println!("   path: {}", candidate.primary_path.display());
+            if candidate.stale_record_only {
+                println!("   note: no managed files remain on disk; cleanup only removes the usage record");
+            }
+            println!();
+        }
+    }
+
+    if let Some(result) = result {
+        println!("Removed model records: {}", result.removed_candidates);
+        println!("Removed files: {}", result.removed_files);
+        println!(
+            "Removed metadata cache files: {}",
+            result.removed_metadata_files
+        );
+        println!("Removed usage records: {}", result.removed_records);
+        println!(
+            "Reclaimed: {}",
+            format_installed_size(result.reclaimed_bytes)
+        );
+    } else {
+        println!(
+            "Would remove: {} across {} file{}",
+            format_installed_size(plan.total_bytes),
+            plan.total_files,
+            if plan.total_files == 1 { "" } else { "s" }
+        );
+        if plan.stale_record_only > 0 {
+            println!(
+                "Would also clear {} stale usage record{}",
+                plan.stale_record_only,
+                if plan.stale_record_only == 1 { "" } else { "s" }
+            );
+        }
+        if plan.skipped_recent > 0 {
+            println!(
+                "Skipped recent mesh-managed record{}: {}",
+                if plan.skipped_recent == 1 { "" } else { "s" },
+                plan.skipped_recent
+            );
+        }
+        println!();
+        println!("Apply with:");
+        print!("  mesh-llm models cleanup");
+        if let Some(unused_since) = unused_since {
+            print!(" --unused-since {}", unused_since);
+        }
+        println!(" --yes");
+    }
+    Ok(())
+}
+
+fn render_cleanup_json(
+    unused_since: Option<&str>,
+    plan: &ModelCleanupPlan,
+    result: Option<&ModelCleanupResult>,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "hf_cache_dir": crate::models::huggingface_hub_cache_dir(),
+            "mesh_cache_dir": model_usage_cache_dir(),
+            "mesh_managed_only": true,
+            "unused_since": unused_since,
+            "dry_run": result.is_none(),
+            "plan": plan,
+            "result": result,
+        }))?
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cleanup_age;
+
+    #[test]
+    fn cleanup_age_parser_accepts_common_units() {
+        assert_eq!(
+            parse_cleanup_age("30m").expect("minutes should parse"),
+            std::time::Duration::from_secs(30 * 60)
+        );
+        assert_eq!(
+            parse_cleanup_age("12h").expect("hours should parse"),
+            std::time::Duration::from_secs(12 * 60 * 60)
+        );
+        assert_eq!(
+            parse_cleanup_age("7d").expect("days should parse"),
+            std::time::Duration::from_secs(7 * 24 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn cleanup_age_parser_rejects_missing_or_unknown_units() {
+        assert!(parse_cleanup_age("30").is_err());
+        assert!(parse_cleanup_age("2months").is_err());
+        assert!(parse_cleanup_age("").is_err());
+    }
 }
 
 fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
