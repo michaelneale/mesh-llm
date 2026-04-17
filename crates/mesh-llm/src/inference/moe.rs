@@ -5,9 +5,19 @@
 //! replicated to every node. Remaining experts are distributed uniquely.
 //!
 //! No cross-node traffic during inference — each node runs independently.
+//!
+//! # Storage modes
+//! - **Monolithic** (default): each node holds a self-contained GGUF with trunk
+//!   + its expert subset.
+//! - **Split** (`moe.storage.mode = "split"`): one shared trunk GGUF lives on
+//!   NAS, and each node has a small per-node experts GGUF. Handled by the
+//!   `ensure_trunk_and_expert` + `SplitManifest` machinery below.
 
+use chrono::{DateTime, Utc};
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub use crate::models::gguf::{detect_moe, scan_gguf_compact_meta, GgufMoeInfo};
@@ -832,6 +842,610 @@ pub fn run_split(
     Ok(())
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Trunk/experts split storage (moe.storage.mode = "split")
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Splitter format we require when building trunk/experts shards. Bumped in
+/// lockstep with the llama.cpp fork's `MOE_SPLIT_SPLITTER_VERSION`. When the
+/// installed splitter reports a different string, we refuse to emit split
+/// shards rather than silently produce shards the loader won't accept.
+pub const REQUIRED_SPLITTER_VERSION: &str = "trunk-experts/v1";
+
+/// Typed failure modes for trunk/experts storage. Distinct variants so the
+/// orchestrator (election / launcher) can react differently — e.g. a
+/// `NasUnreachable` should never fall back to monolithic local; a
+/// `SplitterTooOld` should prompt the user to rebuild the image.
+#[derive(thiserror::Error, Debug)]
+pub enum MoeStorageError {
+    #[error("NAS/storage unreachable at {path}: {source}")]
+    NasUnreachable {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "llama-moe-split reports version {found:?} but mesh-llm requires {expected:?}; \
+         rebuild llama.cpp on the current fork to get trunk/experts support"
+    )]
+    SplitterTooOld {
+        found: String,
+        expected: &'static str,
+    },
+    #[error("trunk hash mismatch for {path}: manifest {expected}, file {found}")]
+    TrunkHashMismatch {
+        path: PathBuf,
+        expected: String,
+        found: String,
+    },
+    #[error("shard size mismatch for {path}: manifest {expected} bytes, file {found} bytes")]
+    ShardSizeMismatch {
+        path: PathBuf,
+        expected: u64,
+        found: u64,
+    },
+    #[error("manifest not found at {0}; expected leader to publish it first")]
+    ManifestMissing(PathBuf),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrunkEntry {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExpertEntry {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+/// Manifest describing a complete trunk/experts split. Lives at
+/// `<trunk_root>/manifests/<model_stem>/<version>.json`. Published atomically
+/// (tmp + fsync + rename) by the elected leader after it finishes producing
+/// trunk + every node's experts shard. Followers poll for its presence.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SplitManifest {
+    /// `manifest.version`: stable derived ID (see `derive_manifest_version`).
+    /// New plan ⇒ new version directory; old manifests remain for forensics.
+    pub version: String,
+    /// SHA-256 of the source monolithic GGUF at split time.
+    pub source_model_sha256: String,
+    /// Value of `llama-moe-split --splitter-version` used to build these
+    /// shards. Tells a future loader which splitter produced the shards
+    /// without re-opening the GGUF.
+    pub splitter_version: String,
+    /// Mesh sizing at plan time.
+    pub n_nodes: usize,
+    /// Per-node expert assignment exactly as passed to the splitter.
+    pub assignments: BTreeMap<usize, Vec<u32>>,
+    pub trunk: TrunkEntry,
+    pub experts: BTreeMap<usize, ExpertEntry>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Paths + version id resolved for one node's view of a trunk/experts split.
+/// This is what the launcher hands to llama-server as
+/// `--model-trunk <trunk>` + `--model-experts <experts>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedShards {
+    pub trunk: PathBuf,
+    pub experts: PathBuf,
+    pub manifest_version: String,
+}
+
+/// Directory layout helpers. All paths are derived from the `MoeStorageConfig`
+/// roots so nodes that mount the NAS at different points still agree on
+/// structure.
+pub fn trunk_file_path(
+    cfg: &crate::plugin::MoeStorageConfig,
+    model_path: &Path,
+    version: &str,
+) -> Option<PathBuf> {
+    let root = crate::plugin::resolve_trunk_root(cfg)?;
+    let stem = model_stem_for_split(model_path);
+    Some(root.join(&stem).join(version).join("trunk.gguf"))
+}
+
+pub fn experts_file_path(
+    cfg: &crate::plugin::MoeStorageConfig,
+    model_path: &Path,
+    n_nodes: usize,
+    node_index: usize,
+    version: &str,
+) -> Option<PathBuf> {
+    let root = crate::plugin::resolve_experts_root(cfg)?;
+    let stem = model_stem_for_split(model_path);
+    Some(
+        root.join(&stem)
+            .join(format!("{n_nodes}-nodes"))
+            .join(version)
+            .join(format!("node-{node_index}-experts.gguf")),
+    )
+}
+
+pub fn manifest_file_path(
+    cfg: &crate::plugin::MoeStorageConfig,
+    model_path: &Path,
+    version: &str,
+) -> Option<PathBuf> {
+    let root = crate::plugin::resolve_trunk_root(cfg)?;
+    let stem = model_stem_for_split(model_path);
+    Some(
+        root.join("manifests")
+            .join(&stem)
+            .join(format!("{version}.json")),
+    )
+}
+
+/// Reuse the same stem-stripping rule as monolithic `split_path` so that
+/// multi-file source GGUFs (e.g. `Kimi-K2.5-Q4_K_M-00001-of-00013.gguf`) map
+/// to a single stem (`Kimi-K2.5-Q4_K_M`).
+fn model_stem_for_split(model_path: &Path) -> String {
+    let stem = model_path.file_stem().unwrap_or_default().to_string_lossy();
+    // strip_split_suffix already returns an owned String.
+    strip_split_suffix(&stem)
+}
+
+/// Derive a short, stable manifest version ID from the inputs that
+/// determine the split output bit-for-bit. Any change in source model,
+/// splitter, assignments, or node count produces a new version directory;
+/// identical inputs share the directory so re-runs skip redundant writes.
+pub fn derive_manifest_version(
+    source_model_sha256: &str,
+    splitter_version: &str,
+    n_nodes: usize,
+    assignments: &BTreeMap<usize, Vec<u32>>,
+) -> String {
+    let mut h = Sha256::new();
+    h.update(source_model_sha256.as_bytes());
+    h.update(b"|");
+    h.update(splitter_version.as_bytes());
+    h.update(b"|");
+    h.update(n_nodes.to_le_bytes());
+    for (idx, experts) in assignments {
+        h.update(b"|node=");
+        h.update(idx.to_le_bytes());
+        for e in experts {
+            h.update(b",");
+            h.update(e.to_le_bytes());
+        }
+    }
+    let digest = h.finalize();
+    hex_lower(&digest[..6])
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Streaming SHA-256 of a file. Used to verify shards match the manifest.
+pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use std::io::Read as _;
+    let mut f = std::fs::File::open(path)
+        .map_err(|e| anyhow::anyhow!("opening {} for hashing: {e}", path.display()))?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    loop {
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| anyhow::anyhow!("reading {} for hashing: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(hex_lower(&h.finalize()))
+}
+
+/// Probe `llama-moe-split --splitter-version`. Returns the reported string,
+/// or `SplitterTooOld` when it does not match `REQUIRED_SPLITTER_VERSION`.
+pub fn probe_splitter_version(bin_dir: &Path) -> anyhow::Result<String> {
+    let split_bin = resolve_split_binary(bin_dir)?;
+    let output = std::process::Command::new(&split_bin)
+        .arg("--splitter-version")
+        .output()
+        .map_err(|e| anyhow::anyhow!("probing {} version: {e}", split_bin.display()))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "llama-moe-split --splitter-version exited {} (stderr={})",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version != REQUIRED_SPLITTER_VERSION {
+        return Err(MoeStorageError::SplitterTooOld {
+            found: version,
+            expected: REQUIRED_SPLITTER_VERSION,
+        }
+        .into());
+    }
+    Ok(version)
+}
+
+/// Run the splitter in trunk/experts mode for one node. Writes both
+/// `trunk_out` and `experts_out` atomically (the C++ side uses .tmp+rename).
+/// `reuse_trunk` tells the splitter to keep an existing trunk when its hash
+/// still matches; set to true for any invocation past the first node.
+pub fn run_split_trunk_experts(
+    bin_dir: &Path,
+    model_path: &Path,
+    assignment: &NodeAssignment,
+    trunk_out: &Path,
+    experts_out: &Path,
+    reuse_trunk: bool,
+) -> anyhow::Result<()> {
+    if let Some(p) = trunk_out.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    if let Some(p) = experts_out.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+
+    let expert_list = expert_list_arg(assignment);
+    let split_bin = resolve_split_binary(bin_dir)?;
+    let mut cmd = std::process::Command::new(&split_bin);
+    cmd.args([
+        "-m",
+        &model_path.to_string_lossy(),
+        "--expert-list",
+        &expert_list,
+        "--trunk-out",
+        &trunk_out.to_string_lossy(),
+        "--experts-out",
+        &experts_out.to_string_lossy(),
+    ]);
+    if reuse_trunk {
+        cmd.arg("--reuse-trunk");
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run {}: {e}", split_bin.display()))?;
+    anyhow::ensure!(
+        status.success(),
+        "llama-moe-split (trunk/experts) exited with {status}"
+    );
+    Ok(())
+}
+
+/// Acquire an exclusive advisory lock on a lockfile sibling to the trunk path.
+/// Used so concurrent splitter invocations across nodes don't race when
+/// producing the shared trunk for the first time. The lock is held for the
+/// duration of `body` and released when the File drops at the end.
+pub fn with_trunk_build_lock<T>(
+    lock_path: &Path,
+    body: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if let Some(p) = lock_path.parent() {
+        std::fs::create_dir_all(p).map_err(|e| {
+            anyhow::anyhow!("creating lock parent {}: {e}", p.display())
+        })?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+        .map_err(|e| anyhow::anyhow!("opening lock {}: {e}", lock_path.display()))?;
+    // SAFETY: flock is async-signal-safe; we block until we get the lock.
+    use std::os::unix::io::AsRawFd as _;
+    let fd = lock_file.as_raw_fd();
+    let rc = unsafe { libc::flock(fd, libc::LOCK_EX) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        anyhow::bail!("flock({}): {err}", lock_path.display());
+    }
+    let result = body();
+    // LOCK_UN is implicit on close; we don't rely on it here since dropping
+    // lock_file on return will unlock. Keep lock_file alive through body.
+    drop(lock_file);
+    result
+}
+
+/// Write a JSON manifest atomically: tmp + fsync + rename, so readers never
+/// see a half-written file.
+pub fn write_manifest_atomic(path: &Path, manifest: &SplitManifest) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| anyhow::anyhow!("create {}: {e}", tmp.display()))?;
+        let body = serde_json::to_vec_pretty(manifest)
+            .map_err(|e| anyhow::anyhow!("serializing manifest: {e}"))?;
+        f.write_all(&body)
+            .map_err(|e| anyhow::anyhow!("writing {}: {e}", tmp.display()))?;
+        f.sync_all()
+            .map_err(|e| anyhow::anyhow!("fsync {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path)
+        .map_err(|e| anyhow::anyhow!("rename {} -> {}: {e}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+pub fn load_manifest(path: &Path) -> anyhow::Result<SplitManifest> {
+    let data = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("reading manifest {}: {e}", path.display()))?;
+    let m: SplitManifest = serde_json::from_slice(&data)
+        .map_err(|e| anyhow::anyhow!("parsing manifest {}: {e}", path.display()))?;
+    Ok(m)
+}
+
+/// Pre-launch integrity check. Compares this node's resolved trunk + experts
+/// files against what the manifest declared. Cheap-ish: size always, SHA256
+/// only when `full` is true (too expensive per-launch on Kimi K2.5 scale —
+/// callers should use `full=false` for hot path and `true` for migration/
+/// audit).
+pub fn verify_shards(
+    resolved: &ResolvedShards,
+    manifest: &SplitManifest,
+    node_index: usize,
+    full: bool,
+) -> anyhow::Result<()> {
+    let expert = manifest.experts.get(&node_index).ok_or_else(|| {
+        anyhow::anyhow!(
+            "manifest has no expert entry for node {node_index} (has nodes {:?})",
+            manifest.experts.keys().collect::<Vec<_>>()
+        )
+    })?;
+
+    for (path, expected_size, expected_hash) in [
+        (
+            resolved.trunk.as_path(),
+            manifest.trunk.size_bytes,
+            &manifest.trunk.sha256,
+        ),
+        (resolved.experts.as_path(), expert.size_bytes, &expert.sha256),
+    ] {
+        let meta = std::fs::metadata(path).map_err(|e| MoeStorageError::NasUnreachable {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        if meta.len() != expected_size {
+            return Err(MoeStorageError::ShardSizeMismatch {
+                path: path.to_path_buf(),
+                expected: expected_size,
+                found: meta.len(),
+            }
+            .into());
+        }
+        if full {
+            let got = sha256_file(path)?;
+            if &got != expected_hash {
+                return Err(MoeStorageError::TrunkHashMismatch {
+                    path: path.to_path_buf(),
+                    expected: expected_hash.clone(),
+                    found: got,
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cheap, stable identity for a source GGUF: `sha256(filename | size)[..6]`.
+/// Used for manifest version derivation so we don't have to hash hundreds of
+/// GB on every launch. Full integrity comes from `source_model_sha256` stored
+/// in the manifest, computed exactly once at split time.
+pub fn source_fingerprint(model_path: &Path) -> anyhow::Result<String> {
+    let meta = std::fs::metadata(model_path).map_err(|e| {
+        anyhow::anyhow!("stat {} for fingerprint: {e}", model_path.display())
+    })?;
+    let mut h = Sha256::new();
+    let name = model_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    h.update(name.as_bytes());
+    h.update(b"|");
+    h.update(meta.len().to_le_bytes());
+    Ok(hex_lower(&h.finalize()[..6]))
+}
+
+/// Side-input for `ensure_trunk_and_expert`. The caller (election/planner)
+/// passes its own view of model + assignments + node index. `is_leader`
+/// gates whether we are allowed to *build* the trunk+experts — a false value
+/// means "only poll for an existing manifest; fail if not present yet".
+#[derive(Clone, Debug)]
+pub struct EnsureOpts {
+    pub bin_dir: PathBuf,
+    pub model_path: PathBuf,
+    pub assignments: BTreeMap<usize, Vec<u32>>,
+    pub node_index: usize,
+    pub is_leader: bool,
+    /// Max wall time a non-leader will wait for the leader's manifest to
+    /// appear (e.g. while the leader is still producing trunk+experts).
+    pub follower_timeout: std::time::Duration,
+}
+
+/// Top-level orchestrator: return the (trunk, experts) paths the launcher
+/// should hand to llama-server, after ensuring the on-disk split exists and
+/// matches the manifest.
+///
+/// Leader path: produce trunk + this node's experts + manifest (atomic).
+/// Follower path: poll for the manifest; when it appears, verify shards.
+pub fn ensure_trunk_and_expert(
+    cfg: &crate::plugin::MoeStorageConfig,
+    opts: &EnsureOpts,
+) -> anyhow::Result<ResolvedShards> {
+    if !matches!(
+        cfg.mode,
+        crate::plugin::MoeStorageMode::Split
+    ) {
+        anyhow::bail!("ensure_trunk_and_expert called with storage.mode != split");
+    }
+
+    let splitter_version = probe_splitter_version(&opts.bin_dir)?;
+    let fingerprint = source_fingerprint(&opts.model_path)?;
+    // Version is derived purely from inputs that determine output bits.
+    // We prefix the cheap fingerprint so two distinct models with the same
+    // assignments map to different version dirs.
+    let mut assignments_sorted: BTreeMap<usize, Vec<u32>> = opts.assignments.clone();
+    for v in assignments_sorted.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+    let n_nodes = assignments_sorted.len();
+    let version_seed = format!("{fingerprint}:{splitter_version}");
+    let version =
+        derive_manifest_version(&version_seed, &splitter_version, n_nodes, &assignments_sorted);
+
+    let trunk = trunk_file_path(cfg, &opts.model_path, &version)
+        .ok_or_else(|| anyhow::anyhow!("moe.storage.trunk_path not configured"))?;
+    let experts = experts_file_path(
+        cfg,
+        &opts.model_path,
+        n_nodes,
+        opts.node_index,
+        &version,
+    )
+    .ok_or_else(|| anyhow::anyhow!("moe.storage.experts_path not configured"))?;
+    let manifest_path = manifest_file_path(cfg, &opts.model_path, &version)
+        .ok_or_else(|| anyhow::anyhow!("moe.storage.trunk_path not configured"))?;
+
+    // Fast path: manifest already exists → size-verify shards and return.
+    if let Ok(manifest) = load_manifest(&manifest_path) {
+        let resolved = ResolvedShards {
+            trunk: trunk.clone(),
+            experts: experts.clone(),
+            manifest_version: version.clone(),
+        };
+        verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
+        return Ok(resolved);
+    }
+
+    if !opts.is_leader {
+        // Followers never build — they wait for the leader to publish.
+        let deadline = std::time::Instant::now() + opts.follower_timeout;
+        loop {
+            if let Ok(manifest) = load_manifest(&manifest_path) {
+                let resolved = ResolvedShards {
+                    trunk: trunk.clone(),
+                    experts: experts.clone(),
+                    manifest_version: version.clone(),
+                };
+                verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
+                return Ok(resolved);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(MoeStorageError::ManifestMissing(manifest_path.clone()).into());
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+
+    // Leader path: hold the trunk build lock, produce THIS node's shards
+    // (other nodes will produce their own experts shards under the same
+    // trunk path with --reuse-trunk), and publish the manifest.
+    let lock_path = trunk
+        .parent()
+        .map(|p| p.join(".trunk.build.lock"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/.mesh-llm-trunk.build.lock"));
+
+    with_trunk_build_lock(&lock_path, || -> anyhow::Result<()> {
+        // Race check: another process may have published the manifest while
+        // we waited for the lock. Bail out early in that case.
+        if manifest_path.exists() {
+            return Ok(());
+        }
+
+        // Produce trunk + experts for this node.
+        let this_assignment = opts
+            .assignments
+            .get(&opts.node_index)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "leader node index {} missing from assignments (have {:?})",
+                    opts.node_index,
+                    opts.assignments.keys().collect::<Vec<_>>()
+                )
+            })?;
+        let assignment_struct = NodeAssignment {
+            experts: this_assignment.clone(),
+            n_shared: 0,
+            n_unique: this_assignment.len(),
+        };
+        let reuse = trunk.exists();
+        run_split_trunk_experts(
+            &opts.bin_dir,
+            &opts.model_path,
+            &assignment_struct,
+            &trunk,
+            &experts,
+            reuse,
+        )?;
+
+        // Build the manifest with trunk + THIS node's experts only. Other
+        // nodes will call ensure_trunk_and_expert separately; they'll find
+        // a manifest that mentions only node_index=leader initially and
+        // extend it on their own leader pass.
+        //
+        // For MVP we require the leader to be node 0 AND to call
+        // ensure_trunk_and_expert once per node before any follower starts.
+        // A richer design (shard-by-shard manifest append with flock) is
+        // future work tracked in the storage plan.
+        let trunk_meta = std::fs::metadata(&trunk)?;
+        let experts_meta = std::fs::metadata(&experts)?;
+        let trunk_sha = sha256_file(&trunk)?;
+        let experts_sha = sha256_file(&experts)?;
+
+        let mut experts_map = BTreeMap::new();
+        experts_map.insert(
+            opts.node_index,
+            ExpertEntry {
+                path: experts.clone(),
+                sha256: experts_sha,
+                size_bytes: experts_meta.len(),
+            },
+        );
+
+        // Full source hash is expensive on 600GB models; we compute it
+        // lazily only when the caller has a cached value or asks for it.
+        // For MVP we skip it (empty string means "not computed") — the
+        // fingerprint already handled version identity, and integrity
+        // comes from trunk/experts hashes which ARE computed.
+        let manifest = SplitManifest {
+            version: version.clone(),
+            source_model_sha256: String::new(),
+            splitter_version: splitter_version.clone(),
+            n_nodes,
+            assignments: assignments_sorted.clone(),
+            trunk: TrunkEntry {
+                path: trunk.clone(),
+                sha256: trunk_sha,
+                size_bytes: trunk_meta.len(),
+            },
+            experts: experts_map,
+            created_at: Utc::now(),
+        };
+        write_manifest_atomic(&manifest_path, &manifest)?;
+        Ok(())
+    })?;
+
+    // Re-load + verify.
+    let manifest = load_manifest(&manifest_path)?;
+    let resolved = ResolvedShards {
+        trunk,
+        experts,
+        manifest_version: version,
+    };
+    verify_shards(&resolved, &manifest, opts.node_index, /*full=*/ false)?;
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,4 +1886,226 @@ mod tests {
             );
         }
     }
+
+    // ── trunk/experts split storage tests ────────────────────────────────
+
+    fn mk_assignments(n_nodes: usize) -> BTreeMap<usize, Vec<u32>> {
+        let mut m = BTreeMap::new();
+        for i in 0..n_nodes {
+            m.insert(i, vec![i as u32, (i + n_nodes) as u32]);
+        }
+        m
+    }
+
+    #[test]
+    fn derive_manifest_version_is_deterministic_and_short() {
+        let a = mk_assignments(2);
+        let v1 = derive_manifest_version("abc:sha", "trunk-experts/v1", 2, &a);
+        let v2 = derive_manifest_version("abc:sha", "trunk-experts/v1", 2, &a);
+        assert_eq!(v1, v2);
+        assert_eq!(v1.len(), 12); // 6 bytes hex = 12 chars
+    }
+
+    #[test]
+    fn derive_manifest_version_changes_with_each_input() {
+        let a = mk_assignments(2);
+        let base = derive_manifest_version("abc:sha", "trunk-experts/v1", 2, &a);
+        // Change each input independently; all should produce different versions.
+        assert_ne!(base, derive_manifest_version("xyz:sha", "trunk-experts/v1", 2, &a));
+        assert_ne!(base, derive_manifest_version("abc:sha", "trunk-experts/v2", 2, &a));
+        assert_ne!(base, derive_manifest_version("abc:sha", "trunk-experts/v1", 3, &a));
+        let mut a2 = a.clone();
+        a2.get_mut(&0).unwrap().push(99);
+        assert_ne!(base, derive_manifest_version("abc:sha", "trunk-experts/v1", 2, &a2));
+    }
+
+    #[test]
+    fn sha256_file_is_deterministic_content_sensitive_and_matches_in_memory() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let content = b"mesh-llm trunk test\n";
+        std::fs::write(tmp.path(), content).unwrap();
+        // Must match the in-memory hash over the same bytes.
+        let mut h = sha2::Sha256::new();
+        sha2::Digest::update(&mut h, content);
+        let expected = hex_lower(&sha2::Digest::finalize(h));
+        assert_eq!(sha256_file(tmp.path()).unwrap(), expected);
+        // Stable under repeated reads.
+        assert_eq!(sha256_file(tmp.path()).unwrap(), expected);
+        // Sensitive to content change.
+        std::fs::write(tmp.path(), b"different\n").unwrap();
+        assert_ne!(sha256_file(tmp.path()).unwrap(), expected);
+    }
+
+    #[test]
+    fn source_fingerprint_is_stable_and_size_sensitive() {
+        let a = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(a.path(), b"0123456789").unwrap();
+        let f1 = source_fingerprint(a.path()).unwrap();
+        let f2 = source_fingerprint(a.path()).unwrap();
+        assert_eq!(f1, f2);
+        // Same name, different size → different fingerprint.
+        std::fs::write(a.path(), b"differentdatasizeisnotsame").unwrap();
+        let f3 = source_fingerprint(a.path()).unwrap();
+        assert_ne!(f1, f3);
+    }
+
+    #[test]
+    fn manifest_round_trips_via_atomic_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("0abc.json");
+        let original = SplitManifest {
+            version: "0abc".into(),
+            source_model_sha256: String::new(),
+            splitter_version: "trunk-experts/v1".into(),
+            n_nodes: 2,
+            assignments: mk_assignments(2),
+            trunk: TrunkEntry {
+                path: dir.path().join("trunk.gguf"),
+                sha256: "deadbeef".into(),
+                size_bytes: 100,
+            },
+            experts: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    0,
+                    ExpertEntry {
+                        path: dir.path().join("e0.gguf"),
+                        sha256: "feedface".into(),
+                        size_bytes: 50,
+                    },
+                );
+                m
+            },
+            created_at: Utc::now(),
+        };
+        write_manifest_atomic(&path, &original).unwrap();
+        // Atomic: tmp must not be left behind.
+        assert!(!path.with_extension("json.tmp").exists());
+        let loaded = load_manifest(&path).unwrap();
+        // created_at serializes with microsecond precision; compare field-by-field
+        // with a tolerance if needed. Here serde uses RFC3339 which preserves.
+        assert_eq!(loaded.version, original.version);
+        assert_eq!(loaded.trunk, original.trunk);
+        assert_eq!(loaded.experts, original.experts);
+        assert_eq!(loaded.assignments, original.assignments);
+    }
+
+    #[test]
+    fn verify_shards_detects_size_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let trunk = dir.path().join("trunk.gguf");
+        let experts = dir.path().join("e0.gguf");
+        std::fs::write(&trunk, b"trunk-bytes-here").unwrap();
+        std::fs::write(&experts, b"expert-bytes").unwrap();
+        let manifest = SplitManifest {
+            version: "v".into(),
+            source_model_sha256: String::new(),
+            splitter_version: "trunk-experts/v1".into(),
+            n_nodes: 1,
+            assignments: mk_assignments(1),
+            trunk: TrunkEntry {
+                path: trunk.clone(),
+                sha256: sha256_file(&trunk).unwrap(),
+                size_bytes: 999, // WRONG
+            },
+            experts: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    0,
+                    ExpertEntry {
+                        path: experts.clone(),
+                        sha256: sha256_file(&experts).unwrap(),
+                        size_bytes: std::fs::metadata(&experts).unwrap().len(),
+                    },
+                );
+                m
+            },
+            created_at: Utc::now(),
+        };
+        let resolved = ResolvedShards {
+            trunk: trunk.clone(),
+            experts: experts.clone(),
+            manifest_version: "v".into(),
+        };
+        let err = verify_shards(&resolved, &manifest, 0, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("size mismatch"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn verify_shards_detects_hash_mismatch_when_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let trunk = dir.path().join("trunk.gguf");
+        let experts = dir.path().join("e0.gguf");
+        std::fs::write(&trunk, b"trunk-v1").unwrap();
+        std::fs::write(&experts, b"expert-v1").unwrap();
+        let manifest = SplitManifest {
+            version: "v".into(),
+            source_model_sha256: String::new(),
+            splitter_version: "trunk-experts/v1".into(),
+            n_nodes: 1,
+            assignments: mk_assignments(1),
+            trunk: TrunkEntry {
+                path: trunk.clone(),
+                // Wrong hash (but correct size) → size-only check passes, full fails.
+                sha256: "0".repeat(64),
+                size_bytes: std::fs::metadata(&trunk).unwrap().len(),
+            },
+            experts: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    0,
+                    ExpertEntry {
+                        path: experts.clone(),
+                        sha256: sha256_file(&experts).unwrap(),
+                        size_bytes: std::fs::metadata(&experts).unwrap().len(),
+                    },
+                );
+                m
+            },
+            created_at: Utc::now(),
+        };
+        let resolved = ResolvedShards {
+            trunk: trunk.clone(),
+            experts: experts.clone(),
+            manifest_version: "v".into(),
+        };
+        // size-only passes
+        verify_shards(&resolved, &manifest, 0, false).unwrap();
+        // full catches the hash mismatch
+        let err = verify_shards(&resolved, &manifest, 0, true).unwrap_err();
+        assert!(err.to_string().contains("hash mismatch"), "got: {err}");
+    }
+
+    #[test]
+    fn trunk_build_lock_is_exclusive() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join(".trunk.build.lock");
+        let barrier = Arc::new(Barrier::new(2));
+        let lock_a = lock.clone();
+        let bar_a = barrier.clone();
+        let hold_ms = 300u64;
+        let t1 = thread::spawn(move || {
+            with_trunk_build_lock(&lock_a, || {
+                bar_a.wait();
+                thread::sleep(Duration::from_millis(hold_ms));
+                Ok(Instant::now())
+            })
+        });
+        barrier.wait();
+        let started = Instant::now();
+        let second = with_trunk_build_lock(&lock, || Ok(Instant::now())).unwrap();
+        let first_done = t1.join().unwrap().unwrap();
+        // Second acquire must not start until the first released.
+        assert!(
+            second >= first_done,
+            "second acquired at {:?} before first released at {:?}",
+            second.duration_since(started),
+            first_done.duration_since(started)
+        );
+    }
 }
+

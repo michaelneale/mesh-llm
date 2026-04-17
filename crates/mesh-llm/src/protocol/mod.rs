@@ -1590,6 +1590,7 @@ mod tests {
                 args: vec!["--plugin".to_string()],
                 url: None,
             }],
+            moe: Default::default(),
         };
         let snapshot = mesh_config_to_proto(&config);
         let restored = proto_config_to_mesh(&snapshot);
@@ -1635,6 +1636,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
         let snap1 = mesh_config_to_proto(&config);
         let snap2 = mesh_config_to_proto(&config);
@@ -1656,6 +1658,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
         let snap3 = mesh_config_to_proto(&config2);
         let h3 = canonical_config_hash(&snap3);
@@ -1680,6 +1683,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
 
         let snapshot = mesh_config_to_proto(&config);

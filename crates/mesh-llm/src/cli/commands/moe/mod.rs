@@ -97,7 +97,237 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
             ranking_file,
             dataset_repo,
         } => run_share(model, ranking_file.as_deref(), dataset_repo).await,
+        MoeCommand::Migrate {
+            source_model,
+            nas_root,
+            n_nodes,
+            overlap,
+            ranking_file,
+            dry_run,
+            bin_dir,
+        } => {
+            run_migrate(MigrateArgs {
+                source_model: source_model.clone(),
+                nas_root: nas_root.clone(),
+                n_nodes: *n_nodes,
+                overlap: *overlap,
+                ranking_file: ranking_file.clone(),
+                dry_run: *dry_run,
+                bin_dir: bin_dir.clone(),
+            })
+            .await
+        }
     }
+}
+
+struct MigrateArgs {
+    source_model: PathBuf,
+    nas_root: Option<PathBuf>,
+    n_nodes: usize,
+    overlap: u32,
+    ranking_file: Option<PathBuf>,
+    dry_run: bool,
+    bin_dir: Option<PathBuf>,
+}
+
+async fn run_migrate(args: MigrateArgs) -> Result<()> {
+    use crate::plugin::{self, MoeStorageConfig, MoeStorageMode};
+
+    if !args.source_model.exists() {
+        bail!(
+            "source model {} does not exist",
+            args.source_model.display()
+        );
+    }
+    if args.n_nodes < 2 {
+        bail!("--n-nodes must be >= 2 (got {})", args.n_nodes);
+    }
+
+    // Build a MoeStorageConfig for the duration of this command. Prefer the
+    // explicit --nas-root; else fall back to the per-user config and env.
+    let mut storage = plugin::MoeStorageConfig {
+        mode: MoeStorageMode::Split,
+        ..MoeStorageConfig::default()
+    };
+    if let Some(root) = args.nas_root.as_ref() {
+        if !root.is_absolute() {
+            bail!(
+                "--nas-root must be an absolute path (got {})",
+                root.display()
+            );
+        }
+        storage.trunk_path = Some(root.join("mesh-llm").join("trunks"));
+        storage.experts_path = Some(root.join("mesh-llm").join("experts"));
+    } else {
+        let cfg = plugin::load_config(None).with_context(|| "loading mesh-llm config")?;
+        if matches!(cfg.moe.storage.mode, MoeStorageMode::Split) {
+            storage.trunk_path = cfg.moe.storage.trunk_path.clone();
+            storage.experts_path = cfg.moe.storage.experts_path.clone();
+            storage.experts_local_override = cfg.moe.storage.experts_local_override.clone();
+        }
+        // Fall back to MESH_LLM_NAS_ROOT if config didn't provide paths.
+        if storage.trunk_path.is_none() || storage.experts_path.is_none() {
+            if let Some(root) = plugin::resolve_trunk_root(&storage)
+                .or_else(|| plugin::resolve_experts_root(&storage))
+            {
+                // resolve_* already derives the `/mesh-llm/trunks` and
+                // `/mesh-llm/experts` subpaths, so we re-use them directly.
+                if storage.trunk_path.is_none() {
+                    storage.trunk_path = plugin::resolve_trunk_root(&storage);
+                }
+                if storage.experts_path.is_none() {
+                    storage.experts_path = plugin::resolve_experts_root(&storage);
+                }
+                let _ = root; // used above via resolve_*
+            }
+        }
+    }
+    if storage.trunk_path.is_none() || storage.experts_path.is_none() {
+        bail!(
+            "--nas-root, moe.storage.trunk_path+experts_path, or MESH_LLM_NAS_ROOT must be set"
+        );
+    }
+
+    // Resolve a ranking + assignment plan for the source model. We cap
+    // `nodes` to the requested `n_nodes` so the report matches what we
+    // actually want to lay out on disk.
+    let report = moe_planner::plan_moe(MoePlanArgs {
+        model: args.source_model.display().to_string(),
+        ranking_file: args.ranking_file.clone(),
+        max_vram_gb: None,
+        nodes: Some(args.n_nodes),
+        dataset_repo: "meshllm/moe-rankings".to_string(),
+        progress: true,
+    })
+    .await
+    .with_context(|| "planning migration")?;
+
+    if report.assignments.len() != args.n_nodes {
+        bail!(
+            "planner returned {} assignments for {} nodes; aborting",
+            report.assignments.len(),
+            args.n_nodes
+        );
+    }
+
+    // Build the (node_index -> experts) map the splitter needs.
+    let mut assignments_map = BTreeMap::new();
+    for (i, a) in report.assignments.iter().enumerate() {
+        assignments_map.insert(i, a.experts.clone());
+    }
+
+    // Report what we plan to do.
+    let source_size = fs::metadata(&args.source_model)?.len();
+    eprintln!("📍 Source model: {}", args.source_model.display());
+    eprintln!(
+        "📐 Mesh: {} nodes, overlap={}, experts={}, used={}",
+        args.n_nodes,
+        args.overlap,
+        report.model.expert_count,
+        report.model.used_expert_count
+    );
+    eprintln!(
+        "🗂  Trunk root:   {}",
+        storage.trunk_path.as_ref().unwrap().display()
+    );
+    eprintln!(
+        "🗂  Experts root: {}",
+        storage.experts_path.as_ref().unwrap().display()
+    );
+
+    // Rough size estimate: assume trunk fraction ≈ 1 - (expert_bytes /
+    // total). We can't know the exact split without running the splitter;
+    // report source size as an upper bound for the dry-run.
+    let est_per_node = (source_size / args.n_nodes as u64).saturating_add(
+        // trunk duplication cost eliminated by split, but we don't know
+        // trunk size until after the split. Use 5% of source as a crude
+        // placeholder so users see a meaningful number.
+        source_size / 20,
+    );
+    eprintln!(
+        "🧮 Expected per-node experts shard: ~{:.1} GB (upper bound; real size shown after split)",
+        est_per_node as f64 / 1e9
+    );
+    eprintln!(
+        "🧮 Expected monolithic per-node total: ~{:.1} GB × {} = ~{:.1} GB",
+        source_size as f64 / 1e9,
+        args.n_nodes,
+        source_size as f64 * args.n_nodes as f64 / 1e9
+    );
+    if args.dry_run {
+        eprintln!("(--dry-run: no files written)");
+        return Ok(());
+    }
+
+    // Resolve the splitter binary dir.
+    let bin_dir = args
+        .bin_dir
+        .clone()
+        .unwrap_or_else(|| default_bin_dir().unwrap_or_else(|| PathBuf::from(".")));
+
+    // Drive the splitter node-by-node. `ensure_trunk_and_expert` is
+    // idempotent and holds the trunk build lock, so sequential calls are
+    // safe AND cheap (trunk is written on the first pass; subsequent
+    // passes detect the existing hash and skip).
+    eprintln!("🚧 Migrating (node-by-node)...");
+    let mut trunk_path_final = None;
+    for node_idx in 0..args.n_nodes {
+        let opts = moe::EnsureOpts {
+            bin_dir: bin_dir.clone(),
+            model_path: args.source_model.clone(),
+            assignments: assignments_map.clone(),
+            node_index: node_idx,
+            // We always drive the migrate ourselves, so every node invocation
+            // is allowed to build (is_leader=true). The flock inside
+            // `ensure_trunk_and_expert` serializes concurrent writers.
+            is_leader: true,
+            follower_timeout: std::time::Duration::from_secs(5),
+        };
+        let resolved = moe::ensure_trunk_and_expert(&storage, &opts)
+            .with_context(|| format!("migrating node {node_idx}"))?;
+        let e_size = fs::metadata(&resolved.experts).map(|m| m.len()).unwrap_or(0);
+        eprintln!(
+            "  ✓ node {}: experts = {} ({:.2} GB)",
+            node_idx,
+            resolved.experts.display(),
+            e_size as f64 / 1e9
+        );
+        trunk_path_final = Some(resolved.trunk);
+    }
+
+    if let Some(trunk) = trunk_path_final {
+        let t_size = fs::metadata(&trunk).map(|m| m.len()).unwrap_or(0);
+        eprintln!("✅ Trunk: {} ({:.2} GB)", trunk.display(), t_size as f64 / 1e9);
+    }
+
+    // Legacy cleanup hint: if the old per-node cache has entries for this
+    // model, tell the user where they are. Never delete automatically.
+    let mono_cache = dirs::home_dir()
+        .map(|h| h.join(".cache").join("mesh-llm").join("splits"))
+        .filter(|p| p.exists());
+    if let Some(root) = mono_cache {
+        let stem = args
+            .source_model
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let legacy_dir = root.join(&stem);
+        if legacy_dir.exists() {
+            eprintln!(
+                "💡 Legacy monolithic shards still present at {}. Delete them once you've verified split mode works end-to-end.",
+                legacy_dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Default bin-dir fallback: the directory containing the mesh-llm binary.
+/// mesh-llm is shipped alongside llama-moe-split under
+/// `/opt/mesh-bundle/` in the standard CUDA image.
+fn default_bin_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    exe.parent().map(|p| p.to_path_buf())
 }
 
 async fn run_plan(

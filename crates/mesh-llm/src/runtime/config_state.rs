@@ -233,6 +233,7 @@ mod tests {
             },
             models: vec![],
             plugins: vec![],
+            moe: Default::default(),
         }
     }
 
@@ -357,6 +358,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
 
         assert_eq!(state.revision(), 0);
@@ -391,6 +393,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
         state.apply(config_with_model, 0);
         let new_hash = *state.config_hash();
@@ -432,6 +435,7 @@ mod tests {
                 parallel: None,
             }],
             plugins: vec![],
+            moe: Default::default(),
         };
 
         let r1 = state.apply(config_with_model.clone(), 0);
