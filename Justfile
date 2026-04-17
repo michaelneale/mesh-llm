@@ -75,65 +75,6 @@ release-build-vulkan:
 release-build-vulkan-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan
 
-# Bump release version consistently across source and Cargo manifests.
-release-version version:
-    @scripts/release-version.sh "{{ version }}"
-
-# Tag and push a release. Bumps version, updates Cargo.lock, commits, tags, pushes.
-# CI builds and publishes the GitHub release automatically.
-release version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    current_branch="$(git branch --show-current)"
-    if [[ "$current_branch" != "main" ]]; then
-        echo "Error: release must be run from the 'main' branch (current: ${current_branch:-detached HEAD})" >&2
-        exit 1
-    fi
-    if [[ -n "$(git status --porcelain)" ]]; then
-        echo "Error: working tree is not clean. Commit or stash changes before releasing." >&2
-        exit 1
-    fi
-    just check-release
-    tag="{{ version }}"
-    if [[ "$tag" != v* ]]; then
-        tag="v$tag"
-    fi
-    scripts/release-version.sh "$tag"
-    git add -A
-    git commit -m "$tag: release"
-    git tag "$tag"
-    git push origin main
-    git push origin "$tag"
-
-# Tag and push a prerelease from the current branch. Bumps version, updates
-# Cargo.lock, commits, tags, and pushes the branch plus prerelease tag.
-prerelease version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    current_branch="$(git branch --show-current)"
-    if [[ -z "$current_branch" ]]; then
-        echo "Error: prerelease must be run from a branch, not detached HEAD." >&2
-        exit 1
-    fi
-    if [[ -n "$(git status --porcelain)" ]]; then
-        echo "Error: working tree is not clean. Commit or stash changes before prereleasing." >&2
-        exit 1
-    fi
-    tag="{{ version }}"
-    if [[ "$tag" != v* ]]; then
-        tag="v$tag"
-    fi
-    if [[ "$tag" != *-* ]]; then
-        echo "Error: prerelease tag must include a prerelease suffix such as -rc.1 (got: $tag)" >&2
-        exit 1
-    fi
-    scripts/release-version.sh "$tag"
-    git add -A
-    git commit -m "$tag: prerelease"
-    git tag "$tag"
-    git push origin "$current_branch"
-    git push origin "$tag"
-
 # Download the default model (GLM-4.7-Flash Q4_K_M, 17GB)
 download-model:
     #!/usr/bin/env bash

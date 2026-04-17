@@ -1,9 +1,26 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, with or without a leading v
+        required: true
+        type: string
+      prerelease:
+        description: Mark this as a prerelease and allow releasing from a non-main branch
+        required: true
+        default: false
+        type: boolean
+      target_branch:
+        description: Branch to release from
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -13,9 +30,157 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  prepare_release:
+    name: Prepare release commit and tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_meta.outputs.tag }}
+      version: ${{ steps.release_meta.outputs.version }}
+      prerelease: ${{ steps.release_meta.outputs.prerelease }}
+      target_branch: ${{ steps.release_meta.outputs.target_branch }}
+      release_sha: ${{ steps.release_commit.outputs.release_sha }}
+
+    steps:
+      - name: Normalize release metadata
+        id: release_meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          INPUT_TARGET_BRANCH: ${{ inputs.target_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${INPUT_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $INPUT_VERSION" >&2
+            exit 1
+          fi
+
+          tag="v$version"
+          prerelease="${INPUT_PRERELEASE}"
+          target_branch="${INPUT_TARGET_BRANCH}"
+
+          if [[ "$prerelease" != "true" && "$prerelease" != "false" ]]; then
+            echo "Invalid prerelease flag: $prerelease" >&2
+            exit 1
+          fi
+
+          if [[ -z "$target_branch" || "$target_branch" == refs/* ]]; then
+            echo "target_branch must be a plain branch name under origin/ (got: $target_branch)" >&2
+            exit 1
+          fi
+
+          if ! git check-ref-format --branch "$target_branch" >/dev/null 2>&1; then
+            echo "Invalid branch name: $target_branch" >&2
+            exit 1
+          fi
+
+          if [[ "$prerelease" == "false" && "$target_branch" != "main" ]]; then
+            echo "Stable releases must target main (got: $target_branch)" >&2
+            exit 1
+          fi
+
+          if [[ "$prerelease" == "false" && "$tag" == *-* ]]; then
+            echo "Stable releases must not use prerelease semver tags (got: $tag)" >&2
+            exit 1
+          fi
+
+          if [[ "$prerelease" == "true" && "$tag" != *-* ]]; then
+            echo "Prereleases must include a semver prerelease suffix such as -rc.1 (got: $tag)" >&2
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "target_branch=$target_branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.release_meta.outputs.target_branch }}
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@just
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify release invariants
+        run: just check-release
+
+      - name: Ensure target branch exists on origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git show-ref --verify --quiet "refs/remotes/origin/${{ steps.release_meta.outputs.target_branch }}"; then
+            echo "target_branch must resolve to a remote branch under origin/ (got: ${{ steps.release_meta.outputs.target_branch }})" >&2
+            exit 1
+          fi
+
+      - name: Ensure release tag does not already exist
+        env:
+          TAG: ${{ steps.release_meta.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag already exists locally: $TAG" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists on origin: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Create release commit and tag
+        id: release_commit
+        env:
+          TAG: ${{ steps.release_meta.outputs.tag }}
+          TARGET_BRANCH: ${{ steps.release_meta.outputs.target_branch }}
+          PRERELEASE: ${{ steps.release_meta.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+
+          scripts/release-version.sh "$TAG"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Release version update produced no changes for $TAG" >&2
+            exit 1
+          fi
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            git commit -m "$TAG: prerelease"
+          else
+            git commit -m "$TAG: release"
+          fi
+
+          git tag "$TAG"
+          git push origin "HEAD:$TARGET_BRANCH"
+          git push origin "$TAG"
+
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: prepare_release
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +194,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: taiki-e/install-action@just
 
@@ -56,9 +223,11 @@ jobs:
 
       - name: Build release bundle
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
         run: |
           just --shell bash --shell-arg -lc release-build
-          just --shell bash --shell-arg -lc release-bundle "${GITHUB_REF_NAME}" dist
+          just --shell bash --shell-arg -lc release-bundle "$RELEASE_TAG" dist
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v6
@@ -86,6 +255,7 @@ jobs:
 
   inference_smoke_tests:
     needs:
+      - prepare_release
       - build
     uses: ./.github/workflows/smoke.yml
     with:
@@ -97,9 +267,12 @@ jobs:
   build_linux_arm64:
     name: Build Linux ARM64 CPU
     runs-on: ubuntu-24.04-arm
+    needs: prepare_release
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: taiki-e/install-action@just
 
@@ -126,9 +299,11 @@ jobs:
 
       - name: Build ARM64 CPU release bundle
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
         run: |
           just --shell bash --shell-arg -lc release-build-arm64
-          just --shell bash --shell-arg -lc release-bundle-arm64 "${GITHUB_REF_NAME}" dist
+          just --shell bash --shell-arg -lc release-bundle-arm64 "$RELEASE_TAG" dist
 
       - name: Upload ARM64 CPU release artifacts
         uses: actions/upload-artifact@v6
@@ -144,6 +319,7 @@ jobs:
   build_linux_cuda:
     name: Build Linux CUDA
     runs-on: ubuntu-latest
+    needs: prepare_release
     container:
       image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
 
@@ -165,6 +341,8 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: actions/setup-node@v5
         with:
@@ -188,9 +366,11 @@ jobs:
 
       - name: Build CUDA release bundle
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
         run: |
           just --shell bash --shell-arg -lc release-build-cuda
-          just --shell bash --shell-arg -lc release-bundle-cuda "${GITHUB_REF_NAME}" dist
+          just --shell bash --shell-arg -lc release-bundle-cuda "$RELEASE_TAG" dist
 
       - name: Upload CUDA release artifacts
         uses: actions/upload-artifact@v6
@@ -206,6 +386,7 @@ jobs:
   build_linux_rocm:
     name: Build Linux ROCm
     runs-on: ubuntu-latest
+    needs: prepare_release
     container:
       image: rocm/dev-ubuntu-24.04:7.0-complete
 
@@ -227,6 +408,8 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: actions/setup-node@v5
         with:
@@ -250,9 +433,11 @@ jobs:
 
       - name: Build ROCm release bundle
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
         run: |
           just --shell bash --shell-arg -lc release-build-rocm
-          just --shell bash --shell-arg -lc release-bundle-rocm "${GITHUB_REF_NAME}" dist
+          just --shell bash --shell-arg -lc release-bundle-rocm "$RELEASE_TAG" dist
 
       - name: Upload ROCm release artifacts
         uses: actions/upload-artifact@v6
@@ -268,6 +453,7 @@ jobs:
   build_linux_vulkan:
     name: Build Linux Vulkan
     runs-on: ubuntu-latest
+    needs: prepare_release
 
     steps:
       - name: Install Vulkan build packages
@@ -289,6 +475,8 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare_release.outputs.release_sha }}
 
       - uses: actions/setup-node@v5
         with:
@@ -312,9 +500,11 @@ jobs:
 
       - name: Build Vulkan release bundle
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
         run: |
           just --shell bash --shell-arg -lc release-build-vulkan
-          just --shell bash --shell-arg -lc release-bundle-vulkan "${GITHUB_REF_NAME}" dist
+          just --shell bash --shell-arg -lc release-bundle-vulkan "$RELEASE_TAG" dist
 
       - name: Upload Vulkan release artifacts
         uses: actions/upload-artifact@v6
@@ -327,100 +517,17 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
-  # Windows release builds disabled until llama.cpp CUDA compile issue is resolved
-  # (mmvq.cu fails for compute_120a / Blackwell). Re-enable by uncommenting
-  # build_windows below and adding it back to publish.needs.
+  # Windows release builds remain disabled until the llama.cpp CUDA fix lands.
+  # Re-enable by restoring the dedicated Windows build matrix here and adding
+  # it back to publish.needs.
   #
   # build_windows:
-  #   name: Build Windows ${{ matrix.name }}
-  #   runs-on: windows-2022
-  #   env:
-  #     ROCM_HIP_SDK_FILENAME: AMD-Software-PRO-Edition-25.Q3-WinSvr2022-For-HIP.exe
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       include:
-  #         - name: CPU
-  #           backend: cpu
-  #           build_recipe: release-build-windows
-  #           bundle_recipe: release-bundle-windows
-  #           artifact_name: release-windows-cpu
-  #         - name: CUDA
-  #           backend: cuda
-  #           build_recipe: release-build-cuda-windows
-  #           bundle_recipe: release-bundle-cuda-windows
-  #           artifact_name: release-windows-cuda
-  #         - name: ROCm
-  #           backend: rocm
-  #           build_recipe: release-build-rocm-windows
-  #           bundle_recipe: release-bundle-rocm-windows
-  #           artifact_name: release-windows-rocm
-  #         - name: Vulkan
-  #           backend: vulkan
-  #           build_recipe: release-build-vulkan-windows
-  #           bundle_recipe: release-bundle-vulkan-windows
-  #           artifact_name: release-windows-vulkan
-  #
-  #   steps:
-  #     - uses: actions/checkout@v5
-  #
-  #     - uses: taiki-e/install-action@just
-  #
-  #     - uses: actions/setup-node@v5
-  #       with:
-  #         node-version: 24
-  #         cache: npm
-  #         cache-dependency-path: mesh-llm/ui/package-lock.json
-  #
-  #     - uses: dtolnay/rust-toolchain@stable
-  #
-  #     - uses: mozilla-actions/sccache-action@v0.0.9
-  #
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         workspaces: |
-  #           . -> target
-  #
-  #     - name: Cache Windows SDK installers
-  #       if: matrix.backend != 'cpu'
-  #       uses: actions/cache@v5
-  #       with:
-  #         path: ~\sdk-installer-cache\${{ matrix.backend }}
-  #         key: windows-sdk-installers-${{ matrix.backend }}-${{ env.ROCM_HIP_SDK_FILENAME }}-${{ hashFiles('scripts/install-windows-sdk.ps1') }}
-  #
-  #     - name: Install backend SDK
-  #       shell: pwsh
-  #       run: |
-  #         .\scripts\install-windows-sdk.ps1 `
-  #           -Backend '${{ matrix.backend }}' `
-  #           -RocmHipSdkFilename $env:ROCM_HIP_SDK_FILENAME `
-  #           -InstallerCacheDir (Join-Path $env:USERPROFILE 'sdk-installer-cache\${{ matrix.backend }}')
-  #
-  #     - name: Build Windows release bundle
-  #       shell: pwsh
-  #       run: |
-  #         just ${{ matrix.build_recipe }}
-  #         just ${{ matrix.bundle_recipe }} "${env:GITHUB_REF_NAME}" dist
-  #
-  #     - name: Upload Windows release artifacts
-  #       uses: actions/upload-artifact@v6
-  #       with:
-  #         name: ${{ matrix.artifact_name }}
-  #         path: dist/*
-  #         if-no-files-found: error
-  #
-  #     - name: Show sccache stats
-  #       if: always()
-  #       shell: pwsh
-  #       run: |
-  #         if (Get-Command sccache -ErrorAction SilentlyContinue) {
-  #           sccache --show-stats
-  #         }
 
   publish:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs:
+      - prepare_release
       - build
       - build_linux_arm64
       - build_linux_cuda
@@ -441,6 +548,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare_release.outputs.tag }}
+          PRERELEASE: ${{ needs.prepare_release.outputs.prerelease }}
         shell: bash
         run: |
           shopt -s nullglob
@@ -451,15 +560,15 @@ jobs:
           fi
 
           release_args=(--repo "$GH_REPO")
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+          if [[ "$PRERELEASE" == "true" ]]; then
             release_args+=(--prerelease --latest=false)
           fi
 
-          if gh release view "$GITHUB_REF_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-              gh release edit "$GITHUB_REF_NAME" --repo "$GH_REPO" --prerelease --latest=false
+          if gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            if [[ "$PRERELEASE" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" --repo "$GH_REPO" --prerelease --latest=false
             fi
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
+            gh release upload "$RELEASE_TAG" "${files[@]}" --repo "$GH_REPO" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" "${release_args[@]}" --generate-notes
+            gh release create "$RELEASE_TAG" "${files[@]}" "${release_args[@]}" --generate-notes
           fi
