@@ -577,7 +577,10 @@ impl GlobalMetrics {
 
     fn status_snapshot(&self, current_inflight_requests: u64) -> RoutingMetricsStatusSnapshot {
         debug_assert!(metric_vocabulary_is_complete());
-        debug_assert_eq!(metric_group("routing_metrics").scope, MetricScope::LocalOnly);
+        debug_assert_eq!(
+            metric_group("routing_metrics").scope,
+            MetricScope::LocalOnly
+        );
         debug_assert_eq!(
             metric_group("routing_metrics.local_node").scope,
             MetricScope::LocalOnly
