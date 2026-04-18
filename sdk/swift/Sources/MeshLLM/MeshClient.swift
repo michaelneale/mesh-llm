@@ -173,7 +173,7 @@ public final class MeshClient: @unchecked Sendable {
         _ query: PublicMeshQuery = PublicMeshQuery()
     ) async throws -> [PublicMesh] {
         let meshes = try await runBlocking {
-            try MeshLLMFFI.discoverPublicMeshes(query: mapPublicMeshQuery(query))
+            try MeshLLM.discoverPublicMeshes(query: mapPublicMeshQuery(query))
         }
         return meshes.map(mapPublicMesh)
     }

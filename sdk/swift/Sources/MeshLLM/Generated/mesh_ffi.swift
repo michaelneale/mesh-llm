@@ -1744,43 +1744,43 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_mesh_ffi_checksum_func_create_auto_client() != 1999) {
+    if (uniffi_mesh_ffi_checksum_func_create_auto_client() != 47814) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_func_create_client() != 22190) {
+    if (uniffi_mesh_ffi_checksum_func_create_client() != 44334) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_func_discover_public_meshes() != 62458) {
+    if (uniffi_mesh_ffi_checksum_func_discover_public_meshes() != 41758) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_func_generate_owner_keypair_hex() != 23190) {
+    if (uniffi_mesh_ffi_checksum_func_generate_owner_keypair_hex() != 58861) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_cancel() != 54410) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_cancel() != 27338) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_chat() != 32610) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_chat() != 32798) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_disconnect() != 31650) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_disconnect() != 49378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_join() != 59965) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_join() != 60918) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_list_models() != 40439) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_list_models() != 47189) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_reconnect() != 31942) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_reconnect() != 11257) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_responses() != 343) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_responses() != 13271) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_status() != 38366) {
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_status() != 11480) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_mesh_ffi_checksum_method_eventlistener_on_event() != 25585) {
+    if (uniffi_mesh_ffi_checksum_method_eventlistener_on_event() != 46383) {
         return InitializationResult.apiChecksumMismatch
     }
 
