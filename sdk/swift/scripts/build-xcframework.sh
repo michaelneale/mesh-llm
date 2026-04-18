@@ -17,7 +17,15 @@ if ! cargo metadata --no-deps --format-version 1 2>/dev/null | grep -q '"name":"
   exit 1
 fi
 
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin 2>/dev/null || true
+rustup target add \
+  aarch64-apple-ios \
+  aarch64-apple-ios-sim \
+  x86_64-apple-ios \
+  aarch64-apple-ios-macabi \
+  x86_64-apple-ios-macabi \
+  aarch64-apple-darwin \
+  x86_64-apple-darwin \
+  2>/dev/null || true
 
 "$SWIFT_DIR/scripts/generate-swift-bindings.sh"
 
@@ -41,6 +49,14 @@ RUSTC="$RUSTUP_RUSTC" \
 echo "Building for x86_64-apple-ios..."
 RUSTC="$RUSTUP_RUSTC" \
   cargo build --release -p mesh-api-ffi --target x86_64-apple-ios --no-default-features
+
+echo "Building for aarch64-apple-ios-macabi (Mac Catalyst)..."
+RUSTC="$RUSTUP_RUSTC" \
+  cargo build --release -p mesh-api-ffi --target aarch64-apple-ios-macabi --no-default-features
+
+echo "Building for x86_64-apple-ios-macabi (Mac Catalyst)..."
+RUSTC="$RUSTUP_RUSTC" \
+  cargo build --release -p mesh-api-ffi --target x86_64-apple-ios-macabi --no-default-features
 
 echo "Building for aarch64-apple-darwin (macOS)..."
 RUSTC="$RUSTUP_RUSTC" \
@@ -100,6 +116,13 @@ lipo -create \
   "$TARGET_DIR/x86_64-apple-darwin/release/libmesh_ffi.a" \
   -output "$TARGET_DIR/macos-fat/libmesh_ffi.a"
 
+echo "Creating fat library for Mac Catalyst..."
+mkdir -p "$TARGET_DIR/ios-macabi-fat"
+lipo -create \
+  "$TARGET_DIR/aarch64-apple-ios-macabi/release/libmesh_ffi.a" \
+  "$TARGET_DIR/x86_64-apple-ios-macabi/release/libmesh_ffi.a" \
+  -output "$TARGET_DIR/ios-macabi-fat/libmesh_ffi.a"
+
 create_framework() {
   local ARCH="$1"
   local LIB_PATH="$2"
@@ -147,6 +170,7 @@ PLIST
 echo "Assembling framework bundles..."
 create_framework "ios"     "$TARGET_DIR/aarch64-apple-ios/release/libmesh_ffi.a"
 create_framework "ios-sim" "$TARGET_DIR/ios-sim-fat/libmesh_ffi.a"
+create_framework "ios-macabi" "$TARGET_DIR/ios-macabi-fat/libmesh_ffi.a"
 create_framework "macos"   "$TARGET_DIR/macos-fat/libmesh_ffi.a"
 
 echo "Creating XCFramework..."
@@ -158,6 +182,7 @@ XCFW_OUT="$XCFRAMEWORK_DIR/$FRAMEWORK_NAME.xcframework"
 xcodebuild -create-xcframework \
   -framework "$TARGET_DIR/frameworks/ios/$FRAMEWORK_NAME.framework" \
   -framework "$TARGET_DIR/frameworks/ios-sim/$FRAMEWORK_NAME.framework" \
+  -framework "$TARGET_DIR/frameworks/ios-macabi/$FRAMEWORK_NAME.framework" \
   -framework "$TARGET_DIR/frameworks/macos/$FRAMEWORK_NAME.framework" \
   -output "$XCFW_OUT" 2>/dev/null || true
 
@@ -165,10 +190,12 @@ if [ ! -d "$XCFW_OUT" ]; then
   echo "xcodebuild unavailable or failed; assembling XCFramework manually..."
   mkdir -p "$XCFW_OUT/ios-arm64/$FRAMEWORK_NAME.framework"
   mkdir -p "$XCFW_OUT/ios-arm64_x86_64-simulator/$FRAMEWORK_NAME.framework"
+  mkdir -p "$XCFW_OUT/ios-arm64_x86_64-maccatalyst/$FRAMEWORK_NAME.framework"
   mkdir -p "$XCFW_OUT/macos-arm64_x86_64/$FRAMEWORK_NAME.framework"
 
   cp -R "$TARGET_DIR/frameworks/ios/$FRAMEWORK_NAME.framework/"     "$XCFW_OUT/ios-arm64/$FRAMEWORK_NAME.framework/"
   cp -R "$TARGET_DIR/frameworks/ios-sim/$FRAMEWORK_NAME.framework/" "$XCFW_OUT/ios-arm64_x86_64-simulator/$FRAMEWORK_NAME.framework/"
+  cp -R "$TARGET_DIR/frameworks/ios-macabi/$FRAMEWORK_NAME.framework/" "$XCFW_OUT/ios-arm64_x86_64-maccatalyst/$FRAMEWORK_NAME.framework/"
   cp -R "$TARGET_DIR/frameworks/macos/$FRAMEWORK_NAME.framework/"   "$XCFW_OUT/macos-arm64_x86_64/$FRAMEWORK_NAME.framework/"
 
   cat > "$XCFW_OUT/Info.plist" << 'XCINFO'
@@ -203,6 +230,20 @@ if [ ! -d "$XCFW_OUT" ]; then
             <string>ios</string>
             <key>SupportedPlatformVariant</key>
             <string>simulator</string>
+        </dict>
+        <dict>
+            <key>BinaryPath</key>
+            <string>MeshLLMFFI.framework/MeshLLMFFI</string>
+            <key>LibraryIdentifier</key>
+            <string>ios-arm64_x86_64-maccatalyst</string>
+            <key>LibraryPath</key>
+            <string>MeshLLMFFI.framework</string>
+            <key>SupportedArchitectures</key>
+            <array><string>arm64</string><string>x86_64</string></array>
+            <key>SupportedPlatform</key>
+            <string>ios</string>
+            <key>SupportedPlatformVariant</key>
+            <string>maccatalyst</string>
         </dict>
         <dict>
             <key>BinaryPath</key>

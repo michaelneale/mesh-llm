@@ -1,6 +1,6 @@
 # MeshLLM Swift SDK
 
-Swift Package for connecting to mesh-llm meshes from iOS and macOS apps.
+Swift Package for connecting to mesh-llm meshes from iOS, Mac Catalyst, and macOS apps.
 
 ## Installation
 

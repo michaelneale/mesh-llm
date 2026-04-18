@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-api"
-version = "0.63.0-rc4"
+version = "0.63.0-rc5"
 dependencies = [
  "hex",
  "mesh-llm-client",
@@ -3079,7 +3079,7 @@ version = "0.1.0"
 
 [[package]]
 name = "mesh-llm"
-version = "0.63.0-rc4"
+version = "0.63.0-rc5"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3133,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-client"
-version = "0.63.0-rc4"
+version = "0.63.0-rc5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-llm-plugin"
-version = "0.63.0-rc4"
+version = "0.63.0-rc5"
 dependencies = [
  "anyhow",
  "async-trait",

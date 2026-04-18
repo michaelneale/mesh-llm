@@ -1,6 +1,6 @@
 [package]
 name = "mesh-llm-client"
-version = "0.63.0-rc4"
+version = "0.63.0-rc5"
 edition = "2021"
 description = "Low-level Rust client implementation for Mesh LLM embedded integrations"
 license = "Apache-2.0"

@@ -1164,6 +1164,18 @@ pub async fn start_llama_server(
         //   "chat_template_kwargs": {"enable_thinking": true}
         "--reasoning-budget".to_string(),
         "0".to_string(),
+        // Anti-repetition default. llama.cpp ships repeat_penalty off
+        // (1.0), which lets small quantized models fall into tight decode
+        // loops ("Ok 1 2 3 4 5 Ok 1 2 3 4 5 ...") on mildly adversarial
+        // prompts. 1.1 over a 256-token window is the conventional mild
+        // setting — it kills loops without measurably affecting normal
+        // prose. Per-request JSON fields (`repeat_penalty`, `repeat_last_n`)
+        // still override these, so clients that tune their own sampling are
+        // unaffected.
+        "--repeat-penalty".to_string(),
+        "1.1".to_string(),
+        "--repeat-last-n".to_string(),
+        "256".to_string(),
     ]);
 
     // Mesh hooks — tell llama-server where to call back.
