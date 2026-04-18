@@ -2,7 +2,7 @@
 
 Rust implementation of mesh-llm: a peer-to-peer control plane for llama.cpp inference over QUIC, with distributed routing, model orchestration, plugin hosting, and a local management API.
 
-For install and end-user usage, see the [project README](../README.md). For deeper architecture and test flows, see [docs/DESIGN.md](docs/DESIGN.md), [docs/TESTING.md](docs/TESTING.md), and [docs/message_protocol.md](docs/message_protocol.md).
+For install and end-user usage, see the [project README](../README.md). For deeper architecture and test flows, see [docs/DESIGN.md](docs/DESIGN.md), [docs/METRICS.md](docs/METRICS.md), [docs/TESTING.md](docs/TESTING.md), and [docs/message_protocol.md](docs/message_protocol.md).
 
 ## Source layout
 

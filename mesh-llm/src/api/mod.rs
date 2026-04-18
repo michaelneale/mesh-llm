@@ -1,7 +1,8 @@
 //! Mesh management API — read-only dashboard on port 3131 (default).
 //!
 //! Endpoints:
-//!   GET  /api/status    — live mesh state (JSON)
+//!   GET  /api/status    — live mesh state plus local-only routing metrics (JSON)
+//!   GET  /api/models    — mesh model inventory plus local-only routing metrics (JSON)
 //!   GET  /api/runtime   — local model state (JSON)
 //!   GET  /api/runtime/endpoints — registered plugin endpoint state (JSON)
 //!   GET  /api/runtime/processes — local inference process state (JSON)
@@ -16,6 +17,10 @@
 //!
 //! The dashboard is mostly read-only — shows status, topology, and models.
 //! Local model load/unload is exposed for operator control.
+//!
+//! `routing_metrics`, `routing_metrics.local_node`, `routing_metrics.pressure`,
+//! and `/api/models` per-model `routing_metrics.targets` are measured on the
+//! current node only; not mesh-wide aggregates.
 
 mod assets;
 mod http;
@@ -405,6 +410,9 @@ impl MeshApi {
         let catalog = node.mesh_catalog_entries().await;
         let served = node.models_being_served().await;
         let active_demand = node.active_demand().await;
+        // Per-model routing metrics are current-node-only observations. They
+        // help the management API explain recent local routing behavior without
+        // claiming mesh-wide totals.
         let routing_metrics_by_model = node.model_routing_metrics();
         let my_serving_models = node.serving_models().await;
         let local_model_names = local_scan.model_names;
@@ -765,6 +773,8 @@ impl MeshApi {
                 inner.node.vram_bytes() as f64 / 1e9,
                 inner.node.inflight_requests(),
                 inner.affinity_router.stats_snapshot(),
+                // `/api/status` exposes the current node's bounded routing
+                // outcome snapshot only; peers do not publish these counters.
                 inner.node.routing_metrics_snapshot(),
                 inner.model_name.clone(),
                 inner.model_size_bytes,

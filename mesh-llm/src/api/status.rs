@@ -140,6 +140,8 @@ pub(super) struct StatusPayload {
     pub(super) my_is_soc: Option<bool>,
     pub(super) gpus: Vec<GpuEntry>,
     pub(super) routing_affinity: affinity::AffinityStatsSnapshot,
+    /// Local-only routing outcome and current-node pressure snapshot measured on
+    /// this node only; not mesh-wide aggregates.
     pub(super) routing_metrics: metrics::RoutingMetricsStatusSnapshot,
 }
 
@@ -264,6 +266,8 @@ pub(super) struct MeshModelPayload {
     pub(super) request_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) last_active_secs_ago: Option<u64>,
+    /// Local-only per-model routing outcome snapshot measured on the current
+    /// node only; not mesh-wide aggregates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) routing_metrics: Option<metrics::ModelRoutingMetricsSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]

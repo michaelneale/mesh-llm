@@ -1,4 +1,5 @@
-//! Bounded in-memory routing and utilization metrics for operator/API surfaces.
+//! Bounded in-memory routing outcome and local routing pressure metrics for
+//! operator/API surfaces.
 
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
@@ -14,6 +15,93 @@ const MAX_TARGETS_PER_MODEL: usize = 16;
 const DEFAULT_MODEL_SHARDS: usize = 32;
 const THROUGHPUT_SCALE_MILLI: u64 = 1000;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MetricLayer {
+    Runtime,
+    Information,
+    Strategy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MetricScope {
+    LocalOnly,
+    PeerAdvertised,
+    MeshDerived,
+}
+
+const METRIC_LAYER_VOCAB: [MetricLayer; 3] = [
+    MetricLayer::Runtime,
+    MetricLayer::Information,
+    MetricLayer::Strategy,
+];
+const METRIC_SCOPE_VOCAB: [MetricScope; 3] = [
+    MetricScope::LocalOnly,
+    MetricScope::PeerAdvertised,
+    MetricScope::MeshDerived,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MetricGroupMetadata {
+    pub(crate) name: &'static str,
+    pub(crate) layer: MetricLayer,
+    pub(crate) scope: MetricScope,
+    pub(crate) api_surface: &'static str,
+    pub(crate) description: &'static str,
+}
+
+pub(crate) const ROUTING_METRIC_GROUPS: [MetricGroupMetadata; 5] = [
+    MetricGroupMetadata {
+        name: "routing_metrics",
+        layer: MetricLayer::Information,
+        scope: MetricScope::LocalOnly,
+        api_surface: "/api/status",
+        description: "Current-node routing outcome summary for operator/API inspection.",
+    },
+    MetricGroupMetadata {
+        name: "routing_metrics.local_node",
+        layer: MetricLayer::Runtime,
+        scope: MetricScope::LocalOnly,
+        api_surface: "/api/status",
+        description: "Current-node routing pressure and lightweight utilization proxies.",
+    },
+    MetricGroupMetadata {
+        name: "routing_metrics.pressure",
+        layer: MetricLayer::Information,
+        scope: MetricScope::LocalOnly,
+        api_surface: "/api/status",
+        description: "Current-node service mix summary for locally fronted traffic.",
+    },
+    MetricGroupMetadata {
+        name: "mesh_models[].routing_metrics",
+        layer: MetricLayer::Information,
+        scope: MetricScope::LocalOnly,
+        api_surface: "/api/models",
+        description: "Per-model routing outcome summary observed on the current node.",
+    },
+    MetricGroupMetadata {
+        name: "mesh_models[].routing_metrics.targets[]",
+        layer: MetricLayer::Runtime,
+        scope: MetricScope::LocalOnly,
+        api_surface: "/api/models",
+        description: "Per-target routing outcome memory observed on the current node.",
+    },
+];
+
+fn metric_group(name: &str) -> &'static MetricGroupMetadata {
+    ROUTING_METRIC_GROUPS
+        .iter()
+        .find(|group| group.name == name)
+        .expect("routing metric group metadata must stay in sync with exported API groups")
+}
+
+fn metric_vocabulary_is_complete() -> bool {
+    METRIC_LAYER_VOCAB.len() == 3 && METRIC_SCOPE_VOCAB.len() == 3
+}
+
+/// Local-only current-node routing outcome summary exposed on `/api/status`.
+///
+/// These counters are measured on the current node only and do not represent a
+/// mesh-wide aggregate.
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct RoutingMetricsStatusSnapshot {
     pub request_count: u64,
@@ -31,7 +119,9 @@ pub struct RoutingMetricsStatusSnapshot {
     pub avg_tokens_per_second: Option<f64>,
     pub completion_tokens_observed: u64,
     pub throughput_samples: u64,
-    pub local_node: LocalNodeUtilizationSnapshot,
+    /// Current-node routing pressure and lightweight utilization proxies.
+    pub local_node: LocalNodePressureSnapshot,
+    /// Current-node service mix for requests fronted by this node.
     pub pressure: RoutingPressureSnapshot,
 }
 
@@ -52,14 +142,18 @@ impl Default for RoutingMetricsStatusSnapshot {
             avg_tokens_per_second: None,
             completion_tokens_observed: 0,
             throughput_samples: 0,
-            local_node: LocalNodeUtilizationSnapshot::default(),
+            local_node: LocalNodePressureSnapshot::default(),
             pressure: RoutingPressureSnapshot::default(),
         }
     }
 }
 
+/// Current-node routing pressure and lightweight utilization proxies.
+///
+/// These values are measured locally and intentionally avoid claiming to be a
+/// complete node utilization model.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
-pub struct LocalNodeUtilizationSnapshot {
+pub struct LocalNodePressureSnapshot {
     pub current_inflight_requests: u64,
     pub peak_inflight_requests: u64,
     pub local_attempt_count: u64,
@@ -73,6 +167,10 @@ pub struct LocalNodeUtilizationSnapshot {
     pub throughput_samples: u64,
 }
 
+/// Current-node service mix summary for requests fronted by this node.
+///
+/// These shares are derived from local routing outcomes and are not mesh-wide
+/// demand or serving totals.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct RoutingPressureSnapshot {
     pub fronted_request_count: u64,
@@ -84,6 +182,7 @@ pub struct RoutingPressureSnapshot {
     pub endpoint_service_share: f64,
 }
 
+/// Local-only per-model routing outcome summary exposed on `/api/models`.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct ModelRoutingMetricsSnapshot {
     pub request_count: u64,
@@ -101,10 +200,12 @@ pub struct ModelRoutingMetricsSnapshot {
     pub avg_tokens_per_second: Option<f64>,
     pub completion_tokens_observed: u64,
     pub throughput_samples: u64,
+    /// Local-only per-target routing outcome memory for this model.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub targets: Vec<TargetRoutingMetricsSnapshot>,
 }
 
+/// Local-only per-target routing outcome memory exposed on `/api/models`.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 pub struct TargetRoutingMetricsSnapshot {
     pub target: String,
@@ -475,6 +576,16 @@ impl GlobalMetrics {
     }
 
     fn status_snapshot(&self, current_inflight_requests: u64) -> RoutingMetricsStatusSnapshot {
+        debug_assert!(metric_vocabulary_is_complete());
+        debug_assert_eq!(metric_group("routing_metrics").scope, MetricScope::LocalOnly);
+        debug_assert_eq!(
+            metric_group("routing_metrics.local_node").scope,
+            MetricScope::LocalOnly
+        );
+        debug_assert_eq!(
+            metric_group("routing_metrics.pressure").scope,
+            MetricScope::LocalOnly
+        );
         let request_count = load_u64(&self.request_count);
         let successful_requests = load_u64(&self.successful_requests);
         let attempt_count = load_u64(&self.attempt_count);
@@ -484,7 +595,7 @@ impl GlobalMetrics {
         let avg_attempt_ms = average(load_u64(&self.attempt_ms_total), attempt_count);
         let avg_tokens_per_second =
             average_milli(load_u64(&self.throughput_tps_milli_sum), throughput_samples);
-        let local_node = LocalNodeUtilizationSnapshot {
+        let local_node = LocalNodePressureSnapshot {
             current_inflight_requests,
             peak_inflight_requests: load_u64(&self.peak_inflight_requests),
             local_attempt_count: load_u64(&self.local_attempt_count),
@@ -728,6 +839,15 @@ impl ModelMetrics {
     }
 
     fn snapshot(&self, now: Instant) -> ModelRoutingMetricsSnapshot {
+        debug_assert!(metric_vocabulary_is_complete());
+        debug_assert_eq!(
+            metric_group("mesh_models[].routing_metrics").scope,
+            MetricScope::LocalOnly
+        );
+        debug_assert_eq!(
+            metric_group("mesh_models[].routing_metrics.targets[]").scope,
+            MetricScope::LocalOnly
+        );
         let mut targets = self
             .targets
             .iter()
@@ -925,6 +1045,42 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn routing_metric_groups_declare_explicit_layer_and_scope() {
+        let mut names = ROUTING_METRIC_GROUPS
+            .iter()
+            .map(|group| group.name)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "mesh_models[].routing_metrics",
+                "mesh_models[].routing_metrics.targets[]",
+                "routing_metrics",
+                "routing_metrics.local_node",
+                "routing_metrics.pressure",
+            ]
+        );
+        assert!(ROUTING_METRIC_GROUPS
+            .iter()
+            .all(|group| !group.description.is_empty()));
+        assert!(ROUTING_METRIC_GROUPS
+            .iter()
+            .all(|group| !group.api_surface.is_empty()));
+        assert!(ROUTING_METRIC_GROUPS.iter().all(|group| matches!(
+            group.layer,
+            MetricLayer::Runtime | MetricLayer::Information | MetricLayer::Strategy
+        )));
+        assert!(ROUTING_METRIC_GROUPS.iter().all(|group| matches!(
+            group.scope,
+            MetricScope::LocalOnly | MetricScope::PeerAdvertised | MetricScope::MeshDerived
+        )));
+        assert!(ROUTING_METRIC_GROUPS
+            .iter()
+            .all(|group| group.scope == MetricScope::LocalOnly));
+    }
 
     #[test]
     fn routing_metrics_enforces_model_and_target_bounds() {
