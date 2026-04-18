@@ -4,16 +4,20 @@ mod formatters_json;
 mod hf_jobs;
 
 use anyhow::{bail, Context, Result};
-use hf_hub::RepoUploadFolderParams;
+use hf_hub::{
+    Progress, ProgressEvent, ProgressHandler, RepoUploadFolderParams, UploadEvent, UploadPhase,
+};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cli::moe::{HfJobArgs, MoeAnalyzeCommand, MoeCommand};
-use crate::cli::terminal_progress::start_spinner;
+use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, SpinnerHandle};
 use crate::cli::Cli;
 use crate::inference::moe;
 use crate::models;
@@ -37,6 +41,210 @@ struct TempRootGuard(PathBuf);
 impl Drop for TempRootGuard {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+struct MeshUploadProgressState {
+    total_files: usize,
+    completed_files: usize,
+    total_bytes: u64,
+    bytes_completed: u64,
+    transfer_bytes: u64,
+    transfer_bytes_completed: u64,
+    transfer_bytes_per_sec: Option<f64>,
+    phase: Option<UploadPhase>,
+    last_draw: Option<Instant>,
+}
+
+struct MeshUploadProgress {
+    spinner: Mutex<Option<SpinnerHandle>>,
+    state: Mutex<MeshUploadProgressState>,
+}
+
+impl MeshUploadProgress {
+    fn new() -> Self {
+        Self {
+            spinner: Mutex::new(Some(start_spinner("Preparing upload"))),
+            state: Mutex::new(MeshUploadProgressState {
+                total_files: 0,
+                completed_files: 0,
+                total_bytes: 0,
+                bytes_completed: 0,
+                transfer_bytes: 0,
+                transfer_bytes_completed: 0,
+                transfer_bytes_per_sec: None,
+                phase: None,
+                last_draw: None,
+            }),
+        }
+    }
+
+    fn phase_label(phase: Option<&UploadPhase>) -> &'static str {
+        match phase {
+            Some(UploadPhase::Preparing) => "Preparing upload",
+            Some(UploadPhase::CheckingUploadMode) => "Checking upload mode",
+            Some(UploadPhase::Uploading) => "Uploading files",
+            Some(UploadPhase::Committing) => "Creating commit",
+            None => "Uploading",
+        }
+    }
+
+    fn should_draw(state: &MeshUploadProgressState) -> bool {
+        state.transfer_bytes_completed > 0
+            || state.transfer_bytes > 0
+            || state.bytes_completed > 0
+            || state.completed_files > 0
+            || matches!(
+                state.phase,
+                Some(UploadPhase::Uploading) | Some(UploadPhase::Committing)
+            )
+    }
+
+    fn draw(state: &mut MeshUploadProgressState, force: bool) {
+        let now = Instant::now();
+        if !force
+            && state.last_draw.is_some_and(|last| {
+                now.duration_since(last) < std::time::Duration::from_millis(150)
+            })
+        {
+            return;
+        }
+        state.last_draw = Some(now);
+
+        let (completed, total) = if state.transfer_bytes > 0 {
+            (state.transfer_bytes_completed, state.transfer_bytes)
+        } else {
+            (state.bytes_completed, state.total_bytes)
+        };
+        let percent = if total > 0 {
+            ((completed as f64 / total as f64) * 1000.0).round() as usize
+        } else if state.total_files > 0 {
+            ((state.completed_files as f64 / state.total_files as f64) * 1000.0).round() as usize
+        } else {
+            0
+        };
+        let percent_major = (percent.min(1000)) / 10;
+        let percent_minor = (percent.min(1000)) % 10;
+        let file_suffix = if state.total_files > 0 {
+            format!(
+                ", {}/{} files",
+                state.completed_files.min(state.total_files),
+                state.total_files
+            )
+        } else {
+            String::new()
+        };
+        let speed_suffix = state
+            .transfer_bytes_per_sec
+            .filter(|bytes_per_sec| *bytes_per_sec > 0.0)
+            .map(|bytes_per_sec| format!(" at {}/s", format_upload_bytes(bytes_per_sec as u64)))
+            .unwrap_or_default();
+        let byte_suffix = if total > 0 {
+            format!(
+                " ({}/{})",
+                format_upload_bytes(completed),
+                format_upload_bytes(total)
+            )
+        } else {
+            String::new()
+        };
+        eprint!(
+            "\r\x1b[K   ⏫ {} {:>3}.{:01}%{}{}{}",
+            Self::phase_label(state.phase.as_ref()),
+            percent_major,
+            percent_minor,
+            byte_suffix,
+            file_suffix,
+            speed_suffix,
+        );
+        let _ = std::io::stderr().flush();
+        if force {
+            eprintln!();
+        }
+    }
+
+    fn update(state: &mut MeshUploadProgressState, event: &UploadEvent) {
+        match event {
+            UploadEvent::Start {
+                total_files,
+                total_bytes,
+            } => {
+                state.total_files = *total_files;
+                state.total_bytes = *total_bytes;
+            }
+            UploadEvent::Progress {
+                phase,
+                bytes_completed,
+                total_bytes,
+                transfer_bytes_completed,
+                transfer_bytes,
+                transfer_bytes_per_sec,
+                ..
+            } => {
+                state.phase = Some(phase.clone());
+                state.bytes_completed = state.bytes_completed.max(*bytes_completed);
+                state.total_bytes = state.total_bytes.max(*total_bytes);
+                state.transfer_bytes_completed = state
+                    .transfer_bytes_completed
+                    .max(*transfer_bytes_completed);
+                state.transfer_bytes = state.transfer_bytes.max(*transfer_bytes);
+                state.transfer_bytes_per_sec = *transfer_bytes_per_sec;
+            }
+            UploadEvent::FileComplete { files, phase } => {
+                state.phase = Some(phase.clone());
+                state.completed_files =
+                    (state.completed_files + files.len()).min(state.total_files.max(files.len()));
+            }
+            UploadEvent::Complete => {
+                state.phase = Some(UploadPhase::Committing);
+                if state.transfer_bytes > 0 {
+                    state.transfer_bytes_completed = state.transfer_bytes;
+                }
+                if state.total_bytes > 0 {
+                    state.bytes_completed = state.total_bytes;
+                }
+                if state.total_files > 0 {
+                    state.completed_files = state.total_files;
+                }
+                state.transfer_bytes_per_sec = None;
+            }
+        }
+    }
+}
+
+impl ProgressHandler for MeshUploadProgress {
+    fn on_progress(&self, event: &ProgressEvent) {
+        let ProgressEvent::Upload(event) = event else {
+            return;
+        };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        Self::update(&mut state, event);
+        let should_draw = Self::should_draw(&state);
+        let force = matches!(event, UploadEvent::Complete) && should_draw;
+        if should_draw {
+            if let Ok(mut spinner) = self.spinner.lock() {
+                spinner.take();
+            }
+            Self::draw(&mut state, force);
+        } else if let Ok(mut spinner) = self.spinner.lock() {
+            if let Some(spinner) = spinner.as_ref() {
+                spinner.set_message(Self::phase_label(state.phase.as_ref()));
+            }
+            if matches!(event, UploadEvent::Complete) {
+                spinner.take();
+                let _ = clear_stderr_line();
+            }
+        }
+    }
+}
+
+impl Drop for MeshUploadProgress {
+    fn drop(&mut self) {
+        if let Ok(mut spinner) = self.spinner.lock() {
+            spinner.take();
+        }
     }
 }
 
@@ -506,6 +714,8 @@ async fn run_share_resolved(
         )?;
     }
 
+    let progress_tracker = Arc::new(MeshUploadProgress::new());
+    let progress_handler: Progress = Some(progress_tracker);
     println!("⬆️ Opening contribution PR...");
     let commit = dataset
         .upload_folder(
@@ -515,6 +725,7 @@ async fn run_share_resolved(
                 .commit_message(bundle.commit_message.clone())
                 .commit_description(bundle.commit_description.clone())
                 .create_pr(true)
+                .progress(progress_handler)
                 .build(),
         )
         .await
@@ -570,6 +781,18 @@ fn stage_share_file(temp_root: &Path, relative_path: &str, source: &Path) -> Res
     }
 }
 
+fn format_upload_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1e9)
+    } else if bytes >= 1_000_000 {
+        format!("{:.0}MB", bytes as f64 / 1e6)
+    } else if bytes >= 1_000 {
+        format!("{:.0}KB", bytes as f64 / 1e3)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +820,13 @@ mod tests {
     fn parse_dataset_repo_requires_owner_and_name() {
         assert!(parse_dataset_repo("meshllm/moe-rankings").is_ok());
         assert!(parse_dataset_repo("invalid").is_err());
+    }
+
+    #[test]
+    fn format_upload_bytes_uses_human_units() {
+        assert_eq!(format_upload_bytes(999), "999B");
+        assert_eq!(format_upload_bytes(1_000), "1KB");
+        assert_eq!(format_upload_bytes(1_000_000), "1MB");
     }
 }
 
