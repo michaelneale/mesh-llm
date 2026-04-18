@@ -224,53 +224,57 @@ fn collect_catalog_json_files(root: &Path, out: &mut Vec<PathBuf>) -> Result<()>
 }
 
 fn load_catalog_entries_from_hf() -> Result<Vec<CatalogRepoEntry>> {
-    let repo_id = curated_catalog_dataset_repo();
-    let catalog_root = format!("{}/", curated_catalog_root_path().trim_end_matches('/'));
-    let (owner, name) = repo_id
-        .split_once('/')
-        .with_context(|| format!("Invalid Mesh catalog repo id {}", repo_id))?;
-    let api = crate::models::build_hf_api(false)?;
-    let dataset = api.dataset(owner, name);
-    let info = dataset
-        .info(
-            &hf_hub::RepoInfoParams::builder()
-                .revision("main".to_string())
-                .build(),
-        )
-        .with_context(|| format!("Fetch Mesh catalog repo info for {}", repo_id))?;
-    let hf_hub::RepoInfo::Dataset(info) = info else {
-        anyhow::bail!("Expected dataset repo info for {}", repo_id);
-    };
-    let revision = info.sha.as_deref().unwrap_or("main");
-    let mut repo_paths = info
-        .siblings
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .filter(|entry| {
-            entry.rfilename.starts_with(&catalog_root) && entry.rfilename.ends_with(".json")
-        })
-        .map(|entry| entry.rfilename.clone())
-        .collect::<Vec<_>>();
-    repo_paths.sort();
-    let mut entries = Vec::new();
-    for repo_path in repo_paths {
-        let downloaded = dataset
-            .download_file(
-                &RepoDownloadFileParams::builder()
-                    .filename(repo_path.clone())
-                    .revision(revision.to_string())
+    crate::models::run_hf_blocking(|| {
+        let repo_id = curated_catalog_dataset_repo();
+        let catalog_root = format!("{}/", curated_catalog_root_path().trim_end_matches('/'));
+        let (owner, name) = repo_id
+            .split_once('/')
+            .with_context(|| format!("Invalid Mesh catalog repo id {}", repo_id))?;
+        let api = crate::models::build_hf_api(false)?;
+        let dataset = api.dataset(owner, name);
+        let info = dataset
+            .info(
+                &hf_hub::RepoInfoParams::builder()
+                    .revision("main".to_string())
                     .build(),
             )
-            .with_context(|| format!("Download Mesh catalog entry {}", repo_path))?;
-        let bytes = fs::read(&downloaded)
-            .with_context(|| format!("Read downloaded Mesh catalog {}", downloaded.display()))?;
-        let entry: CatalogRepoEntry = serde_json::from_slice(&bytes)
-            .with_context(|| format!("Parse downloaded Mesh catalog {}", downloaded.display()))?;
-        validate_catalog_repo_entry(&entry, &downloaded.display().to_string())?;
-        entries.push(entry);
-    }
-    Ok(entries)
+            .with_context(|| format!("Fetch Mesh catalog repo info for {}", repo_id))?;
+        let hf_hub::RepoInfo::Dataset(info) = info else {
+            anyhow::bail!("Expected dataset repo info for {}", repo_id);
+        };
+        let revision = info.sha.as_deref().unwrap_or("main");
+        let mut repo_paths = info
+            .siblings
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|entry| {
+                entry.rfilename.starts_with(&catalog_root) && entry.rfilename.ends_with(".json")
+            })
+            .map(|entry| entry.rfilename.clone())
+            .collect::<Vec<_>>();
+        repo_paths.sort();
+        let mut entries = Vec::new();
+        for repo_path in repo_paths {
+            let downloaded = dataset
+                .download_file(
+                    &RepoDownloadFileParams::builder()
+                        .filename(repo_path.clone())
+                        .revision(revision.to_string())
+                        .build(),
+                )
+                .with_context(|| format!("Download Mesh catalog entry {}", repo_path))?;
+            let bytes = fs::read(&downloaded).with_context(|| {
+                format!("Read downloaded Mesh catalog {}", downloaded.display())
+            })?;
+            let entry: CatalogRepoEntry = serde_json::from_slice(&bytes).with_context(|| {
+                format!("Parse downloaded Mesh catalog {}", downloaded.display())
+            })?;
+            validate_catalog_repo_entry(&entry, &downloaded.display().to_string())?;
+            entries.push(entry);
+        }
+        Ok(entries)
+    })
 }
 
 fn validate_catalog_repo_entry(entry: &CatalogRepoEntry, label: &str) -> Result<()> {

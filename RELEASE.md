@@ -43,7 +43,7 @@ Each should only show the binary name — no `/opt/homebrew/` paths.
 just bundle
 ```
 
-Creates `/tmp/mesh-bundle.tar.gz` containing `mesh-llm`, flavor-specific llama.cpp runtime binaries, `llama-moe-analyze` for MoE ranking generation, and `llama-moe-split` for MoE shard generation.
+Creates `/tmp/mesh-bundle.tar.gz` containing `mesh-llm`, flavor-specific llama.cpp runtime binaries, `llama-moe-analyze` for MoE ranking generation, `llama-moe-split` for the stable shard path, and `llama-moe-components` for topology-independent trunk/expert packaging.
 
 Bundle naming now follows the same convention everywhere:
 
@@ -147,6 +147,6 @@ After the workflow finishes, verify:
 - The ROCm and Vulkan Linux release bundles are compile-tested in CI, but not runtime-tested against real GPUs during the workflow.
 - `codesign` and `xattr` may be needed on the receiving machine if macOS Gatekeeper blocks unsigned binaries:
   ```bash
-  codesign -s - /usr/local/bin/mesh-llm /usr/local/bin/rpc-server-metal /usr/local/bin/llama-server-metal /usr/local/bin/llama-moe-analyze /usr/local/bin/llama-moe-split
-  xattr -cr /usr/local/bin/mesh-llm /usr/local/bin/rpc-server-metal /usr/local/bin/llama-server-metal /usr/local/bin/llama-moe-analyze /usr/local/bin/llama-moe-split
+  codesign -s - /usr/local/bin/mesh-llm /usr/local/bin/rpc-server-metal /usr/local/bin/llama-server-metal /usr/local/bin/llama-moe-analyze /usr/local/bin/llama-moe-split /usr/local/bin/llama-moe-components
+  xattr -cr /usr/local/bin/mesh-llm /usr/local/bin/rpc-server-metal /usr/local/bin/llama-server-metal /usr/local/bin/llama-moe-analyze /usr/local/bin/llama-moe-split /usr/local/bin/llama-moe-components
   ```

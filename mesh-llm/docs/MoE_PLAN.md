@@ -1,5 +1,9 @@
 # MoE Expert Sharding — Design & Status
 
+This document is historical implementation context. The current publication,
+catalog, and package-repo design lives in
+[MOE_EXPERTS_SHARDING.md](./MOE_EXPERTS_SHARDING.md).
+
 Distribute MoE models across mesh nodes using **overlapping expert shards** with zero cross-node inference traffic. Each node holds the full trunk plus a subset of experts. Sessions are hash-routed to nodes.
 
 See [ROADMAP.md](../../ROADMAP.md) for how this fits into mesh-llm.
@@ -13,24 +17,24 @@ All core phases are complete and integrated into mesh-llm.
 - Auto-detected in `election.rs` at model load time.
 
 ### Ranking
-- **Published rankings**: `meshllm/moe-rankings` on Hugging Face is now the canonical shared ranking source for exact `repo + revision + distribution_id + analyzer_id`.
-- **Cached rankings**: local analysis results remain in the mesh-llm cache and are preferred when they are at least as strong as published data. Published rankings only replace local cache when they are stronger.
-- **Runtime resolution**: `mesh-llm moe plan` and `serve` check the local mesh-llm cache first, then the Hugging Face dataset, and prefer `full-*` over `micro-*`.
-- **HF cache behavior**: dataset artifacts stay in the Hugging Face cache when downloaded; they are not copied into `~/.cache/mesh-llm`.
+- **Published rankings**: legacy ranking-only publications still refer to `meshllm/moe-rankings`, but the current package flow publishes through per-source package repos plus `meshllm/catalog`.
+- **Cached rankings**: local analysis results remain in the mesh-llm cache and are preferred when they are at least as strong as published data.
+- **Runtime resolution**: `mesh-llm moe plan` can still consult the legacy rankings dataset, while `serve` now prefers package resolution through `meshllm/catalog`.
+- **HF cache behavior**: metadata and artifact fetches stay in the Hugging Face cache and are reused from there.
 - **Dynamic analysis**: runtime can still materialize cached rankings via `micro-analyze` or full `moe-analyze`.
 - **Fallback**: no ranking → conservative 50% shared core with sequential expert IDs.
 - **Tool**: `llama-moe-analyze` (in `llama.cpp/tools/moe-analyze/`) runs inference on sample prompts and exports per-expert gate mass CSV.
 
 ### MoE CLI
 
-- `mesh-llm moe plan <model>` resolves rankings from local cache or `meshllm/moe-rankings` and produces a placement recommendation.
+- `mesh-llm moe plan <model>` resolves rankings from local cache or the legacy rankings dataset and produces a placement recommendation.
 - `mesh-llm moe analyze full <model>` and `mesh-llm moe analyze micro <model>` generate local ranking artifacts.
-- `mesh-llm moe share <model>` opens a contribution PR against `meshllm/moe-rankings` when a locally generated ranking is new.
+- `mesh-llm moe publish <model>` publishes a package repo and opens a contribution PR against `meshllm/catalog`.
 
-### Splitting (`moe.rs` + `llama-moe-split`)
+### Splitting (`moe.rs` + llama.cpp tools)
 - `compute_assignments()` implements the overlap strategy: shared core (top N experts by gate mass) replicated to every node, remaining experts distributed uniquely.
-- `run_split()` calls `llama-moe-split` to produce per-node GGUFs (trunk + expert subset). Cached at `~/.cache/mesh-llm/splits/<model>/<n>-nodes/node-<i>.gguf`.
-- `llama-moe-split` (in `llama.cpp/tools/moe-split/`) slices expert tensors, gathers router gate rows, clamps `expert_used_count`. Supports `--groups`, `--expert-list`, `--ranking-file`.
+- The stable split tool remains `llama-moe-split`, but the current package path prefers `llama-moe-components` to build topology-independent `trunk.gguf` plus `experts/expert-*.gguf`.
+- Local fallback now builds a package-shaped cache under `~/.cache/mesh-llm/moe/packages/...` instead of reusing topology-specific split directories.
 
 ### Mesh Integration (`election.rs`)
 - `moe_election_loop()` handles the full lifecycle: detect MoE → compute assignments → split if needed → start llama-server with shard → rebuild on mesh changes.

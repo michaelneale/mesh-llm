@@ -543,8 +543,8 @@ mesh-llm client --join <TOKEN> --port 9338
 ```bash
 just bundle
 # scp, then on remote:
-codesign -s - ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
-xattr -cr ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server
+codesign -s - ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server ~/mesh-bundle/llama-moe-analyze ~/mesh-bundle/llama-moe-split ~/mesh-bundle/llama-moe-components
+xattr -cr ~/mesh-bundle/mesh-llm ~/mesh-bundle/rpc-server ~/mesh-bundle/llama-server ~/mesh-bundle/llama-moe-analyze ~/mesh-bundle/llama-moe-split ~/mesh-bundle/llama-moe-components
 ```
 
 Must codesign + xattr after every scp or macOS kills the binary (exit 137).

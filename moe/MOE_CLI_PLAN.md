@@ -25,7 +25,7 @@ Planned command family:
 mesh-llm moe plan <model>
 mesh-llm moe analyze full <model>
 mesh-llm moe analyze micro <model>
-mesh-llm moe share <model>
+mesh-llm moe publish <model>
 ```
 
 These are explicit subcommands, not flag modes.
@@ -43,19 +43,17 @@ Purpose:
 
 Planner ranking resolution should follow this precedence:
 
-1. `--ranking-file` override
-2. local `~/.cache/mesh-llm/...`
-3. Hugging Face dataset `meshllm/moe-rankings`
+1. local `~/.cache/mesh-llm/...`
+2. Hugging Face dataset `meshllm/moe-rankings`
 
 However, local cache should only win when it is current enough.
 
 Final resolution rule:
 
-1. If `--ranking-file` is provided, use it directly.
-2. Otherwise inspect local cached rankings.
-3. Inspect `meshllm/moe-rankings`.
-4. If Hugging Face has a stronger artifact than local cache, use the Hugging Face artifact via the Hugging Face cache/download path. Do not copy it into `~/.cache/mesh-llm/...`. If local and published artifacts have equal analyzer strength, keep the local cache.
-5. Otherwise use local cache.
+1. Inspect local cached rankings.
+2. Inspect `meshllm/moe-rankings`.
+3. If Hugging Face has a stronger artifact than local cache, use the Hugging Face artifact via the Hugging Face cache/download path. Do not copy it into `~/.cache/mesh-llm/...`. If local and published artifacts have equal analyzer strength, keep the local cache.
+4. Otherwise use local cache.
 
 This means planner behavior is:
 
@@ -136,7 +134,7 @@ Purpose:
 
 - run the canonical full MoE analysis for a model
 - cache the resulting artifact locally
-- optionally submit the analyze run to Hugging Face Jobs with `--hf-job`
+- optionally submit the publish run to Hugging Face Jobs with `--hf-job`
 - on remote success, share the resulting artifact back through a dataset PR
 
 This should align to:
@@ -149,7 +147,7 @@ Purpose:
 
 - run the canonical micro analysis for a model
 - cache the resulting artifact locally
-- optionally submit the analyze run to Hugging Face Jobs with `--hf-job`
+- optionally submit the publish run to Hugging Face Jobs with `--hf-job`
 - on remote success, share the resulting artifact back through a dataset PR
 
 This should align to:
@@ -185,13 +183,13 @@ Progress bars should be used for:
 
 ### Remote Job Mode
 
-`--hf-job` should:
+`moe publish --hf-job` should:
 
 - require a Hugging Face-backed model identity so the remote worker can resolve the same exact distribution
 - submit a Hugging Face Job from the Rust CLI
 - download a release bundle inside the remote job
 - run the public `mesh-llm moe analyze ...` command inside the job
-- run the public `mesh-llm moe share ...` command after successful analysis
+- run the public `mesh-llm moe publish ...` command after successful analysis
 - open a dataset PR against `meshllm/moe-rankings` rather than writing directly to `main`
 
 ### Error Discoverability
@@ -216,7 +214,7 @@ Log: ~/.cache/mesh-llm/moe/.../run.log
 Cause: llama-moe-analyze exited with code 1
 ```
 
-## `mesh-llm moe share`
+## `mesh-llm moe publish`
 
 Purpose:
 
@@ -239,7 +237,6 @@ The preferred model is contribution-oriented, not blind direct write for all use
 
 Expected override support later may include:
 
-- `--ranking-file`
 - `--metadata-file`
 - `--dry-run`
 
@@ -281,7 +278,7 @@ Example:
 📍 Cached at: ~/.cache/mesh-llm/...
 ☁️ No published ranking was found in meshllm/moe-rankings
 📤 Consider contributing it with:
-   mesh-llm moe share <model>
+   mesh-llm moe publish <model>
 ```
 
 `serve` should not auto-submit.

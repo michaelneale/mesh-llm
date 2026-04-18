@@ -902,7 +902,7 @@ fn print_runtime_submit_suggestion(model_name: &str, model_path: &Path, ranking_
     );
     eprintln!("⚠️  [{model_name}] This run did not use a published ranking.");
     eprintln!(
-        "📤 [{model_name}] Contribute it with: mesh-llm moe share '{}'",
+        "📤 [{model_name}] Contribute it with: mesh-llm moe publish '{}'",
         identity.distribution_ref()
     );
 }

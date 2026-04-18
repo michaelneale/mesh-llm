@@ -19,7 +19,7 @@ pub(crate) enum MoeCommand {
         /// Optional node count override. When omitted, mesh-llm recommends a minimum node count.
         #[arg(long)]
         nodes: Option<usize>,
-        /// Published dataset repo used for MoE ranking lookup.
+        /// Legacy published rankings dataset repo used only for direct ranking lookup during planning.
         #[arg(long, default_value = "meshllm/moe-rankings")]
         dataset_repo: String,
     },
@@ -28,14 +28,10 @@ pub(crate) enum MoeCommand {
         #[command(subcommand)]
         command: MoeAnalyzeCommand,
     },
-    /// Share a local MoE package with other mesh-llm users via Hugging Face package repos and the Mesh catalog.
-    Share {
+    /// Publish a local MoE package via Hugging Face package repos and the Mesh catalog.
+    Publish {
         /// Model spec: local path, catalog name, HF exact ref, HF repo selector like `org/repo:BF16@main`, or HF URL.
         model: String,
-        /// Override the ranking CSV path instead of resolving a local cached artifact.
-        /// This should point to a ranking CSV, such as a file produced by `mesh-llm moe analyze`.
-        #[arg(long)]
-        ranking_file: Option<PathBuf>,
         /// Mesh catalog dataset repo used for package resolution entries.
         #[arg(long, default_value = "meshllm/catalog")]
         catalog_repo: String,
@@ -43,6 +39,8 @@ pub(crate) enum MoeCommand {
         /// falls back to your user namespace when you cannot publish there.
         #[arg(long)]
         namespace: Option<String>,
+        #[command(flatten)]
+        hf_job: HfJobArgs,
     },
 }
 
@@ -58,8 +56,6 @@ pub(crate) enum MoeAnalyzeCommand {
         /// Number of layers to offload to GPU during analysis. Use 0 for CPU-only runs.
         #[arg(long, default_value = "0")]
         n_gpu_layers: u32,
-        #[command(flatten)]
-        hf_job: HfJobArgs,
     },
     /// Run the canonical micro MoE analysis and cache it locally.
     Micro {
@@ -77,19 +73,14 @@ pub(crate) enum MoeAnalyzeCommand {
         /// Number of layers to offload to GPU during analysis. Use 0 for CPU-only runs.
         #[arg(long, default_value = "0")]
         n_gpu_layers: u32,
-        #[command(flatten)]
-        hf_job: HfJobArgs,
     },
 }
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct HfJobArgs {
-    /// Submit this MoE analyze run to Hugging Face Jobs instead of running locally.
+    /// Submit this MoE publish run to Hugging Face Jobs instead of running locally.
     #[arg(long)]
     pub(crate) hf_job: bool,
-    /// Mesh catalog dataset repo to contribute to when the remote analysis succeeds.
-    #[arg(long, default_value = "meshllm/catalog")]
-    pub(crate) catalog_repo: String,
     /// HF Jobs hardware flavor, e.g. cpu-xl, cpu-performance, l40sx1.
     #[arg(long, default_value = "cpu-xl")]
     pub(crate) hf_job_flavor: String,

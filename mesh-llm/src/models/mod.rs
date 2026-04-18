@@ -11,6 +11,7 @@ mod usage;
 
 use anyhow::{Context, Result};
 use hf_hub::{HFClient, HFClientBuilder, HFClientSync};
+use std::panic::AssertUnwindSafe;
 
 pub use capabilities::{CapabilityLevel, ModelCapabilities};
 pub use inventory::{scan_local_inventory_snapshot_with_progress, LocalModelInventorySnapshot};
@@ -80,6 +81,38 @@ pub(crate) fn hf_token_override() -> Option<String> {
     None
 }
 
+pub(crate) fn run_hf_blocking<T, F>(operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::spawn(move || std::panic::catch_unwind(AssertUnwindSafe(operation)))
+            .join()
+            .map_err(|panic| {
+                let detail = if let Some(message) = panic.downcast_ref::<&str>() {
+                    (*message).to_string()
+                } else if let Some(message) = panic.downcast_ref::<String>() {
+                    message.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                anyhow::anyhow!("Hugging Face blocking operation thread panicked: {detail}")
+            })?
+            .map_err(|panic| {
+                if let Some(message) = panic.downcast_ref::<&str>() {
+                    anyhow::anyhow!("Hugging Face blocking operation panicked: {message}")
+                } else if let Some(message) = panic.downcast_ref::<String>() {
+                    anyhow::anyhow!("Hugging Face blocking operation panicked: {message}")
+                } else {
+                    anyhow::anyhow!("Hugging Face blocking operation panicked")
+                }
+            })?
+    } else {
+        operation()
+    }
+}
+
 fn format_size_bytes(bytes: u64) -> String {
     if bytes >= 1_000_000_000 {
         format!("{:.1}GB", bytes as f64 / 1e9)
@@ -134,5 +167,17 @@ mod tests {
     fn find_catalog_model_exact_matches_filename_stem() {
         let model = find_catalog_model_exact("Qwen3-8B-Q4_K_M").unwrap();
         assert_eq!(model.name, "Qwen3-8B-Q4_K_M");
+    }
+
+    #[test]
+    fn run_hf_blocking_works_without_runtime() {
+        let value = run_hf_blocking(|| Ok::<_, anyhow::Error>(42)).unwrap();
+        assert_eq!(value, 42);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_hf_blocking_works_inside_runtime() {
+        let value = run_hf_blocking(|| Ok::<_, anyhow::Error>(7)).unwrap();
+        assert_eq!(value, 7);
     }
 }

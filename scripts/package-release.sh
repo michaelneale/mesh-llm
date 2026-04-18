@@ -352,10 +352,11 @@ main() {
     cp "$BUILD_BIN_DIR/llama-server${BIN_EXT}" "$bundle_dir/$(bundle_bin_name llama-server)"
     cp "$BUILD_BIN_DIR/llama-moe-analyze${BIN_EXT}" "$bundle_dir/llama-moe-analyze"
     cp "$BUILD_BIN_DIR/llama-moe-split${BIN_EXT}" "$bundle_dir/llama-moe-split"
+    cp "$BUILD_BIN_DIR/llama-moe-components${BIN_EXT}" "$bundle_dir/llama-moe-components"
     copy_runtime_libs "$bundle_dir"
 
     if [[ "$os_name" == "Darwin" ]]; then
-        for bin in "$bundle_dir/$(bundle_bin_name mesh-llm)" "$bundle_dir/$(bundle_bin_name rpc-server)" "$bundle_dir/$(bundle_bin_name llama-server)" "$bundle_dir/llama-moe-analyze" "$bundle_dir/llama-moe-split"; do
+        for bin in "$bundle_dir/$(bundle_bin_name mesh-llm)" "$bundle_dir/$(bundle_bin_name rpc-server)" "$bundle_dir/$(bundle_bin_name llama-server)" "$bundle_dir/llama-moe-analyze" "$bundle_dir/llama-moe-split" "$bundle_dir/llama-moe-components"; do
             [[ -f "$bin" ]] || continue
             install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
         done

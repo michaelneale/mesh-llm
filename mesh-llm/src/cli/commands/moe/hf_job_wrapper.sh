@@ -97,10 +97,6 @@ else
 fi
 echo "✅ Model cached in Hugging Face cache"
 
-echo "🧠 Running analyze step"
-stdbuf -oL -eL bash -lc '__ANALYZE_COMMAND__'
-echo "✅ Analyze step complete"
-
-echo "📤 Opening catalog and package PRs"
-stdbuf -oL -eL bash -lc '__SHARE_COMMAND__'
-echo "✅ Share step complete"
+echo "📤 Running publish step"
+stdbuf -oL -eL bash -lc '__PUBLISH_COMMAND__'
+echo "✅ Publish step complete"

@@ -1,5 +1,9 @@
 # MoE Auto-Deploy — Implementation Notes
 
+This document is historical runtime context. The current package publication,
+catalog, and package-shaped local cache design lives in
+[MOE_EXPERTS_SHARDING.md](./MOE_EXPERTS_SHARDING.md).
+
 This documents how MoE expert sharding is implemented in mesh-llm. Originally a design doc; updated to reflect the actual implementation.
 
 ## User Experience
@@ -93,15 +97,14 @@ else:
     → normal election — solo or tensor split
 ```
 
-`lookup_moe_config()` checks the current ranking sources in descending quality:
-1. **published full analyze** from `meshllm/moe-rankings`
-2. **cached full analyze**
-3. **published micro-analyze** from `meshllm/moe-rankings`
-4. **cached/imported micro-analyze**
-5. **peer-first micro-analyze on cold start**
-6. **sequential fallback**
+`lookup_moe_config()` and the runtime ranking resolver now prefer:
+1. package-backed rankings from `meshllm/catalog` package repos
+2. cached full analyze
+3. cached/imported micro-analyze
+4. peer-first micro-analyze on cold start
+5. sequential fallback for shape hints only
 
-Published rankings are downloaded through the normal Hugging Face cache and remain there. mesh-llm does not copy dataset artifacts into its own cache.
+Published metadata and artifacts are downloaded through the normal Hugging Face cache and remain there. mesh-llm does not copy them into a second catalog cache.
 
 ### Step 3: Compute assignments (`moe.rs`)
 
@@ -113,11 +116,12 @@ Published rankings are downloaded through the normal Hugging Face cache and rema
 The leader now chooses placement automatically from cluster resources instead of exposing MoE split-planning knobs at runtime. The current planner keeps a healthy active shard set stable, uses overlap-based redundancy in the active split, and reserves a full-coverage fallback replica when there is enough spare capacity.
 Recover-up is intentionally conservative: a recovered node must pass probation, then a quiet window, and then the leader only scales back up if the candidate plan is materially better than the current healthy one.
 
-### Step 4: Split GGUF (`moe.rs` → `llama-moe-split`)
+### Step 4: Build or reuse components (`moe.rs` + llama.cpp tools)
 
-`run_split()` calls the external `llama-moe-split` tool with `--expert-list`. Produces a self-contained GGUF: full trunk + selected experts + adjusted router gates + updated metadata.
+The current package path prefers the external `llama-moe-components` tool to extract a topology-independent `trunk.gguf` plus `experts/expert-*.gguf`, then assembles the runtime shard from those components.
 
-Splits are cached at `~/.cache/mesh-llm/splits/<model>/<n>-nodes/node-<i>.gguf`. Invalidated implicitly when node count changes (different directory).
+Local fallback components are cached in the same layout that `moe publish` publishes, under `~/.cache/mesh-llm/moe/packages/<owner>/<repo>/<revision>/variants/<variant>/...`.
+`llama-moe-split` remains the stable legacy runnable-shard tool, but it is no longer the preferred local fallback.
 
 ### Step 5: Independent llama-servers
 
@@ -148,7 +152,7 @@ As mesh-llm moves toward protocol-level `ServedModelDescriptor` objects, MoE sho
 
 Planned source priority:
 
-1. published `moe-analyze` data in `meshllm/moe-rankings`
+1. package-backed metadata from `meshllm/catalog`
 2. local cached `moe-analyze` output for that exact descriptor identity
 3. Hugging Face metadata for exact `repository + revision + artifact`
 4. GGUF header fallback
@@ -161,7 +165,7 @@ This gives us two important properties:
 Contribution flow:
 
 - use `mesh-llm moe analyze full` or `mesh-llm moe analyze micro` to generate local rankings
-- use `mesh-llm moe share` to open contribution PRs against `meshllm/moe-rankings`
-- when `serve` had to generate a local ranking because no published one was available, it should suggest `mesh-llm moe share <model>`
+- use `mesh-llm moe publish` to publish package repos and open contribution PRs against `meshllm/catalog`
+- when `serve` had to generate a local ranking because no published one was available, it should suggest `mesh-llm moe publish <model>`
 
 Longer term, we may also use lighter-weight local signals such as short warm-up inference or recent router statistics to improve unknown models. That data should remain explicitly lower-confidence than `moe-analyze`, and should be treated as a hinting/calibration layer rather than the canonical topology source.

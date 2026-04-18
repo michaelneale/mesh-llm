@@ -45,6 +45,11 @@ const SHARE_UPLOAD_BATCH_MAX_BYTES: u64 = 1_500_000_000;
 const SHARE_UPLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(180);
 const SHARE_UPLOAD_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const SHARE_UPLOAD_MAX_RETRIES: usize = 3;
+const SHARE_REPO_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const SHARE_REPO_READY_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const FULL_ANALYZE_CONTEXT_SIZE: u32 = 4096;
+const FULL_ANALYZE_GPU_LAYERS: u32 = 0;
+const FULL_ANALYZE_TOKEN_COUNT: u32 = 32;
 
 struct TempRootGuard(PathBuf);
 
@@ -504,15 +509,13 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
                 model,
                 context_size,
                 n_gpu_layers,
-                hf_job,
-            } => run_analyze_full(model, *context_size, *n_gpu_layers, hf_job).await,
+            } => run_analyze_full(model, *context_size, *n_gpu_layers).await,
             MoeAnalyzeCommand::Micro {
                 model,
                 prompt_count,
                 token_count,
                 context_size,
                 n_gpu_layers,
-                hf_job,
             } => {
                 run_analyze_micro(
                     model,
@@ -520,25 +523,16 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
                     *token_count,
                     *context_size,
                     *n_gpu_layers,
-                    hf_job,
                 )
                 .await
             }
         },
-        MoeCommand::Share {
+        MoeCommand::Publish {
             model,
-            ranking_file,
             catalog_repo,
             namespace,
-        } => {
-            run_share(
-                model,
-                ranking_file.as_deref(),
-                catalog_repo,
-                namespace.as_deref(),
-            )
-            .await
-        }
+            hf_job,
+        } => run_publish(model, catalog_repo, namespace.as_deref(), hf_job).await,
     }
 }
 
@@ -571,48 +565,23 @@ async fn run_plan(
     moe_plan_formatter(json_output).render(&report)
 }
 
-async fn run_analyze_full(
-    model: &str,
-    context_size: u32,
-    n_gpu_layers: u32,
-    hf_job: &HfJobArgs,
-) -> Result<()> {
-    if hf_job.hf_job {
-        return hf_jobs::submit_full_analyze_job(model, context_size, n_gpu_layers, hf_job).await;
-    }
+async fn run_analyze_full(model: &str, context_size: u32, n_gpu_layers: u32) -> Result<()> {
     let resolved = moe_planner::resolve_model_context(model).await?;
-    let output_path = moe::ranking_cache_path(&resolved.path);
-    let log_path = log_path_for(&resolved.path, "full-v1");
-    let binary = resolve_analyze_binary()?;
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
     eprintln!("📍 Model: {}", resolved.display_name);
     eprintln!("🧠 Running full-v1 MoE analysis");
-    let command = vec![
-        binary.to_string_lossy().to_string(),
-        "-m".to_string(),
-        resolved.path.display().to_string(),
-        "--all-layers".to_string(),
-        "--export-ranking".to_string(),
-        output_path.display().to_string(),
-        "-n".to_string(),
-        "32".to_string(),
-        "-c".to_string(),
-        context_size.to_string(),
-        "-ngl".to_string(),
-        n_gpu_layers.to_string(),
-    ];
-    run_analyzer_command(&command, &log_path, "full-v1")?;
-    let analysis_path = moe_planner::write_analysis_json(&resolved, &output_path, "full-v1")?;
+    let artifacts = run_local_full_analysis(&resolved, context_size, n_gpu_layers)?;
     println!("✅ Full MoE analysis complete");
-    println!("  Ranking: {}", output_path.display());
-    println!("  Analysis: {}", analysis_path.display());
-    println!("  Log: {}", log_path.display());
+    println!("  Ranking: {}", artifacts.ranking_path.display());
+    println!("  Analysis: {}", artifacts.analysis_path.display());
+    println!("  Log: {}", artifacts.log_path.display());
+    println!(
+        "  Package cache: {}",
+        moe::package_cache_root_dir(&resolved.path).display()
+    );
+    println!(
+        "  Variant cache: {}",
+        moe::package_cache_variant_dir(&resolved.path).display()
+    );
     print_submit_suggestion(&resolved.path);
     Ok(())
 }
@@ -623,19 +592,7 @@ async fn run_analyze_micro(
     token_count: u32,
     context_size: u32,
     n_gpu_layers: u32,
-    hf_job: &HfJobArgs,
 ) -> Result<()> {
-    if hf_job.hf_job {
-        return hf_jobs::submit_micro_analyze_job(
-            model,
-            prompt_count,
-            token_count,
-            context_size,
-            n_gpu_layers,
-            hf_job,
-        )
-        .await;
-    }
     let resolved = moe_planner::resolve_model_context(model).await?;
     let prompt_count = prompt_count.clamp(1, MICRO_PROMPTS.len());
     let log_path = log_path_for(&resolved.path, "micro-v1");
@@ -747,6 +704,15 @@ async fn run_analyze_micro(
         ranking.iter().map(|(_, values)| values.0).sum::<f64>(),
     )?;
     let analysis_path = moe_planner::write_analysis_json(&resolved, &cache_path, "micro-v1")?;
+    let ranking = moe_planner::ResolvedRanking {
+        path: cache_path.clone(),
+        metadata_path: None,
+        analysis_path: Some(analysis_path.clone()),
+        analyzer_id: "micro-v1".to_string(),
+        source: moe_planner::RankingSource::LocalCache,
+        reason: "local analysis artifact".to_string(),
+    };
+    sync_local_package_cache(&resolved, &ranking, Some(&log_path))?;
     println!("✅ Micro MoE analysis complete");
     println!("  Ranking: {}", cache_path.display());
     println!("  Analysis: {}", analysis_path.display());
@@ -756,6 +722,14 @@ async fn run_analyze_micro(
         );
     }
     println!("  Log: {}", log_path.display());
+    println!(
+        "  Package cache: {}",
+        moe::package_cache_root_dir(&resolved.path).display()
+    );
+    println!(
+        "  Variant cache: {}",
+        moe::package_cache_variant_dir(&resolved.path).display()
+    );
     print_submit_suggestion(&resolved.path);
     Ok(())
 }
@@ -809,15 +783,167 @@ fn print_submit_suggestion(model_path: &Path) {
         return;
     };
     println!("📤 Contribute this ranking to mesh-llm so other users can reuse it:");
-    println!("  mesh-llm moe share '{}'", identity.distribution_ref());
+    println!("  mesh-llm moe publish '{}'", identity.distribution_ref());
 }
 
-async fn run_share(
+struct FullAnalyzeArtifacts {
+    ranking: moe_planner::ResolvedRanking,
+    ranking_path: PathBuf,
+    analysis_path: PathBuf,
+    log_path: PathBuf,
+}
+
+fn full_analyze_artifacts(model: &moe_planner::MoeModelContext) -> FullAnalyzeArtifacts {
+    let ranking_path = moe::ranking_cache_path(&model.path);
+    let analysis_path = ranking_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("analysis.json");
+    let log_path = log_path_for(&model.path, "full-v1");
+    FullAnalyzeArtifacts {
+        ranking: moe_planner::ResolvedRanking {
+            path: ranking_path.clone(),
+            metadata_path: None,
+            analysis_path: Some(analysis_path.clone()),
+            analyzer_id: "full-v1".to_string(),
+            source: moe_planner::RankingSource::LocalCache,
+            reason: "local full analysis artifact".to_string(),
+        },
+        ranking_path,
+        analysis_path,
+        log_path,
+    }
+}
+
+fn has_complete_full_analyze_artifacts(model: &moe_planner::MoeModelContext) -> bool {
+    let artifacts = full_analyze_artifacts(model);
+    artifacts.ranking_path.exists()
+        && artifacts.analysis_path.exists()
+        && artifacts.log_path.exists()
+}
+
+fn run_local_full_analysis(
+    model: &moe_planner::MoeModelContext,
+    context_size: u32,
+    n_gpu_layers: u32,
+) -> Result<FullAnalyzeArtifacts> {
+    let artifacts = full_analyze_artifacts(model);
+    let binary = resolve_analyze_binary()?;
+    if let Some(parent) = artifacts.ranking_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = artifacts.log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let command = vec![
+        binary.to_string_lossy().to_string(),
+        "-m".to_string(),
+        model.path.display().to_string(),
+        "--all-layers".to_string(),
+        "--export-ranking".to_string(),
+        artifacts.ranking_path.display().to_string(),
+        "-n".to_string(),
+        FULL_ANALYZE_TOKEN_COUNT.to_string(),
+        "-c".to_string(),
+        context_size.to_string(),
+        "-ngl".to_string(),
+        n_gpu_layers.to_string(),
+    ];
+    run_analyzer_command(&command, &artifacts.log_path, "full-v1")?;
+    let analysis_path =
+        moe_planner::write_analysis_json(model, &artifacts.ranking_path, "full-v1")?;
+    let ranking = moe_planner::ResolvedRanking {
+        analysis_path: Some(analysis_path.clone()),
+        ..artifacts.ranking.clone()
+    };
+    sync_local_package_cache(model, &ranking, Some(&artifacts.log_path))?;
+    Ok(FullAnalyzeArtifacts {
+        ranking,
+        ranking_path: artifacts.ranking_path,
+        analysis_path,
+        log_path: artifacts.log_path,
+    })
+}
+
+fn sync_local_package_cache(
+    model: &moe_planner::MoeModelContext,
+    ranking: &moe_planner::ResolvedRanking,
+    log_path: Option<&Path>,
+) -> Result<moe_planner::MoeSubmitBundle> {
+    let bundle = moe_planner::build_submit_bundle(model, ranking, log_path)?;
+
+    let meshllm_path = moe::package_cache_meshllm_path(&model.path);
+    let existing_meshllm = if meshllm_path.exists() {
+        Some(
+            fs::read_to_string(&meshllm_path)
+                .with_context(|| format!("Read {}", meshllm_path.display()))?,
+        )
+    } else {
+        None
+    };
+    let meshllm = moe_planner::build_meshllm_descriptor(
+        existing_meshllm.as_deref(),
+        model,
+        &bundle.manifest_repo_path,
+    )?;
+    if let Some(parent) = meshllm_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("Create {}", parent.display()))?;
+    }
+    fs::write(
+        &meshllm_path,
+        serde_json::to_string_pretty(&meshllm)? + "\n",
+    )
+    .with_context(|| format!("Write {}", meshllm_path.display()))?;
+
+    let package_ranking_path = moe::package_cache_ranking_path(&model.path);
+    if let Some(parent) = package_ranking_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("Create {}", parent.display()))?;
+    }
+    if ranking.path != package_ranking_path {
+        fs::copy(&ranking.path, &package_ranking_path).with_context(|| {
+            format!(
+                "Copy ranking {} to {}",
+                ranking.path.display(),
+                package_ranking_path.display()
+            )
+        })?;
+    }
+
+    let package_analysis_path = moe::package_cache_analysis_path(&model.path);
+    moe_planner::write_package_analysis_json(model, ranking, &package_analysis_path)?;
+
+    let package_log_path = moe::package_cache_run_log_path(&model.path);
+    if let Some(log_path) = log_path.filter(|path| path.exists()) {
+        if let Some(parent) = package_log_path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("Create {}", parent.display()))?;
+        }
+        if log_path != package_log_path {
+            fs::copy(log_path, &package_log_path).with_context(|| {
+                format!(
+                    "Copy run log {} to {}",
+                    log_path.display(),
+                    package_log_path.display()
+                )
+            })?;
+        }
+    } else if package_log_path.exists() {
+        fs::remove_file(&package_log_path)
+            .with_context(|| format!("Remove stale {}", package_log_path.display()))?;
+    }
+
+    Ok(bundle)
+}
+
+async fn run_publish(
     model: &str,
-    ranking_file: Option<&Path>,
     catalog_repo: &str,
     namespace: Option<&str>,
+    hf_job: &HfJobArgs,
 ) -> Result<()> {
+    if hf_job.hf_job {
+        return hf_jobs::submit_publish_job(model, catalog_repo, namespace, hf_job).await;
+    }
     let share_error = |title: &str, detail: &str| -> anyhow::Error {
         eprintln!("❌ {title}");
         eprintln!("   {detail}");
@@ -825,7 +951,23 @@ async fn run_share(
     };
 
     let resolved = moe_planner::resolve_model_context(model).await?;
-    let ranking = moe_planner::local_submit_ranking(&resolved, ranking_file)?;
+    let ranking = if has_complete_full_analyze_artifacts(&resolved) {
+        eprintln!(
+            "🧠 Reusing full-v1 MoE analysis from {}",
+            full_analyze_artifacts(&resolved).ranking_path.display()
+        );
+        let artifacts = full_analyze_artifacts(&resolved);
+        sync_local_package_cache(&resolved, &artifacts.ranking, Some(&artifacts.log_path))?;
+        artifacts.ranking
+    } else {
+        eprintln!("🧠 Running full-v1 MoE analysis before publish");
+        run_local_full_analysis(
+            &resolved,
+            FULL_ANALYZE_CONTEXT_SIZE,
+            FULL_ANALYZE_GPU_LAYERS,
+        )?
+        .ranking
+    };
     moe_planner::validate_ranking(&resolved, &ranking).with_context(|| {
         format!(
             "Validate ranking {} against model {}",
@@ -834,15 +976,15 @@ async fn run_share(
         )
     })?;
     let log_path = log_path_for(&resolved.path, &ranking.analyzer_id);
-    let bundle = moe_planner::build_submit_bundle(&resolved, &ranking, Some(log_path.as_path()))?;
+    let bundle = sync_local_package_cache(&resolved, &ranking, Some(log_path.as_path()))?;
     models::hf_token_override().ok_or_else(|| {
         share_error(
             "Missing Hugging Face token",
-            "Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN before running `mesh-llm moe share`.",
+            "Set HF_TOKEN or HUGGING_FACE_HUB_TOKEN before running `mesh-llm moe publish`.",
         )
     })?;
     let api =
-        models::build_hf_tokio_api(false).context("Build Hugging Face client for MoE share")?;
+        models::build_hf_tokio_api(false).context("Build Hugging Face client for MoE publish")?;
     let publish_target = resolve_publish_target(&api, &resolved, namespace)
         .await
         .map_err(|err| {
@@ -851,24 +993,45 @@ async fn run_share(
                 &err.to_string(),
             )
         })?;
+    ensure_repo_ready(&api, &publish_target.package_repo, RepoType::Model)
+        .await
+        .map_err(|err| {
+            share_error(
+                "Failed to prepare package repository",
+                &format!(
+                    "Ensure {} exists and is ready: {}",
+                    publish_target.package_repo, err
+                ),
+            )
+        })?;
     let (package_owner, package_name) = parse_repo_id(&publish_target.package_repo)?;
     let package_repo = api.model(package_owner, package_name);
-    let package_info = package_repo
+    let package_info = match package_repo
         .info(
             &RepoInfoParams::builder()
                 .revision("main".to_string())
                 .build(),
         )
         .await
-        .with_context(|| {
-            format!(
-                "Fetch package repo info for {}",
-                publish_target.package_repo
-            )
-        })?;
-    let (package_siblings, _) = repo_info_siblings_and_sha(&package_info)?;
+    {
+        Ok(info) => Some(info),
+        Err(HFError::RevisionNotFound { .. }) => None,
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "Fetch package repo info for {}",
+                    publish_target.package_repo
+                )
+            });
+        }
+    };
+    let (package_siblings, package_main_head) = if let Some(info) = package_info.as_ref() {
+        repo_info_siblings_and_sha(info)?
+    } else {
+        (Vec::new(), None)
+    };
 
-    println!("📤 MoE package share");
+    println!("📤 MoE package publish");
     println!("📦 {}", resolved.display_name);
     println!("   ranking: {}", ranking.path.display());
     println!("   source: {}", ranking.source.label());
@@ -881,7 +1044,7 @@ async fn run_share(
     println!("   variant: {}", bundle.variant);
 
     let temp_root = std::env::temp_dir().join(format!(
-        "mesh-llm-moe-share-{}-{}",
+        "mesh-llm-moe-publish-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -913,30 +1076,40 @@ async fn run_share(
         &resolved,
         &bundle.manifest_repo_path,
     )?;
+    let meshllm_cache_path = moe::package_cache_meshllm_path(&resolved.path);
+    if let Some(parent) = meshllm_cache_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &meshllm_cache_path,
+        serde_json::to_string_pretty(&meshllm)? + "\n",
+    )
+    .with_context(|| format!("Write {}", meshllm_cache_path.display()))?;
     let readme = build_package_readme(&meshllm, &publish_target.package_repo);
 
     let mut staged_files = Vec::new();
     stage_share_text(&temp_root, "README.md", &readme)?;
     staged_files.push(staged_upload_file(&temp_root, "README.md")?);
-    stage_share_text(
-        &temp_root,
-        "meshllm.json",
-        &(serde_json::to_string_pretty(&meshllm)? + "\n"),
-    )?;
+    stage_share_file(&temp_root, "meshllm.json", &meshllm_cache_path)?;
     staged_files.push(staged_upload_file(&temp_root, "meshllm.json")?);
-    stage_share_file(&temp_root, &bundle.ranking_repo_path, &bundle.ranking_path)?;
+    stage_share_file(
+        &temp_root,
+        &bundle.ranking_repo_path,
+        &moe::package_cache_ranking_path(&resolved.path),
+    )?;
     staged_files.push(staged_upload_file(&temp_root, &bundle.ranking_repo_path)?);
-    stage_share_text(
+    stage_share_file(
         &temp_root,
         &bundle.analysis_repo_path,
-        &bundle.analysis_content,
+        &moe::package_cache_analysis_path(&resolved.path),
     )?;
     staged_files.push(staged_upload_file(&temp_root, &bundle.analysis_repo_path)?);
-    if let (Some(log_path), Some(log_repo_path)) =
-        (bundle.log_path.as_ref(), bundle.log_repo_path.as_ref())
-    {
-        stage_share_file(&temp_root, log_repo_path, log_path)?;
-        staged_files.push(staged_upload_file(&temp_root, log_repo_path)?);
+    if let Some(log_repo_path) = bundle.log_repo_path.as_ref() {
+        let package_log_path = moe::package_cache_run_log_path(&resolved.path);
+        if package_log_path.exists() {
+            stage_share_file(&temp_root, log_repo_path, &package_log_path)?;
+            staged_files.push(staged_upload_file(&temp_root, log_repo_path)?);
+        }
     }
 
     let current_exe = std::env::current_exe().context("Failed to determine own binary path")?;
@@ -951,28 +1124,20 @@ async fn run_share(
         "{}/{}",
         publish_target.package_repo, bundle.variant_root
     ));
-    let main_head = dataset_branch_head(&package_repo, "main")
-        .await
-        .with_context(|| {
-            format!(
-                "Resolve main branch head for {}",
-                publish_target.package_repo
-            )
-        })?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Repository {} is missing a main branch",
-                publish_target.package_repo
-            )
-        })?;
-    let branch_state = load_share_branch_state(&package_repo, &branch_name, &staged_files)
-        .await
-        .with_context(|| {
-            format!(
-                "Inspect contribution branch {} for {}",
-                branch_name, publish_target.package_repo
-            )
-        })?;
+    let mut upload_branch = branch_name.clone();
+    let mut use_direct_main = false;
+    let branch_state = if package_main_head.is_some() {
+        load_share_branch_state(&package_repo, &branch_name, &staged_files)
+            .await
+            .with_context(|| {
+                format!(
+                    "Inspect contribution branch {} for {}",
+                    branch_name, publish_target.package_repo
+                )
+            })?
+    } else {
+        None
+    };
     let mut branch_head = if let Some(state) = &branch_state {
         println!("🌿 Resuming contribution branch");
         println!("   branch: {branch_name}");
@@ -982,7 +1147,7 @@ async fn run_share(
             staged_files.len()
         );
         state.head_commit.clone()
-    } else {
+    } else if let Some(main_head) = package_main_head.clone() {
         println!("🌿 Creating contribution branch");
         println!("   branch: {branch_name}");
         package_repo
@@ -1003,6 +1168,12 @@ async fn run_share(
                 )
             })?;
         main_head
+    } else {
+        use_direct_main = true;
+        upload_branch = "main".to_string();
+        println!("🌱 Initializing empty package repo");
+        println!("   repo: {}", publish_target.package_repo);
+        "main".to_string()
     };
 
     let mut completed_paths = branch_state
@@ -1022,7 +1193,7 @@ async fn run_share(
 
     if pending_files.is_empty() {
         println!("✅ Contribution branch already contains all staged files");
-        println!("   branch: {branch_name}");
+        println!("   branch: {upload_branch}");
         return Ok(());
     }
 
@@ -1046,13 +1217,17 @@ async fn run_share(
         );
         let batch_commit = upload_share_batch_with_retry(
             &package_repo,
-            &branch_name,
-            &mut branch_head,
+            &upload_branch,
+            if use_direct_main && index == 0 {
+                None
+            } else {
+                Some(branch_head.clone())
+            },
             batch,
             &progress,
             batch_commit_message(&bundle.commit_message, index + 1, batches.len()),
             batch_commit_description(&bundle.commit_description, index + 1, batches.len()),
-            index == 0,
+            !use_direct_main && index == 0,
         )
         .await
         .map_err(|err| {
@@ -1106,8 +1281,13 @@ async fn run_share(
         pr_url: None,
         pr_num: None,
     });
-    println!("✅ Opened MoE package contribution");
-    println!("   branch: {branch_name}");
+    if use_direct_main {
+        println!("✅ Published MoE package");
+        println!("   branch: main");
+    } else {
+        println!("✅ Opened MoE package contribution");
+        println!("   branch: {branch_name}");
+    }
     if let Some(commit_oid) = commit.commit_oid.as_deref() {
         println!("   commit: {commit_oid}");
     }
@@ -1233,7 +1413,7 @@ async fn load_share_branch_state(
 async fn upload_share_batch_with_retry(
     dataset: &hf_hub::HFRepository,
     branch: &str,
-    branch_head: &mut String,
+    parent_commit: Option<String>,
     batch: &ShareUploadBatch,
     progress: &Arc<ShareUploadProgress>,
     commit_message: String,
@@ -1257,31 +1437,48 @@ async fn upload_share_batch_with_retry(
 
     for attempt in 1..=SHARE_UPLOAD_MAX_RETRIES {
         let progress_handler: Progress = Some(progress.clone());
-        let params = RepoCreateCommitParams::builder()
+        let builder = RepoCreateCommitParams::builder()
             .operations(operations.clone())
             .commit_message(commit_message.clone())
             .commit_description(commit_description.clone())
             .revision(branch.to_string())
             .create_pr(create_pr)
-            .parent_commit(branch_head.clone())
-            .progress(progress_handler)
-            .build();
+            .progress(progress_handler);
+        let params = if let Some(parent_commit) = parent_commit.clone() {
+            builder.parent_commit(parent_commit).build()
+        } else {
+            builder.build()
+        };
         match create_commit_with_stall_monitor(dataset, &params, progress).await {
             Ok(commit) => return Ok(commit),
             Err(err) => {
+                let repo_not_ready = err
+                    .downcast_ref::<HFError>()
+                    .is_some_and(|hf| matches!(hf, HFError::RepoNotFound { .. }));
                 last_error = Some(err);
-                if let Some(state) = load_share_branch_state(dataset, branch, &batch.files).await? {
-                    *branch_head = state.head_commit.clone();
-                    if state.uploaded_paths == batch_paths {
-                        return Ok(CommitInfo {
-                            commit_url: None,
-                            commit_message: Some(commit_message.clone()),
-                            commit_description: Some(commit_description.clone()),
-                            commit_oid: Some(state.head_commit),
-                            pr_url: None,
-                            pr_num: None,
-                        });
+                match load_share_branch_state(dataset, branch, &batch.files).await {
+                    Ok(Some(state)) => {
+                        if state.uploaded_paths == batch_paths {
+                            return Ok(CommitInfo {
+                                commit_url: None,
+                                commit_message: Some(commit_message.clone()),
+                                commit_description: Some(commit_description.clone()),
+                                commit_oid: Some(state.head_commit),
+                                pr_url: None,
+                                pr_num: None,
+                            });
+                        }
                     }
+                    Ok(None) => {}
+                    Err(state_err)
+                        if repo_not_ready
+                            && state_err
+                                .downcast_ref::<HFError>()
+                                .is_some_and(|hf| matches!(hf, HFError::RepoNotFound { .. })) => {}
+                    Err(state_err) => return Err(state_err),
+                }
+                if repo_not_ready {
+                    tokio::time::sleep(SHARE_REPO_READY_POLL_INTERVAL).await;
                 }
                 if attempt < SHARE_UPLOAD_MAX_RETRIES {
                     eprintln!(
@@ -1290,6 +1487,9 @@ async fn upload_share_batch_with_retry(
                         attempt + 1,
                         SHARE_UPLOAD_MAX_RETRIES
                     );
+                    if repo_not_ready {
+                        eprintln!("   repository is still propagating on the Hub");
+                    }
                 }
             }
         }
@@ -1447,6 +1647,10 @@ fn stage_variant_components(
         if cached_manifest.ranking_sha256 == moe_planner::sha256_file(&ranking.path)?
             && cached_manifest.n_expert == model.expert_count
             && cached_manifest.n_expert_used == model.used_expert_count
+            && moe::component_trunk_path(&model.path).exists()
+            && (0..model.expert_count).all(|expert_id| {
+                moe::component_expert_path(&model.path, expert_id, model.expert_count).exists()
+            })
         {
             println!(
                 "   reusing local package cache from {}",
@@ -1485,8 +1689,7 @@ fn stage_variant_components(
     }
 
     println!("   extracting trunk");
-    let trunk_repo_path = format!("{}/trunk.gguf", bundle.variant_root);
-    let trunk_path = temp_root.join(&trunk_repo_path);
+    let trunk_path = moe::component_trunk_path(&model.path);
     moe::run_extract_trunk(bin_dir, &model.path, &trunk_path)?;
 
     let mut spinner = start_spinner("Extracting expert components");
@@ -1498,8 +1701,7 @@ fn stage_variant_components(
             model.expert_count
         ));
         let filename = moe::expert_component_filename(expert_id, model.expert_count);
-        let repo_path = format!("{}/experts/{filename}", bundle.variant_root);
-        let output_path = temp_root.join(&repo_path);
+        let output_path = moe::component_expert_path(&model.path, expert_id, model.expert_count);
         moe::run_extract_expert(bin_dir, &model.path, expert_id, &output_path)?;
         expert_files.push(moe::ExpertComponentFile {
             path: format!("experts/{filename}"),
@@ -1523,11 +1725,38 @@ fn stage_variant_components(
         },
         experts: expert_files,
     };
-    stage_share_text(
-        temp_root,
-        &bundle.manifest_repo_path,
-        &(serde_json::to_string_pretty(&manifest)? + "\n"),
-    )?;
+    if let Some(parent) = cached_manifest_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &cached_manifest_path,
+        serde_json::to_string_pretty(&manifest)? + "\n",
+    )
+    .with_context(|| format!("Write {}", cached_manifest_path.display()))?;
+
+    let manifest_repo_path = temp_root.join(&bundle.manifest_repo_path);
+    if let Some(parent) = manifest_repo_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&cached_manifest_path, &manifest_repo_path)?;
+
+    let trunk_repo_path = temp_root.join(format!("{}/trunk.gguf", bundle.variant_root));
+    if let Some(parent) = trunk_repo_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&trunk_path, &trunk_repo_path)?;
+
+    for expert_id in 0..model.expert_count {
+        let filename = moe::expert_component_filename(expert_id, model.expert_count);
+        let repo_path = temp_root.join(format!("{}/experts/{filename}", bundle.variant_root));
+        if let Some(parent) = repo_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(
+            moe::component_expert_path(&model.path, expert_id, model.expert_count),
+            &repo_path,
+        )?;
+    }
     Ok(variant_component_paths(
         &bundle.variant_root,
         model.expert_count,
@@ -1545,7 +1774,14 @@ async fn resolve_publish_target(
 
     if let Some(namespace) = namespace {
         let package_repo = format!("{namespace}/{repo_name}");
-        ensure_repo_exists(api, &package_repo, RepoType::Model).await?;
+        ensure_repo_exists(api, &package_repo, RepoType::Model)
+            .await
+            .with_context(|| {
+                format!(
+                    "Access or create model repo {}. Check that your Hugging Face token can create or write model repos in namespace {}.",
+                    package_repo, namespace
+                )
+            })?;
         return Ok(SharePublishTarget {
             package_repo,
             publisher,
@@ -1564,13 +1800,24 @@ async fn resolve_publish_target(
             publisher,
             trust: "canonical",
         }),
-        Err(err) if matches!(err, HFError::Forbidden | HFError::AuthRequired) => {
+        Err(err)
+            if err
+                .downcast_ref::<HFError>()
+                .is_some_and(|hf| matches!(hf, HFError::Forbidden | HFError::AuthRequired)) =>
+        {
             let package_repo = format!("{}/{}", publisher, repo_name);
             eprintln!(
                 "↪ No permission to publish in meshllm. Falling back to community package repo {}",
                 package_repo
             );
-            ensure_repo_exists(api, &package_repo, RepoType::Model).await?;
+            ensure_repo_exists(api, &package_repo, RepoType::Model)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Access or create fallback model repo {}. Check that your Hugging Face token can create or write model repos in namespace {}.",
+                        package_repo, publisher
+                    )
+                })?;
             Ok(SharePublishTarget {
                 package_repo,
                 publisher,
@@ -1585,16 +1832,79 @@ async fn ensure_repo_exists(
     api: &hf_hub::HFClient,
     repo_id: &str,
     repo_type: RepoType,
-) -> hf_hub::Result<()> {
-    api.create_repo(
-        &CreateRepoParams::builder()
-            .repo_id(repo_id.to_string())
-            .repo_type(repo_type)
-            .exist_ok(true)
-            .build(),
-    )
-    .await?;
-    Ok(())
+) -> Result<()> {
+    if repo_exists(api, repo_id, repo_type).await? {
+        return Ok(());
+    }
+
+    match api
+        .create_repo(
+            &CreateRepoParams::builder()
+                .repo_id(repo_id.to_string())
+                .repo_type(repo_type)
+                .exist_ok(true)
+                .build(),
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(err @ (HFError::Forbidden | HFError::AuthRequired)) => {
+            if repo_exists(api, repo_id, repo_type).await? {
+                Ok(())
+            } else {
+                Err(anyhow::Error::from(err))
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn ensure_repo_ready(
+    api: &hf_hub::HFClient,
+    repo_id: &str,
+    repo_type: RepoType,
+) -> Result<()> {
+    ensure_repo_exists(api, repo_id, repo_type).await?;
+    let started = std::time::Instant::now();
+    loop {
+        match repo_exists(api, repo_id, repo_type).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                if started.elapsed() >= SHARE_REPO_READY_TIMEOUT {
+                    bail!(
+                        "Repository {} still is not visible after {:.0}s",
+                        repo_id,
+                        SHARE_REPO_READY_TIMEOUT.as_secs_f64()
+                    );
+                }
+            }
+            Err(err) => return Err(err),
+        }
+        tokio::time::sleep(SHARE_REPO_READY_POLL_INTERVAL).await;
+    }
+}
+
+async fn repo_exists(api: &hf_hub::HFClient, repo_id: &str, repo_type: RepoType) -> Result<bool> {
+    let (owner, name) = parse_repo_id(repo_id)?;
+    let params = RepoInfoParams::builder()
+        .revision("main".to_string())
+        .build();
+    let result = match repo_type {
+        RepoType::Model => api.model(owner, name).info(&params).await,
+        RepoType::Dataset => api.dataset(owner, name).info(&params).await,
+        RepoType::Space => api.space(owner, name).info(&params).await,
+        RepoType::Kernel => {
+            return Err(anyhow::anyhow!(
+                "Kernel repositories are not supported for MoE package publication"
+            ));
+        }
+    };
+    match result {
+        Ok(_) => Ok(true),
+        Err(HFError::RepoNotFound { .. }) => Ok(false),
+        Err(HFError::RevisionNotFound { .. }) => Ok(true),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn repo_info_siblings_and_sha(
@@ -1712,18 +2022,7 @@ async fn contribute_catalog_entry(
         .packages
         .retain(|existing| existing.package_repo != package_pointer.package_repo);
     variant_entry.packages.push(package_pointer.clone());
-    variant_entry.packages.sort_by(|left, right| {
-        let trust_rank = |trust: &str| match trust {
-            "canonical" => 2,
-            "community" => 1,
-            _ => 0,
-        };
-        trust_rank(&right.trust)
-            .cmp(&trust_rank(&left.trust))
-            .then_with(|| left.package_repo.cmp(&right.package_repo))
-            .then_with(|| left.publisher.cmp(&right.publisher))
-            .then_with(|| left.package_revision.cmp(&right.package_revision))
-    });
+    moe_planner::sort_catalog_package_pointers(&mut variant_entry.packages);
     let temp_root = TempRootGuard(make_temp_root("mesh-llm-catalog")?);
     stage_share_text(
         &temp_root.0,

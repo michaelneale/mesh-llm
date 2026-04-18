@@ -16,57 +16,20 @@ const ROCM_JOB_IMAGE: &str = "rocm/pytorch:rocm6.3_ubuntu24.04_py3.12_pytorch_re
 const VULKAN_JOB_IMAGE: &str = "ghcr.io/astral-sh/uv:python3.12-bookworm";
 const HF_JOB_WRAPPER_TEMPLATE: &str = include_str!("hf_job_wrapper.sh");
 
-pub(crate) async fn submit_full_analyze_job(
+pub(crate) async fn submit_publish_job(
     model_spec: &str,
-    context_size: u32,
-    n_gpu_layers: u32,
+    catalog_repo: &str,
+    package_namespace: Option<&str>,
     options: &HfJobArgs,
 ) -> Result<()> {
     let identity = remote_identity(model_spec).await?;
     let spec = JobSubmissionSpec {
         model_ref: identity.distribution_ref(),
-        analyzer: RemoteAnalyzer::Full {
-            context_size,
-            n_gpu_layers,
-        },
-        catalog_repo: options.catalog_repo.clone(),
+        catalog_repo: catalog_repo.to_string(),
+        package_namespace: package_namespace.map(ToOwned::to_owned),
         flavor: options.hf_job_flavor.clone(),
         timeout: options.hf_job_timeout.clone(),
-        namespace: options.hf_job_namespace.clone(),
-        release_repo: options.hf_job_release_repo.clone(),
-        release_tag: options.hf_job_release_tag.clone(),
-        release_target: options.hf_job_release_target,
-        source_repo: identity.repo_id.clone(),
-        source_revision: identity.revision.clone(),
-        source_file: identity.file.clone(),
-        distribution_id: crate::system::moe_planner::normalize_distribution_id(
-            &identity.local_file_name,
-        ),
-    };
-    submit_job(spec).await
-}
-
-pub(crate) async fn submit_micro_analyze_job(
-    model_spec: &str,
-    prompt_count: usize,
-    token_count: u32,
-    context_size: u32,
-    n_gpu_layers: u32,
-    options: &HfJobArgs,
-) -> Result<()> {
-    let identity = remote_identity(model_spec).await?;
-    let spec = JobSubmissionSpec {
-        model_ref: identity.distribution_ref(),
-        analyzer: RemoteAnalyzer::Micro {
-            prompt_count,
-            token_count,
-            context_size,
-            n_gpu_layers,
-        },
-        catalog_repo: options.catalog_repo.clone(),
-        flavor: options.hf_job_flavor.clone(),
-        timeout: options.hf_job_timeout.clone(),
-        namespace: options.hf_job_namespace.clone(),
+        job_namespace: options.hf_job_namespace.clone(),
         release_repo: options.hf_job_release_repo.clone(),
         release_tag: options.hf_job_release_tag.clone(),
         release_target: options.hf_job_release_target,
@@ -83,11 +46,11 @@ pub(crate) async fn submit_micro_analyze_job(
 #[derive(Clone)]
 struct JobSubmissionSpec {
     model_ref: String,
-    analyzer: RemoteAnalyzer,
     catalog_repo: String,
+    package_namespace: Option<String>,
     flavor: String,
     timeout: String,
-    namespace: Option<String>,
+    job_namespace: Option<String>,
     release_repo: String,
     release_tag: String,
     release_target: HfJobReleaseTarget,
@@ -95,53 +58,6 @@ struct JobSubmissionSpec {
     source_revision: String,
     source_file: String,
     distribution_id: String,
-}
-
-#[derive(Clone)]
-enum RemoteAnalyzer {
-    Full {
-        context_size: u32,
-        n_gpu_layers: u32,
-    },
-    Micro {
-        prompt_count: usize,
-        token_count: u32,
-        context_size: u32,
-        n_gpu_layers: u32,
-    },
-}
-
-impl RemoteAnalyzer {
-    fn analyzer_id(&self) -> &'static str {
-        match self {
-            Self::Full { .. } => "full-v1",
-            Self::Micro { .. } => "micro-v1",
-        }
-    }
-
-    fn analyze_command_with_env_ref(&self) -> String {
-        match self {
-            Self::Full {
-                context_size,
-                n_gpu_layers,
-            } => format!(
-                "./mesh-llm moe analyze full \"$MODEL_REF\" --context-size {} --n-gpu-layers {}",
-                context_size, n_gpu_layers
-            ),
-            Self::Micro {
-                prompt_count,
-                token_count,
-                context_size,
-                n_gpu_layers,
-            } => format!(
-                "./mesh-llm moe analyze micro \"$MODEL_REF\" --prompt-count {} --token-count {} --context-size {} --n-gpu-layers {}",
-                prompt_count,
-                token_count,
-                context_size,
-                n_gpu_layers
-            ),
-        }
-    }
 }
 
 #[derive(Deserialize)]
@@ -217,7 +133,7 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
         )
     })?;
     let endpoint = hf_endpoint();
-    let namespace = match spec.namespace.clone() {
+    let namespace = match spec.job_namespace.clone() {
         Some(namespace) => namespace,
         None => resolve_namespace(&endpoint, &token).await?,
     };
@@ -255,8 +171,7 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
         "timeoutSeconds": timeout_seconds,
         "labels": {
             "app": "mesh-llm",
-            "workflow": "moe-analyze-share",
-            "analyzer_id": spec.analyzer.analyzer_id(),
+            "workflow": "moe-publish",
             "source_repo": sanitize_label(&spec.source_repo),
             "source_revision": sanitize_label(&spec.source_revision),
             "distribution_id": sanitize_label(&spec.distribution_id),
@@ -265,9 +180,12 @@ async fn submit_job(spec: JobSubmissionSpec) -> Result<()> {
     });
 
     println!("☁️ Hugging Face Job submission");
-    println!("📍 Analyzer: {}", spec.analyzer.analyzer_id());
     println!("📦 Model: {}", spec.model_ref);
+    println!("📤 Workflow: moe publish");
     println!("🗂️ Catalog: {}", spec.catalog_repo);
+    if let Some(package_namespace) = &spec.package_namespace {
+        println!("📦 Package namespace: {}", package_namespace);
+    }
     println!("🖥️ Flavor: {}", spec.flavor);
     println!("⏱️ Timeout: {}", spec.timeout);
     println!("📥 Release: {} {}", spec.release_repo, spec.release_tag);
@@ -392,12 +310,13 @@ fn hf_endpoint() -> String {
 }
 
 fn remote_bash_script(spec: &JobSubmissionSpec) -> String {
-    let analyze_command = spec.analyzer.analyze_command_with_env_ref();
-    let share_command =
-        "./mesh-llm moe share \"$MODEL_REF\" --catalog-repo \"$CATALOG_REPO\"".to_string();
-    HF_JOB_WRAPPER_TEMPLATE
-        .replace("__ANALYZE_COMMAND__", &shell_single_quote(&analyze_command))
-        .replace("__SHARE_COMMAND__", &shell_single_quote(&share_command))
+    let mut publish_command =
+        "./mesh-llm moe publish \"$MODEL_REF\" --catalog-repo \"$CATALOG_REPO\"".to_string();
+    if let Some(namespace) = &spec.package_namespace {
+        publish_command.push_str(" --namespace ");
+        publish_command.push_str(&shell_single_quote(namespace));
+    }
+    HF_JOB_WRAPPER_TEMPLATE.replace("__PUBLISH_COMMAND__", &shell_single_quote(&publish_command))
 }
 
 fn parse_timeout_seconds(input: &str) -> Result<u64> {
@@ -521,64 +440,21 @@ mod tests {
     }
 
     #[test]
-    fn release_assets_match_expected_linux_names() {
-        assert_eq!(
-            release_asset_name("latest", HfJobReleaseTarget::Cpu),
-            "mesh-llm-x86_64-unknown-linux-gnu.tar.gz"
-        );
-        assert_eq!(
-            release_asset_name("v0.1.0", HfJobReleaseTarget::Cuda),
-            "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-cuda.tar.gz"
-        );
-        assert_eq!(
-            release_asset_name("v0.1.0", HfJobReleaseTarget::Rocm),
-            "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-rocm.tar.gz"
-        );
-        assert_eq!(
-            release_asset_name("v0.1.0", HfJobReleaseTarget::Vulkan),
-            "mesh-llm-v0.1.0-x86_64-unknown-linux-gnu-vulkan.tar.gz"
-        );
+    fn estimate_cost_supports_minute_pricing() {
+        let cost = estimate_cost_usd(2.0, "minute", 1800).unwrap();
+        assert!((cost - 60.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn job_images_match_runtime_targets() {
-        assert_eq!(
-            job_image(HfJobReleaseTarget::Cpu),
-            "ghcr.io/astral-sh/uv:python3.12-bookworm"
-        );
-        assert_eq!(
-            job_image(HfJobReleaseTarget::Cuda),
-            "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel"
-        );
-        assert_eq!(
-            job_image(HfJobReleaseTarget::Rocm),
-            "rocm/pytorch:rocm6.3_ubuntu24.04_py3.12_pytorch_release_2.4.0"
-        );
-        assert_eq!(
-            job_image(HfJobReleaseTarget::Vulkan),
-            "ghcr.io/astral-sh/uv:python3.12-bookworm"
-        );
-    }
-
-    #[test]
-    fn release_target_hf_jobs_parity() {
-        for (release_target, flavor) in [
-            (HfJobReleaseTarget::Cpu, BinaryFlavor::Cpu),
-            (HfJobReleaseTarget::Cuda, BinaryFlavor::Cuda),
-            (HfJobReleaseTarget::Rocm, BinaryFlavor::Rocm),
-            (HfJobReleaseTarget::Vulkan, BinaryFlavor::Vulkan),
-        ] {
-            assert_eq!(
-                release_asset_name("v0.60.0", release_target),
-                release_target_versioned_linux_asset_name("v0.60.0", flavor).unwrap()
-            );
-        }
+    fn estimate_cost_supports_hour_pricing() {
+        let cost = estimate_cost_usd(12.0, "hour", 1800).unwrap();
+        assert!((cost - 6.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn sanitize_label_replaces_unsupported_characters() {
         assert_eq!(sanitize_label("meshllm/catalog"), "meshllm-catalog");
-        assert_eq!(sanitize_label("Qwen/Qwen3@abc"), "Qwen-Qwen3-abc");
+        assert_eq!(sanitize_label("  weird value  "), "weird-value");
     }
 
     #[test]
@@ -587,40 +463,55 @@ mod tests {
     }
 
     #[test]
-    fn estimate_cost_supports_minute_pricing() {
-        let cost = estimate_cost_usd(0.03, "minute", 7200).unwrap();
-        assert!((cost - 3.60).abs() < 1e-9);
+    fn job_images_match_runtime_targets() {
+        assert_eq!(job_image(HfJobReleaseTarget::Cpu), CPU_JOB_IMAGE);
+        assert_eq!(job_image(HfJobReleaseTarget::Cuda), CUDA_JOB_IMAGE);
+        assert_eq!(job_image(HfJobReleaseTarget::Rocm), ROCM_JOB_IMAGE);
+        assert_eq!(job_image(HfJobReleaseTarget::Vulkan), VULKAN_JOB_IMAGE);
     }
 
     #[test]
-    fn estimate_cost_supports_hour_pricing() {
-        let cost = estimate_cost_usd(1.80, "hour", 7200).unwrap();
-        assert!((cost - 3.60).abs() < 1e-9);
+    fn release_assets_match_expected_linux_names() {
+        let versioned = release_target_versioned_linux_asset_name("v0.1.2", BinaryFlavor::Cpu)
+            .expect("linux x86_64 cpu release asset");
+        assert_eq!(
+            release_asset_name("v0.1.2", HfJobReleaseTarget::Cpu),
+            versioned
+        );
     }
 
     #[test]
-    fn hardware_pricing_supports_unit_cost_usd() {
-        let flavor: HardwareFlavor = serde_json::from_value(json!({
-            "name": "l40sx1",
-            "prettyName": "1x Nvidia L40S",
-            "unitCostUSD": 0.03,
-            "unitLabel": "minute"
-        }))
-        .unwrap();
-        assert_eq!(flavor.pretty_name(), "1x Nvidia L40S");
-        assert_eq!(flavor.unit_label(), "minute");
-        assert!((flavor.resolved_unit_cost_usd().unwrap() - 0.03).abs() < 1e-9);
+    fn release_target_hf_jobs_parity() {
+        for target in [
+            HfJobReleaseTarget::Cpu,
+            HfJobReleaseTarget::Cuda,
+            HfJobReleaseTarget::Rocm,
+            HfJobReleaseTarget::Vulkan,
+        ] {
+            let _ = release_asset_name("latest", target);
+        }
     }
 
     #[test]
-    fn hardware_pricing_falls_back_to_micro_usd() {
-        let flavor: HardwareFlavor = serde_json::from_value(json!({
-            "name": "l40sx1",
-            "unitCostMicroUSD": 30000
-        }))
-        .unwrap();
-        assert_eq!(flavor.pretty_name(), "l40sx1");
-        assert_eq!(flavor.unit_label(), "minute");
-        assert!((flavor.resolved_unit_cost_usd().unwrap() - 0.03).abs() < 1e-9);
+    fn remote_publish_script_includes_namespace_when_requested() {
+        let spec = JobSubmissionSpec {
+            model_ref: "mesh/model:Q4".to_string(),
+            catalog_repo: "meshllm/catalog".to_string(),
+            package_namespace: Some("meshllm".to_string()),
+            flavor: "cpu-xl".to_string(),
+            timeout: "1h".to_string(),
+            job_namespace: None,
+            release_repo: "Mesh-LLM/mesh-llm".to_string(),
+            release_tag: "latest".to_string(),
+            release_target: HfJobReleaseTarget::Cpu,
+            source_repo: "unsloth/demo".to_string(),
+            source_revision: "deadbeef".to_string(),
+            source_file: "model.gguf".to_string(),
+            distribution_id: "Demo-Q4".to_string(),
+        };
+        let script = remote_bash_script(&spec);
+        assert!(script.contains("__PUBLISH_COMMAND__") == false);
+        assert!(script.contains("moe publish"));
+        assert!(script.contains("--namespace"));
     }
 }

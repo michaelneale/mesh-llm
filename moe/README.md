@@ -18,8 +18,8 @@ This directory contains the MoE ranking work for `mesh-llm`.
 - `micro-v1` and `full-v1` analyzer ids
 - Canonical publication to the `meshllm/moe-rankings` Hugging Face dataset
 - `mesh-llm moe plan` console and `--json` output modes
-- `mesh-llm moe share` opening contribution PRs against `meshllm/moe-rankings`
-- `mesh-llm moe analyze {full,micro} --hf-job` for remote analyze-and-share runs on Hugging Face Jobs
+- `mesh-llm moe publish` opening contribution PRs against `meshllm/moe-rankings`
+- `mesh-llm moe publish` for remote publish runs on Hugging Face Jobs
 
 ## Entry Points
 
@@ -27,8 +27,8 @@ This directory contains the MoE ranking work for `mesh-llm`.
 - Read the placement-planning note in [`MOE_PLACEMENT_PLAN.md`](MOE_PLACEMENT_PLAN.md).
 - Read the CLI and UX plan in [`MOE_CLI_PLAN.md`](MOE_CLI_PLAN.md).
 - Use `mesh-llm moe analyze full <model>` or `mesh-llm moe analyze micro <model>` to generate local ranking artifacts.
-- Use `mesh-llm moe share <model>` to open a dataset PR with an existing local artifact.
-- Use `mesh-llm moe analyze {full,micro} <model> --hf-job` to queue a remote analyze run that shares the result back through a dataset PR on success.
+- Use `mesh-llm moe publish <model>` to open a dataset PR with an existing local artifact.
+- Use `mesh-llm moe publish <model> --hf-job` to queue a remote publish run that downloads the model, runs full analysis, builds the package, and opens the package/catalog PRs on success.
 - For split GGUF distributions, prefer HF repo selector syntax such as `unsloth/gemma-4-26B-A4B-it-GGUF:BF16@main` instead of naming a specific shard file.
 
 ## Notes

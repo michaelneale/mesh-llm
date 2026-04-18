@@ -81,9 +81,6 @@ pub(crate) struct MoeSubmitBundle {
     pub analysis_repo_path: String,
     pub manifest_repo_path: String,
     pub log_repo_path: Option<String>,
-    pub ranking_path: PathBuf,
-    pub analysis_content: String,
-    pub log_path: Option<PathBuf>,
     pub commit_message: String,
     pub commit_description: String,
 }
@@ -479,6 +476,7 @@ pub(crate) fn normalize_distribution_id(name: &str) -> String {
     stem.to_string()
 }
 
+#[cfg(test)]
 pub(crate) fn local_submit_ranking(
     model: &MoeModelContext,
     ranking_file: Option<&Path>,
@@ -988,19 +986,33 @@ fn resolve_catalog_package_pointer(
         .get(variant)
         .map(|variant_entry| variant_entry.packages.clone())
         .unwrap_or_default();
-
-    packages.sort_by(|left, right| {
-        let trust_rank = |trust: &str| match trust {
-            "canonical" => 2,
-            "community" => 1,
-            _ => 0,
-        };
-        trust_rank(&right.trust)
-            .cmp(&trust_rank(&left.trust))
-            .then_with(|| left.package_repo.cmp(&right.package_repo))
-            .then_with(|| left.package_revision.cmp(&right.package_revision))
-    });
+    sort_catalog_package_pointers(&mut packages);
     Ok(packages.into_iter().next())
+}
+
+pub(crate) fn sort_catalog_package_pointers(
+    packages: &mut [crate::models::catalog::CatalogPackagePointer],
+) {
+    packages.sort_by(compare_catalog_package_pointers);
+}
+
+fn compare_catalog_package_pointers(
+    left: &crate::models::catalog::CatalogPackagePointer,
+    right: &crate::models::catalog::CatalogPackagePointer,
+) -> std::cmp::Ordering {
+    catalog_package_trust_rank(&right.trust)
+        .cmp(&catalog_package_trust_rank(&left.trust))
+        .then_with(|| left.publisher.cmp(&right.publisher))
+        .then_with(|| left.package_repo.cmp(&right.package_repo))
+        .then_with(|| left.package_revision.cmp(&right.package_revision))
+}
+
+fn catalog_package_trust_rank(trust: &str) -> u8 {
+    match trust {
+        "canonical" => 2,
+        "community" => 1,
+        _ => 0,
+    }
 }
 
 fn resolve_package_variant(
@@ -1056,58 +1068,64 @@ fn fetch_remote_package_ranking(
     model_ref: &str,
     progress: bool,
 ) -> Result<Option<ResolvedRanking>> {
-    let api = build_hf_api(progress).context("Build Hugging Face client for MoE package lookup")?;
-    let Some(entry) = resolve_catalog_package_pointer(&api, catalog_repo_name, model_ref)? else {
-        return Ok(None);
-    };
-    let Some((siblings, package_revision, manifest_path)) = resolve_package_variant(
-        &api,
-        &entry.package_repo,
-        &entry.package_revision,
-        model_ref,
-    )?
-    else {
-        return Ok(None);
-    };
+    let catalog_repo_name = catalog_repo_name.to_string();
+    let model_ref = model_ref.to_string();
+    crate::models::run_hf_blocking(move || {
+        let api =
+            build_hf_api(progress).context("Build Hugging Face client for MoE package lookup")?;
+        let Some(entry) = resolve_catalog_package_pointer(&api, &catalog_repo_name, &model_ref)?
+        else {
+            return Ok(None);
+        };
+        let Some((siblings, package_revision, manifest_path)) = resolve_package_variant(
+            &api,
+            &entry.package_repo,
+            &entry.package_revision,
+            &model_ref,
+        )?
+        else {
+            return Ok(None);
+        };
 
-    let ranking_rel = join_repo_relative(&manifest_path, "ranking.csv");
-    let analysis_rel = join_repo_relative(&manifest_path, ANALYSIS_JSON_FILENAME);
-    if !(siblings.iter().any(|entry| entry.rfilename == ranking_rel)
-        && siblings.iter().any(|entry| entry.rfilename == analysis_rel))
-    {
-        return Ok(None);
-    }
+        let ranking_rel = join_repo_relative(&manifest_path, "ranking.csv");
+        let analysis_rel = join_repo_relative(&manifest_path, ANALYSIS_JSON_FILENAME);
+        if !(siblings.iter().any(|entry| entry.rfilename == ranking_rel)
+            && siblings.iter().any(|entry| entry.rfilename == analysis_rel))
+        {
+            return Ok(None);
+        }
 
-    let (owner, name) = entry
-        .package_repo
-        .split_once('/')
-        .unwrap_or(("", entry.package_repo.as_str()));
-    let repo = api.model(owner, name);
-    let ranking_path = repo
-        .download_file(
-            &RepoDownloadFileParams::builder()
-                .filename(ranking_rel.clone())
-                .revision(package_revision.clone())
-                .build(),
-        )
-        .with_context(|| format!("Download {}", ranking_rel))?;
-    let analysis_path = repo
-        .download_file(
-            &RepoDownloadFileParams::builder()
-                .filename(analysis_rel.clone())
-                .revision(package_revision.clone())
-                .build(),
-        )
-        .with_context(|| format!("Download {}", analysis_rel))?;
-    let analyzer_id = analyzer_id_from_analysis(&analysis_path)?;
-    Ok(Some(ResolvedRanking {
-        path: ranking_path,
-        metadata_path: None,
-        analysis_path: Some(analysis_path),
-        analyzer_id,
-        source: RankingSource::HuggingFacePackage,
-        reason: format!("published package ranking in {}", entry.package_repo),
-    }))
+        let (owner, name) = entry
+            .package_repo
+            .split_once('/')
+            .unwrap_or(("", entry.package_repo.as_str()));
+        let repo = api.model(owner, name);
+        let ranking_path = repo
+            .download_file(
+                &RepoDownloadFileParams::builder()
+                    .filename(ranking_rel.clone())
+                    .revision(package_revision.clone())
+                    .build(),
+            )
+            .with_context(|| format!("Download {}", ranking_rel))?;
+        let analysis_path = repo
+            .download_file(
+                &RepoDownloadFileParams::builder()
+                    .filename(analysis_rel.clone())
+                    .revision(package_revision.clone())
+                    .build(),
+            )
+            .with_context(|| format!("Download {}", analysis_rel))?;
+        let analyzer_id = analyzer_id_from_analysis(&analysis_path)?;
+        Ok(Some(ResolvedRanking {
+            path: ranking_path,
+            metadata_path: None,
+            analysis_path: Some(analysis_path),
+            analyzer_id,
+            source: RankingSource::HuggingFacePackage,
+            reason: format!("published package ranking in {}", entry.package_repo),
+        }))
+    })
 }
 
 pub(crate) fn fetch_remote_package_expert_components(
@@ -1117,103 +1135,111 @@ pub(crate) fn fetch_remote_package_expert_components(
     expected_experts: &[u32],
     progress: bool,
 ) -> Result<Option<ResolvedExpertComponents>> {
-    let api = build_hf_api(progress)
-        .context("Build Hugging Face client for MoE expert component lookup")?;
-    let Some(entry) = resolve_catalog_package_pointer(&api, catalog_repo_name, model_ref)? else {
-        return Ok(None);
-    };
-    let Some((siblings, package_revision, manifest_rel)) = resolve_package_variant(
-        &api,
-        &entry.package_repo,
-        &entry.package_revision,
-        model_ref,
-    )?
-    else {
-        return Ok(None);
-    };
-    if !siblings
-        .iter()
-        .any(|sibling| sibling.rfilename == manifest_rel)
-    {
-        return Ok(None);
-    }
-
-    let (owner, name) = entry
-        .package_repo
-        .split_once('/')
-        .unwrap_or(("", entry.package_repo.as_str()));
-    let repo = api.model(owner, name);
-    let manifest_path = repo
-        .download_file(
-            &RepoDownloadFileParams::builder()
-                .filename(manifest_rel.clone())
-                .revision(package_revision.clone())
-                .build(),
-        )
-        .with_context(|| format!("Download {}", manifest_rel))?;
-    let manifest_content = fs::read_to_string(&manifest_path)
-        .with_context(|| format!("Read {}", manifest_path.display()))?;
-    let manifest: MoePackageManifest = serde_json::from_str(&manifest_content)
-        .with_context(|| format!("Parse {}", manifest_path.display()))?;
-
-    if manifest.ranking_sha256 != ranking_sha256 || manifest.format != "meshllm-moe-components" {
-        return Ok(None);
-    }
-
-    let trunk_rel = join_repo_relative(&manifest_rel, &manifest.trunk.path);
-    if !siblings.iter().any(|entry| entry.rfilename == trunk_rel) {
-        return Ok(None);
-    }
-    let trunk_path = repo
-        .download_file(
-            &RepoDownloadFileParams::builder()
-                .filename(trunk_rel.clone())
-                .revision(package_revision.clone())
-                .build(),
-        )
-        .with_context(|| format!("Download {}", trunk_rel))?;
-    if sha256_file(&trunk_path)? != manifest.trunk.sha256 {
-        bail!("Downloaded trunk component hash mismatch for {}", trunk_rel);
-    }
-
-    let mut expert_paths = Vec::with_capacity(expected_experts.len());
-    for expert_id in expected_experts {
-        let Some(expert) = manifest
-            .experts
-            .iter()
-            .find(|entry| entry.expert_id == Some(*expert_id))
+    let catalog_repo_name = catalog_repo_name.to_string();
+    let model_ref = model_ref.to_string();
+    let ranking_sha256 = ranking_sha256.to_string();
+    let expected_experts = expected_experts.to_vec();
+    crate::models::run_hf_blocking(move || {
+        let api = build_hf_api(progress)
+            .context("Build Hugging Face client for MoE expert component lookup")?;
+        let Some(entry) = resolve_catalog_package_pointer(&api, &catalog_repo_name, &model_ref)?
         else {
             return Ok(None);
         };
-        let expert_rel = join_repo_relative(&manifest_rel, &expert.path);
-        if !siblings.iter().any(|entry| entry.rfilename == expert_rel) {
+        let Some((siblings, package_revision, manifest_rel)) = resolve_package_variant(
+            &api,
+            &entry.package_repo,
+            &entry.package_revision,
+            &model_ref,
+        )?
+        else {
+            return Ok(None);
+        };
+        if !siblings
+            .iter()
+            .any(|sibling| sibling.rfilename == manifest_rel)
+        {
             return Ok(None);
         }
-        let expert_path = repo
+
+        let (owner, name) = entry
+            .package_repo
+            .split_once('/')
+            .unwrap_or(("", entry.package_repo.as_str()));
+        let repo = api.model(owner, name);
+        let manifest_path = repo
             .download_file(
                 &RepoDownloadFileParams::builder()
-                    .filename(expert_rel.clone())
+                    .filename(manifest_rel.clone())
                     .revision(package_revision.clone())
                     .build(),
             )
-            .with_context(|| format!("Download {}", expert_rel))?;
-        if sha256_file(&expert_path)? != expert.sha256 {
-            bail!(
-                "Downloaded expert component hash mismatch for {}",
-                expert_rel
-            );
-        }
-        expert_paths.push(expert_path);
-    }
+            .with_context(|| format!("Download {}", manifest_rel))?;
+        let manifest_content = fs::read_to_string(&manifest_path)
+            .with_context(|| format!("Read {}", manifest_path.display()))?;
+        let manifest: MoePackageManifest = serde_json::from_str(&manifest_content)
+            .with_context(|| format!("Parse {}", manifest_path.display()))?;
 
-    Ok(Some(ResolvedExpertComponents {
-        prefix: format!(
-            "{}@{}:{}",
-            entry.package_repo, package_revision, manifest_rel
-        ),
-        trunk_path,
-        expert_paths,
-    }))
+        if manifest.ranking_sha256 != ranking_sha256 || manifest.format != "meshllm-moe-components"
+        {
+            return Ok(None);
+        }
+
+        let trunk_rel = join_repo_relative(&manifest_rel, &manifest.trunk.path);
+        if !siblings.iter().any(|entry| entry.rfilename == trunk_rel) {
+            return Ok(None);
+        }
+        let trunk_path = repo
+            .download_file(
+                &RepoDownloadFileParams::builder()
+                    .filename(trunk_rel.clone())
+                    .revision(package_revision.clone())
+                    .build(),
+            )
+            .with_context(|| format!("Download {}", trunk_rel))?;
+        if sha256_file(&trunk_path)? != manifest.trunk.sha256 {
+            bail!("Downloaded trunk component hash mismatch for {}", trunk_rel);
+        }
+
+        let mut expert_paths = Vec::with_capacity(expected_experts.len());
+        for expert_id in &expected_experts {
+            let Some(expert) = manifest
+                .experts
+                .iter()
+                .find(|entry| entry.expert_id == Some(*expert_id))
+            else {
+                return Ok(None);
+            };
+            let expert_rel = join_repo_relative(&manifest_rel, &expert.path);
+            if !siblings.iter().any(|entry| entry.rfilename == expert_rel) {
+                return Ok(None);
+            }
+            let expert_path = repo
+                .download_file(
+                    &RepoDownloadFileParams::builder()
+                        .filename(expert_rel.clone())
+                        .revision(package_revision.clone())
+                        .build(),
+                )
+                .with_context(|| format!("Download {}", expert_rel))?;
+            if sha256_file(&expert_path)? != expert.sha256 {
+                bail!(
+                    "Downloaded expert component hash mismatch for {}",
+                    expert_rel
+                );
+            }
+            expert_paths.push(expert_path);
+        }
+
+        Ok(Some(ResolvedExpertComponents {
+            prefix: format!(
+                "{}@{}:{}",
+                entry.package_repo, package_revision, manifest_rel
+            ),
+            trunk_path,
+            expert_paths,
+        }))
+    })
 }
 
 pub(crate) fn build_submit_bundle(
@@ -1228,11 +1254,6 @@ pub(crate) fn build_submit_bundle(
     let manifest_rel = format!("{variant_root}/manifest.json");
     let log_rel = format!("{variant_root}/run.log");
 
-    let model_files = discover_distribution_files(model)?;
-    let analysis_content =
-        serde_json::to_string_pretty(&build_package_analysis_json(model, ranking, &model_files)?)?
-            + "\n";
-
     let log_path = log_path.filter(|path| path.exists()).map(Path::to_path_buf);
     let model_ref = canonical_model_ref_for_model(model)?;
     Ok(MoeSubmitBundle {
@@ -1243,9 +1264,6 @@ pub(crate) fn build_submit_bundle(
         analysis_repo_path: analysis_rel,
         manifest_repo_path: manifest_rel,
         log_repo_path: log_path.as_ref().map(|_| log_rel),
-        ranking_path: ranking.path.clone(),
-        analysis_content,
-        log_path,
         commit_message: format!(
             "Publish {} {} package",
             model.distribution_id, ranking.analyzer_id,
@@ -2370,6 +2388,57 @@ mod tests {
             default_package_repo_name_for_model(&model).unwrap(),
             "qwen3.6-35b-a3b-gguf-moe"
         );
+    }
+
+    #[test]
+    fn sort_catalog_package_pointers_prefers_canonical_before_community() {
+        let mut packages = vec![
+            crate::models::catalog::CatalogPackagePointer {
+                package_repo: "alice/demo".to_string(),
+                package_revision: "bbbb".to_string(),
+                publisher: "alice".to_string(),
+                trust: "community".to_string(),
+            },
+            crate::models::catalog::CatalogPackagePointer {
+                package_repo: "meshllm/demo".to_string(),
+                package_revision: "aaaa".to_string(),
+                publisher: "meshllm".to_string(),
+                trust: "canonical".to_string(),
+            },
+        ];
+        sort_catalog_package_pointers(&mut packages);
+        assert_eq!(packages[0].trust, "canonical");
+        assert_eq!(packages[0].package_repo, "meshllm/demo");
+    }
+
+    #[test]
+    fn sort_catalog_package_pointers_is_stable_for_multiple_community_entries() {
+        let mut packages = vec![
+            crate::models::catalog::CatalogPackagePointer {
+                package_repo: "zoe/demo".to_string(),
+                package_revision: "2222".to_string(),
+                publisher: "zoe".to_string(),
+                trust: "community".to_string(),
+            },
+            crate::models::catalog::CatalogPackagePointer {
+                package_repo: "alice/demo".to_string(),
+                package_revision: "3333".to_string(),
+                publisher: "alice".to_string(),
+                trust: "community".to_string(),
+            },
+            crate::models::catalog::CatalogPackagePointer {
+                package_repo: "alice/demo".to_string(),
+                package_revision: "1111".to_string(),
+                publisher: "alice".to_string(),
+                trust: "community".to_string(),
+            },
+        ];
+        sort_catalog_package_pointers(&mut packages);
+        assert_eq!(packages[0].publisher, "alice");
+        assert_eq!(packages[0].package_revision, "1111");
+        assert_eq!(packages[1].publisher, "alice");
+        assert_eq!(packages[1].package_revision, "3333");
+        assert_eq!(packages[2].publisher, "zoe");
     }
 
     #[test]

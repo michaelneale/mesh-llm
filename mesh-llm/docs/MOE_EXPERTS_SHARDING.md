@@ -40,7 +40,7 @@ This means:
 - keep package identity separate from runtime assembly metadata
 - make `serve` resolve from a canonical Mesh model ref instead of a transport URL
 - make the local fallback build the same package-shaped artifact layout that
-  `moe share` publishes
+  `moe publish` publishes
 
 ## Non-Goals
 
@@ -229,7 +229,7 @@ The local package cache should mirror the published package layout under:
 This local cache is the source of truth for:
 
 - local runtime assembly
-- later `moe share` uploads
+- later `moe publish` uploads
 - topology changes after the initial local extraction
 
 Legacy topology-specific GGUF split caches should be deleted rather than
@@ -487,7 +487,7 @@ blocking.
 
 That includes:
 
-- upload progress for `mesh-llm moe share`
+- upload progress for `mesh-llm moe publish`
 - download progress for large artifacts
 - lightweight progress indicators or spinners for metadata fetches when they
   are part of an interactive CLI flow
@@ -503,10 +503,10 @@ The intent is:
 The preferred UX remains:
 
 ```bash
-mesh-llm moe share MODEL
+mesh-llm moe publish MODEL
 ```
 
-- `mesh-llm moe share MODEL`
+- `mesh-llm moe publish MODEL`
   publishes the complete variant package:
   - `analysis.json`
   - `ranking.csv`
@@ -610,7 +610,7 @@ Deliverables:
 
 ### Phase 3: Publish into per-source package repos
 
-1. Change `moe share` so it publishes into the per-source Mesh repo instead of
+1. Change `moe publish` so it publishes into the per-source Mesh repo instead of
    the old analysis dataset.
 2. Reuse the Rust Hub upload path for the complete package upload flow.
 3. Preserve contribution PR creation.
@@ -647,7 +647,7 @@ Deliverables:
      components
 9. Delete any legacy topology-specific GGUF split cache entries instead of
    reusing them.
-10. Ensure `moe share` can upload directly from the local package cache when it
+10. Ensure `moe publish` can upload directly from the local package cache when it
     already matches the current ranking and manifest.
 11. Ensure Hugging Face metadata and artifact fetches use cache-first behavior
     and visible progress in interactive CLI flows.

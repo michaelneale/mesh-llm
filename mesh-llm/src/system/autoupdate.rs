@@ -844,6 +844,9 @@ fn replace_bundle_files(
     let mut managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
     managed_names.extend(crate::runtime::bundled_bin_names("rpc-server"));
     managed_names.extend(crate::runtime::bundled_bin_names("llama-server"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-analyze"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-split"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-components"));
 
     let mut backed_up = Vec::new();
     for name in managed_names {
@@ -962,6 +965,9 @@ fn windows_update_script(
     let mut managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
     managed_names.extend(crate::runtime::bundled_bin_names("rpc-server"));
     managed_names.extend(crate::runtime::bundled_bin_names("llama-server"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-analyze"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-split"));
+    managed_names.extend(crate::runtime::bundled_tool_names("llama-moe-components"));
     let managed_json = serde_json::to_string(&managed_names.into_iter().collect::<Vec<_>>())?;
 
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "''");

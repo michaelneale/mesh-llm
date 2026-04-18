@@ -360,7 +360,7 @@ Subcommands:
 - `moe plan <MODEL>`: resolve a ranking and compute a placement recommendation.
 - `moe analyze full <MODEL>`: run a full local MoE analysis and cache the result.
 - `moe analyze micro <MODEL>`: run the canonical micro analysis and cache the result.
-- `moe share <MODEL>`: validate a local ranking artifact and open a contribution PR to the canonical dataset.
+- `moe publish <MODEL>`: run full analysis when needed, materialize the local MoE package cache, and publish it to the package repo plus catalog.
 
 ### `moe plan`
 
@@ -404,7 +404,7 @@ Behavior:
 - Runs `llama-moe-analyze` locally using the full analyzer contract.
 - Shows progress for long-running work.
 - Writes durable logs so failures can be inspected after the command exits.
-- Caches the generated ranking locally for later `moe plan`, `serve`, or `moe share`.
+- Caches the generated ranking locally for later `moe plan`, `serve`, or `moe publish`.
 
 ### `moe analyze micro`
 
@@ -423,33 +423,33 @@ Behavior:
 - Caches the generated ranking locally for later planning or submission.
 - Writes a durable log path on success or failure.
 
-### `moe share`
+### `moe publish`
 
-Use this to open a contribution PR for a local ranking artifact on the canonical dataset repo on Hugging Face.
+Use this to publish the local MoE package for a model to Hugging Face.
 
 Usage:
 
 ```bash
-mesh-llm moe share unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S
-mesh-llm moe share unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S --ranking-file ~/.cache/mesh-llm/moe-rankings/local-gemma-4-26b-a4b-it-ud-q4_k_s.micro-p8-t128-all.csv
+mesh-llm moe publish unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_S
 ```
 
 Behavior:
 
-- Validates the local artifact and computes its canonical dataset path.
-- Checks `meshllm/moe-rankings` first and exits cleanly when the artifact is already published.
-- Opens a dataset PR instead of writing directly to `main`.
-- Includes `ranking.csv`, `metadata.json`, and `run.log` when available.
-- Uses the same Hugging Face commit API pattern as the Python publisher, with PR creation enabled.
+- Runs a local full analysis first when the full package cache is missing.
+- Materializes the package cache under `~/.cache/mesh-llm/moe/packages/...`.
+- Publishes `meshllm.json`, `ranking.csv`, `analysis.json`, `run.log` when available, `manifest.json`, `trunk.gguf`, and `experts/*`.
+- Creates or reuses the package repo and opens the catalog PR.
+- Uses PR-based uploads instead of writing directly to `main`.
 
 Requirements:
 
-- Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` with write access to the destination dataset repo.
+- Set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` with write access to the destination package repo and catalog dataset.
 
 Switches:
 
-- `--ranking-file <RANKING_FILE>`: share one specific local ranking file instead of resolving the default cached artifact.
-- `--dataset-repo <DATASET_REPO>`: override the target dataset repo (default `meshllm/moe-rankings`).
+- `--catalog-repo <CATALOG_REPO>`: override the Mesh catalog dataset repo (default `meshllm/catalog`).
+- `--namespace <NAMESPACE>`: force a destination package namespace instead of using `meshllm` first.
+- `--hf-job`: run the full publish flow remotely on Hugging Face Jobs.
 
 ## Model reference formats
 

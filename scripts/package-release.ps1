@@ -167,10 +167,16 @@ $versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple
 $meshBinary = Join-Path $releaseBinDir "mesh-llm.exe"
 $rpcBinary = Join-Path $buildBinDir "rpc-server.exe"
 $llamaBinary = Join-Path $buildBinDir "llama-server.exe"
+$moeAnalyzeBinary = Join-Path $buildBinDir "llama-moe-analyze.exe"
+$moeSplitBinary = Join-Path $buildBinDir "llama-moe-split.exe"
+$moeComponentsBinary = Join-Path $buildBinDir "llama-moe-components.exe"
 
 Require-File $meshBinary
 Require-File $rpcBinary
 Require-File $llamaBinary
+Require-File $moeAnalyzeBinary
+Require-File $moeSplitBinary
+Require-File $moeComponentsBinary
 
 $resolvedOutputDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     [System.IO.Path]::GetFullPath($OutputDir)
@@ -187,6 +193,9 @@ try {
     Copy-Item $meshBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "mesh-llm" $binaryFlavor)) -Force
     Copy-Item $rpcBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "rpc-server" $binaryFlavor)) -Force
     Copy-Item $llamaBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "llama-server" $binaryFlavor)) -Force
+    Copy-Item $moeAnalyzeBinary -Destination (Join-Path $bundleDir "llama-moe-analyze.exe") -Force
+    Copy-Item $moeSplitBinary -Destination (Join-Path $bundleDir "llama-moe-split.exe") -Force
+    Copy-Item $moeComponentsBinary -Destination (Join-Path $bundleDir "llama-moe-components.exe") -Force
     Copy-RuntimeLibs $bundleDir
     Copy-BenchmarkBinaries $bundleDir
 

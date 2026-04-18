@@ -2573,6 +2573,18 @@ pub(crate) fn bundled_bin_names(name: &str) -> Vec<String> {
     names
 }
 
+pub(crate) fn bundled_tool_names(name: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![format!("{name}.exe")]
+    }
+
+    #[cfg(not(windows))]
+    {
+        vec![name.to_string()]
+    }
+}
+
 fn has_bundled_llama_bins(dir: &Path) -> bool {
     bundled_bin_names("rpc-server")
         .iter()
