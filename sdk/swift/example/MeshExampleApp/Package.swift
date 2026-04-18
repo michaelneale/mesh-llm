@@ -17,5 +17,10 @@ let package = Package(
             ],
             path: "Sources/MeshExampleApp"
         ),
+        .testTarget(
+            name: "MeshExampleAppTests",
+            dependencies: ["MeshExampleApp"],
+            path: "Tests/MeshExampleAppTests"
+        ),
     ]
 )

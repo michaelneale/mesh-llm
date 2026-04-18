@@ -11,15 +11,29 @@ public struct InviteToken: Sendable {
 public struct Model: Sendable {
     public let id: String
     public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
 }
 
 public struct MeshStatus: Sendable {
     public let connected: Bool
     public let peerCount: Int
+
+    public init(connected: Bool, peerCount: Int) {
+        self.connected = connected
+        self.peerCount = peerCount
+    }
 }
 
 public struct RequestId: Sendable {
     public let value: String
+
+    public init(value: String) {
+        self.value = value
+    }
 }
 
 public enum MeshEvent: Sendable {

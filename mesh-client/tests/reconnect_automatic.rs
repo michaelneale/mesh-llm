@@ -1,6 +1,7 @@
 use mesh_client::client::builder::{ClientBuilder, InviteToken, MAX_RECONNECT_ATTEMPTS};
 use mesh_client::crypto::keys::OwnerKeypair;
-use std::str::FromStr;
+
+mod support;
 
 #[tokio::test]
 async fn max_reconnect_attempts_is_ten() {
@@ -10,7 +11,7 @@ async fn max_reconnect_attempts_is_ten() {
 #[tokio::test]
 async fn reconnect_resets_attempt_counter() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("test-token").unwrap();
+    let token = InviteToken(support::spawn_mock_mesh(&["mesh-model-1"], "hello from mesh").await);
     let mut client = ClientBuilder::new(kp, token).build().unwrap();
 
     client.reconnect_attempts = 7;
@@ -25,7 +26,7 @@ async fn reconnect_resets_attempt_counter() {
 #[tokio::test]
 async fn reconnect_attempts_does_not_exceed_max() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("test-token").unwrap();
+    let token = InviteToken("test-token".to_string());
     let client = ClientBuilder::new(kp, token).build().unwrap();
 
     assert!(
@@ -37,7 +38,7 @@ async fn reconnect_attempts_does_not_exceed_max() {
 #[tokio::test]
 async fn explicit_disconnect_sets_user_disconnected_flag() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("test-token").unwrap();
+    let token = InviteToken(support::spawn_mock_mesh(&["mesh-model-1"], "hello from mesh").await);
     let mut client = ClientBuilder::new(kp, token).build().unwrap();
 
     client.join().await.unwrap();
@@ -53,7 +54,7 @@ async fn explicit_disconnect_sets_user_disconnected_flag() {
 #[tokio::test]
 async fn reconnect_clears_user_disconnected_flag() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("test-token").unwrap();
+    let token = InviteToken(support::spawn_mock_mesh(&["mesh-model-1"], "hello from mesh").await);
     let mut client = ClientBuilder::new(kp, token).build().unwrap();
 
     client.disconnect().await;
