@@ -78,10 +78,7 @@ pub async fn spawn_mock_mesh(models: &[&str], chat_response: &str) -> String {
                             .into_bytes(),
                         };
 
-                        stream
-                            .write_all(&response)
-                            .await
-                            .expect("write response");
+                        stream.write_all(&response).await.expect("write response");
                         stream.shutdown().await.expect("shutdown response stream");
                     });
                 }

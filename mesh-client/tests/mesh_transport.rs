@@ -17,7 +17,8 @@ impl EventListener for ChannelListener {
 
 #[tokio::test]
 async fn invite_token_supports_models_and_chat_over_mesh_transport() {
-    let invite_token = support::spawn_mock_mesh(&["mesh-model-1", "mesh-model-2"], "hello from mesh").await;
+    let invite_token =
+        support::spawn_mock_mesh(&["mesh-model-1", "mesh-model-2"], "hello from mesh").await;
     let owner_keypair = OwnerKeypair::generate();
     let mut client = ClientBuilder::new(owner_keypair, InviteToken(invite_token))
         .build()

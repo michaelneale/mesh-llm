@@ -70,7 +70,9 @@ async fn mesh_client_cancel_idempotent() {
 #[tokio::test]
 async fn mesh_client_list_models_returns_models_from_mesh() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken(support::spawn_mock_mesh(&["mesh-model-1", "mesh-model-2"], "hello from mesh").await);
+    let token = InviteToken(
+        support::spawn_mock_mesh(&["mesh-model-1", "mesh-model-2"], "hello from mesh").await,
+    );
     let client = ClientBuilder::new(kp, token).build().unwrap();
 
     let models = client.list_models().await.unwrap();

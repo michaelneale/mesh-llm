@@ -100,8 +100,11 @@ impl ClientBuilder {
         let runtime = CoreRuntime::new()?;
         let invite_token = self.config.invite_token.0.clone();
         let owner_keypair = self.config.owner_keypair.clone();
-        let endpoint = runtime_block_on(&runtime, async move { create_endpoint(&owner_keypair).await })
-            .map_err(ClientError::Endpoint)?;
+        let endpoint = runtime_block_on(
+            &runtime,
+            async move { create_endpoint(&owner_keypair).await },
+        )
+        .map_err(ClientError::Endpoint)?;
 
         Ok(MeshClient {
             runtime,
@@ -170,7 +173,8 @@ impl MeshClient {
         )
         .await
         .map_err(ClientError::Endpoint)?;
-        let response: ModelsResponse = parse_json_response(&response).map_err(ClientError::Endpoint)?;
+        let response: ModelsResponse =
+            parse_json_response(&response).map_err(ClientError::Endpoint)?;
         let models: Vec<Model> = response
             .data
             .into_iter()
