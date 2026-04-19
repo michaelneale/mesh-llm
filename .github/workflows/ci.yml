@@ -93,10 +93,12 @@ jobs:
             ci/requirements-ci-python.txt
 
       - name: Build UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
 
       - name: Test UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm test
 
@@ -431,12 +433,12 @@ jobs:
             mesh-llm/ui/package-lock.json
 
       - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
 
       - name: Test UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm test
 
