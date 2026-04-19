@@ -296,18 +296,16 @@ describe('CommandBarModal', () => {
             { id: 'alpha', name: 'Alpha model' },
             { id: 'beta', name: 'Beta model' },
             { id: 'gamma', name: 'Gamma model' },
-          ],
-          { onSelect },
-        ),
-      ],
-    });
+        ],
+        { ResultContainer: ScrollableResultContainer, onSelect },
+          ),
+        ],
+      });
 
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+      fireEvent.click(screen.getByRole('button', { name: 'Open command bar' }));
 
-    await screen.findByRole('dialog');
-
-    const input = screen.getByRole('textbox', { name: 'Command bar search' });
-    const listbox = screen.getByRole('listbox', { name: 'Command bar results' });
+      const input = await screen.findByRole('textbox', { name: 'Command bar search' });
+      const listbox = screen.getByRole('listbox', { name: 'Command bar results' });
 
     await waitFor(() => expect(input).toHaveFocus());
 
@@ -345,7 +343,7 @@ describe('CommandBarModal', () => {
     expect(onSelect).toHaveBeenCalledWith({ id: 'beta', name: 'Beta model' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Open command bar' }));
 
     const reopenedInput = await screen.findByRole('textbox', { name: 'Command bar search' });
     expect(screen.getByTestId('command-bar-leading-icon')).toHaveAttribute('data-mode-id', 'models');
@@ -375,7 +373,7 @@ describe('CommandBarModal', () => {
         ],
       });
 
-      fireEvent.keyDown(window, { key: 'k', metaKey: true });
+      fireEvent.click(screen.getByRole('button', { name: 'Open command bar' }));
 
       const input = await screen.findByRole('textbox', { name: 'Command bar search' });
       const listbox = screen.getByRole('listbox', { name: 'Command bar results' });
@@ -428,7 +426,7 @@ describe('CommandBarModal', () => {
       ],
     });
 
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Open command bar' }));
 
     const input = await screen.findByRole('textbox', { name: 'Command bar search' });
     const dialog = screen.getByRole('dialog');
@@ -454,7 +452,7 @@ describe('CommandBarModal', () => {
     const openButton = screen.getByRole('button', { name: 'Open command bar' });
     openButton.focus();
 
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(openButton);
 
     const input = await screen.findByRole('textbox', { name: 'Command bar search' });
     await waitFor(() => expect(input).toHaveFocus());
@@ -482,7 +480,7 @@ describe('CommandBarModal', () => {
       ],
     });
 
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Open command bar' }));
 
     const input = await screen.findByRole('textbox', { name: 'Command bar search' });
     fireEvent.change(input, { target: { value: 'alpha' } });

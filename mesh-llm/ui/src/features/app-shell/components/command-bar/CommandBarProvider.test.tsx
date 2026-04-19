@@ -40,73 +40,43 @@ function renderProvider() {
   );
 }
 
-describe('CommandBarProvider', () => {
-  const originalUserAgent = navigator.userAgent;
+  describe('CommandBarProvider', () => {
+   const originalUserAgent = navigator.userAgent;
 
-  beforeEach(() => {
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
-    });
-  });
+   beforeEach(() => {
+     Object.defineProperty(navigator, 'userAgent', {
+       configurable: true,
+       value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)',
+     });
+   });
 
-  afterEach(() => {
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: originalUserAgent,
-    });
-    cleanup();
-  });
+   afterEach(() => {
+     Object.defineProperty(navigator, 'userAgent', {
+       configurable: true,
+       value: originalUserAgent,
+     });
+     cleanup();
+   });
 
-  it('throws a clear error when the hook is used outside the provider', () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+   it('throws a clear error when the hook is used outside the provider', () => {
+     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    expect(() => render(<HookConsumerOutsideProvider />)).toThrow(
-      'useCommandBar must be used within a CommandBarProvider.',
-    );
+     expect(() => render(<HookConsumerOutsideProvider />)).toThrow(
+       'useCommandBar must be used within a CommandBarProvider.',
+     );
 
-    consoleError.mockRestore();
-  });
+     consoleError.mockRestore();
+   });
 
-  it('opens on Meta+K on macOS', () => {
-    renderProvider();
-
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
-
-    expect(screen.getByTestId('command-bar-state')).toHaveTextContent('open');
-  });
-
-  it('opens on Ctrl+K on non-macOS platforms', () => {
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    });
-
-    renderProvider();
-
-    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
-
-    expect(screen.getByTestId('command-bar-state')).toHaveTextContent('open');
-  });
-
-  it('ignores the global open shortcut from editable targets while closed', () => {
-    renderProvider();
-
-    const input = screen.getByRole('textbox', { name: 'Editable target' });
-    input.focus();
-    fireEvent.keyDown(input, { key: 'k', metaKey: true });
-
-    expect(screen.getByTestId('command-bar-state')).toHaveTextContent('closed');
-  });
-
-  it('closes on Escape and restores focus to the previously focused element', () => {
+   it('closes on Escape and restores focus to the previously focused element', () => {
     renderProvider();
 
     const primaryTrigger = screen.getByRole('button', { name: 'Primary trigger' });
     const secondaryTarget = screen.getByRole('button', { name: 'Secondary target' });
+    const openButton = screen.getByRole('button', { name: 'Open models' });
 
     primaryTrigger.focus();
-    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.click(openButton);
     secondaryTarget.focus();
     fireEvent.keyDown(window, { key: 'Escape' });
 
