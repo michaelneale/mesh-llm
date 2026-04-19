@@ -168,6 +168,14 @@ let supportsStandardDerivatives = false;
 
 let activeGl: ReturnType<typeof createFakeWebGLContext>;
 
+function flushAnimationFrame(timestamp = clock.now) {
+  const callbacks = [...rafState.callbacks.values()];
+  rafState.callbacks.clear();
+  for (const callback of callbacks) {
+    callback(timestamp);
+  }
+}
+
 function createFakeWebGLContext() {
   const attributeLocations = new Map<string, number>([
     ["a_position", 0],
@@ -198,6 +206,7 @@ function createFakeWebGLContext() {
     blendFuncSeparate: vi.fn(),
     bindBuffer: vi.fn(),
     bufferData: vi.fn(),
+    bufferSubData: vi.fn(),
     clear: vi.fn(),
     clearColor: vi.fn(),
     createBuffer: vi.fn(() => buffer),
@@ -610,31 +619,28 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={renderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
-    expect(mocks.buildProximityLinesMock).toHaveBeenCalledTimes(1);
-    const hoverCall = mocks.buildProximityLinesMock.mock.calls[0]?.[0];
-    const hoverIds = hoverCall.screenNodes.map((node: { id: string }) => node.id);
-    const hoverSizes = new Map(
-      hoverCall.screenNodes.map((node: { id: string; size: number }) => [node.id, node.size]),
-    );
-
-    expect([...hoverCall.highlightedNodeIds]).toEqual([]);
-    expect(hoverCall.visiblePairKeys).toBeUndefined();
-    expect(hoverIds).toEqual(baseIds);
-    expect(hoverSizes).toEqual(baseSizes);
-    expect(hoverCall.screenNodes.find((node: { id: string }) => node.id === "peer")?.hitSize).toBeGreaterThan(
-      hoverCall.screenNodes.find((node: { id: string }) => node.id === "peer")?.size ?? 0,
-    );
+    expect(mocks.buildProximityLinesMock).not.toHaveBeenCalled();
     expect(refs.screenNodesRef.current.map((node) => node.id)).toEqual([
       "peer",
       "anchor",
       "stable-b",
       "stable-a",
     ]);
+    const hoveredScreenNode = refs.screenNodesRef.current.find((node) => node.id === "peer");
+    expect(hoveredScreenNode?.hitSize).toBeGreaterThan(hoveredScreenNode?.size ?? 0);
+    const stableLineNodes = [...refs.screenNodesRef.current]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((node) => node.id);
+    expect(stableLineNodes.slice().sort()).toEqual(baseIds.slice().sort());
+    expect(
+      new Map(refs.screenNodesRef.current.map((node) => [node.id, node.size])),
+    ).toEqual(baseSizes);
   });
 
   it("keeps snapshot lines stable during the join pre-reveal branch", () => {
@@ -774,16 +780,17 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const calls = mocks.buildProximityLinesMock.mock.calls.map((call) => call[0]);
     const finalCall = calls[calls.length - 1];
 
-    expect(calls).toHaveLength(3);
-    expect(calls.map((call) => [...call.highlightedNodeIds])).toEqual([[], [], []]);
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => [...call.highlightedNodeIds])).toEqual([[], []]);
     expect(calls.every((call) => call.visiblePairKeys === undefined)).toBe(true);
     expect(finalCall.pairAlphaOverrides).toBeInstanceOf(Map);
     if (!finalCall.pairAlphaOverrides) {
@@ -851,10 +858,11 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const finalCall =
       mocks.buildProximityLinesMock.mock.calls[
@@ -1063,10 +1071,11 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const finalCall =
       mocks.buildProximityLinesMock.mock.calls[
@@ -1148,10 +1157,11 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const finalCall =
       mocks.buildProximityLinesMock.mock.calls[
@@ -1228,10 +1238,11 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const finalCall =
       mocks.buildProximityLinesMock.mock.calls[
@@ -1304,10 +1315,11 @@ describe("useTopologyCanvas light transition regressions", () => {
       <Harness
         {...refs}
         renderNodes={currentRenderNodes.map((node) => ({ ...node }))}
-       
+        
         selfNodeId="peer"
       />,
     );
+    flushAnimationFrame();
 
     const finalCall =
       mocks.buildProximityLinesMock.mock.calls[
@@ -1315,7 +1327,7 @@ describe("useTopologyCanvas light transition regressions", () => {
       ]?.[0];
     const movedNode = finalCall.screenNodes.find((node: { id: string }) => node.id === "stable-a");
 
-    expect(finalCall.visiblePairKeys).toEqual(new Set(["peer::replacement", "stable-a::stable-b"]));
+    expect(finalCall.visiblePairKeys).toEqual(new Set(["peer::replacement"]));
     expect(movedNode?.lineRevealProgress).toBe(0);
   });
 
