@@ -74,18 +74,27 @@ jobs:
         run: |
           set -euo pipefail
           file="${{ inputs.dockerfile_path }}"
-          grep -q "COPY Cargo.toml" "$file"
-          grep -q "COPY Cargo.lock" "$file"
-          grep -q "COPY mesh-llm/Cargo.toml" "$file"
-          grep -q "COPY mesh-llm/build.rs" "$file"
-          grep -q "COPY mesh-llm/plugin/Cargo.toml" "$file"
-          grep -q "COPY mesh-llm/plugin/build.rs" "$file"
-          grep -q "COPY mesh-llm/proto/" "$file"
-          if grep -qE "echo.*fn main|stub.*lib" "$file"; then
-            echo "FAIL: stub lib.rs shortcut detected in $file" >&2
-            exit 1
+          if grep -qE '^\s*COPY \. \.' "$file"; then
+            # COPY . . copies the entire workspace including all manifests — accept as equivalent
+            if grep -qE "echo.*fn main|stub.*lib" "$file"; then
+              echo "FAIL: stub lib.rs shortcut detected in $file" >&2
+              exit 1
+            fi
+            echo "PASS: COPY . . copies all workspace manifests"
+          else
+            grep -q "COPY Cargo.toml" "$file"
+            grep -q "COPY Cargo.lock" "$file"
+            grep -q "COPY mesh-llm/Cargo.toml" "$file"
+            grep -q "COPY mesh-llm/build.rs" "$file"
+            grep -q "COPY mesh-llm/plugin/Cargo.toml" "$file"
+            grep -q "COPY mesh-llm/plugin/build.rs" "$file"
+            grep -q "COPY mesh-llm/proto/" "$file"
+            if grep -qE "echo.*fn main|stub.*lib" "$file"; then
+              echo "FAIL: stub lib.rs shortcut detected in $file" >&2
+              exit 1
+            fi
+            echo "PASS: full workspace manifests present with corrected proto path"
           fi
-          echo "PASS: full workspace manifests present with corrected proto path"
 
       - name: Rust builder installs libdbus-1-dev
         if: ${{ inputs.validate_shared_core }}
