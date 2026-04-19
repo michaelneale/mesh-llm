@@ -1,3 +1,4 @@
+use crate::mesh;
 use crate::network::openai::transport;
 use anyhow::Result;
 use tokio::io::AsyncWriteExt;
@@ -5,6 +6,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
+
+/// Maximum concurrent requests allowed through the backend proxy.
+///
+/// Must match the `--parallel` slot count passed to llama-server in
+/// `inference/launch.rs`. When inflight requests reach this cap, the proxy
+/// drops new TCP connections instead of forwarding them, which prevents
+/// llama.cpp's internal `queue_tasks_deferred` from growing unboundedly.
+///
+/// Clients observe the dropped connection as a connect/EOF failure, which
+/// the OpenAI transport layer already classifies as `RetryableUnavailable`
+/// and retries against the next candidate host/model.
+pub(crate) const BACKEND_PROXY_MAX_INFLIGHT: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct BackendProxyHandle {
@@ -24,7 +37,10 @@ impl BackendProxyHandle {
     }
 }
 
-pub(crate) async fn start_backend_proxy(llama_port: u16) -> Result<BackendProxyHandle> {
+pub(crate) async fn start_backend_proxy(
+    llama_port: u16,
+    node: Option<mesh::Node>,
+) -> Result<BackendProxyHandle> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let (stop_tx, mut stop_rx) = watch::channel(false);
@@ -47,10 +63,34 @@ pub(crate) async fn start_backend_proxy(llama_port: u16) -> Result<BackendProxyH
                 }
                 accept_result = listener.accept() => match accept_result {
                     Ok((stream, _)) => {
-                        connections.spawn(async move {
-                        if let Err(err) = handle_connection(stream, llama_port).await {
-                            tracing::debug!("backend proxy request failed: {err}");
+                        // Inflight backpressure gate. Upstream callers
+                        // (`route_local_attempt`, the inbound HTTP tunnel,
+                        // etc.) already hold an inflight guard for every
+                        // request that reaches us, so we only read the
+                        // counter here — we don't take a second guard.
+                        //
+                        // When inflight >= cap, drop the socket without
+                        // forwarding. The client's transport layer treats
+                        // this as `RetryableUnavailable` and falls over to
+                        // the next candidate host/model, which prevents
+                        // llama.cpp's internal deferred task queue from
+                        // growing unbounded under sustained load.
+                        if let Some(node_ref) = node.as_ref() {
+                            let inflight = node_ref.inflight_requests() as usize;
+                            if inflight > BACKEND_PROXY_MAX_INFLIGHT {
+                                tracing::warn!(
+                                    inflight,
+                                    cap = BACKEND_PROXY_MAX_INFLIGHT,
+                                    "backend proxy at capacity; dropping incoming connection"
+                                );
+                                drop(stream);
+                                continue;
+                            }
                         }
+                        connections.spawn(async move {
+                            if let Err(err) = handle_connection(stream, llama_port).await {
+                                tracing::debug!("backend proxy request failed: {err}");
+                            }
                         });
                     }
                     Err(err) => {
@@ -172,7 +212,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
         let (upstream_port, request_rx) = start_recording_upstream(upstream_response).await;
 
-        let proxy = start_backend_proxy(upstream_port).await.unwrap();
+        let proxy = start_backend_proxy(upstream_port, None).await.unwrap();
         let proxy_port = proxy.port();
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
@@ -204,7 +244,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
         let upstream_port = start_dummy_upstream(upstream_response).await;
 
-        let proxy = start_backend_proxy(upstream_port).await.unwrap();
+        let proxy = start_backend_proxy(upstream_port, None).await.unwrap();
         let proxy_port = proxy.port();
 
         // Confirm proxy accepts connections before shutdown.
@@ -228,7 +268,7 @@ mod tests {
     async fn test_backend_proxy_shutdown_aborts_inflight_connections() {
         let upstream_port = start_stalled_upstream().await;
 
-        let proxy = start_backend_proxy(upstream_port).await.unwrap();
+        let proxy = start_backend_proxy(upstream_port, None).await.unwrap();
         let proxy_port = proxy.port();
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
@@ -267,7 +307,7 @@ mod tests {
             // listener dropped — port freed
         };
 
-        let proxy = start_backend_proxy(dead_port).await.unwrap();
+        let proxy = start_backend_proxy(dead_port, None).await.unwrap();
         let proxy_port = proxy.port();
 
         let mut client = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
@@ -284,6 +324,65 @@ mod tests {
             "expected 503, got: {response:?}"
         );
 
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_backend_proxy_drops_connection_when_inflight_cap_reached() {
+        use crate::mesh;
+
+        let upstream_port = start_dummy_upstream(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        )
+        .await;
+
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .unwrap();
+
+        // Saturate the inflight counter at the cap. These guards simulate
+        // requests already being counted by upstream callers
+        // (`route_local_attempt` / inbound HTTP tunnel) — which is the
+        // invariant the proxy gate relies on.
+        let mut guards = Vec::new();
+        for _ in 0..BACKEND_PROXY_MAX_INFLIGHT {
+            guards.push(node.begin_inflight_request());
+        }
+        // Push one over the cap to represent the incoming request's own
+        // upstream guard being taken just before the TCP connect.
+        let overflow_guard = node.begin_inflight_request();
+
+        let proxy = start_backend_proxy(upstream_port, Some(node.clone()))
+            .await
+            .unwrap();
+        let proxy_port = proxy.port();
+
+        // The connection gets accepted by the OS, but the proxy drops the
+        // socket immediately. The client sees EOF before receiving any
+        // response bytes.
+        let mut client = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+            .await
+            .unwrap();
+        let req = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+        // Write may succeed (buffered) or fail (peer already closed) —
+        // either is fine; we care about the read result.
+        let _ = client.write_all(req).await;
+
+        let mut buf = Vec::new();
+        let read = timeout(Duration::from_secs(2), client.read_to_end(&mut buf)).await;
+        match read {
+            Ok(Ok(0)) => {}
+            Ok(Ok(_)) => assert!(
+                buf.is_empty(),
+                "expected no response bytes when proxy drops at cap, got: {:?}",
+                String::from_utf8_lossy(&buf)
+            ),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("proxy did not drop the connection within timeout"),
+        }
+
+        drop(overflow_guard);
+        drop(guards);
         proxy.shutdown().await;
     }
 }

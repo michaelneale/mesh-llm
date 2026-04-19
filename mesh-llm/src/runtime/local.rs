@@ -207,7 +207,7 @@ pub(super) async fn start_runtime_local_model(
         },
     )
     .await?;
-    let backend_proxy = backend::start_backend_proxy(llama_port).await?;
+    let backend_proxy = backend::start_backend_proxy(llama_port, Some(node.clone())).await?;
     let port = backend_proxy.port();
 
     Ok((

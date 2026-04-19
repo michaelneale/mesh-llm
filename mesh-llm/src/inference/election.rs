@@ -1835,7 +1835,11 @@ pub async fn election_loop(
                 }
             };
 
-            let proxy = match crate::network::openai::backend::start_backend_proxy(llama_port).await
+            let proxy = match crate::network::openai::backend::start_backend_proxy(
+                llama_port,
+                Some(node.clone()),
+            )
+            .await
             {
                 Ok(proxy) => proxy,
                 Err(err) => {
@@ -2260,6 +2264,7 @@ async fn moe_election_loop(
                 Ok(process) => {
                     let proxy = match crate::network::openai::backend::start_backend_proxy(
                         llama_port,
+                        Some(node.clone()),
                     )
                     .await
                     {
@@ -2365,19 +2370,19 @@ async fn moe_election_loop(
                 .await
                 {
                     Ok(process) => {
-                        let proxy =
-                            match crate::network::openai::backend::start_backend_proxy(llama_port)
-                                .await
-                            {
-                                Ok(proxy) => proxy,
-                                Err(err) => {
-                                    eprintln!(
-                                        "  Failed to start local OpenAI backend proxy: {err}"
-                                    );
-                                    process.handle.shutdown().await;
-                                    continue;
-                                }
-                            };
+                        let proxy = match crate::network::openai::backend::start_backend_proxy(
+                            llama_port,
+                            Some(node.clone()),
+                        )
+                        .await
+                        {
+                            Ok(proxy) => proxy,
+                            Err(err) => {
+                                eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                                process.handle.shutdown().await;
+                                continue;
+                            }
+                        };
                         let local_proxy_port = proxy.port();
                         backend_proxy = Some(proxy);
 
@@ -2529,6 +2534,7 @@ async fn moe_election_loop(
                 Ok(process) => {
                     let proxy = match crate::network::openai::backend::start_backend_proxy(
                         llama_port,
+                        Some(node.clone()),
                     )
                     .await
                     {
