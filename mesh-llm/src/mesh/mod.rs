@@ -2054,10 +2054,6 @@ impl Node {
         *self.first_joined_mesh_ts.lock().await
     }
 
-    pub async fn set_first_joined_mesh_ts(&self, ts: u64) {
-        *self.first_joined_mesh_ts.lock().await = Some(ts);
-    }
-
     pub async fn set_first_joined_mesh_ts_if_absent(&self, ts: u64) -> bool {
         let mut current = self.first_joined_mesh_ts.lock().await;
         if current.is_none() {
@@ -4067,112 +4063,6 @@ pub fn load_last_mesh_id() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Mesh join-time persistence
-// ---------------------------------------------------------------------------
-
-/// JSON file schema for persisting mesh join times.
-#[derive(Serialize, Deserialize, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
-struct MeshJoinTimesFile {
-    version: u32,
-    by_mesh_id: HashMap<String, u64>,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn mesh_join_times_path_in(base_dir: &std::path::Path) -> std::path::PathBuf {
-    base_dir.join("mesh-join-times.json")
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn save_mesh_join_time_in(base_dir: &std::path::Path, mesh_id: &str, ts_ms: u64) {
-    let path = mesh_join_times_path_in(base_dir);
-
-    let mut data: MeshJoinTimesFile = if path.exists() {
-        match std::fs::read_to_string(&path) {
-            Ok(json_str) => serde_json::from_str(&json_str).unwrap_or_default(),
-            Err(_) => MeshJoinTimesFile::default(),
-        }
-    } else {
-        MeshJoinTimesFile::default()
-    };
-
-    if data.version == 0 {
-        data.version = 1;
-    }
-
-    data.by_mesh_id.insert(mesh_id.to_string(), ts_ms);
-
-    let json_str = match serde_json::to_string_pretty(&data) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("failed to serialize mesh join times: {e}");
-            return;
-        }
-    };
-
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let tmp_path = path.with_extension("json.tmp");
-    let write_result = (|| -> Result<()> {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&tmp_path)
-            .with_context(|| format!("failed to create tmp file: {}", tmp_path.display()))?;
-        file.write_all(json_str.as_bytes())
-            .with_context(|| format!("failed to write tmp file: {}", tmp_path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("failed to sync tmp file: {}", tmp_path.display()))?;
-        std::fs::rename(&tmp_path, &path).with_context(|| {
-            format!(
-                "failed to rename tmp file from {} to {}",
-                tmp_path.display(),
-                path.display()
-            )
-        })?;
-        Ok(())
-    })();
-
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-    }
-
-    if let Err(e) = write_result {
-        tracing::warn!("failed to save mesh join time: {e}");
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn load_mesh_join_time_in(base_dir: &std::path::Path, mesh_id: &str) -> Option<u64> {
-    let path = mesh_join_times_path_in(base_dir);
-    if !path.exists() {
-        return None;
-    }
-    let json_str = std::fs::read_to_string(&path).ok()?;
-    let data: MeshJoinTimesFile = serde_json::from_str(&json_str).ok()?;
-    data.by_mesh_id.get(mesh_id).copied()
-}
-
-/// Save the mesh join time for a given mesh_id.
-/// Never panics — logs warnings and returns on any I/O or serialization error.
-#[allow(dead_code)]
-pub fn save_mesh_join_time(mesh_id: &str, ts_ms: u64) {
-    let Some(home) = dirs::home_dir() else {
-        tracing::warn!("cannot save mesh join time: home directory unavailable");
-        return;
-    };
-    save_mesh_join_time_in(&home.join(".mesh-llm"), mesh_id, ts_ms);
-}
-
-/// Load the mesh join time for a given mesh_id.
-/// Returns None if the file doesn't exist, can't be read, or the mesh_id is not found.
-#[allow(dead_code)]
-pub fn load_mesh_join_time(mesh_id: &str) -> Option<u64> {
-    let home = dirs::home_dir()?;
-    load_mesh_join_time_in(&home.join(".mesh-llm"), mesh_id)
-}
-
-// ---------------------------------------------------------------------------
 // Public-to-private identity transition
 // ---------------------------------------------------------------------------
 
@@ -4337,84 +4227,6 @@ use heartbeat::{
 pub(crate) use heartbeat::{
     moe_recovery_ready_at, peer_is_eligible_for_active_moe, resolve_peer_down,
 };
-
-#[cfg(test)]
-mod mesh_join_time_tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn test_save_and_load_mesh_join_time() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path();
-
-        let mesh_id = "test-mesh-123";
-        let timestamp = 1234567890u64;
-
-        save_mesh_join_time_in(base_dir, mesh_id, timestamp);
-
-        let loaded = load_mesh_join_time_in(base_dir, mesh_id);
-        assert_eq!(loaded, Some(timestamp));
-    }
-
-    #[test]
-    fn test_load_mesh_join_time_missing_file_returns_none() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path();
-
-        let mesh_id = "nonexistent-mesh";
-        let loaded = load_mesh_join_time_in(base_dir, mesh_id);
-
-        assert_eq!(loaded, None);
-    }
-
-    #[test]
-    fn test_save_mesh_join_time_overwrites() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path();
-
-        let mesh_id = "test-mesh-456";
-        let first_timestamp = 1111111111u64;
-        let second_timestamp = 2222222222u64;
-
-        save_mesh_join_time_in(base_dir, mesh_id, first_timestamp);
-        let loaded_first = load_mesh_join_time_in(base_dir, mesh_id);
-        assert_eq!(loaded_first, Some(first_timestamp));
-
-        save_mesh_join_time_in(base_dir, mesh_id, second_timestamp);
-        let loaded_second = load_mesh_join_time_in(base_dir, mesh_id);
-        assert_eq!(loaded_second, Some(second_timestamp));
-    }
-
-    #[test]
-    fn test_save_load_multiple_mesh_ids() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_dir = temp_dir.path();
-
-        let mesh_id_1 = "mesh-one";
-        let mesh_id_2 = "mesh-two";
-        let timestamp_1 = 1000000000u64;
-        let timestamp_2 = 2000000000u64;
-
-        save_mesh_join_time_in(base_dir, mesh_id_1, timestamp_1);
-        save_mesh_join_time_in(base_dir, mesh_id_2, timestamp_2);
-
-        let loaded_1 = load_mesh_join_time_in(base_dir, mesh_id_1);
-        let loaded_2 = load_mesh_join_time_in(base_dir, mesh_id_2);
-
-        assert_eq!(loaded_1, Some(timestamp_1));
-        assert_eq!(loaded_2, Some(timestamp_2));
-
-        let file_path = mesh_join_times_path_in(base_dir);
-        let json_str = fs::read_to_string(&file_path).unwrap();
-        let data: MeshJoinTimesFile = serde_json::from_str(&json_str).unwrap();
-
-        assert_eq!(data.version, 1);
-        assert_eq!(data.by_mesh_id.len(), 2);
-        assert_eq!(data.by_mesh_id.get(mesh_id_1), Some(&timestamp_1));
-        assert_eq!(data.by_mesh_id.get(mesh_id_2), Some(&timestamp_2));
-    }
-}
 
 #[cfg(test)]
 mod tests;

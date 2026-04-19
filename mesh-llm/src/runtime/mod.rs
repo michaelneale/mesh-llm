@@ -42,15 +42,9 @@ fn current_time_unix_ms() -> u64 {
         .as_millis() as u64
 }
 
-async fn load_or_record_first_joined_mesh_ts(node: &mesh::Node, mesh_id: &str) {
-    if let Some(ts) = mesh::load_mesh_join_time(mesh_id) {
-        node.set_first_joined_mesh_ts(ts).await;
-    } else {
-        let now_ms = current_time_unix_ms();
-        if node.set_first_joined_mesh_ts_if_absent(now_ms).await {
-            mesh::save_mesh_join_time(mesh_id, now_ms);
-        }
-    }
+async fn record_first_joined_mesh_ts(node: &mesh::Node) {
+    let now_ms = current_time_unix_ms();
+    node.set_first_joined_mesh_ts_if_absent(now_ms).await;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1303,8 +1297,8 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
         for token in &cli.join {
             match node.join(token).await {
                 Ok(()) => {
-                    if let Some(mesh_id) = node.mesh_id().await {
-                        load_or_record_first_joined_mesh_ts(node, &mesh_id).await;
+                    if node.mesh_id().await.is_some() {
+                        record_first_joined_mesh_ts(node).await;
                     }
                     eprintln!("Joined mesh");
                     return Ok(());
@@ -1341,8 +1335,8 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                     );
                     match node.join(token).await {
                         Ok(()) => {
-                            if let Some(mesh_id) = node.mesh_id().await {
-                                load_or_record_first_joined_mesh_ts(node, &mesh_id).await;
+                            if node.mesh_id().await.is_some() {
+                                record_first_joined_mesh_ts(node).await;
                             }
                             last_err = None;
                             break;
@@ -1570,8 +1564,8 @@ async fn run_auto(
         for (t, mesh_name) in &join_attempts {
             match node.join(t).await {
                 Ok(()) => {
-                    if let Some(mesh_id) = node.mesh_id().await {
-                        load_or_record_first_joined_mesh_ts(&node, &mesh_id).await;
+                    if node.mesh_id().await.is_some() {
+                        record_first_joined_mesh_ts(&node).await;
                     }
                     eprintln!("Joined mesh");
                     joined = true;
@@ -1605,7 +1599,7 @@ async fn run_auto(
                 // Wait for gossip to propagate mesh_id
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if let Some(id) = save_node.mesh_id().await {
-                    load_or_record_first_joined_mesh_ts(&save_node, &id).await;
+                    record_first_joined_mesh_ts(&save_node).await;
                     mesh::save_last_mesh_id(&id);
                     tracing::info!("Mesh ID: {id}");
                 }
@@ -1659,7 +1653,7 @@ async fn run_auto(
         };
         let mesh_id = mesh::generate_mesh_id(cli.mesh_name.as_deref(), nostr_pubkey.as_deref());
         node.set_mesh_id_force(mesh_id.clone()).await;
-        load_or_record_first_joined_mesh_ts(&node, &mesh_id).await;
+        record_first_joined_mesh_ts(&node).await;
         mesh::save_last_mesh_id(&mesh_id);
         tracing::info!("Mesh ID: {mesh_id}");
         eprintln!("Invite: {token}");
