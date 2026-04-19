@@ -51,14 +51,14 @@ detect_host_device() {
 
     if command -v rocm-smi &>/dev/null; then
         if rocm-smi --showproductname 2>/dev/null | grep -q '^GPU\['; then
-            echo HIP0
+            echo ROCm0
             return 0
         fi
     fi
 
     if command -v rocminfo &>/dev/null; then
         if rocminfo 2>/dev/null | grep -q 'gfx'; then
-            echo HIP0
+            echo ROCm0
             return 0
         fi
     fi
@@ -77,7 +77,7 @@ pick_preferred_available_device() {
     local available=("$@")
     local candidate
 
-    for candidate in MTL0 CUDA0 HIP0 Vulkan0 CPU; do
+    for candidate in MTL0 CUDA0 ROCm0 HIP0 Vulkan0 CPU; do
         local device
         for device in "${available[@]}"; do
             if [[ "$device" == "$candidate" ]]; then

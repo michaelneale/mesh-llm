@@ -336,7 +336,7 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) llama_flavor: Option<crate::inference::launch::BinaryFlavor>,
 
-    /// Device for rpc-server (e.g. MTL0, CUDA0, HIP0, Vulkan0, CPU).
+    /// Device for rpc-server (e.g. MTL0, CUDA0, ROCm0, Vulkan0, CPU).
     #[arg(long, hide = true)]
     pub(crate) device: Option<String>,
 
