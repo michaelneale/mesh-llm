@@ -211,7 +211,7 @@ creating topology-specific split directories.
 The local package cache should mirror the published package layout under:
 
 ```text
-~/.cache/mesh-llm/moe/packages/<source-owner>/<source-repo>/<source-revision>/
+~/.cache/mesh-llm/packages/<source-owner>/<source-repo>/<source-revision>/
   meshllm.json
   variants/
     <variant>/
@@ -366,10 +366,25 @@ This remains a separate file.
 
 ### `variants/<variant>/run.log`
 
-Latest analyze/share log for the active variant publication.
+Latest analyze/publish log for the active variant publication.
 
 This is for debugging the current publication only. v1 does not preserve older
 logs after a new publication replaces the active files.
+
+### `README.md`
+
+Generated Hugging Face model card for the package repo.
+
+Owns:
+
+- YAML front matter for Hugging Face metadata such as `base_model`,
+  `library_name`, `pipeline_tag`, `license`, `language`, and `tags`
+- a description of what the package repo is for
+- the list of published variants
+- `mesh-llm serve owner/repo:variant` examples for each variant
+
+`moe publish` should regenerate this file from package metadata so the local
+package cache and the published repo stay in sync.
 
 ## Why This Layout
 
@@ -447,7 +462,7 @@ the intended runtime flow is:
 10. Materialize a local runnable shard.
 11. Launch `llama-server`.
 12. If there is no catalog package, or package resolution fails, build or
-    reuse the local package cache under `~/.cache/mesh-llm/moe/packages/...`.
+    reuse the local package cache under `~/.cache/mesh-llm/packages/...`.
 13. Assemble the runnable shard from the cached `trunk.gguf` plus the selected
     experts for the current topology.
 14. Delete legacy topology-specific split artifacts instead of reusing them.
@@ -498,7 +513,57 @@ The intent is:
 - if large files are moving, the user should see per-file and overall progress
 - if cached data is reused, the CLI should make that visible where helpful
 
-## Share Workflow
+## Benchmark Calibration
+
+`moe analyze full` and `moe publish` should both run the same package
+calibration benchmark workflow.
+
+The benchmark is a topology stress suite, not an absolute leaderboard eval. It
+measures how much an assembled shard diverges from the full model.
+
+Benchmark baseline:
+
+- run the full original model
+
+Benchmark candidates:
+
+- assemble shard candidates from cached `trunk.gguf` plus selected experts
+- sweep candidate `min_experts_per_node` values
+- compare each shard output to the full-model baseline output
+
+The benchmark corpus should be fetched from Hugging Face datasets rather than
+checked into this repo. The current default suite is:
+
+- `HuggingFaceH4/mt_bench_prompts`
+- `google/IFEval`
+- `openai/gsm8k`
+- `openai/openai_humaneval`
+
+Execution requirements:
+
+- use warm `llama-server` runners instead of one-shot `llama-cli`
+- use deterministic generation settings
+- cache full-model baseline outputs
+- use the same runner style for baseline and shard runs
+- use `~/.cache/mesh-llm/packages/.../variants/<variant>/.tmp/` for benchmark
+  temp work
+- clean up benchmark temp directories on normal success or failure
+- pipeline shard assembly and benchmark execution so the first benchmark starts
+  as soon as the first shard is assembled
+- scale assembly and request concurrency conservatively with available hardware,
+  with environment overrides for debugging
+
+Robustness requirements:
+
+- whitespace-only outputs should score as empty responses rather than aborting
+  the benchmark
+- weak-shard llama-server parse failures should score as degenerate shard
+  outputs rather than aborting `moe publish`
+
+Benchmark results should be written into `variants/<variant>/analysis.json` and
+should drive the recommended `min_experts_per_node` used by planning and serve.
+
+## Publish Workflow
 
 The preferred UX remains:
 
@@ -515,7 +580,7 @@ mesh-llm moe publish MODEL
   - `trunk.gguf`
   - `experts/expert-*.gguf`
 
-Under the new spec, share should publish to the package repo layout described
+Under the new spec, publish should publish to the package repo layout described
 above and then update `meshllm/catalog` to point at that package revision.
 
 If the publisher does not have permission to create or write the canonical
@@ -532,16 +597,24 @@ Publishing order:
 
 The catalog must not point at a package revision that does not exist yet.
 
+`moe publish` should also:
+
+- ensure a full local materialized package exists first
+- run `moe analyze full` automatically if required package artifacts are
+  missing
+- upload directly from the local package cache
+- regenerate `meshllm.json` and `README.md`
+
 ## Upload Path
 
-All MoE share uploads should use the Rust `huggingface_hub_rust` client.
+All MoE publish uploads should use the Rust `huggingface_hub_rust` client.
 
 Do not keep:
 
 - one small-artifact NDJSON path
 - another path for large-file expert uploads
 
-The entire MoE share flow should use one Hub upload implementation with:
+The entire MoE publish flow should use one Hub upload implementation with:
 
 - contribution PR creation
 - xet/LFS-backed large-file support
@@ -570,6 +643,30 @@ Required component operations:
 
 Without that assembly step, `serve` cannot consume the new package format.
 
+## Hugging Face Jobs
+
+`mesh-llm moe publish --hf-job` should run the same publish workflow remotely on
+Hugging Face Jobs.
+
+Default UX:
+
+- `--hf-job` performs a dry run
+- the dry run prints the selected hardware, minimum timeout, effective timeout,
+  and estimated max cost
+- `--hf-confirm` is required to actually submit the remote job
+
+Remote publish responsibilities:
+
+- download the model on Hugging Face
+- run the same full analysis and benchmark calibration workflow
+- materialize the same package repo layout
+- create the package repo if needed
+- upload package artifacts
+- update `meshllm/catalog`
+
+Hardware selection should default to conservative auto-selection based on model
+size and the publish workload, while still allowing explicit overrides.
+
 ## Implementation Plan
 
 ### Phase 1: Define and freeze the new spec
@@ -592,8 +689,9 @@ Deliverables:
    - `meshllm.json`
    - variant `manifest.json`
    - variant `analysis.json`
-2. Teach share to stage files into:
+2. Teach publish to stage files into:
    - `meshllm.json`
+   - `README.md`
    - `variants/<variant>/analysis.json`
    - `variants/<variant>/ranking.csv`
    - `variants/<variant>/manifest.json`
@@ -621,6 +719,12 @@ Deliverables:
    new package revision with the correct `publisher` and `trust`.
 6. Ensure all Hugging Face metadata reads and uploads use cache-aware clients
    and visible progress reporting.
+7. Generate and maintain the package repo `README.md`, including Hugging Face
+   model-card YAML metadata and per-variant `mesh-llm serve` examples.
+8. For a brand-new package repo:
+   - create the repo
+   - create the first commit directly on the default branch
+   - only use PR batching once the repo already exists with content
 
 Deliverables:
 
@@ -640,7 +744,7 @@ Deliverables:
 8. If there is no catalog package, or package resolution fails, prefer a
    local package-shaped component cache:
    - write `meshllm.json` plus `variants/<variant>/...` into
-     `~/.cache/mesh-llm/moe/packages/<source-owner>/<source-repo>/<source-revision>/`
+     `~/.cache/mesh-llm/packages/<source-owner>/<source-repo>/<source-revision>/`
    - reuse locally extracted `trunk.gguf`
    - reuse locally extracted `experts/expert-*.gguf`
    - assemble the required shard for the current topology from those local
@@ -658,6 +762,20 @@ Deliverables:
 - package-shaped local cache reuse when topology changes
 - topology-independent expert reuse
 - no new topology-specific split cache
+
+### Phase 4.5: Benchmark-driven planning
+
+1. Treat publish-time benchmark calibration as part of the package build.
+2. Store benchmark corpus results and the recommended
+   `min_experts_per_node` in `analysis.json`.
+3. Teach `moe plan` and `serve` to prefer the benchmark-derived recommendation
+   over a static heuristic when available.
+
+Deliverables:
+
+- benchmark-derived `min_experts_per_node`
+- shared benchmark flow for `moe analyze full` and `moe publish`
+- fidelity-based topology recommendation instead of a fixed constant
 
 ### Phase 5: Legacy cleanup
 
@@ -683,7 +801,7 @@ Deliverables:
 
 - Should `manifest.json` include any additional assembler-level compatibility
   fields beyond `ranking_sha256`, expert counts, and hashes?
-- Should `run.log` always be uploaded, or should share allow a lighter-weight
+- Should `run.log` always be uploaded, or should publish allow a lighter-weight
   publication mode later?
 - Do we want a separate discovery view later, or is the per-source catalog
   entry format enough on its own?
@@ -697,7 +815,13 @@ Build the new system around:
 - one Mesh-owned per-source package repo
 - `meshllm.json` as the repo descriptor
 - `variants/<variant>/...` as the active artifact layout
+- `~/.cache/mesh-llm/packages/...` as the canonical local package cache
 - `analysis.json`, `ranking.csv`, `manifest.json`, `run.log`, `trunk.gguf`,
   and `experts/` as the variant files
+- `README.md` as the generated package model card
+- HF-backed calibration benchmarks as part of `moe analyze full` and
+  `moe publish`
+- `moe publish --hf-job` as the remote package build path, with dry-run by
+  default and `--hf-confirm` for submission
 
 and treat the old `meshllm/moe-analysis` plus raw URL catalog model as legacy.
