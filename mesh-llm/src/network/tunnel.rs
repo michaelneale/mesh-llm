@@ -322,7 +322,7 @@ async fn handle_inbound_stream(
 
 /// Handle an inbound HTTP tunnel bi-stream: connect to the local backend proxy and relay.
 async fn handle_inbound_http_stream(
-    node: Node,
+    _node: Node,
     quic_send: iroh::endpoint::SendStream,
     quic_recv: iroh::endpoint::RecvStream,
     http_port: u16,
@@ -330,7 +330,8 @@ async fn handle_inbound_http_stream(
     tracing::info!("Inbound HTTP tunnel stream → backend proxy :{http_port}");
     let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
     tcp_stream.set_nodelay(true)?;
-    let _inflight = node.begin_inflight_request();
+    // Inflight tracking is handled by the backend proxy (backend.rs)
+    // which is the single choke point for all traffic.
 
     let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
     relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await

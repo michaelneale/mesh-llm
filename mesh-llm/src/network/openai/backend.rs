@@ -90,9 +90,13 @@ async fn handle_connection(
 ) -> Result<()> {
     let _ = stream.set_nodelay(true);
 
+    // Count this request. The guard drops when the connection finishes,
+    // decrementing the counter. This is the single source of truth for
+    // inflight tracking — all traffic (local ingress + remote tunnel)
+    // converges on this backend proxy.
+    let _inflight = node.begin_inflight_request();
+
     // Backpressure gate: reject before touching llama-server.
-    // This fires for ALL traffic (local ingress + remote tunnel) since
-    // both paths converge on this backend proxy.
     if node.is_overloaded() {
         let current = node.inflight_requests();
         tracing::warn!("Backpressure: rejecting request at backend proxy (inflight={current})");

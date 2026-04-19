@@ -1484,7 +1484,7 @@ async fn relay_probed_response<R: AsyncRead + Unpin>(
 }
 
 async fn route_local_attempt(
-    node: &mesh::Node,
+    _node: &mesh::Node,
     tcp_stream: &mut TcpStream,
     port: u16,
     prefetched: &[u8],
@@ -1493,7 +1493,7 @@ async fn route_local_attempt(
 ) -> RouteAttemptResult {
     match TcpStream::connect(format!("127.0.0.1:{port}")).await {
         Ok(mut upstream) => {
-            let _inflight = node.begin_inflight_request();
+            // Inflight tracking is handled by the backend proxy (backend.rs).
             let _ = upstream.set_nodelay(true);
             if let Err(err) = upstream.write_all(prefetched).await {
                 tracing::warn!(
