@@ -93,8 +93,14 @@ jobs:
             ci/requirements-ci-python.txt
 
       - name: Build UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
+
+      - name: Test UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: mesh-llm/ui
+        run: npm test
 
       - name: Install Python SDKs
         run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
@@ -427,9 +433,14 @@ jobs:
             mesh-llm/ui/package-lock.json
 
       - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
         working-directory: mesh-llm/ui
         run: npm ci && npm run build
+
+      - name: Test UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: mesh-llm/ui
+        run: npm test
 
       # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable

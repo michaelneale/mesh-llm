@@ -1138,6 +1138,13 @@ pub async fn start_llama_server(
         args.push("--rpc".to_string());
         args.push(rpc_arg);
     }
+    // Pin slot count explicitly. llama.cpp's default of 4 slots silently
+    // queues anything beyond that in an unbounded deferred deque, which is
+    // the source of the MiniMax-style death spiral: 43k-token prefills
+    // occupy all slots for minutes while new requests pile up invisibly.
+    // The backend proxy enforces a matching inflight cap so the deferred
+    // queue never actually fills. See network/openai/backend.rs.
+    const LLAMA_PARALLEL_SLOTS: usize = 4;
     args.extend_from_slice(&[
         "-ngl".to_string(),
         "99".to_string(),
@@ -1146,6 +1153,8 @@ pub async fn start_llama_server(
         "-fit".to_string(),
         "off".to_string(),
         "--no-mmap".to_string(),
+        "--parallel".to_string(),
+        LLAMA_PARALLEL_SLOTS.to_string(),
         "--host".to_string(),
         "0.0.0.0".to_string(),
         "--port".to_string(),

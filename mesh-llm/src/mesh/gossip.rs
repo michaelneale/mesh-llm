@@ -102,7 +102,27 @@ pub(super) fn apply_transitive_ann(
 impl Node {
     /// Open a gossip stream on an existing connection to exchange peer info.
     pub(super) async fn initiate_gossip(&self, conn: Connection, remote: EndpointId) -> Result<()> {
-        self.initiate_gossip_inner(conn, remote, true).await
+        // Timeout only the gossip round-trip. A misbehaving peer may accept the
+        // QUIC connection and even the bi-stream but never send a gossip response,
+        // blocking the join path indefinitely and preventing fallback to other
+        // candidates.
+        match tokio::time::timeout(
+            PEER_CONNECT_AND_GOSSIP_TIMEOUT,
+            self.gossip_round_trip(&conn, remote),
+        )
+        .await
+        {
+            Ok(Ok((their_announcements, rtt_ms))) => {
+                self.apply_gossip_announcements(remote, rtt_ms, &their_announcements, true)
+                    .await
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => anyhow::bail!(
+                "gossip exchange with {} timed out ({}s)",
+                remote.fmt_short(),
+                PEER_CONNECT_AND_GOSSIP_TIMEOUT.as_secs()
+            ),
+        }
     }
 
     pub(super) async fn initiate_gossip_inner(
@@ -111,6 +131,16 @@ impl Node {
         remote: EndpointId,
         discover_peers: bool,
     ) -> Result<()> {
+        let (their_announcements, rtt_ms) = self.gossip_round_trip(&conn, remote).await?;
+        self.apply_gossip_announcements(remote, rtt_ms, &their_announcements, discover_peers)
+            .await
+    }
+
+    async fn gossip_round_trip(
+        &self,
+        conn: &Connection,
+        remote: EndpointId,
+    ) -> Result<(Vec<(EndpointAddr, PeerAnnouncement)>, u32)> {
         let protocol = connection_protocol(&conn);
         let t0 = std::time::Instant::now();
         let (mut send, mut recv) = conn.open_bi().await?;
@@ -126,8 +156,17 @@ impl Node {
 
         let _ = recv.read_to_end(0).await;
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Ok((their_announcements, rtt_ms))
+    }
 
-        for (addr, ann) in &their_announcements {
+    async fn apply_gossip_announcements(
+        &self,
+        remote: EndpointId,
+        rtt_ms: u32,
+        their_announcements: &[(EndpointAddr, PeerAnnouncement)],
+        discover_peers: bool,
+    ) -> Result<()> {
+        for (addr, ann) in their_announcements {
             let peer_id = addr.id;
             if peer_id == self.endpoint.id() {
                 continue;
@@ -175,7 +214,7 @@ impl Node {
 
         if discover_peers {
             let my_role = self.role.lock().await.clone();
-            for (addr, ann) in &their_announcements {
+            for (addr, ann) in their_announcements {
                 let peer_id = addr.id;
                 if peer_id == self.endpoint.id() {
                     continue;

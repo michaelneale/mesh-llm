@@ -285,10 +285,14 @@ ui-dev api="http://127.0.0.1:3131" port="5173":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ ui_dir }}"
-    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 127.0.0.1 --port {{ port }}
+    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
 
 # Run the UI with Vite HMR proxying to the public anarchai.org API
 ui-dev-public: (ui-dev "https://www.anarchai.org")
+
+# Run UI unit tests (vitest)
+ui-test:
+    cd "{{ ui_dir }}" && npm test
 
 # Start a lite client — no GPU, no model, just a local HTTP proxy to the mesh host.
 

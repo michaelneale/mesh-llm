@@ -1,5 +1,89 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+
+vi.mock("./components/ui/select", async () => {
+  const React = await import("react");
+
+  function MockSelectItem(_props: { value: string; children: React.ReactNode }) {
+    return null;
+  }
+
+  function collectItems(children: React.ReactNode): Array<{ value: string; label: string }> {
+    const items: Array<{ value: string; label: string }> = [];
+
+    React.Children.forEach(children, (child) => {
+      if (!React.isValidElement(child)) return;
+
+      if (child.type === MockSelectItem) {
+        items.push({
+          value: child.props.value as string,
+          label: String(child.props.children),
+        });
+        return;
+      }
+
+      if (child.props && "children" in child.props) {
+        items.push(...collectItems(child.props.children));
+      }
+    });
+
+    return items;
+  }
+
+  const SelectContext = React.createContext<{
+    value?: string;
+    onValueChange?: (value: string) => void;
+    items: Array<{ value: string; label: string }>;
+  } | null>(null);
+
+  function Select({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value?: string;
+    onValueChange?: (value: string) => void;
+    children: React.ReactNode;
+  }) {
+    const items = collectItems(children);
+
+    return (
+      <SelectContext.Provider value={{ value, onValueChange, items }}>
+        {children}
+      </SelectContext.Provider>
+    );
+  }
+
+  function SelectTrigger({ className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+    const context = React.useContext(SelectContext);
+
+    return (
+      <select
+        {...props}
+        className={className}
+        value={context?.value ?? ""}
+        onChange={(event) => context?.onValueChange?.(event.target.value)}
+      >
+        {context?.items.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return {
+    Select,
+    SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectItem: MockSelectItem,
+    SelectLabel: () => null,
+    SelectSeparator: () => null,
+    SelectTrigger,
+    SelectValue: () => null,
+  };
+});
 
 import {
   App,
@@ -197,6 +281,19 @@ beforeAll(() => {
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    value: vi.fn(() => false),
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+    configurable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+    configurable: true,
+    value: vi.fn(),
   });
 });
 
@@ -475,6 +572,22 @@ describe("App routing and status", () => {
     expect(input).toBeDisabled();
     expect(input).toHaveAttribute("placeholder", "Waiting for a warm model...");
     expect(screen.getByTestId("chat-send")).toBeDisabled();
+  });
+
+
+  it("ignores the global command-bar shortcut when focus is inside the chat input", async () => {
+    statusPayload = createStatusPayload();
+    setPath("/chat");
+
+    render(<App />);
+
+    const chatInput = await screen.findByTestId("chat-input");
+    chatInput.focus();
+
+    fireEvent.keyDown(chatInput, { key: "k", metaKey: true });
+
+    expect(screen.queryByRole("dialog", { name: "Switch models" })).not.toBeInTheDocument();
+    expect(chatInput).toHaveFocus();
   });
 });
 

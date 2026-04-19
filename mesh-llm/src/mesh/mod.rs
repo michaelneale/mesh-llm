@@ -43,6 +43,8 @@ fn current_time_unix_ms() -> u64 {
 }
 
 const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
+pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(15);
 
 fn config_uses_pinned_gpu(config: &crate::plugin::MeshConfig) -> bool {
     config.gpu.assignment == crate::plugin::GpuAssignment::Pinned
@@ -3767,7 +3769,7 @@ impl Node {
 
         tracing::info!("Connecting to peer {}...", peer_id.fmt_short());
         let conn = match tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            PEER_CONNECT_AND_GOSSIP_TIMEOUT,
             connect_mesh(&self.endpoint, addr.clone()),
         )
         .await
@@ -3777,7 +3779,11 @@ impl Node {
                 anyhow::bail!("Failed to connect to {}: {e}", peer_id.fmt_short());
             }
             Err(_) => {
-                anyhow::bail!("Timeout connecting to {} (15s)", peer_id.fmt_short());
+                anyhow::bail!(
+                    "Timeout connecting to {} ({}s)",
+                    peer_id.fmt_short(),
+                    PEER_CONNECT_AND_GOSSIP_TIMEOUT.as_secs()
+                );
             }
         };
 

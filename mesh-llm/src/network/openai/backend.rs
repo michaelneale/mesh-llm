@@ -1,10 +1,23 @@
 use crate::network::openai::transport;
 use anyhow::Result;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore, TryAcquireError};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, Duration};
+
+/// Maximum concurrent requests allowed through the backend proxy.
+///
+/// Must match the `--parallel` slot count passed to llama-server in
+/// `inference/launch.rs`. When inflight requests reach this cap, the proxy
+/// drops new TCP connections instead of forwarding them, which prevents
+/// llama.cpp's internal `queue_tasks_deferred` from growing unboundedly.
+///
+/// Clients observe the dropped connection as a connect/EOF failure, which
+/// the OpenAI transport layer already classifies as `RetryableUnavailable`
+/// and retries against the next candidate host/model.
+pub(crate) const BACKEND_PROXY_MAX_INFLIGHT: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct BackendProxyHandle {
@@ -29,6 +42,17 @@ pub(crate) async fn start_backend_proxy(llama_port: u16) -> Result<BackendProxyH
     let port = listener.local_addr()?.port();
     let (stop_tx, mut stop_rx) = watch::channel(false);
 
+    // Local semaphore gates concurrent forwarded connections at the cap.
+    // A permit is acquired in the accept loop, *before* forwarding to
+    // llama-server, and held for the full connection lifetime. When all
+    // permits are in use, new connections are dropped immediately —
+    // preventing llama.cpp's `queue_tasks_deferred` from growing unbounded.
+    //
+    // The gate lives here (not on the mesh Node counter) so that it can't
+    // race with upstream callers that increment the counter only *after*
+    // a successful connect.
+    let slots = Arc::new(Semaphore::new(BACKEND_PROXY_MAX_INFLIGHT));
+
     let task = tokio::spawn(async move {
         let mut connections = JoinSet::new();
         loop {
@@ -47,10 +71,27 @@ pub(crate) async fn start_backend_proxy(llama_port: u16) -> Result<BackendProxyH
                 }
                 accept_result = listener.accept() => match accept_result {
                     Ok((stream, _)) => {
+                        let permit = match Arc::clone(&slots).try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(TryAcquireError::NoPermits) => {
+                                tracing::warn!(
+                                    cap = BACKEND_PROXY_MAX_INFLIGHT,
+                                    "backend proxy at capacity; dropping incoming connection"
+                                );
+                                drop(stream);
+                                continue;
+                            }
+                            Err(TryAcquireError::Closed) => {
+                                // Semaphore is only closed on shutdown; bail.
+                                drop(stream);
+                                break;
+                            }
+                        };
                         connections.spawn(async move {
-                        if let Err(err) = handle_connection(stream, llama_port).await {
-                            tracing::debug!("backend proxy request failed: {err}");
-                        }
+                            let _permit = permit;
+                            if let Err(err) = handle_connection(stream, llama_port).await {
+                                tracing::debug!("backend proxy request failed: {err}");
+                            }
                         });
                     }
                     Err(err) => {
@@ -284,6 +325,59 @@ mod tests {
             "expected 503, got: {response:?}"
         );
 
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_backend_proxy_drops_connection_when_at_capacity() {
+        // A stalled upstream never responds, so each forwarded request
+        // holds its permit indefinitely. Fire enough clients to exhaust
+        // the cap, then assert that the next client gets dropped without
+        // a response instead of being queued.
+        let upstream_port = start_stalled_upstream().await;
+        let proxy = start_backend_proxy(upstream_port).await.unwrap();
+        let proxy_port = proxy.port();
+
+        let req = b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}";
+
+        // Saturate the permits. Keep the streams alive for the duration
+        // of the test so the proxy doesn't free any slot.
+        let mut saturating = Vec::new();
+        for _ in 0..BACKEND_PROXY_MAX_INFLIGHT {
+            let mut s = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+                .await
+                .unwrap();
+            s.write_all(req).await.unwrap();
+            saturating.push(s);
+        }
+
+        // Give the accept loop a moment to pick each one up and acquire
+        // a permit. Without this sleep the 5th client below could race
+        // the accept of the 4th, permits wouldn't yet be exhausted, and
+        // it would get forwarded to the stalled upstream instead of
+        // dropped.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // The (cap + 1)-th connection should be accepted at the OS
+        // level, then immediately dropped by the proxy. The client
+        // observes EOF before any response bytes.
+        let mut overflow = TcpStream::connect(format!("127.0.0.1:{proxy_port}"))
+            .await
+            .unwrap();
+        let _ = overflow.write_all(req).await;
+        let mut buf = Vec::new();
+        let read = timeout(Duration::from_secs(2), overflow.read_to_end(&mut buf)).await;
+        match read {
+            Ok(Ok(_)) => assert!(
+                buf.is_empty(),
+                "expected no response bytes from dropped connection, got: {:?}",
+                String::from_utf8_lossy(&buf)
+            ),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("proxy did not drop overflow connection within timeout"),
+        }
+
+        drop(saturating);
         proxy.shutdown().await;
     }
 }
