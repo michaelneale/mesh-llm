@@ -102,7 +102,22 @@ pub(super) fn apply_transitive_ann(
 impl Node {
     /// Open a gossip stream on an existing connection to exchange peer info.
     pub(super) async fn initiate_gossip(&self, conn: Connection, remote: EndpointId) -> Result<()> {
-        self.initiate_gossip_inner(conn, remote, true).await
+        // Timeout the entire gossip exchange. A misbehaving peer may accept the
+        // QUIC connection and even the bi-stream but never send a gossip response,
+        // blocking the join path indefinitely and preventing fallback to other
+        // candidates. The 15s budget matches the QUIC connect timeout.
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            self.initiate_gossip_inner(conn, remote, true),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => anyhow::bail!(
+                "gossip exchange with {} timed out (15s)",
+                remote.fmt_short()
+            ),
+        }
     }
 
     pub(super) async fn initiate_gossip_inner(
