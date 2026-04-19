@@ -2063,12 +2063,10 @@ pub async fn handle_mesh_request(
         .await
         {
             RouteAttemptResult::Delivered { status_code } => {
-                // Record TTFB for auto-routed requests so the tracker
-                // learns which models are responsive.
-                if is_auto {
-                    if let Some(ref name) = effective_model {
-                        ttfb_tracker.record(name, route_started.elapsed());
-                    }
+                // Record TTFB for all requests (auto and explicit) so the
+                // tracker has full visibility into model responsiveness.
+                if let Some(ref name) = effective_model {
+                    ttfb_tracker.record(name, route_started.elapsed());
                 }
                 if should_learn_affinity(status_code) {
                     if let (Some(name), Some(prefix_hash)) =
@@ -2165,12 +2163,10 @@ pub async fn handle_mesh_request(
     // All hosts failed
     if last_retryable {
         tracing::warn!("All hosts failed for model {:?}", effective_model);
-        // Record a slow TTFB so auto routing learns to avoid this model.
+        // Record a slow TTFB so routing learns to avoid this model.
         // The full elapsed time captures the cumulative timeout/failure.
-        if is_auto {
-            if let Some(ref name) = effective_model {
-                ttfb_tracker.record(name, route_started.elapsed());
-            }
+        if let Some(ref name) = effective_model {
+            ttfb_tracker.record(name, route_started.elapsed());
         }
         // Every host serving the cached auto-model was unreachable or
         // returned a retryable error. The memo is worthless — drop it so
