@@ -102,26 +102,25 @@ export function CommandBarProvider({ children }: { children: ReactNode }) {
   }, [closeCommandBar, openCommandBar]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isOpenRef.current && event.key === 'Escape') {
-        event.preventDefault();
-        closeCommandBar();
-        return;
-      }
+     const onKeyDown = (event: KeyboardEvent) => {
+       if (isOpenRef.current && event.key === 'Escape') {
+         event.preventDefault();
+         closeCommandBar();
+         return;
+       }
 
-      if (event.key.toLowerCase() !== 'k' || event.altKey || event.shiftKey) return;
+       // Hotkey (cmd-k) is disabled
+       // if (event.key.toLowerCase() !== 'k' || event.altKey || event.shiftKey) return;
+       // const shouldOpen = isMacPlatform() ? event.metaKey : event.ctrlKey;
+       // if (!shouldOpen) return;
+       // if (!isOpenRef.current && isEditableTarget(event.target)) return;
+       // event.preventDefault();
+       // openCommandBar();
+     };
 
-      const shouldOpen = isMacPlatform() ? event.metaKey : event.ctrlKey;
-      if (!shouldOpen) return;
-      if (!isOpenRef.current && isEditableTarget(event.target)) return;
-
-      event.preventDefault();
-      openCommandBar();
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeCommandBar, openCommandBar]);
+     window.addEventListener('keydown', onKeyDown);
+     return () => window.removeEventListener('keydown', onKeyDown);
+   }, [closeCommandBar]);
 
   const value = useMemo<CommandBarContextValue>(
     () => ({
