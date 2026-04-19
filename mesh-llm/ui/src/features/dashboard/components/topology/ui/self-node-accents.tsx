@@ -1,5 +1,6 @@
 import type { SelfNodeAccentProps } from "../types";
 
+import { color } from "../helpers";
 import { SCENE_PALETTES } from "../theme/scene";
 
 export function DarkSelfNodeAccent({ style }: SelfNodeAccentProps) {
@@ -21,9 +22,11 @@ export function LightSelfNodeAccent({
   selectedModelMatch,
 }: SelfNodeAccentProps) {
   const selfNodeColor = SCENE_PALETTES.light.nodes.self;
-  const accentBorder = `rgba(${selfNodeColor.line[0]}, ${selfNodeColor.line[1]}, ${selfNodeColor.line[2]}, ${selectedModelMatch ? 0.44 : 0.34})`;
-  const accentFill = `rgba(${selfNodeColor.fill[0]}, ${selfNodeColor.fill[1]}, ${selfNodeColor.fill[2]}, ${selectedModelMatch ? 0.12 : 0.08})`;
-  const accentInset = `rgba(${selfNodeColor.fill[0]}, ${selfNodeColor.fill[1]}, ${selfNodeColor.fill[2]}, ${selectedModelMatch ? 0.18 : 0.12})`;
+  const [lr, lg, lb] = color(selfNodeColor.line, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v));
+  const [fr, fg, fb] = color(selfNodeColor.fill, 1).map((v, i) => (i < 3 ? Math.round(v * 255) : v));
+  const accentBorder = `rgba(${lr}, ${lg}, ${lb}, ${selectedModelMatch ? 0.44 : 0.34})`;
+  const accentFill = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.12 : 0.08})`;
+  const accentInset = `rgba(${fr}, ${fg}, ${fb}, ${selectedModelMatch ? 0.18 : 0.12})`;
 
   return (
     <div className="pointer-events-none absolute" style={style}>

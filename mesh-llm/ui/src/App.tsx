@@ -253,6 +253,10 @@ export function App() {
         gpus: p.gpus,
       });
     }
+    const activeIds = new Set(nodes.map((n) => n.id));
+    for (const key of topologyFirstSeenAt.keys()) {
+      if (!activeIds.has(key)) topologyFirstSeenAt.delete(key);
+    }
     return nodes;
   }, [status]);
 

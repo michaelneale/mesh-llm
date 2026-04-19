@@ -531,6 +531,8 @@ export function MeshRadarField({
       <div className="absolute bottom-4 right-4 flex flex-col gap-2">
         <button
           type="button"
+          aria-label="Zoom in"
+          title="Zoom in"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
             scene.chromeClassName,
@@ -546,6 +548,8 @@ export function MeshRadarField({
         </button>
         <button
           type="button"
+          aria-label="Zoom out"
+          title="Zoom out"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
             scene.chromeClassName,
@@ -561,6 +565,8 @@ export function MeshRadarField({
         </button>
         <button
           type="button"
+          aria-label="Reset view"
+          title="Reset view"
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-full border backdrop-blur",
             scene.chromeClassName,

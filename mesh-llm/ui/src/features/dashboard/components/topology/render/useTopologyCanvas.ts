@@ -124,6 +124,8 @@ export function useTopologyCanvas({
     hopDelayMs,
 }: UseTopologyCanvasArgs) {
   const lineScreenNodesRef = useRef<ScreenNode[]>([]);
+  const renderNodesRef = useRef(renderNodes);
+  renderNodesRef.current = renderNodes;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -309,14 +311,14 @@ export function useTopologyCanvas({
       const pointTwinkles = _scratchPointTwinkle;
       const screenNodes: ScreenNode[] = [];
       const centerNode =
-        renderNodes.find((node) => node.id === selfNodeId) ?? renderNodes[renderNodes.length - 1];
+        renderNodesRef.current.find((node) => node.id === selfNodeId) ?? renderNodesRef.current[renderNodesRef.current.length - 1];
       const now = performance.now();
       const hoveredNodeId = hoveredNodeIdRef.current;
       _pointHighlightedSet.clear();
       if (hoveredNodeId) _pointHighlightedSet.add(hoveredNodeId);
       _baseLineHighlightedSet.clear();
       _activeIds.clear();
-      for (const node of renderNodes) _activeIds.add(node.id);
+      for (const node of renderNodesRef.current) _activeIds.add(node.id);
       const pointHighlightedSet = _pointHighlightedSet;
       const baseLineHighlightedSet = _baseLineHighlightedSet;
       const activeIds = _activeIds;
@@ -363,7 +365,7 @@ export function useTopologyCanvas({
           lineTailAlpha: renderVariant.lineTailAlpha,
         });
         const currentPreview = buildProximityLines({
-          screenNodes: buildPreviewScreenNodes(renderNodes),
+          screenNodes: buildPreviewScreenNodes(renderNodesRef.current),
           centerNodeId: centerNode?.id,
           highlightedNodeIds: baseLineHighlightedSet,
           devicePixelRatio,
@@ -396,7 +398,8 @@ export function useTopologyCanvas({
         // Detect repositioning nodes (surviving nodes that will move >18px)
         // and include their edges in outgoing/incoming so they fade out before motion.
         const repositioningNodeIds = new Set<string>();
-        for (const node of renderNodes) {
+      for (const node of renderNodesRef.current) {
+        const currentZoom = zoomRef.current;
           if (node.id === selfNodeId) continue;
           const prev = lastScreenPositionsRef.current.get(node.id);
           if (prev) {
@@ -531,7 +534,7 @@ export function useTopologyCanvas({
         }
       }
 
-      for (const node of renderNodes) {
+      for (const node of renderNodesRef.current) {
         const currentZoom = zoomRef.current;
         const currentPan = panRef.current;
         const shouldHoldAddedNode =
@@ -1041,7 +1044,6 @@ export function useTopologyCanvas({
     lineRevealRef,
     panRef,
     pendingLineTransitionRef,
-    renderNodes,
     renderVariant,
     screenNodesRef,
     seenNodeIdsRef,
