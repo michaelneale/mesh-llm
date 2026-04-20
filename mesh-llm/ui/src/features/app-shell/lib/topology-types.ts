@@ -9,6 +9,8 @@ export type TopologyNode = {
   client: boolean;
   serving: string;
   servingModels: string[];
+  statusLabel?: string;
+  ageSeconds?: number | null;
 
   latencyMs?: number | null;
   hostname?: string;

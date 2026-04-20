@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  Clock3,
   Cpu,
   MemoryStick,
   Minus,

@@ -26,6 +26,7 @@ import {
 } from "./features/app-shell/lib/routes";
 import {
   applyThemeMode,
+  formatLiveNodeState,
   localRoutableModels,
   modelDisplayName,
   overviewVramGb,
@@ -486,7 +487,7 @@ export function App() {
         client: p.state === "client",
         serving: peerPrimaryModel(p),
         servingModels: pModels,
-        statusLabel: peerStatusLabel(p),
+        statusLabel: formatLiveNodeState(p.state),
         ageSeconds: elapsedSecondsFrom(p.first_joined_mesh_ts) ?? elapsedSecondsFrom(ensureFirstSeenAt(p.id)),
         latencyMs: p.rtt_ms ?? null,
         hostname: p.hostname,

@@ -533,6 +533,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            first_joined_mesh_ts: None,
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -577,12 +578,12 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            first_joined_mesh_ts: None,
         };
 
-        let json = serde_json::to_value(&status).expect("serialization failed");
-        assert_eq!(json["node_state"], "serving");
-        assert_eq!(json["node_status"], "Serving");
-        assert!(json.get("node_status").is_some());
+        let json = serde_json::to_string(&status).expect("serialization failed");
+        assert!(json.contains("\"node_state\":\"serving\""));
+        assert!(json.contains("\"node_status\":\"Serving\""));
     }
 
     #[test]
@@ -629,6 +630,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            first_joined_mesh_ts: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -675,6 +677,7 @@ mod tests {
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
+            first_joined_mesh_ts: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -701,6 +704,7 @@ mod tests {
             hostname: Some("peer.local".to_string()),
             is_soc: Some(false),
             gpus: vec![],
+            first_joined_mesh_ts: None,
         };
 
         let json = serde_json::to_string(&peer).expect("serialization failed");

@@ -92,6 +92,8 @@ export type RenderNode = {
   vramLabel: string;
   modelLabel: string;
   gpuLabel: string;
+  statusLabel?: string;
+  ageSeconds?: number | null;
   x: number;
   y: number;
   size: number;

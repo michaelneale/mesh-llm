@@ -1755,6 +1755,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
+            first_joined_mesh_ts: None,
         }
     }
 
