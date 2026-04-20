@@ -526,6 +526,7 @@ mod tests {
             my_is_soc: None,
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
+            routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -569,6 +570,7 @@ mod tests {
             my_is_soc: None,
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
+            routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -620,6 +622,7 @@ mod tests {
             my_is_soc: None,
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
+            routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -665,6 +668,7 @@ mod tests {
             my_is_soc: None,
             gpus: vec![],
             routing_affinity: affinity::AffinityStatsSnapshot::default(),
+            routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
