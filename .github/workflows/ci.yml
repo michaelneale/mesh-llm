@@ -30,6 +30,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       ui: ${{ steps.filter.outputs.ui }}
       benchmarks: ${{ steps.filter.outputs.benchmarks }}
+      sdk: ${{ steps.filter.outputs.sdk }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,6 +63,17 @@ jobs:
               - '.github/workflows/ci.yml'
             ui:
               - 'mesh-llm/ui/**'
+            sdk:
+              - 'mesh-api/**'
+              - 'mesh-api-ffi/**'
+              - 'mesh-client/**'
+              - 'sdk/**'
+              - 'Package.swift'
+              - 'scripts/ci-native-sdk-smoke.sh'
+              - 'scripts/ci-kotlin-sdk-smoke.sh'
+              - 'scripts/ci-swift-sdk-smoke.sh'
+              - 'scripts/ci-sdk-fixture.sh'
+              - '.github/workflows/ci.yml'
 
   resolve_llama_cache_keys:
     needs: changes
@@ -235,7 +247,7 @@ jobs:
 
   native_sdk_smoke:
     needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -284,7 +296,7 @@ jobs:
 
   kotlin_sdk_smoke:
     needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -338,7 +350,7 @@ jobs:
 
   swift_sdk_smoke:
     needs: [changes, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
