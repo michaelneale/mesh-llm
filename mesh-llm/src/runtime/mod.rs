@@ -351,10 +351,11 @@ pub(crate) async fn run() -> Result<()> {
 
         let last_mesh_id = mesh::load_last_mesh_id();
         let target_name = cli.mesh_name.as_deref();
-        // When the user did not target a specific mesh, `--auto` only joins the
-        // community mesh (unnamed or name == "mesh-llm"). Hide private named
-        // meshes from the listing so the output matches what auto will actually
-        // consider.
+        // When the user did not target a specific mesh, `--auto` only joins
+        // the community mesh (unnamed or name == "mesh-llm"). Other named
+        // meshes are still publicly discoverable on Nostr, but the user has
+        // to opt in by name. Hide them from the listing so the output matches
+        // what auto will actually consider.
         let listed: Vec<&nostr::DiscoveredMesh> = if target_name.is_some() {
             meshes.iter().collect()
         } else {
@@ -366,7 +367,7 @@ pub(crate) async fn run() -> Result<()> {
         let hidden = meshes.len().saturating_sub(listed.len());
         if hidden > 0 {
             eprintln!(
-                "  Found {} mesh(es) ({} private named mesh(es) hidden; use --mesh-name to join)",
+                "  Found {} mesh(es) ({} named mesh(es) hidden; use --mesh-name to join)",
                 listed.len(),
                 hidden
             );

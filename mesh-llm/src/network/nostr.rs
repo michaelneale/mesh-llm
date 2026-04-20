@@ -814,9 +814,12 @@ pub async fn discover(
 
 /// Is this mesh eligible for `--auto` when the user did not specify `--mesh-name`?
 ///
-/// `--auto` is for the public/community mesh only. Named third-party meshes are
-/// private groups and must be opted into explicitly via `--mesh-name`.
-/// Eligible = unnamed listing OR the blessed community name "mesh-llm".
+/// `--auto` joins the default community mesh. Eligible listings are:
+///   - unnamed (the implicit default), or
+///   - the blessed community name "mesh-llm".
+///
+/// Any other named mesh is still publicly discoverable on Nostr, but it is
+/// not the default — the user must opt in by name via `--mesh-name`.
 pub fn is_auto_eligible(mesh: &DiscoveredMesh) -> bool {
     match mesh.listing.name.as_deref() {
         None => true,
@@ -832,9 +835,10 @@ pub fn score_mesh(mesh: &DiscoveredMesh, _now_secs: u64, last_mesh_id: Option<&s
     let mut score: i64 = 100; // base score — if we can see it, it's alive
 
     // The community mesh ("mesh-llm") gets a moderate bonus so it ranks above
-    // unnamed ad-hoc meshes. Private named meshes are excluded entirely from
-    // `--auto` by `is_auto_eligible`, so we no longer penalize them here —
-    // when `--mesh-name` explicitly targets them, the penalty would be wrong.
+    // unnamed ad-hoc meshes. Other named meshes are excluded from `--auto`
+    // entirely by `is_auto_eligible`, so they don't need a score adjustment
+    // here — when the user targets one via `--mesh-name`, the raw score is
+    // what matters and any penalty would be wrong.
     if let Some(ref name) = mesh.listing.name {
         if name.eq_ignore_ascii_case("mesh-llm") {
             score += 300; // prefer the default community mesh
@@ -901,8 +905,8 @@ pub fn smart_auto(
 
     // If target name is set, only consider meshes with that exact name.
     // Otherwise `--auto` considers only the community mesh: unnamed listings
-    // plus the blessed name "mesh-llm". Other named meshes are private groups
-    // and require explicit opt-in via `--mesh-name`.
+    // plus the blessed name "mesh-llm". Other named meshes are still publicly
+    // discoverable on Nostr but must be opted into by name via `--mesh-name`.
     let candidates: Vec<&DiscoveredMesh> = if let Some(target) = target_name {
         meshes
             .iter()
@@ -928,7 +932,7 @@ pub fn smart_auto(
     // Collect viable candidates.
     // If the user specified --mesh-name, take all candidates (they already
     // filtered by name above — the user explicitly asked for this mesh).
-    // Otherwise, require positive score to filter out stale/private meshes.
+    // Otherwise, require positive score to filter out stale meshes.
     let viable: Vec<(String, DiscoveredMesh)> = scored
         .iter()
         .filter(|(_, score)| target_name.is_some() || *score > 0)
@@ -1226,11 +1230,11 @@ mod scoring_tests {
     }
 
     #[test]
-    fn score_private_named_mesh_no_community_bonus() {
-        // Private named meshes are excluded from --auto entirely by
+    fn score_other_named_mesh_no_community_bonus() {
+        // Non-community named meshes are excluded from --auto entirely by
         // `is_auto_eligible`; within `score_mesh` they simply don't get the
-        // community bonus. When the user explicitly targets one via
-        // --mesh-name, the raw score is what's used to rank.
+        // community bonus. When the user targets one via --mesh-name, the
+        // raw score is what's used to rank.
         let mesh = make_mesh(
             Some("bobs-cluster"),
             Some("xyz"),
@@ -1244,13 +1248,16 @@ mod scoring_tests {
         // base(100) + nodes(15) + models(10) — no community bonus, no penalty
         assert!(
             score < 300,
-            "private mesh should not get community bonus, got {score}"
+            "non-community named mesh should not get community bonus, got {score}"
         );
-        assert!(score > 0, "private mesh with real nodes should be positive");
+        assert!(
+            score > 0,
+            "named mesh with real nodes should be positive"
+        );
     }
 
     #[test]
-    fn private_named_mesh_not_auto_eligible() {
+    fn other_named_mesh_not_auto_eligible() {
         let bobs = make_mesh(Some("bobs-cluster"), Some("x"), &[], 1, 0, 0, 0);
         let community = make_mesh(Some("mesh-llm"), Some("c"), &[], 1, 0, 0, 0);
         let community_caps = make_mesh(Some("MESH-LLM"), Some("c2"), &[], 1, 0, 0, 0);
@@ -1541,10 +1548,11 @@ mod smart_auto_tests {
     }
 
     #[test]
-    fn smart_auto_excludes_private_named_meshes() {
+    fn smart_auto_excludes_other_named_meshes() {
         // Without --mesh-name, --auto must only consider the community mesh
-        // (unnamed or name == "mesh-llm"). Private named meshes should never
-        // appear as candidates.
+        // (unnamed or name == "mesh-llm"). Other named meshes — even though
+        // they are publicly discoverable on Nostr — should never appear as
+        // candidates unless the user targets them by name.
         let meshes = vec![
             make_mesh(
                 Some("bobs-cluster"),
@@ -1556,8 +1564,8 @@ mod smart_auto_tests {
                 0,
             ),
             make_mesh(
-                Some("alice-private"),
-                "aap",
+                Some("alice-cluster"),
+                "aac",
                 &["Qwen3-8B-Q4_K_M"],
                 3,
                 24_000_000_000,
@@ -1567,7 +1575,7 @@ mod smart_auto_tests {
         ];
         match smart_auto(&meshes, 8.0, None) {
             AutoDecision::Join { .. } => {
-                panic!("private named meshes must not be joined by --auto")
+                panic!("other named meshes must not be joined by --auto")
             }
             AutoDecision::StartNew { models } => {
                 assert!(!models.is_empty());
