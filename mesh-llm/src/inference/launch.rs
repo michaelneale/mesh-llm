@@ -782,7 +782,7 @@ pub async fn start_rpc_server(
 
     tracing::info!("Starting rpc-server on :{port} (device: {device})");
 
-    let rpc_log = runtime.log_path(&format!("rpc-server-{port}.log"));
+    let rpc_log = runtime.log_path(&format!("rpc-server-{port}"));
     eprintln!(
         "⏳ Starting rpc-server on port {port}... (logs: {})",
         rpc_log.display()
@@ -1103,7 +1103,7 @@ pub async fn start_llama_server(
         rpc_arg
     );
 
-    let llama_log = runtime.log_path("llama-server.log");
+    let llama_log = runtime.log_path("llama-server");
     eprintln!(
         "⏳ Starting llama-server... (logs: {})",
         llama_log.display()
@@ -2063,7 +2063,7 @@ No devices found
         );
     }
 
-    #[test]
+#[test]
     fn no_pkill_f_in_source_tree() {
         let src = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2092,6 +2092,56 @@ No devices found
             !runtime_src.contains(&orphan_func),
             "legacy orphan cleanup function reference still present in runtime module"
         );
+    }
+
+    #[test]
+    fn log_path_does_not_duplicate_extension() {
+        use crate::runtime::instance::InstanceRuntime;
+        use tempfile::TempDir;
+        use std::env;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let temp_path = temp_dir.path();
+
+        // Set runtime root to temp directory for test isolation
+        let original_root = env::var("MESH_LLM_RUNTIME_ROOT").ok();
+        env::set_var("MESH_LLM_RUNTIME_ROOT", temp_path);
+
+        let runtime = InstanceRuntime::acquire(std::process::id())
+            .expect("Failed to acquire runtime");
+
+        // Test llama-server log path (should NOT have .log.log)
+        let llama_log = runtime.log_path("llama-server");
+        assert!(
+            llama_log.to_string_lossy().ends_with("llama-server.log"),
+            "llama-server log path should end with .log, got: {}",
+            llama_log.display()
+        );
+        assert!(
+            !llama_log.to_string_lossy().contains(".log.log"),
+            "llama-server log path should not have double .log extension, got: {}",
+            llama_log.display()
+        );
+
+        // Test rpc-server log path (should NOT have .log.log)
+        let rpc_log = runtime.log_path("rpc-server-8001");
+        assert!(
+            rpc_log.to_string_lossy().ends_with("rpc-server-8001.log"),
+            "rpc-server log path should end with .log, got: {}",
+            rpc_log.display()
+        );
+        assert!(
+            !rpc_log.to_string_lossy().contains(".log.log"),
+            "rpc-server log path should not have double .log extension, got: {}",
+            rpc_log.display()
+        );
+
+        // Restore original env var
+        if let Some(orig) = original_root {
+            env::set_var("MESH_LLM_RUNTIME_ROOT", orig);
+        } else {
+            env::remove_var("MESH_LLM_RUNTIME_ROOT");
+        }
     }
 
     // ── parallel slots tests ──────────────────────────────────────────
