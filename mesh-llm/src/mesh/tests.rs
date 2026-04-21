@@ -14,8 +14,8 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     let transport_config = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(128u32.into())
         .build();
-    let endpoint = Endpoint::empty_builder()
-        .secret_key(SecretKey::generate(&mut rand::rng()))
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
         .alpns(vec![ALPN_V1.to_vec()])
         .transport_config(transport_config)
         .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
@@ -2761,7 +2761,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
 #[tokio::test]
 async fn test_rtt_drop_triggers_reelection() -> Result<()> {
     let node = make_test_node(super::NodeRole::Worker).await?;
-    let peer_key = SecretKey::generate(&mut rand::rng());
+    let peer_key = SecretKey::generate();
     let peer_id = EndpointId::from(peer_key.public());
 
     // Add a fake peer with high relay RTT
@@ -2797,7 +2797,7 @@ async fn test_rtt_drop_triggers_reelection() -> Result<()> {
 #[tokio::test]
 async fn test_rtt_below_threshold_no_reelection() -> Result<()> {
     let node = make_test_node(super::NodeRole::Worker).await?;
-    let peer_key = SecretKey::generate(&mut rand::rng());
+    let peer_key = SecretKey::generate();
     let peer_id = EndpointId::from(peer_key.public());
 
     {
@@ -2824,7 +2824,7 @@ async fn test_rtt_below_threshold_no_reelection() -> Result<()> {
 #[tokio::test]
 async fn test_rtt_update_unknown_peer_no_panic() -> Result<()> {
     let node = make_test_node(super::NodeRole::Worker).await?;
-    let peer_key = SecretKey::generate(&mut rand::rng());
+    let peer_key = SecretKey::generate();
     let peer_id = EndpointId::from(peer_key.public());
 
     let rx = node.peer_change_rx.clone();
@@ -2845,7 +2845,7 @@ async fn test_rtt_update_unknown_peer_no_panic() -> Result<()> {
 #[tokio::test]
 async fn test_rtt_cannot_regress() -> Result<()> {
     let node = make_test_node(super::NodeRole::Worker).await?;
-    let peer_key = SecretKey::generate(&mut rand::rng());
+    let peer_key = SecretKey::generate();
     let peer_id = EndpointId::from(peer_key.public());
 
     {
@@ -2882,7 +2882,7 @@ async fn test_rtt_cannot_regress() -> Result<()> {
 #[tokio::test]
 async fn test_connect_to_peer_skips_known_peer_without_connection() -> Result<()> {
     let node = make_test_node(super::NodeRole::Client).await?;
-    let peer_key = SecretKey::generate(&mut rand::rng());
+    let peer_key = SecretKey::generate();
     let peer_id = EndpointId::from(peer_key.public());
 
     // Simulate a transitive peer: in state.peers but NOT in state.connections
@@ -3148,8 +3148,8 @@ async fn make_test_node_with_owner(
     let transport_config = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(128u32.into())
         .build();
-    let endpoint = Endpoint::empty_builder()
-        .secret_key(SecretKey::generate(&mut rand::rng()))
+    let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(SecretKey::generate())
         .alpns(vec![ALPN_V1.to_vec()])
         .transport_config(transport_config)
         .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?

@@ -2667,7 +2667,7 @@ mod tests {
             let inner = state.inner.lock().await;
             inner.node.clone()
         };
-        let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate(&mut rand::rng()).public());
+        let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate().public());
 
         node.record_inference_attempt(
             Some("test-model"),
@@ -2734,7 +2734,7 @@ mod tests {
             inner.node.clone()
         };
         let model_name = crate::models::catalog::MODEL_CATALOG[0].name.clone();
-        let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate(&mut rand::rng()).public());
+        let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate().public());
         node.set_requested_models(vec![model_name.clone()]).await;
 
         node.record_inference_attempt(
