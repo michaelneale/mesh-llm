@@ -119,6 +119,31 @@ fn repo_only_resolution_falls_back_to_gguf_when_no_mlx_weights() {
 }
 
 #[test]
+fn canonicalize_interest_model_ref_accepts_catalog_names() {
+    let canonical = canonicalize_interest_model_ref("Qwen3-8B-Q4_K_M").unwrap();
+    assert_eq!(canonical, "Qwen3-8B-Q4_K_M");
+}
+
+#[test]
+fn canonicalize_interest_model_ref_normalizes_huggingface_selectors() {
+    let canonical =
+        canonicalize_interest_model_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL").unwrap();
+    assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
+}
+
+#[test]
+fn canonicalize_interest_model_ref_rejects_direct_urls() {
+    let err = canonicalize_interest_model_ref(
+        "https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf",
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
+    );
+}
+
+#[test]
 fn parse_huggingface_ref_rejects_http_url() {
     assert!(parse_huggingface_ref("https://example.com/model.gguf").is_none());
 }

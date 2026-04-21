@@ -2,6 +2,7 @@ use crate::mesh;
 use crate::network::affinity;
 use crate::plugin;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -33,6 +34,15 @@ pub struct RuntimeProcessPayload {
     pub pid: u32,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LocalModelInterest {
+    pub model_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submission_source: Option<String>,
+    pub created_at_unix: u64,
+    pub updated_at_unix: u64,
+}
+
 #[derive(Clone)]
 pub struct MeshApi {
     pub(super) inner: Arc<Mutex<ApiInner>>,
@@ -59,6 +69,7 @@ pub(super) struct ApiInner {
     pub(super) runtime_control: Option<tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>>,
     pub(super) local_processes: Vec<RuntimeProcessPayload>,
     pub(super) sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub(super) model_interests: HashMap<String, LocalModelInterest>,
     pub(super) inventory_scan_running: bool,
     pub(super) inventory_scan_waiters:
         Vec<tokio::sync::oneshot::Sender<crate::models::LocalModelInventorySnapshot>>,

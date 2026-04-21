@@ -52,6 +52,7 @@ The management API exposes the state the UI uses directly:
 - `GET /api/events` for live updates
 - `GET /api/models` for mesh model inventory and `GET /api/runtime*` for loaded model/process state
 - `GET /api/search` for read-only catalog or Hugging Face model search, returning the same JSON payload shape as `mesh-llm models search --json`
+- `GET`/`POST`/`DELETE /api/model-interests` for local explicit-interest submission and readback using canonical model refs
 - `GET /api/discover` for mesh discovery results
 - `GET /api/plugins` plus per-plugin tool endpoints
 - `GET /api/blackboard/feed`, `GET /api/blackboard/search`, `POST /api/blackboard/post`

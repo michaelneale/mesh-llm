@@ -4,6 +4,9 @@
 //!   GET  /api/status    — live mesh state plus local-only routing metrics (JSON)
 //!   GET  /api/models    — mesh model inventory plus local-only routing metrics (JSON)
 //!   GET  /api/search    — catalog or Hugging Face model search with the same JSON payload as `mesh-llm models search --json`
+//!   GET  /api/model-interests — local explicit-interest readback (JSON)
+//!   POST /api/model-interests — register local explicit interest for a canonical model ref
+//!   DELETE /api/model-interests/{model_ref} — clear local explicit interest
 //!   GET  /api/runtime   — local model state (JSON)
 //!   GET  /api/runtime/endpoints — registered plugin endpoint state (JSON)
 //!   GET  /api/runtime/processes — local inference process state (JSON)
@@ -29,7 +32,9 @@ mod routes;
 mod state;
 mod status;
 
-pub use self::state::{MeshApi, RuntimeControlRequest, RuntimeModelPayload, RuntimeProcessPayload};
+pub use self::state::{
+    LocalModelInterest, MeshApi, RuntimeControlRequest, RuntimeModelPayload, RuntimeProcessPayload,
+};
 pub(crate) use self::status::classify_runtime_error;
 
 use self::assets::{respond_console_asset, respond_console_index};
@@ -248,6 +253,7 @@ impl MeshApi {
                 runtime_control: None,
                 local_processes: Vec::new(),
                 sse_clients: Vec::new(),
+                model_interests: std::collections::HashMap::new(),
                 inventory_scan_running: false,
                 inventory_scan_waiters: Vec::new(),
                 local_instances: Arc::new(Mutex::new(Vec::new())),
@@ -258,6 +264,65 @@ impl MeshApi {
 
     pub async fn node(&self) -> mesh::Node {
         self.inner.lock().await.node.clone()
+    }
+
+    pub(super) async fn model_interests(&self) -> Vec<LocalModelInterest> {
+        let mut interests = {
+            let inner = self.inner.lock().await;
+            inner
+                .model_interests
+                .values()
+                .cloned()
+                .collect::<Vec<LocalModelInterest>>()
+        };
+        interests.sort_by(|left, right| {
+            right
+                .updated_at_unix
+                .cmp(&left.updated_at_unix)
+                .then_with(|| left.model_ref.cmp(&right.model_ref))
+        });
+        interests
+    }
+
+    pub(super) async fn upsert_model_interest(
+        &self,
+        model_ref: String,
+        submission_source: Option<String>,
+    ) -> (LocalModelInterest, bool) {
+        let now = current_unix_secs();
+        let mut inner = self.inner.lock().await;
+        match inner.model_interests.entry(model_ref.clone()) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get().clone();
+                let updated = LocalModelInterest {
+                    model_ref,
+                    submission_source: submission_source.or(existing.submission_source),
+                    created_at_unix: existing.created_at_unix,
+                    updated_at_unix: now,
+                };
+                entry.insert(updated.clone());
+                (updated, false)
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let created = LocalModelInterest {
+                    model_ref,
+                    submission_source,
+                    created_at_unix: now,
+                    updated_at_unix: now,
+                };
+                entry.insert(created.clone());
+                (created, true)
+            }
+        }
+    }
+
+    pub(super) async fn remove_model_interest(&self, model_ref: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .model_interests
+            .remove(model_ref)
+            .is_some()
     }
 
     pub async fn set_primary_backend(&self, backend: String) {
@@ -1051,6 +1116,13 @@ impl MeshApi {
             }
         }
     }
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ── Server ──
@@ -2560,6 +2632,151 @@ mod tests {
         assert_eq!(
             payload["error"],
             json!("Invalid 'sort' value 'random'. Expected one of: trending, downloads, likes, created, updated, parameters-desc, parameters-asc")
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_interests_post_and_get_round_trip() {
+        let state = build_test_mesh_api().await;
+        let (post_addr, post_handle) = spawn_management_test_server(state.clone()).await;
+        let body = r#"{"model_ref":"Qwen3-Coder-Next-Q4_K_M","source":"ui"}"#;
+
+        let post_response = send_management_request(
+            post_addr,
+            format!(
+                "POST /api/model-interests HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+
+        assert!(post_response.starts_with("HTTP/1.1 201"));
+        let post_payload = json_body(&post_response);
+        assert_eq!(post_payload["created"], json!(true));
+        assert_eq!(
+            post_payload["interest"]["model_ref"],
+            json!("Qwen3-Coder-Next-Q4_K_M")
+        );
+        assert_eq!(post_payload["interest"]["submission_source"], json!("ui"));
+        assert_eq!(post_payload["model_interests"].as_array().unwrap().len(), 1);
+        post_handle.abort();
+
+        let (get_addr, get_handle) = spawn_management_test_server(state).await;
+        let get_response = send_management_request(
+            get_addr,
+            "GET /api/model-interests HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(get_response.starts_with("HTTP/1.1 200"));
+        let get_payload = json_body(&get_response);
+        let interests = get_payload["model_interests"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(interests.len(), 1);
+        assert_eq!(interests[0]["model_ref"], json!("Qwen3-Coder-Next-Q4_K_M"));
+        assert_eq!(interests[0]["submission_source"], json!("ui"));
+
+        get_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_interests_post_is_idempotent() {
+        let state = build_test_mesh_api().await;
+        let body = r#"{"model_ref":"Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M","source":"ui"}"#;
+        let request = format!(
+            "POST /api/model-interests HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+
+        let (first_addr, first_handle) = spawn_management_test_server(state.clone()).await;
+        let first_response = send_management_request(first_addr, request.clone()).await;
+        assert!(first_response.starts_with("HTTP/1.1 201"));
+        let first_payload = json_body(&first_response);
+        let created_at = first_payload["interest"]["created_at_unix"]
+            .as_u64()
+            .expect("created_at_unix");
+        first_handle.abort();
+
+        let (second_addr, second_handle) = spawn_management_test_server(state).await;
+        let second_response = send_management_request(second_addr, request).await;
+        assert!(second_response.starts_with("HTTP/1.1 200"));
+        let second_payload = json_body(&second_response);
+        assert_eq!(second_payload["created"], json!(false));
+        assert_eq!(
+            second_payload["interest"]["model_ref"],
+            json!("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
+        );
+        assert_eq!(
+            second_payload["interest"]["created_at_unix"],
+            json!(created_at)
+        );
+        assert_eq!(
+            second_payload["model_interests"].as_array().unwrap().len(),
+            1
+        );
+
+        second_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_interests_delete_decodes_percent_encoded_model_ref() {
+        let state = build_test_mesh_api().await;
+        state
+            .upsert_model_interest(
+                crate::models::canonicalize_interest_model_ref("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
+                    .unwrap(),
+                Some("ui".to_string()),
+            )
+            .await;
+
+        let (addr, handle) = spawn_management_test_server(state).await;
+        let response = send_management_request(
+            addr,
+            "DELETE /api/model-interests/Qwen%2FQwen3-Coder-Next-GGUF%3AQ4_K_M HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let payload = json_body(&response);
+        assert_eq!(payload["removed"], json!(true));
+        assert_eq!(
+            payload["model_ref"],
+            json!("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
+        );
+        assert_eq!(payload["model_interests"], json!([]));
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_interests_reject_direct_urls() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+        let body = r#"{"model_ref":"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"}"#;
+
+        let response = send_management_request(
+            addr,
+            format!(
+                "POST /api/model-interests HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 400"));
+        let payload = json_body(&response);
+        assert_eq!(
+            payload["error"],
+            json!(
+                "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
+            )
         );
 
         handle.abort();

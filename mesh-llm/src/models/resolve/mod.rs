@@ -70,6 +70,41 @@ pub fn find_catalog_model_exact(query: &str) -> Option<&'static catalog::Catalog
     })
 }
 
+pub fn canonicalize_interest_model_ref(input: &str) -> Result<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        bail!("Missing 'model_ref' field");
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        bail!("Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL");
+    }
+
+    if let Some(model) = find_catalog_model_exact(trimmed) {
+        return Ok(model.name.to_string());
+    }
+
+    match parse_exact_model_ref(trimmed)? {
+        ExactModelRef::Catalog(model) => Ok(model.name.to_string()),
+        ExactModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        } => {
+            if is_quant_like_selector(&file) {
+                return Ok(format_repo_selector_ref(&repo, revision.as_deref(), &file));
+            }
+            Ok(format_huggingface_display_ref(
+                &repo,
+                revision.as_deref(),
+                &file,
+            ))
+        }
+        ExactModelRef::Url { .. } => bail!(
+            "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
+        ),
+    }
+}
+
 pub async fn download_model_ref_with_progress_details(
     input: &str,
     progress: bool,
