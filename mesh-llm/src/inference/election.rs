@@ -2260,7 +2260,6 @@ async fn moe_election_loop(
                     ctx_size_override,
                     total_group_vram: None,
                     selected_gpu: pinned_gpu.as_ref(),
-                    slots,
                 },
             )
             .await
@@ -2368,7 +2367,6 @@ async fn moe_election_loop(
                         ctx_size_override,
                         total_group_vram: None,
                         selected_gpu: pinned_gpu.as_ref(),
-                        slots,
                     },
                 )
                 .await
@@ -2531,7 +2529,6 @@ async fn moe_election_loop(
                     ctx_size_override,
                     total_group_vram: None,
                     selected_gpu: pinned_gpu.as_ref(),
-                    slots,
                 },
             )
             .await
@@ -2907,7 +2904,6 @@ async fn start_llama(
             ctx_size_override,
             total_group_vram: group_vram,
             selected_gpu: pinned_gpu,
-            slots,
         },
     )
     .await

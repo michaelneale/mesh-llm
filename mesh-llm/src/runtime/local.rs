@@ -205,7 +205,6 @@ pub(super) async fn start_runtime_local_model(
             ctx_size_override,
             total_group_vram: None,
             selected_gpu: None,
-            slots,
         },
     )
     .await?;
