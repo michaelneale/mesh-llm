@@ -22,7 +22,7 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `mesh-llm/docs/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
 | `mesh-llm/docs/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
-| `relay/README.md` | Self-hosted iroh relay on Fly |
+| `tools/relay-fly-legacy/README.md` | Legacy self-hosted iroh relay (not in use — now using services.iroh.computer) |
 
 ## Building
 
@@ -70,7 +70,7 @@ mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.
 - `mesh-llm/ui/` — React web console (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
 - `mesh-llm/docs/` — Design and testing docs
 - `fly/` — Fly.io deployment (console + API client apps)
-- `relay/` — Self-hosted iroh relay
+- `tools/relay-fly-legacy/` — Legacy self-hosted iroh relay (not in use — now using services.iroh.computer)
 - `evals/` — Benchmarking and evaluation scripts
 
 ## Module Structure Rules

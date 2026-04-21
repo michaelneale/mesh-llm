@@ -26,7 +26,11 @@ Relay connections degrade over hours on some nodes (Studio pattern: fresh=250ms,
 
 ## Production relay infrastructure
 
-Currently mesh-llm uses iroh's default public relays for NAT traversal. We have a self-hosted iroh-relay on Fly.io (`relay/`) but it's not the default yet. Dedicated relays in key regions would improve connectivity. May also help with the relay decay issue above.
+mesh-llm now uses managed iroh relays via [services.iroh.computer](https://services.iroh.computer) as the default:
+- `usw1-2.relay.michaelneale.mesh-llm.iroh.link` (US West)
+- `aps1-1.relay.michaelneale.mesh-llm.iroh.link` (Asia-Pacific South)
+
+The old self-hosted Fly.io relay (`tools/relay-fly-legacy/`) is no longer in use. Adding more relay regions may help with the relay decay issue above.
 
 ## Agent launcher
 
