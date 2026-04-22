@@ -21,7 +21,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
+COPY mesh-llm/build.rs mesh-llm/build.rs
+COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
+COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
+COPY mesh-llm/proto/ mesh-llm/proto/
+COPY mesh-llm/ mesh-llm/
+COPY mesh-client/ mesh-client/
+COPY mesh-api/ mesh-api/
+COPY mesh-host-core/ mesh-host-core/
+COPY mesh-api-ffi/ mesh-api-ffi/
+COPY mesh-llm-test-harness/ mesh-llm-test-harness/
+COPY tools/xtask/ tools/xtask/
 COPY --from=ui-builder /app/dist mesh-llm/ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
