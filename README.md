@@ -364,8 +364,8 @@ mesh-llm exposes an OpenAI-compatible API on `localhost:9337`. Any tool that sup
 
 For built-in launcher integrations (`goose`, `claude`, `opencode`):
 
-- If a mesh is already running locally on `--port`, it is reused.
-- If not, `mesh-llm` auto-starts a background client node that auto-joins the mesh.
+- Goose and Claude reuse a local mesh on `--port` and auto-start a local client if needed.
+- OpenCode targets `--host` (default `127.0.0.1:9337`) and only auto-starts a local client for loopback/localhost targets.
 - If `--model` is omitted, the launcher picks the strongest tool-capable model available on the mesh.
 - When the harness exits (e.g. `claude` quits), the auto-started node is cleaned up automatically.
 
@@ -393,10 +393,22 @@ OpenCode uses a temporary provider config injected by Mesh, so you don't need to
 mesh-llm opencode
 ```
 
+Point OpenCode at a different mesh host or URL:
+
+```bash
+mesh-llm opencode --host https://mesh.example.com
+```
+
 Use a specific model (example: MiniMax):
 
 ```bash
-mesh-llm opencode --model MiniMax-M2.5-Q4_K_M
+mesh-llm opencode --host 127.0.0.1:9337 --model MiniMax-M2.5-Q4_K_M
+```
+
+Write or update a merged persistent OpenCode config:
+
+```bash
+mesh-llm opencode --write --host 127.0.0.1:9337
 ```
 
 ### pi

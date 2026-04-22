@@ -514,15 +514,18 @@ pub(crate) enum Command {
     },
     /// Launch OpenCode with mesh-llm as the inference provider.
     ///
-    /// If no mesh is running on --port, this auto-joins the mesh as a client.
+    /// If no mesh is running on a loopback/localhost target, this auto-joins the mesh as a client.
     #[command(name = "opencode")]
     Opencode {
         /// Model id to use from /v1/models (default: auto = mesh picks best)
         #[arg(long)]
         model: Option<String>,
-        /// API port for mesh-llm (default: 9337)
-        #[arg(long, default_value = "9337")]
-        port: u16,
+        /// mesh-llm host or URL for OpenCode (default: 127.0.0.1:9337)
+        #[arg(long, default_value = "127.0.0.1:9337")]
+        host: String,
+        /// Write the mesh provider config to opencode's config file instead of launching.
+        #[arg(long)]
+        write: bool,
     },
     /// Stop all running mesh-llm, llama-server, and rpc-server processes.
     Stop,
@@ -1002,6 +1005,34 @@ mod tests {
             help.contains("headless") || help.contains("management API"),
             "help text should mention headless or management API"
         );
+    }
+
+    #[test]
+    fn opencode_command_accepts_host_flag() {
+        let cli = Cli::parse_from([
+            "mesh-llm",
+            "opencode",
+            "--host",
+            "https://mesh.example.com:9443",
+        ]);
+
+        match cli.command.expect("opencode command expected") {
+            Command::Opencode { model, host, write } => {
+                assert_eq!(model, None);
+                assert_eq!(host, "https://mesh.example.com:9443");
+                assert!(!write);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opencode_command_rejects_port_flag() {
+        let err = Cli::try_parse_from(["mesh-llm", "opencode", "--port", "9337"])
+            .expect_err("opencode should reject --port");
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("--port"));
     }
 
     #[test]

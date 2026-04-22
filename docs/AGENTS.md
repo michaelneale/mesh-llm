@@ -8,8 +8,8 @@ Mesh LLM exposes an OpenAI-compatible API on `http://localhost:9337/v1`, so most
 
 For built-in launcher commands such as `goose`, `claude`, and `opencode`:
 
-- if a mesh is already running locally on the chosen port, it is reused
-- otherwise Mesh LLM starts a background client node and auto-joins a mesh
+- goose and claude reuse a local mesh on the chosen `--port`
+- opencode targets `--host` (default `127.0.0.1:9337`) and only auto-starts a local client for loopback/localhost targets
 - if `--model` is omitted, the launcher picks the strongest tool-capable model available
 - when the harness exits, the auto-started node is cleaned up
 
@@ -51,11 +51,25 @@ Launch OpenCode directly through Mesh LLM:
 mesh-llm opencode
 ```
 
+Point OpenCode at a different mesh host or URL:
+
+```bash
+mesh-llm opencode --host https://mesh.example.com
+```
+
 Use a specific model:
 
 ```bash
-mesh-llm opencode --model MiniMax-M2.5-Q4_K_M
+mesh-llm opencode --host 127.0.0.1:9337 --model MiniMax-M2.5-Q4_K_M
 ```
+
+Write a merged persistent OpenCode config to `~/.config/opencode/opencode.json`:
+
+```bash
+mesh-llm opencode --write --host 127.0.0.1:9337
+```
+
+If only `~/.config/opencode/opencode.jsonc` exists, Mesh LLM stops with a clear error telling you to rename or migrate it to `opencode.json` first.
 
 Mesh LLM injects a temporary OpenCode config with `OPENCODE_CONFIG_CONTENT` when it launches OpenCode, so it does not edit your persistent OpenCode config files.
 
@@ -69,8 +83,7 @@ OPENCODE_CONFIG_CONTENT='{
       "npm": "@ai-sdk/openai-compatible",
       "name": "mesh-llm",
       "options": {
-        "baseURL": "http://127.0.0.1:9337/v1",
-        "apiKey": "{env:OPENAI_API_KEY}"
+        "baseURL": "http://127.0.0.1:9337/v1"
       },
       "models": {
         "MiniMax-M2.5-Q4_K_M": {
