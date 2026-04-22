@@ -32,6 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "../../../../components/ui/table";
+import { formatShortDuration } from "../../../../lib/format-duration";
 import { cn } from "../../../../lib/utils";
 import { modelStatusTooltip } from "../../../app-shell/lib/status-helpers";
 import type { MeshModel } from "../../../app-shell/lib/status-types";
@@ -396,7 +397,7 @@ export function ModelSidebar({
               ? `${model.request_count} requests seen`
               : "No request count"}
             {model.last_active_secs_ago != null
-              ? ` · active ${formatAge(model.last_active_secs_ago)} ago`
+              ? ` · active ${model.last_active_secs_ago < 1 ? "just now" : `${formatShortDuration(model.last_active_secs_ago)} ago`}`
               : ""}
           </div>
         ) : null}
@@ -465,12 +466,6 @@ function modelRevisionFileName(model?: MeshModel | null) {
   return `${fullName}@${model.source_revision}`;
 }
 
-function formatAge(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds < 60) return "just now";
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
-  return `${Math.round(seconds / 86400)}d`;
-}
 
 function formatContextLength(value?: number) {
   if (!value || !Number.isFinite(value)) return "Unknown";

@@ -4,9 +4,11 @@ use super::resolve::{
 };
 use super::ModelCapabilities;
 use super::{build_hf_tokio_api, capabilities, catalog};
+use crate::system::hardware;
 use anyhow::{Context, Result};
 use hf_hub::{ListModelsParams, ModelInfo};
 use regex_lite::Regex;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use tokio::task::JoinSet;
@@ -72,6 +74,87 @@ pub fn search_catalog_models(query: &str) -> Vec<&'static catalog::CatalogModel>
         .collect();
     results.sort_by(|left, right| left.name.cmp(&right.name));
     results
+}
+
+pub fn search_catalog_json_payload(
+    query: &str,
+    filter: SearchArtifactFilter,
+    sort: SearchSort,
+    results: &[&'static catalog::CatalogModel],
+    limit: usize,
+) -> Value {
+    let payload_results: Vec<Value> = results
+        .iter()
+        .take(limit)
+        .map(|model| {
+            json!({
+                "name": model.name,
+                "repo_id": model.source_repo(),
+                "type": catalog_model_kind_code(model),
+                "size": model.size,
+                "description": model.description,
+                "fit": fit_code_for_size_label(&model.size),
+                "ref": model.name,
+                "show": format!("mesh-llm models show {}", model.name),
+                "download": format!("mesh-llm models download {}", model.name),
+                "draft": model.draft,
+                "capabilities": capabilities_json(capabilities::infer_catalog_capabilities(model)),
+            })
+        })
+        .collect();
+    json!({
+        "query": query,
+        "filter": search_filter_name(filter),
+        "sort": search_sort_name(sort),
+        "source": "catalog",
+        "machine": local_capacity_json(),
+        "results": payload_results,
+    })
+}
+
+pub fn search_huggingface_json_payload(
+    query: &str,
+    filter: SearchArtifactFilter,
+    sort: SearchSort,
+    results: &[SearchHit],
+) -> Value {
+    let payload_results: Vec<Value> = results
+        .iter()
+        .map(|result| {
+            json!({
+                "repo_id": result.repo_id,
+                "repo_url": huggingface_repo_url(&result.repo_id),
+                "type": model_kind_code(result.kind),
+                "variant_count": result.variant_count,
+                "size": result.size_label,
+                "downloads": result.downloads,
+                "likes": result.likes,
+                "fit": result
+                    .size_label
+                    .as_deref()
+                    .and_then(fit_code_for_size_label),
+                "ref": result.exact_ref,
+                "show": format!("mesh-llm models show {}", result.exact_ref),
+                "download": format!("mesh-llm models download {}", result.exact_ref),
+                "capabilities": capabilities_json(result.capabilities),
+                "catalog": result.catalog.map(|model| {
+                    json!({
+                        "name": model.name,
+                        "size": model.size,
+                        "description": model.description,
+                    })
+                }),
+            })
+        })
+        .collect();
+    json!({
+        "query": query,
+        "filter": search_filter_name(filter),
+        "sort": search_sort_name(sort),
+        "source": "huggingface",
+        "machine": local_capacity_json(),
+        "results": payload_results,
+    })
 }
 
 // Keep search custom for now. `hf-hub` handles cache and file transport well,
@@ -243,6 +326,92 @@ fn api_sort_key(sort: SearchSort) -> Option<&'static str> {
         SearchSort::Created => Some("createdAt"),
         SearchSort::Updated => Some("lastModified"),
         SearchSort::ParametersDesc | SearchSort::ParametersAsc => None,
+    }
+}
+
+fn search_filter_name(filter: SearchArtifactFilter) -> &'static str {
+    match filter {
+        SearchArtifactFilter::Gguf => "gguf",
+        SearchArtifactFilter::Mlx => "mlx",
+    }
+}
+
+fn search_sort_name(sort: SearchSort) -> &'static str {
+    match sort {
+        SearchSort::Trending => "trending",
+        SearchSort::Downloads => "downloads",
+        SearchSort::Likes => "likes",
+        SearchSort::Created => "created",
+        SearchSort::Updated => "updated",
+        SearchSort::ParametersDesc => "parameters-desc",
+        SearchSort::ParametersAsc => "parameters-asc",
+    }
+}
+
+fn local_capacity_json() -> Value {
+    let vram_bytes = hardware::survey().vram_bytes;
+    let vram_gb = vram_bytes as f64 / 1e9;
+    json!({
+        "vram_bytes": vram_bytes,
+        "vram_gb": vram_gb,
+    })
+}
+
+fn capabilities_json(caps: ModelCapabilities) -> Value {
+    json!({
+        "text": true,
+        "multimodal": caps.multimodal_status(),
+        "vision": caps.vision_status(),
+        "audio": caps.audio_status(),
+        "reasoning": caps.reasoning_status(),
+        "tool_use": caps.tool_use_status(),
+        "moe": caps.moe,
+    })
+}
+
+fn fit_code_for_size_label(size_label: &str) -> Option<&'static str> {
+    let model_gb = catalog::parse_size_gb(size_label);
+    let vram_gb = hardware::survey().vram_bytes as f64 / 1e9;
+    if model_gb <= 0.0 || vram_gb <= 0.0 {
+        return None;
+    }
+
+    let code = if model_gb <= vram_gb * 0.6 {
+        "comfortable"
+    } else if model_gb <= vram_gb * 0.9 {
+        "tight"
+    } else if model_gb <= vram_gb * 1.1 {
+        "tradeoff"
+    } else {
+        "too_large"
+    };
+    Some(code)
+}
+
+fn huggingface_repo_url(repo_id: &str) -> String {
+    format!("https://huggingface.co/{repo_id}")
+}
+
+fn model_kind_code(kind: &str) -> &'static str {
+    if kind.to_ascii_lowercase().contains("mlx") {
+        "mlx"
+    } else {
+        "gguf"
+    }
+}
+
+fn catalog_model_kind_code(model: &catalog::CatalogModel) -> &'static str {
+    if model
+        .source_file()
+        .map(|file| {
+            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
+        })
+        .unwrap_or(false)
+        || model.url.contains("model.safetensors")
+    {
+        "mlx"
+    } else {
+        "gguf"
     }
 }
 
@@ -481,6 +650,7 @@ fn mlx_candidate_rank(file: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::find_catalog_model_exact;
     use std::sync::{Arc, Mutex};
 
     fn assert_progress_sequence(events: &[SearchProgress]) {
@@ -710,6 +880,64 @@ mod tests {
         let candidates = collect_repo_artifact_candidates(&siblings);
         let files: Vec<_> = candidates.into_iter().map(|c| c.file).collect();
         assert_eq!(files, vec!["model.safetensors".to_string()]);
+    }
+
+    #[test]
+    fn search_catalog_json_payload_uses_cli_contract_fields() {
+        let model = find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M").expect("catalog model");
+        let payload = search_catalog_json_payload(
+            "qwen",
+            SearchArtifactFilter::Gguf,
+            SearchSort::ParametersDesc,
+            &[model],
+            1,
+        );
+
+        assert_eq!(payload["filter"], serde_json::json!("gguf"));
+        assert_eq!(payload["sort"], serde_json::json!("parameters-desc"));
+        assert!(payload.get("machine").is_some());
+        let result = &payload["results"][0];
+        assert_eq!(result["ref"], serde_json::json!("Qwen3-Coder-Next-Q4_K_M"));
+        assert_eq!(result["type"], serde_json::json!("gguf"));
+        assert_eq!(
+            result["show"],
+            serde_json::json!("mesh-llm models show Qwen3-Coder-Next-Q4_K_M")
+        );
+    }
+
+    #[test]
+    fn search_huggingface_json_payload_uses_cli_contract_fields() {
+        let model = find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M").expect("catalog model");
+        let payload = search_huggingface_json_payload(
+            "qwen",
+            SearchArtifactFilter::Gguf,
+            SearchSort::ParametersAsc,
+            &[SearchHit {
+                repo_id: "Qwen/Qwen3-Coder-Next-GGUF".to_string(),
+                kind: "🦙 GGUF",
+                exact_ref: "Qwen3-Coder-Next-Q4_K_M".to_string(),
+                variant_count: Some(3),
+                size_label: Some(model.size.clone()),
+                downloads: Some(42),
+                likes: Some(7),
+                catalog: Some(model),
+                capabilities: capabilities::infer_catalog_capabilities(model),
+            }],
+        );
+
+        assert_eq!(payload["filter"], serde_json::json!("gguf"));
+        assert_eq!(payload["sort"], serde_json::json!("parameters-asc"));
+        let result = &payload["results"][0];
+        assert_eq!(result["ref"], serde_json::json!("Qwen3-Coder-Next-Q4_K_M"));
+        assert_eq!(result["type"], serde_json::json!("gguf"));
+        assert_eq!(
+            result["repo_url"],
+            serde_json::json!("https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF")
+        );
+        assert_eq!(
+            result["catalog"]["name"],
+            serde_json::json!("Qwen3-Coder-Next-Q4_K_M")
+        );
     }
 
     #[tokio::test]

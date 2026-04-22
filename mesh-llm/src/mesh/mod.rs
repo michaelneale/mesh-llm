@@ -655,6 +655,7 @@ pub enum NodeRole {
 pub(crate) struct PeerAnnouncement {
     pub(crate) addr: EndpointAddr,
     pub(crate) role: NodeRole,
+    pub(crate) first_joined_mesh_ts: Option<u64>,
     pub(crate) models: Vec<String>,
     pub(crate) vram_bytes: u64,
     pub(crate) model_source: Option<String>,
@@ -688,6 +689,7 @@ pub struct PeerInfo {
     pub addr: EndpointAddr,
     pub tunnel_port: Option<u16>,
     pub role: NodeRole,
+    pub first_joined_mesh_ts: Option<u64>,
     pub models: Vec<String>,
     pub vram_bytes: u64,
     pub rtt_ms: Option<u32>,
@@ -761,6 +763,7 @@ impl PeerInfo {
             addr,
             tunnel_port: None,
             role: ann.role.clone(),
+            first_joined_mesh_ts: ann.first_joined_mesh_ts,
             models: ann.models.clone(),
             vram_bytes: ann.vram_bytes,
             rtt_ms: None,
@@ -985,6 +988,7 @@ pub struct Node {
     /// This is the single source of truth for "what does the mesh want?"
     model_demand: Arc<std::sync::Mutex<HashMap<String, ModelDemand>>>,
     mesh_id: Arc<Mutex<Option<String>>>,
+    first_joined_mesh_ts: Arc<Mutex<Option<u64>>>,
     accepting: Arc<(tokio::sync::Notify, std::sync::atomic::AtomicBool)>,
     vram_bytes: u64,
     peer_change_tx: watch::Sender<usize>,
@@ -1427,6 +1431,7 @@ impl Node {
             requested_models: Arc::new(Mutex::new(Vec::new())),
             model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mesh_id: Arc::new(Mutex::new(None)),
+            first_joined_mesh_ts: Arc::new(Mutex::new(None)),
             accepting: Arc::new((
                 tokio::sync::Notify::new(),
                 std::sync::atomic::AtomicBool::new(false),
@@ -1526,6 +1531,7 @@ impl Node {
             requested_models: Arc::new(Mutex::new(Vec::new())),
             model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
             mesh_id: Arc::new(Mutex::new(None)),
+            first_joined_mesh_ts: Arc::new(Mutex::new(None)),
             accepting: Arc::new((
                 tokio::sync::Notify::new(),
                 std::sync::atomic::AtomicBool::new(false),
@@ -2039,6 +2045,20 @@ impl Node {
 
     pub async fn mesh_id(&self) -> Option<String> {
         self.mesh_id.lock().await.clone()
+    }
+
+    pub async fn first_joined_mesh_ts(&self) -> Option<u64> {
+        *self.first_joined_mesh_ts.lock().await
+    }
+
+    pub async fn set_first_joined_mesh_ts_if_absent(&self, ts: u64) -> bool {
+        let mut current = self.first_joined_mesh_ts.lock().await;
+        if current.is_none() {
+            *current = Some(ts);
+            true
+        } else {
+            false
+        }
     }
 
     /// Set the mesh identity. If None was set, adopts the given ID (from gossip).

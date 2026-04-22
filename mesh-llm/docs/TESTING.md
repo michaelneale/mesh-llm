@@ -338,11 +338,13 @@ mesh-llm serve --auto
 # After serving:
 curl localhost:3131/api/status   # JSON: node, peers, routing, mesh_id, mesh_name
 curl localhost:3131/api/events   # SSE stream
+curl 'localhost:3131/api/search?q=qwen&catalog=true&artifact=gguf&limit=5' # JSON search results
 curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 ```
 
 - `/api/status` includes `mesh_id` and `mesh_name`
 - SSE events push every 2s and on topology changes
+- `/api/search` returns 200 JSON with canonical model refs for matching results
 - Discover results can be matched to current mesh by `mesh_id`
 
 ### 24. HTTP proxy single-request connection contract

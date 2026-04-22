@@ -35,6 +35,18 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
+fn current_time_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+async fn record_first_joined_mesh_ts(node: &mesh::Node) {
+    let now_ms = current_time_unix_ms();
+    node.set_first_joined_mesh_ts_if_absent(now_ms).await;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StartupModelSpec {
     model_ref: PathBuf,
@@ -1292,6 +1304,9 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
         for token in &cli.join {
             match node.join(token).await {
                 Ok(()) => {
+                    if node.mesh_id().await.is_some() {
+                        record_first_joined_mesh_ts(node).await;
+                    }
                     eprintln!("Joined mesh");
                     return Ok(());
                 }
@@ -1327,6 +1342,9 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                     );
                     match node.join(token).await {
                         Ok(()) => {
+                            if node.mesh_id().await.is_some() {
+                                record_first_joined_mesh_ts(node).await;
+                            }
                             last_err = None;
                             break;
                         }
@@ -1555,6 +1573,9 @@ async fn run_auto(
         for (t, mesh_name) in &join_attempts {
             match node.join(t).await {
                 Ok(()) => {
+                    if node.mesh_id().await.is_some() {
+                        record_first_joined_mesh_ts(&node).await;
+                    }
                     eprintln!("Joined mesh");
                     joined = true;
                     successful_join = Some((t.clone(), mesh_name.clone()));
@@ -1587,6 +1608,7 @@ async fn run_auto(
                 // Wait for gossip to propagate mesh_id
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 if let Some(id) = save_node.mesh_id().await {
+                    record_first_joined_mesh_ts(&save_node).await;
                     mesh::save_last_mesh_id(&id);
                     tracing::info!("Mesh ID: {id}");
                 }
@@ -1640,6 +1662,7 @@ async fn run_auto(
         };
         let mesh_id = mesh::generate_mesh_id(cli.mesh_name.as_deref(), nostr_pubkey.as_deref());
         node.set_mesh_id_force(mesh_id.clone()).await;
+        record_first_joined_mesh_ts(&node).await;
         mesh::save_last_mesh_id(&mesh_id);
         tracing::info!("Mesh ID: {mesh_id}");
         eprintln!("Invite: {token}");
@@ -2244,7 +2267,6 @@ async fn run_auto(
 
     // Wait for SIGINT/SIGTERM or runtime model control commands.
     let primary_model_name = model_name.clone();
-    let slots = config.gpu.parallel.unwrap_or(4);
     loop {
         tokio::select! {
             _ = wait_shutdown_signal() => {
@@ -2264,6 +2286,17 @@ async fn run_auto(
                                 !already_loaded,
                                 "model '{runtime_model_name}' is already loaded"
                             );
+
+                            // Look up per-model parallel from TOML config by matching the
+                            // spec string against [[models]].model entries. Falls back to
+                            // gpu.parallel or default 4 when no entry matches.
+                            let slots = config
+                                .models
+                                .iter()
+                                .find(|m| m.model == spec)
+                                .and_then(|m| m.parallel)
+                                .or(config.gpu.parallel)
+                                .unwrap_or(4);
 
                             assigned_runtime_model = Some(runtime_model_name.clone());
                             add_serving_assignment(&node, &primary_model_name, &runtime_model_name)
@@ -2758,6 +2791,7 @@ fn format_console_ready_line(headless: bool, console_port: u16) -> String {
 mod tests {
     use super::*;
     use crate::models::local::{huggingface_repo_folder_name, huggingface_snapshot_path};
+    use crate::plugin::{GpuAssignment, GpuConfig, ModelConfigEntry};
     use crate::system::hardware::GpuFacts;
     use hf_hub::RepoType;
     use serial_test::serial;
@@ -3648,6 +3682,132 @@ mod tests {
         assert!(
             !line.contains("Management API"),
             "default passive output must not contain 'Management API', got: {line}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Per-model parallel (slots) resolution tests
+    // ---------------------------------------------------------------------------
+
+    /// Scenario 1: No global `gpu.parallel` set; a specific model entry has
+    /// `parallel = 1`. The model's override value must be applied correctly.
+    #[test]
+    fn per_model_parallel_override_applied_when_no_global() {
+        let config_models = vec![ModelConfigEntry {
+            model: "my-model".to_string(),
+            mmproj: None,
+            ctx_size: None,
+            gpu_id: None,
+            parallel: Some(1),
+        }];
+        let gpu_config = GpuConfig::default(); // no parallel set
+
+        // Simulate load handler lookup by spec name
+        let slots = config_models
+            .iter()
+            .find(|m| m.model == "my-model")
+            .and_then(|m| m.parallel)
+            .or(gpu_config.parallel)
+            .unwrap_or(4);
+
+        assert_eq!(
+            slots, 1,
+            "model-specific parallel=1 should win when no global"
+        );
+    }
+
+    /// Scenario 2: Two models in config — only the second one specifies a
+    /// `parallel` value. The slot assignment must land on the correct model.
+    #[test]
+    fn per_model_parallel_applies_to_correct_model() {
+        let config_models = vec![
+            ModelConfigEntry {
+                model: "model-a".to_string(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None, // no override
+            },
+            ModelConfigEntry {
+                model: "model-b".to_string(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: Some(3), // only this one has an override
+            },
+        ];
+        let gpu_config = GpuConfig::default();
+
+        // Model A: falls back to default (no model entry match → default 4)
+        let slots_a = config_models
+            .iter()
+            .find(|m| m.model == "model-a")
+            .and_then(|m| m.parallel)
+            .or(gpu_config.parallel)
+            .unwrap_or(4);
+        assert_eq!(
+            slots_a, 4,
+            "model-a should get default 4 when it has no parallel entry"
+        );
+
+        // Model B: gets its own explicit value
+        let slots_b = config_models
+            .iter()
+            .find(|m| m.model == "model-b")
+            .and_then(|m| m.parallel)
+            .or(gpu_config.parallel)
+            .unwrap_or(4);
+        assert_eq!(slots_b, 3, "model-b should get its own parallel=3 override");
+    }
+
+    /// Scenario 3: Two models. First has NO parallel setting, second has
+    /// `parallel = 2`, and global `gpu.parallel = 3`. The first model should
+    /// fall through to the global (3), while the second uses its own (2).
+    #[test]
+    fn per_model_parallel_fallback_to_global_for_missing_entry() {
+        let config_models = vec![
+            ModelConfigEntry {
+                model: "first".to_string(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None, // missing — should use global fallback
+            },
+            ModelConfigEntry {
+                model: "second".to_string(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: Some(2), // explicit override
+            },
+        ];
+        let gpu_config = GpuConfig {
+            assignment: GpuAssignment::Auto,
+            parallel: Some(3), // global default
+        };
+
+        // First model: no per-model value → falls back to gpu.parallel = 3
+        let slots_first = config_models
+            .iter()
+            .find(|m| m.model == "first")
+            .and_then(|m| m.parallel)
+            .or(gpu_config.parallel)
+            .unwrap_or(4);
+        assert_eq!(
+            slots_first, 3,
+            "missing model parallel should fall back to gpu.parallel=3"
+        );
+
+        // Second model: its own value wins over global
+        let slots_second = config_models
+            .iter()
+            .find(|m| m.model == "second")
+            .and_then(|m| m.parallel)
+            .or(gpu_config.parallel)
+            .unwrap_or(4);
+        assert_eq!(
+            slots_second, 2,
+            "model-specific parallel=2 should win over global gpu.parallel=3"
         );
     }
 }

@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  Clock3,
   Cpu,
   MemoryStick,
   Minus,
@@ -17,6 +18,7 @@ import {
   Wifi,
 } from "lucide-react";
 
+import { formatShortDuration } from "../../../../../lib/format-duration";
 import { useResolvedTheme } from "../../../../../lib/resolved-theme";
 import { cn } from "../../../../../lib/utils";
 import { formatLiveNodeState, shortName } from "../../../../app-shell/lib/status-helpers";
@@ -747,6 +749,24 @@ export function MeshRadarField({
                     Latency
                   </div>
                   <div className="text-[11px] font-medium leading-snug">{hoveredNode.latencyLabel}</div>
+                </div>
+              </div>
+              <div className="flex min-w-0 items-start gap-2">
+                <Clock3
+                  className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", scene.tooltipMutedTextClassName)}
+                />
+                <div className="min-w-0">
+                  <div
+                    className={cn(
+                      "text-[10px] font-semibold uppercase tracking-[0.18em]",
+                      scene.tooltipMutedTextClassName,
+                    )}
+                  >
+                    Age
+                  </div>
+                  <div className="text-[11px] font-medium leading-snug">
+                    {formatShortDuration(hoveredNode.ageSeconds)}
+                  </div>
                 </div>
               </div>
               <div className="flex min-w-0 items-start gap-2">

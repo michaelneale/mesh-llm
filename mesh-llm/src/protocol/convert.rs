@@ -483,6 +483,7 @@ pub(crate) fn local_ann_to_proto_ann(
         gpu_compute_tflops_fp16: ann.gpu_compute_tflops_fp16.clone(),
         gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
+        first_joined_mesh_ts: ann.first_joined_mesh_ts,
     }
 }
 
@@ -543,6 +544,7 @@ pub(crate) fn proto_ann_to_local(
     let mut ann = PeerAnnouncement {
         addr: addr.clone(),
         role,
+        first_joined_mesh_ts: pa.first_joined_mesh_ts,
         models: pa.catalog_models.clone(),
         vram_bytes: pa.vram_bytes,
         model_source: pa.model_source.clone(),

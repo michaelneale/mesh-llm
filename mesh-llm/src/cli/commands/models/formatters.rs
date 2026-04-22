@@ -95,13 +95,6 @@ pub(crate) fn filter_label(filter: SearchArtifactFilter) -> &'static str {
     }
 }
 
-pub(crate) fn filter_name(filter: SearchArtifactFilter) -> &'static str {
-    match filter {
-        SearchArtifactFilter::Gguf => "gguf",
-        SearchArtifactFilter::Mlx => "mlx",
-    }
-}
-
 pub(crate) fn sort_label(sort: SearchSort) -> &'static str {
     match sort {
         SearchSort::Trending => "trending",
@@ -111,18 +104,6 @@ pub(crate) fn sort_label(sort: SearchSort) -> &'static str {
         SearchSort::Updated => "recently updated",
         SearchSort::ParametersDesc => "most parameters",
         SearchSort::ParametersAsc => "least parameters",
-    }
-}
-
-pub(crate) fn sort_name(sort: SearchSort) -> &'static str {
-    match sort {
-        SearchSort::Trending => "trending",
-        SearchSort::Downloads => "downloads",
-        SearchSort::Likes => "likes",
-        SearchSort::Created => "created",
-        SearchSort::Updated => "updated",
-        SearchSort::ParametersDesc => "most_parameters",
-        SearchSort::ParametersAsc => "least_parameters",
     }
 }
 

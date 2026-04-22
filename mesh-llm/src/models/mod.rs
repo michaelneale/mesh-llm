@@ -32,8 +32,8 @@ pub use resolve::{
     show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
 };
 pub use search::{
-    search_catalog_models, search_huggingface, SearchArtifactFilter, SearchHit, SearchProgress,
-    SearchSort,
+    search_catalog_json_payload, search_catalog_models, search_huggingface,
+    search_huggingface_json_payload, SearchArtifactFilter, SearchHit, SearchProgress, SearchSort,
 };
 pub use topology::{infer_local_model_topology, ModelMoeInfo, ModelTopology};
 pub use usage::{

@@ -4,6 +4,7 @@ mod mesh_hook;
 mod objects;
 mod plugins;
 mod runtime;
+mod search;
 
 use super::MeshApi;
 use std::future::Future;
@@ -75,6 +76,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                 }
                 ("DELETE", p) if p.starts_with("/api/runtime/models/") => {
                     runtime::handle(stream, state, method, path_only, body).await?;
+                    Ok(true)
+                }
+                ("GET", "/api/search") => {
+                    search::handle(stream, path).await?;
                     Ok(true)
                 }
                 ("GET", "/api/plugins") => {

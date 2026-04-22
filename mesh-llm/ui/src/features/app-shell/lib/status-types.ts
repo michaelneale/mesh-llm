@@ -80,6 +80,7 @@ export type Peer = {
   version?: string;
   is_soc?: boolean;
   gpus?: { name: string; vram_bytes: number; bandwidth_gbps?: number }[];
+  first_joined_mesh_ts?: number;
 };
 
 export type LocalInstance = {
@@ -131,6 +132,7 @@ export type StatusPayload = {
   my_hostname?: string;
   my_is_soc?: boolean;
   gpus?: { name: string; vram_bytes: number; bandwidth_gbps?: number }[];
+  first_joined_mesh_ts?: number;
 };
 
 export type ModelServingStat = {

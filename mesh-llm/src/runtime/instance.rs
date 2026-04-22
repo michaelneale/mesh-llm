@@ -14,7 +14,7 @@
 //! - `lock` — `flock(2)` advisory lock file held by the owning mesh-llm
 //! - `owner.json` — metadata about the owning instance (pid, version, api_port, started_at)
 //! - `pidfiles/` — JSON pidfiles for child processes (`llama-server.json`, `rpc-server-{port}.json`)
-//! - `logs/` — stdout/stderr logs for each child (`llama-server.log`, `rpc-server-{port}.log`)
+//! - `logs/` — stdout/stderr logs for each child (`llama-server-{port}.log`, `rpc-server-{port}.log`)
 //!
 //! **FORBIDDEN** under `runtime_dir/`:
 //! - Application state, configuration, or catalog caches (live elsewhere under `~/.mesh-llm/`)

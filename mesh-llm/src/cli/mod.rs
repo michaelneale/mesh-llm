@@ -714,6 +714,7 @@ fn shell_display(arg: &OsString) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::models::{ModelSearchSort, ModelsCommand};
     use crate::cli::moe::MoeAnalyzeCommand;
     use clap::{CommandFactory, Parser};
 
@@ -999,5 +1000,51 @@ mod tests {
             help.contains("headless") || help.contains("management API"),
             "help text should mention headless or management API"
         );
+    }
+
+    #[test]
+    fn models_search_accepts_canonical_parameter_sort_names() {
+        let cli = Cli::parse_from([
+            "mesh-llm",
+            "models",
+            "search",
+            "qwen",
+            "--sort",
+            "parameters-desc",
+        ]);
+
+        match cli.command.expect("models command expected") {
+            Command::Models {
+                command:
+                    ModelsCommand::Search {
+                        sort: ModelSearchSort::ParametersDesc,
+                        ..
+                    },
+            } => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn models_search_keeps_legacy_parameter_sort_aliases_parsing() {
+        let cli = Cli::parse_from([
+            "mesh-llm",
+            "models",
+            "search",
+            "qwen",
+            "--sort",
+            "most-parameters",
+        ]);
+
+        match cli.command.expect("models command expected") {
+            Command::Models {
+                command:
+                    ModelsCommand::Search {
+                        sort: ModelSearchSort::ParametersDesc,
+                        ..
+                    },
+            } => {}
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 }

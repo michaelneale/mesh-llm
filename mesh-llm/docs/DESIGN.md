@@ -11,7 +11,7 @@ just see local TCP sockets.
 src/
 ├── main.rs                  CLI args, orchestration (auto, idle, passive)
 ├── lib.rs                   Crate root re-exports
-├── api/                     Management API (:3131): status, events, discover, join
+├── api/                     Management API (:3131): status, models, search, events, discover, join
 ├── cli/                     Clap types, command parsing, command handlers
 ├── crypto/                  Key management, envelope encryption, keychain
 ├── inference/
@@ -202,6 +202,7 @@ and the embedded web dashboard.
 |---|---|---|
 | `/api/status` | GET | Live mesh state (JSON): node, peers, routing, targets |
 | `/api/models` | GET | Mesh model inventory for the dashboard and operators |
+| `/api/search` | GET | Search the built-in catalog or Hugging Face with the same JSON payload shape as `mesh-llm models search --json` |
 | `/api/events` | GET | SSE stream of status updates (2s interval + on change) |
 | `/api/discover` | GET | Browse Nostr-published meshes |
 | `/api/join` | POST | Join a mesh by invite token `{"token":"..."}` |
@@ -209,8 +210,10 @@ and the embedded web dashboard.
 | `/` | GET | Embedded web dashboard |
 
 The dashboard is a thin client. Live node state comes from `/api/status` and
-`/api/events`, while model inventory comes from `/api/models`. Mesh management
-works without the HTML via curl/scripts.
+`/api/events`, while model inventory comes from `/api/models`. `/api/search`
+provides the same read-only model search payload as `mesh-llm models search --json`
+to operators and future UI flows without requiring CLI output parsing. Mesh management works without the
+HTML via curl/scripts.
 
 Always enabled on port 3131 (configurable with `--console <port>`).
 

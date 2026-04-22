@@ -556,7 +556,7 @@ fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
         ModelSearchSort::Likes => SearchSort::Likes,
         ModelSearchSort::Created => SearchSort::Created,
         ModelSearchSort::Updated => SearchSort::Updated,
-        ModelSearchSort::MostParameters => SearchSort::ParametersDesc,
-        ModelSearchSort::LeastParameters => SearchSort::ParametersAsc,
+        ModelSearchSort::ParametersDesc => SearchSort::ParametersDesc,
+        ModelSearchSort::ParametersAsc => SearchSort::ParametersAsc,
     }
 }

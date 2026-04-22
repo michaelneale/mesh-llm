@@ -7,8 +7,10 @@ pub enum ModelSearchSort {
     Likes,
     Created,
     Updated,
-    MostParameters,
-    LeastParameters,
+    #[value(name = "parameters-desc", alias = "most-parameters")]
+    ParametersDesc,
+    #[value(name = "parameters-asc", alias = "least-parameters")]
+    ParametersAsc,
 }
 
 #[derive(Subcommand, Debug)]

@@ -3,6 +3,7 @@
 //! Endpoints:
 //!   GET  /api/status    — live mesh state plus local-only routing metrics (JSON)
 //!   GET  /api/models    — mesh model inventory plus local-only routing metrics (JSON)
+//!   GET  /api/search    — catalog or Hugging Face model search with the same JSON payload as `mesh-llm models search --json`
 //!   GET  /api/runtime   — local model state (JSON)
 //!   GET  /api/runtime/endpoints — registered plugin endpoint state (JSON)
 //!   GET  /api/runtime/processes — local inference process state (JSON)
@@ -927,6 +928,7 @@ impl MeshApi {
                     p.gpu_compute_tflops_fp32.as_deref(),
                     p.gpu_compute_tflops_fp16.as_deref(),
                 ),
+                first_joined_mesh_ts: p.first_joined_mesh_ts,
             })
             .collect();
 
@@ -1034,6 +1036,7 @@ impl MeshApi {
             },
             routing_affinity,
             routing_metrics,
+            first_joined_mesh_ts: node.first_joined_mesh_ts().await,
         }
     }
 
@@ -1753,6 +1756,7 @@ mod tests {
             served_model_runtime: vec![],
             owner_attestation: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
+            first_joined_mesh_ts: None,
         }
     }
 
@@ -1984,6 +1988,7 @@ mod tests {
             },
             tunnel_port: None,
             role,
+            first_joined_mesh_ts: None,
             models: Vec::new(),
             vram_bytes: 24_000_000_000,
             rtt_ms: None,
@@ -2457,6 +2462,107 @@ mod tests {
         assert!(models_body.get("mesh_models").is_some());
 
         models_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_search_catalog_returns_canonical_model_refs() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+
+        let response = send_management_request(
+            addr,
+            "GET /api/search?q=Qwen3-Coder-Next&catalog=true&artifact=gguf&limit=5&sort=trending HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let payload = json_body(&response);
+        assert_eq!(payload["source"], json!("catalog"));
+        assert_eq!(payload["filter"], json!("gguf"));
+        assert_eq!(payload["sort"], json!("trending"));
+        assert!(payload.get("machine").is_some());
+        let results = payload["results"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !results.is_empty(),
+            "expected at least one catalog result for Qwen3-Coder-Next"
+        );
+        let hit = results
+            .into_iter()
+            .find(|entry| entry["ref"] == json!("Qwen3-Coder-Next-Q4_K_M"))
+            .expect("canonical catalog model ref present");
+        assert_eq!(hit["repo_id"], json!("Qwen/Qwen3-Coder-Next-GGUF"));
+        assert_eq!(hit["type"], json!("gguf"));
+        assert_eq!(
+            hit["show"],
+            json!("mesh-llm models show Qwen3-Coder-Next-Q4_K_M")
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_search_caps_limit_and_uses_canonical_parameter_sort_name() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+
+        let response = send_management_request(
+            addr,
+            "GET /api/search?q=Qwen3-Coder-Next&catalog=true&artifact=gguf&limit=999&sort=parameters-desc HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let payload = json_body(&response);
+        assert_eq!(payload["sort"], json!("parameters-desc"));
+        let results = payload["results"].as_array().cloned().unwrap_or_default();
+        assert!(
+            results.len() <= 50,
+            "expected catalog response to apply the API limit cap"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_search_requires_q_query_parameter() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+
+        let response = send_management_request(
+            addr,
+            "GET /api/search?catalog=true HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 400"));
+        let payload = json_body(&response);
+        assert_eq!(
+            payload["error"],
+            json!("Missing required 'q' query parameter")
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_search_rejects_invalid_sort_value() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+
+        let response = send_management_request(
+            addr,
+            "GET /api/search?q=qwen&sort=random HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 400"));
+        let payload = json_body(&response);
+        assert_eq!(
+            payload["error"],
+            json!("Invalid 'sort' value 'random'. Expected one of: trending, downloads, likes, created, updated, parameters-desc, parameters-asc")
+        );
+
+        handle.abort();
     }
 
     #[test]

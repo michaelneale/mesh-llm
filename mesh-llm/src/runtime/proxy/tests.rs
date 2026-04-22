@@ -611,6 +611,7 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         },
         tunnel_port: None,
         role: mesh::NodeRole::Host { http_port: 9337 },
+        first_joined_mesh_ts: None,
         models: vec![],
         vram_bytes: 0,
         rtt_ms: None,

@@ -42,6 +42,7 @@ message PeerAnnouncement {
   optional string gpu_compute_tflops_fp16 = 31;     // Deprecated in v0.60.0: prefer hardware.gpus[].compute_tflops_fp16
   optional string gpu_reserved_bytes = 32;          // Deprecated in v0.60.0: prefer hardware.gpus[].reserved_bytes
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
+  optional uint64 first_joined_mesh_ts = 34;
 }
 
 message HardwareInfo {
