@@ -2466,7 +2466,12 @@ mod tests {
             .await
             .unwrap();
 
-        let _initial = read_until_contains(&mut stream, b"\"publication_state\":\"private\"", Duration::from_secs(2)).await;
+        let _initial = read_until_contains(
+            &mut stream,
+            b"\"publication_state\":\"private\"",
+            Duration::from_secs(2),
+        )
+        .await;
 
         state
             .set_publication_state(crate::api::PublicationState::PublishFailed)

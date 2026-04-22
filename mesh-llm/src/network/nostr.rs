@@ -616,17 +616,7 @@ pub async fn publish_watchdog(
                         }
                     };
                     // Start publish loop (blocks forever)
-                    publish_loop(
-                        node,
-                        keys,
-                        relays,
-                        mesh_name,
-                        region,
-                        None,
-                        60,
-                        status_tx,
-                    )
-                    .await;
+                    publish_loop(node, keys, relays, mesh_name, region, None, 60, status_tx).await;
                     return;
                 }
             }

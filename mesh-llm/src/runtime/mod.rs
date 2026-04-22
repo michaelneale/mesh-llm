@@ -2318,15 +2318,8 @@ async fn run_auto(
             status_tx
         });
         Some(tokio::spawn(async move {
-            nostr::publish_watchdog(
-                wd_node,
-                relays,
-                wd_name,
-                wd_region,
-                120,
-                watchdog_status_rx,
-            )
-            .await;
+            nostr::publish_watchdog(wd_node, relays, wd_name, wd_region, 120, watchdog_status_rx)
+                .await;
         }))
     } else {
         None
