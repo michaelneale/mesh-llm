@@ -220,6 +220,9 @@ impl ModelsFormatter for JsonFormatter {
             .collect();
         print_json(json!({
             "cache_dir": huggingface_cache_dir(),
+            "delete_example": rows
+                .first()
+                .map(|row| format!("mesh-llm models delete {}", row.model_ref)),
             "results": models,
         }))
     }

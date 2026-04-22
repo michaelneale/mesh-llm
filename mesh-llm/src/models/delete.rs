@@ -1,10 +1,16 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use hf_hub::types::cache::HFCacheInfo;
 
-use crate::models::local::{huggingface_hub_cache_dir, scan_hf_cache_info, split_gguf_base_name};
+use crate::models::local::{
+    gguf_metadata_cache_path, huggingface_hub_cache_dir, huggingface_identity_for_path,
+    mesh_llm_cache_dir, scan_hf_cache_info, split_gguf_base_name,
+};
+use crate::models::resolve::{
+    parse_delete_model_ref, resolve_huggingface_file_from_sibling_entries, DeleteModelRef,
+};
 use crate::models::usage;
 
 #[derive(Debug)]
@@ -15,106 +21,123 @@ pub struct DeleteResult {
     pub removed_usage_records: usize,
 }
 
-/// Resolve a user-facing identifier to the set of all GGUF file paths that belong to that model.
-///
-/// Resolution strategy:
-/// - If `identifier` contains `/`, treat it as a HF repo ID and scan HFCacheInfo for any gguf files
-///   in repos whose repo_id starts with `identifier`.
-/// - Otherwise, treat it as a stem (filename base without `.gguf`) and look for exact filename
-///   matches OR split-GGUF patterns (`stem-00001-of-NNNNN.gguf`).
-///
-/// Returns an error if zero files match (NotFound), or if multiple distinct repos match
-/// and cannot be disambiguated by stem analysis (Ambiguous).
-pub fn resolve_model_identifier(identifier: &str) -> Result<Vec<PathBuf>> {
-    let cache_root = huggingface_hub_cache_dir();
-    let Some(cache_info) = scan_hf_cache_info(&cache_root) else {
-        bail!("Model not found: {}", identifier);
-    };
-
-    let stem_matches = find_stem_matches(&cache_info, identifier);
-    if !stem_matches.is_empty() {
-        return Ok(stem_matches);
+pub async fn resolve_model_identifier(identifier: &str) -> Result<Vec<PathBuf>> {
+    match parse_delete_model_ref(identifier).await? {
+        DeleteModelRef::LocalStem(stem) => {
+            let path = crate::models::find_model_path(&stem);
+            if !path.exists() {
+                bail!("Model not found: {}", identifier);
+            }
+            let mut resolved = BTreeSet::from([normalize_path(&path)]);
+            if let Some(cache_info) = scan_hf_cache_info(&huggingface_hub_cache_dir()) {
+                resolved.extend(find_related_hf_cache_paths(&cache_info, &path));
+            }
+            Ok(resolved.into_iter().collect())
+        }
+        DeleteModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        } => resolve_cached_hf_ref(&repo, revision.as_deref(), &file)
+            .await
+            .with_context(|| format!("Resolve installed model ref {identifier}")),
     }
-
-    let repo_matches = find_repo_prefix_matches(&cache_info, identifier);
-    if !repo_matches.is_empty() {
-        return Ok(repo_matches);
-    }
-
-    bail!("Model not found: {}", identifier);
 }
 
-/// Find GGUF file paths whose filename (or split-GGUF base name) matches the given stem.
-fn find_stem_matches(cache_info: &HFCacheInfo, stem: &str) -> Vec<PathBuf> {
-    let mut results: BTreeSet<PathBuf> = BTreeSet::new();
+fn normalized_gguf_stem(stem: &str) -> &str {
+    let stem = stem.strip_suffix(".gguf").unwrap_or(stem);
+    split_gguf_base_name(stem).unwrap_or(stem)
+}
+
+async fn resolve_cached_hf_ref(
+    repo_id: &str,
+    revision: Option<&str>,
+    file: &str,
+) -> Result<Vec<PathBuf>> {
+    let cache_root = huggingface_hub_cache_dir();
+    let Some(cache_info) = scan_hf_cache_info(&cache_root) else {
+        bail!("Model not found: {repo_id}");
+    };
 
     for repo in &cache_info.repos {
         use hf_hub::RepoType;
-        if repo.repo_type != RepoType::Model {
+        if repo.repo_type != RepoType::Model || repo.repo_id != repo_id {
+            continue;
+        }
+        for cached_revision in &repo.revisions {
+            if revision.is_some_and(|requested| {
+                requested != cached_revision.commit_hash
+                    && !cached_revision.refs.iter().any(|r| r == requested)
+            }) {
+                continue;
+            }
+            let sibling_entries: Vec<(String, Option<u64>)> = cached_revision
+                .files
+                .iter()
+                .map(|entry| {
+                    let size = std::fs::metadata(&entry.file_path)
+                        .ok()
+                        .map(|meta| meta.len());
+                    (entry.file_name.clone(), size)
+                })
+                .collect();
+            let resolved_file = resolve_huggingface_file_from_sibling_entries(
+                repo_id,
+                revision.or_else(|| cached_revision.refs.first().map(String::as_str)),
+                file,
+                &sibling_entries,
+            )
+            .await?;
+            if !resolved_file.ends_with(".gguf") {
+                bail!("Delete only supports GGUF models: {repo_id}");
+            }
+            let expected = normalized_gguf_stem(&resolved_file);
+            let mut matches: Vec<PathBuf> = cached_revision
+                .files
+                .iter()
+                .filter(|entry| entry.file_name.ends_with(".gguf"))
+                .filter(|entry| {
+                    normalized_gguf_stem(&entry.file_name).eq_ignore_ascii_case(expected)
+                })
+                .map(|entry| entry.file_path.clone())
+                .collect();
+            if !matches.is_empty() {
+                matches.sort();
+                return Ok(matches);
+            }
+        }
+    }
+
+    bail!("Model not found: {repo_id}")
+}
+
+fn find_related_hf_cache_paths(cache_info: &HFCacheInfo, path: &Path) -> Vec<PathBuf> {
+    let mut results = BTreeSet::new();
+    let Some(identity) = huggingface_identity_for_path(path) else {
+        return Vec::new();
+    };
+    let Some(file_name) = Path::new(&identity.file)
+        .file_name()
+        .and_then(|value| value.to_str())
+    else {
+        return Vec::new();
+    };
+    let expected = normalized_gguf_stem(file_name);
+
+    for repo in &cache_info.repos {
+        use hf_hub::RepoType;
+        if repo.repo_type != RepoType::Model || repo.repo_id != identity.repo_id {
             continue;
         }
         for revision in &repo.revisions {
+            if revision.commit_hash != identity.revision {
+                continue;
+            }
             for file in &revision.files {
                 if !file.file_name.ends_with(".gguf") {
                     continue;
                 }
-                let file_stem = file
-                    .file_name
-                    .strip_suffix(".gguf")
-                    .unwrap_or(&file.file_name);
-
-                if file_stem.eq_ignore_ascii_case(stem) {
-                    results.insert(file.file_path.clone());
-                    continue;
-                }
-
-                if let Some(shard_prefix) = extract_shard_prefix(stem) {
-                    let prefix_pattern = format!("{}-", shard_prefix);
-                    if file.file_name.starts_with(&prefix_pattern)
-                        && file.file_name.ends_with(".gguf")
-                    {
-                        results.insert(file.file_path.clone());
-                    }
-                }
-
-                if let Some(base) = split_gguf_base_name(stem) {
-                    let base_lower = base.to_ascii_lowercase();
-                    if file_stem.to_ascii_lowercase() == base_lower {
-                        results.insert(file.file_path.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    results.into_iter().collect()
-}
-
-/// Extract the shard prefix from a filename like "Qwen3-8B-Q4_K_M-00001".
-fn extract_shard_prefix(filename: &str) -> Option<&str> {
-    let dash = filename.rfind('-')?;
-    let num_part = &filename[dash + 1..];
-    if num_part.len() != 5 || !num_part.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(&filename[..dash])
-}
-
-/// Find GGUF files in repos whose repo_id starts with the given identifier.
-fn find_repo_prefix_matches(cache_info: &HFCacheInfo, prefix: &str) -> Vec<PathBuf> {
-    let mut results: BTreeSet<PathBuf> = BTreeSet::new();
-
-    for repo in &cache_info.repos {
-        use hf_hub::RepoType;
-        if repo.repo_type != RepoType::Model {
-            continue;
-        }
-        if !repo.repo_id.starts_with(prefix) {
-            continue;
-        }
-        for revision in &repo.revisions {
-            for file in &revision.files {
-                if file.file_name.ends_with(".gguf") {
+                if normalized_gguf_stem(&file.file_name).eq_ignore_ascii_case(expected) {
                     results.insert(file.file_path.clone());
                 }
             }
@@ -124,73 +147,42 @@ fn find_repo_prefix_matches(cache_info: &HFCacheInfo, prefix: &str) -> Vec<PathB
     results.into_iter().collect()
 }
 
-/// Collect all paths that should be deleted for a model identified by its primary path.
-/// This includes managed_paths from usage records and any sidecar GGUF files (mmproj, etc.)
-/// found in the same directory as the primary model file.
-pub fn collect_delete_paths(primary_path: &PathBuf) -> Result<Vec<PathBuf>> {
+pub fn collect_delete_paths(resolved_paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut to_delete: BTreeSet<PathBuf> = BTreeSet::new();
+    if resolved_paths.is_empty() {
+        return Ok(Vec::new());
+    }
 
+    for path in resolved_paths {
+        ensure_delete_path_allowed(path)?;
+        to_delete.insert(normalize_path(path));
+    }
+
+    let primary_path = &resolved_paths[0];
     if let Some(record) = usage::load_model_usage_record_for_path(primary_path) {
         if record.mesh_managed && !record.managed_paths.is_empty() {
             for p in &record.managed_paths {
-                to_delete.insert(p.clone());
+                to_delete.insert(normalize_path(p));
             }
-            return Ok(to_delete.into_iter().collect());
-        }
-    }
-
-    let parent = primary_path.parent().context("No parent dir")?;
-
-    let filename = primary_path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .context("No filename")?;
-
-    let base_stem = split_gguf_base_name(filename)
-        .unwrap_or(filename.strip_suffix(".gguf").unwrap_or(filename));
-
-    let entries = std::fs::read_dir(parent)
-        .with_context(|| format!("Cannot read directory: {}", parent.display()))?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() && !path.is_symlink() {
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("gguf") {
-            continue;
-        }
-
-        let entry_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-
-        if entry_stem.eq_ignore_ascii_case(base_stem)
-            || entry_stem.starts_with(&format!("{}-", base_stem))
-            || (split_gguf_base_name(entry_stem).is_some()
-                && split_gguf_base_name(entry_stem).unwrap() == base_stem)
-        {
-            to_delete.insert(path);
         }
     }
 
     Ok(to_delete.into_iter().collect())
 }
 
-/// Execute a model deletion by identifier, collecting and removing ALL files.
 pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult> {
-    let primary_paths = resolve_model_identifier(identifier)?;
+    let resolved_paths = resolve_model_identifier(identifier).await?;
 
-    if primary_paths.is_empty() {
+    if resolved_paths.is_empty() {
         bail!("Model not found: {}", identifier);
     }
 
-    let primary_path = &primary_paths[0];
-
-    let all_paths = collect_delete_paths(primary_path)?;
+    let all_paths = collect_delete_paths(&resolved_paths)?;
 
     if all_paths.is_empty() {
         bail!(
             "No GGUF files found at resolved path: {}",
-            primary_path.display()
+            resolved_paths[0].display()
         );
     }
 
@@ -198,6 +190,7 @@ pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult
     let mut removed_metadata_files: usize = 0;
     let mut removed_usage_records: usize = 0;
     let mut deleted_paths: Vec<PathBuf> = Vec::new();
+    let mut removed_record_paths = BTreeSet::new();
 
     for path in &all_paths {
         if path.exists() {
@@ -207,7 +200,7 @@ pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult
             std::fs::remove_file(path).with_context(|| format!("Remove {}", path.display()))?;
             deleted_paths.push(path.clone());
 
-            if let Some(metadata_path) = crate::models::local::gguf_metadata_cache_path(path) {
+            if let Some(metadata_path) = gguf_metadata_cache_path(path) {
                 if metadata_path.exists() {
                     std::fs::remove_file(&metadata_path).with_context(|| {
                         format!("Remove metadata cache {}", metadata_path.display())
@@ -220,13 +213,15 @@ pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult
         }
     }
 
-    if let Some(record) = load_model_usage_record_for_path(primary_path) {
-        let usage_dir = usage::model_usage_cache_dir();
-        let record_path = usage::usage_record_path(&usage_dir, &record.lookup_key);
-        if record_path.exists() {
-            std::fs::remove_file(&record_path)
-                .with_context(|| format!("Remove usage record {}", record_path.display()))?;
-            removed_usage_records += 1;
+    for path in &all_paths {
+        if let Some(record) = load_model_usage_record_for_path(path) {
+            let usage_dir = usage::model_usage_cache_dir();
+            let record_path = usage::usage_record_path(&usage_dir, &record.lookup_key);
+            if removed_record_paths.insert(record_path.clone()) && record_path.exists() {
+                std::fs::remove_file(&record_path)
+                    .with_context(|| format!("Remove usage record {}", record_path.display()))?;
+                removed_usage_records += 1;
+            }
         }
     }
 
@@ -241,6 +236,20 @@ pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult
 /// Load a model usage record for a given path.
 fn load_model_usage_record_for_path(path: &std::path::Path) -> Option<usage::ModelUsageRecord> {
     usage::load_model_usage_record_for_path(path)
+}
+
+fn ensure_delete_path_allowed(path: &Path) -> Result<()> {
+    let normalized = normalize_path(path);
+    let hf_root = normalize_path(&huggingface_hub_cache_dir());
+    let mesh_root = normalize_path(&mesh_llm_cache_dir());
+    if normalized.starts_with(&hf_root) || normalized.starts_with(&mesh_root) {
+        Ok(())
+    } else {
+        bail!(
+            "Deletion target outside known model roots: {}",
+            normalized.display()
+        );
+    }
 }
 
 /// Prune empty ancestor directories up to (but not including) stop_at.
@@ -273,35 +282,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_shard_prefix_valid() {
+    fn normalized_gguf_stem_collapses_split_shards() {
         assert_eq!(
-            extract_shard_prefix("Qwen3-8B-Q4_K_M-00001"),
-            Some("Qwen3-8B-Q4_K_M")
+            normalized_gguf_stem("GLM-5-UD-IQ2_XXS-00001-of-00006.gguf"),
+            "GLM-5-UD-IQ2_XXS"
         );
-        assert_eq!(extract_shard_prefix("model-00001"), Some("model"));
-    }
-
-    #[test]
-    fn test_extract_shard_prefix_invalid() {
-        assert_eq!(extract_shard_prefix("model-001"), None);
-        assert_eq!(extract_shard_prefix("model00001"), None);
-        assert_eq!(extract_shard_prefix("model-abcde"), None);
-    }
-
-    #[test]
-    fn test_split_gguf_base_name_single_file() {
-        assert_eq!(split_gguf_base_name("Qwen3-8B-Q4_K_M"), None);
-    }
-
-    #[test]
-    fn test_split_gguf_base_name_first_shard() {
-        let base = split_gguf_base_name("GLM-5-UD-IQ2_XXS-00001-of-00006");
-        assert_eq!(base, Some("GLM-5-UD-IQ2_XXS"));
-    }
-
-    #[test]
-    fn test_split_gguf_base_name_last_shard() {
-        let base = split_gguf_base_name("GLM-5-UD-IQ2_XXS-00006-of-00006");
-        assert_eq!(base, Some("GLM-5-UD-IQ2_XXS"));
+        assert_eq!(normalized_gguf_stem("Qwen3-8B-Q4_K_M"), "Qwen3-8B-Q4_K_M");
     }
 }

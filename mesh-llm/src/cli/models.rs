@@ -105,7 +105,7 @@ pub enum ModelsCommand {
     },
     /// Delete a specific model from local storage.
     Delete {
-        /// Model stem name (e.g. Qwen3.5-9B-BF16) or exact file path to delete.
+        /// Installed model stem or Hugging Face ref (e.g. `Qwen3.5-9B-BF16`, `org/repo`, or `org/repo:BF16`).
         #[arg(required = true)]
         model: String,
         /// Skip dry-run preview and delete immediately.

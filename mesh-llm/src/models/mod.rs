@@ -8,6 +8,8 @@ pub mod local;
 mod maintenance;
 pub mod resolve;
 pub use resolve::ResolvedModel;
+#[cfg(test)]
+mod delete_tests;
 pub mod search;
 pub mod topology;
 mod usage;

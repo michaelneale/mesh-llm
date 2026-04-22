@@ -489,7 +489,7 @@ fn render_cleanup_json(
 }
 
 pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Result<()> {
-    let paths = match delete::resolve_model_identifier(model) {
+    let paths = match delete::resolve_model_identifier(model).await {
         Ok(p) => p,
         Err(e) => bail!("{}", e.to_string()),
     };
@@ -508,7 +508,7 @@ pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Resu
         let resolved = crate::models::ResolvedModel {
             path: paths[0].clone(),
             display_name,
-            is_exact_path: model.contains('/'),
+            is_exact_path: false,
             matched_records: vec![],
         };
 

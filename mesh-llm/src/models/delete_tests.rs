@@ -1,171 +1,280 @@
-use std::fs;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
-use crate::models::delete::{delete_model_at_path, resolve_model_identifier, ResolveError};
-use crate::models::local::mesh_llm_cache_dir;
+use serial_test::serial;
 
-fn temp_dir(prefix: &str) -> PathBuf {
-    // Place temp files inside mesh_llm cache so safety gate accepts them.
-    let base = mesh_llm_cache_dir();
-    let _ = fs::create_dir_all(&base);
-    let dir = base.join(format!("test-{prefix}-{}", std::process::id()));
-    let _ = fs::create_dir_all(&dir);
-    dir
+use crate::models::delete::{delete_model_by_identifier, resolve_model_identifier};
+use crate::models::resolve::resolve_huggingface_file_from_sibling_entries;
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("mesh-llm-{prefix}-{stamp}"))
 }
 
-#[test]
-fn test_resolve_exact_path_found() {
-    let tmp = temp_dir("exact-found");
-    let model_file = tmp.join("test-model.gguf");
-    fs::write(&model_file, vec![0u8; 100]).expect("should create temp file");
-
-    let result = resolve_model_identifier(model_file.to_str().unwrap());
-    assert!(
-        result.is_ok(),
-        "resolved exact path should succeed: {:?}",
-        result.err()
-    );
-    let resolved = result.unwrap();
-    assert_eq!(resolved.path, model_file);
-    assert!(resolved.is_exact_path);
-    assert_eq!(resolved.display_name, "test-model");
-}
-
-#[test]
-fn test_resolve_exact_path_not_found() {
-    let result = resolve_model_identifier("/nonexistent/path/model.gguf");
-    assert!(result.is_err(), "should error for nonexistent path");
-    match result.unwrap_err() {
-        ResolveError::NotFound(msg) => {
-            assert!(msg.contains("/nonexistent/path/model.gguf"));
-        }
-        other => panic!("expected NotFound, got: {:?}", other),
+fn restore_env(key: &str, previous: Option<OsString>) {
+    if let Some(value) = previous {
+        std::env::set_var(key, value);
+    } else {
+        std::env::remove_var(key);
     }
 }
 
-#[test]
-fn test_resolve_exact_path_no_gguf_extension() {
-    let tmp = temp_dir("no-gguf-ext");
-    let txt_file = tmp.join("test.txt");
-    fs::write(&txt_file, "not a gguf").expect("should create temp file");
+fn create_cache_repo_file(
+    root: &Path,
+    repo_id: &str,
+    revision: &str,
+    relative_file: &str,
+    size_bytes: usize,
+) -> PathBuf {
+    let repo_dir = root.join(format!("models--{}", repo_id.replace('/', "--")));
+    let refs_dir = repo_dir.join("refs");
+    let snapshot_dir = repo_dir.join("snapshots").join(revision);
+    std::fs::create_dir_all(&refs_dir).unwrap();
+    std::fs::create_dir_all(
+        snapshot_dir.join(Path::new(relative_file).parent().unwrap_or(Path::new(""))),
+    )
+    .unwrap();
+    std::fs::write(refs_dir.join("main"), revision).unwrap();
 
-    let result = resolve_model_identifier(txt_file.to_str().unwrap());
-    assert!(result.is_err(), "should reject non-.gguf extension");
-    match result.unwrap_err() {
-        ResolveError::NotFound(msg) => {
-            assert!(
-                msg.to_lowercase().contains("gguf"),
-                "error should mention .gguf requirement"
-            );
-        }
-        other => panic!("expected NotFound, got: {:?}", other),
-    }
-}
-
-#[test]
-fn test_resolve_stem_single_match() {
-    // Use find_model_path with a stem that matches an existing model on the dev machine.
-    // If no real models exist, it will return a path that doesn't exist — which means
-    // our resolution should detect zero matches and return NotFound.
-    let result = resolve_model_identifier("Qwen3-8B-Q4_K_M");
-    // Either resolves to an actual path (if installed) or returns NotFound
-    match result {
-        Ok(resolved) => {
-            assert!(!resolved.path.as_os_str().is_empty());
-            assert!(!resolved.is_exact_path);
-        }
-        Err(ResolveError::NotFound(_)) => {
-            // Expected if no matching GGUF files are found in cache
-        }
-        Err(ResolveError::Ambiguous(candidates)) => {
-            // Also valid - multiple matches found
-            assert!(candidates.len() >= 2);
-        }
-    }
-}
-
-#[test]
-fn test_resolve_stem_no_match() {
-    let result = resolve_model_identifier("this-stem-does-not-exist-xyz-abc123");
-    assert!(result.is_err(), "should error for non-existent stem");
-    match result.unwrap_err() {
-        ResolveError::NotFound(msg) => {
-            assert!(msg.to_lowercase().contains("no model found") || msg.contains("this-stem"));
-        }
-        other => panic!("expected NotFound, got: {:?}", other),
-    }
-}
-
-async fn setup_mock_delete_dir(prefix: &str) -> (PathBuf, PathBuf) {
-    let tmp = temp_dir(prefix);
-    let model_file = tmp.join("mock-model.gguf");
-    fs::write(&model_file, vec![0u8; 2048]).expect("should create mock file");
-    (tmp, model_file)
+    let path = snapshot_dir.join(relative_file);
+    std::fs::write(&path, vec![0u8; size_bytes]).unwrap();
+    path
 }
 
 #[tokio::test]
-async fn test_delete_dry_run_does_not_modify() {
-    let (_tmp, model_file) = setup_mock_delete_dir("dryrun").await;
-
-    // Dry-run should not modify anything
-    let original_content = fs::read(&model_file).expect("file should exist before dry run");
-
-    let result = delete_model_at_path(model_file.to_str().unwrap(), true).await;
-
-    assert!(result.is_ok());
-    let del_result = result.unwrap();
-    // In dry-run mode, no files are actually deleted but paths may be recorded
-    // The key assertion is the file still exists with same content
-    let current_content = fs::read(&model_file).expect("file should exist after dry run");
-    assert_eq!(
-        original_content, current_content,
-        "file content must not change in dry-run"
-    );
-    assert!(del_result.deleted_paths.iter().any(|p| p == &model_file));
+async fn resolve_model_identifier_rejects_filesystem_paths() {
+    let err = resolve_model_identifier("/tmp/model.gguf")
+        .await
+        .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("does not support filesystem paths"));
 }
 
 #[tokio::test]
-async fn test_delete_actually_removes_files() {
-    let (_tmp, model_file) = setup_mock_delete_dir("actual-delete").await;
-
-    // Verify file exists before deletion
-    assert!(
-        model_file.exists(),
-        "mock file should exist before deletion"
-    );
-
-    let result = delete_model_at_path(model_file.to_str().unwrap(), false).await;
-
-    assert!(
-        result.is_ok(),
-        "deletion should succeed: {:?}",
-        result.err()
-    );
-    let del_result = result.unwrap();
-    assert!(
-        !model_file.exists(),
-        "model file should be removed after deletion"
-    );
-    assert_eq!(del_result.deleted_paths.len(), 1);
+async fn resolve_model_identifier_rejects_direct_urls() {
+    let err = resolve_model_identifier("https://huggingface.co/org/repo/resolve/main/model.gguf")
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("does not support direct URLs"));
 }
 
 #[tokio::test]
-async fn test_delete_reported_bytes_are_accurate() {
-    let (tmp, model_file) = setup_mock_delete_dir("byte-count").await;
+#[serial]
+async fn resolve_model_identifier_returns_all_split_shards_from_selector_ref() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
 
-    // Create a file of known size by writing exactly 2048 bytes
-    fs::write(&model_file, vec![0u8; 2048]).expect("should write exact bytes");
-
-    let result = delete_model_at_path(model_file.to_str().unwrap(), true).await;
-
-    assert!(result.is_ok());
-    let del_result = result.unwrap();
-    assert_eq!(
-        del_result.reclaimed_bytes, 2048,
-        "reclaimed bytes should match actual file size"
+    let temp = unique_temp_dir("delete-split-resolve");
+    let shard1 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00001-of-00002.gguf",
+        4,
+    );
+    let shard2 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00002-of-00002.gguf",
+        4,
+    );
+    let unrelated = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-Q4_K_M.gguf",
+        4,
     );
 
-    // Cleanup temp dir since we're in dry-run mode
-    let _ = tmp.read_dir();
-    let _ = fs::remove_dir_all(&tmp);
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let resolved = resolve_model_identifier("bartowski/GLM-5-UD-IQ2_XXS-GGUF:UD-IQ2_XXS")
+        .await
+        .unwrap();
+    assert_eq!(resolved, vec![shard1.clone(), shard2.clone()]);
+    assert!(unrelated.exists());
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_model_by_identifier_removes_only_the_resolved_split_shards() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-split-target");
+    let shard1 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00001-of-00002.gguf",
+        4,
+    );
+    let shard2 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00002-of-00002.gguf",
+        4,
+    );
+    let unrelated = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-Q4_K_M.gguf",
+        4,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let expected_deleted = vec![
+        shard1.canonicalize().unwrap(),
+        shard2.canonicalize().unwrap(),
+    ];
+    let result = delete_model_by_identifier("bartowski/GLM-5-UD-IQ2_XXS-GGUF:UD-IQ2_XXS")
+        .await
+        .unwrap();
+    assert_eq!(result.deleted_paths, expected_deleted);
+    assert!(!shard1.exists());
+    assert!(!shard2.exists());
+    assert!(unrelated.exists());
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_model_by_identifier_supports_dotted_quant_selector_refs() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-dotted-selector");
+    let q2 = create_cache_repo_file(
+        &temp,
+        "Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF",
+        "a9b8adbec2cc87479c772dac1944f313b4036c26",
+        "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf",
+        4,
+    );
+    let q4 = create_cache_repo_file(
+        &temp,
+        "Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF",
+        "a9b8adbec2cc87479c772dac1944f313b4036c26",
+        "qwen3.5-moe-0.87B-d0.8B.Q4_K_M.gguf",
+        4,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let resolved =
+        resolve_model_identifier("Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF:Q2_K")
+            .await
+            .unwrap();
+    assert_eq!(resolved, vec![q2.clone()]);
+
+    let expected_deleted = vec![q2.canonicalize().unwrap()];
+    let result =
+        delete_model_by_identifier("Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF:Q2_K")
+            .await
+            .unwrap();
+    assert_eq!(result.deleted_paths, expected_deleted);
+    assert!(!q2.exists());
+    assert!(q4.exists());
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}
+
+#[tokio::test]
+#[serial]
+async fn resolve_model_identifier_repo_ref_matches_shared_resolver_semantics() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-default-repo");
+    let shard1 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00001-of-00002.gguf",
+        64,
+    );
+    let shard2 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "GLM-5-UD-IQ2_XXS-00002-of-00002.gguf",
+        64,
+    );
+    let bf16 = create_cache_repo_file(
+        &temp,
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        "abcdef1234567890",
+        "BF16/GLM-5-UD-BF16.gguf",
+        128,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let sibling_entries = vec![
+        ("GLM-5-UD-IQ2_XXS-00001-of-00002.gguf".to_string(), Some(64)),
+        ("GLM-5-UD-IQ2_XXS-00002-of-00002.gguf".to_string(), Some(64)),
+        ("BF16/GLM-5-UD-BF16.gguf".to_string(), Some(128)),
+    ];
+    let selected = resolve_huggingface_file_from_sibling_entries(
+        "bartowski/GLM-5-UD-IQ2_XXS-GGUF",
+        Some("main"),
+        "",
+        &sibling_entries,
+    )
+    .await
+    .unwrap();
+
+    let resolved = resolve_model_identifier("bartowski/GLM-5-UD-IQ2_XXS-GGUF")
+        .await
+        .unwrap();
+    let resolved: Vec<PathBuf> = resolved
+        .into_iter()
+        .map(|path| path.canonicalize().unwrap())
+        .collect();
+    let expected = if selected == "BF16/GLM-5-UD-BF16.gguf" {
+        vec![bf16.canonicalize().unwrap()]
+    } else {
+        vec![
+            shard1.canonicalize().unwrap(),
+            shard2.canonicalize().unwrap(),
+        ]
+    };
+    assert_eq!(resolved, expected);
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
 }

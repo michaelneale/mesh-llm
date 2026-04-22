@@ -58,6 +58,16 @@ enum ExactModelRef {
     },
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum DeleteModelRef {
+    LocalStem(String),
+    HuggingFace {
+        repo: String,
+        revision: Option<String>,
+        file: String,
+    },
+}
+
 pub(super) fn merge_capabilities(
     left: ModelCapabilities,
     right: ModelCapabilities,
@@ -579,6 +589,53 @@ pub fn installed_model_huggingface_ref(identity: &HuggingFaceModelIdentity) -> S
     format_huggingface_display_ref(&identity.repo_id, None, &identity.file)
 }
 
+pub(crate) async fn parse_delete_model_ref(input: &str) -> Result<DeleteModelRef> {
+    if input.starts_with("http://") || input.starts_with("https://") {
+        bail!("Delete does not support direct URLs. Use a model stem or Hugging Face ref.");
+    }
+    if Path::new(input).is_absolute()
+        || input.contains('\\')
+        || input.starts_with("./")
+        || input.starts_with("../")
+        || input.starts_with("~/")
+    {
+        bail!("Delete does not support filesystem paths. Use a model stem or Hugging Face ref.");
+    }
+
+    if let Some(model) = find_catalog_model_exact(input) {
+        let stem = model.file.trim_end_matches(".gguf");
+        if find_model_path(stem).exists() {
+            return Ok(DeleteModelRef::LocalStem(stem.to_string()));
+        }
+    }
+
+    if !input.contains('/') {
+        let installed_name = input.strip_suffix(".gguf").unwrap_or(input);
+        if find_model_path(installed_name).exists() {
+            return Ok(DeleteModelRef::LocalStem(installed_name.to_string()));
+        }
+    }
+
+    let canonical = canonicalize_model_ref_input(input).await?;
+    match parse_exact_model_ref(&canonical)? {
+        ExactModelRef::Catalog(model) => Ok(DeleteModelRef::LocalStem(
+            model.file.trim_end_matches(".gguf").to_string(),
+        )),
+        ExactModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        } => Ok(DeleteModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        }),
+        ExactModelRef::Url { .. } => {
+            bail!("Delete does not support direct URLs. Use a model stem or Hugging Face ref.")
+        }
+    }
+}
+
 pub(super) fn catalog_hf_asset_ref(
     model: &'static catalog::CatalogModel,
     file_name: &str,
@@ -1021,7 +1078,9 @@ fn gguf_matches_quant_selector(file_lower: &str, selector_lower: &str) -> bool {
     }
     file_lower.contains(&format!("/{selector_lower}/"))
         || file_lower.contains(&format!("-{selector_lower}-"))
+        || file_lower.contains(&format!(".{selector_lower}-"))
         || file_lower.ends_with(&format!("-{selector_lower}.gguf"))
+        || file_lower.ends_with(&format!(".{selector_lower}.gguf"))
         || file_lower.ends_with(&format!("/{selector_lower}.gguf"))
 }
 
@@ -1268,10 +1327,11 @@ async fn fetch_repo_sibling_entries(
         .collect())
 }
 
-async fn resolve_huggingface_file(
+pub(crate) async fn resolve_huggingface_file_from_sibling_entries(
     repo: &str,
     revision: Option<&str>,
     file: &str,
+    sibling_entries: &[(String, Option<u64>)],
 ) -> Result<String> {
     if file.ends_with(".gguf")
         || file.ends_with(".safetensors")
@@ -1281,7 +1341,6 @@ async fn resolve_huggingface_file(
     }
 
     let revision = revision.unwrap_or("main");
-    let sibling_entries = fetch_repo_sibling_entries(repo, revision).await?;
     let siblings: Vec<String> = sibling_entries.iter().map(|(f, _)| f.clone()).collect();
     let has_mlx_weights = siblings
         .iter()
@@ -1291,7 +1350,7 @@ async fn resolve_huggingface_file(
         let gguf_only = repo_prefers_gguf_only(repo);
         if gguf_only {
             if let Some(resolved) =
-                select_default_hf_file_fit_aware(repo, Some(revision), &sibling_entries).await
+                select_default_hf_file_fit_aware(repo, Some(revision), sibling_entries).await
             {
                 return Ok(resolved);
             }
@@ -1303,7 +1362,7 @@ async fn resolve_huggingface_file(
         }
 
         if let Some(resolved) =
-            select_default_hf_file_fit_aware(repo, Some(revision), &sibling_entries).await
+            select_default_hf_file_fit_aware(repo, Some(revision), sibling_entries).await
         {
             return Ok(resolved);
         }
@@ -1321,6 +1380,17 @@ async fn resolve_huggingface_file(
     bail!(
         "No model file matching stem '{file}' in {repo}@{revision}. Use a full ref like org/repo/file.gguf or org/repo/model.safetensors."
     )
+}
+
+async fn resolve_huggingface_file(
+    repo: &str,
+    revision: Option<&str>,
+    file: &str,
+) -> Result<String> {
+    let revision = revision.unwrap_or("main");
+    let sibling_entries = fetch_repo_sibling_entries(repo, revision).await?;
+    resolve_huggingface_file_from_sibling_entries(repo, Some(revision), file, &sibling_entries)
+        .await
 }
 
 pub(super) fn huggingface_resolve_url(repo: &str, revision: Option<&str>, file: &str) -> String {

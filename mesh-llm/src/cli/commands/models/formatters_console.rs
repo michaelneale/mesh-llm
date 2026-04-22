@@ -184,6 +184,10 @@ impl ModelsFormatter for ConsoleFormatter {
 
         println!("💾 Installed models");
         println!("📁 HF cache: {}", huggingface_cache_dir().display());
+        println!(
+            "🗑️ Delete example: mesh-llm models delete {}",
+            rows[0].model_ref
+        );
         println!();
         for row in rows {
             println!("📦 {}", row.name);
@@ -370,11 +374,7 @@ impl ModelsFormatter for ConsoleFormatter {
         println!();
         println!("Name: {}", resolved.display_name);
         println!("Path: {}", resolved.path.display());
-        if resolved.is_exact_path {
-            println!("Mode: exact path provided");
-        } else {
-            println!("Mode: stem name resolution");
-        }
+        println!("Mode: installed model ref resolution");
         let file_size = std::fs::metadata(&resolved.path)
             .map(|m| m.len())
             .unwrap_or(0);
