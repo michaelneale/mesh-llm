@@ -23,28 +23,55 @@ fn build_opencode_launch_spec(
     resolved_model: &str,
     port: u16,
 ) -> OpenCodeLaunchSpec {
+    build_opencode_launch_spec_with_limits(
+        model_names,
+        resolved_model,
+        port,
+        &std::collections::HashMap::new(),
+    )
+}
+
+fn build_opencode_launch_spec_with_limits(
+    model_names: &[String],
+    resolved_model: &str,
+    port: u16,
+    context_lengths: &std::collections::HashMap<String, Option<u32>>,
+) -> OpenCodeLaunchSpec {
     let mut models = serde_json::Map::new();
     for model in model_names {
-        models.insert(
-            model.clone(),
-            serde_json::json!({
-                "name": model,
-            }),
-        );
+        let mut model_obj = serde_json::Map::new();
+        model_obj.insert("name".to_string(), serde_json::json!(model));
+
+        if let Some(&Some(ctx_len)) = context_lengths.get(model) {
+            let limit = serde_json::json!({
+                "context": ctx_len,
+                "output": ctx_len,
+            });
+            model_obj.insert("limit".to_string(), limit);
+        }
+
+        models.insert(model.clone(), serde_json::Value::Object(model_obj));
     }
+
+    // Build provider object with explicit field order: name, npm, options, then models
+    let mut mesh_provider = serde_json::Map::new();
+    mesh_provider.insert("name".to_string(), serde_json::json!("mesh-llm"));
+    mesh_provider.insert(
+        "npm".to_string(),
+        serde_json::json!("@ai-sdk/openai-compatible"),
+    );
+    mesh_provider.insert(
+        "options".to_string(),
+        serde_json::json!({
+            "baseURL": format!("http://127.0.0.1:{port}/v1"),
+        }),
+    );
+    mesh_provider.insert("models".to_string(), serde_json::Value::Object(models));
 
     let config = serde_json::json!({
         "$schema": "https://opencode.ai/config.json",
         "provider": {
-            OPENCODE_PROVIDER_ID: {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "mesh-llm",
-                "options": {
-                    "baseURL": format!("http://127.0.0.1:{port}/v1"),
-                    "apiKey": format!("{{env:{OPENCODE_API_KEY_ENV}}}"),
-                },
-                "models": models,
-            }
+            OPENCODE_PROVIDER_ID: serde_json::Value::Object(mesh_provider),
         }
     });
 
@@ -203,11 +230,16 @@ pub(crate) async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn run_opencode(model: Option<String>, port: u16) -> Result<()> {
+pub(crate) async fn run_opencode(model: Option<String>, port: u16, write: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
     let (models, chosen, mut mesh_child) = runtime::check_mesh(&client, port, &model).await?;
+
+    if write {
+        return write_opencode_config(&client, &models, &chosen, port).await;
+    }
+
     let spec = build_opencode_launch_spec(&models, &chosen, port);
 
     eprintln!(
@@ -236,10 +268,273 @@ pub(crate) async fn run_opencode(model: Option<String>, port: u16) -> Result<()>
     Ok(())
 }
 
+fn resolve_opencode_config_path() -> Result<std::path::PathBuf> {
+    let config_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".config")
+        .join("opencode");
+
+    std::fs::create_dir_all(&config_dir)?;
+
+    let json_path = config_dir.join("opencode.json");
+    let jsonc_path = config_dir.join("opencode.jsonc");
+
+    if json_path.exists() {
+        return Ok(json_path);
+    }
+    if jsonc_path.exists() {
+        return Ok(jsonc_path);
+    }
+
+    Ok(json_path)
+}
+
+fn load_existing_config(path: &std::path::Path) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+
+    let content = std::fs::read_to_string(path)?;
+
+    if path.extension().map_or(false, |ext| ext == "jsonc") {
+        eprintln!(
+            "⚠️  opencode.jsonc detected: comments will be stripped during write (JSONC → JSON round-trip)"
+        );
+    }
+
+    serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))
+}
+
+fn merge_mesh_provider(config: &mut serde_json::Value, mesh_provider: serde_json::Value) {
+    let provider = config
+        .as_object_mut()
+        .expect("config must be an object")
+        .entry("provider".to_string())
+        .or_insert_with(|| serde_json::Map::new().into())
+        .as_object_mut()
+        .expect("provider must be an object");
+
+    provider.insert("mesh".to_string(), mesh_provider);
+}
+
+const MESH_LLM_MANAGEMENT_PORT: u16 = 3131;
+
+async fn fetch_model_context_lengths(
+    client: &reqwest::Client,
+) -> Result<std::collections::HashMap<String, Option<u32>>> {
+    let url = format!("http://127.0.0.1:{MESH_LLM_MANAGEMENT_PORT}/api/models");
+
+    let mut context_map = std::collections::HashMap::new();
+
+    if let Ok(resp) = client.get(&url).send().await {
+        if let Ok(body) = resp.json::<serde_json::Value>().await {
+            for model in body["mesh_models"].as_array().unwrap_or(&vec![]) {
+                let name = model["name"].as_str().map(String::from);
+                let ctx_len = model["context_length"].as_u64().map(|v| v as u32);
+                if let Some(n) = name {
+                    context_map.insert(n, ctx_len);
+                }
+            }
+        }
+    }
+
+    Ok(context_map)
+}
+
+pub(crate) async fn write_opencode_config(
+    client: &reqwest::Client,
+    model_names: &[String],
+    resolved_model: &str,
+    port: u16,
+) -> Result<()> {
+    let config_path = resolve_opencode_config_path()?;
+    write_opencode_config_to_path(client, model_names, resolved_model, port, &config_path).await
+}
+
+fn format_opencode_config_ordered(
+    existing_config: &serde_json::Value,
+    new_mesh_provider: serde_json::Value,
+    _model_count: usize,
+) -> String {
+    let indent = |level: usize| "  ".repeat(level);
+
+    let mut lines = Vec::new();
+    lines.push(indent(0) + "{");
+
+    // $schema first if present
+    if let Some(schema) = existing_config
+        .get("$schema")
+        .or_else(|| new_mesh_provider["provider"]["mesh"].get("$schema"))
+    {
+        let schema_str = serde_json::to_string(schema).unwrap();
+        lines.push(format!("{}\"$schema\": {},", indent(1), schema_str));
+    }
+
+    // provider object
+    lines.push(indent(1) + "\"provider\": {");
+    lines.push(indent(2) + "\"mesh\": {");
+
+    // mesh fields in order: name, npm, options, then models
+    if let Some(name) = new_mesh_provider["name"].as_str() {
+        lines.push(format!("{}\"name\": \"{}\",", indent(3), name));
+    }
+    if let Some(npm) = new_mesh_provider["npm"].as_str() {
+        lines.push(format!("{}\"npm\": \"{}\",", indent(3), npm));
+    }
+    if let Some(options) = new_mesh_provider.get("options") {
+        let options_obj = options.as_object().unwrap();
+        lines.push(indent(3) + "\"options\": {");
+        for (i, (k, v)) in options_obj.iter().enumerate() {
+            let comma = if i < options_obj.len() - 1 { "," } else { "" };
+            lines.push(format!(
+                "{}\"{}\": {}{}",
+                indent(4),
+                k,
+                serde_json::to_string(v).unwrap(),
+                comma
+            ));
+        }
+        lines.push(indent(3) + "},");
+    }
+
+    // models last
+    if let Some(models) = new_mesh_provider.get("models") {
+        let model_map = models.as_object().unwrap();
+        lines.push(indent(3) + "\"models\": {");
+        for (i, (model_name, model_obj)) in model_map.iter().enumerate() {
+            let comma = if i < model_map.len() - 1 { "," } else { "" };
+            let obj_lines: Vec<String> = vec![format!(
+                "{}\"{}\": {}",
+                indent(4),
+                model_name,
+                serde_json::to_string(model_obj).unwrap()
+            )];
+            lines.extend(obj_lines);
+            if !comma.is_empty() {
+                let _ = lines.last_mut().map(|s| *s = format!("{},", s));
+            }
+        }
+        lines.push(indent(3) + "}");
+    }
+
+    lines.push(indent(2) + "}");
+    lines.push(indent(1) + "}");
+    lines.push(indent(0) + "}");
+
+    lines.join("\n")
+}
+
+async fn write_opencode_config_to_path(
+    client: &reqwest::Client,
+    model_names: &[String],
+    resolved_model: &str,
+    port: u16,
+    config_path: &std::path::Path,
+) -> Result<()> {
+    std::fs::create_dir_all(config_path.parent().expect("config path must have parent"))?;
+
+    let existing_config = load_existing_config(config_path)?;
+
+    let context_lengths = fetch_model_context_lengths(client).await?;
+
+    let spec =
+        build_opencode_launch_spec_with_limits(model_names, resolved_model, port, &context_lengths);
+    let config_value: serde_json::Value = serde_json::from_str(&spec.config_content)?;
+    let mesh_provider = config_value["provider"]["mesh"].clone();
+
+    // Merge schema if needed (for display in ordered format)
+    let mut merged_config = existing_config.clone();
+    if !merged_config.get("$schema").is_some() {
+        if let Some(schema) = config_value.get("$schema") {
+            merged_config
+                .as_object_mut()
+                .expect("config is object")
+                .insert("$schema".to_string(), schema.clone());
+        }
+    }
+
+    merge_mesh_provider(&mut merged_config, mesh_provider.clone());
+
+    // Use custom formatter to preserve field order
+    let formatted_json =
+        format_opencode_config_ordered(&merged_config, mesh_provider, model_names.len());
+    std::fs::write(config_path, &formatted_json)?;
+
+    eprintln!(
+        "✅ Wrote {} ({} models)",
+        config_path.display(),
+        model_names.len()
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_opencode_config_to_path_sync(
+    model_names: &[String],
+    resolved_model: &str,
+    port: u16,
+    config_path: &std::path::Path,
+) -> Result<()> {
+    std::fs::create_dir_all(config_path.parent().expect("config path must have parent"))?;
+
+    let mut config = load_existing_config(config_path)?;
+
+    let spec = build_opencode_launch_spec_with_limits(
+        model_names,
+        resolved_model,
+        port,
+        &std::collections::HashMap::new(),
+    );
+    let config_value: serde_json::Value = serde_json::from_str(&spec.config_content)?;
+    let mesh_provider = config_value["provider"]["mesh"].clone();
+
+    if !config.get("$schema").is_some() {
+        if let Some(schema) = config_value.get("$schema") {
+            config
+                .as_object_mut()
+                .expect("config is object")
+                .insert("$schema".to_string(), schema.clone());
+        }
+    }
+
+    merge_mesh_provider(&mut config, mesh_provider);
+
+    let pretty_json = serde_json::to_string_pretty(&config)?;
+    std::fs::write(config_path, &pretty_json)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn write_opencode_config_for_test(
+    config_path: &std::path::Path,
+    models: &[String],
+    port: u16,
+) -> Result<(), anyhow::Error> {
+    write_opencode_config_to_path_sync(
+        models,
+        &models.first().cloned().unwrap_or_default(),
+        port,
+        config_path,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn build_mesh_provider_spec_for_test(models: &[String], port: u16) -> serde_json::Value {
+    let spec =
+        build_opencode_launch_spec(models, &models.first().cloned().unwrap_or_default(), port);
+    let config_value: serde_json::Value =
+        serde_json::from_str(&spec.config_content).expect("valid JSON");
+    config_value["provider"]["mesh"].clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        build_opencode_launch_spec, opencode_missing_binary_guidance, OPENCODE_INSTALL_HINT,
+        build_mesh_provider_spec_for_test, build_opencode_launch_spec,
+        opencode_missing_binary_guidance, write_opencode_config_for_test, OPENCODE_INSTALL_HINT,
     };
 
     #[test]
@@ -268,9 +563,12 @@ mod tests {
             config["provider"]["mesh"]["options"]["baseURL"],
             "http://127.0.0.1:9337/v1"
         );
-        assert_eq!(
-            config["provider"]["mesh"]["options"]["apiKey"],
-            "{env:OPENAI_API_KEY}"
+        // apiKey should NOT be in persisted config (handled at runtime via env var)
+        assert!(
+            config["provider"]["mesh"]["options"]
+                .get("apiKey")
+                .is_none(),
+            "apiKey should not be in options for persisted config"
         );
         assert_eq!(
             config["provider"]["mesh"]["models"]["GLM-4.7-Flash-Q4_K_M"]["name"],
@@ -334,6 +632,350 @@ mod tests {
         assert_eq!(
             lines[4],
             "mesh-llm injects OPENCODE_CONFIG_CONTENT automatically when launching OpenCode."
+        );
+    }
+
+    #[test]
+    fn test_write_creates_new_config_file() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        assert!(!config_path.exists());
+
+        let models = vec!["qwen2.5-3b".to_string(), "glm-4.7-flash".to_string()];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(
+            result.is_ok(),
+            "write_opencode_config should succeed on new file"
+        );
+        assert!(config_path.exists(), "config file should be created");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(parsed["$schema"], "https://opencode.ai/config.json");
+        assert!(parsed["provider"]["mesh"].is_object());
+    }
+
+    #[test]
+    fn test_write_merges_with_existing_providers() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        let existing_config = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "anthropic": {
+                    "npm": "@ai-sdk/anthropic",
+                    "name": "Anthropic",
+                    "options": {
+                        "apiKey": "{env:ANTHROPIC_API_KEY}"
+                    },
+                    "models": {
+                        "claude-3-sonnet": { "name": "claude-3-sonnet" }
+                    }
+                },
+                "openai": {
+                    "npm": "@ai-sdk/openai",
+                    "name": "OpenAI",
+                    "options": {
+                        "apiKey": "{env:OPENAI_API_KEY}"
+                    },
+                    "models": {
+                        "gpt-4o": { "name": "gpt-4o" }
+                    }
+                }
+            }
+        });
+
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing_config).unwrap(),
+        )
+        .expect("failed to write initial config");
+
+        let models = vec!["qwen2.5-3b".to_string()];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(result.is_ok(), "merge should succeed");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(parsed["$schema"], "https://opencode.ai/config.json");
+        assert!(
+            parsed["provider"]["anthropic"].is_object(),
+            "anthropic provider should be preserved"
+        );
+        assert!(
+            parsed["provider"]["openai"].is_object(),
+            "openai provider should be preserved"
+        );
+        assert!(
+            parsed["provider"]["mesh"].is_object(),
+            "mesh provider should be added"
+        );
+        assert_eq!(
+            parsed["provider"]["anthropic"]["name"], "Anthropic",
+            "anthropic name should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_write_overwrites_mesh_provider() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        let existing_config = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "mesh": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "mesh-llm-old",
+                    "options": {
+                        "baseURL": "http://127.0.0.1:8080/v1",
+                        "apiKey": "{env:OPENAI_API_KEY}"
+                    },
+                    "models": {
+                        "old-model": { "name": "old-model" }
+                    }
+                }
+            }
+        });
+
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing_config).unwrap(),
+        )
+        .expect("failed to write initial config");
+
+        let models = vec!["qwen2.5-3b".to_string(), "deepseek-r1".to_string()];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(result.is_ok(), "overwrite should succeed");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(
+            parsed["provider"]["mesh"]["name"], "mesh-llm",
+            "mesh name should be updated"
+        );
+        assert_eq!(
+            parsed["provider"]["mesh"]["options"]["baseURL"], "http://127.0.0.1:9337/v1",
+            "baseURL should be updated to new port"
+        );
+        assert!(
+            parsed["provider"]["mesh"]["models"]["old-model"].is_null(),
+            "old model should be removed"
+        );
+        assert_eq!(
+            parsed["provider"]["mesh"]["models"]["qwen2.5-3b"]["name"], "qwen2.5-3b",
+            "new model should be present"
+        );
+        assert_eq!(
+            parsed["provider"]["mesh"]["models"]["deepseek-r1"]["name"], "deepseek-r1",
+            "second new model should be present"
+        );
+    }
+
+    #[test]
+    fn test_build_mesh_provider_spec_generates_correct_format() {
+        let models = vec![
+            "Qwen2.5-3B-Q4_K_M".to_string(),
+            "bartowski/GLM-4.7-Flash-Q4_K_M".to_string(),
+        ];
+        let port = 9337u16;
+
+        let spec = build_mesh_provider_spec_for_test(&models, port);
+
+        assert!(spec.is_object(), "should return a JSON object");
+
+        assert_eq!(
+            spec["npm"], "@ai-sdk/openai-compatible",
+            "npm package should match opencode format"
+        );
+        assert_eq!(spec["name"], "mesh-llm", "name field should be mesh-llm");
+        assert!(spec["options"].is_object(), "options should be an object");
+        assert_eq!(
+            spec["options"]["baseURL"], "http://127.0.0.1:9337/v1",
+            "baseURL should include /v1 suffix and correct port"
+        );
+        // apiKey is not persisted in config (handled at runtime via env var)
+        assert!(
+            spec["options"].get("apiKey").is_none(),
+            "apiKey should not be in options for persisted config"
+        );
+        assert!(spec["models"].is_object(), "models should be an object");
+        assert_eq!(
+            spec["models"]["Qwen2.5-3B-Q4_K_M"]["name"], "Qwen2.5-3B-Q4_K_M",
+            "model name should match input"
+        );
+        assert_eq!(
+            spec["models"]["bartowski/GLM-4.7-Flash-Q4_K_M"]["name"],
+            "bartowski/GLM-4.7-Flash-Q4_K_M",
+            "model with slash in name should work correctly"
+        );
+    }
+
+    #[test]
+    fn test_write_handles_empty_models_list() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        let models: Vec<String> = vec![];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(result.is_ok(), "should succeed with empty models list");
+        assert!(config_path.exists(), "config file should still be created");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert!(
+            parsed["provider"]["mesh"]["models"].is_object(),
+            "models field should exist even when empty"
+        );
+        assert_eq!(
+            parsed["provider"]["mesh"]["models"]
+                .as_object()
+                .map(|m| m.len())
+                .unwrap_or(0),
+            0,
+            "models object should be empty"
+        );
+    }
+
+    #[test]
+    fn test_write_handles_special_characters_in_model_names() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        let models = vec![
+            "model-with-dashes".to_string(),
+            "model_with_underscores".to_string(),
+            "ModelWithCamelCase".to_string(),
+            "bartowski/model-v2.5-Q4_K_M.gguf".to_string(),
+            "1-model-starting-with-number".to_string(),
+        ];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(
+            result.is_ok(),
+            "should succeed with special character model names"
+        );
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        for model in &models {
+            assert!(
+                !parsed["provider"]["mesh"]["models"][model].is_null(),
+                "model '{}' should be present in config",
+                model
+            );
+            assert_eq!(
+                parsed["provider"]["mesh"]["models"][model]["name"], *model,
+                "model name should match exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn test_write_preserves_existing_file_schema() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+
+        let existing_config = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "$customField": "preserve-me",
+            "provider": {}
+        });
+
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing_config).unwrap(),
+        )
+        .expect("failed to write initial config");
+
+        let models = vec!["qwen".to_string()];
+
+        let result = write_opencode_config_for_test(&config_path, &models, 9337);
+
+        assert!(result.is_ok());
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(
+            parsed["$schema"], "https://opencode.ai/config.json",
+            "schema should be preserved"
+        );
+        assert_eq!(
+            parsed["$customField"], "preserve-me",
+            "custom fields at root level should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_build_opencode_launch_spec_with_limits_includes_context_length() {
+        use super::build_opencode_launch_spec_with_limits;
+
+        let mut context_lengths = std::collections::HashMap::new();
+        context_lengths.insert("Qwen3.5-27B".to_string(), Some(262144));
+        context_lengths.insert("Gemma-7B".to_string(), Some(8192));
+        context_lengths.insert("Llama-3B".to_string(), None);
+
+        let models = vec![
+            "Qwen3.5-27B".to_string(),
+            "Gemma-7B".to_string(),
+            "Llama-3B".to_string(),
+        ];
+
+        let spec =
+            build_opencode_launch_spec_with_limits(&models, "Qwen3.5-27B", 9337, &context_lengths);
+        let config: serde_json::Value =
+            serde_json::from_str(&spec.config_content).expect("valid JSON");
+
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Qwen3.5-27B"]["name"],
+            "Qwen3.5-27B"
+        );
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Qwen3.5-27B"]["limit"]["context"],
+            262144
+        );
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Qwen3.5-27B"]["limit"]["output"],
+            262144
+        );
+
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Gemma-7B"]["name"],
+            "Gemma-7B"
+        );
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Gemma-7B"]["limit"]["context"],
+            8192
+        );
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Gemma-7B"]["limit"]["output"],
+            8192
+        );
+
+        assert_eq!(
+            config["provider"]["mesh"]["models"]["Llama-3B"]["name"],
+            "Llama-3B"
+        );
+        assert!(
+            config["provider"]["mesh"]["models"]["Llama-3B"]["limit"].is_null(),
+            "model with None context_length should not have limit field"
         );
     }
 }

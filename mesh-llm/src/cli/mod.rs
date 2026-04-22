@@ -521,6 +521,9 @@ pub(crate) enum Command {
         /// API port for mesh-llm (default: 9337)
         #[arg(long, default_value = "9337")]
         port: u16,
+        /// Write the mesh provider config to opencode's config file instead of launching.
+        #[arg(long)]
+        write: bool,
     },
     /// Stop all running mesh-llm, llama-server, and rpc-server processes.
     Stop,

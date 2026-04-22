@@ -69,7 +69,9 @@ pub(crate) async fn dispatch(cli: &Cli) -> Result<bool> {
         Command::RotateKey => nostr::rotate_keys(),
         Command::Goose { model, port } => run_goose(model.clone(), *port).await,
         Command::Claude { model, port } => run_claude(model.clone(), *port).await,
-        Command::Opencode { model, port } => run_opencode(model.clone(), *port).await,
+        Command::Opencode { model, port, write } => {
+            run_opencode(model.clone(), *port, *write).await
+        }
         Command::Blackboard {
             text,
             search,
