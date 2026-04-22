@@ -2641,7 +2641,7 @@ mod tests {
     async fn test_api_model_interests_post_and_get_round_trip() {
         let state = build_test_mesh_api().await;
         let (post_addr, post_handle) = spawn_management_test_server(state.clone()).await;
-        let body = r#"{"model_ref":"Qwen3-Coder-Next-Q4_K_M","source":"ui"}"#;
+        let body = r#"{"model_ref":"Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M","source":"ui"}"#;
 
         let post_response = send_management_request(
             post_addr,
@@ -2658,7 +2658,7 @@ mod tests {
         assert_eq!(post_payload["created"], json!(true));
         assert_eq!(
             post_payload["interest"]["model_ref"],
-            json!("Qwen3-Coder-Next-Q4_K_M")
+            json!("Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M")
         );
         assert_eq!(post_payload["interest"]["submission_source"], json!("ui"));
         assert_eq!(post_payload["model_interests"].as_array().unwrap().len(), 1);
@@ -2678,7 +2678,10 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(interests.len(), 1);
-        assert_eq!(interests[0]["model_ref"], json!("Qwen3-Coder-Next-Q4_K_M"));
+        assert_eq!(
+            interests[0]["model_ref"],
+            json!("Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M")
+        );
         assert_eq!(interests[0]["submission_source"], json!("ui"));
 
         get_handle.abort();
@@ -2687,7 +2690,7 @@ mod tests {
     #[tokio::test]
     async fn test_api_model_interests_post_is_idempotent() {
         let state = build_test_mesh_api().await;
-        let body = r#"{"model_ref":"Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M","source":"ui"}"#;
+        let body = r#"{"model_ref":"Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M","source":"ui"}"#;
         let request = format!(
             "POST /api/model-interests HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             body.len(),
@@ -2710,7 +2713,7 @@ mod tests {
         assert_eq!(second_payload["created"], json!(false));
         assert_eq!(
             second_payload["interest"]["model_ref"],
-            json!("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
+            json!("Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M")
         );
         assert_eq!(
             second_payload["interest"]["created_at_unix"],
@@ -2729,8 +2732,10 @@ mod tests {
         let state = build_test_mesh_api().await;
         state
             .upsert_model_interest(
-                crate::models::canonicalize_interest_model_ref("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
-                    .unwrap(),
+                crate::models::canonicalize_interest_model_ref(
+                    "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M",
+                )
+                .unwrap(),
                 Some("ui".to_string()),
             )
             .await;
@@ -2738,7 +2743,7 @@ mod tests {
         let (addr, handle) = spawn_management_test_server(state).await;
         let response = send_management_request(
             addr,
-            "DELETE /api/model-interests/Qwen%2FQwen3-Coder-Next-GGUF%3AQ4_K_M HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+            "DELETE /api/model-interests/Qwen%2FQwen3-Coder-Next-GGUF%40main%3AQ4_K_M HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
         )
         .await;
 
@@ -2747,7 +2752,7 @@ mod tests {
         assert_eq!(payload["removed"], json!(true));
         assert_eq!(
             payload["model_ref"],
-            json!("Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M")
+            json!("Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M")
         );
         assert_eq!(payload["model_interests"], json!([]));
 
@@ -2777,6 +2782,32 @@ mod tests {
             json!(
                 "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
             )
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_interests_normalize_legacy_selector_revision_order() {
+        let state = build_test_mesh_api().await;
+        let (addr, handle) = spawn_management_test_server(state).await;
+        let body = r#"{"model_ref":"Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M@main","source":"ui"}"#;
+
+        let response = send_management_request(
+            addr,
+            format!(
+                "POST /api/model-interests HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            ),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 201"));
+        let payload = json_body(&response);
+        assert_eq!(
+            payload["interest"]["model_ref"],
+            json!("Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M")
         );
 
         handle.abort();

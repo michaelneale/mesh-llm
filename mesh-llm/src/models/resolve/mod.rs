@@ -546,7 +546,7 @@ fn is_quant_like_selector(value: &str) -> bool {
 
 fn format_repo_selector_ref(repo: &str, revision: Option<&str>, selector: &str) -> String {
     match revision {
-        Some(revision) => format!("{repo}:{selector}@{revision}"),
+        Some(revision) => format!("{repo}@{revision}:{selector}"),
         None => format!("{repo}:{selector}"),
     }
 }
@@ -773,25 +773,55 @@ pub(super) fn parse_huggingface_ref(input: &str) -> Option<(String, Option<Strin
 fn parse_repo_tail_selector_and_revision(
     tail: &str,
 ) -> Option<(String, Option<String>, Option<String>)> {
-    let (with_selector, revision) = match tail.split_once('@') {
-        Some((repo, revision)) => {
-            if repo.is_empty() || revision.is_empty() {
+    let at_pos = tail.find('@');
+    let colon_pos = tail.find(':');
+
+    match (at_pos, colon_pos) {
+        (Some(at), Some(colon)) if at < colon => {
+            let repo_tail = &tail[..at];
+            let revision = &tail[at + 1..colon];
+            let selector = &tail[colon + 1..];
+            if repo_tail.is_empty() || revision.is_empty() || selector.is_empty() {
                 return None;
             }
-            (repo, Some(revision.to_string()))
+            Some((
+                repo_tail.to_string(),
+                Some(revision.to_string()),
+                Some(selector.to_string()),
+            ))
         }
-        None => (tail, None),
-    };
-    let (repo_tail, selector) = match with_selector.split_once(':') {
-        Some((repo, selector)) => {
-            if repo.is_empty() || selector.is_empty() {
+        (Some(at), Some(colon)) if colon < at => {
+            let repo_tail = &tail[..colon];
+            let selector = &tail[colon + 1..at];
+            let revision = &tail[at + 1..];
+            if repo_tail.is_empty() || revision.is_empty() || selector.is_empty() {
                 return None;
             }
-            (repo, Some(selector.to_string()))
+            Some((
+                repo_tail.to_string(),
+                Some(revision.to_string()),
+                Some(selector.to_string()),
+            ))
         }
-        None => (with_selector, None),
-    };
-    Some((repo_tail.to_string(), revision, selector))
+        (Some(at), None) => {
+            let repo_tail = &tail[..at];
+            let revision = &tail[at + 1..];
+            if repo_tail.is_empty() || revision.is_empty() {
+                return None;
+            }
+            Some((repo_tail.to_string(), Some(revision.to_string()), None))
+        }
+        (None, Some(colon)) => {
+            let repo_tail = &tail[..colon];
+            let selector = &tail[colon + 1..];
+            if repo_tail.is_empty() || selector.is_empty() {
+                return None;
+            }
+            Some((repo_tail.to_string(), None, Some(selector.to_string())))
+        }
+        (None, None) => Some((tail.to_string(), None, None)),
+        _ => None,
+    }
 }
 
 fn parse_huggingface_repo_ref(input: &str) -> Option<(String, Option<String>, Option<String>)> {
@@ -865,7 +895,7 @@ fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
         });
     }
     bail!(
-        "Expected an exact model ref. Use a catalog id, a Hugging Face ref like org/repo, org/repo:QUANT, org/repo/file.gguf, org/repo/file-stem for split GGUFs, org/repo/model.safetensors, or org/repo/model-00001-of-00048.safetensors, or a direct URL."
+        "Expected an exact model ref. Use a catalog id, a Hugging Face ref like org/repo, org/repo@rev:QUANT, org/repo/file.gguf, org/repo/file-stem for split GGUFs, org/repo/model.safetensors, or org/repo/model-00001-of-00048.safetensors, or a direct URL."
     )
 }
 

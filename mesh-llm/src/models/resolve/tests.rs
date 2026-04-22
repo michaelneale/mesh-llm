@@ -127,8 +127,15 @@ fn canonicalize_interest_model_ref_accepts_catalog_names() {
 #[test]
 fn canonicalize_interest_model_ref_normalizes_huggingface_selectors() {
     let canonical =
-        canonicalize_interest_model_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL").unwrap();
-    assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL");
+        canonicalize_interest_model_ref("unsloth/gemma-4-31B-it-GGUF@main:UD-Q4_K_XL").unwrap();
+    assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF@main:UD-Q4_K_XL");
+}
+
+#[test]
+fn canonicalize_interest_model_ref_normalizes_legacy_selector_revision_order() {
+    let canonical =
+        canonicalize_interest_model_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL@main").unwrap();
+    assert_eq!(canonical, "unsloth/gemma-4-31B-it-GGUF@main:UD-Q4_K_XL");
 }
 
 #[test]
@@ -169,6 +176,32 @@ fn parse_huggingface_repo_ref_parses_quant_selector() {
         Some((
             "unsloth/gemma-4-31B-it-GGUF".to_string(),
             None,
+            Some("UD-Q4_K_XL".to_string())
+        ))
+    );
+}
+
+#[test]
+fn parse_huggingface_repo_ref_parses_revisioned_quant_selector() {
+    let parsed = parse_huggingface_repo_ref("unsloth/gemma-4-31B-it-GGUF@main:UD-Q4_K_XL");
+    assert_eq!(
+        parsed,
+        Some((
+            "unsloth/gemma-4-31B-it-GGUF".to_string(),
+            Some("main".to_string()),
+            Some("UD-Q4_K_XL".to_string())
+        ))
+    );
+}
+
+#[test]
+fn parse_huggingface_repo_ref_accepts_legacy_revision_after_selector() {
+    let parsed = parse_huggingface_repo_ref("unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL@main");
+    assert_eq!(
+        parsed,
+        Some((
+            "unsloth/gemma-4-31B-it-GGUF".to_string(),
+            Some("main".to_string()),
             Some("UD-Q4_K_XL".to_string())
         ))
     );
@@ -318,6 +351,23 @@ fn parse_exact_model_ref_accepts_unsloth_gemma_quant_selector() {
             assert_eq!(file, "UD-Q4_K_XL");
         }
         other => panic!("expected HuggingFace quant selector ref, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_exact_model_ref_accepts_revisioned_quant_selector() {
+    let parsed = parse_exact_model_ref("unsloth/gemma-4-31B-it-GGUF@main:UD-Q4_K_XL").unwrap();
+    match parsed {
+        ExactModelRef::HuggingFace {
+            repo,
+            revision,
+            file,
+        } => {
+            assert_eq!(repo, "unsloth/gemma-4-31B-it-GGUF");
+            assert_eq!(revision.as_deref(), Some("main"));
+            assert_eq!(file, "UD-Q4_K_XL");
+        }
+        other => panic!("expected HuggingFace revisioned quant selector ref, got {other:?}"),
     }
 }
 

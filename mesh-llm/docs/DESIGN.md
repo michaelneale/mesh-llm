@@ -217,7 +217,8 @@ provides the same read-only model search payload as `mesh-llm models search --js
 to operators and future UI flows without requiring CLI output parsing.
 `/api/model-interests` is intentionally local-node-only in phase 2: it stores
 explicit interest on the connected host without changing mesh gossip or runtime
-demand semantics yet. Mesh management works without the HTML via curl/scripts.
+demand semantics yet. Entries should use canonical refs such as
+`org/repo@rev:variant`. Mesh management works without the HTML via curl/scripts.
 
 Always enabled on port 3131 (configurable with `--console <port>`).
 

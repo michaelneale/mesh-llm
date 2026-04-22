@@ -185,10 +185,11 @@ mod tests {
 
     #[test]
     fn parse_upsert_request_preserves_optional_source() {
-        let request =
-            parse_upsert_request("{\"model_ref\":\"Qwen3-8B-Q4_K_M\",\"source\":\" ui \"}")
-                .unwrap();
-        assert_eq!(request.model_ref, "Qwen3-8B-Q4_K_M");
+        let request = parse_upsert_request(
+            "{\"model_ref\":\"Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M\",\"source\":\" ui \"}",
+        )
+        .unwrap();
+        assert_eq!(request.model_ref, "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M");
         assert_eq!(request.source.as_deref(), Some(" ui "));
     }
 
@@ -204,10 +205,10 @@ mod tests {
     #[test]
     fn decode_model_interest_path_decodes_percent_encoded_model_refs() {
         let decoded = decode_model_interest_path(
-            "/api/model-interests/Qwen%2FQwen3-Coder-Next-GGUF%3AQ4_K_M",
+            "/api/model-interests/Qwen%2FQwen3-Coder-Next-GGUF%40main%3AQ4_K_M",
         )
         .unwrap();
-        assert_eq!(decoded, "Qwen/Qwen3-Coder-Next-GGUF:Q4_K_M");
+        assert_eq!(decoded, "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M");
     }
 
     #[test]
