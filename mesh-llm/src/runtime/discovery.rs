@@ -148,9 +148,10 @@ pub(super) fn start_new_mesh(
     if !has_startup_models && cli.model.is_empty() {
         cli.model.push(primary.into());
     }
-    if !cli.publish {
-        cli.publish = true;
-        eprintln!("   Auto-enabling --publish for discovery");
+    if cli.publish {
+        eprintln!("   Publishing to Nostr for public discovery");
+    } else {
+        eprintln!("   Mesh is PRIVATE — add --publish for public discovery");
     }
 }
 

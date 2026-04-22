@@ -1,6 +1,6 @@
 [package]
 name = "mesh-api"
-version = "0.64.0"
+version = "0.65.0-rc1"
 edition = "2021"
 description = "Public Rust SDK for embedding Mesh LLM clients in applications"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ categories = ["api-bindings", "network-programming"]
 host-io = ["mesh-client/host-io"]
 
 [dependencies]
-mesh-client = { package = "mesh-llm-client", version = "0.64.0", path = "../mesh-client" }
+mesh-client = { package = "mesh-llm-client", version = "0.65.0-rc1", path = "../mesh-client" }
 hex = "0.4"
 thiserror = "2"
 

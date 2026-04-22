@@ -6,7 +6,7 @@ use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
 use crate::models::{
-    catalog, download_model_ref_with_progress_details, find_catalog_model_exact,
+    catalog, delete, download_model_ref_with_progress_details, find_catalog_model_exact,
     installed_model_capabilities, load_model_usage_record_for_path, model_usage_cache_dir,
     plan_model_cleanup, scan_installed_models, search_catalog_models, search_huggingface,
     show_exact_model, show_model_variants_with_progress, ModelCleanupPlan, ModelCleanupResult,
@@ -196,6 +196,8 @@ pub fn run_model_cleanup(unused_since: Option<&str>, yes: bool, json_output: boo
     Ok(())
 }
 
+// Delete command integration will be implemented in Task 2.
+
 pub async fn run_model_show(model_ref: &str, json_output: bool) -> Result<()> {
     let formatter = models_formatter(json_output);
     let interactive = !json_output && std::io::stdout().is_terminal();
@@ -337,6 +339,9 @@ pub async fn dispatch_models_command(command: &ModelsCommand) -> Result<()> {
                 let formatter = models_formatter(*json);
                 formatter.render_updates_status(repo_for_render.as_deref(), all, check)?;
             }
+        }
+        ModelsCommand::Delete { model, yes, json } => {
+            run_model_delete(model.as_str(), *yes, *json).await?
         }
     }
     Ok(())
@@ -481,6 +486,39 @@ fn render_cleanup_json(
         }))?
     );
     Ok(())
+}
+
+pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Result<()> {
+    let paths = match delete::resolve_model_identifier(model).await {
+        Ok(p) => p,
+        Err(e) => bail!("{}", e.to_string()),
+    };
+
+    if paths.is_empty() {
+        bail!("Model not found: {}", model);
+    }
+
+    if !yes {
+        let display_name = paths[0]
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let resolved = crate::models::ResolvedModel {
+            path: paths[0].clone(),
+            display_name,
+            is_exact_path: false,
+            matched_records: vec![],
+        };
+
+        let formatter = models_formatter(json_output);
+        return formatter.render_delete_preview(&resolved);
+    }
+
+    let result = delete::delete_model_by_identifier(model).await?;
+    let formatter = models_formatter(json_output);
+    formatter.render_delete_result(&result)
 }
 
 #[cfg(test)]

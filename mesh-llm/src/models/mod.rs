@@ -1,10 +1,15 @@
 pub mod capabilities;
 pub mod catalog;
+pub mod delete;
+pub use delete::DeleteResult;
 pub mod gguf;
 pub mod inventory;
 pub mod local;
 mod maintenance;
-mod resolve;
+pub mod resolve;
+pub use resolve::ResolvedModel;
+#[cfg(test)]
+mod delete_tests;
 pub mod search;
 pub mod topology;
 mod usage;

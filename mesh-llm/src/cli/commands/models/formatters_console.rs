@@ -4,7 +4,10 @@ use super::formatters::{
     huggingface_repo_url, installed_model_kind, model_kind_code, sort_label,
     variant_selector_label, ConsoleFormatter, InstalledRow, ModelsFormatter, SearchFormatter,
 };
-use crate::models::{catalog, ModelDetails, SearchArtifactFilter, SearchHit, SearchSort};
+use crate::models::{
+    catalog, DeleteResult as CliDeleteResult, ModelDetails, ResolvedModel as CliResolvedModel,
+    SearchArtifactFilter, SearchHit, SearchSort,
+};
 use anyhow::Result;
 use std::io::Write;
 use tabwriter::TabWriter;
@@ -181,6 +184,10 @@ impl ModelsFormatter for ConsoleFormatter {
 
         println!("💾 Installed models");
         println!("📁 HF cache: {}", huggingface_cache_dir().display());
+        println!(
+            "🗑️ Delete example: mesh-llm models delete {}",
+            rows[0].model_ref
+        );
         println!();
         for row in rows {
             println!("📦 {}", row.name);
@@ -221,6 +228,7 @@ impl ModelsFormatter for ConsoleFormatter {
             println!("   ref: {}", row.model_ref);
             println!("   show: mesh-llm models show {}", row.model_ref);
             println!("   download: mesh-llm models download {}", row.model_ref);
+            println!("   delete: mesh-llm models delete {}", row.model_ref);
             println!("   path: {}", row.path.display());
             if let Some(model) = row.catalog_model {
                 println!("   about: {}", model.description);
@@ -358,6 +366,48 @@ impl ModelsFormatter for ConsoleFormatter {
     }
 
     fn render_updates_status(&self, _repo: Option<&str>, _all: bool, _check: bool) -> Result<()> {
+        Ok(())
+    }
+
+    fn render_delete_preview(&self, resolved: &CliResolvedModel) -> Result<()> {
+        println!("🗑️ Model delete preview");
+        println!();
+        println!("Name: {}", resolved.display_name);
+        println!("Path: {}", resolved.path.display());
+        println!("Mode: installed model ref resolution");
+        let file_size = std::fs::metadata(&resolved.path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        println!("Size: {}", format_installed_size(file_size));
+        if !resolved.matched_records.is_empty() {
+            println!();
+            println!("{} usage record(s) found:", resolved.matched_records.len());
+            for record in &resolved.matched_records {
+                println!(
+                    "  - {} (last used: {})",
+                    record.lookup_key, record.last_used_at
+                );
+            }
+        }
+        println!();
+        println!("To confirm deletion, run with --yes flag.");
+        Ok(())
+    }
+
+    fn render_delete_result(&self, result: &CliDeleteResult) -> Result<()> {
+        println!("✅ Model deleted successfully");
+        println!();
+        println!("Deleted paths:");
+        for p in &result.deleted_paths {
+            println!("  {}", p.display());
+        }
+        println!();
+        println!(
+            "Reclaimed: {}",
+            format_installed_size(result.reclaimed_bytes)
+        );
+        println!("Metadata files removed: {}", result.removed_metadata_files);
+        println!("Usage records purged: {}", result.removed_usage_records);
         Ok(())
     }
 }

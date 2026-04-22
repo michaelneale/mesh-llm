@@ -438,7 +438,7 @@ fn find_hf_cache_model_path(root: &Path, stem: &str) -> Option<PathBuf> {
 /// Extract the base model name from a split GGUF stem.
 /// "GLM-5-UD-IQ2_XXS-00001-of-00006" → Some("GLM-5-UD-IQ2_XXS")
 /// "Qwen3-8B-Q4_K_M" → None (not a split file)
-fn split_gguf_base_name(stem: &str) -> Option<&str> {
+pub(crate) fn split_gguf_base_name(stem: &str) -> Option<&str> {
     let suffix = stem.rfind("-of-")?;
     let part_num = &stem[suffix + 4..];
     if part_num.len() != 5 || !part_num.chars().all(|c| c.is_ascii_digit()) {

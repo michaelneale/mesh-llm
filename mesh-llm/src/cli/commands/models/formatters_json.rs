@@ -1,13 +1,14 @@
 use super::formatters::{
     capabilities_json, catalog_model_capabilities, catalog_model_kind_code,
-    fit_code_for_size_label, huggingface_cache_dir, installed_model_kind_code, local_capacity_json,
-    model_kind_code, moe_json, print_json, InstalledRow, JsonFormatter, ModelsFormatter,
-    SearchFormatter,
+    fit_code_for_size_label, format_installed_size, huggingface_cache_dir,
+    installed_model_kind_code, local_capacity_json, model_kind_code, moe_json, print_json,
+    InstalledRow, JsonFormatter, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
     catalog, search_catalog_json_payload, search_huggingface_json_payload, ModelDetails,
     SearchArtifactFilter, SearchHit, SearchSort,
 };
+use crate::models::{DeleteResult as CliDeleteResult, ResolvedModel as CliResolvedModel};
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -140,6 +141,7 @@ impl ModelsFormatter for JsonFormatter {
                     "ref": row.model_ref,
                     "show": format!("mesh-llm models show {}", row.model_ref),
                     "download": format!("mesh-llm models download {}", row.model_ref),
+                    "delete": format!("mesh-llm models delete {}", row.model_ref),
                     "path": row.path,
                     "about": row.catalog_model.map(|m| m.description.clone()),
                     "draft": row.catalog_model.and_then(|m| m.draft.clone()),
@@ -149,6 +151,9 @@ impl ModelsFormatter for JsonFormatter {
             .collect();
         print_json(json!({
             "cache_dir": huggingface_cache_dir(),
+            "delete_example": rows
+                .first()
+                .map(|row| format!("mesh-llm models delete {}", row.model_ref)),
             "results": models,
         }))
     }
@@ -191,6 +196,35 @@ impl ModelsFormatter for JsonFormatter {
                 "repo": repo,
                 "all": all,
             },
+        }))
+    }
+
+    fn render_delete_preview(&self, resolved: &CliResolvedModel) -> Result<()> {
+        let file_size = std::fs::metadata(&resolved.path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        print_json(json!({
+            "display_name": resolved.display_name,
+            "path": resolved.path,
+            "is_exact_path": resolved.is_exact_path,
+            "file_size_bytes": file_size,
+            "file_size_human": format_installed_size(file_size),
+            "matched_records": resolved.matched_records.iter().map(|r| json!({
+                "lookup_key": r.lookup_key,
+                "display_name": r.display_name,
+                "last_used_at": r.last_used_at,
+            })).collect::<Vec<_>>(),
+            "dry_run": true,
+        }))
+    }
+
+    fn render_delete_result(&self, result: &CliDeleteResult) -> Result<()> {
+        print_json(json!({
+            "deleted_paths": result.deleted_paths.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>(),
+            "reclaimed_bytes": result.reclaimed_bytes,
+            "reclaimed_bytes_human": format_installed_size(result.reclaimed_bytes),
+            "removed_metadata_files": result.removed_metadata_files,
+            "removed_usage_records": result.removed_usage_records,
         }))
     }
 }

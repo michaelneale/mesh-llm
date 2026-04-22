@@ -2,6 +2,7 @@ use crate::models::{
     capabilities, catalog, huggingface_hub_cache_dir, ModelCapabilities, ModelDetails,
     SearchArtifactFilter, SearchHit, SearchSort,
 };
+use crate::models::{DeleteResult as CliDeleteResult, ResolvedModel as CliResolvedModel};
 use crate::system::hardware;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -64,6 +65,8 @@ pub(crate) trait ModelsFormatter: SearchFormatter {
         draft: Option<(&str, &Path)>,
     ) -> Result<()>;
     fn render_updates_status(&self, repo: Option<&str>, all: bool, check: bool) -> Result<()>;
+    fn render_delete_preview(&self, resolved: &CliResolvedModel) -> Result<()>;
+    fn render_delete_result(&self, result: &CliDeleteResult) -> Result<()>;
 }
 
 pub(crate) struct ConsoleFormatter;

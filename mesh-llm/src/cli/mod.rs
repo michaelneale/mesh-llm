@@ -275,11 +275,13 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) headless: bool,
 
-    /// Publish this mesh for discovery by others.
+    /// Publish this mesh to Nostr for public discovery by other nodes.
+    /// Without this flag, your mesh is private and only joinable via invite token.
     #[arg(long)]
     pub(crate) publish: bool,
 
-    /// Name for this mesh (shown in discovery).
+    /// Human-readable name for this mesh (shown in discovery when combined with --publish).
+    /// Naming a mesh does NOT make it publicly discoverable — use --publish for that.
     #[arg(long)]
     pub(crate) mesh_name: Option<String>,
 

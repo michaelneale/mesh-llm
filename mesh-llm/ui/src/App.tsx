@@ -1,4 +1,12 @@
-import { Brain, Boxes, Cpu, ImagePlus, Network, Sparkles, Volume2 } from "lucide-react";
+import {
+  Brain,
+  Boxes,
+  Cpu,
+  ImagePlus,
+  Network,
+  Sparkles,
+  Volume2,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "./components/ui/badge";
@@ -10,9 +18,7 @@ import {
   SelectValue,
 } from "./components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group";
-import {
-  TooltipProvider,
-} from "./components/ui/tooltip";
+import { TooltipProvider } from "./components/ui/tooltip";
 import { AppHeader } from "./features/app-shell/components/AppHeader";
 import { CommandBarModal } from "./features/app-shell/components/command-bar/CommandBarModal";
 import { CommandBarProvider } from "./features/app-shell/components/command-bar/CommandBarProvider";
@@ -21,9 +27,7 @@ import type {
   CommandBarResultContainerProps,
   CommandBarResultItemProps,
 } from "./features/app-shell/components/command-bar/command-bar-types";
-import {
-  type TopSection,
-} from "./features/app-shell/lib/routes";
+import { type TopSection } from "./features/app-shell/lib/routes";
 import {
   applyThemeMode,
   formatLiveNodeState,
@@ -41,21 +45,20 @@ import {
   useStatusStream,
   type MeshModel,
 } from "./features/app-shell/hooks/useStatusStream";
-import type { ModelServingStat, ThemeMode } from "./features/app-shell/lib/status-types";
+import type {
+  ModelServingStat,
+  ThemeMode,
+} from "./features/app-shell/lib/status-types";
 import { DashboardPage } from "./features/dashboard/components/DashboardPage";
 import { useChatSession } from "./features/chat/hooks/useChatSession";
-import {
-  attachmentForMessage,
-} from "./features/chat/lib/message-content";
+import { attachmentForMessage } from "./features/chat/lib/message-content";
 import {
   describeImageAttachmentForPrompt,
   describeRenderedPagesAsText,
 } from "./features/chat/lib/vision-describe";
 import { ChatPage } from "./features/chat/components/ChatPage";
 import { cn } from "./lib/utils";
-import type {
-  TopologyNode,
-} from "./features/app-shell/lib/topology-types";
+import type { TopologyNode } from "./features/app-shell/lib/topology-types";
 import githubBlackLogo from "./assets/icons/github-invertocat-black.svg";
 import githubWhiteLogo from "./assets/icons/github-invertocat-white.svg";
 
@@ -94,12 +97,18 @@ function modelCommandBarCapabilityLabels(model: MeshModel) {
 }
 
 function modelCommandBarSearchText(model: MeshModel) {
-  return [model.name, modelDisplayName(model), ...modelCommandBarCapabilityLabels(model)]
+  return [
+    model.name,
+    modelDisplayName(model),
+    ...modelCommandBarCapabilityLabels(model),
+  ]
     .filter(Boolean)
     .join(" ");
 }
 
-function ModelCommandBarResultContainer({ children }: CommandBarResultContainerProps<MeshModel>) {
+function ModelCommandBarResultContainer({
+  children,
+}: CommandBarResultContainerProps<MeshModel>) {
   return (
     <div className="max-h-[420px] overflow-y-auto p-2">
       <div className="space-y-2">{children}</div>
@@ -107,7 +116,10 @@ function ModelCommandBarResultContainer({ children }: CommandBarResultContainerP
   );
 }
 
-function ModelCommandBarResultItem({ item, selected }: CommandBarResultItemProps<MeshModel>) {
+function ModelCommandBarResultItem({
+  item,
+  selected,
+}: CommandBarResultItemProps<MeshModel>) {
   const displayName = modelDisplayName(item) || item.name;
   const capabilityLabels = modelCommandBarCapabilityLabels(item);
 
@@ -120,7 +132,7 @@ function ModelCommandBarResultItem({ item, selected }: CommandBarResultItemProps
             ? "border-primary/30 bg-primary/10 text-primary"
             : "border-border bg-muted/40",
         )}
-        >
+      >
         <Sparkles className="h-3.5 w-3.5" />
       </div>
       <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3">
@@ -148,11 +160,21 @@ function ModelCommandBarResultItem({ item, selected }: CommandBarResultItemProps
                   key={`${item.name}-${label}`}
                   className="min-w-0 max-w-full items-start justify-start gap-1 rounded-md border-border/60 bg-muted/40 px-2 py-1 text-[10px] uppercase tracking-[0.08em] text-muted-foreground"
                 >
-                  {label === "vision" ? <ImagePlus className="mt-0.5 h-3 w-3 shrink-0" /> : null}
-                  {label === "audio" ? <Volume2 className="mt-0.5 h-3 w-3 shrink-0" /> : null}
-                  {label === "reasoning" ? <Brain className="mt-0.5 h-3 w-3 shrink-0" /> : null}
-                  {label === "moe" ? <Boxes className="mt-0.5 h-3 w-3 shrink-0" /> : null}
-                  {label === "multimodal" ? <Sparkles className="mt-0.5 h-3 w-3 shrink-0" /> : null}
+                  {label === "vision" ? (
+                    <ImagePlus className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : null}
+                  {label === "audio" ? (
+                    <Volume2 className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : null}
+                  {label === "reasoning" ? (
+                    <Brain className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : null}
+                  {label === "moe" ? (
+                    <Boxes className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : null}
+                  {label === "multimodal" ? (
+                    <Sparkles className="mt-0.5 h-3 w-3 shrink-0" />
+                  ) : null}
                   <span className="min-w-0 break-words leading-tight [overflow-wrap:anywhere]">
                     {label}
                   </span>
@@ -208,7 +230,10 @@ const MODEL_CAPABILITY_FILTERS: ReadonlyArray<{
   { id: "tool_use", label: "Tool use" },
 ];
 
-function modelMatchesCapabilityFilter(model: MeshModel, capability: ModelCapabilityFilterId) {
+function modelMatchesCapabilityFilter(
+  model: MeshModel,
+  capability: ModelCapabilityFilterId,
+) {
   if (capability === "multimodal") return Boolean(model.multimodal);
   if (capability === "vision") return Boolean(model.vision);
   if (capability === "audio") return Boolean(model.audio);
@@ -224,7 +249,7 @@ function modelMatchesStructuredFilters(
 ) {
   const matchesStatus = statusFilter === "all" || model.status === statusFilter;
   const matchesCapabilities = capabilityFilters.every((capability) =>
-    modelMatchesCapabilityFilter(model, capability)
+    modelMatchesCapabilityFilter(model, capability),
   );
 
   return matchesStatus && matchesCapabilities;
@@ -250,7 +275,9 @@ function ModelCommandBarFilterBar({
         <ToggleGroup
           type="multiple"
           value={[...capabilityFilters]}
-          onValueChange={(value: string[]) => onCapabilityFiltersChange(value as ModelCapabilityFilterId[])}
+          onValueChange={(value: string[]) =>
+            onCapabilityFiltersChange(value as ModelCapabilityFilterId[])
+          }
           aria-label="Model capability filters"
           className="flex min-w-0 flex-nowrap gap-1.5 overflow-x-auto pb-1"
         >
@@ -271,8 +298,16 @@ function ModelCommandBarFilterBar({
         <span className="text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
           Status
         </span>
-        <Select value={statusFilter} onValueChange={(value) => onStatusFilterChange(value as ModelStatusFilter)}>
-          <SelectTrigger aria-label="Model status filter" className="h-7 w-[88px] rounded-md text-[11px]">
+        <Select
+          value={statusFilter}
+          onValueChange={(value) =>
+            onStatusFilterChange(value as ModelStatusFilter)
+          }
+        >
+          <SelectTrigger
+            aria-label="Model status filter"
+            className="h-7 w-[88px] rounded-md text-[11px]"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -287,13 +322,23 @@ function ModelCommandBarFilterBar({
 }
 
 export function App() {
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode(THEME_STORAGE_KEY));
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() =>
+    readThemeMode(THEME_STORAGE_KEY),
+  );
   const topologyFirstSeenAtRef = useRef<Map<string, number>>(new Map());
-  const [modelCapabilityFilters, setModelCapabilityFilters] = useState<ModelCapabilityFilterId[]>([]);
-  const [modelStatusFilter, setModelStatusFilter] = useState<ModelStatusFilter>("all");
+  const [modelCapabilityFilters, setModelCapabilityFilters] = useState<
+    ModelCapabilityFilterId[]
+  >([]);
+  const [modelStatusFilter, setModelStatusFilter] =
+    useState<ModelStatusFilter>("all");
   const { status, statusError, meshModels, modelsLoading } = useStatusStream();
-  const { section, routedChatId, navigateToSection, pushChatRoute, replaceChatRoute } =
-    useAppRouting();
+  const {
+    section,
+    routedChatId,
+    navigateToSection,
+    pushChatRoute,
+    replaceChatRoute,
+  } = useAppRouting();
   const chatSession = useChatSession({
     status,
     meshModels,
@@ -370,10 +415,15 @@ export function App() {
   }, [meshModels]);
   const filteredCommandBarModels = useMemo(() => {
     return meshModels.filter((model) =>
-      modelMatchesStructuredFilters(model, modelCapabilityFilters, modelStatusFilter)
+      modelMatchesStructuredFilters(
+        model,
+        modelCapabilityFilters,
+        modelStatusFilter,
+      ),
     );
   }, [meshModels, modelCapabilityFilters, modelStatusFilter]);
-  const selectedChatModel = selectedModel || warmModels[0] || status?.model_name || "";
+  const selectedChatModel =
+    selectedModel || warmModels[0] || status?.model_name || "";
   const selectedModelStat = selectedChatModel
     ? modelStatsByName[selectedChatModel]
     : undefined;
@@ -409,6 +459,12 @@ export function App() {
     const port = status?.api_port ?? 9337;
     return `http://127.0.0.1:${port}/v1`;
   }, [status?.api_port, isLocalhost]);
+  const isPublicMesh = (() => {
+    if (!status) return false;
+    if (status.publication_state === "public") return true;
+    if (status.publication_state != null) return false;
+    return !!status.nostr_discovery;
+  })();
 
   useEffect(() => {
     applyThemeMode(themeMode);
@@ -433,17 +489,25 @@ export function App() {
       return now;
     };
     const elapsedSecondsFrom = (startedAtUnix: number | null | undefined) => {
-      if (startedAtUnix == null || !Number.isFinite(startedAtUnix) || startedAtUnix <= 0) {
+      if (
+        startedAtUnix == null ||
+        !Number.isFinite(startedAtUnix) ||
+        startedAtUnix <= 0
+      ) {
         return null;
       }
-      const startedAtMs = startedAtUnix > 1_000_000_000_000 ? startedAtUnix : startedAtUnix * 1000;
+      const startedAtMs =
+        startedAtUnix > 1_000_000_000_000
+          ? startedAtUnix
+          : startedAtUnix * 1000;
       return Math.max(0, Math.floor((now - startedAtMs) / 1000));
     };
     const nodes: TopologyNode[] = [];
     if (status.node_id) {
       const selfFirstSeenAt = ensureFirstSeenAt(status.node_id);
-      const selfStartedAtUnix = status.local_instances?.find((instance) => instance.is_self)
-        ?.started_at_unix;
+      const selfStartedAtUnix = status.local_instances?.find(
+        (instance) => instance.is_self,
+      )?.started_at_unix;
       nodes.push({
         id: status.node_id,
         vram: overviewVramGb(status.node_state === "client", status.my_vram_gb),
@@ -457,7 +521,7 @@ export function App() {
             ? status.hosted_models
             : status.serving_models && status.serving_models.length > 0
               ? status.serving_models
-            : status.model_name
+              : status.model_name
                 ? [status.model_name]
                 : [],
         statusLabel:
@@ -515,12 +579,13 @@ export function App() {
         source: filteredCommandBarModels,
         getItemKey: (model) => model.name,
         getSearchText: (model) => modelCommandBarSearchText(model),
-        getKeywords: (model) => [
-          model.status,
-          model.architecture ?? "",
-          model.fit_label ?? "",
-          model.description ?? "",
-        ].filter(Boolean),
+        getKeywords: (model) =>
+          [
+            model.status,
+            model.architecture ?? "",
+            model.fit_label ?? "",
+            model.description ?? "",
+          ].filter(Boolean),
         ResultContainer: ModelCommandBarResultContainer,
         ResultItem: ModelCommandBarResultItem,
         onSelect: (model) => {
@@ -529,13 +594,14 @@ export function App() {
       },
     ];
   }, [filteredCommandBarModels, setSelectedModel]);
-  const commandBarEmptyMessage = modelsLoading && meshModels.length === 0
-    ? "Loading model catalog…"
-    : meshModels.length === 0
-      ? "No model catalog data yet."
-      : filteredCommandBarModels.length === 0
-        ? "No models match the current filters."
-        : "No models match this search.";
+  const commandBarEmptyMessage =
+    modelsLoading && meshModels.length === 0
+      ? "Loading model catalog…"
+      : meshModels.length === 0
+        ? "No model catalog data yet."
+        : filteredCommandBarModels.length === 0
+          ? "No models match the current filters."
+          : "No models match this search.";
   const modelCommandBarFilterBar = (
     <ModelCommandBarFilterBar
       capabilityFilters={modelCapabilityFilters}
@@ -553,7 +619,9 @@ export function App() {
             <AppHeader
               sections={sections}
               section={section}
-              setSection={(next) => navigateToSection(next, activeConversationId || null)}
+              setSection={(next) =>
+                navigateToSection(next, activeConversationId || null)
+              }
               themeMode={themeMode}
               setThemeMode={setThemeMode}
               statusError={statusError}
@@ -562,7 +630,7 @@ export function App() {
               inviteClientCommand={inviteClientCommand}
               inviteToken={inviteToken}
               apiDirectUrl={apiDirectUrl}
-              isPublicMesh={status?.nostr_discovery ?? false}
+              isPublicMesh={isPublicMesh}
             />
             <CommandBarModal
               modes={commandBarModes}
@@ -581,7 +649,7 @@ export function App() {
                   <ChatPage
                     status={status}
                     inviteToken={status?.token ?? ""}
-                    isPublicMesh={status?.nostr_discovery ?? false}
+                    isPublicMesh={isPublicMesh}
                     isFlyHosted={isFlyHosted}
                     inflightRequests={status?.inflight_requests ?? 0}
                     warmModels={warmModels}
@@ -621,7 +689,6 @@ export function App() {
                     onSubmit={handleSubmit}
                   />
                 </div>
-
               ) : null}
 
               {section === "dashboard" ? (
@@ -635,7 +702,7 @@ export function App() {
                       selectedModel={selectedModel || status?.model_name || ""}
                       meshModelByName={meshModelByName}
                       themeMode={themeMode}
-                      isPublicMesh={status?.nostr_discovery ?? false}
+                      isPublicMesh={isPublicMesh}
                       inviteToken={inviteToken}
                       isLocalhost={isLocalhost}
                     />

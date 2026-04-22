@@ -187,6 +187,7 @@ const statusTemplate: StatusPayload = {
   peers: [],
   inflight_requests: 0,
   nostr_discovery: false,
+  publication_state: "private" as const,
   my_hostname: "host.local",
   gpus: [],
 };

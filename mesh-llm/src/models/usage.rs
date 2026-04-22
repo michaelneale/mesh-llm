@@ -538,7 +538,7 @@ fn hf_identity_for_path_in_root(path: &Path, track_root: &Path) -> Option<PathHu
     })
 }
 
-fn usage_record_path(usage_dir: &Path, lookup_key: &str) -> PathBuf {
+pub(crate) fn usage_record_path(usage_dir: &Path, lookup_key: &str) -> PathBuf {
     let digest = Sha256::digest(lookup_key.as_bytes());
     usage_dir.join(format!("{digest:x}.json"))
 }

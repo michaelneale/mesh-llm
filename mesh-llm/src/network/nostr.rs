@@ -197,6 +197,26 @@ pub fn rotate_keys() -> Result<()> {
 // Publisher — background task that keeps the listing fresh
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishStateUpdate {
+    Public,
+    PublishFailed,
+}
+
+fn report_publish_state(
+    status_tx: &Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
+    last_reported: &mut Option<PublishStateUpdate>,
+    next: PublishStateUpdate,
+) {
+    if *last_reported == Some(next) {
+        return;
+    }
+    if let Some(tx) = status_tx {
+        let _ = tx.send(Some(next));
+    }
+    *last_reported = Some(next);
+}
+
 pub struct Publisher {
     client: Client,
     keys: Keys,
@@ -272,10 +292,17 @@ pub async fn publish_loop(
     region: Option<String>,
     max_clients: Option<usize>,
     interval_secs: u64,
+    status_tx: Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
 ) {
+    let mut last_reported = None;
     let publisher = match Publisher::new(keys.clone(), &relays).await {
         Ok(p) => p,
         Err(e) => {
+            report_publish_state(
+                &status_tx,
+                &mut last_reported,
+                PublishStateUpdate::PublishFailed,
+            );
             tracing::error!("Failed to create Nostr publisher: {e}");
             return;
         }
@@ -482,13 +509,23 @@ pub async fn publish_loop(
 
         let ttl = interval_secs * 2;
         match publisher.publish(&listing, ttl).await {
-            Ok(()) => tracing::debug!(
-                "Published mesh listing ({} models, {} nodes, {} clients)",
-                listing.serving.len(),
-                listing.node_count,
-                client_count
-            ),
-            Err(e) => tracing::warn!("Failed to publish to Nostr: {e}"),
+            Ok(()) => {
+                report_publish_state(&status_tx, &mut last_reported, PublishStateUpdate::Public);
+                tracing::debug!(
+                    "Published mesh listing ({} models, {} nodes, {} clients)",
+                    listing.serving.len(),
+                    listing.node_count,
+                    client_count
+                );
+            }
+            Err(e) => {
+                report_publish_state(
+                    &status_tx,
+                    &mut last_reported,
+                    PublishStateUpdate::PublishFailed,
+                );
+                tracing::warn!("Failed to publish to Nostr: {e}");
+            }
         }
 
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -511,6 +548,7 @@ pub async fn publish_watchdog(
     mesh_name: Option<String>,
     region: Option<String>,
     check_interval_secs: u64,
+    status_tx: Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
 ) {
     // Short initial wait with jitter (10-30s) — start watching quickly
     let jitter = (rand::random::<u64>() % 20) + 10;
@@ -578,7 +616,7 @@ pub async fn publish_watchdog(
                         }
                     };
                     // Start publish loop (blocks forever)
-                    publish_loop(node, keys, relays, mesh_name, region, None, 60).await;
+                    publish_loop(node, keys, relays, mesh_name, region, None, 60, status_tx).await;
                     return;
                 }
             }
