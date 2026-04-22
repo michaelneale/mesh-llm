@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import {
+  normalizeSection,
   pushRoute,
   readRouteFromLocation,
   replaceRoute,
@@ -38,10 +39,11 @@ export function useAppRouting() {
 
   const navigateToSection = useCallback(
     (next: TopSection, activeConversationId: string | null) => {
-      if (next === section) return;
-      const nextChatId = next === "chat" ? activeConversationId : null;
-      pushRoute({ section: next, chatId: nextChatId });
-      setSection(next);
+      const normalizedSection = normalizeSection(next);
+      if (normalizedSection === section) return;
+      const nextChatId = normalizedSection === "chat" ? activeConversationId : null;
+      pushRoute({ section: normalizedSection, chatId: nextChatId });
+      setSection(normalizedSection);
       setRoutedChatId(nextChatId);
     },
     [section],

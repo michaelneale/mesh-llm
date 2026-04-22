@@ -5,7 +5,28 @@ export type AppRoute = {
   chatId: string | null;
 };
 
-export function sectionFromPathname(pathname: string): TopSection | null {
+export function normalizeSection(
+  section: TopSection,
+  allowPlayground = import.meta.env.DEV,
+): TopSection {
+  if (!allowPlayground && section === "playground") {
+    return "dashboard";
+  }
+  return section;
+}
+
+function normalizeRoute(route: AppRoute, allowPlayground = import.meta.env.DEV): AppRoute {
+  const section = normalizeSection(route.section, allowPlayground);
+  if (section !== route.section) {
+    return { section, chatId: null };
+  }
+  return route;
+}
+
+export function sectionFromPathname(
+  pathname: string,
+  allowPlayground = import.meta.env.DEV,
+): TopSection | null {
   if (pathname === "/dashboard" || pathname === "/dashboard/") {
     return "dashboard";
   }
@@ -16,13 +37,13 @@ export function sectionFromPathname(pathname: string): TopSection | null {
   ) {
     return "chat";
   }
-  if (pathname === "/playground" || pathname === "/playground/") {
+  if (allowPlayground && (pathname === "/playground" || pathname === "/playground/")) {
     return "playground";
   }
   return null;
 }
 
-export function readRouteFromLocation(): AppRoute {
+export function readRouteFromLocation(allowPlayground = import.meta.env.DEV): AppRoute {
   if (typeof window === "undefined") {
     return { section: "dashboard", chatId: null };
   }
@@ -39,21 +60,26 @@ export function readRouteFromLocation(): AppRoute {
     const chatId = raw ? decodeURIComponent(raw.split("/")[0]) : null;
     return { section: "chat", chatId };
   }
-  if (pathname === "/playground" || pathname === "/playground/") {
+  if (allowPlayground && (pathname === "/playground" || pathname === "/playground/")) {
     return { section: "playground", chatId: null };
   }
 
   return { section: "dashboard", chatId: null };
 }
 
-export function pathnameForRoute(route: AppRoute): string {
-  if (route.section === "dashboard") {
+export function pathnameForRoute(
+  route: AppRoute,
+  allowPlayground = import.meta.env.DEV,
+): string {
+  const normalizedRoute = normalizeRoute(route, allowPlayground);
+
+  if (normalizedRoute.section === "dashboard") {
     return "/dashboard";
   }
-  if (route.section === "playground") {
+  if (normalizedRoute.section === "playground") {
     return "/playground";
   }
-  return route.chatId ? `/chat/${encodeURIComponent(route.chatId)}` : "/chat";
+  return normalizedRoute.chatId ? `/chat/${encodeURIComponent(normalizedRoute.chatId)}` : "/chat";
 }
 
 export function pushRoute(route: AppRoute) {

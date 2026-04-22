@@ -610,6 +610,9 @@ export function App() {
         : filteredCommandBarModels.length === 0
           ? "No models match the current filters."
           : "No models match this search.";
+  const showPlayground = import.meta.env.DEV && section === "playground";
+  const showDashboard =
+    section === "dashboard" || (!import.meta.env.DEV && section === "playground");
   const modelCommandBarFilterBar = (
     <ModelCommandBarFilterBar
       capabilityFilters={modelCapabilityFilters}
@@ -699,7 +702,7 @@ export function App() {
                 </div>
               ) : null}
 
-              {section === "dashboard" ? (
+              {showDashboard ? (
                 <div className="min-h-0 flex-1 overflow-y-auto">
                   <div className="mx-auto w-full max-w-7xl p-4">
                     <DashboardPage
@@ -718,7 +721,7 @@ export function App() {
                 </div>
               ) : null}
 
-              {import.meta.env.DEV && section === "playground" ? (
+              {showPlayground ? (
                 <Suspense
                   fallback={
                     <div className="flex min-h-0 items-center justify-center p-8 text-muted-foreground">
