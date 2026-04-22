@@ -378,7 +378,7 @@ pub fn smart_auto(
         .iter()
         .map(|m| (*m, score_mesh(m, now, last_mesh_id)))
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     let viable: Vec<(String, DiscoveredMesh)> = scored
         .iter()

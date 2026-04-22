@@ -2584,7 +2584,7 @@ impl Node {
         let mut by_name: HashMap<String, ServedModelDescriptor> = HashMap::new();
         for descriptor in infer_available_model_descriptors(&my_available)
             .into_iter()
-            .chain(my_served_descriptors.into_iter())
+            .chain(my_served_descriptors)
         {
             upsert_mesh_catalog_descriptor(&mut by_name, descriptor);
         }

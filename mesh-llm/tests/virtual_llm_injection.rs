@@ -37,7 +37,8 @@ fn find_small_model() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
 
     // CI puts models here
-    for name in &["SmolLM2-135M-Instruct-Q8_0.gguf"] {
+    {
+        let name = "SmolLM2-135M-Instruct-Q8_0.gguf";
         let p = PathBuf::from(format!("{home}/.models/{name}"));
         if p.is_file() {
             return Some(p);
@@ -75,15 +76,12 @@ async fn wait_for_ready(port: u16, timeout_secs: u64) -> bool {
         if tokio::time::Instant::now() > deadline {
             return false;
         }
-        match reqwest::get(format!("http://127.0.0.1:{port}/health")).await {
-            Ok(resp) => {
-                if let Ok(body) = resp.json::<Value>().await {
-                    if body["status"] == "ok" {
-                        return true;
-                    }
+        if let Ok(resp) = reqwest::get(format!("http://127.0.0.1:{port}/health")).await {
+            if let Ok(body) = resp.json::<Value>().await {
+                if body["status"] == "ok" {
+                    return true;
                 }
             }
-            Err(_) => {}
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -142,6 +140,8 @@ fn framing_rag(hint: &str) -> String {
          Based on the above context, answer the question:\n"
     )
 }
+
+type FramingVariant = (&'static str, fn(&str) -> String);
 
 // ── Test cases ──────────────────────────────────────────────────────────
 
@@ -290,7 +290,7 @@ async fn test_injection_framing() {
     );
     eprintln!("llama-server ready on port {llama_port}");
 
-    let framings: Vec<(&str, fn(&str) -> String)> = vec![
+    let framings: Vec<FramingVariant> = vec![
         ("current", framing_current),
         ("reference", framing_reference),
         ("assistant_draft", framing_assistant_draft),

@@ -7,6 +7,7 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::time::Duration;
 
 /// NIP-89 "Application Handler" kind — used for service advertisements.
@@ -972,7 +973,7 @@ pub fn smart_auto(
         .iter()
         .map(|m| (*m, score_mesh(m, now, last_mesh_id.as_deref())))
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|b| Reverse(b.1));
 
     // Collect viable candidates.
     // If the user specified --mesh-name, take all candidates (they already

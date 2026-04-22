@@ -313,17 +313,19 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
         }
     }
 
-    if meta.head_count > 0 {
-        if meta.key_length == 0 {
-            meta.key_length = meta.embedding_size / meta.head_count;
+    if meta.key_length == 0 {
+        if let Some(key_length) = meta.embedding_size.checked_div(meta.head_count) {
+            meta.key_length = key_length;
         }
-        if meta.value_length == 0 {
-            let effective_kv = if kv_head_count > 0 {
-                kv_head_count
-            } else {
-                meta.head_count
-            };
-            meta.value_length = meta.embedding_size / effective_kv;
+    }
+    if meta.value_length == 0 {
+        let effective_kv = if kv_head_count > 0 {
+            kv_head_count
+        } else {
+            meta.head_count
+        };
+        if let Some(value_length) = meta.embedding_size.checked_div(effective_kv) {
+            meta.value_length = value_length;
         }
     }
 

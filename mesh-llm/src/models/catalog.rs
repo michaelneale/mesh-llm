@@ -343,6 +343,9 @@ type DownloadHfAssetsOverrideFn =
 type DownloadPlanObserverFn = Arc<dyn Fn(&str, Vec<(bool, String)>) + Send + Sync>;
 
 #[cfg(test)]
+type DownloadHfAssetsLabelFn = Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>;
+
+#[cfg(test)]
 static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -368,7 +371,7 @@ impl DownloadHfAssetsOverrideGuard {
 #[cfg(test)]
 pub(crate) fn set_download_hf_assets_label_override(
     label: String,
-    func: Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>,
+    func: DownloadHfAssetsLabelFn,
 ) -> DownloadHfAssetsOverrideGuard {
     DownloadHfAssetsOverrideGuard::set(
         label,

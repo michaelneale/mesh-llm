@@ -353,13 +353,15 @@ impl RoutingMetrics {
             let mut shard = self.shards[shard_index].lock().unwrap();
             shard.record_attempt(
                 model,
-                now,
-                target_key,
-                queue_wait_ms,
-                attempt_ms,
-                outcome,
-                completion_tokens,
-                &self.config,
+                AttemptRecord {
+                    now,
+                    target: target_key,
+                    queue_wait_ms,
+                    attempt_ms,
+                    outcome,
+                    completion_tokens,
+                    config: &self.config,
+                },
             );
         }
     }
@@ -656,36 +658,25 @@ struct ModelShard {
     models: HashMap<String, ModelMetrics>,
 }
 
+struct AttemptRecord<'a> {
+    now: Instant,
+    target: TargetKey,
+    queue_wait_ms: u64,
+    attempt_ms: u64,
+    outcome: AttemptOutcome,
+    completion_tokens: Option<u64>,
+    config: &'a MetricsConfig,
+}
+
 impl ModelShard {
-    fn record_attempt(
-        &mut self,
-        model: &str,
-        now: Instant,
-        target: TargetKey,
-        queue_wait_ms: u64,
-        attempt_ms: u64,
-        outcome: AttemptOutcome,
-        completion_tokens: Option<u64>,
-        config: &MetricsConfig,
-    ) {
+    fn record_attempt(&mut self, model: &str, record: AttemptRecord<'_>) {
         let inserted = !self.models.contains_key(model);
-        if inserted && self.models.len() >= config.max_models_per_shard {
-            self.compact(now, config);
+        if inserted && self.models.len() >= record.config.max_models_per_shard {
+            self.compact(record.now, record.config);
         }
-        let metrics = self
-            .models
-            .entry(model.to_string())
-            .or_insert_with(ModelMetrics::default);
-        metrics.last_updated = now;
-        metrics.record_attempt(
-            target,
-            now,
-            queue_wait_ms,
-            attempt_ms,
-            outcome,
-            completion_tokens,
-            config,
-        );
+        let metrics = self.models.entry(model.to_string()).or_default();
+        metrics.last_updated = record.now;
+        metrics.record_attempt(record);
     }
 
     fn record_request(
@@ -700,10 +691,7 @@ impl ModelShard {
         if inserted && self.models.len() >= config.max_models_per_shard {
             self.compact(now, config);
         }
-        let metrics = self
-            .models
-            .entry(model.to_string())
-            .or_insert_with(ModelMetrics::default);
+        let metrics = self.models.entry(model.to_string()).or_default();
         metrics.last_updated = now;
         metrics.record_request(attempts, outcome);
     }
@@ -768,27 +756,20 @@ impl Default for ModelMetrics {
 }
 
 impl ModelMetrics {
-    fn record_attempt(
-        &mut self,
-        target: TargetKey,
-        now: Instant,
-        queue_wait_ms: u64,
-        attempt_ms: u64,
-        outcome: AttemptOutcome,
-        completion_tokens: Option<u64>,
-        config: &MetricsConfig,
-    ) {
-        self.last_updated = now;
+    fn record_attempt(&mut self, record: AttemptRecord<'_>) {
+        self.last_updated = record.now;
         self.attempt_count += 1;
-        self.queue_wait_ms_total = self.queue_wait_ms_total.saturating_add(queue_wait_ms);
-        self.attempt_ms_total = self.attempt_ms_total.saturating_add(attempt_ms);
-        match outcome {
+        self.queue_wait_ms_total = self
+            .queue_wait_ms_total
+            .saturating_add(record.queue_wait_ms);
+        self.attempt_ms_total = self.attempt_ms_total.saturating_add(record.attempt_ms);
+        match record.outcome {
             AttemptOutcome::Success => {
-                if let Some(tokens) = completion_tokens {
+                if let Some(tokens) = record.completion_tokens {
                     self.completion_tokens_observed =
                         self.completion_tokens_observed.saturating_add(tokens);
                     if let Some(tps_milli) =
-                        tokens_per_second_milli(tokens, Duration::from_millis(attempt_ms))
+                        tokens_per_second_milli(tokens, Duration::from_millis(record.attempt_ms))
                     {
                         self.throughput_tps_milli_sum =
                             self.throughput_tps_milli_sum.saturating_add(tps_milli);
@@ -802,16 +783,18 @@ impl ModelMetrics {
             AttemptOutcome::Rejected => self.attempt_reject_count += 1,
         }
 
-        let inserted = !self.targets.contains_key(&target);
-        if inserted && self.targets.len() >= config.max_targets_per_model {
-            self.compact_targets(now, config);
+        let inserted = !self.targets.contains_key(&record.target);
+        if inserted && self.targets.len() >= record.config.max_targets_per_model {
+            self.compact_targets(record.now, record.config);
         }
-        let metrics = self
-            .targets
-            .entry(target)
-            .or_insert_with(TargetMetrics::default);
-        metrics.last_updated = now;
-        metrics.record(queue_wait_ms, attempt_ms, outcome, completion_tokens);
+        let metrics = self.targets.entry(record.target).or_default();
+        metrics.last_updated = record.now;
+        metrics.record(
+            record.queue_wait_ms,
+            record.attempt_ms,
+            record.outcome,
+            record.completion_tokens,
+        );
     }
 
     fn record_request(&mut self, attempts: usize, outcome: RequestOutcome) {

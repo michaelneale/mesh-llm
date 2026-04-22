@@ -532,10 +532,9 @@ model = "Qwen3-8B-Q4_K_M"
 
     #[test]
     fn gpu_parallel_unwrap_or_default_is_4() {
-        assert_eq!(None::<usize>.unwrap_or(4), 4);
-        assert_eq!(Some(1usize).unwrap_or(4), 1);
-        assert_eq!(Some(8usize).unwrap_or(4), 8);
-        assert_eq!(Some(64usize).unwrap_or(4), 64);
+        let values = [None, Some(1usize), Some(8usize), Some(64usize)];
+        let resolved: Vec<_> = values.into_iter().map(|value| value.unwrap_or(4)).collect();
+        assert_eq!(resolved, vec![4, 1, 8, 64]);
     }
 
     #[test]

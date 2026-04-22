@@ -12,6 +12,7 @@ use mesh_llm_plugin::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -213,7 +214,7 @@ impl BlackboardStore {
         let mut items = self.items.lock().await;
         self.prune_locked(&mut items);
         let mut result = items.clone();
-        result.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        result.sort_by_key(|b| Reverse(b.timestamp));
         result
     }
 
@@ -285,7 +286,7 @@ impl BlackboardStore {
             })
             .cloned()
             .collect();
-        result.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        result.sort_by_key(|b| Reverse(b.timestamp));
         result.truncate(limit);
         result
     }
@@ -295,7 +296,7 @@ impl BlackboardStore {
         let cutoff = now_secs().saturating_sub(TTL_SECS);
         items.retain(|i| i.timestamp > cutoff);
         if items.len() > MAX_ITEMS {
-            items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+            items.sort_by_key(|b| Reverse(b.timestamp));
             items.truncate(MAX_ITEMS);
         }
     }

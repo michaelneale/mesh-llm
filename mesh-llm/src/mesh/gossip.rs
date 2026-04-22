@@ -152,7 +152,7 @@ impl Node {
         conn: &Connection,
         remote: EndpointId,
     ) -> Result<(Vec<(EndpointAddr, PeerAnnouncement)>, u32)> {
-        let protocol = connection_protocol(&conn);
+        let protocol = connection_protocol(conn);
         let t0 = std::time::Instant::now();
         let (mut send, mut recv) = conn.open_bi().await?;
         send.write_all(&[STREAM_GOSSIP]).await?;

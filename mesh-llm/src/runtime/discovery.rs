@@ -2,6 +2,7 @@ use crate::cli::Cli;
 use crate::mesh;
 use crate::network::{nostr, router};
 use anyhow::{Context, Result};
+use std::cmp::Reverse;
 
 /// Health probe: try QUIC connect to the mesh's bootstrap node.
 /// Returns Ok if reachable within 10s, Err if not.
@@ -89,7 +90,7 @@ pub(super) async fn nostr_rediscovery(
             .iter()
             .map(|m| (*m, nostr::score_mesh(m, now_ts, last_mesh_id.as_deref())))
             .collect();
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        candidates.sort_by_key(|b| Reverse(b.1));
 
         let our_mesh_id = node.mesh_id().await;
 

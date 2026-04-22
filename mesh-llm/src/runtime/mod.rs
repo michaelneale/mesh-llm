@@ -10,7 +10,7 @@ use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
     remove_runtime_local_target, remove_serving_assignment, resolved_model_name,
     set_advertised_model_context, start_runtime_local_model, withdraw_advertised_model,
-    LocalRuntimeModelHandle, ManagedModelController, RuntimeEvent,
+    LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -30,6 +30,7 @@ use crate::plugin;
 use crate::system::{autoupdate, benchmark, hardware, moe_planner};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -1080,7 +1081,7 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
 
     // Sort demand entries by request_count descending (hottest first)
     let mut demand_sorted: Vec<(String, mesh::ModelDemand)> = demand.into_iter().collect();
-    demand_sorted.sort_by(|a, b| b.1.request_count.cmp(&a.1.request_count));
+    demand_sorted.sort_by_key(|b| Reverse(b.1.request_count));
 
     // Priority 1: Unserved models on disk, ordered by demand
     let mut candidates: Vec<String> = Vec::new();
@@ -2362,14 +2363,16 @@ async fn run_auto(
                             add_serving_assignment(&node, &primary_model_name, &runtime_model_name)
                                 .await;
                             let (loaded_name, handle, death_rx) = start_runtime_local_model(
-                                &runtime_arc,
-                                &bin_dir,
-                                cli.llama_flavor,
-                                &node,
-                                &model_path,
-                                None,
-                                cli.ctx_size,
-                                slots,
+                                LocalRuntimeModelStartSpec {
+                                    runtime: &runtime_arc,
+                                    bin_dir: &bin_dir,
+                                    binary_flavor: cli.llama_flavor,
+                                    node: &node,
+                                    model_path: &model_path,
+                                    mmproj_override: None,
+                                    ctx_size_override: cli.ctx_size,
+                                    slots,
+                                },
                             )
                             .await?;
 
@@ -3806,7 +3809,7 @@ mod tests {
     /// `parallel = 1`. The model's override value must be applied correctly.
     #[test]
     fn per_model_parallel_override_applied_when_no_global() {
-        let config_models = vec![ModelConfigEntry {
+        let config_models = [ModelConfigEntry {
             model: "my-model".to_string(),
             mmproj: None,
             ctx_size: None,
@@ -3833,7 +3836,7 @@ mod tests {
     /// `parallel` value. The slot assignment must land on the correct model.
     #[test]
     fn per_model_parallel_applies_to_correct_model() {
-        let config_models = vec![
+        let config_models = [
             ModelConfigEntry {
                 model: "model-a".to_string(),
                 mmproj: None,
@@ -3878,7 +3881,7 @@ mod tests {
     /// fall through to the global (3), while the second uses its own (2).
     #[test]
     fn per_model_parallel_fallback_to_global_for_missing_entry() {
-        let config_models = vec![
+        let config_models = [
             ModelConfigEntry {
                 model: "first".to_string(),
                 mmproj: None,

@@ -274,11 +274,10 @@ pub fn extract_image(payload: &Value) -> (String, String) {
             let mut text = String::new();
             for part in parts {
                 match part["type"].as_str() {
-                    Some("image_url") => {
-                        if image_url.is_empty() {
-                            image_url = part["image_url"]["url"].as_str().unwrap_or("").to_string();
-                        }
+                    Some("image_url") if image_url.is_empty() => {
+                        image_url = part["image_url"]["url"].as_str().unwrap_or("").to_string();
                     }
+                    Some("image_url") => {}
                     Some("text") => {
                         // Check for mesh_image_url — preserved by llama-server's
                         // content parser when mesh hooks strip unsupported images.

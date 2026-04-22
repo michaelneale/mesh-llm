@@ -716,7 +716,7 @@ mod tests {
         )
         .expect("managed usage should be recorded");
 
-        let record = find_usage_record_by_paths(&usage_dir, &[shard.clone()])
+        let record = find_usage_record_by_paths(&usage_dir, std::slice::from_ref(&shard))
             .expect("split shard should resolve back to the bundle record");
         assert_eq!(
             record.lookup_key,

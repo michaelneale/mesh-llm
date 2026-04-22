@@ -491,7 +491,7 @@ fn render_cleanup_json(
 pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Result<()> {
     let paths = match delete::resolve_model_identifier(model).await {
         Ok(p) => p,
-        Err(e) => bail!("{}", e.to_string()),
+        Err(e) => bail!("{e}"),
     };
 
     if paths.is_empty() {
@@ -521,6 +521,18 @@ pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Resu
     formatter.render_delete_result(&result)
 }
 
+fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
+    match sort {
+        ModelSearchSort::Trending => SearchSort::Trending,
+        ModelSearchSort::Downloads => SearchSort::Downloads,
+        ModelSearchSort::Likes => SearchSort::Likes,
+        ModelSearchSort::Created => SearchSort::Created,
+        ModelSearchSort::Updated => SearchSort::Updated,
+        ModelSearchSort::ParametersDesc => SearchSort::ParametersDesc,
+        ModelSearchSort::ParametersAsc => SearchSort::ParametersAsc,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_cleanup_age;
@@ -546,17 +558,5 @@ mod tests {
         assert!(parse_cleanup_age("30").is_err());
         assert!(parse_cleanup_age("2months").is_err());
         assert!(parse_cleanup_age("").is_err());
-    }
-}
-
-fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
-    match sort {
-        ModelSearchSort::Trending => SearchSort::Trending,
-        ModelSearchSort::Downloads => SearchSort::Downloads,
-        ModelSearchSort::Likes => SearchSort::Likes,
-        ModelSearchSort::Created => SearchSort::Created,
-        ModelSearchSort::Updated => SearchSort::Updated,
-        ModelSearchSort::ParametersDesc => SearchSort::ParametersDesc,
-        ModelSearchSort::ParametersAsc => SearchSort::ParametersAsc,
     }
 }

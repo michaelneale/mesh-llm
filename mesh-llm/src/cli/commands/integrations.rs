@@ -541,7 +541,7 @@ async fn write_opencode_config_to_path(
 
     // Merge schema if needed (for display in ordered format)
     let mut merged_config = existing_config.clone();
-    if !merged_config.get("$schema").is_some() {
+    if merged_config.get("$schema").is_none() {
         if let Some(schema) = config_value.get("$schema") {
             merged_config
                 .as_object_mut()

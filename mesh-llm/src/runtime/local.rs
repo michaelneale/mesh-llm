@@ -33,6 +33,17 @@ pub(super) struct ManagedModelController {
     pub(super) task: tokio::task::JoinHandle<()>,
 }
 
+pub(super) struct LocalRuntimeModelStartSpec<'a> {
+    pub(super) runtime: &'a crate::runtime::instance::InstanceRuntime,
+    pub(super) bin_dir: &'a Path,
+    pub(super) binary_flavor: Option<launch::BinaryFlavor>,
+    pub(super) node: &'a mesh::Node,
+    pub(super) model_path: &'a Path,
+    pub(super) mmproj_override: Option<&'a Path>,
+    pub(super) ctx_size_override: Option<u32>,
+    pub(super) slots: usize,
+}
+
 pub(super) fn resolved_model_name(path: &Path) -> String {
     let stem = path
         .file_stem()
@@ -162,50 +173,44 @@ pub(super) async fn remove_serving_assignment(node: &mesh::Node, model_name: &st
 }
 
 pub(super) async fn start_runtime_local_model(
-    runtime: &crate::runtime::instance::InstanceRuntime,
-    bin_dir: &Path,
-    binary_flavor: Option<launch::BinaryFlavor>,
-    node: &mesh::Node,
-    model_path: &Path,
-    mmproj_override: Option<&Path>,
-    ctx_size_override: Option<u32>,
-    slots: usize,
+    spec: LocalRuntimeModelStartSpec<'_>,
 ) -> Result<(
     String,
     LocalRuntimeModelHandle,
     tokio::sync::oneshot::Receiver<()>,
 )> {
-    let model_name = resolved_model_name(model_path);
-    let model_bytes = election::total_model_bytes(model_path);
-    let my_vram = node.vram_bytes();
+    let model_name = resolved_model_name(spec.model_path);
+    let model_bytes = election::total_model_bytes(spec.model_path);
+    let my_vram = spec.node.vram_bytes();
     anyhow::ensure!(
         my_vram >= (model_bytes as f64 * 1.1) as u64,
         "runtime load only supports models that fit locally on this node"
     );
 
     let llama_port = alloc_local_port().await?;
-    let mmproj_path = mmproj_override
+    let mmproj_path = spec
+        .mmproj_override
         .map(Path::to_path_buf)
         .or_else(|| mmproj_path_for_model(&model_name));
     let process = launch::start_llama_server(
-        runtime,
-        bin_dir,
-        binary_flavor,
+        spec.runtime,
+        spec.bin_dir,
+        spec.binary_flavor,
         launch::ModelLaunchSpec {
-            model: model_path,
+            model: spec.model_path,
             http_port: llama_port,
             tunnel_ports: &[],
             tensor_split: None,
-            split_mode: election::local_multi_gpu_split_mode(binary_flavor),
+            split_mode: election::local_multi_gpu_split_mode(spec.binary_flavor),
             draft: None,
             draft_max: 0,
             model_bytes,
             my_vram,
             mmproj: mmproj_path.as_deref(),
-            ctx_size_override,
+            ctx_size_override: spec.ctx_size_override,
             total_group_vram: None,
             selected_gpu: None,
-            slots,
+            slots: spec.slots,
         },
     )
     .await?;

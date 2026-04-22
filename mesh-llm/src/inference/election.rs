@@ -3038,7 +3038,13 @@ mod tests {
         };
 
         let local_launch_vram = effective_local_launch_vram(80, Some(&pinned_gpu));
-        let plan = build_dense_launch_plan(local_launch_vram, 60, false, model, &[peer.clone()]);
+        let plan = build_dense_launch_plan(
+            local_launch_vram,
+            60,
+            false,
+            model,
+            std::slice::from_ref(&peer),
+        );
 
         assert_eq!(
             plan,
@@ -3047,7 +3053,11 @@ mod tests {
                 total_group_vram: 80,
             }
         );
-        assert!(should_be_host_for_model(make_id(1), 80, &[peer.clone()]));
+        assert!(should_be_host_for_model(
+            make_id(1),
+            80,
+            std::slice::from_ref(&peer)
+        ));
         assert!(!should_be_host_for_model(
             make_id(1),
             local_launch_vram,
