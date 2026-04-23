@@ -86,6 +86,18 @@ copy_runtime_libs() {
     shopt -u nullglob
 }
 
+# Map an outer release flavor (used for archive naming) to the flavor
+# suffix baked into binary filenames. The mesh-llm runtime looks up
+# binaries by the BinaryFlavor enum (cpu/cuda/rocm/vulkan/metal); "lane"
+# variants that produce the same runtime binary must share the binary
+# suffix. Only the outer archive name distinguishes lanes.
+binary_flavor_for_release_flavor() {
+    case "$1" in
+        cuda-blackwell) printf 'cuda\n' ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 bundle_bin_name() {
     local name="$1"
     if [[ "$name" == "mesh-llm" ]]; then
@@ -93,7 +105,8 @@ bundle_bin_name() {
         return
     fi
 
-    local binary_flavor="$RELEASE_FLAVOR"
+    local binary_flavor
+    binary_flavor="$(binary_flavor_for_release_flavor "$RELEASE_FLAVOR")"
     if [[ -z "$binary_flavor" ]]; then
         case "$(release_os_name)" in
             Darwin) binary_flavor="metal" ;;
@@ -194,7 +207,7 @@ supported_release_flavors() {
             printf 'metal\n'
             ;;
         linux/x86_64)
-            printf 'cpu cuda rocm vulkan\n'
+            printf 'cpu cuda cuda-blackwell rocm vulkan\n'
             ;;
         linux/aarch64)
             printf 'cpu\n'

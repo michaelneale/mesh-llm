@@ -5,7 +5,6 @@
 #         (optional) --build-arg CUDA_ARCH="75;80;86;87;89" for narrower compute list
 # Run (requires NVIDIA Container Toolkit):
 #         docker run --rm --gpus all -p 9337:9337 -v ~/.models:/root/.models -e APP_MODE=worker mesh-llm:cuda
-#         docker run --rm --gpus all -p 9337:9337 -p 3131:3131 -e APP_MODE=worker -e MESH_HEADLESS=1 mesh-llm:cuda  # API-only
 #
 # IMPORTANT: -DGGML_CUDA_FA_ALL_QUANTS=ON is mandatory for correctness.
 # See ggml-org/llama.cpp#20866. Do NOT remove until fork is rebased past the fix.
@@ -13,6 +12,13 @@
 # Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-cuda,llama-server-cuda,llama-moe-split}
 
 # syntax=docker/dockerfile:1.7
+
+# Global ARG declared before any FROM so it is in scope for every FROM
+# directive below. Docker drops pre-FROM ARG scope once the first FROM
+# is parsed, and re-declaring ARG between stages does NOT propagate into
+# subsequent FROM lines — so this must stay at the very top, above the
+# ui-builder FROM, for the CUDA FROM lines to resolve ${CUDA_VERSION}.
+ARG CUDA_VERSION=12.6.3
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
@@ -23,7 +29,7 @@ COPY mesh-llm/ui/ ./
 RUN npm run build
 # Output: /app/dist
 
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS rust-deps
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS rust-deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -82,7 +88,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     mkdir -p /out && \
     cp /src/target/release/mesh-llm /out/mesh-llm
 
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04 AS llama-builder-cuda
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS llama-builder-cuda
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build build-essential git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -94,7 +100,7 @@ RUN cd llama.cpp && git rev-parse HEAD > /tmp/llama-sha.txt
 #   See ggml-org/llama.cpp#20866 — without this, asymmetric K/V quant hits
 #   BEST_FATTN_KERNEL_NONE and crashes rpc-server.
 #   Remove this flag ONLY once the fork is rebased past the upstream fix.
-ARG CUDA_ARCH="75;80;86;87;89;90;100;120"
+ARG CUDA_ARCH="75;80;86;87;89;90"
 RUN cd llama.cpp && \
     cmake -B build -G Ninja \
       -DGGML_RPC=ON \
@@ -116,7 +122,7 @@ RUN cd llama.cpp && \
     cp build/bin/llama-server /out/llama-server-cuda && \
     cp build/bin/llama-moe-split /out/llama-moe-split
 
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu22.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgomp1 libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*

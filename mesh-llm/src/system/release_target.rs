@@ -114,11 +114,13 @@ impl ReleaseTarget {
             (CanonicalOs::Macos, CanonicalArch::Aarch64, BinaryFlavor::Metal)
             | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::Cpu)
             | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::Cuda)
+            | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::CudaBlackwell)
             | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::Rocm)
             | (CanonicalOs::Linux, CanonicalArch::X86_64, BinaryFlavor::Vulkan)
             | (CanonicalOs::Linux, CanonicalArch::Aarch64, BinaryFlavor::Cpu)
             | (CanonicalOs::Windows, CanonicalArch::X86_64, BinaryFlavor::Cpu)
             | (CanonicalOs::Windows, CanonicalArch::X86_64, BinaryFlavor::Cuda)
+            | (CanonicalOs::Windows, CanonicalArch::X86_64, BinaryFlavor::CudaBlackwell)
             | (CanonicalOs::Windows, CanonicalArch::X86_64, BinaryFlavor::Rocm)
             | (CanonicalOs::Windows, CanonicalArch::X86_64, BinaryFlavor::Vulkan) => {
                 SupportStatus::Supported
@@ -164,6 +166,7 @@ impl ReleaseTarget {
         let flavor_suffix = match self.flavor {
             BinaryFlavor::Cpu | BinaryFlavor::Metal => "",
             BinaryFlavor::Cuda => "-cuda",
+            BinaryFlavor::CudaBlackwell => "-cuda-blackwell",
             BinaryFlavor::Rocm => "-rocm",
             BinaryFlavor::Vulkan => "-vulkan",
         };
@@ -205,6 +208,7 @@ mod tests {
         match name {
             "cpu" => BinaryFlavor::Cpu,
             "cuda" => BinaryFlavor::Cuda,
+            "cuda-blackwell" => BinaryFlavor::CudaBlackwell,
             "rocm" => BinaryFlavor::Rocm,
             "vulkan" => BinaryFlavor::Vulkan,
             "metal" => BinaryFlavor::Metal,

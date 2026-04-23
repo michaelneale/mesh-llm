@@ -26,6 +26,14 @@
   {
     "os": "linux",
     "arch": "x86_64",
+    "flavor": "cuda-blackwell",
+    "support": "supported",
+    "stable_asset": "mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz",
+    "versioned_asset": "mesh-llm-v0.60.0-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz"
+  },
+  {
+    "os": "linux",
+    "arch": "x86_64",
     "flavor": "rocm",
     "support": "supported",
     "stable_asset": "mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz",
@@ -58,6 +66,14 @@
   {
     "os": "linux",
     "arch": "aarch64",
+    "flavor": "cuda-blackwell",
+    "support": "unknown",
+    "stable_asset": null,
+    "versioned_asset": null
+  },
+  {
+    "os": "linux",
+    "arch": "aarch64",
     "flavor": "rocm",
     "support": "unknown",
     "stable_asset": null,
@@ -83,6 +99,14 @@
     "os": "macos",
     "arch": "aarch64",
     "flavor": "cuda",
+    "support": "unknown",
+    "stable_asset": null,
+    "versioned_asset": null
+  },
+  {
+    "os": "macos",
+    "arch": "aarch64",
+    "flavor": "cuda-blackwell",
     "support": "unknown",
     "stable_asset": null,
     "versioned_asset": null
@@ -118,6 +142,14 @@
     "support": "supported",
     "stable_asset": "mesh-llm-x86_64-pc-windows-msvc-cuda.zip",
     "versioned_asset": "mesh-llm-v0.60.0-x86_64-pc-windows-msvc-cuda.zip"
+  },
+  {
+    "os": "windows",
+    "arch": "x86_64",
+    "flavor": "cuda-blackwell",
+    "support": "supported",
+    "stable_asset": "mesh-llm-x86_64-pc-windows-msvc-cuda-blackwell.zip",
+    "versioned_asset": "mesh-llm-v0.60.0-x86_64-pc-windows-msvc-cuda-blackwell.zip"
   },
   {
     "os": "windows",

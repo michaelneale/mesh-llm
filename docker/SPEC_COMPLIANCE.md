@@ -12,7 +12,7 @@ This file is the human-readable counterpart to `.github/workflows/docker-prechec
 |----------|--------|----------|
 | Q1: CLI form | `mesh-llm --client --auto --port 9337 --console 3131 --listen-all` (bare flags) | mesh-llm/src/cli/mod.rs — top-level Cli struct accepts bare flags |
 | Q2: :latest tag target | `client` (most portable, smallest, no GPU dependency) | Design decision |
-| Q3: CUDA compute_120 (Blackwell) | Works with CUDA 12.8.0 (compute_120 included in Justfile release-build-cuda) | Justfile line 53, release.yml line 78 |
+| Q3: CUDA compute_120 (Blackwell) | Split into two lanes. Primary `release-build-cuda` targets sm_75..sm_90 on CUDA 12.6.3 for R535 compatibility (nvcc 12.8 cubins are rejected at load by the R535-series driver on SM 8.0 A30/A100 with `device kernel image is invalid`). Blackwell support (sm_100/compute_120) lives in `release-build-cuda-blackwell` on CUDA 12.8 and requires an R550+ driver. | Justfile `release-build-cuda` / `release-build-cuda-blackwell`, release.yml `build_linux_cuda` / `build_linux_cuda_blackwell`, docs/cuda-release-lanes.md |
 | Q4: Non-root user policy | Stay root (matches existing fly/Dockerfile; K3S users override via securityContext) | Design decision |
 
 ## Spec Compliance Table

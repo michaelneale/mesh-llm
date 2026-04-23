@@ -491,7 +491,7 @@ curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh |
 Installed release bundles use flavor-specific llama.cpp binaries:
 
 - macOS: `metal`
-- Linux: `cpu`, `cuda`, `rocm`, `vulkan`
+- Linux: `cpu`, `cuda` (primary CUDA lane, built on the CUDA 12.6.3 toolkit; compatible with NVIDIA R535+ drivers; sm_75..sm_90 Turing–Hopper), `cuda-blackwell` (Blackwell lane, built on the CUDA 12.8 toolkit; requires R550+ drivers; adds sm_100/120 — sm_103 is a later CUDA release), `rocm`, `vulkan`
 - Linux ARM64 CPU: `cpu` (asset triple: `aarch64-unknown-linux-gnu`)
 
 For release and install naming, `arm64` and `aarch64` both refer to the same 64-bit ARM target. Generic 32-bit ARM is not a published release target.

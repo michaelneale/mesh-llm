@@ -54,11 +54,28 @@ release-build-arm64:
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
-# Build a Linux CUDA release artifact with an explicit architecture list.
-release-build-cuda cuda_arch="75;80;86;87;89;90;100;120":
+# Build a Linux CUDA release artifact (primary / R535-compatible lane).
+# Default arch list is Turing..Hopper (sm_75..sm_90); this matches the
+# CUDA 12.6.3 toolkit pinned by .github/workflows/release.yml. The
+# emitted cubins load on the R535 driver series (the install base of the
+# currently-deployed A30/A100 fleet). For Blackwell support see
+# release-build-cuda-blackwell. See docs/cuda-release-lanes.md.
+release-build-cuda cuda_arch="75;80;86;87;89;90":
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-release-build-cuda-windows cuda_arch="75;80;86;87;89;90;100;120":
+# Build a Linux CUDA release artifact (Blackwell lane).
+# Must be invoked under the CUDA 12.8 toolkit. Emitted sm_100/120 cubins
+# require the R550+ driver series at runtime; the produced bundle is
+# NOT compatible with R535. Note: nvcc 12.8.0 does not know sm_103
+# (that arch was introduced in a later CUDA release), so it's omitted
+# here. See docs/cuda-release-lanes.md.
+release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120":
+    @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
+
+release-build-cuda-windows cuda_arch="75;80;86;87;89;90":
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
+
+release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
 # Build a Linux ROCm release artifact with an explicit architecture list.
@@ -74,6 +91,65 @@ release-build-vulkan:
 
 release-build-vulkan-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan
+
+# Bump release version consistently across source and Cargo manifests.
+release-version version:
+    @scripts/release-version.sh "{{ version }}"
+
+# Tag and push a release. Bumps version, updates Cargo.lock, commits, tags, pushes.
+# CI builds and publishes the GitHub release automatically.
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current_branch="$(git branch --show-current)"
+    if [[ "$current_branch" != "main" ]]; then
+        echo "Error: release must be run from the 'main' branch (current: ${current_branch:-detached HEAD})" >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Error: working tree is not clean. Commit or stash changes before releasing." >&2
+        exit 1
+    fi
+    just check-release
+    tag="{{ version }}"
+    if [[ "$tag" != v* ]]; then
+        tag="v$tag"
+    fi
+    scripts/release-version.sh "$tag"
+    git add -A
+    git commit -m "$tag: release"
+    git tag "$tag"
+    git push origin main
+    git push origin "$tag"
+
+# Tag and push a prerelease from the current branch. Bumps version, updates
+# Cargo.lock, commits, tags, and pushes the branch plus prerelease tag.
+prerelease version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    current_branch="$(git branch --show-current)"
+    if [[ -z "$current_branch" ]]; then
+        echo "Error: prerelease must be run from a branch, not detached HEAD." >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Error: working tree is not clean. Commit or stash changes before prereleasing." >&2
+        exit 1
+    fi
+    tag="{{ version }}"
+    if [[ "$tag" != v* ]]; then
+        tag="v$tag"
+    fi
+    if [[ "$tag" != *-* ]]; then
+        echo "Error: prerelease tag must include a prerelease suffix such as -rc.1 (got: $tag)" >&2
+        exit 1
+    fi
+    scripts/release-version.sh "$tag"
+    git add -A
+    git commit -m "$tag: prerelease"
+    git tag "$tag"
+    git push origin "$current_branch"
+    git push origin "$tag"
 
 # Download the default model (GLM-4.7-Flash Q4_K_M, 17GB)
 download-model:
@@ -226,8 +302,18 @@ release-bundle-windows version output="dist":
 release-bundle-cuda version output="dist":
     MESH_RELEASE_FLAVOR=cuda scripts/package-release.sh "{{ version }}" "{{ output }}"
 
+# Create Linux CUDA (Blackwell) release archive(s). Paired with
+# release-build-cuda-blackwell above; emits the cuda-blackwell archive
+# suffix while keeping inner binary names as -cuda (runtime looks up
+# binaries by BinaryFlavor enum, which has one cuda variant).
+release-bundle-cuda-blackwell version output="dist":
+    MESH_RELEASE_FLAVOR=cuda-blackwell scripts/package-release.sh "{{ version }}" "{{ output }}"
+
 release-bundle-cuda-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}" -Flavor cuda
+
+release-bundle-cuda-blackwell-windows version output="dist":
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}" -Flavor cuda-blackwell
 
 # Create Linux ROCm release archive(s).
 release-bundle-rocm version output="dist":
@@ -285,14 +371,10 @@ ui-dev api="http://127.0.0.1:3131" port="5173":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ ui_dir }}"
-    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
+    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 127.0.0.1 --port {{ port }}
 
 # Run the UI with Vite HMR proxying to the public anarchai.org API
 ui-dev-public: (ui-dev "https://www.anarchai.org")
-
-# Run UI unit tests (vitest)
-ui-test:
-    cd "{{ ui_dir }}" && npm test
 
 # Start a lite client — no GPU, no model, just a local HTTP proxy to the mesh host.
 
@@ -368,16 +450,21 @@ docker-build-cpu tag="mesh-llm:cpu":
 docker-build-cpu tag="mesh-llm:cpu":
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cpu -t '{{ tag }}' ."
 
-# Build the CUDA full-node Docker image
+# Build the CUDA full-node Docker image.
+# Default arch list targets the CUDA 12.6.3 toolkit baked into
+# docker/Dockerfile.cuda (Turing..Hopper). For Blackwell (sm_100/120)
+# override cuda_arch AND cuda_version: the 12.6.3 base image's nvcc cannot
+# emit those cubins. See docs/cuda-release-lanes.md.
 [unix]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90;100;120":
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90" cuda_version="12.6.3":
     DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda \
         --build-arg CUDA_ARCH="{{ cuda_arch }}" \
+        --build-arg CUDA_VERSION="{{ cuda_version }}" \
         -t {{ tag }} .
 
 [windows]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90;100;120":
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cuda --build-arg CUDA_ARCH='{{ cuda_arch }}' -t '{{ tag }}' ."
+docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90" cuda_version="12.6.3":
+    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cuda --build-arg CUDA_ARCH='{{ cuda_arch }}' --build-arg CUDA_VERSION='{{ cuda_version }}' -t '{{ tag }}' ."
 
 # Build the ROCm full-node Docker image
 [unix]

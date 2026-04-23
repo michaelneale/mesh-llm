@@ -111,7 +111,7 @@ Running `.github/workflows/release.yml` via `workflow_dispatch` triggers the rel
 - creates and pushes the release commit and tag before any build jobs start
 - serializes releases so two manual runs cannot race each other
 - builds release bundles on macOS, Linux CPU, and Linux ARM64 CPU
-- also builds Linux CUDA, Linux ROCm, and Linux Vulkan unless `skip_gpu_bundles=true` is set on a prerelease run
+- also builds Linux CUDA (primary lane, CUDA 12.6.3 toolkit, R535-compatible), Linux CUDA Blackwell (CUDA 12.8 toolkit, R550+ required), Linux ROCm, and Linux Vulkan unless `skip_gpu_bundles=true` is set on a prerelease run
 - keeps the Windows publish block commented out for now, so GitHub release publishing does not currently upload Windows bundles
 - still leaves the local Windows bundle recipes available in `Justfile` for manual builds
 - uploads `MeshLLMFFI.xcframework.zip` for Swift Package Manager consumers
@@ -119,7 +119,7 @@ Running `.github/workflows/release.yml` via `workflow_dispatch` triggers the rel
 - uploads versioned assets such as `mesh-llm-v0.X.0-aarch64-apple-darwin.tar.gz`
 - uploads the Linux ARM64 CPU asset as `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`
 - uploads stable `latest` assets such as `mesh-llm-x86_64-unknown-linux-gnu.tar.gz`
-- uploads CUDA-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz`
+- uploads CUDA-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz` (primary lane) and `mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz` (Blackwell lane — see `docs/cuda-release-lanes.md`)
 - uploads ROCm-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz`
 - uploads Vulkan-specific Linux assets such as `mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz`
 - keeps the legacy macOS `mesh-bundle.tar.gz` asset available for direct archive installs
@@ -146,9 +146,10 @@ After the workflow finishes, verify:
 - `mesh-llm-aarch64-apple-darwin.tar.gz` exists
 - `mesh-llm-aarch64-unknown-linux-gnu.tar.gz` exists
 - `mesh-llm-x86_64-unknown-linux-gnu.tar.gz` exists
-- `mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz` exists unless this was a prerelease with `skip_gpu_bundles=true`
-- `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz` exists unless this was a prerelease with `skip_gpu_bundles=true`
+- `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz` exists (primary R535-compatible lane) unless this was a prerelease with `skip_gpu_bundles=true`
+- `mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz` exists (Blackwell lane, R550+ only) unless this was a prerelease with `skip_gpu_bundles=true`
 - `mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz` exists unless this was a prerelease with `skip_gpu_bundles=true`
+- `mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz` exists unless this was a prerelease with `skip_gpu_bundles=true`
 - Windows release bundles are not expected from the current GitHub Actions workflow while the publish block stays commented out
 
 ## Notes
