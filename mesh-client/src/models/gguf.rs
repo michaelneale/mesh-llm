@@ -429,7 +429,13 @@ fn read_tensor_infos(
     f: &mut std::fs::File,
     n_tensors: usize,
 ) -> std::io::Result<Vec<GgufTensorInfo>> {
-    let mut tensors = Vec::with_capacity(n_tensors);
+    let mut tensors = Vec::new();
+    tensors.try_reserve(n_tensors).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "GGUF tensor count requires too much memory",
+        )
+    })?;
     for _ in 0..n_tensors {
         let name = read_gguf_string(f)?;
         let n_dims = read_u32(f)?;
