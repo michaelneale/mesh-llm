@@ -540,6 +540,43 @@ function Ensure-VulkanToolchain {
     }
 }
 
+function Copy-DevRuntimeBinaries {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BackendName,
+        [Parameter(Mandatory = $true)]
+        [string]$BuildDir,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $sourceBinDir = Join-Path $BuildDir "bin"
+    $targetDir = Join-Path $RepoRoot "target\release"
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+
+    $flavoredCopies = @(
+        @{ Source = "rpc-server.exe"; Target = "rpc-server-$BackendName.exe" },
+        @{ Source = "llama-server.exe"; Target = "llama-server-$BackendName.exe" }
+    )
+
+    foreach ($copy in $flavoredCopies) {
+        $source = Join-Path $sourceBinDir $copy.Source
+        if (-not (Test-Path $source)) {
+            throw "Expected llama.cpp binary not found: $source"
+        }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $copy.Target) -Force
+    }
+
+    foreach ($name in @("llama-moe-analyze.exe", "llama-moe-split.exe")) {
+        $source = Join-Path $sourceBinDir $name
+        if (Test-Path $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $name) -Force
+        }
+    }
+
+    Write-Host "Staged llama.cpp runtime binaries in target\release with '$BackendName' flavor names."
+}
+
 function Invoke-InRepo {
     param(
         [scriptblock]$Script
@@ -734,5 +771,6 @@ Invoke-InRepo {
 
     Write-Host "Building mesh-llm..."
     Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
+    Copy-DevRuntimeBinaries -BackendName $backendName -BuildDir $buildDir -RepoRoot $repoRoot
     Write-Host "Mesh binary: target\release\mesh-llm.exe"
 }
