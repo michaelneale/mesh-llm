@@ -29,7 +29,7 @@
 //!
 //! 1. `MESH_LLM_RUNTIME_ROOT` environment variable (highest; used by tests)
 //! 2. `$XDG_RUNTIME_DIR/mesh-llm/runtime` (systemd services, rootless containers)
-//! 3. `$HOME/.mesh-llm/runtime` (default interactive use)
+//! 3. Platform home directory (`$HOME` on Unix, Windows profile directory on Windows)
 //! 4. Fails fast with a clear error if none of the above are set
 //!
 //! # Liveness detection
@@ -227,8 +227,8 @@ impl Drop for PidfileGuard {
 /// Precedence:
 /// 1. `MESH_LLM_RUNTIME_ROOT` environment variable (test override / custom deployment)
 /// 2. `$XDG_RUNTIME_DIR/mesh-llm/runtime`
-/// 3. `$HOME/.mesh-llm/runtime` (via [`dirs::home_dir`])
-/// 4. [`anyhow::bail!`] — at least one of the above must be set
+/// 3. The platform home directory from [`dirs::home_dir`]
+/// 4. [`anyhow::bail!`] - at least one of the above must be set
 pub fn runtime_root() -> Result<PathBuf> {
     // 1. Explicit override — always wins (also used by tests to avoid touching ~)
     if let Ok(root) = std::env::var("MESH_LLM_RUNTIME_ROOT") {
@@ -240,15 +240,16 @@ pub fn runtime_root() -> Result<PathBuf> {
         return Ok(PathBuf::from(xdg).join("mesh-llm").join("runtime"));
     }
 
-    // 3. $HOME/.mesh-llm/runtime — only when HOME env var is explicitly set
-    if std::env::var_os("HOME").is_some_and(|h| !h.is_empty()) {
-        if let Some(home) = dirs::home_dir() {
-            return Ok(home.join(".mesh-llm").join("runtime"));
-        }
+    // 3. Platform home directory. On Windows this can be available even when
+    // HOME is unset in the launching shell.
+    if let Some(home) = dirs::home_dir() {
+        return Ok(home.join(".mesh-llm").join("runtime"));
     }
 
-    // 4. Nothing usable — fail fast with a clear message
-    anyhow::bail!("mesh-llm requires HOME, XDG_RUNTIME_DIR, or MESH_LLM_RUNTIME_ROOT to be set")
+    // 4. Nothing usable - fail fast with a clear message.
+    anyhow::bail!(
+        "mesh-llm requires a home directory, XDG_RUNTIME_DIR, or MESH_LLM_RUNTIME_ROOT to be set"
+    )
 }
 
 /// A scoped runtime directory for a single mesh-llm process instance.
@@ -1605,6 +1606,7 @@ mod tests {
         assert_eq!(root, dir.path().join("mesh-llm").join("runtime"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     #[serial]
     fn runtime_root_falls_back_to_home() {
@@ -1617,6 +1619,20 @@ mod tests {
         assert_eq!(root, dir.path().join(".mesh-llm").join("runtime"));
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[serial]
+    fn runtime_root_falls_back_to_windows_profile_without_home() {
+        let _g_mesh = EnvGuard::save_and_remove("MESH_LLM_RUNTIME_ROOT");
+        let _g_xdg = EnvGuard::save_and_remove("XDG_RUNTIME_DIR");
+        let _g_home = EnvGuard::save_and_remove("HOME");
+
+        let home = dirs::home_dir().expect("Windows profile directory should be available");
+        let root = runtime_root().expect("runtime_root should succeed without HOME on Windows");
+        assert_eq!(root, home.join(".mesh-llm").join("runtime"));
+    }
+
+    #[cfg(not(windows))]
     #[test]
     #[serial]
     fn runtime_root_bails_when_unset() {
