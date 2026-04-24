@@ -1296,9 +1296,11 @@ impl Node {
             tracing::info!("Relay: {:?}", urls);
             builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(relay_map));
         }
-        if let Some(port) = bind_port {
+             if let Some(port) = bind_port {
             tracing::info!("Binding QUIC to UDP port {port}");
             builder = builder.bind_addr(std::net::SocketAddr::from(([0, 0, 0, 0], port)))?;
+        } else if cfg!(target_os = "windows") {
+            builder = builder.bind_addr("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())?;
         }
         let endpoint = builder.bind().await?;
         // Wait briefly for relay connection so the invite token includes the relay URL.
@@ -1489,36 +1491,35 @@ impl Node {
         let transport_config = QuicTransportConfig::builder()
             .max_concurrent_bidi_streams(1024u32.into())
             .build();
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(SecretKey::generate())
+        let secret_key = SecretKey::generate();
+        let endpoint = match Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(secret_key.clone())
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::endpoint::RelayMode::Disabled)
-            .transport_config(transport_config)
+            .transport_config(transport_config.clone())
             .bind()
-            .await?;
-
-        let (peer_change_tx, peer_change_rx) = watch::channel(0usize);
-        let (inflight_change_tx, _inflight_change_rx) = watch::channel(0u64);
-        let (tunnel_tx, tunnel_rx) = tokio::sync::mpsc::channel(256);
-        let (tunnel_http_tx, tunnel_http_rx) = tokio::sync::mpsc::channel(256);
-
-        let _channels = TunnelChannels {
-            rpc: tunnel_rx,
-            http: tunnel_http_rx,
+            .await
+        {
+            Ok(ep) => ep,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to bind iroh endpoint with provided config: {}. Falling back to localhost.",
+                    e
+                );
+                let fallback_addr = "127.0.0.1:0".parse().unwrap();
+                Endpoint::builder(iroh::endpoint::presets::Minimal)
+                    .secret_key(secret_key)
+                    .alpns(vec![ALPN.to_vec()])
+                    .relay_mode(iroh::endpoint::RelayMode::Disabled)
+                    .transport_config(TransportConfig::default())
+                    .bind_addr(fallback_addr)
+                    .bind()
+                    .await
+                    .context("Failed to bind iroh endpoint even on localhost")?
+            }
         };
-
         Ok(Node {
             endpoint,
-            public_addr: None,
-            state: Arc::new(Mutex::new(MeshState {
-                peers: HashMap::new(),
-                connections: HashMap::new(),
-                remote_tunnel_maps: HashMap::new(),
-                dead_peers: std::collections::HashSet::new(),
-                seen_plugin_messages: HashMap::new(),
-                seen_plugin_message_order: VecDeque::new(),
-                policy_rejected_peers: HashMap::new(),
-            })),
             role: Arc::new(Mutex::new(role)),
             models: Arc::new(Mutex::new(Vec::new())),
             model_source: Arc::new(Mutex::new(None)),
@@ -2584,7 +2585,7 @@ impl Node {
         let mut by_name: HashMap<String, ServedModelDescriptor> = HashMap::new();
         for descriptor in infer_available_model_descriptors(&my_available)
             .into_iter()
-            .chain(my_served_descriptors)
+            .chain(my_served_descriptors.into_iter())
         {
             upsert_mesh_catalog_descriptor(&mut by_name, descriptor);
         }

@@ -1210,7 +1210,6 @@ pub async fn start_llama_server(
     // Mesh hooks — tell llama-server where to call back.
     // Uses the management API port (default 3131) as the callback target.
     if let Ok(api_port) = std::env::var("MESH_API_PORT") {
-        args.extend_from_slice(&["--mesh-port".to_string(), api_port]);
     }
     if std::env::var("MESH_HOOK_DEBUG").is_ok() {
         args.push("--mesh-hook-debug".to_string());
@@ -1290,7 +1289,7 @@ pub async fn start_llama_server(
                 args.push("-ngld".to_string());
                 args.push("99".to_string());
                 args.push("--device-draft".to_string());
-                args.push(local_device.clone());
+                args.push("Vulkan1".to_string());
                 args.push("--draft-max".to_string());
                 args.push(draft_max.to_string());
                 tracing::info!(

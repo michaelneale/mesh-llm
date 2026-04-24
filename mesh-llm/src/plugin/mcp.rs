@@ -222,7 +222,8 @@ impl ExternalMcpClient {
                     ))
                 }
             }
-            ExternalMcpTransport::NamedPipe { name: _ } => {
+            // ─── CORRECCIÓN: capturar `name` en el patrón ─────────────────────
+            ExternalMcpTransport::NamedPipe { name } => {
                 #[cfg(windows)]
                 {
                     let client = tokio::net::windows::named_pipe::ClientOptions::new()
