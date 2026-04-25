@@ -183,6 +183,34 @@ configure_compiler_cache() {
     esac
 }
 
+stage_dev_runtime_binaries() {
+    local backend="$1"
+    local target_dir="$2"
+    local source_bin_dir="$BUILD_DIR/bin"
+
+    mkdir -p "$target_dir"
+    rm -f "$target_dir/rpc-server" "$target_dir/llama-server"
+    rm -f "$target_dir"/rpc-server-* "$target_dir"/llama-server-*
+
+    for name in rpc-server llama-server; do
+        local source="$source_bin_dir/$name"
+        if [[ ! -f "$source" ]]; then
+            echo "Error: expected llama.cpp binary not found: $source" >&2
+            exit 1
+        fi
+        cp "$source" "$target_dir/$name-$backend"
+    done
+
+    for name in llama-moe-analyze llama-moe-split; do
+        local source="$source_bin_dir/$name"
+        if [[ -f "$source" ]]; then
+            cp "$source" "$target_dir/$name"
+        fi
+    done
+
+    echo "Staged llama.cpp runtime binaries in $target_dir with '$backend' flavor names."
+}
+
 if [[ -z "$BACKEND" ]]; then
     BACKEND="$(detect_backend)"
 fi
@@ -422,10 +450,12 @@ if [[ -d "$MESH_DIR" ]]; then
     if [[ "${MESH_LLM_BUILD_PROFILE:-release}" == "dev" || "${MESH_LLM_BUILD_PROFILE:-release}" == "debug" ]]; then
         echo "Building mesh-llm (profile: dev, bin only)..."
         (cd "$REPO_ROOT" && cargo build -p mesh-llm --bin mesh-llm)
+        stage_dev_runtime_binaries "$BACKEND" "$REPO_ROOT/target/debug"
         echo "Mesh binary: target/debug/mesh-llm"
     else
         echo "Building mesh-llm (profile: release)..."
         (cd "$MESH_DIR" && cargo build --release)
+        stage_dev_runtime_binaries "$BACKEND" "$REPO_ROOT/target/release"
         echo "Mesh binary: target/release/mesh-llm"
     fi
 fi
