@@ -17,8 +17,6 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `mesh-llm/docs/DESIGN.md` | Architecture, protocols, features |
 | `mesh-llm/docs/TESTING.md` | Test playbook, scenarios, remote deploy |
 | `mesh-llm/docs/MULTI_MODAL.md` | Multimodal design: capability model, blob plugin, console, routing |
-| `mesh-llm/docs/MoE_PLAN.md` | MoE expert sharding design |
-| `mesh-llm/docs/MoE_DEPLOY_DESIGN.md` | MoE auto-deploy UX |
 | `mesh-llm/docs/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
 | `mesh-llm/docs/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
@@ -53,7 +51,7 @@ See `CONTRIBUTING.md` for full dev workflow.
 
 ## llama.cpp Fork
 
-mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.cpp](https://github.com/Mesh-LLM/llama.cpp)** (`master` branch). The fork carries 8 commits on top of upstream: RPC optimizations, MoE expert splitting, and mesh hooks for inter-model collaboration.
+mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.cpp](https://github.com/Mesh-LLM/llama.cpp)** (`master` branch). The fork carries Mesh-LLM patches on top of upstream for RPC optimizations and mesh hooks for inter-model collaboration.
 
 **Be careful with this fork.** It is a separate repo with its own history. Breaking the fork breaks all builds.
 
@@ -85,7 +83,7 @@ Use semantic ownership for module placement.
 - `mesh-llm/src/cli/` — Clap types, command parsing, command dispatch, and user-facing command handlers.
 - `mesh-llm/src/runtime/` — top-level process orchestration and startup/runtime coordination.
 - `mesh-llm/src/network/` — request routing, proxying, tunneling, relay/discovery networking, request-affinity logic, and endpoint rewrite support.
-- `mesh-llm/src/inference/` — model-serving logic, election, launch, pipeline, and MoE behavior.
+- `mesh-llm/src/inference/` — model-serving logic, election, launch, and pipeline behavior.
 - `mesh-llm/src/system/` — machine-local environment and platform concerns such as hardware detection, benchmarking, self-update, and local system integration.
 - `mesh-llm/src/models/` — model catalog, resolution, downloads, local model storage, and model metadata.
 - `mesh-llm/src/mesh/` — peer membership, gossip, identity, peer state, and mesh node behavior.
@@ -145,7 +143,6 @@ Current structure notes.
 - `mesh-llm/src/mesh/mod.rs` — `Node` struct, gossip, mesh_id, peer management
 - `mesh-llm/src/inference/election.rs` — Host election, tensor split calculation
 - `mesh-llm/src/inference/launch.rs` — llama-server/rpc-server process management
-- `mesh-llm/src/inference/moe.rs` — MoE detection, expert rankings, split orchestration
 - `mesh-llm/src/network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers
 - `mesh-llm/src/network/router.rs` — Request classification, model scoring, multimodal routing
 - `mesh-llm/src/network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`
@@ -188,7 +185,7 @@ Testing matters more than usual in this project because:
 - Nodes run on different machines with different hardware and OS versions. Bugs that don't reproduce locally can appear in real deployments.
 - The mesh protocol is a distributed system — gossip, election, and routing interact across nodes. Single-node unit tests don't catch protocol-level regressions.
 - The public mesh at anarchai.org runs continuously. Breaking changes that pass local tests can take down live inference for real users.
-- Multimodal, MoE splitting, and multi-model routing all have complex interaction paths that are hard to reason about statically.
+- Multimodal and multi-model routing both have complex interaction paths that are hard to reason about statically.
 
 When making changes that touch gossip, routing, proxy, election, or capability advertisement, test against at least two nodes before merging. The deploy checklist above is not optional.
 

@@ -22,9 +22,7 @@ It contains patches for:
 
 - RPC optimizations: zero-transfer GGUF loading, allocation-size caching, and
   direct worker-to-worker tensor transfers
-- MoE support: expert mask routing, `llama-moe-analyze`, `llama-moe-split`,
-  standalone shard output, multi-shard tensor reading, and GLM/Qwen expert
-  tensor fixes
+- MoE analysis support: expert mask routing and `llama-moe-analyze`
 - Mesh hooks: virtual LLM callback hooks used by inter-model collaboration
 
 All runtime behavior remains external-process based in this migration:
@@ -98,7 +96,7 @@ with `git format-patch`.
 The queue should remain ordered by responsibility:
 
 1. RPC patches
-2. MoE patches
+2. MoE analysis patches
 3. Mesh hook patches
 4. Future llama-stage ABI patches, when intentionally added
 

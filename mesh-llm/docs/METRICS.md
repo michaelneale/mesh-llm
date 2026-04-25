@@ -160,8 +160,7 @@ These are the highest-priority proposals because they directly affect routing qu
 | Active server count vs. demanded server count by model | Measures serving deficit; if demand exceeds active servers, the mesh is underserving the model | mesh-derived |
 | GPU occupancy / estimated node utilization | Routing needs a utilization signal to avoid overloading nodes that are already near capacity | local-only |
 | Cold-start / model-activation time | Affects TTFT for the first request after a model loads; important for demand-aware rebalancing | local-only |
-| Split-eligibility / split-failure rate | Measures how often pipeline or expert splits fail to form; split failures fall back to single-node serving | local-only |
-| MoE expert pressure / skew indicators | Uneven expert load across nodes degrades MoE throughput; skew detection enables rebalancing | local-only |
+| Split-eligibility / split-failure rate | Measures how often pipeline splits fail to form; split failures fall back to single-node serving | local-only |
 | Client-only vs. host-serving pressure | Distinguishes nodes that are only routing from nodes that are also serving; affects placement decisions | local-only |
 
 ### Information (proposed)
@@ -226,5 +225,3 @@ New metrics should expand outward from what already exists: local runtime state 
 **Route explanation: `/api/status` or a dedicated diagnostics endpoint?** Embedding route explanations in `/api/status` keeps the surface simple but adds noise for operators who don't need it. A dedicated `/api/diagnostics` or per-request trace endpoint is cleaner but adds API surface.
 
 **Which strategy metrics are derivable cheaply without persistent storage?** Some strategy metrics (model popularity over time, demand trends) require time-windowed aggregation. Without persistent storage, they can only be approximated from current state. The tradeoff between accuracy and implementation complexity needs to be evaluated per metric.
-
-**MoE expert-pressure signal stability?** Expert load is highly request-dependent and can shift rapidly. A pressure signal that's too noisy will cause unnecessary rebalancing. A signal that's too smooth will miss real skew. The right smoothing window and threshold are unknown without production data.

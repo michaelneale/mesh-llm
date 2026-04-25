@@ -6,7 +6,7 @@
 #         docker run --rm --device /dev/dri -p 9337:9337 -v ~/.models:/root/.models -e APP_MODE=worker mesh-llm:vulkan
 #         docker run --rm --device /dev/dri -p 9337:9337 -p 3131:3131 -e APP_MODE=worker -e MESH_HEADLESS=1 mesh-llm:vulkan  # API-only
 #
-# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-vulkan,llama-server-vulkan,llama-moe-split}
+# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-vulkan,llama-server-vulkan}
 
 # syntax=docker/dockerfile:1.7
 
@@ -106,11 +106,10 @@ RUN cd llama.cpp && \
       -DGGML_HIP=OFF \
       -DGGML_METAL=OFF \
       -DGGML_NATIVE=OFF && \
-    cmake --build build --target rpc-server llama-server llama-moe-split && \
+    cmake --build build --target rpc-server llama-server && \
     mkdir -p /out && \
     cp build/bin/rpc-server /out/rpc-server-vulkan && \
-    cp build/bin/llama-server /out/llama-server-vulkan && \
-    cp build/bin/llama-moe-split /out/llama-moe-split
+    cp build/bin/llama-server /out/llama-server-vulkan
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -119,7 +118,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
 COPY --from=llama-builder-vulkan /out/rpc-server-vulkan /usr/local/lib/mesh-llm/bin/rpc-server-vulkan
 COPY --from=llama-builder-vulkan /out/llama-server-vulkan /usr/local/lib/mesh-llm/bin/llama-server-vulkan
-COPY --from=llama-builder-vulkan /out/llama-moe-split /usr/local/lib/mesh-llm/bin/llama-moe-split
 COPY --from=llama-builder-vulkan /tmp/llama-sha.txt /usr/local/share/mesh-llm/llama-revision.txt
 LABEL io.mesh-llm.llama-revision-file="/usr/local/share/mesh-llm/llama-revision.txt"
 COPY docker/entrypoint.sh /entrypoint.sh

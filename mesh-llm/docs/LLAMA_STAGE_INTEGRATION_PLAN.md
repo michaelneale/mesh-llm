@@ -23,7 +23,6 @@ The first migration step converts those fork commits into a local patch queue.
 Those patches cover:
 
 - llama.cpp RPC optimizations
-- MoE expert analysis and splitting tools
 - mesh hooks used by the virtual LLM path
 
 Runtime orchestration is process based:
@@ -154,8 +153,6 @@ For early integration, keep mesh-llm's routing and tunneling model stable:
 - remote requests still tunnel through QUIC using the existing HTTP path
 - dense split mode continues using external llama.cpp RPC unless explicitly
   running an experimental staged-runtime split
-- MoE sharded serving continues using current shard artifacts and process
-  orchestration until the embedded backend can serve those shards equivalently
 
 ## Build System Plan
 
@@ -175,7 +172,6 @@ Patch groups should stay reviewable:
 
 ```text
 0001-00xx  mesh RPC patches
-00xx-00xx  mesh MoE patches
 00xx-00xx  mesh hook patches
 00xx-00xx  llama stage ABI/runtime patches
 ```
@@ -325,12 +321,11 @@ Acceptance criteria:
 - any backend-specific regression is documented and either fixed or explicitly
   excluded from embedded support for that release
 
-### Milestone 6: Multimodal, MoE, and Mesh Hooks
+### Milestone 6: Multimodal and Mesh Hooks
 
 Port higher-level behavior after the basic text path is stable:
 
 - `mmproj` and image/audio request handling
-- MoE shard serving behavior
 - current mesh hook behavior used by virtual LLM
 - speculative decoding
 - dense split mode replacement or coexistence with staged activation transport
@@ -338,7 +333,6 @@ Port higher-level behavior after the basic text path is stable:
 Acceptance criteria:
 
 - existing multimodal tests and manual smokes pass
-- MoE split artifacts serve correctly through embedded mode
 - virtual LLM behavior has either equivalent Rust-owned hook points or an
   explicit reason to stay on external llama-server
 

@@ -14,7 +14,7 @@ src/
 ├── main.rs                binary entrypoint
 ├── api/                   management API, status shaping, HTTP routing
 ├── cli/                   clap types, subcommands, command handlers
-├── inference/             election, launch, pipeline splits, MoE orchestration
+├── inference/             election, launch, pipeline splits
 ├── mesh/                  peer membership, gossip, routing tables, QUIC node behavior
 ├── models/                catalog, search, GGUF metadata, inventory, resolution
 ├── network/               proxying, tunnels, affinity, Nostr discovery, endpoint rewrite
@@ -38,7 +38,6 @@ plugins/
 - `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by model.
 - The management API and web console live on `:3131`. Pass `--headless` to disable the embedded web UI while keeping the management API (`/api/*`) available on that port.
 - Dense models that fit run locally. Dense models that do not fit can be split with pipeline parallelism.
-- MoE models are handled through expert-aware orchestration in `inference/moe.rs`.
 - Routing and demand tracking are mesh-wide. Nodes can serve different models at the same time.
 - Discovery is optional and Nostr-backed. Private meshes work with explicit join tokens only.
 

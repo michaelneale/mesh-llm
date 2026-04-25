@@ -15,6 +15,7 @@ pub struct CatalogModel {
     pub size: String,
     pub description: String,
     pub draft: Option<String>,
+    /// MoE model metadata, when the catalog has a known expert layout.
     pub moe: Option<MoeConfig>,
     pub extra_files: Vec<CatalogAsset>,
     pub mmproj: Option<CatalogAsset>,
@@ -38,7 +39,9 @@ impl CatalogModel {
 pub struct MoeConfig {
     pub n_expert: u32,
     pub n_expert_used: u32,
+    /// Legacy catalog field retained for compatibility with existing catalog JSON.
     pub min_experts_per_node: u32,
+    /// Legacy catalog field retained for compatibility with older catalog JSON.
     pub ranking: Vec<u32>,
 }
 

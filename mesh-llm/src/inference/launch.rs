@@ -1448,7 +1448,7 @@ pub async fn start_llama_server(
         )
     })?;
 
-    // Wait for health check — scale timeout by model size so large MoE shards
+    // Wait for health check — scale timeout by model size so large models
     // don't hit a fixed ceiling. 120s per GB gives plenty of headroom for slow
     // I/O or GPU upload, with a 600s floor for small models.
     let model_gb = model_bytes / GB + 1; // ceiling

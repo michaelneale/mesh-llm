@@ -9,7 +9,6 @@ Mesh LLM lets you pool spare GPU capacity across machines and expose the result 
 If a model fits on one machine, it runs there. If it does not, Mesh LLM automatically spreads the work across the mesh:
 
 - Dense models use pipeline parallelism.
-- MoE models use expert sharding with zero cross-node inference traffic.
 - Models collaborate during inference — a text-only model consults a vision peer, an uncertain model gets a second opinion from a different architecture.
 - Every node gets the same local API at `http://localhost:9337/v1`.
 
@@ -126,14 +125,11 @@ Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribu
 
 - **Model fits on one machine?** → runs solo, full speed, no network overhead
 - **Dense model too big?** → pipeline parallelism — layers split across nodes
-- **MoE model too big?** → expert parallelism — experts split across nodes, zero cross-node traffic
 
 If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
 Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md).
 
 **Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. llama-server runs on the highest-VRAM node and coordinates via RPC. Each rpc-server loads only its assigned layers from local disk. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
-
-**MoE expert parallelism** — Mixture-of-Experts models (Qwen3-MoE, GLM, OLMoE, Mixtral, DeepSeek — increasingly the best-performing architectures) are auto-detected from the GGUF header. The mesh reads expert routing statistics to identify which experts matter most, then assigns each node an overlapping shard: a shared core of critical experts replicated everywhere, plus unique experts distributed across nodes. Each node gets a standalone GGUF with the full trunk + its expert subset and runs its own independent llama-server — zero cross-node traffic during inference. Sessions are hash-routed to nodes for KV cache locality.
 
 **Multi-model** — different nodes serve different models simultaneously. The API proxy peeks at the `model` field in each request and routes to the right node via QUIC tunnel. `/v1/models` lists everything available.
 
@@ -473,7 +469,6 @@ Mesh LLM keeps the user-facing surface simple: talk to `localhost:9337`, pick a 
 
 - If a model fits on one machine, it runs there with no network overhead.
 - If a dense model does not fit, layers are split across low-latency peers.
-- If an MoE model does not fit, experts are split across nodes and requests are hash-routed for cache locality.
 - Different nodes can serve different models at the same time.
 
 Each node also exposes a management API and web console on port `3131`.

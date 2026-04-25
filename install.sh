@@ -477,7 +477,6 @@ stale_binary_names() {
 mesh-llm
 rpc-server
 llama-server
-llama-moe-split
 rpc-server-cpu
 llama-server-cpu
 rpc-server-cuda

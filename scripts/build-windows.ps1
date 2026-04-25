@@ -615,13 +615,6 @@ function Copy-DevRuntimeBinaries {
         Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $copy.Target) -Force
     }
 
-    foreach ($name in @("llama-moe-analyze.exe", "llama-moe-split.exe")) {
-        $source = Join-Path $sourceBinDir $name
-        if (Test-Path $source) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $name) -Force
-        }
-    }
-
     Write-Host "Staged llama.cpp runtime binaries in target\release with '$BackendName' flavor names."
 }
 

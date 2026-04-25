@@ -88,7 +88,6 @@ pub struct PeerInfo {
     pub available_models: Vec<String>,
     pub requested_models: Vec<String>,
     pub last_seen: std::time::Instant,
-    pub moe_recovered_at: Option<std::time::Instant>,
     pub version: Option<String>,
     pub gpu_name: Option<String>,
     pub hostname: Option<String>,
@@ -122,12 +121,6 @@ impl PeerInfo {
         } else {
             self.is_assigned_model(model)
         }
-    }
-
-    pub fn moe_recovery_ready(&self) -> bool {
-        self.moe_recovered_at
-            .map(|t| t.elapsed().as_secs() >= 30)
-            .unwrap_or(true)
     }
 
     pub fn advertised_context_length(&self, model: &str) -> Option<u32> {

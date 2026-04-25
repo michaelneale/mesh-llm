@@ -1,7 +1,7 @@
 From a36af408887cb0c12b1d685ba19d3af6d50043f1 Mon Sep 17 00:00:00 2001
 From: Michael Neale <michael.neale@gmail.com>
 Date: Sat, 28 Feb 2026 08:54:14 -0500
-Subject: [PATCH 04/15] MoE Phase 1: expert mask routing + analysis tool
+Subject: [PATCH 04/07] MoE Phase 1: expert mask routing + analysis tool
 
 Phase 1a: moe-analyze tool
 - Intercepts ffn_moe_probs via eval callback to observe router decisions

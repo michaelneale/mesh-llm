@@ -53,13 +53,6 @@ Run giant MoE models on a single node by streaming active experts from NVMe inst
 
 **Plan:** Use flash-moe as an alternative backend. Mesh-llm spawns it like llama-server. Needs HTTP/SSE endpoint (currently CLI only) and OpenAI-compatible `/v1/chat/completions`.
 
-## MoE Expert Sharding
-
-Design: [MoE_PLAN.md](docs/MoE_PLAN.md) · Auto-deploy: [MoE_DEPLOY_DESIGN.md](docs/MoE_DEPLOY_DESIGN.md) · Validation: [MoE_SPLIT_REPORT.md](docs/MoE_SPLIT_REPORT.md)
-
-- [ ] **Lazy `moe-analyze`** — auto-run ranking for unknown MoE models.
-- [ ] **Scale testing** — Mixtral 8×22B, Qwen3-235B-A22B across multi-node.
-
 ## Smart Router
 - [ ] **Context-aware routing**: Hosts advertise `n_ctx` in gossip. Router estimates request token count and skips hosts that can't fit it. Today a long chat routed to a small-context host returns 400 with no fallback.
 - [ ] **Retry on 400**: If a host returns 400 (context overflow, bad request), try the next host instead of forwarding the error. Requires reading the response status before committing to the byte-pipe tunnel. Non-trivial — the current `relay_tcp_via_quic` is a blind bidirectional copy.
@@ -82,7 +75,7 @@ Core virtual LLM hooks working end-to-end: Hook 1 (image captioning on text-only
 - [ ] **Use TTFT perf data for peer selection**: PR #271 adds `InferenceTracker` with per-model per-target TTFT ring buffers. Use `best_ttft_for_target()` in `consult::find_different_model_peers()` to score candidates by observed inference speed instead of QUIC RTT. Peers like MiniMax that have low RTT but take 7-10s for actual inference would get deprioritized naturally.
 - [ ] **Wire audio extraction**: `find_audio_peer` works but extracting audio data from the request payload isn't implemented. Same approach as image: strip in content parser, preserve original data, hook consults audio peer.
 - [ ] **Test Hook 1 with real vision peer**: Image captioning plumbing works end-to-end with mock server. Needs testing with an actual vision model on the mesh (e.g. Gemma-3 with mmproj).
-- [x] **Push C++ to fork**: Moved to `Mesh-LLM/llama.cpp` org fork, all patches (RPC, MoE, mesh hooks) on `master`. Pinned by SHA.
+- [x] **Push C++ to fork**: Moved to `Mesh-LLM/llama.cpp` org fork, all patches on `master`. Pinned by SHA.
 - [ ] **Image caption caching**: Same image sent multiple times shouldn't re-consult. Hash the data URL, cache the caption.
 
 ## Resilience

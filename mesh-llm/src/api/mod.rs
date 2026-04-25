@@ -1162,11 +1162,10 @@ pub async fn start(
             }
             let target = target_rx.borrow().clone();
             match target {
-                election::InferenceTarget::Local(port)
-                | election::InferenceTarget::MoeLocal(port) => {
+                election::InferenceTarget::Local(port) => {
                     state2.set_llama_port(Some(port)).await;
                 }
-                election::InferenceTarget::Remote(_) | election::InferenceTarget::MoeRemote(_) => {
+                election::InferenceTarget::Remote(_) => {
                     let mut inner = state2.inner.lock().await;
                     inner.llama_ready = true;
                     inner.llama_port = None;
@@ -1829,7 +1828,6 @@ mod tests {
             requested_models: vec![],
             last_seen: Instant::now(),
             last_mentioned: Instant::now(),
-            moe_recovered_at: None,
             version: None,
             gpu_name: None,
             hostname: None,
@@ -2090,7 +2088,6 @@ mod tests {
             requested_models: Vec::new(),
             last_seen: std::time::Instant::now(),
             last_mentioned: std::time::Instant::now(),
-            moe_recovered_at: None,
             version: None,
             gpu_name: None,
             hostname: None,

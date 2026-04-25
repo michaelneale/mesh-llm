@@ -270,7 +270,6 @@ mesh-llm models updates Qwen/Qwen3-8B-GGUF
 - Hugging Face repo snapshots are the canonical managed model store.
 - Flat `~/.models/` storage is no longer scanned for managed models.
 - Arbitrary local GGUF files still work through `mesh-llm serve --gguf`.
-- MoE split artifacts are cached under `~/.cache/mesh-llm/splits/`.
 
 ## Inspect local GPUs
 

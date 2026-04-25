@@ -138,11 +138,6 @@ jobs:
           file="${{ inputs.dockerfile_path }}"
           grep -q "/usr/local/lib/mesh-llm/bin/rpc-server-" "$file"
           grep -q "/usr/local/lib/mesh-llm/bin/llama-server-" "$file"
-          grep -q "/usr/local/lib/mesh-llm/bin/llama-moe-split" "$file"
-          if grep -q "llama-moe-split-" "$file"; then
-            echo "FAIL: llama-moe-split must not be flavor-suffixed in $file" >&2
-            exit 1
-          fi
           echo "PASS: flavored binary naming correct"
 
       - name: Shared Dockerfiles do not invoke just bundle

@@ -28,8 +28,7 @@ pub struct CatalogModel {
     pub description: String,
     /// If set, this model has a recommended draft model for speculative decoding.
     pub draft: Option<String>,
-    /// MoE expert routing config. If set, this model supports expert sharding.
-    /// Pre-computed from `moe-analyze --export-ranking --all-layers`.
+    /// MoE model metadata, when the catalog has a known expert layout.
     pub moe: Option<MoeConfig>,
     /// Additional split GGUF files (for models too large for a single file).
     /// llama.cpp auto-discovers splits from the first file, but all parts
@@ -54,18 +53,16 @@ impl CatalogModel {
     }
 }
 
-/// Pre-computed MoE expert sharding configuration for a model.
-/// Derived from router gate mass analysis — determines which experts go where.
+/// MoE expert layout metadata for a catalog model.
 #[derive(Clone, Debug)]
 pub struct MoeConfig {
     /// Total number of experts in the model
     pub n_expert: u32,
     /// Number of experts selected per token (top-k)
     pub n_expert_used: u32,
-    /// Minimum number of experts per node for coherent output.
-    /// Determined experimentally per model (~36% for Qwen3-30B-A3B).
+    /// Legacy catalog field retained for compatibility with existing catalog JSON.
     pub min_experts_per_node: u32,
-    /// Expert IDs sorted by gate mass descending (hottest first).
+    /// Legacy catalog field retained for compatibility with older catalog JSON.
     pub ranking: Vec<u32>,
 }
 

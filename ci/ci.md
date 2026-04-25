@@ -70,7 +70,7 @@ flowchart TD
     UI_Target -- "artifact: ci-ui-dist" --> ROCm_Target
     %% ── Smoke tests (consume artifact) ──
     subgraph Smoke["smoke.yml (reusable, ubuntu-latest)"]
-        SMOKE["Download ci-linux-inference-binaries\nReal inference · OpenAI compat\nSplit-mode · MoE split + mesh"]
+        SMOKE["Download ci-linux-inference-binaries\nReal inference · OpenAI compat\nSplit-mode mesh"]
     end
     CORE -- "artifact" --> SMOKE
     subgraph SDK_Smokes["SDK Smokes (consume artifact)"]

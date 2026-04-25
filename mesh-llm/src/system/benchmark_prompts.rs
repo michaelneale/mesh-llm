@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 const DATASETS_SERVER_BASE: &str = "https://datasets-server.huggingface.co";
@@ -131,36 +131,6 @@ pub(crate) async fn import_prompt_corpus(args: ImportPromptsArgs) -> Result<()> 
         args.output.display()
     );
     Ok(())
-}
-
-pub(crate) fn load_prompt_corpus(path: &Path) -> Result<Vec<PromptCorpusEntry>> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Open prompt corpus {}", path.display()))?;
-    let reader = BufReader::new(file);
-    let mut prompts = Vec::new();
-
-    for (idx, line) in reader.lines().enumerate() {
-        let line =
-            line.with_context(|| format!("Read line {} from {}", idx + 1, path.display()))?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let prompt: PromptCorpusEntry = serde_json::from_str(trimmed)
-            .with_context(|| format!("Parse JSONL entry {} from {}", idx + 1, path.display()))?;
-        prompts.push(prompt);
-    }
-
-    if prompts.is_empty() {
-        bail!("Prompt corpus is empty: {}", path.display());
-    }
-
-    Ok(prompts)
-}
-
-pub(crate) fn summarize_prompt_corpus(path: &Path) -> Result<PromptCorpusSummary> {
-    let prompts = load_prompt_corpus(path)?;
-    Ok(summarize_prompts(&prompts, path))
 }
 
 pub(crate) fn summarize_prompts(prompts: &[PromptCorpusEntry], path: &Path) -> PromptCorpusSummary {

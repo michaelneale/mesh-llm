@@ -591,7 +591,7 @@ async fn test_api_proxy_integration_chunked_body() {
 }
 
 #[tokio::test]
-async fn test_moe_remote_failure_removes_peer_for_faildown() {
+async fn test_remote_failure_removes_peer_for_faildown() {
     let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
         .await
         .unwrap();
@@ -623,7 +623,6 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         requested_models: vec![],
         last_seen: std::time::Instant::now(),
         last_mentioned: std::time::Instant::now(),
-        moe_recovered_at: None,
         version: None,
         gpu_name: None,
         hostname: None,
@@ -651,7 +650,7 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         node.clone(),
         client,
         None,
-        election::InferenceTarget::MoeRemote(peer_id),
+        election::InferenceTarget::Remote(peer_id),
         request,
         crate::network::proxy::ResponseAdapter::None,
     )
@@ -660,7 +659,7 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
     assert!(!routed);
     assert!(
         !node.has_test_peer(peer_id).await,
-        "failed MoE shard should be removed so election can fail down"
+        "failed remote host should be removed so election can fail down"
     );
     let metrics = node.routing_metrics_snapshot();
     assert_eq!(metrics.request_count, 1);

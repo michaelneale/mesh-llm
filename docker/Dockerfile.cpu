@@ -8,7 +8,7 @@
 # Binaries at /usr/local/lib/mesh-llm/bin/:
 #   rpc-server-cpu
 #   llama-server-cpu
-#   llama-moe-split (unsuffixed — same across flavors)
+#   (unsuffixed — same across flavors)
 #
 # llama.cpp revision: tracked at /usr/local/share/mesh-llm/llama-revision.txt
 # Source: ggml-org/llama.cpp upstream pin plus Mesh-LLM patch queue
@@ -103,11 +103,10 @@ RUN cd llama.cpp && \
       -DGGML_VULKAN=OFF \
       -DGGML_METAL=OFF \
       -DGGML_NATIVE=OFF && \
-    cmake --build build --target rpc-server llama-server llama-moe-split && \
+    cmake --build build --target rpc-server llama-server && \
     mkdir -p /out && \
     cp build/bin/rpc-server /out/rpc-server-cpu && \
-    cp build/bin/llama-server /out/llama-server-cpu && \
-    cp build/bin/llama-moe-split /out/llama-moe-split
+    cp build/bin/llama-server /out/llama-server-cpu
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -116,7 +115,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
 COPY --from=llama-builder-cpu /out/rpc-server-cpu /usr/local/lib/mesh-llm/bin/rpc-server-cpu
 COPY --from=llama-builder-cpu /out/llama-server-cpu /usr/local/lib/mesh-llm/bin/llama-server-cpu
-COPY --from=llama-builder-cpu /out/llama-moe-split /usr/local/lib/mesh-llm/bin/llama-moe-split
 COPY --from=llama-builder-cpu /tmp/llama-sha.txt /usr/local/share/mesh-llm/llama-revision.txt
 LABEL io.mesh-llm.llama-revision-file="/usr/local/share/mesh-llm/llama-revision.txt"
 COPY docker/entrypoint.sh /entrypoint.sh

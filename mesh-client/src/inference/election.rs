@@ -38,21 +38,6 @@ pub enum InferenceTarget {
     Local(u16),
     /// Another node is host — proxy via QUIC to this peer.
     Remote(EndpointId),
-    /// MoE mode — this node runs its own llama-server with its expert shard.
-    /// All MoE nodes are independent; the proxy picks one per session.
-    MoeLocal(u16),
-    /// MoE mode — another node is running its shard; proxy via QUIC.
-    MoeRemote(EndpointId),
-}
-
-/// MoE deployment state shared between election and proxy.
-/// The proxy uses this to route sessions to MoE nodes.
-#[derive(Clone, Debug, Default)]
-pub struct MoeState {
-    /// All MoE node targets (local + remote), in stable order.
-    pub nodes: Vec<InferenceTarget>,
-    /// Full-coverage targets that can serve the whole model if the active shard set fails.
-    pub fallbacks: Vec<InferenceTarget>,
 }
 
 /// Per-model routing table. The API proxy uses this to route by model name.
@@ -60,9 +45,6 @@ pub struct MoeState {
 pub struct ModelTargets {
     /// model_name → list of inference targets (multiple hosts = load balancing)
     pub targets: HashMap<String, Vec<InferenceTarget>>,
-    /// MoE state — if set, this model uses MoE expert sharding.
-    /// The proxy uses this for session-sticky routing across MoE nodes.
-    pub moe: Option<MoeState>,
     /// Round-robin counter for load balancing, shared across clones via Arc<AtomicU64>
     /// so that all ModelTargets clones (including per-request proxy clones) share a sequence.
     counter: Arc<AtomicU64>,
@@ -111,34 +93,5 @@ impl ModelTargets {
             let idx = sticky_key as usize % candidates.len();
             candidates[idx].clone()
         }
-    }
-
-    /// Get MoE target for a session (hash-based routing).
-    /// Returns None if not in MoE mode.
-    pub fn get_moe_target(&self, session_hint: &str) -> Option<InferenceTarget> {
-        let moe = self.moe.as_ref()?;
-        if moe.nodes.is_empty() {
-            return None;
-        }
-        let hash = session_hint
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let idx = (hash as usize) % moe.nodes.len();
-        Some(moe.nodes[idx].clone())
-    }
-
-    pub fn get_moe_failover_targets(&self, session_hint: &str) -> Vec<InferenceTarget> {
-        let Some(primary) = self.get_moe_target(session_hint) else {
-            return Vec::new();
-        };
-        let mut ordered = vec![primary.clone()];
-        if let Some(moe) = self.moe.as_ref() {
-            for fallback in &moe.fallbacks {
-                if fallback != &primary {
-                    ordered.push(fallback.clone());
-                }
-            }
-        }
-        ordered
     }
 }

@@ -274,8 +274,6 @@ jobs:
             target/release/mesh-llm
             llama.cpp/build/bin/rpc-server
             llama.cpp/build/bin/llama-server
-            llama.cpp/build/bin/llama-moe-analyze
-            llama.cpp/build/bin/llama-moe-split
           if-no-files-found: error
 
       - name: Show sccache stats

@@ -35,7 +35,7 @@ case "$APP_MODE" in
     RPC_SERVER="$1"
     set -- "$BIN_DIR"/llama-server-*
     LLAMA_SERVER="$1"
-    if [ ! -e "$RPC_SERVER" ] || [ ! -e "$LLAMA_SERVER" ] || [ ! -x "$BIN_DIR/llama-moe-split" ]; then
+    if [ ! -e "$RPC_SERVER" ] || [ ! -e "$LLAMA_SERVER" ]; then
       echo "APP_MODE=worker requires bundled llama binaries in $BIN_DIR; use a full-node image (:cpu/:cuda/:rocm/:vulkan) or APP_MODE=console." >&2
       exit 1
     fi

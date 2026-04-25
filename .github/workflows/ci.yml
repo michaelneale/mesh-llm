@@ -16,9 +16,6 @@ env:
   # Tiny model for integration tests (~138MB Q8_0, has chat template)
   MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
-  # Small MoE model for MoE split tests (~598MB Q2_K, qwen35moe architecture)
-  MOE_MODEL_URL: https://huggingface.co/Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF/resolve/main/qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf
-  MOE_MODEL_FILE: qwen3.5-moe-0.87B-d0.8B-Q2_K.gguf
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -203,7 +200,7 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_OPENSSL=OFF \
             "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(nproc) --target rpc-server llama-server llama-moe-analyze llama-moe-split
+          cmake --build llama.cpp/build --config Release -j$(nproc) --target rpc-server llama-server llama-moe-analyze
 
       - name: CLI smoke test
         run: |
@@ -221,8 +218,6 @@ jobs:
             target/debug/mesh-llm
             llama.cpp/build/bin/rpc-server
             llama.cpp/build/bin/llama-server
-            llama.cpp/build/bin/llama-moe-analyze
-            llama.cpp/build/bin/llama-moe-split
           if-no-files-found: error
 
       - name: Show sccache stats
@@ -381,7 +376,7 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_OPENSSL=OFF \
             "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server
+          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server llama-moe-analyze
 
       - name: Cache integration model
         id: cache-model-swift-sdk
@@ -494,7 +489,7 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DLLAMA_OPENSSL=OFF \
             "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server llama-moe-analyze llama-moe-split
+          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server llama-moe-analyze
 
       # ── Download model ──
       - name: Cache model
@@ -535,44 +530,6 @@ jobs:
             target/debug/mesh-llm \
             llama.cpp/build/bin \
             ~/.models/$MODEL_FILE
-
-      # ── MoE split test ──
-      - name: Cache MoE model
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        id: cache-moe-model
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.models/${{ env.MOE_MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
-      - name: Download MoE model
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-moe-model.outputs.cache-hit != 'true' }}
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
-          ls -lh ~/.models/$MOE_MODEL_FILE
-
-      - name: Save MoE model cache
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-moe-model.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.models/${{ env.MOE_MODEL_FILE }}
-          key: ${{ steps.cache-moe-model.outputs.cache-primary-key }}
-
-      - name: MoE split test (expert sharding)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-moe-split-test.sh \
-            llama.cpp/build/bin \
-            ~/.models/$MOE_MODEL_FILE
-
-      - name: MoE mesh test (expert sharding end-to-end)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-moe-mesh-test.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MOE_MODEL_FILE
 
       - name: Virtual LLM hook test
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
@@ -760,7 +717,7 @@ jobs:
           MESH_LLM_BUILD_PROFILE: dev
           MESH_LLM_CUDA_FA_ALL_QUANTS: off
           MESH_LLM_LLAMA_PIN_SHA: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
-          MESH_LLM_LLAMA_TARGETS: "rpc-server llama-server llama-moe-analyze llama-moe-split"
+          MESH_LLM_LLAMA_TARGETS: "rpc-server llama-server llama-moe-analyze"
         run: |
           just --shell bash --shell-arg -lc release-build-cuda 89
 

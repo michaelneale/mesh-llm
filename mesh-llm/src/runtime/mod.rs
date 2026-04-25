@@ -14,20 +14,19 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
-use crate::cli::terminal_progress::start_spinner;
 use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::crypto::{
     default_keystore_path, default_trust_store_path, keystore_exists, keystore_metadata,
     load_keystore, load_owner_keypair_from_keychain, load_trust_store, OwnerKeychainLoadError,
 };
-use crate::inference::{election, launch, moe};
+use crate::inference::{election, launch};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
 use crate::models::catalog;
 use crate::network::{affinity, nostr, router, tunnel};
 use crate::plugin;
-use crate::system::{autoupdate, benchmark, hardware, moe_planner};
+use crate::system::{autoupdate, benchmark, hardware};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::cmp::Reverse;
@@ -686,13 +685,10 @@ fn build_startup_model_specs(
 
 async fn resolve_startup_models(
     specs: &[StartupModelSpec],
-    max_vram_gb: Option<f64>,
+    _max_vram_gb: Option<f64>,
 ) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
-    let mut preflight_cache: HashMap<String, Option<moe_planner::MoeStartupFitEstimate>> =
-        HashMap::new();
     for spec in specs {
-        preflight_remote_startup_model(spec, max_vram_gb, &mut preflight_cache).await?;
         let resolved_path = resolve_model(&spec.model_ref).await?;
         let mmproj_path = match spec.mmproj_ref.as_ref() {
             Some(mmproj) => Some(resolve_model(mmproj).await?),
@@ -709,130 +705,6 @@ async fn resolve_startup_models(
         });
     }
     Ok(plans)
-}
-
-async fn preflight_remote_startup_model(
-    spec: &StartupModelSpec,
-    max_vram_gb: Option<f64>,
-    cache: &mut HashMap<String, Option<moe_planner::MoeStartupFitEstimate>>,
-) -> Result<()> {
-    if spec.model_ref.exists() {
-        return Ok(());
-    }
-
-    let declared_ref = spec.model_ref.to_string_lossy().to_string();
-    if !declared_ref.contains('/') {
-        let installed_name = declared_ref.strip_suffix(".gguf").unwrap_or(&declared_ref);
-        if models::find_model_path(installed_name).exists() {
-            return Ok(());
-        }
-    }
-
-    let mut spinner = start_spinner(&format!("Checking published MoE fit for {declared_ref}"));
-    let identity = models::resolve_huggingface_model_identity(&declared_ref)
-        .await
-        .with_context(|| format!("Resolve model identity for {declared_ref}"))?;
-    let Some(identity) = identity else {
-        spinner.finish();
-        return Ok(());
-    };
-
-    if let Some(cached) = cache.get(&identity.canonical_ref).cloned() {
-        spinner.finish();
-        return apply_remote_startup_preflight(&declared_ref, &identity.local_file_name, cached);
-    }
-
-    spinner.set_message(format!(
-        "Fetching published MoE analysis for {}",
-        identity.local_file_name
-    ));
-    let dataset_repo = moe_planner::DEFAULT_MOE_RANKINGS_DATASET.to_string();
-    let source_repo = identity.repo_id.clone();
-    let source_revision = identity.revision.clone();
-    let distribution_id = moe_planner::normalize_distribution_id(&identity.local_file_name);
-    let target_vram_bytes = mesh::detect_vram_bytes_capped(max_vram_gb);
-    let fetched = tokio::task::spawn_blocking(move || {
-        moe_planner::fetch_remote_startup_fit(
-            &dataset_repo,
-            &source_repo,
-            &source_revision,
-            &distribution_id,
-            target_vram_bytes,
-            false,
-        )
-    })
-    .await;
-    spinner.finish();
-
-    let fit = match fetched {
-        Ok(Ok(fit)) => fit,
-        Ok(Err(err)) => {
-            eprintln!(
-                "⚠️  [{declared_ref}] Published MoE preflight lookup failed ({err}); continuing with normal model resolution"
-            );
-            None
-        }
-        Err(err) => {
-            eprintln!(
-                "⚠️  [{declared_ref}] Published MoE preflight task failed ({err}); continuing with normal model resolution"
-            );
-            None
-        }
-    };
-    cache.insert(identity.canonical_ref.clone(), fit.clone());
-    apply_remote_startup_preflight(&declared_ref, &identity.local_file_name, fit)
-}
-
-fn apply_remote_startup_preflight(
-    declared_ref: &str,
-    model_label: &str,
-    fit: Option<moe_planner::MoeStartupFitEstimate>,
-) -> Result<()> {
-    let Some(fit) = fit else {
-        return Ok(());
-    };
-    if !fit.any_fit_exists() {
-        anyhow::bail!(
-            "Published MoE preflight says '{}' will not fit locally before download: full model needs about {}, and the smallest conservative split still needs about {} per node with a 50% shared core ({} shared experts). Local budget is {}.",
-            declared_ref,
-            format_vram_gb(fit.full_model_launch_bytes),
-            fit.predicted_max_shard_launch_bytes
-                .map(format_vram_gb)
-                .unwrap_or_else(|| "unknown".to_string()),
-            fit.required_experts_per_node,
-            format_vram_gb(fit.target_vram_bytes),
-        );
-    }
-
-    if fit.full_model_fits() {
-        eprintln!(
-            "🧩 [{}] Published MoE preflight: full model should fit locally (~{} <= {}, mode={}, source={})",
-            model_label,
-            format_vram_gb(fit.full_model_launch_bytes),
-            format_vram_gb(fit.target_vram_bytes),
-            fit.analyzer_id,
-            fit.ranking_source,
-        );
-        return Ok(());
-    }
-
-    if fit.shard_plan_fits() {
-        eprintln!(
-            "🧩 [{}] Published MoE preflight: full model needs ~{}, but a conservative {}-node shard should fit here (~{}/node, mode={}, source={})",
-            model_label,
-            format_vram_gb(fit.full_model_launch_bytes),
-            fit.recommended_nodes.unwrap_or(1),
-            format_vram_gb(fit.predicted_max_shard_launch_bytes.unwrap_or_default()),
-            fit.analyzer_id,
-            fit.ranking_source,
-        );
-        return Ok(());
-    }
-    Ok(())
-}
-
-fn format_vram_gb(bytes: u64) -> String {
-    format!("{:.1}GB", bytes as f64 / 1e9)
 }
 
 fn preflight_config_owned_startup_models(
@@ -2036,7 +1908,6 @@ async fn run_auto(
     let console_state_for_primary_process = console_state.clone();
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
-    let moe_runtime_options = moe::MoeRuntimeOptions::default();
     let primary_mmproj = primary_startup_model
         .as_ref()
         .and_then(|model| model.mmproj_path.clone());
@@ -2066,7 +1937,6 @@ async fn run_auto(
                 binary_flavor: llama_flavor,
                 ctx_size_override: primary_ctx_size,
                 pinned_gpu: primary_pinned_gpu,
-                moe_runtime_options,
                 target_tx: primary_target_tx,
                 stop_rx: primary_stop_rx,
                 slots,
@@ -2194,7 +2064,6 @@ async fn run_auto(
             let api_port_extra = api_port;
             let extra_llama_flavor = cli.llama_flavor;
             let slots = extra_model.parallel.or(config.gpu.parallel).unwrap_or(4);
-            let extra_moe_runtime_options = moe::MoeRuntimeOptions::default();
             let extra_console_state = console_state.clone();
             let extra_model_name_for_status = extra_model_name.clone();
             let extra_model_name_for_process = extra_model_name.clone();
@@ -2224,7 +2093,6 @@ async fn run_auto(
                         binary_flavor: extra_llama_flavor,
                         ctx_size_override: extra_ctx_size,
                         pinned_gpu: extra_pinned_gpu,
-                        moe_runtime_options: extra_moe_runtime_options,
                         target_tx: extra_target_tx,
                         stop_rx: extra_stop_rx,
                         slots,

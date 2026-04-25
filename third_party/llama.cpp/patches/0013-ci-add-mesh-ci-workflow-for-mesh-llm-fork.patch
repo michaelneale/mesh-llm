@@ -1,28 +1,26 @@
 From e831eb7c6c2f198d66af45642e4cfa056517a59e Mon Sep 17 00:00:00 2001
 From: micn <micn@users.noreply.github.com>
 Date: Fri, 17 Apr 2026 18:31:17 +1000
-Subject: [PATCH 13/15] ci: add mesh-ci workflow for mesh-llm fork
+Subject: [PATCH 7/7] ci: add mesh-ci workflow for mesh-llm fork
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
 Minimal Linux CPU build check that runs on every push and PR, with no
-path filter. Builds the exact four binaries mesh-llm consumes
-(rpc-server, llama-server, llama-moe-analyze, llama-moe-split) with the
-same cmake flags mesh-llm uses.
+path filter. Builds the exact llama.cpp binaries mesh-llm validates
+(rpc-server, llama-server, llama-moe-analyze) with the same cmake flags
+mesh-llm uses.
 
 Motivation: upstream's build.yml has path filters that can skip the
-entire build matrix for small commits. A bad merge (de21992e6 → e88186e78)
-shipped a non-compiling moe-split.cpp because no build lane actually
-ran. This workflow has no path filter, so every commit gets built.
+entire build matrix for small commits. This workflow has no path filter, so every commit gets built.
 
 To suppress upstream's ~25 workflows on this fork without touching their
 files (keeps upstream syncs clean), flip: Settings → Actions → General →
 'Allow select actions and reusable workflows', then whitelist only
 mesh-ci.yml.
 ---
- .github/workflows/mesh-ci.yml | 71 +++++++++++++++++++++++++++++++++++
- 1 file changed, 71 insertions(+)
+ .github/workflows/mesh-ci.yml | 70 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 70 insertions(+)
  create mode 100644 .github/workflows/mesh-ci.yml
 
 diff --git a/.github/workflows/mesh-ci.yml b/.github/workflows/mesh-ci.yml
@@ -30,7 +28,7 @@ new file mode 100644
 index 000000000..2731c0996
 --- /dev/null
 +++ b/.github/workflows/mesh-ci.yml
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,70 @@
 +name: mesh-ci
 +
 +# Minimal build check for the Mesh-LLM/llama.cpp fork.
@@ -38,8 +36,7 @@ index 000000000..2731c0996
 +# Why this exists:
 +# Upstream's build.yml is large and has path filters that can skip entire
 +# matrix legs for small changes. That let a bad merge (de21992e6 → e88186e78)
-+# ship a moe-split.cpp that didn't compile, because no build lane actually
-+# ran for the commit that merged it.
++# ship a broken mesh-llm runtime target.
 +#
 +# This workflow runs on every push and every PR, with no path filter, and
 +# builds the exact set of binaries mesh-llm consumes, using the same cmake
@@ -94,11 +91,11 @@ index 000000000..2731c0996
 +      - name: Build mesh-llm targets
 +        run: |
 +          cmake --build build --config Release -j"$(nproc)" \
-+            --target rpc-server llama-server llama-moe-analyze llama-moe-split
++            --target rpc-server llama-server llama-moe-analyze
 +
 +      - name: Verify binaries exist
 +        run: |
 +          set -e
-+          for bin in rpc-server llama-server llama-moe-analyze llama-moe-split; do
++          for bin in rpc-server llama-server llama-moe-analyze; do
 +            test -x "build/bin/$bin" && echo "ok: $bin"
 +          done

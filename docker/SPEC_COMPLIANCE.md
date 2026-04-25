@@ -65,10 +65,10 @@ This file is the human-readable counterpart to `.github/workflows/docker-prechec
 <!-- Each task appends a 1-line entry here after running the reusable docker precheck workflow -->
 Task 0.5 — docker/entrypoint.sh — verified spec item 13 (3-mode case, no api-only mode) at 2026-04-08
 Task 1.1 — docker/Dockerfile.client — verified spec items 1, 2, 3, 7, 8, 12 (client image, 52MB, 0 missing libs) at 2026-04-08
-Task 1.2 — docker/Dockerfile.cpu — verified spec items 4, 6, 11 (cpu image, 58MB, binaries: rpc-server-cpu llama-server-cpu llama-moe-split, llama-sha: b2f6a68) at 2026-04-08
-Task 1.3 — docker/Dockerfile.vulkan — verified spec items 1, 2, 3, 4, 6, 7, 8, 11, 12 (vulkan image, 75MB, binaries: rpc-server-vulkan llama-server-vulkan llama-moe-split, mesh-llm 0.58.0) at 2026-04-08
-Task 1.4 — docker/Dockerfile.cuda — verified spec item 5 (GGML_CUDA_FA_ALL_QUANTS=ON, cuda image 2717MB, binaries: rpc-server-cuda llama-server-cuda llama-moe-split, mesh-llm 0.58.0) at 2026-04-08
-Task 1.5 — docker/Dockerfile.rocm — verified spec items 1, 2, 3, 4, 6, 7, 8, 11, 12 (rocm image 1305MB, binaries: rpc-server-rocm llama-server-rocm llama-moe-split, mesh-llm 0.58.0, HIPCXX/HIP_PATH exports, DGGML_HIP=ON, DAMDGPU_TARGETS ARG) at 2026-04-08
+Task 1.2 — docker/Dockerfile.cpu — verified spec items 4, 6, 11 (cpu image, 58MB, binaries: rpc-server-cpu llama-server-cpu, llama-sha: b2f6a68) at 2026-04-08
+Task 1.3 — docker/Dockerfile.vulkan — verified spec items 1, 2, 3, 4, 6, 7, 8, 11, 12 (vulkan image, 75MB, binaries: rpc-server-vulkan llama-server-vulkan, mesh-llm 0.58.0) at 2026-04-08
+Task 1.4 — docker/Dockerfile.cuda — verified spec item 5 (GGML_CUDA_FA_ALL_QUANTS=ON, cuda image 2717MB, binaries: rpc-server-cuda llama-server-cuda, mesh-llm 0.58.0) at 2026-04-08
+Task 1.5 — docker/Dockerfile.rocm — verified spec items 1, 2, 3, 4, 6, 7, 8, 11, 12 (rocm image 1305MB, binaries: rpc-server-rocm llama-server-rocm, mesh-llm 0.58.0, HIPCXX/HIP_PATH exports, DGGML_HIP=ON, DAMDGPU_TARGETS ARG) at 2026-04-08
 Task 2.2 — fly/Dockerfile — verified spec item 10 (ui-builder stage present, latent bug fixed); rows 1, 2, 3, 7, 8, 12 updated with fly/Dockerfile file:line refs; cleanroom build (no local ui/dist) → exit 0; smoke test mesh-llm 0.58.0; APP_MODE=console confirmed at 2026-04-08
 Task 3.1 — .github/workflows/docker.yml — verified spec item 9 (no QEMU, 17 jobs total, 6 reusable precheck jobs, 3 native ubuntu-24.04-arm runners for client/cpu/vulkan arm64, cuda+rocm amd64-only, manifest merge jobs); reusable docker precheck encoded the same assertions in YAML at 2026-04-08
 Task 3.2 — Final Verification — all 13 spec items verified via `.github/workflows/docker-precheck.yml`; SPEC_COMPLIANCE.md updated with reusable workflow authority at 2026-04-08

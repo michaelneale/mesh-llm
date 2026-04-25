@@ -10,7 +10,7 @@
 # IMPORTANT: -DGGML_CUDA_FA_ALL_QUANTS=ON is mandatory for correctness.
 # See ggml-org/llama.cpp#20866. Do NOT remove until the patch queue is based past the fix.
 #
-# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-cuda,llama-server-cuda,llama-moe-split}
+# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-cuda,llama-server-cuda}
 
 # syntax=docker/dockerfile:1.7
 
@@ -112,11 +112,10 @@ RUN cd llama.cpp && \
       -DGGML_NATIVE=OFF && \
     grep -q "^GGML_CUDA_FA_ALL_QUANTS:BOOL=ON$" build/CMakeCache.txt || (echo "FAIL: GGML_CUDA_FA_ALL_QUANTS=ON did not take effect (see ggml-org/llama.cpp#20866)"; exit 1) && \
     echo "OK: GGML_CUDA_FA_ALL_QUANTS:BOOL=ON verified in CMakeCache.txt" && \
-    cmake --build build --target rpc-server llama-server llama-moe-split && \
+    cmake --build build --target rpc-server llama-server && \
     mkdir -p /out && \
     cp build/bin/rpc-server /out/rpc-server-cuda && \
-    cp build/bin/llama-server /out/llama-server-cuda && \
-    cp build/bin/llama-moe-split /out/llama-moe-split
+    cp build/bin/llama-server /out/llama-server-cuda
 
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -125,7 +124,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
 COPY --from=llama-builder-cuda /out/rpc-server-cuda /usr/local/lib/mesh-llm/bin/rpc-server-cuda
 COPY --from=llama-builder-cuda /out/llama-server-cuda /usr/local/lib/mesh-llm/bin/llama-server-cuda
-COPY --from=llama-builder-cuda /out/llama-moe-split /usr/local/lib/mesh-llm/bin/llama-moe-split
 COPY --from=llama-builder-cuda /tmp/llama-sha.txt /usr/local/share/mesh-llm/llama-revision.txt
 LABEL io.mesh-llm.llama-revision-file="/usr/local/share/mesh-llm/llama-revision.txt"
 COPY docker/entrypoint.sh /entrypoint.sh

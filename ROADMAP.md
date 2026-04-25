@@ -48,12 +48,6 @@ We already print launch commands when the mesh is ready and show them in the web
 
 Currently ships as a 3-binary bundle (`mesh-llm` + `llama-server` + `rpc-server`). Could compile llama.cpp directly into the Rust binary via [llama-cpp-2](https://crates.io/crates/llama-cpp-2) — one binary, no bundle.
 
-## MoE expert sharding ✅
-
-Implemented. Auto-detects MoE, computes overlapping expert assignments, splits locally, session-sticky routing. Zero cross-node traffic. See [MoE_PLAN.md](mesh-llm/docs/MoE_PLAN.md).
-
-Remaining: optimized rankings for unknown models, scale testing on Mixtral 8×22B / Qwen3-235B.
-
 ## SSD expert streaming
 
 Run MoE models that are far too large for memory on a single node by streaming only the active experts from NVMe SSD per token. The trunk (attention, norms, embeddings) stays resident in memory; expert weights live on disk and are `pread()`'d on demand.
@@ -79,7 +73,7 @@ This is a single-node strategy. The goal is running e.g. Qwen3.5-397B-A17B (~209
 
 **How this fits mesh-llm:**
 
-Today mesh-llm has two MoE modes: **solo** (model fits in memory, run it whole) and **split** (model doesn't fit, shard experts across nodes). SSD streaming would be a third mode: model doesn't fit in memory but *does* fit on one node's SSD. No mesh coordination, no cross-node traffic, no splitting — just one machine streaming experts from disk.
+SSD streaming would be a single-node strategy for MoE models that do not fit in memory but do fit on local SSD. No mesh coordination, no cross-node traffic, no splitting — just one machine streaming experts from disk.
 
 **Plan:** Use flash-moe directly as an alternative backend, not hack SSD streaming into llama.cpp. llama.cpp's `ggml_mul_mat_id` assumes all expert weights resident in one contiguous tensor — changing that is deep surgery across ggml, the Metal backend, and the model loader. Flash-moe is a working engine. Mesh-llm spawns it like it spawns llama-server — process management + HTTP wrapper.
 

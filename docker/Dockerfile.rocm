@@ -11,7 +11,7 @@
 #           -p 9337:9337 -p 3131:3131 -v ~/.models:/root/.models \
 #           -e APP_MODE=worker -e MESH_HEADLESS=1 mesh-llm:rocm  # API-only
 #
-# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-rocm,llama-server-rocm,llama-moe-split}
+# Binaries: /usr/local/lib/mesh-llm/bin/{rpc-server-rocm,llama-server-rocm}
 
 # syntax=docker/dockerfile:1.7
 
@@ -109,11 +109,10 @@ RUN cd llama.cpp && \
       -DGGML_VULKAN=OFF \
       -DGGML_METAL=OFF \
       -DGGML_NATIVE=OFF && \
-    cmake --build build --target rpc-server llama-server llama-moe-split && \
+    cmake --build build --target rpc-server llama-server && \
     mkdir -p /out && \
     cp build/bin/rpc-server /out/rpc-server-rocm && \
-    cp build/bin/llama-server /out/llama-server-rocm && \
-    cp build/bin/llama-moe-split /out/llama-moe-split
+    cp build/bin/llama-server /out/llama-server-rocm
 
 FROM rocm/dev-ubuntu-24.04:7.0 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -122,7 +121,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
 COPY --from=llama-builder-rocm /out/rpc-server-rocm /usr/local/lib/mesh-llm/bin/rpc-server-rocm
 COPY --from=llama-builder-rocm /out/llama-server-rocm /usr/local/lib/mesh-llm/bin/llama-server-rocm
-COPY --from=llama-builder-rocm /out/llama-moe-split /usr/local/lib/mesh-llm/bin/llama-moe-split
 COPY --from=llama-builder-rocm /tmp/llama-sha.txt /usr/local/share/mesh-llm/llama-revision.txt
 LABEL io.mesh-llm.llama-revision-file="/usr/local/share/mesh-llm/llama-revision.txt"
 COPY docker/entrypoint.sh /entrypoint.sh

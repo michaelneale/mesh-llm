@@ -178,13 +178,11 @@ bundle output="/tmp/mesh-bundle.tar.gz":
     cp {{ mesh_bin }} "$BUNDLE/"
     cp {{ build_dir }}/bin/rpc-server "$BUNDLE/$rpc_name"
     cp {{ build_dir }}/bin/llama-server "$BUNDLE/$llama_name"
-    cp {{ build_dir }}/bin/llama-moe-analyze "$BUNDLE/"
-    cp {{ build_dir }}/bin/llama-moe-split "$BUNDLE/"
     for lib in {{ build_dir }}/bin/*.dylib; do
         cp "$lib" "$BUNDLE/" 2>/dev/null || true
     done
     # Fix rpaths for portability
-    for bin in "$BUNDLE/mesh-llm" "$BUNDLE/$rpc_name" "$BUNDLE/$llama_name" "$BUNDLE/llama-moe-analyze" "$BUNDLE/llama-moe-split"; do
+    for bin in "$BUNDLE/mesh-llm" "$BUNDLE/$rpc_name" "$BUNDLE/$llama_name"; do
         [ -f "$bin" ] || continue
         install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
     done
@@ -333,14 +331,6 @@ test port="9337":
 # Optional SDK compatibility smoke: 2 mesh nodes + 1 lite client.
 compat-smoke model mmproj="":
     scripts/ci-compat-smoke.sh "target/release/mesh-llm" "{{ build_dir }}/bin" "{{ model }}" "{{ mmproj }}"
-
-# Direct splitter smoke for the MoE families we actively use.
-moe-split-smoke families="all":
-    scripts/moe-split-smoke.sh "{{ build_dir }}/bin" {{ families }}
-
-# Validate an already-running MoE deployment end-to-end through one API/console pair.
-moe-live-smoke model api_url console_url expected_nodes="2" timeout="120":
-    scripts/moe-live-smoke.sh --expected-nodes {{ expected_nodes }} --timeout {{ timeout }} "{{ model }}" "{{ api_url }}" "{{ console_url }}"
 
 # Benchmark sticky-only vs prefix-only affinity on a 3-node local mesh.
 bench-prefix-affinity:

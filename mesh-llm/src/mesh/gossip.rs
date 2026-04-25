@@ -373,7 +373,7 @@ impl Node {
         addr: EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
-        let imported_ranking = import_remote_moe_rankings(&ann.served_model_descriptors);
+        let imported_ranking = false;
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -451,9 +451,6 @@ impl Node {
             existing.available_models.clear();
             existing.requested_models = ann.requested_models.clone();
             existing.last_seen = now;
-            if recovered {
-                existing.moe_recovered_at = Some(now);
-            }
             existing.owner_attestation = ann.owner_attestation.clone();
             existing.owner_summary = owner_summary.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
@@ -519,10 +516,7 @@ impl Node {
             ann.available_models,
             state.peers.len() + 1
         );
-        let mut peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
-        if recovered {
-            peer.moe_recovered_at = Some(now);
-        }
+        let peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
         state.peers.insert(id, peer.clone());
         let count = state.peers.len();
         drop(state);
@@ -551,7 +545,7 @@ impl Node {
         addr: &EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
-        let imported_ranking = import_remote_moe_rankings(&ann.served_model_descriptors);
+        let imported_ranking = false;
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),

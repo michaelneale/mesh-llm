@@ -16,44 +16,6 @@ pub struct HuggingFaceModelIdentity {
     pub local_file_name: String,
 }
 
-impl HuggingFaceModelIdentity {
-    pub fn distribution_ref(&self) -> String {
-        format!(
-            "{}@{}/{}",
-            self.repo_id,
-            self.revision,
-            distribution_ref_file(&self.file)
-        )
-    }
-}
-
-fn distribution_ref_file(file: &str) -> String {
-    let path = Path::new(file);
-    let file_name = path.file_name().and_then(|value| value.to_str());
-    let Some(file_name) = file_name else {
-        return file.to_string();
-    };
-    let Some(stem) = file_name.strip_suffix(".gguf") else {
-        return file.to_string();
-    };
-    let Some((prefix, suffix)) = stem.rsplit_once("-of-") else {
-        return file.to_string();
-    };
-    let Some((prefix, shard_no)) = prefix.rsplit_once('-') else {
-        return file.to_string();
-    };
-    if shard_no.len() != 5
-        || suffix.len() != 5
-        || !shard_no.chars().all(|ch| ch.is_ascii_digit())
-        || !suffix.chars().all(|ch| ch.is_ascii_digit())
-    {
-        return file.to_string();
-    }
-    path.with_file_name(prefix)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
 fn hf_hub_cache_override() -> Option<PathBuf> {
     let path = std::env::var("HF_HUB_CACHE").ok()?;
     let trimmed = path.trim();
@@ -905,55 +867,6 @@ mod tests {
         restore_env("HF_HUB_CACHE", prev_hub_cache);
         restore_env("HF_HOME", prev_hf_home);
         restore_env("XDG_CACHE_HOME", prev_xdg);
-    }
-
-    #[test]
-    fn distribution_ref_preserves_unsplit_exact_file() {
-        let identity = HuggingFaceModelIdentity {
-            repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF".to_string(),
-            revision: "deadbeef".to_string(),
-            file: "BF16/Qwen3.6-35B-A3B-BF16.gguf".to_string(),
-            canonical_ref: "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16.gguf"
-                .to_string(),
-            local_file_name: "Qwen3.6-35B-A3B-BF16.gguf".to_string(),
-        };
-
-        assert_eq!(
-            identity.distribution_ref(),
-            "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16.gguf"
-        );
-    }
-
-    #[test]
-    fn distribution_ref_strips_split_suffix_for_split_gguf() {
-        let identity = HuggingFaceModelIdentity {
-            repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF".to_string(),
-            revision: "deadbeef".to_string(),
-            file: "BF16/Qwen3.6-35B-A3B-BF16-00001-of-00002.gguf".to_string(),
-            canonical_ref: "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16-00001-of-00002.gguf".to_string(),
-            local_file_name: "Qwen3.6-35B-A3B-BF16-00001-of-00002.gguf".to_string(),
-        };
-
-        assert_eq!(
-            identity.distribution_ref(),
-            "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16"
-        );
-    }
-
-    #[test]
-    fn distribution_ref_strips_non_first_split_suffix_for_split_gguf() {
-        let identity = HuggingFaceModelIdentity {
-            repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF".to_string(),
-            revision: "deadbeef".to_string(),
-            file: "BF16/Qwen3.6-35B-A3B-BF16-00002-of-00002.gguf".to_string(),
-            canonical_ref: "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16-00002-of-00002.gguf".to_string(),
-            local_file_name: "Qwen3.6-35B-A3B-BF16-00002-of-00002.gguf".to_string(),
-        };
-
-        assert_eq!(
-            identity.distribution_ref(),
-            "unsloth/Qwen3.6-35B-A3B-GGUF@deadbeef/BF16/Qwen3.6-35B-A3B-BF16"
-        );
     }
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {

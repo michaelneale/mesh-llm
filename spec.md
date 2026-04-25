@@ -341,4 +341,3 @@ This ensures the new logic is strictly opt-in based on data availability and nev
 - Does not change the `--ctx-size` / `--parallel` config file override path. Explicit user values always win.
 - Does not attempt to dynamically resize context or slots at runtime (that would require llama-server restart).
 - Does not model CPU-offload memory separately. CPU RAM is ignored for now; a future improvement could count it.
-- Does not change MoE expert-shard launch, which has separate resource accounting.

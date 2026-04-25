@@ -134,12 +134,12 @@
             <div class="feature">
                 <div class="feature-icon">⚡</div>
                 <h3>Automatic distribution</h3>
-                <p>Model fits on one machine? Solo mode, full speed. Too big? Dense models pipeline-split by layers across nodes. MoE models (Qwen3, GLM, Mixtral, DeepSeek) split by experts — auto-detected from GGUF metadata, zero config. Splits are latency-aware — low-RTT peers preferred for tighter coordination.</p>
+                <p>Model fits on one machine? Solo mode, full speed. Too big? Dense models pipeline-split by layers across nodes. Splits are latency-aware — low-RTT peers preferred for tighter coordination.</p>
             </div>
             <div class="feature">
                 <div class="feature-icon">🧩</div>
-                <h3>MoE expert sharding</h3>
-                <p>Each node gets the full trunk plus an overlapping expert shard. Critical experts replicated everywhere, remaining distributed uniquely. Each node runs its own llama-server — zero cross-node traffic during inference.</p>
+                <h3>Model-aware serving</h3>
+                <p>Nodes advertise model metadata and capabilities through gossip so the mesh can keep routing decisions aligned with what is actually running.</p>
             </div>
             <div class="feature">
                 <div class="feature-icon">🔀</div>
