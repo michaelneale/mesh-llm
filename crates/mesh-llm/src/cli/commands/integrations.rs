@@ -400,7 +400,8 @@ pub(crate) async fn run_pi(model: Option<String>, port: u16) -> Result<()> {
     let models_path = pi_agent_dir.join("models.json");
     let mut config = if models_path.exists() {
         let content = std::fs::read_to_string(&models_path)?;
-        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
+        serde_json::from_str::<serde_json::Value>(&content)
+            .unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
@@ -416,15 +417,18 @@ pub(crate) async fn run_pi(model: Option<String>, port: u16) -> Result<()> {
         model_entries.push(serde_json::json!({ "id": &chosen }));
     }
 
-    providers.as_object_mut().expect("providers must be an object").insert(
-        "mesh".to_string(),
-        serde_json::json!({
-            "api": "openai-completions",
-            "apiKey": "mesh",
-            "baseUrl": &base_url,
-            "models": model_entries
-        }),
-    );
+    providers
+        .as_object_mut()
+        .expect("providers must be an object")
+        .insert(
+            "mesh".to_string(),
+            serde_json::json!({
+                "api": "openai-completions",
+                "apiKey": "mesh",
+                "baseUrl": &base_url,
+                "models": model_entries
+            }),
+        );
 
     std::fs::write(&models_path, serde_json::to_string_pretty(&config)?)?;
     eprintln!("✅ Wrote mesh provider to {}", models_path.display());
