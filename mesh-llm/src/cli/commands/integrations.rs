@@ -456,6 +456,42 @@ pub(crate) async fn run_pi(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn run_hermes(model: Option<String>, port: u16) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let (_models, chosen, mut mesh_child) = runtime::check_mesh(&client, port, &model).await?;
+
+    let base_url = format!("http://localhost:{port}/v1");
+
+    // Hermes is OpenAI-compatible — just pass provider, base URL, and model as CLI flags.
+    // No config file writing needed.
+    eprintln!("🚀 Launching Hermes Agent with {chosen} → {base_url}\n");
+    let status = std::process::Command::new("hermes")
+        .args([
+            "--provider",
+            "custom",
+            "--base-url",
+            &base_url,
+            "--model",
+            &chosen,
+        ])
+        .env("OPENAI_API_KEY", "mesh-llm")
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("hermes exited with {s}"),
+        Err(_) => {
+            eprintln!("hermes not found in PATH.");
+            eprintln!("Install: pip install hermes-agent");
+            eprintln!("Or run manually:");
+            eprintln!("  hermes --provider custom --base-url {base_url} --model {chosen}");
+        }
+    }
+    cleanup_mesh_child(&mut mesh_child);
+    Ok(())
+}
+
 pub(crate) async fn run_opencode(model: Option<String>, host: &str, write: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
