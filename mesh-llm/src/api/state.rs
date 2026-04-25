@@ -143,6 +143,8 @@ pub(super) struct ApiInner {
     /// `/api/status` and CLI reporting. Peers infer yield state from the empty
     /// `serving_models` / `hosted_models` gossip, not from this field.
     pub(super) yield_state: Option<YieldReason>,
+    /// Unix-epoch millisecond timestamp of when the current yield started.
+    pub(super) yielded_at: Option<u64>,
     pub(super) runtime_control: Option<tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>>,
     pub(super) local_processes: Vec<RuntimeProcessPayload>,
     pub(super) sse_clients: Vec<tokio::sync::mpsc::UnboundedSender<String>>,

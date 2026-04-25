@@ -145,7 +145,8 @@ async fn pressure_yield_loop(
 
 /// Inner form of the pressure yield loop that accepts an injected probe and
 /// poll interval. Extracted so tests can drive the state machine with a
-/// scripted probe instead of waiting on wall clock and real OS state.
+/// scripted probe and a custom polling cadence instead of depending on real
+/// OS state.
 async fn pressure_yield_loop_with(
     control_tx: tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
     probe: Box<dyn crate::system::pressure::PressureProbe>,
@@ -213,8 +214,23 @@ async fn pressure_yield_loop_with(
                 }
             }
             Pressure::Unknown => {
-                // Fail-open: do not change state on broken probes.
+                // Fail-open: if the probe breaks while we're yielded, resume
+                // so a broken probe can't keep the node offline silently.
                 pressured_since = None;
+                if we_yielded {
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    if control_tx
+                        .send(api::RuntimeControlRequest::Resume {
+                            reason: api::YieldReason::MemoryPressure,
+                            resp: tx,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let _ = rx.await;
+                    we_yielded = false;
+                }
             }
         }
     }

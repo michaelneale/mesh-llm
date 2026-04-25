@@ -181,6 +181,9 @@ pub(super) struct StatusPayload {
     /// `"memory_pressure"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) yielded: Option<&'static str>,
+    /// Unix-epoch millisecond timestamp of when the current yield started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) yielded_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -543,6 +546,7 @@ mod tests {
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: None,
             yielded: None,
+            yielded_at: None,
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -590,6 +594,7 @@ mod tests {
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: None,
             yielded: None,
+            yielded_at: None,
         };
 
         let json = serde_json::to_string(&status).expect("serialization failed");
@@ -644,6 +649,7 @@ mod tests {
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: None,
             yielded: None,
+            yielded_at: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");
@@ -693,6 +699,7 @@ mod tests {
             routing_metrics: metrics::RoutingMetricsStatusSnapshot::default(),
             first_joined_mesh_ts: None,
             yielded: None,
+            yielded_at: None,
         };
 
         let json = serde_json::to_value(&status).expect("serialization failed");

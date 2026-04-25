@@ -253,6 +253,7 @@ impl MeshApi {
                 nostr_discovery: false,
                 publication_state: state::PublicationState::Private,
                 yield_state: None,
+                yielded_at: None,
                 runtime_control: None,
                 local_processes: Vec::new(),
                 sse_clients: Vec::new(),
@@ -381,7 +382,14 @@ impl MeshApi {
     /// Update the recorded yield state. `None` = serving normally.
     pub async fn set_yield_state(&self, state: Option<YieldReason>) {
         {
-            self.inner.lock().await.yield_state = state;
+            let mut inner = self.inner.lock().await;
+            inner.yield_state = state;
+            inner.yielded_at = state.map(|_| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            });
         }
         self.push_status().await;
     }
@@ -954,9 +962,9 @@ impl MeshApi {
             )
         }; // inner lock dropped here
 
-        let yielded = {
+        let (yielded, yielded_at) = {
             let inner = self.inner.lock().await;
-            inner.yield_state.map(|r| r.as_str())
+            (inner.yield_state.map(|r| r.as_str()), inner.yielded_at)
         };
 
         let local_instances: Vec<LocalInstance> = {
@@ -1141,6 +1149,7 @@ impl MeshApi {
             routing_metrics,
             first_joined_mesh_ts: node.first_joined_mesh_ts().await,
             yielded,
+            yielded_at,
         }
     }
 
