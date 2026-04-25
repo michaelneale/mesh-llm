@@ -78,7 +78,7 @@ async fn record_first_joined_mesh_ts(node: &mesh::Node) {
 
 /// Return true if any model we are currently serving (either via election or
 /// a runtime-loaded local process) is not hosted by any other peer. Used as a
-/// safety guard against presence-driven yield stranding a model: better to
+/// safety guard against pressure-driven yield stranding a model: better to
 /// stay up and serve a slightly slower local experience than to take the
 /// model offline for the whole mesh.
 async fn is_last_host_for_any_local_model(
@@ -116,70 +116,65 @@ fn last_host_for_any(local_models: &[String], peers: &[mesh::PeerInfo]) -> bool 
     false
 }
 
-/// Presence-driven yield loop. Polls the platform probe every 5s; when the
-/// user has been active for longer than `active_grace`, asks the runtime to
-/// yield. When the machine has been idle for longer than `idle_threshold`,
-/// asks the runtime to resume.
+/// Pressure-driven yield loop. Polls the platform memory-pressure probe
+/// every 5s; when the system has been under pressure for longer than
+/// `pressure_grace`, asks the runtime to yield. When pressure returns to
+/// normal, asks the runtime to resume.
 ///
-/// - `Presence::Unknown` is fail-open: we keep serving (never auto-yield).
+/// - `Pressure::Unknown` is fail-open: we keep serving (never auto-yield).
 /// - A manual `mesh-llm yield` still takes effect, and a manual `mesh-llm
-///   resume` brings us back online even while the user is technically active
-///   (we just won't re-trigger auto-yield until they become idle + active
-///   again).
+///   resume` brings us back online even while pressure is elevated (we just
+///   won't re-trigger auto-yield until pressure clears and rises again).
 /// - Stickiness of a manual yield is enforced by the runtime, not the probe
-///   loop: the runtime refuses a presence-triggered `Resume` when the prior
+///   loop: the runtime refuses a pressure-triggered `Resume` when the prior
 ///   yield was issued manually. The loop is free to keep sending Yield /
 ///   Resume based purely on what it sees.
-async fn presence_yield_loop(
+async fn pressure_yield_loop(
     control_tx: tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
-    idle_threshold: std::time::Duration,
-    active_grace: std::time::Duration,
+    pressure_grace: std::time::Duration,
 ) {
-    let probe = crate::system::presence::default_probe();
-    presence_yield_loop_with(
+    let probe = crate::system::pressure::default_probe();
+    pressure_yield_loop_with(
         control_tx,
         probe,
-        idle_threshold,
-        active_grace,
+        pressure_grace,
         std::time::Duration::from_secs(5),
     )
     .await
 }
 
-/// Inner form of the presence yield loop that accepts an injected probe and
+/// Inner form of the pressure yield loop that accepts an injected probe and
 /// poll interval. Extracted so tests can drive the state machine with a
-/// scripted probe and `tokio::time::pause()` instead of waiting on wall
-/// clock and real OS input.
-async fn presence_yield_loop_with(
+/// scripted probe instead of waiting on wall clock and real OS state.
+async fn pressure_yield_loop_with(
     control_tx: tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
-    probe: Box<dyn crate::system::presence::PresenceProbe>,
-    idle_threshold: std::time::Duration,
-    active_grace: std::time::Duration,
+    probe: Box<dyn crate::system::pressure::PressureProbe>,
+    pressure_grace: std::time::Duration,
     poll_interval: std::time::Duration,
 ) {
-    use crate::system::presence::Presence;
+    use crate::system::pressure::Pressure;
 
-    // Track how long the user has been continuously active. Only yield once
-    // this exceeds `active_grace` — this stops a stray mouse jiggle from
-    // thrashing the serving state.
-    let mut active_since: Option<std::time::Instant> = None;
-    // Whether we believe we are currently in a presence-yielded state. Flipped
+    // Track how long the system has been continuously under pressure. Only
+    // yield once this exceeds `pressure_grace` — this stops a brief spike
+    // from thrashing the serving state.
+    let mut pressured_since: Option<std::time::Instant> = None;
+    // Whether we believe we are currently in a pressure-yielded state. Flipped
     // only after the runtime confirms the request — otherwise a manual yield
     // in flight would cause us to falsely "own" the yield and later resume it.
     let mut we_yielded = false;
 
     loop {
         tokio::time::sleep(poll_interval).await;
-        let presence_state = probe.sample(idle_threshold);
+        let state = probe.sample();
         let now = std::time::Instant::now();
-        match presence_state {
-            Presence::Active => {
-                let started = *active_since.get_or_insert(now);
-                if !we_yielded && now.duration_since(started) >= active_grace {
+        match state {
+            Pressure::Pressured => {
+                let started = *pressured_since.get_or_insert(now);
+                if !we_yielded && now.duration_since(started) >= pressure_grace {
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     if control_tx
                         .send(api::RuntimeControlRequest::Yield {
-                            reason: api::YieldReason::UserActive,
+                            reason: api::YieldReason::MemoryPressure,
                             resp: tx,
                         })
                         .is_err()
@@ -197,13 +192,13 @@ async fn presence_yield_loop_with(
                     }
                 }
             }
-            Presence::Away => {
-                active_since = None;
+            Pressure::Normal => {
+                pressured_since = None;
                 if we_yielded {
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     if control_tx
                         .send(api::RuntimeControlRequest::Resume {
-                            reason: api::YieldReason::UserActive,
+                            reason: api::YieldReason::MemoryPressure,
                             resp: tx,
                         })
                         .is_err()
@@ -217,9 +212,9 @@ async fn presence_yield_loop_with(
                     we_yielded = false;
                 }
             }
-            Presence::Unknown => {
+            Pressure::Unknown => {
                 // Fail-open: do not change state on broken probes.
-                active_since = None;
+                pressured_since = None;
             }
         }
     }
@@ -2041,7 +2036,7 @@ async fn run_auto(
     // restart them via the existing Load path. `None` = not yielded.
     //
     // Also remember *who* initiated the yield. Manual yields are sticky: the
-    // presence loop is not allowed to resume a manually-yielded node, since
+    // pressure loop is not allowed to resume a manually-yielded node, since
     // that would clobber the user's intent. Only a manual `mesh-llm resume`
     // (or API /api/resume) clears a Manual yield.
     let mut yielded_specs: Option<Vec<String>> = None;
@@ -2485,16 +2480,16 @@ async fn run_auto(
         None
     };
 
-    // Presence-driven yield controller. Cheap polling task: every 5s asks the
-    // platform probe whether the user is active, and flips through control_tx
-    // to Yield/Resume. Gated behind --yield-on-presence; on unsupported
-    // platforms (Linux etc.) the probe returns Unknown and nothing yields.
-    let presence_handle = if cli.yield_on_presence && !is_client {
-        let control_tx_presence = control_tx.clone();
-        let idle_threshold = std::time::Duration::from_secs(cli.yield_idle_secs);
-        let active_grace = std::time::Duration::from_secs(cli.yield_active_grace);
+    // Pressure-driven yield controller. Cheap polling task: every 5s asks the
+    // platform probe whether the system is under memory pressure, and flips
+    // through control_tx to Yield/Resume. Gated behind --yield-on-pressure;
+    // on unsupported platforms (Linux etc.) the probe returns Unknown and
+    // nothing yields.
+    let pressure_handle = if cli.yield_on_pressure && !is_client {
+        let control_tx_pressure = control_tx.clone();
+        let pressure_grace = std::time::Duration::from_secs(cli.yield_pressure_grace);
         Some(tokio::spawn(async move {
-            presence_yield_loop(control_tx_presence, idle_threshold, active_grace).await;
+            pressure_yield_loop(control_tx_pressure, pressure_grace).await;
         }))
     } else {
         None
@@ -2629,7 +2624,7 @@ async fn run_auto(
                     api::RuntimeControlRequest::Yield { reason, resp } => {
                         let result = if yielded_specs.is_some() {
                             Err(anyhow::anyhow!("already yielded"))
-                        } else if reason == api::YieldReason::UserActive
+                        } else if reason == api::YieldReason::MemoryPressure
                             && is_last_host_for_any_local_model(
                                 &node,
                                 &managed_models,
@@ -2637,11 +2632,11 @@ async fn run_auto(
                             )
                             .await
                         {
-                            // Auto-yield from presence never strands a model —
-                            // if we're the only peer hosting any of our models,
-                            // stay up. Manual `mesh-llm yield` bypasses this
-                            // guard (the user explicitly asked for the machine
-                            // back).
+                            // Auto-yield from memory pressure never strands a
+                            // model — if we're the only peer hosting any of our
+                            // models, stay up. Manual `mesh-llm yield` bypasses
+                            // this guard (the user explicitly asked for the
+                            // machine back).
                             Err(anyhow::anyhow!(
                                 "refusing auto-yield: this node is the last host for one or more models"
                             ))
@@ -2703,14 +2698,14 @@ async fn run_auto(
                         let _ = resp.send(result);
                     }
                     api::RuntimeControlRequest::Resume { reason, resp } => {
-                        // Stickiness: a presence-triggered resume cannot undo
+                        // Stickiness: a pressure-triggered resume cannot undo
                         // a manual yield. The user explicitly took their
                         // machine back; only a manual resume puts it back in
                         // service.
                         let blocked_by_manual = matches!(
                             (reason, yield_owner),
                             (
-                                api::YieldReason::UserActive,
+                                api::YieldReason::MemoryPressure,
                                 Some(api::YieldReason::Manual),
                             )
                         );
@@ -2818,7 +2813,7 @@ async fn run_auto(
     if let Some(handle) = nostr_publisher {
         handle.abort();
     }
-    if let Some(handle) = presence_handle {
+    if let Some(handle) = pressure_handle {
         handle.abort();
     }
 
@@ -4473,17 +4468,17 @@ mod tests {
         assert!(!last_host_for_any(&local, &[peer]));
     }
 
-    // ---- presence_yield_loop_with ------------------------------------------
+    // ---- pressure_yield_loop_with -------------------------------------------
 
     /// Scripted probe that returns a sequence of states, one per call, and
     /// repeats the last state forever once the script is exhausted.
     struct ScriptedProbe {
-        script: std::sync::Mutex<std::vec::IntoIter<crate::system::presence::Presence>>,
-        last: std::sync::Mutex<crate::system::presence::Presence>,
+        script: std::sync::Mutex<std::vec::IntoIter<crate::system::pressure::Pressure>>,
+        last: std::sync::Mutex<crate::system::pressure::Pressure>,
     }
 
     impl ScriptedProbe {
-        fn new(states: Vec<crate::system::presence::Presence>) -> Self {
+        fn new(states: Vec<crate::system::pressure::Pressure>) -> Self {
             let last = *states.last().expect("non-empty script");
             Self {
                 script: std::sync::Mutex::new(states.into_iter()),
@@ -4492,11 +4487,8 @@ mod tests {
         }
     }
 
-    impl crate::system::presence::PresenceProbe for ScriptedProbe {
-        fn sample(
-            &self,
-            _idle_threshold: std::time::Duration,
-        ) -> crate::system::presence::Presence {
+    impl crate::system::pressure::PressureProbe for ScriptedProbe {
+        fn sample(&self) -> crate::system::pressure::Pressure {
             let mut iter = self.script.lock().unwrap();
             match iter.next() {
                 Some(s) => {
@@ -4509,16 +4501,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn presence_loop_yields_after_grace_then_resumes_on_away() {
-        use crate::system::presence::Presence;
+    async fn pressure_loop_yields_after_grace_then_resumes_on_normal() {
+        use crate::system::pressure::Pressure;
 
-        // Script: 3 Active samples (exceeds active_grace=2 ticks), then Away.
-        // After that the probe returns Away forever.
+        // Script: 3 Pressured samples (exceeds pressure_grace of ~2 ticks),
+        // then Normal. After that the probe returns Normal forever.
         let probe = Box::new(ScriptedProbe::new(vec![
-            Presence::Active,
-            Presence::Active,
-            Presence::Active,
-            Presence::Away,
+            Pressure::Pressured,
+            Pressure::Pressured,
+            Pressure::Pressured,
+            Pressure::Normal,
         ]));
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4546,13 +4538,11 @@ mod tests {
         });
 
         let loop_handle = tokio::spawn(async move {
-            // poll_interval 10ms, active_grace 20ms → need ~3 consecutive
-            // Active samples before the loop yields. idle_threshold is only
-            // used by the probe itself, which is scripted here.
-            presence_yield_loop_with(
+            // poll_interval 10ms, pressure_grace 20ms → need ~3 consecutive
+            // Pressured samples before the loop yields.
+            pressure_yield_loop_with(
                 tx,
                 probe,
-                std::time::Duration::from_millis(100),
                 std::time::Duration::from_millis(20),
                 std::time::Duration::from_millis(10),
             )
@@ -4568,24 +4558,24 @@ mod tests {
         assert_eq!(
             seen,
             vec!["yield", "resume"],
-            "presence loop should yield then resume"
+            "pressure loop should yield then resume"
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn presence_loop_does_not_resume_when_yield_was_refused() {
-        use crate::system::presence::Presence;
+    async fn pressure_loop_does_not_resume_when_yield_was_refused() {
+        use crate::system::pressure::Pressure;
 
-        // User appears active for long enough to trigger a yield, then goes
-        // away. If the runtime refuses the Yield, the loop must NOT later
-        // issue a Resume on its own — that was the stickiness bug.
+        // System goes under pressure long enough to trigger a yield, then
+        // pressure clears. If the runtime refuses the Yield, the loop must
+        // NOT later issue a Resume on its own.
         let probe = Box::new(ScriptedProbe::new(vec![
-            Presence::Active,
-            Presence::Active,
-            Presence::Active,
-            Presence::Away,
-            Presence::Away,
-            Presence::Away,
+            Pressure::Pressured,
+            Pressure::Pressured,
+            Pressure::Pressured,
+            Pressure::Normal,
+            Pressure::Normal,
+            Pressure::Normal,
         ]));
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4612,17 +4602,16 @@ mod tests {
         });
 
         let loop_handle = tokio::spawn(async move {
-            presence_yield_loop_with(
+            pressure_yield_loop_with(
                 tx,
                 probe,
-                std::time::Duration::from_millis(100),
                 std::time::Duration::from_millis(20),
                 std::time::Duration::from_millis(10),
             )
             .await;
         });
 
-        // Let the loop transition Active → Away with plenty of margin.
+        // Let the loop transition Pressured → Normal with plenty of margin.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         loop_handle.abort();
         collector.abort();

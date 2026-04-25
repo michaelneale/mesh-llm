@@ -403,25 +403,23 @@ pub(crate) struct Cli {
     #[arg(skip)]
     pub(crate) nostr_discovery: bool,
 
-    /// Yield local model serving while the user is actively using this machine.
+    /// Yield local model serving when the system is under memory pressure.
     ///
-    /// Only effective on macOS and Windows. Stops all local model serving when
-    /// input (keyboard/mouse) has been seen within `--yield-active-grace`
-    /// seconds, and resumes when the machine has been idle for
-    /// `--yield-idle-secs`.
+    /// Only effective on macOS (reads `vm.memory_pressure` via sysctl). When
+    /// the kernel signals memory pressure (warn or critical), mesh-llm
+    /// unloads its models to free memory for whatever else needs it, and
+    /// reloads them once pressure returns to normal.
+    ///
+    /// On Apple Silicon unified memory this covers both CPU and GPU memory
+    /// contention. llama-server allocates its memory up-front, so pressure
+    /// rising means something *else* is competing — not our own inference.
     #[arg(long)]
-    pub(crate) yield_on_presence: bool,
+    pub(crate) yield_on_pressure: bool,
 
-    /// Seconds of idle time before the node auto-resumes serving after a
-    /// presence-triggered yield. Default: 120.
-    #[arg(long, default_value = "120")]
-    pub(crate) yield_idle_secs: u64,
-
-    /// Seconds of sustained user input before yielding. Short enough to
-    /// protect the user from lag, long enough to ignore a mouse jiggle.
-    /// Default: 15.
-    #[arg(long, default_value = "15")]
-    pub(crate) yield_active_grace: u64,
+    /// Seconds of sustained memory pressure before the node yields. Prevents
+    /// a brief pressure spike from thrashing the serving state. Default: 30.
+    #[arg(long, default_value = "30")]
+    pub(crate) yield_pressure_grace: u64,
 }
 
 #[derive(Subcommand, Debug)]

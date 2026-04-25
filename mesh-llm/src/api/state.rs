@@ -47,7 +47,7 @@ pub enum RuntimeControlRequest {
     },
     /// Stop serving all startup-configured models and release their resources.
     /// The node stays in the mesh but advertises no hosted models, so peers
-    /// route around it naturally. Used by the presence-driven yield controller
+    /// route around it naturally. Used by the pressure-driven yield controller
     /// and by the `mesh-llm yield` CLI.
     Yield {
         reason: YieldReason,
@@ -57,7 +57,7 @@ pub enum RuntimeControlRequest {
     /// that were torn down. No-op if the node is not yielded.
     ///
     /// `reason` identifies the caller: `Manual` is the CLI / API path and can
-    /// resume any prior yield; `UserActive` is the presence loop and is
+    /// resume any prior yield; `MemoryPressure` is the pressure loop and is
     /// refused when the current yield was issued manually (manual-yield
     /// stickiness).
     Resume {
@@ -72,19 +72,19 @@ pub enum RuntimeControlRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum YieldReason {
-    /// User requested via `mesh-llm yield` or the console. Sticky: a
-    /// subsequent presence probe will not auto-resume until the user issues
+    /// User requested via `mesh-llm yield` or the console. Sticky: the
+    /// pressure probe will not auto-resume until the user issues
     /// `mesh-llm resume`.
     Manual,
-    /// Presence probe saw user input within the active-grace window.
-    UserActive,
+    /// Pressure probe detected sustained system memory pressure.
+    MemoryPressure,
 }
 
 impl YieldReason {
     pub fn as_str(self) -> &'static str {
         match self {
             YieldReason::Manual => "manual",
-            YieldReason::UserActive => "user_active",
+            YieldReason::MemoryPressure => "memory_pressure",
         }
     }
 }
@@ -139,7 +139,7 @@ pub(super) struct ApiInner {
     pub(super) nostr_relays: Vec<String>,
     pub(super) nostr_discovery: bool,
     pub(super) publication_state: PublicationState,
-    /// Current yield state (None = serving normally). Recorded locally for
+    /// Current yield state (`None` = serving normally). Recorded locally for
     /// `/api/status` and CLI reporting. Peers infer yield state from the empty
     /// `serving_models` / `hosted_models` gossip, not from this field.
     pub(super) yield_state: Option<YieldReason>,

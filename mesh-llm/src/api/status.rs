@@ -176,9 +176,9 @@ pub(super) struct StatusPayload {
     pub(super) routing_metrics: metrics::RoutingMetricsStatusSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) first_joined_mesh_ts: Option<u64>,
-    /// Present when the node has yielded to local user activity (or manual
+    /// Present when the node has yielded due to memory pressure (or manual
     /// `mesh-llm yield`). Absent = serving normally. Reason is `"manual"` or
-    /// `"user_active"`.
+    /// `"memory_pressure"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) yielded: Option<&'static str>,
 }
