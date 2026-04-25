@@ -382,6 +382,76 @@ pub(crate) async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
+pub(crate) async fn run_pi(model: Option<String>, port: u16) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let (_models, chosen, mut mesh_child) = runtime::check_mesh(&client, port, &model).await?;
+
+    let base_url = format!("http://localhost:{port}/v1");
+
+    // Write/merge mesh provider into ~/.pi/agent/models.json
+    let pi_agent_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".pi")
+        .join("agent");
+    std::fs::create_dir_all(&pi_agent_dir)?;
+
+    let models_path = pi_agent_dir.join("models.json");
+    let mut config = if models_path.exists() {
+        let content = std::fs::read_to_string(&models_path)?;
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let providers = config
+        .as_object_mut()
+        .expect("config must be an object")
+        .entry("providers".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+
+    let mut model_entries = vec![serde_json::json!({ "id": "auto" })];
+    if model.is_some() && chosen != "auto" {
+        model_entries.push(serde_json::json!({ "id": &chosen }));
+    }
+
+    providers.as_object_mut().expect("providers must be an object").insert(
+        "mesh".to_string(),
+        serde_json::json!({
+            "api": "openai-completions",
+            "apiKey": "mesh",
+            "baseUrl": &base_url,
+            "models": model_entries
+        }),
+    );
+
+    std::fs::write(&models_path, serde_json::to_string_pretty(&config)?)?;
+    eprintln!("✅ Wrote mesh provider to {}", models_path.display());
+
+    let model_arg = if model.is_some() {
+        format!("mesh/{chosen}")
+    } else {
+        "mesh/auto".to_string()
+    };
+    eprintln!("🚀 Launching pi with {chosen} → {base_url}\n");
+    let status = std::process::Command::new("pi")
+        .args(["--model", &model_arg])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("pi exited with {s}"),
+        Err(_) => {
+            eprintln!("pi not found in PATH.");
+            eprintln!("Install: npm install -g @mariozechner/pi-coding-agent");
+            eprintln!("Or run manually:");
+            eprintln!("  pi --model {model_arg}");
+        }
+    }
+    cleanup_mesh_child(&mut mesh_child);
+    Ok(())
+}
+
 pub(crate) async fn run_opencode(model: Option<String>, host: &str, write: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
