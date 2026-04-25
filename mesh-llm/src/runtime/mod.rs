@@ -1160,11 +1160,11 @@ pub(crate) async fn run() -> Result<()> {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
     };
-    let rpc_binary_flavor = if config.gpu.assignment == plugin::GpuAssignment::Pinned {
-        launch::resolve_binary_flavor(&bin_dir, "rpc-server", cli.llama_flavor)?
-    } else {
-        None
-    };
+    let rpc_binary_flavor =
+        launch::resolve_binary_flavor(&bin_dir, "rpc-server", cli.llama_flavor)?;
+    if cli.llama_flavor.is_none() {
+        cli.llama_flavor = rpc_binary_flavor;
+    }
     preflight_config_owned_startup_models(
         &config,
         &startup_specs,

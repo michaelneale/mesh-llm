@@ -601,6 +601,12 @@ function Copy-DevRuntimeBinaries {
     $sourceBinDir = Join-Path $BuildDir "bin"
     $targetDir = Join-Path $RepoRoot "target\release"
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    Remove-Item -LiteralPath (Join-Path $targetDir "rpc-server.exe") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $targetDir "llama-server.exe") -Force -ErrorAction SilentlyContinue
+    foreach ($pattern in @("rpc-server-*.exe", "llama-server-*.exe")) {
+        Get-ChildItem -Path (Join-Path $targetDir $pattern) -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+    }
 
     $flavoredCopies = @(
         @{ Source = "rpc-server.exe"; Target = "rpc-server-$BackendName.exe" },

@@ -164,8 +164,32 @@ fn split_peer_vram_bytes(peer: &mesh::PeerInfo, my_vram: u64) -> u64 {
 fn effective_local_launch_vram(
     my_vram: u64,
     pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+    binary_flavor: Option<launch::BinaryFlavor>,
+    gpu_vram: Option<&str>,
 ) -> u64 {
-    pinned_gpu.map(|gpu| gpu.vram_bytes).unwrap_or(my_vram)
+    if let Some(gpu) = pinned_gpu {
+        return gpu.vram_bytes;
+    }
+
+    match binary_flavor {
+        Some(launch::BinaryFlavor::Vulkan) | Some(launch::BinaryFlavor::Metal) => {
+            primary_gpu_vram_bytes(gpu_vram)
+                .map(|bytes| bytes.min(my_vram))
+                .unwrap_or(my_vram)
+        }
+        Some(launch::BinaryFlavor::Cpu)
+        | Some(launch::BinaryFlavor::Cuda)
+        | Some(launch::BinaryFlavor::Rocm)
+        | None => my_vram,
+    }
+}
+
+fn primary_gpu_vram_bytes(gpu_vram: Option<&str>) -> Option<u64> {
+    gpu_vram?
+        .split(',')
+        .next()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0)
 }
 
 fn build_dense_launch_plan(
@@ -1662,7 +1686,12 @@ pub async fn election_loop(
 
     let model_bytes = total_model_bytes(&model);
     let my_vram = node.vram_bytes();
-    let local_launch_vram = effective_local_launch_vram(my_vram, pinned_gpu.as_ref());
+    let local_launch_vram = effective_local_launch_vram(
+        my_vram,
+        pinned_gpu.as_ref(),
+        binary_flavor,
+        node.gpu_vram.as_deref(),
+    );
     let model_fits_locally = local_launch_vram >= (model_bytes as f64 * 1.1) as u64;
 
     // Check if this is a MoE model with enough metadata to plan expert routing.
@@ -3033,7 +3062,8 @@ async fn start_llama(
         slots,
     } = params;
     let my_vram = node.vram_bytes();
-    let local_launch_vram = effective_local_launch_vram(my_vram, pinned_gpu);
+    let local_launch_vram =
+        effective_local_launch_vram(my_vram, pinned_gpu, binary_flavor, node.gpu_vram.as_deref());
     let model_bytes = total_model_bytes(model);
     let launch_plan = build_dense_launch_plan(
         local_launch_vram,
@@ -3335,7 +3365,7 @@ mod tests {
             vram_bytes: 30,
         };
 
-        let local_launch_vram = effective_local_launch_vram(80, Some(&pinned_gpu));
+        let local_launch_vram = effective_local_launch_vram(80, Some(&pinned_gpu), None, None);
         let plan = build_dense_launch_plan(
             local_launch_vram,
             60,
@@ -3361,6 +3391,30 @@ mod tests {
             local_launch_vram,
             &[peer]
         ));
+    }
+
+    #[test]
+    fn vulkan_local_launch_preflight_uses_primary_device_capacity() {
+        let local_launch_vram = effective_local_launch_vram(
+            29_400_000_000,
+            None,
+            Some(BinaryFlavor::Vulkan),
+            Some("15977000000,16212000000"),
+        );
+
+        assert_eq!(local_launch_vram, 15_977_000_000);
+    }
+
+    #[test]
+    fn cuda_local_launch_preflight_keeps_aggregate_capacity() {
+        let local_launch_vram = effective_local_launch_vram(
+            48_000_000_000,
+            None,
+            Some(BinaryFlavor::Cuda),
+            Some("24000000000,24000000000"),
+        );
+
+        assert_eq!(local_launch_vram, 48_000_000_000);
     }
 
     #[test]
