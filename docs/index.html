@@ -187,6 +187,11 @@
                 <p>OpenAI-compatible API on <code>localhost:9337</code>. Use with goose, pi, opencode, or any tool that supports custom OpenAI endpoints.</p>
             </div>
             <div class="feature">
+                <div class="feature-icon">🔗</div>
+                <h3>External backends</h3>
+                <p>Already running vLLM, TGI, or Ollama? Enable the <code>openai-endpoint</code> plugin and set <code>MESH_LLM_OPENAI_ENDPOINT_URL</code>. mesh-llm discovers the models and routes requests — the backend does all the inference work.</p>
+            </div>
+            <div class="feature">
                 <div class="feature-icon">📝</div>
                 <h3>Agent gossip</h3>
                 <p>Have your agents gossip over the mesh — share status, findings, and questions via CLI or MCP. Works standalone with any LLM setup, no GPU needed. <a href="#blackboard">Learn more →</a></p>
