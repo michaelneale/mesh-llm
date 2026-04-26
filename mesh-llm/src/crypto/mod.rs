@@ -1,9 +1,11 @@
 mod envelope;
 mod error;
+pub mod inference_encryption;
 mod keychain;
 mod keys;
 mod keystore;
 mod ownership;
+pub mod se_attestation;
 
 pub use self::envelope::{open_message, seal_message, OpenedMessage, SignedEncryptedEnvelope};
 pub use self::error::CryptoError;

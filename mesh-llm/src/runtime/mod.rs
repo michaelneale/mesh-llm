@@ -275,6 +275,13 @@ pub(crate) async fn run() -> Result<()> {
         return plugin::run_plugin_process(name).await;
     }
 
+    // Runtime security hardening (result stored on Node in run_auto)
+    if let Err(err) = crate::system::hardening::harden_runtime(false, false) {
+        tracing::warn!("Security hardening failed: {err}");
+    } else {
+        tracing::info!("Runtime security hardening applied");
+    }
+
     let checked_updates = autoupdate::maybe_auto_update(&cli).await?;
 
     // Finish the release check before startup continues.
@@ -1512,7 +1519,7 @@ async fn run_auto(
     let owner_config = owner_runtime_config(&cli)?;
     // Clients report 0 VRAM so they're never assigned a model to serve
     let max_vram = if is_client { Some(0.0) } else { cli.max_vram };
-    let (node, channels) = mesh::Node::start(
+    let (mut node, channels) = mesh::Node::start(
         role,
         &cli.relay,
         cli.bind_port,
@@ -1522,6 +1529,8 @@ async fn run_auto(
         cli.config.as_deref(),
     )
     .await?;
+    node.require_attested_hosts = cli.require_attested_hosts;
+    node.local_security_posture = crate::system::hardening::harden_runtime(false, false).ok();
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;

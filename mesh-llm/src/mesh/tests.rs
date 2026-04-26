@@ -67,9 +67,14 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         plugin_manager: Arc::new(Mutex::new(None)),
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(None)),
+        inference_keypair: Arc::new(
+            crate::crypto::inference_encryption::InferenceKeypair::generate(),
+        ),
         owner_summary: Arc::new(Mutex::new(OwnershipSummary::default())),
         trust_store: Arc::new(Mutex::new(TrustStore::default())),
         trust_policy: TrustPolicy::Off,
+        require_attested_hosts: false,
+        local_security_posture: None,
         enumerate_host: false,
         gpu_name: None,
         hostname: None,
@@ -551,6 +556,9 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -1215,6 +1223,9 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
             ready: true,
         }],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     };
 
     let proto_pa = local_ann_to_proto_ann(&local_ann);
@@ -1436,6 +1447,9 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     };
 
     apply_transitive_ann(&mut existing, &addr, &ann);
@@ -1508,6 +1522,9 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     };
 
     apply_transitive_ann(&mut existing, &weak_addr, &ann);
@@ -1559,6 +1576,9 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     };
     apply_transitive_ann(&mut existing, &richer_addr, &ann2);
 
@@ -2104,6 +2124,9 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     };
 
     apply_transitive_ann(&mut peer, &addr, &ann);
@@ -2761,6 +2784,9 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         served_model_descriptors: vec![],
         served_model_runtime: vec![],
         owner_attestation: None,
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
         owner_summary: OwnershipSummary::default(),
     }
 }
@@ -3228,9 +3254,14 @@ async fn make_test_node_with_owner(
         plugin_manager: Arc::new(Mutex::new(None)),
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(Some(owner_attestation))),
+        inference_keypair: Arc::new(
+            crate::crypto::inference_encryption::InferenceKeypair::generate(),
+        ),
         owner_summary: Arc::new(Mutex::new(owner_summary)),
         trust_store: Arc::new(Mutex::new(trust_store)),
         trust_policy: TrustPolicy::Off,
+        require_attested_hosts: false,
+        local_security_posture: None,
         enumerate_host: false,
         gpu_name: None,
         hostname: None,

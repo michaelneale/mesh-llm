@@ -681,6 +681,10 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
+    pub(crate) inference_public_key: Option<String>,
+    pub(crate) security_posture: Option<crate::system::hardening::SecurityPosture>,
+    pub(crate) hardware_attestation:
+        Option<crate::crypto::se_attestation::SignedHardwareAttestation>,
 }
 
 #[derive(Debug, Clone)]
@@ -735,6 +739,9 @@ pub struct PeerInfo {
     pub served_model_descriptors: Vec<ServedModelDescriptor>,
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
+    pub inference_public_key: Option<String>,
+    pub security_posture: Option<crate::system::hardening::SecurityPosture>,
+    pub hardware_attestation: Option<crate::crypto::se_attestation::SignedHardwareAttestation>,
     pub owner_summary: OwnershipSummary,
 }
 
@@ -791,6 +798,9 @@ impl PeerInfo {
             served_model_descriptors: ann.served_model_descriptors.clone(),
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
+            inference_public_key: ann.inference_public_key.clone(),
+            security_posture: ann.security_posture.clone(),
+            hardware_attestation: ann.hardware_attestation.clone(),
             owner_summary,
         }
     }
@@ -1002,9 +1012,12 @@ pub struct Node {
     plugin_manager: Arc<Mutex<Option<crate::plugin::PluginManager>>>,
     display_name: Arc<Mutex<Option<String>>>,
     owner_attestation: Arc<Mutex<Option<SignedNodeOwnership>>>,
+    inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
     owner_summary: Arc<Mutex<OwnershipSummary>>,
     trust_store: Arc<Mutex<TrustStore>>,
     trust_policy: TrustPolicy,
+    pub require_attested_hosts: bool,
+    pub local_security_posture: Option<crate::system::hardening::SecurityPosture>,
     pub enumerate_host: bool,
     pub gpu_name: Option<String>,
     pub hostname: Option<String>,
@@ -1447,9 +1460,14 @@ impl Node {
             plugin_manager: Arc::new(Mutex::new(None)),
             display_name: Arc::new(Mutex::new(None)),
             owner_attestation: Arc::new(Mutex::new(owner_attestation)),
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
             owner_summary: Arc::new(Mutex::new(owner_summary)),
             trust_store: Arc::new(Mutex::new(trust_store)),
             trust_policy,
+            require_attested_hosts: false,
+            local_security_posture: None,
             enumerate_host,
             gpu_name,
             hostname,
@@ -1547,9 +1565,14 @@ impl Node {
             plugin_manager: Arc::new(Mutex::new(None)),
             display_name: Arc::new(Mutex::new(None)),
             owner_attestation: Arc::new(Mutex::new(None)),
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
             owner_summary: Arc::new(Mutex::new(OwnershipSummary::default())),
             trust_store: Arc::new(Mutex::new(TrustStore::default())),
             trust_policy: TrustPolicy::Off,
+            require_attested_hosts: false,
+            local_security_posture: None,
             enumerate_host: true,
             gpu_name: None,
             hostname: None,
@@ -2704,6 +2727,28 @@ impl Node {
 
     pub fn vram_bytes(&self) -> u64 {
         self.vram_bytes
+    }
+
+    /// Returns a reference to this node's inference keypair (used for E2E encryption).
+    pub fn inference_keypair(&self) -> &Arc<crate::crypto::inference_encryption::InferenceKeypair> {
+        &self.inference_keypair
+    }
+
+    /// Returns true if a peer has both an inference public key and hardware attestation.
+    pub async fn peer_is_attested(&self, peer_id: iroh::EndpointId) -> bool {
+        let state = self.state.lock().await;
+        state.peers.get(&peer_id).map_or(false, |p| {
+            p.inference_public_key.is_some() && p.hardware_attestation.is_some()
+        })
+    }
+
+    /// Returns the inference public key (base64) advertised by a connected peer, if available.
+    pub async fn peer_inference_public_key(&self, peer_id: EndpointId) -> Option<String> {
+        let state = self.state.lock().await;
+        state
+            .peers
+            .get(&peer_id)
+            .and_then(|p| p.inference_public_key.clone())
     }
 
     pub async fn peers(&self) -> Vec<PeerInfo> {

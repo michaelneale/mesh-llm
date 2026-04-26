@@ -1593,6 +1593,108 @@ async fn route_local_attempt(
     }
 }
 
+/// Magic byte prefix for E2E encrypted tunnel payloads.
+const ENCRYPTED_TUNNEL_MAGIC: u8 = 0xE1;
+
+/// Result of maybe_encrypt_for_host: the wire payload and optional session/host key
+/// needed to decrypt the encrypted response.
+struct EncryptionResult {
+    /// Wire bytes to send over QUIC (may be plaintext or MAGIC + encrypted JSON).
+    payload: Vec<u8>,
+    /// Present when the payload was encrypted — needed to decrypt the response.
+    session: Option<(
+        crate::crypto::inference_encryption::EphemeralSession,
+        crypto_box::PublicKey,
+    )>,
+}
+
+/// Encrypt prefetched HTTP request bytes for a remote host if they have an inference key.
+/// Falls back to plaintext if no key is available or encryption fails.
+async fn maybe_encrypt_for_host(
+    node: &mesh::Node,
+    host_id: iroh::EndpointId,
+    prefetched: &[u8],
+) -> EncryptionResult {
+    // Gate: if --require-attested-hosts, refuse to route to peers without an inference key
+    if node.require_attested_hosts {
+        if !node.peer_is_attested(host_id).await {
+            tracing::warn!(
+                "Refusing to route to unattested host {} (--require-attested-hosts)",
+                host_id.fmt_short()
+            );
+            return EncryptionResult {
+                payload: vec![],
+                session: None,
+            }; // empty vec signals refusal
+        }
+    }
+    let Some(host_key_b64) = node.peer_inference_public_key(host_id).await else {
+        return EncryptionResult {
+            payload: prefetched.to_vec(),
+            session: None,
+        }; // no key, send plaintext
+    };
+    let Ok(host_pub) = crate::crypto::inference_encryption::parse_public_key(&host_key_b64) else {
+        if node.require_attested_hosts {
+            tracing::warn!(
+                "Invalid inference key for host {} and --require-attested-hosts is set, refusing",
+                host_id.fmt_short()
+            );
+            return EncryptionResult {
+                payload: vec![],
+                session: None,
+            };
+        }
+        tracing::warn!(
+            "Invalid inference key for host {}, sending plaintext",
+            host_id.fmt_short()
+        );
+        return EncryptionResult {
+            payload: prefetched.to_vec(),
+            session: None,
+        };
+    };
+    // Encrypt the entire HTTP payload
+    match crate::crypto::inference_encryption::encrypt_inference_request(prefetched, "", &host_pub)
+    {
+        Ok((payload, session)) => {
+            // Wire format: MAGIC byte + JSON-serialized EncryptedInferencePayload
+            let json = serde_json::to_vec(&payload).expect("serialize encrypted payload");
+            let mut out = Vec::with_capacity(1 + json.len());
+            out.push(ENCRYPTED_TUNNEL_MAGIC);
+            out.extend_from_slice(&json);
+            tracing::debug!(
+                "Encrypted inference request for host {}",
+                host_id.fmt_short()
+            );
+            EncryptionResult {
+                payload: out,
+                session: Some((session, host_pub)),
+            }
+        }
+        Err(err) => {
+            if node.require_attested_hosts {
+                tracing::warn!(
+                    "Encryption failed for host {} and --require-attested-hosts is set, refusing",
+                    host_id.fmt_short()
+                );
+                return EncryptionResult {
+                    payload: vec![],
+                    session: None,
+                };
+            }
+            tracing::warn!(
+                "Encryption failed for host {}: {err}, sending plaintext",
+                host_id.fmt_short()
+            );
+            EncryptionResult {
+                payload: prefetched.to_vec(),
+                session: None,
+            }
+        }
+    }
+}
+
 async fn route_remote_attempt(
     node: &mesh::Node,
     tcp_stream: &mut TcpStream,
@@ -1603,50 +1705,205 @@ async fn route_remote_attempt(
 ) -> RouteAttemptResult {
     match node.open_http_tunnel(host_id).await {
         Ok((mut quic_send, mut quic_recv)) => {
-            if let Err(err) = quic_send.write_all(prefetched).await {
+            let enc = maybe_encrypt_for_host(node, host_id, prefetched).await;
+            if enc.payload.is_empty() {
+                // --require-attested-hosts refused this host
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+            let is_encrypted = enc.payload.first() == Some(&ENCRYPTED_TUNNEL_MAGIC);
+            if let Err(err) = quic_send.write_all(&enc.payload).await {
                 tracing::warn!(
                     "API proxy: failed to forward buffered request to host {}: {err}",
                     host_id.fmt_short()
                 );
                 return RouteAttemptResult::RetryableUnavailable;
             }
-            match probe_http_response(&mut quic_recv).await {
-                Ok(probe) => {
-                    let status_code = probe.status_code;
-                    match relay_probed_response(
-                        tcp_stream,
-                        &mut quic_recv,
-                        probe,
-                        retry_context_overflow,
-                        response_adapter,
-                    )
-                    .await
-                    {
-                        Ok(result) => result,
-                        Err(err) => {
-                            if is_client_disconnect_error(&err) {
-                                tracing::info!(
-                                    "API proxy (remote): downstream client disconnected during relay"
-                                );
-                                return RouteAttemptResult::ClientDisconnected;
+            // For encrypted payloads, finish the send stream so the receiver's
+            // read_to_end() can return. Plaintext uses bidirectional relay which
+            // handles stream lifecycle itself.
+            if is_encrypted {
+                if let Err(err) = quic_send.finish() {
+                    tracing::warn!(
+                        "API proxy: failed to finish send stream to host {}: {err}",
+                        host_id.fmt_short()
+                    );
+                    return RouteAttemptResult::RetryableUnavailable;
+                }
+            }
+
+            // If encrypted, response will also be encrypted — decrypt before probing.
+            if let Some((session, host_pub)) = enc.session {
+                // Read all response bytes from QUIC (encrypted blob).
+                match quic_recv.read_to_end(16 * 1024 * 1024).await {
+                    Ok(encrypted_response) => {
+                        // Check for magic byte prefix
+                        if encrypted_response.first() == Some(&ENCRYPTED_TUNNEL_MAGIC) {
+                            let resp_json = &encrypted_response[1..];
+                            match serde_json::from_slice::<
+                                crate::crypto::inference_encryption::EncryptedResponseChunk,
+                            >(resp_json)
+                            {
+                                Ok(chunk) => {
+                                    match crate::crypto::inference_encryption::decrypt_response_chunk(
+                                        &chunk, &session, &host_pub,
+                                    ) {
+                                        Ok(plaintext) => {
+                                            tracing::debug!(
+                                                "Decrypted response from host {} ({} bytes)",
+                                                host_id.fmt_short(),
+                                                plaintext.len()
+                                            );
+                                            // Feed decrypted plaintext through the normal response pipeline.
+                                            let mut cursor = std::io::Cursor::new(plaintext);
+                                            match probe_http_response(&mut cursor).await {
+                                                Ok(probe) => {
+                                                    let status_code = probe.status_code;
+                                                    match relay_probed_response(
+                                                        tcp_stream,
+                                                        &mut cursor,
+                                                        probe,
+                                                        retry_context_overflow,
+                                                        response_adapter,
+                                                    )
+                                                    .await
+                                                    {
+                                                        Ok(result) => result,
+                                                        Err(err) => {
+                                                            if is_client_disconnect_error(&err) {
+                                                                tracing::info!("API proxy (remote): downstream client disconnected during relay");
+                                                                return RouteAttemptResult::ClientDisconnected;
+                                                            }
+                                                            tracing::debug!("API proxy (remote) ended after commit: {err}");
+                                                            RouteAttemptResult::Delivered {
+                                                                status_code,
+                                                                completion_tokens: None,
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Err(err) => {
+                                                    tracing::warn!(
+                                                        "API proxy: failed to parse decrypted response from host {}: {err}",
+                                                        host_id.fmt_short()
+                                                    );
+                                                    RouteAttemptResult::RetryableUnavailable
+                                                }
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                "API proxy: failed to decrypt response from host {}: {err}",
+                                                host_id.fmt_short()
+                                            );
+                                            RouteAttemptResult::RetryableUnavailable
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "API proxy: failed to parse encrypted response JSON from host {}: {err}",
+                                        host_id.fmt_short()
+                                    );
+                                    RouteAttemptResult::RetryableUnavailable
+                                }
                             }
-                            tracing::debug!("API proxy (remote) ended after commit: {err}");
-                            RouteAttemptResult::Delivered {
-                                status_code,
-                                completion_tokens: None,
+                        } else {
+                            // Response wasn't encrypted (shouldn't happen, but handle gracefully).
+                            tracing::debug!(
+                                "Got plaintext response from host {} despite encrypted request",
+                                host_id.fmt_short()
+                            );
+                            let mut cursor = std::io::Cursor::new(encrypted_response);
+                            match probe_http_response(&mut cursor).await {
+                                Ok(probe) => {
+                                    let status_code = probe.status_code;
+                                    match relay_probed_response(
+                                        tcp_stream,
+                                        &mut cursor,
+                                        probe,
+                                        retry_context_overflow,
+                                        response_adapter,
+                                    )
+                                    .await
+                                    {
+                                        Ok(result) => result,
+                                        Err(err) => {
+                                            if is_client_disconnect_error(&err) {
+                                                tracing::info!("API proxy (remote): downstream client disconnected during relay");
+                                                return RouteAttemptResult::ClientDisconnected;
+                                            }
+                                            tracing::debug!(
+                                                "API proxy (remote) ended after commit: {err}"
+                                            );
+                                            RouteAttemptResult::Delivered {
+                                                status_code,
+                                                completion_tokens: None,
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "API proxy: failed to read response from host {}: {err}",
+                                        host_id.fmt_short()
+                                    );
+                                    RouteAttemptResult::RetryableUnavailable
+                                }
                             }
                         }
                     }
+                    Err(err) => {
+                        tracing::warn!(
+                            "API proxy: failed to read encrypted response from host {}: {err}",
+                            host_id.fmt_short()
+                        );
+                        if is_timeout_error(&anyhow!("{err}")) {
+                            RouteAttemptResult::RetryableTimeout
+                        } else {
+                            RouteAttemptResult::RetryableUnavailable
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!(
-                        "API proxy: failed to read response from host {}: {err}",
-                        host_id.fmt_short()
-                    );
-                    if is_timeout_error(&err) {
-                        RouteAttemptResult::RetryableTimeout
-                    } else {
-                        RouteAttemptResult::RetryableUnavailable
+            } else {
+                // Plaintext path — use normal probe_http_response.
+                match probe_http_response(&mut quic_recv).await {
+                    Ok(probe) => {
+                        let status_code = probe.status_code;
+                        match relay_probed_response(
+                            tcp_stream,
+                            &mut quic_recv,
+                            probe,
+                            retry_context_overflow,
+                            response_adapter,
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(err) => {
+                                if is_client_disconnect_error(&err) {
+                                    tracing::info!(
+                                        "API proxy (remote): downstream client disconnected during relay"
+                                    );
+                                    return RouteAttemptResult::ClientDisconnected;
+                                }
+                                tracing::debug!("API proxy (remote) ended after commit: {err}");
+                                RouteAttemptResult::Delivered {
+                                    status_code,
+                                    completion_tokens: None,
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "API proxy: failed to read response from host {}: {err}",
+                            host_id.fmt_short()
+                        );
+                        if is_timeout_error(&err) {
+                            RouteAttemptResult::RetryableTimeout
+                        } else {
+                            RouteAttemptResult::RetryableUnavailable
+                        }
                     }
                 }
             }

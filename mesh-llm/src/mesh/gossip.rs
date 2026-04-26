@@ -99,6 +99,9 @@ pub(super) fn apply_transitive_ann(
     existing.available_models.clear();
     existing.requested_models = ann.requested_models.clone();
     existing.owner_attestation = ann.owner_attestation.clone();
+    existing.inference_public_key = ann.inference_public_key.clone();
+    existing.security_posture = ann.security_posture.clone();
+    existing.hardware_attestation = ann.hardware_attestation.clone();
     if ann.model_source.is_some() {
         existing.model_source = ann.model_source.clone();
     }
@@ -689,6 +692,9 @@ impl Node {
                     served_model_descriptors: p.served_model_descriptors.clone(),
                     served_model_runtime: p.served_model_runtime.clone(),
                     owner_attestation: p.owner_attestation.clone(),
+                    inference_public_key: p.inference_public_key.clone(),
+                    security_posture: p.security_posture.clone(),
+                    hardware_attestation: p.hardware_attestation.clone(),
                 })
                 .collect()
         };
@@ -752,6 +758,9 @@ impl Node {
             served_model_descriptors: my_served_model_descriptors,
             served_model_runtime: my_model_runtime_descriptors,
             owner_attestation: my_owner_attestation,
+            inference_public_key: Some(self.inference_keypair.public_key_base64()),
+            security_posture: self.local_security_posture.clone(),
+            hardware_attestation: None,
         });
         announcements
     }
@@ -804,6 +813,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
+            security_posture: None,
+            hardware_attestation: None,
         }
     }
 

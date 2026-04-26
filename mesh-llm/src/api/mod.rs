@@ -1845,6 +1845,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
+            security_posture: None,
+            hardware_attestation: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
             first_joined_mesh_ts: None,
         }
@@ -2106,6 +2109,9 @@ mod tests {
             served_model_descriptors: Vec::new(),
             served_model_runtime: Vec::new(),
             owner_attestation: None,
+            inference_public_key: None,
+            security_posture: None,
+            hardware_attestation: None,
             owner_summary: crate::crypto::OwnershipSummary::default(),
         }
     }
