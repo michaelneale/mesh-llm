@@ -485,8 +485,6 @@ mesh-llm serve
 
 mesh-llm discovers the models on the backend and makes them available alongside any local models. The backend does all the inference work — mesh-llm just routes requests to it. Works with vLLM, TGI, Ollama, or anything that speaks the OpenAI API.
 
-See [mesh-llm/docs/EXTERNAL_BACKENDS.md](mesh-llm/docs/EXTERNAL_BACKENDS.md) for details, multi-backend setups, and examples.
-
 ## How it works
 
 Mesh LLM keeps the user-facing surface simple: talk to `localhost:9337`, pick a model, and let the mesh decide how to serve it.
@@ -567,7 +565,6 @@ You can also try the hosted demo:
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for benchmark numbers and context
 - [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
 - [PLUGINS.md](PLUGINS.md) for the plugin system and blackboard internals
-- [mesh-llm/docs/EXTERNAL_BACKENDS.md](mesh-llm/docs/EXTERNAL_BACKENDS.md) for using vLLM, TGI, Ollama, or any OpenAI-compatible server
 - [mesh-llm/docs/VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md) for inter-model collaboration design
 - [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md) for llama.cpp patch queue maintenance
 - [mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md](mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md) for the planned llama-stage-runtime integration

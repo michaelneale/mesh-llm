@@ -20,7 +20,6 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `mesh-llm/docs/MoE_PLAN.md` | MoE expert sharding design |
 | `mesh-llm/docs/MoE_DEPLOY_DESIGN.md` | MoE auto-deploy UX |
 | `mesh-llm/docs/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
-| `mesh-llm/docs/EXTERNAL_BACKENDS.md` | External backends: vLLM, TGI, Ollama via plugin config |
 | `mesh-llm/docs/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
 | `tools/relay-fly-legacy/README.md` | Legacy self-hosted iroh relay (not in use — now using services.iroh.computer) |
