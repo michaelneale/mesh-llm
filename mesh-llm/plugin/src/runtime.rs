@@ -1613,7 +1613,7 @@ mod tests {
         #[cfg(unix)]
         {
             let (client, _server) = tokio::net::UnixStream::pair().unwrap();
-            return LocalStream::Unix(client);
+            LocalStream::Unix(client)
         }
         #[cfg(windows)]
         {

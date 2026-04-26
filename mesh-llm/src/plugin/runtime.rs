@@ -55,6 +55,7 @@ impl ExternalPlugin {
                 kind: "external".into(),
                 enabled: true,
                 status: "starting".into(),
+                pid: None,
                 version: None,
                 capabilities: Vec::new(),
                 command: Some(spec.command.clone()),
@@ -98,6 +99,9 @@ impl ExternalPlugin {
 
     pub(crate) async fn supervise(&self) -> Result<()> {
         if self.is_disabled().await {
+            return Ok(());
+        }
+        if self.is_stopping().await {
             return Ok(());
         }
         self.ensure_running().await?;
@@ -150,6 +154,7 @@ impl ExternalPlugin {
         {
             let mut summary = self.summary.lock().await;
             summary.status = "starting".into();
+            summary.pid = None;
             summary.error = None;
         }
 
@@ -182,6 +187,8 @@ impl ExternalPlugin {
                 self.spec.name, self.spec.command
             )
         })?;
+        let pid = child.id();
+        self.summary.lock().await.pid = pid;
 
         let stream = tokio::time::timeout(
             std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
@@ -354,6 +361,33 @@ impl ExternalPlugin {
             .clone()
             .map(|manifest| manifest_tool_summaries(&manifest))
             .unwrap_or_default())
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        {
+            let mut summary = self.summary.lock().await;
+            summary.status = "shutting down".into();
+            summary.error = None;
+        }
+
+        let runtime = self.runtime.lock().await.take();
+        if let Some(runtime) = runtime {
+            let mut pending = runtime.pending.lock().await;
+            for (_, response) in pending.drain() {
+                let _ = response.send(Err(anyhow::anyhow!("plugin shutting down")));
+            }
+        }
+
+        *self.server_info.lock().await = None;
+        *self.manifest.lock().await = None;
+
+        let mut summary = self.summary.lock().await;
+        summary.status = "stopped".into();
+        summary.pid = None;
+        summary.version = None;
+        summary.capabilities.clear();
+        summary.tools.clear();
+        summary.error = None;
     }
 
     pub(crate) async fn call_tool(
@@ -593,6 +627,7 @@ impl ExternalPlugin {
         drop(runtime);
         let mut summary = self.summary.lock().await;
         summary.status = "restarting".into();
+        summary.pid = None;
         summary.error = Some(reason);
     }
 
@@ -614,6 +649,11 @@ impl ExternalPlugin {
         self.disabled_reason().await.is_some()
     }
 
+    async fn is_stopping(&self) -> bool {
+        let summary = self.summary.lock().await;
+        matches!(summary.status.as_str(), "shutting down" | "stopped")
+    }
+
     async fn mark_disabled(&self, generation: u64, reason: String) {
         let mut runtime = self.runtime.lock().await;
         if runtime.as_ref().map(|runtime| runtime.generation) == Some(generation) {
@@ -632,6 +672,7 @@ impl ExternalPlugin {
         let mut summary = self.summary.lock().await;
         summary.enabled = false;
         summary.status = "disabled".into();
+        summary.pid = None;
         summary.version = None;
         summary.capabilities.clear();
         summary.tools.clear();

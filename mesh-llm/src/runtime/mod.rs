@@ -1,11 +1,13 @@
 pub(crate) mod config_state;
 mod discovery;
 pub mod instance;
+mod interactive;
 mod local;
 mod proxy;
 pub(crate) mod wakeable;
 
 use self::discovery::{nostr_rediscovery, start_new_mesh};
+use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
     remove_runtime_local_target, remove_serving_assignment, resolved_model_name,
@@ -14,6 +16,11 @@ use self::local::{
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
+use crate::cli::output::{
+    emit_event, ConsoleSessionMode, DashboardAcceptedRequestBucket, DashboardEndpointRow,
+    DashboardModelRow, DashboardProcessRow, DashboardSnapshot, DashboardSnapshotFuture,
+    DashboardSnapshotProvider, OutputEvent, RuntimeStatus,
+};
 use crate::cli::terminal_progress::start_spinner;
 use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::crypto::{
@@ -30,11 +37,144 @@ use crate::plugin;
 use crate::system::{autoupdate, benchmark, hardware, moe_planner};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
-use std::cmp::Reverse;
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::time::{Duration, Instant};
+use tracing_subscriber::fmt::MakeWriter;
 use zeroize::Zeroizing;
+
+const PRETTY_DASHBOARD_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
+
+thread_local! {
+    static ROUTING_TRACING_STDERR: Cell<bool> = const { Cell::new(false) };
+}
+
+#[derive(Clone, Copy, Default)]
+struct MeshTracingStderr;
+
+struct MeshTracingStderrWriter {
+    level: tracing::Level,
+    target: String,
+    buffer: Vec<u8>,
+}
+
+impl MeshTracingStderrWriter {
+    fn new(level: tracing::Level, target: impl Into<String>) -> Self {
+        Self {
+            level,
+            target: target.into(),
+            buffer: Vec::new(),
+        }
+    }
+
+    fn drain_complete_lines(&mut self) -> io::Result<()> {
+        while let Some(newline_index) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line = self.buffer.drain(..=newline_index).collect::<Vec<_>>();
+            self.write_line(&line)?;
+        }
+        Ok(())
+    }
+
+    fn drain_remainder(&mut self) -> io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        let line = std::mem::take(&mut self.buffer);
+        self.write_line(&line)
+    }
+
+    fn write_line(&self, line: &[u8]) -> io::Result<()> {
+        let message = String::from_utf8_lossy(line)
+            .trim_end_matches(['\r', '\n'])
+            .to_string();
+        if message.trim().is_empty() {
+            return Ok(());
+        }
+
+        if self.should_route_to_dashboard() {
+            return self.route_line_to_dashboard(message);
+        }
+
+        write_stderr_line(&message)
+    }
+
+    fn should_route_to_dashboard(&self) -> bool {
+        !self.target.starts_with("mesh_llm::cli::output")
+            && crate::cli::output::interactive_tui_active()
+    }
+
+    fn route_line_to_dashboard(&self, message: String) -> io::Result<()> {
+        ROUTING_TRACING_STDERR.with(|routing| {
+            if routing.get() {
+                return write_stderr_line(&message);
+            }
+
+            routing.set(true);
+            let event = match self.level {
+                tracing::Level::ERROR => crate::cli::output::OutputEvent::Error {
+                    message: message.clone(),
+                    context: Some("stderr".to_string()),
+                },
+                tracing::Level::WARN => crate::cli::output::OutputEvent::Warning {
+                    message: message.clone(),
+                    context: Some("stderr".to_string()),
+                },
+                _ => crate::cli::output::OutputEvent::Info {
+                    message: message.clone(),
+                    context: Some("stderr".to_string()),
+                },
+            };
+            let result =
+                crate::cli::output::emit_event(event).or_else(|_| write_stderr_line(&message));
+            routing.set(false);
+            result
+        })
+    }
+}
+
+impl Write for MeshTracingStderrWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        self.drain_complete_lines()?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.drain_remainder()
+    }
+}
+
+impl Drop for MeshTracingStderrWriter {
+    fn drop(&mut self) {
+        let _ = self.drain_remainder();
+    }
+}
+
+impl<'writer> MakeWriter<'writer> for MeshTracingStderr {
+    type Writer = MeshTracingStderrWriter;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        MeshTracingStderrWriter::new(tracing::Level::INFO, "tracing")
+    }
+
+    fn make_writer_for(&'writer self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        MeshTracingStderrWriter::new(*meta.level(), meta.target())
+    }
+}
+
+fn write_stderr_line(message: &str) -> io::Result<()> {
+    let mut stderr = io::stderr().lock();
+    stderr.write_all(message.as_bytes())?;
+    stderr.write_all(b"\n")?;
+    stderr.flush()
+}
 
 fn current_time_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -48,6 +188,339 @@ fn publication_state_from_update(update: nostr::PublishStateUpdate) -> api::Publ
         nostr::PublishStateUpdate::Public => api::PublicationState::Public,
         nostr::PublishStateUpdate::PublishFailed => api::PublicationState::PublishFailed,
     }
+}
+
+#[allow(dead_code)]
+struct RuntimeDashboardSnapshotProvider {
+    node: mesh::Node,
+    local_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    plugin_manager: Option<plugin::PluginManager>,
+    api_port: u16,
+    console_port: Option<u16>,
+    headless: bool,
+    inventory_snapshot_cache: Arc<tokio::sync::Mutex<CachedDashboardInventorySnapshot>>,
+    inventory_snapshot_ttl: Duration,
+    inventory_snapshot_loader:
+        Arc<dyn Fn() -> crate::models::LocalModelInventorySnapshot + Send + Sync>,
+}
+
+#[cfg(test)]
+struct RuntimeDashboardSnapshotProviderTestOptions {
+    api_port: u16,
+    console_port: Option<u16>,
+    headless: bool,
+    inventory_snapshot_ttl: Duration,
+    inventory_snapshot_loader:
+        Arc<dyn Fn() -> crate::models::LocalModelInventorySnapshot + Send + Sync>,
+}
+
+#[derive(Clone, Default)]
+struct CachedDashboardInventorySnapshot {
+    snapshot: crate::models::LocalModelInventorySnapshot,
+    captured_at: Option<Instant>,
+}
+
+impl RuntimeDashboardSnapshotProvider {
+    fn new(
+        node: mesh::Node,
+        local_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+        plugin_manager: Option<plugin::PluginManager>,
+        api_port: u16,
+        console_port: Option<u16>,
+        headless: bool,
+    ) -> Self {
+        Self {
+            node,
+            local_processes,
+            plugin_manager,
+            api_port,
+            console_port,
+            headless,
+            inventory_snapshot_cache: Arc::new(tokio::sync::Mutex::new(
+                CachedDashboardInventorySnapshot::default(),
+            )),
+            inventory_snapshot_ttl: PRETTY_DASHBOARD_INVENTORY_CACHE_TTL,
+            inventory_snapshot_loader: Arc::new(|| {
+                crate::models::scan_local_inventory_snapshot_with_progress(|_| {})
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_inventory_loader(
+        node: mesh::Node,
+        local_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+        plugin_manager: Option<plugin::PluginManager>,
+        options: RuntimeDashboardSnapshotProviderTestOptions,
+    ) -> Self {
+        Self {
+            node,
+            local_processes,
+            plugin_manager,
+            api_port: options.api_port,
+            console_port: options.console_port,
+            headless: options.headless,
+            inventory_snapshot_cache: Arc::new(tokio::sync::Mutex::new(
+                CachedDashboardInventorySnapshot::default(),
+            )),
+            inventory_snapshot_ttl: options.inventory_snapshot_ttl,
+            inventory_snapshot_loader: options.inventory_snapshot_loader,
+        }
+    }
+
+    async fn inventory_snapshot(&self) -> crate::models::LocalModelInventorySnapshot {
+        {
+            let cache = self.inventory_snapshot_cache.lock().await;
+            if let Some(captured_at) = cache.captured_at {
+                if captured_at.elapsed() < self.inventory_snapshot_ttl {
+                    return cache.snapshot.clone();
+                }
+            }
+        }
+
+        let inventory_snapshot_loader = self.inventory_snapshot_loader.clone();
+        let snapshot = match tokio::task::spawn_blocking(move || inventory_snapshot_loader()).await
+        {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                tracing::warn!("pretty dashboard inventory snapshot failed: {err}");
+                crate::models::LocalModelInventorySnapshot::default()
+            }
+        };
+
+        let mut cache = self.inventory_snapshot_cache.lock().await;
+        cache.snapshot = snapshot.clone();
+        cache.captured_at = Some(Instant::now());
+        snapshot
+    }
+}
+
+impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
+    fn snapshot(&self) -> DashboardSnapshotFuture<'_> {
+        let node = self.node.clone();
+        let local_processes = self.local_processes.clone();
+        let api_port = self.api_port;
+        let console_port = self.console_port;
+        let headless = self.headless;
+        let plugin_manager = self.plugin_manager.clone();
+        let provider = self;
+
+        Box::pin(async move {
+            let process_rows = local_processes.lock().await.clone();
+            let request_metrics = node.local_request_metrics_snapshot();
+            let accepted_request_counts_len = request_metrics.accepted_request_counts.len();
+            let inventory_snapshot = provider.inventory_snapshot().await;
+            let metadata_by_name = inventory_snapshot.metadata_by_name;
+            let mut loaded_model_rows = Vec::with_capacity(process_rows.len());
+            for process in &process_rows {
+                let metadata = metadata_by_name.get(&process.name);
+                loaded_model_rows.push(DashboardModelRow {
+                    name: process.name.clone(),
+                    role: dashboard_role_for_local_process(process),
+                    status: runtime_status_from_process_status(&process.status),
+                    port: Some(process.port),
+                    device: Some(process.backend.clone()),
+                    slots: Some(process.slots),
+                    quantization: metadata
+                        .map(|model| model.quantization_type.trim())
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string),
+                    ctx_size: node
+                        .local_model_context_length(&process.name)
+                        .await
+                        .or_else(|| {
+                            metadata
+                                .map(|model| model.context_length)
+                                .filter(|value| *value > 0)
+                        }),
+                    file_size_gb: inventory_snapshot
+                        .size_by_name
+                        .get(&process.name)
+                        .map(|size| *size as f64 / 1e9),
+                });
+            }
+            loaded_model_rows.sort_by(|left, right| left.name.cmp(&right.name));
+
+            let mut webserver_rows =
+                build_dashboard_endpoint_rows(api_port, console_port, headless);
+            if let Some(plugin_manager) = plugin_manager {
+                webserver_rows.extend(plugin_dashboard_endpoint_rows(&plugin_manager).await);
+            }
+            sort_dashboard_endpoint_rows(&mut webserver_rows);
+
+            DashboardSnapshot {
+                llama_process_rows: process_rows
+                    .into_iter()
+                    .map(|process| DashboardProcessRow {
+                        name: process.name,
+                        backend: process.backend,
+                        status: runtime_status_from_process_status(&process.status),
+                        port: process.port,
+                        pid: process.pid,
+                    })
+                    .collect(),
+                webserver_rows,
+                loaded_model_rows,
+                current_inflight_requests: node.inflight_requests(),
+                accepted_request_buckets: request_metrics
+                    .accepted_request_counts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, accepted_count)| DashboardAcceptedRequestBucket {
+                        second_offset: accepted_request_counts_len.saturating_sub(1 + index) as u32,
+                        accepted_count,
+                    })
+                    .collect(),
+                latency_samples_ms: request_metrics.latency_samples_ms,
+            }
+        })
+    }
+}
+
+#[allow(dead_code)]
+fn runtime_status_from_process_status(status: &str) -> RuntimeStatus {
+    match status {
+        "ready" => RuntimeStatus::Ready,
+        "shutting down" | "shutting_down" => RuntimeStatus::ShuttingDown,
+        "stopped" => RuntimeStatus::Stopped,
+        "exited" => RuntimeStatus::Exited,
+        "warning" => RuntimeStatus::Warning,
+        "error" => RuntimeStatus::Error,
+        _ => RuntimeStatus::Starting,
+    }
+}
+
+#[allow(dead_code)]
+fn runtime_status_from_plugin_status(status: &str) -> RuntimeStatus {
+    match status {
+        "running" | "ready" => RuntimeStatus::Ready,
+        "shutting down" | "shutting_down" => RuntimeStatus::ShuttingDown,
+        "stopped" | "disabled" => RuntimeStatus::Stopped,
+        "error" => RuntimeStatus::Error,
+        "restarting" => RuntimeStatus::Warning,
+        _ => RuntimeStatus::Starting,
+    }
+}
+
+#[allow(dead_code)]
+fn dashboard_role_for_local_process(_process: &api::RuntimeProcessPayload) -> Option<String> {
+    // `local_processes` only tracks local model-serving processes that own a ready
+    // listening port on this node, so the pretty-only Loaded Models panel should
+    // present them as host entries rather than inferring from event text.
+    Some("host".to_string())
+}
+
+#[allow(dead_code)]
+fn build_dashboard_endpoint_rows(
+    api_port: u16,
+    console_port: Option<u16>,
+    headless: bool,
+) -> Vec<DashboardEndpointRow> {
+    let mut rows = vec![DashboardEndpointRow {
+        label: "OpenAI-compatible API".to_string(),
+        status: RuntimeStatus::Ready,
+        url: format!("http://localhost:{api_port}"),
+        port: api_port,
+        pid: None,
+    }];
+    if let Some(console_port) = console_port.filter(|_| !headless) {
+        rows.push(DashboardEndpointRow {
+            label: "Web console".to_string(),
+            status: RuntimeStatus::Ready,
+            url: format!("http://localhost:{console_port}"),
+            port: console_port,
+            pid: None,
+        });
+    }
+    sort_dashboard_endpoint_rows(&mut rows);
+    rows
+}
+
+fn sort_dashboard_endpoint_rows(rows: &mut [DashboardEndpointRow]) {
+    rows.sort_by(|left, right| {
+        dashboard_endpoint_sort_bucket(left)
+            .cmp(&dashboard_endpoint_sort_bucket(right))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+}
+
+fn dashboard_endpoint_sort_bucket(row: &DashboardEndpointRow) -> u8 {
+    if row.label.starts_with("Plugin: ") {
+        1
+    } else {
+        0
+    }
+}
+
+#[allow(dead_code)]
+async fn plugin_dashboard_endpoint_rows(
+    plugin_manager: &plugin::PluginManager,
+) -> Vec<DashboardEndpointRow> {
+    plugin_manager
+        .list()
+        .await
+        .into_iter()
+        .map(|summary| {
+            let url = plugin_dashboard_command_name(&summary);
+            DashboardEndpointRow {
+                label: format!("Plugin: {}", summary.name),
+                status: runtime_status_from_plugin_status(&summary.status),
+                url,
+                port: 0,
+                pid: summary.pid,
+            }
+        })
+        .collect()
+}
+
+fn plugin_dashboard_command_name(summary: &plugin::PluginSummary) -> String {
+    summary
+        .command
+        .as_deref()
+        .filter(|command| !command.is_empty())
+        .and_then(|command| {
+            Path::new(command)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+        })
+        .unwrap_or(&summary.kind)
+        .to_string()
+}
+
+fn runtime_process_payload_with_status(
+    name: &str,
+    handle: &LocalRuntimeModelHandle,
+    status: &str,
+) -> api::RuntimeProcessPayload {
+    api::RuntimeProcessPayload {
+        name: name.to_string(),
+        backend: handle.backend.clone(),
+        status: status.to_string(),
+        port: handle.port,
+        pid: handle.process.pid(),
+        slots: handle.slots,
+    }
+}
+
+async fn upsert_dashboard_process(
+    shared: &Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    process: api::RuntimeProcessPayload,
+) {
+    let mut guard = shared.lock().await;
+    guard.retain(|existing| existing.name != process.name);
+    guard.push(process);
+    guard.sort_by_key(|process| process.name.to_lowercase());
+}
+
+async fn remove_dashboard_process(
+    shared: &Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    model_name: &str,
+) {
+    shared
+        .lock()
+        .await
+        .retain(|process| process.name != model_name);
 }
 
 fn bridge_publication_state(
@@ -69,6 +542,87 @@ fn bridge_publication_state(
             pending = *status_rx.borrow_and_update();
         }
     });
+}
+
+fn write_stderr_newline() {
+    let _ = std::io::stderr().write_all(b"\n");
+}
+
+fn emit_shutdown(reason: Option<String>) {
+    crate::inference::launch::mark_runtime_shutting_down();
+    let _ = emit_event(OutputEvent::Shutdown { reason });
+}
+
+#[derive(Clone)]
+struct StartupReadyReporter {
+    ready_by_model: Arc<Mutex<HashMap<String, bool>>>,
+    emitted: Arc<AtomicBool>,
+    primary_model: String,
+    api_port: u16,
+    console_port: Option<u16>,
+}
+
+impl StartupReadyReporter {
+    fn new(
+        models: &[String],
+        primary_model: String,
+        api_port: u16,
+        console_port: Option<u16>,
+    ) -> Self {
+        let ready_by_model = models.iter().cloned().map(|model| (model, false)).collect();
+        Self {
+            ready_by_model: Arc::new(Mutex::new(ready_by_model)),
+            emitted: Arc::new(AtomicBool::new(false)),
+            primary_model,
+            api_port,
+            console_port,
+        }
+    }
+
+    fn mark_ready_and_maybe_emit(&self, model_name: &str) {
+        let models_count = {
+            let mut ready_by_model = self
+                .ready_by_model
+                .lock()
+                .expect("startup readiness mutex poisoned");
+            if let Some(entry) = ready_by_model.get_mut(model_name) {
+                *entry = true;
+            }
+            if ready_by_model.values().all(|ready| *ready) {
+                Some(ready_by_model.len())
+            } else {
+                None
+            }
+        };
+
+        let Some(models_count) = models_count else {
+            return;
+        };
+
+        if self.emitted.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let api_url = format!("http://localhost:{}", self.api_port);
+        let console_url = self
+            .console_port
+            .map(|port| format!("http://localhost:{port}"));
+        let pi_command = Some(format!("pi --provider mesh --model {}", self.primary_model));
+        let goose_command = Some(format!(
+            "GOOSE_PROVIDER=openai OPENAI_HOST={api_url} OPENAI_API_KEY=mesh GOOSE_MODEL={} goose session",
+            self.primary_model
+        ));
+        let _ = emit_event(OutputEvent::RuntimeReady {
+            api_url,
+            console_url,
+            api_port: self.api_port,
+            console_port: self.console_port,
+            models_count: Some(models_count),
+            pi_command,
+            goose_command,
+        });
+        let _ = crate::cli::output::OutputManager::global().schedule_ready_prompt();
+    }
 }
 
 async fn record_first_joined_mesh_ts(node: &mesh::Node) {
@@ -173,10 +727,12 @@ fn owner_runtime_config(cli: &Cli) -> Result<mesh::OwnerRuntimeConfig> {
         Some(path) => match load_owner_keypair_for_runtime(&path) {
             Ok(keypair) => Some(keypair),
             Err(err) if !cli.owner_required => {
-                eprintln!(
-                    "⚠️ Owner identity unavailable at {}: {err}\n  Starting without owner attestation.",
-                    path.display()
-                );
+                let _ = emit_event(OutputEvent::Warning {
+                    message: format!(
+                        "Owner identity unavailable: {err}. Starting without owner attestation."
+                    ),
+                    context: Some(path.display().to_string()),
+                });
                 None
             }
             Err(err) => return Err(err),
@@ -223,6 +779,7 @@ async fn wait_shutdown_signal() {
 }
 
 pub(crate) async fn run() -> Result<()> {
+    crate::inference::launch::clear_runtime_shutting_down();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -231,7 +788,7 @@ pub(crate) async fn run() -> Result<()> {
                 .add_directive("nostr_sdk=warn".parse()?)
                 .add_directive("noq_proto::connection=warn".parse()?),
         )
-        .with_writer(std::io::stderr)
+        .with_writer(MeshTracingStderr)
         .init();
 
     // --help-advanced: print full help with all hidden options and commands visible
@@ -251,7 +808,7 @@ pub(crate) async fn run() -> Result<()> {
             cmd = cmd.mut_subcommand(name, |s| s.hide(false));
         }
         cmd.print_help().ok();
-        eprintln!();
+        write_stderr_newline();
         std::process::exit(0);
     }
 
@@ -262,13 +819,20 @@ pub(crate) async fn run() -> Result<()> {
 
     let normalized_args = crate::cli::normalize_runtime_surface_args(std::env::args_os());
     let mut cli = Cli::parse_from(normalized_args.normalized.clone());
+    crate::cli::output::OutputManager::init_global(
+        cli.log_format,
+        initial_console_session_mode(normalized_args.explicit_surface),
+    );
 
     if let Some(warning) = crate::cli::legacy_runtime_surface_warning(
         &cli,
         &normalized_args.original,
         normalized_args.explicit_surface,
     ) {
-        eprintln!("{warning}");
+        let _ = emit_event(OutputEvent::Warning {
+            message: warning,
+            context: None,
+        });
     }
 
     if let Some(name) = cli.plugin.clone() {
@@ -294,10 +858,9 @@ pub(crate) async fn run() -> Result<()> {
     // Acquire the per-instance runtime directory and flock (skip for --client — no local servers).
     // Wrap in Arc so it can be cheaply shared with election/spawn tasks that
     // need to write pidfiles for child processes (rpc-server, llama-server).
-    let runtime: Option<std::sync::Arc<crate::runtime::instance::InstanceRuntime>> = if !cli.client
-    {
+    let runtime: Option<Arc<crate::runtime::instance::InstanceRuntime>> = if !cli.client {
         match crate::runtime::instance::InstanceRuntime::acquire(std::process::id()) {
-            Ok(rt) => Some(std::sync::Arc::new(rt)),
+            Ok(rt) => Some(Arc::new(rt)),
             Err(e) => {
                 tracing::warn!("failed to acquire instance runtime: {e}");
                 None
@@ -340,10 +903,13 @@ pub(crate) async fn run() -> Result<()> {
                     {
                         Ok(summary) => {
                             if summary.children_killed > 0 || summary.dirs_gc_d > 0 {
-                                eprintln!(
-                                    "🧹 Reaped {} orphan children from {} dead instance(s)",
-                                    summary.children_killed, summary.dirs_gc_d
-                                );
+                                let _ = emit_event(OutputEvent::Info {
+                                    message: format!(
+                                        "Reaped {} orphan children from {} dead instance(s)",
+                                        summary.children_killed, summary.dirs_gc_d
+                                    ),
+                                    context: None,
+                                });
                             }
                         }
                         Err(e) => tracing::warn!("cross-runtime reap failed: {e}"),
@@ -359,10 +925,13 @@ pub(crate) async fn run() -> Result<()> {
 
     // Warn users who used to rely on --mesh-name auto-publishing
     if let Some(mesh_name) = cli.mesh_name.as_ref().filter(|_| !cli.publish) {
-        eprintln!(
-            "ℹ️  Mesh named '{}' — private by default. Add --publish to make it publicly discoverable.",
-            mesh_name
-        );
+        let _ = emit_event(OutputEvent::Info {
+            message: format!(
+                "Mesh named '{}' — private by default. Add --publish to make it publicly discoverable.",
+                mesh_name
+            ),
+            context: None,
+        });
     }
 
     // --- Public-to-private identity transition ---
@@ -373,7 +942,10 @@ pub(crate) async fn run() -> Result<()> {
     if is_public {
         mesh::mark_was_public();
     } else if mesh::was_previously_public() {
-        eprintln!("🔑 Previous run was public — rotating identity for private mesh");
+        let _ = emit_event(OutputEvent::Info {
+            message: "Previous run was public — rotating identity for private mesh".to_string(),
+            context: None,
+        });
         mesh::clear_public_identity();
     }
 
@@ -382,7 +954,9 @@ pub(crate) async fn run() -> Result<()> {
     // --- Auto-discover ---
     if cli.auto && cli.join.is_empty() {
         cli.nostr_discovery = true;
-        eprintln!("🔍 Discovering meshes via Nostr...");
+        let _ = emit_event(OutputEvent::DiscoveryStarting {
+            source: "Nostr auto-discovery".to_string(),
+        });
 
         let relays = nostr_relays(&cli.nostr_relay);
         let filter = nostr::MeshFilter {
@@ -390,7 +964,16 @@ pub(crate) async fn run() -> Result<()> {
             min_vram_gb: None,
             region: None,
         };
-        let meshes = nostr::discover(&relays, &filter, None).await?;
+        let meshes = match nostr::discover(&relays, &filter, None).await {
+            Ok(meshes) => meshes,
+            Err(err) => {
+                let _ = emit_event(OutputEvent::DiscoveryFailed {
+                    message: "Nostr auto-discovery failed".to_string(),
+                    detail: Some(err.to_string()),
+                });
+                return Err(err);
+            }
+        };
 
         let my_vram_gb = mesh::detect_vram_bytes_capped(cli.max_vram) as f64 / 1e9;
         let now = std::time::SystemTime::now()
@@ -413,30 +996,20 @@ pub(crate) async fn run() -> Result<()> {
                 .filter(|m| nostr::is_auto_eligible(m))
                 .collect()
         };
-        let hidden = meshes.len().saturating_sub(listed.len());
-        if hidden > 0 {
-            eprintln!(
-                "  Found {} mesh(es) ({} named mesh(es) hidden; use --mesh-name to join)",
-                listed.len(),
-                hidden
-            );
-        } else {
-            eprintln!("  Found {} mesh(es)", listed.len());
-        }
         for m in &listed {
             let score = nostr::score_mesh(m, now, last_mesh_id.as_deref());
-            eprintln!(
-                "  · {} (score: {}, {} nodes, {:.0}GB, {} clients{})",
+            let _ = emit_event(OutputEvent::MeshFound {
+                mesh: m.listing.name.as_deref().unwrap_or("unnamed").to_string(),
+                peers: m.listing.node_count,
+                region: m.listing.region.clone(),
+            });
+            tracing::debug!(
+                "Nostr auto-discovery candidate: {} score={} nodes={} vram_gb={:.0} clients={}",
                 m.listing.name.as_deref().unwrap_or("unnamed"),
                 score,
                 m.listing.node_count,
                 m.listing.total_vram_bytes as f64 / 1e9,
-                m.listing.client_count,
-                m.listing
-                    .region
-                    .as_ref()
-                    .map(|r| format!(", {r}"))
-                    .unwrap_or_default()
+                m.listing.client_count
             );
         }
 
@@ -451,17 +1024,14 @@ pub(crate) async fn run() -> Result<()> {
                             cli.mesh_name = Some(name.clone());
                         }
                     }
-                    eprintln!(
-                        "✅ Joining: {} ({} nodes, {} models{})",
-                        mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                        mesh.listing.node_count,
-                        mesh.listing.serving.len(),
-                        mesh.listing
-                            .region
-                            .as_ref()
-                            .map(|r| format!(", region: {r}"))
-                            .unwrap_or_default()
-                    );
+                    let _ = emit_event(OutputEvent::DiscoveryJoined {
+                        mesh: mesh
+                            .listing
+                            .name
+                            .as_deref()
+                            .unwrap_or("unnamed")
+                            .to_string(),
+                    });
                     for (token, _) in &candidates {
                         cli.join.push(token.clone());
                     }
@@ -470,21 +1040,25 @@ pub(crate) async fn run() -> Result<()> {
                     // No ephemeral probe — it fails when the target has a firewall
                     // even though the real join (via relay) would succeed.
                     let mut joined = false;
-                    for (i, (token, mesh)) in candidates.iter().enumerate() {
-                        eprintln!(
-                            "  Trying mesh {}{}...",
-                            mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                            if candidates.len() > 1 {
-                                format!(" ({}/{})", i + 1, candidates.len())
-                            } else {
-                                String::new()
-                            }
-                        );
+                    for (token, mesh) in &candidates {
+                        let _ = emit_event(OutputEvent::MeshFound {
+                            mesh: mesh
+                                .listing
+                                .name
+                                .as_deref()
+                                .unwrap_or("unnamed")
+                                .to_string(),
+                            peers: mesh.listing.node_count,
+                            region: mesh.listing.region.clone(),
+                        });
                         auto_join_candidates.push((token.clone(), mesh.listing.name.clone()));
                         joined = true;
                     }
                     if !joined {
-                        eprintln!("⚠️  No meshes found — starting new");
+                        let _ = emit_event(OutputEvent::DiscoveryFailed {
+                            message: "No meshes found — starting new".to_string(),
+                            detail: None,
+                        });
                         let models = nostr::default_models_for_vram(my_vram_gb);
                         start_new_mesh(&mut cli, &models, my_vram_gb, has_startup_models);
                     }
@@ -493,11 +1067,16 @@ pub(crate) async fn run() -> Result<()> {
             nostr::AutoDecision::StartNew { models } => {
                 if cli.client {
                     // Retry discovery — meshes may appear later
-                    eprintln!("⏳ No meshes found yet — retrying in 15s...");
+                    let _ = emit_event(OutputEvent::DiscoveryFailed {
+                        message: "No meshes found yet — retrying in 15s...".to_string(),
+                        detail: None,
+                    });
                     let mut found = false;
                     for attempt in 1..=20 {
                         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                        eprintln!("🔍 Retry {attempt}/20...");
+                        let _ = emit_event(OutputEvent::DiscoveryStarting {
+                            source: format!("Nostr retry {attempt}/20"),
+                        });
                         if let Ok(retry_meshes) = nostr::discover(&relays, &filter, None).await {
                             if let nostr::AutoDecision::Join { candidates } =
                                 nostr::smart_auto(&retry_meshes, my_vram_gb, target_name)
@@ -508,21 +1087,32 @@ pub(crate) async fn run() -> Result<()> {
                                         cli.mesh_name = Some(name.clone());
                                     }
                                 }
-                                eprintln!(
-                                    "✅ Joining: {} ({} nodes, {} models)",
-                                    mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                                    mesh.listing.node_count,
-                                    mesh.listing.serving.len()
-                                );
+                                let _ = emit_event(OutputEvent::DiscoveryJoined {
+                                    mesh: mesh
+                                        .listing
+                                        .name
+                                        .as_deref()
+                                        .unwrap_or("unnamed")
+                                        .to_string(),
+                                });
                                 for (token, _) in &candidates {
                                     cli.join.push(token.clone());
                                 }
                                 found = true;
                                 break;
                             }
+                        } else {
+                            let _ = emit_event(OutputEvent::DiscoveryFailed {
+                                message: format!("Retry {attempt}/20 discovery failed"),
+                                detail: None,
+                            });
                         }
                     }
                     if !found {
+                        let _ = emit_event(OutputEvent::DiscoveryFailed {
+                            message: "No meshes found after 5 minutes of retrying.".to_string(),
+                            detail: None,
+                        });
                         anyhow::bail!("No meshes found after 5 minutes of retrying.");
                     }
                 } else {
@@ -556,12 +1146,12 @@ pub(crate) async fn run() -> Result<()> {
                 .join(".mesh-llm")
                 .join("config.toml")
         });
-        eprintln!(
-            "⚠️ `mesh-llm serve` needs at least one startup model.\n  Add `[[models]]` to {}, or pass `--model` / `--gguf` explicitly.",
-            config_path.display()
-        );
+        let _ = emit_event(OutputEvent::Warning {
+            message: "`mesh-llm serve` needs at least one startup model. Add `[[models]]` or pass `--model` / `--gguf` explicitly.".to_string(),
+            context: Some(config_path.display().to_string()),
+        });
         Cli::command().print_help().ok();
-        eprintln!();
+        write_stderr_newline();
         return Ok(());
     }
     let mut startup_models = resolve_startup_models(&startup_specs, cli.max_vram).await?;
@@ -593,7 +1183,10 @@ pub(crate) async fn run() -> Result<()> {
         {
             Ok(()) => {}
             Err(err) => {
-                eprintln!("Warning: could not join Hugging Face update check task: {err}");
+                let _ = emit_event(OutputEvent::Warning {
+                    message: format!("Could not join Hugging Face update check task: {err}"),
+                    context: None,
+                });
             }
         }
     }
@@ -767,15 +1360,21 @@ async fn preflight_remote_startup_model(
     let fit = match fetched {
         Ok(Ok(fit)) => fit,
         Ok(Err(err)) => {
-            eprintln!(
-                "⚠️  [{declared_ref}] Published MoE preflight lookup failed ({err}); continuing with normal model resolution"
-            );
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!(
+                    "Published MoE preflight lookup failed ({err}); continuing with normal model resolution"
+                ),
+                context: Some(format!("model={declared_ref}")),
+            });
             None
         }
         Err(err) => {
-            eprintln!(
-                "⚠️  [{declared_ref}] Published MoE preflight task failed ({err}); continuing with normal model resolution"
-            );
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!(
+                    "Published MoE preflight task failed ({err}); continuing with normal model resolution"
+                ),
+                context: Some(format!("model={declared_ref}")),
+            });
             None
         }
     };
@@ -805,27 +1404,37 @@ fn apply_remote_startup_preflight(
     }
 
     if fit.full_model_fits() {
-        eprintln!(
-            "🧩 [{}] Published MoE preflight: full model should fit locally (~{} <= {}, mode={}, source={})",
-            model_label,
-            format_vram_gb(fit.full_model_launch_bytes),
-            format_vram_gb(fit.target_vram_bytes),
-            fit.analyzer_id,
-            fit.ranking_source,
-        );
+        let _ = emit_event(OutputEvent::MoeStatus {
+            model: model_label.to_string(),
+            status: crate::cli::output::MoeStatusSummary {
+                phase: "published MoE preflight".to_string(),
+                detail: format!(
+                    "full model should fit locally (~{} <= {}, mode={}, source={})",
+                    format_vram_gb(fit.full_model_launch_bytes),
+                    format_vram_gb(fit.target_vram_bytes),
+                    fit.analyzer_id,
+                    fit.ranking_source,
+                ),
+            },
+        });
         return Ok(());
     }
 
     if fit.shard_plan_fits() {
-        eprintln!(
-            "🧩 [{}] Published MoE preflight: full model needs ~{}, but a conservative {}-node shard should fit here (~{}/node, mode={}, source={})",
-            model_label,
-            format_vram_gb(fit.full_model_launch_bytes),
-            fit.recommended_nodes.unwrap_or(1),
-            format_vram_gb(fit.predicted_max_shard_launch_bytes.unwrap_or_default()),
-            fit.analyzer_id,
-            fit.ranking_source,
-        );
+        let _ = emit_event(OutputEvent::MoeStatus {
+            model: model_label.to_string(),
+            status: crate::cli::output::MoeStatusSummary {
+                phase: "published MoE preflight".to_string(),
+                detail: format!(
+                    "full model needs ~{}, but a conservative {}-node shard should fit here (~{}/node, mode={}, source={})",
+                    format_vram_gb(fit.full_model_launch_bytes),
+                    fit.recommended_nodes.unwrap_or(1),
+                    format_vram_gb(fit.predicted_max_shard_launch_bytes.unwrap_or_default()),
+                    fit.analyzer_id,
+                    fit.ranking_source,
+                ),
+            },
+        });
         return Ok(());
     }
     Ok(())
@@ -951,6 +1560,23 @@ fn should_show_serve_config_help(
         && cli.discover.is_none()
 }
 
+fn initial_console_session_mode(explicit_surface: Option<RuntimeSurface>) -> ConsoleSessionMode {
+    initial_console_session_mode_for_surface(
+        explicit_surface,
+        interactive::current_console_session_mode(),
+    )
+}
+
+fn initial_console_session_mode_for_surface(
+    explicit_surface: Option<RuntimeSurface>,
+    current_mode: ConsoleSessionMode,
+) -> ConsoleSessionMode {
+    match explicit_surface {
+        Some(RuntimeSurface::Serve) => current_mode,
+        _ => ConsoleSessionMode::Fallback,
+    }
+}
+
 fn startup_rpc_backend_device<'a>(
     cli_device: Option<&'a str>,
     primary_startup_model: Option<&'a StartupModelPlan>,
@@ -1008,19 +1634,28 @@ pub async fn ensure_draft(model: &std::path::Path) -> Option<PathBuf> {
         return Some(draft_path);
     }
     // Draft not on disk — download it (small, <1GB)
-    eprintln!(
-        "📥 Downloading draft model {} ({})...",
-        draft_entry.name, draft_entry.size
-    );
+    let _ = emit_event(OutputEvent::Info {
+        message: format!(
+            "Downloading draft model {} ({})...",
+            draft_entry.name, draft_entry.size
+        ),
+        context: None,
+    });
     match catalog::download_model(draft_entry).await {
         Ok(path) => {
-            eprintln!("✅ Draft model ready: {}", draft_entry.name);
+            let _ = emit_event(OutputEvent::Info {
+                message: format!("Draft model ready: {}", draft_entry.name),
+                context: None,
+            });
             Some(path)
         }
         Err(e) => {
-            eprintln!(
-                "⚠ Failed to download draft model: {e} — continuing without speculative decoding"
-            );
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!(
+                    "Failed to download draft model: {e} — continuing without speculative decoding"
+                ),
+                context: Some(format!("draft_model={}", draft_entry.name)),
+            });
             None
         }
     }
@@ -1061,17 +1696,26 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         // No API requests yet — log what the mesh is serving for visibility
         let served: Vec<String> = peers.iter().flat_map(|p| p.routable_models()).collect();
         if !served.is_empty() {
-            eprintln!(
-                "📋 No demand yet — mesh is serving {:?}, staying standby until needed",
-                served
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!(
+                    "No demand yet — mesh is serving {:?}, staying standby until needed",
+                    served
+                ),
+                context: None,
+            });
         } else {
-            eprintln!("📋 No demand signals — no models requested");
+            let _ = emit_event(OutputEvent::Info {
+                message: "No demand signals — no models requested".to_string(),
+                context: None,
+            });
         }
         return None;
     }
 
-    eprintln!("📋 Active demand: {:?}", demand.keys().collect::<Vec<_>>());
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("Active demand: {:?}", demand.keys().collect::<Vec<_>>()),
+        context: None,
+    });
 
     // Count how many nodes are serving each model
     let mut serving_count: std::collections::HashMap<String, usize> =
@@ -1092,12 +1736,15 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
             .unwrap_or(0);
         let needed = (model_bytes as f64 * 1.1) as u64;
         if model_bytes > 0 && needed > my_vram {
-            eprintln!(
-                "📋 Skipping {} — needs {:.1}GB, we have {:.1}GB",
-                model,
-                needed as f64 / 1e9,
-                my_vram as f64 / 1e9
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!(
+                    "Skipping {} — needs {:.1}GB, we have {:.1}GB",
+                    model,
+                    needed as f64 / 1e9,
+                    my_vram as f64 / 1e9
+                ),
+                context: None,
+            });
             return false;
         }
         true
@@ -1105,7 +1752,7 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
 
     // Sort demand entries by request_count descending (hottest first)
     let mut demand_sorted: Vec<(String, mesh::ModelDemand)> = demand.into_iter().collect();
-    demand_sorted.sort_by_key(|b| Reverse(b.1.request_count));
+    demand_sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1.request_count));
 
     // Priority 1: Unserved models on disk, ordered by demand
     let mut candidates: Vec<String> = Vec::new();
@@ -1128,18 +1775,21 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
                 .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
             let idx = (hash as usize) % candidates.len();
             let pick = &candidates[idx];
-            eprintln!(
-                "📋 Assigned to serve {} (unserved, on disk, {} candidates, by demand)",
-                pick,
-                candidates.len()
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!(
+                    "Assigned to serve {} (unserved, on disk, {} candidates, by demand)",
+                    pick,
+                    candidates.len()
+                ),
+                context: None,
+            });
             return Some(pick.clone());
         }
         let pick = &candidates[0];
-        eprintln!(
-            "📋 Assigned to serve {} (unserved, on disk, by demand)",
-            pick
-        );
+        let _ = emit_event(OutputEvent::Info {
+            message: format!("Assigned to serve {} (unserved, on disk, by demand)", pick),
+            context: None,
+        });
         return Some(pick.clone());
     }
 
@@ -1161,10 +1811,13 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
             .max_by_key(|(_, &v)| v)
             .map(|(k, _)| k.as_str())
             .unwrap_or("?");
-        eprintln!(
-            "📋 Assigned to serve {} ({} servers vs {} has {}) — rebalancing",
-            pick, count, max_model, max_count
-        );
+        let _ = emit_event(OutputEvent::Info {
+            message: format!(
+                "Assigned to serve {} ({} servers vs {} has {}) — rebalancing",
+                pick, count, max_model, max_count
+            ),
+            context: None,
+        });
         return Some(pick.clone());
     }
 
@@ -1180,12 +1833,15 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
             if needed <= my_vram {
                 downloadable.push((m.clone(), d.request_count));
             } else {
-                eprintln!(
-                    "📋 Skipping {} — needs {:.1}GB, we have {:.1}GB",
-                    m,
-                    needed as f64 / 1e9,
-                    my_vram as f64 / 1e9
-                );
+                let _ = emit_event(OutputEvent::Info {
+                    message: format!(
+                        "Skipping {} — needs {:.1}GB, we have {:.1}GB",
+                        m,
+                        needed as f64 / 1e9,
+                        my_vram as f64 / 1e9
+                    ),
+                    context: None,
+                });
             }
         }
     }
@@ -1199,17 +1855,23 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
                 .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(b as u64));
             let idx = (hash as usize) % downloadable.len();
             let (pick, _) = &downloadable[idx];
-            eprintln!(
-                "📋 Assigned to serve {} (unserved, will download, by demand)",
-                pick
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!(
+                    "Assigned to serve {} (unserved, will download, by demand)",
+                    pick
+                ),
+                context: None,
+            });
             return Some(pick.clone());
         }
         let (pick, _) = &downloadable[0];
-        eprintln!(
-            "📋 Assigned to serve {} (unserved, will download, by demand)",
-            pick
-        );
+        let _ = emit_event(OutputEvent::Info {
+            message: format!(
+                "Assigned to serve {} (unserved, will download, by demand)",
+                pick
+            ),
+            context: None,
+        });
         return Some(pick.clone());
     }
 
@@ -1218,7 +1880,10 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         .iter()
         .all(|(m, _)| serving_count.get(m).copied().unwrap_or(0) > 0);
     if all_covered {
-        eprintln!("📋 All demanded models are covered — staying on standby");
+        let _ = emit_event(OutputEvent::Info {
+            message: "All demanded models are covered — staying on standby".to_string(),
+            context: None,
+        });
     }
 
     None
@@ -1317,10 +1982,13 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
         };
 
         if should_promote {
-            eprintln!(
-                "📋 Promoting to serve {} — demand {:.0} req/server (coldest: {:.0})",
-                hottest_model, hottest_ratio, coldest_ratio
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!(
+                    "Promoting to serve {} — demand {:.0} req/server (coldest: {:.0})",
+                    hottest_model, hottest_ratio, coldest_ratio
+                ),
+                context: None,
+            });
             return Some(hottest_model.clone());
         }
     }
@@ -1366,7 +2034,10 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(node).await;
                     }
-                    eprintln!("Joined mesh");
+                    let _ = emit_event(OutputEvent::Info {
+                        message: "Joined mesh".to_string(),
+                        context: None,
+                    });
                     return Ok(());
                 }
                 Err(err) => tracing::warn!("Failed to join via token: {err}"),
@@ -1383,31 +2054,57 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
             region: cli.region.clone(),
         };
         let target_name = cli.discover.as_deref().or(cli.mesh_name.as_deref());
-        let meshes = nostr::discover(&relays, &filter, None).await?;
+        let _ = emit_event(OutputEvent::DiscoveryStarting {
+            source: "Nostr discovery".to_string(),
+        });
+        let meshes = match nostr::discover(&relays, &filter, None).await {
+            Ok(meshes) => meshes,
+            Err(err) => {
+                let _ = emit_event(OutputEvent::DiscoveryFailed {
+                    message: "Nostr discovery failed".to_string(),
+                    detail: Some(err.to_string()),
+                });
+                return Err(err);
+            }
+        };
         match nostr::smart_auto(&meshes, 0.0, target_name) {
             nostr::AutoDecision::Join { candidates } => {
                 let mut last_err: Option<anyhow::Error> = None;
                 for (token, mesh) in &candidates {
-                    eprintln!(
-                        "✅ Joining: {} ({} nodes, {} models{})",
-                        mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                        mesh.listing.node_count,
-                        mesh.listing.serving.len(),
-                        mesh.listing
-                            .region
-                            .as_ref()
-                            .map(|r| format!(", region: {r}"))
-                            .unwrap_or_default()
-                    );
+                    let _ = emit_event(OutputEvent::MeshFound {
+                        mesh: mesh
+                            .listing
+                            .name
+                            .as_deref()
+                            .unwrap_or("unnamed")
+                            .to_string(),
+                        peers: mesh.listing.node_count,
+                        region: mesh.listing.region.clone(),
+                    });
                     match node.join(token).await {
                         Ok(()) => {
                             if node.mesh_id().await.is_some() {
                                 record_first_joined_mesh_ts(node).await;
                             }
+                            let _ = emit_event(OutputEvent::DiscoveryJoined {
+                                mesh: mesh
+                                    .listing
+                                    .name
+                                    .as_deref()
+                                    .unwrap_or("unnamed")
+                                    .to_string(),
+                            });
                             last_err = None;
                             break;
                         }
                         Err(err) => {
+                            let _ = emit_event(OutputEvent::DiscoveryFailed {
+                                message: format!(
+                                    "Failed to join mesh {}",
+                                    mesh.listing.name.as_deref().unwrap_or("unnamed")
+                                ),
+                                detail: Some(err.to_string()),
+                            });
                             tracing::warn!("Failed to join mesh candidate: {err}");
                             last_err = Some(err);
                         }
@@ -1418,6 +2115,10 @@ async fn join_mesh_for_mcp(cli: &Cli, node: &mesh::Node) -> Result<()> {
                 }
             }
             nostr::AutoDecision::StartNew { .. } => {
+                let _ = emit_event(OutputEvent::DiscoveryFailed {
+                    message: "No mesh found for MCP mode".to_string(),
+                    detail: Some("Pass --join or start a mesh first.".to_string()),
+                });
                 anyhow::bail!("No mesh found for MCP mode. Pass --join or start a mesh first.");
             }
         }
@@ -1635,7 +2336,10 @@ async fn run_auto(
                     if node.mesh_id().await.is_some() {
                         record_first_joined_mesh_ts(&node).await;
                     }
-                    eprintln!("Joined mesh");
+                    let _ = emit_event(OutputEvent::Info {
+                        message: "Joined mesh".to_string(),
+                        context: None,
+                    });
                     joined = true;
                     successful_join = Some((t.clone(), mesh_name.clone()));
                     break;
@@ -1657,7 +2361,10 @@ async fn run_auto(
         }
 
         if !joined {
-            eprintln!("Failed to join any peer — running standalone");
+            let _ = emit_event(OutputEvent::Warning {
+                message: "Failed to join any peer — running standalone".to_string(),
+                context: None,
+            });
         }
 
         // Save mesh_id for sticky preference after gossip propagates it
@@ -1674,7 +2381,15 @@ async fn run_auto(
             });
         }
 
-        eprintln!("This node's token (for others to join): {token}");
+        let mesh_id = node
+            .mesh_id()
+            .await
+            .unwrap_or_else(|| "pending".to_string());
+        let _ = emit_event(OutputEvent::InviteToken {
+            token: token.clone(),
+            mesh_id,
+            mesh_name: cli.mesh_name.clone(),
+        });
 
         // Periodic rejoin: re-connect to bootstrap tokens every 60s.
         // No-op if already connected (connect_to_peer returns early).
@@ -1724,8 +2439,12 @@ async fn run_auto(
         record_first_joined_mesh_ts(&node).await;
         mesh::save_last_mesh_id(&mesh_id);
         tracing::info!("Mesh ID: {mesh_id}");
-        eprintln!("Invite: {token}");
-        eprintln!("Waiting for peers...");
+        let _ = emit_event(OutputEvent::InviteToken {
+            token: token.clone(),
+            mesh_id: mesh_id.clone(),
+            mesh_name: cli.mesh_name.clone(),
+        });
+        let _ = emit_event(OutputEvent::WaitingForPeers { detail: None });
 
         // Originator also re-discovers: if we started solo and a matching mesh
         // already exists on Nostr, we should join it instead of staying alone.
@@ -1772,7 +2491,9 @@ async fn run_auto(
         primary.resolved_path.clone()
     } else {
         // No --model: try to find a model on disk that the mesh needs
-        eprintln!("No --model specified, checking local models against mesh...");
+        let _ = emit_event(OutputEvent::WaitingForPeers {
+            detail: Some("No --model specified, checking local models against mesh...".to_string()),
+        });
 
         // Give gossip a moment to propagate
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -1782,11 +2503,6 @@ async fn run_auto(
         let assignment = if assignment.is_none() && cli.auto && !is_client {
             let pack = nostr::auto_model_pack(node.vram_bytes() as f64 / 1e9);
             if !pack.is_empty() {
-                eprintln!(
-                    "📋 No unserved demand — serving {} for {:.0}GB capacity",
-                    pack[0],
-                    node.vram_bytes() as f64 / 1e9
-                );
                 Some(pack[0].clone())
             } else {
                 assignment
@@ -1795,13 +2511,21 @@ async fn run_auto(
             assignment
         };
         if let Some(model_name) = assignment {
-            eprintln!("Mesh assigned model: {model_name}");
+            let _ = emit_event(OutputEvent::HostElected {
+                model: model_name.clone(),
+                host: node.id().fmt_short().to_string(),
+                role: Some("host".to_string()),
+                capacity_gb: Some(node.vram_bytes() as f64 / 1e9),
+            });
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
             } else if let Some(cat) = catalog::find_model(&model_name) {
                 // Model not on disk but in catalog — download it
-                eprintln!("📥 Downloading {} for mesh...", model_name);
+                let _ = emit_event(OutputEvent::Info {
+                    message: format!("Downloading {model_name} for mesh..."),
+                    context: None,
+                });
                 catalog::download_model(cat).await?
             } else {
                 model_path
@@ -1813,15 +2537,24 @@ async fn run_auto(
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             // If a model becomes unserved while we're standby, we'll promote
             if is_client {
-                eprintln!("📡 Running as client — proxying requests to mesh");
+                let _ = emit_event(OutputEvent::PassiveMode {
+                    role: "client".to_string(),
+                    status: RuntimeStatus::Starting,
+                    capacity_gb: None,
+                    models_on_disk: None,
+                    detail: Some("Running as client — proxying requests to mesh".to_string()),
+                });
             } else {
-                eprintln!("💤 No matching model on disk — running as standby GPU node");
-                eprintln!(
-                    "   Capacity: {:.1}GB, models on disk: {:?}",
-                    node.vram_bytes() as f64 / 1e9,
-                    local_models
-                );
-                eprintln!("   Proxying requests to other nodes. Will activate when needed.");
+                let _ = emit_event(OutputEvent::PassiveMode {
+                    role: "standby".to_string(),
+                    status: RuntimeStatus::Starting,
+                    capacity_gb: Some(node.vram_bytes() as f64 / 1e9),
+                    models_on_disk: Some(local_models.clone()),
+                    detail: Some(
+                        "No matching model on disk — running as standby GPU node. Proxying requests to other nodes. Will activate when needed."
+                            .to_string(),
+                    ),
+                });
             }
             match run_passive(&cli, node.clone(), is_client, plugin_manager.clone()).await? {
                 Some(model_name) => {
@@ -1864,7 +2597,10 @@ async fn run_auto(
     // override an explicitly supplied `--draft` value.
     if !cli.no_draft && cli.draft.is_none() {
         if let Some(draft_path) = ensure_draft(&model).await {
-            eprintln!("Auto-detected draft model: {}", draft_path.display());
+            let _ = emit_event(OutputEvent::Info {
+                message: format!("Auto-detected draft model: {}", draft_path.display()),
+                context: None,
+            });
             cli.draft = Some(draft_path);
         }
     }
@@ -1911,6 +2647,10 @@ async fn run_auto(
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
     let mut runtime_models: HashMap<String, LocalRuntimeModelHandle> = HashMap::new();
     let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
+    let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let input_handler_enabled = crate::cli::output::OutputManager::global()
+        .console_session_mode()
+        .is_some();
 
     // Take over listener from bootstrap proxy (if running), or bind a new one
     let existing_listener = if let Some(tx) = bootstrap_listener_tx {
@@ -1927,7 +2667,7 @@ async fn run_auto(
     let proxy_rx = target_rx.clone();
     let proxy_affinity = affinity_router.clone();
     let api_control_tx = control_tx.clone();
-    tokio::spawn(async move {
+    let api_proxy_handle = tokio::spawn(async move {
         api_proxy(
             proxy_node,
             api_port,
@@ -1942,6 +2682,7 @@ async fn run_auto(
 
     // Console (optional)
     let model_name_for_console = model_name.clone();
+    let mut console_server_handle = None;
     let console_state = if let Some(cport) = console_port {
         let model_size_bytes = election::total_model_bytes(&model);
         let cs = api::MeshApi::new(
@@ -1970,7 +2711,7 @@ async fn run_auto(
         let cs2 = cs.clone();
         let console_rx = target_rx.clone();
         let mn = model_name_for_console.clone();
-        tokio::spawn(async move {
+        console_server_handle = Some(tokio::spawn(async move {
             // Console still takes old-style InferenceTarget for now — adapt
             let (adapted_tx, adapted_rx) =
                 tokio::sync::watch::channel(election::InferenceTarget::None);
@@ -1986,11 +2727,22 @@ async fn run_auto(
                 }
             });
             api::start(cport, cs2, adapted_rx, cli.listen_all, cli.headless).await;
-        });
+        }));
         Some(cs)
     } else {
         None
     };
+
+    crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
+        RuntimeDashboardSnapshotProvider::new(
+            node.clone(),
+            dashboard_processes.clone(),
+            Some(plugin_manager.clone()),
+            api_port,
+            console_port,
+            cli.headless,
+        ),
+    ));
 
     if !is_client {
         if let Some(ref cs) = console_state {
@@ -2026,7 +2778,6 @@ async fn run_auto(
     let force_split = cli.split;
     let llama_flavor = cli.llama_flavor;
     let cb_console_port = console_port;
-    let cli_headless = cli.headless;
     let model_name_for_cb = model_name.clone();
     let model_name_for_election = model_name.clone();
     let node_for_cb = node.clone();
@@ -2034,8 +2785,30 @@ async fn run_auto(
     let primary_target_tx = target_tx.clone();
     let console_state_for_election = console_state.clone();
     let console_state_for_primary_process = console_state.clone();
+    let interactive_console_state = console_state.clone();
+    let interactive_control_tx = control_tx.clone();
+    let interactive_started = Arc::new(AtomicBool::new(false));
     let primary_process_model_name = model_name.clone();
     let primary_model_name_for_advertise = model_name.clone();
+    let startup_model_names: Vec<String> = startup_models
+        .iter()
+        .map(|model| {
+            router::strip_split_suffix_owned(
+                &model
+                    .resolved_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy(),
+            )
+        })
+        .collect();
+    let startup_ready_reporter = StartupReadyReporter::new(
+        &startup_model_names,
+        model_name.clone(),
+        api_port,
+        cb_console_port,
+    );
+    let primary_startup_ready_reporter = startup_ready_reporter.clone();
     let moe_runtime_options = moe::MoeRuntimeOptions::default();
     let primary_mmproj = primary_startup_model
         .as_ref()
@@ -2048,6 +2821,7 @@ async fn run_auto(
         .and_then(|model| model.pinned_gpu.clone());
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_runtime = runtime_arc.clone();
+    let dashboard_processes_for_primary_task = dashboard_processes.clone();
     let primary_task = tokio::spawn(async move {
         election::election_loop(
             election::ElectionLoopParams {
@@ -2074,6 +2848,10 @@ async fn run_auto(
             move |is_host, llama_ready| {
                 let advertise_node = node_for_cb.clone();
                 let advertise_model = primary_model_name_for_advertise.clone();
+                let interactive_started = interactive_started.clone();
+                let interactive_console_state = interactive_console_state.clone();
+                let interactive_control_tx = interactive_control_tx.clone();
+                let startup_ready_reporter = primary_startup_ready_reporter.clone();
                 tokio::spawn(async move {
                     if is_host && llama_ready {
                         advertise_model_ready(&advertise_node, &advertise_model, &advertise_model)
@@ -2084,22 +2862,34 @@ async fn run_auto(
                 });
                 if llama_ready {
                     let n = node_for_cb.clone();
-                    tokio::spawn(async move { n.set_llama_ready(true).await; });
+                    tokio::spawn(async move {
+                        n.set_llama_ready(true).await;
+                    });
                 }
                 if is_host && llama_ready {
-                    let url = format!("http://localhost:{api_port}");
-                    eprintln!("  API:     {url}");
-                    if let Some(cp) = cb_console_port {
-                        eprintln!("{}", format_console_ready_line(cli_headless, cp));
-                    }
                     update_pi_models_json(&model_name_for_cb, api_port);
-                    eprintln!();
-                    eprintln!("  pi:    pi --provider mesh --model {model_name_for_cb}");
-                    eprintln!("  goose: GOOSE_PROVIDER=openai OPENAI_HOST={url} OPENAI_API_KEY=mesh GOOSE_MODEL={model_name_for_cb} goose session");
-                } else if is_host {
-                    eprintln!("⏳ Starting llama-server...");
+                    startup_ready_reporter.mark_ready_and_maybe_emit(&model_name_for_cb);
                 } else {
-                    eprintln!("  API: http://localhost:{api_port} (proxied to host)");
+                    let _ = emit_event(OutputEvent::Info {
+                        message: format!("API: http://localhost:{api_port} (proxied to host)"),
+                        context: None,
+                    });
+                }
+                if input_handler_enabled
+                    && llama_ready
+                    && !interactive_started.swap(true, Ordering::AcqRel)
+                    && std::io::stdin().is_terminal()
+                {
+                    if let Some(cs) = interactive_console_state {
+                        // Spawn input handler for both Dashboard and line-oriented Fallback modes;
+                        // spawn_handler internally selects the variant.
+                        interactive::spawn_handler(
+                            interactive_control_tx,
+                            cs,
+                            crate::cli::output::OutputManager::global(),
+                            InitialPromptMode::Deferred,
+                        );
+                    }
                 }
                 if let Some(ref cs) = console_state_for_election {
                     let cs = cs.clone();
@@ -2112,6 +2902,7 @@ async fn run_auto(
                 let context_node = node_for_primary_process.clone();
                 let model_name = primary_process_model_name.clone();
                 let console_state = console_state_for_primary_process.clone();
+                let dashboard_processes = dashboard_processes_for_primary_task.clone();
                 tokio::spawn(async move {
                     match process {
                         Some(process) => {
@@ -2121,18 +2912,21 @@ async fn run_auto(
                                 Some(process.context_length),
                             )
                             .await;
+                            let payload = local_process_payload(
+                                &model_name,
+                                &process.backend,
+                                process.port,
+                                process.pid,
+                                slots,
+                            );
+                            upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
                             if let Some(cs) = console_state {
-                                cs.upsert_local_process(local_process_payload(
-                                    &model_name,
-                                    &process.backend,
-                                    process.port,
-                                    process.pid,
-                                ))
-                                .await;
+                                cs.upsert_local_process(payload).await;
                             }
                         }
                         None => {
                             set_advertised_model_context(&context_node, &model_name, None).await;
+                            remove_dashboard_process(&dashboard_processes, &model_name).await;
                             if let Some(cs) = console_state {
                                 cs.remove_local_process(&model_name).await;
                             }
@@ -2140,7 +2934,8 @@ async fn run_auto(
                     }
                 });
             },
-        ).await;
+        )
+        .await;
     });
     managed_models.insert(
         model_name.clone(),
@@ -2154,10 +2949,6 @@ async fn run_auto(
     // Each additional model gets its own solo election loop — no rpc, no draft, no split.
     // They share the same target_tx so the proxy sees all models.
     if startup_models.len() > 1 {
-        eprintln!(
-            "🔀 Multi-model mode: {} additional model(s)",
-            startup_models.len() - 1
-        );
         // Announce all models to mesh
         let all_names: Vec<String> = startup_models
             .iter()
@@ -2169,6 +2960,10 @@ async fn run_auto(
                     .to_string()
             })
             .collect();
+        let _ = emit_event(OutputEvent::MultiModelMode {
+            count: all_names.len(),
+            models: all_names.clone(),
+        });
         node.set_models(all_names).await;
         node.regossip().await;
 
@@ -2201,11 +2996,12 @@ async fn run_auto(
             let extra_model_name_for_advertise = extra_model_name.clone();
             let extra_node_for_advertise = node.clone();
             let extra_node_for_process = node.clone();
+            let extra_startup_ready_reporter = startup_ready_reporter.clone();
             let primary_model_name_for_extra = model_name.clone();
             let managed_model_name = extra_name.clone();
-            eprintln!("  + {extra_name}");
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
             let extra_runtime = runtime_arc.clone();
+            let dashboard_processes_for_extra_task = dashboard_processes.clone();
             let extra_task = tokio::spawn(async move {
                 election::election_loop(
                     election::ElectionLoopParams {
@@ -2230,6 +3026,7 @@ async fn run_auto(
                         slots,
                     },
                     move |is_host, llama_ready| {
+                        let startup_ready_reporter = extra_startup_ready_reporter.clone();
                         let advertise_node = extra_node_for_advertise.clone();
                         let model_name = extra_model_name_for_advertise.clone();
                         let primary_model_name = primary_model_name_for_extra.clone();
@@ -2242,14 +3039,28 @@ async fn run_auto(
                             }
                         });
                         if is_host && llama_ready {
-                            eprintln!("✅ [{extra_model_name_for_status}] ready (multi-model)");
-                            eprintln!("  API: http://localhost:{api_port_extra} (model={extra_model_name_for_status})");
+                            startup_ready_reporter
+                                .mark_ready_and_maybe_emit(&extra_model_name_for_status);
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!(
+                                    "[{extra_model_name_for_status}] ready (multi-model)"
+                                ),
+                                context: None,
+                            });
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!(
+                                    "API: http://localhost:{api_port_extra} (model={extra_model_name_for_status})"
+                                ),
+                                context: None,
+                            });
                         }
                     },
                     move |process| {
                         let context_node = extra_node_for_process.clone();
                         let model_name = extra_model_name_for_process.clone();
                         let console_state = extra_console_state.clone();
+                        let dashboard_processes =
+                            dashboard_processes_for_extra_task.clone();
                         tokio::spawn(async move {
                             match process {
                                 Some(process) => {
@@ -2259,19 +3070,30 @@ async fn run_auto(
                                         Some(process.context_length),
                                     )
                                     .await;
+                                    let payload = local_process_payload(
+                                        &model_name,
+                                        &process.backend,
+                                        process.port,
+                                        process.pid,
+                                        slots,
+                                    );
+                                    upsert_dashboard_process(
+                                        &dashboard_processes,
+                                        payload.clone(),
+                                    )
+                                    .await;
                                     if let Some(cs) = console_state {
-                                        cs.upsert_local_process(local_process_payload(
-                                            &model_name,
-                                            &process.backend,
-                                            process.port,
-                                            process.pid,
-                                        ))
-                                        .await;
+                                        cs.upsert_local_process(payload).await;
                                     }
                                 }
                                 None => {
                                     set_advertised_model_context(&context_node, &model_name, None)
                                         .await;
+                                    remove_dashboard_process(
+                                        &dashboard_processes,
+                                        &model_name,
+                                    )
+                                    .await;
                                     if let Some(cs) = console_state {
                                         cs.remove_local_process(&model_name).await;
                                     }
@@ -2308,8 +3130,8 @@ async fn run_auto(
                     nostr::publish_loop(
                         pub_node,
                         nostr_keys,
-                        relays,
-                        nostr::PublishLoopOptions {
+                        nostr::PublishLoopConfig {
+                            relays,
                             name: pub_name,
                             region: pub_region,
                             max_clients: pub_max_clients,
@@ -2321,10 +3143,12 @@ async fn run_auto(
                 }))
             }
             Err(e) => {
-                eprintln!(
-                    "⚠️  Publishing to Nostr failed: {e}.\n\
-                     Mesh is running privately — add --publish after fixing the issue to make discoverable."
-                );
+                let _ = emit_event(OutputEvent::Warning {
+                    message: format!(
+                        "Publishing to Nostr failed: {e}. Mesh is running privately — add --publish after fixing the issue to make discoverable."
+                    ),
+                    context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
+                });
                 tracing::warn!("Nostr publish failed: {e}");
                 if let Some(ref cs) = console_state {
                     cs.set_publication_state(api::PublicationState::PublishFailed)
@@ -2357,7 +3181,7 @@ async fn run_auto(
     loop {
         tokio::select! {
             _ = wait_shutdown_signal() => {
-                eprintln!("\nShutting down...");
+                emit_shutdown(None);
                 break;
             }
             Some(cmd) = control_rx.recv() => {
@@ -2411,14 +3235,17 @@ async fn run_auto(
                             .await;
                             advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
                             node.set_available_models(models::scan_local_models()).await;
-                            if let Some(ref cs) = console_state {
-                                cs.upsert_local_process(local_process_payload(
-                                    &loaded_name,
-                                    &handle.backend,
-                                    handle.port,
-                                    handle.process.pid(),
-                                ))
+                            let payload = local_process_payload(
+                                &loaded_name,
+                                &handle.backend,
+                                handle.port,
+                                handle.process.pid(),
+                                slots,
+                            );
+                            upsert_dashboard_process(&dashboard_processes, payload.clone())
                                 .await;
+                            if let Some(ref cs) = console_state {
+                                cs.upsert_local_process(payload).await;
                             }
 
                             let event_tx = runtime_event_tx.clone();
@@ -2432,12 +3259,15 @@ async fn run_auto(
                                 });
                             });
 
-                            eprintln!(
-                                "✅ Runtime-loaded {} model '{}' on :{}",
-                                handle.backend,
-                                loaded_name,
-                                handle.port
-                            );
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!(
+                                    "Runtime-loaded {} model '{}' on :{}",
+                                    handle.backend,
+                                    loaded_name,
+                                    handle.port
+                                ),
+                                context: None,
+                            });
                             runtime_models.insert(loaded_name.clone(), handle);
                             Ok(loaded_name)
                         }
@@ -2455,28 +3285,53 @@ async fn run_auto(
                             let port = handle.port;
                             remove_runtime_local_target(&target_tx, &model, port);
                             withdraw_advertised_model(&node, &model).await;
+                            upsert_dashboard_process(
+                                &dashboard_processes,
+                                runtime_process_payload_with_status(&model, &handle, "shutting down"),
+                            )
+                            .await;
+                            if let Some(ref cs) = console_state {
+                                cs.upsert_local_process(runtime_process_payload_with_status(
+                                    &model,
+                                    &handle,
+                                    "shutting down",
+                                ))
+                                .await;
+                            }
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                             handle.shutdown().await;
                             remove_serving_assignment(&node, &model).await;
+                            remove_dashboard_process(&dashboard_processes, &model).await;
                             if let Some(ref cs) = console_state {
                                 cs.remove_local_process(&model).await;
                             }
-                            eprintln!("🗑 Unloaded local model '{}' from :{}", model, port);
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!("Unloaded local model '{}' from :{}", model, port),
+                                context: None,
+                            });
                             Ok(())
                         } else if let Some(controller) = managed_models.remove(&model) {
                             let _ = controller.stop_tx.send(true);
                             let _ = controller.task.await;
                             withdraw_advertised_model(&node, &model).await;
                             remove_serving_assignment(&node, &model).await;
+                            remove_dashboard_process(&dashboard_processes, &model).await;
                             if let Some(ref cs) = console_state {
                                 cs.remove_local_process(&model).await;
                             }
-                            eprintln!("🗑 Unloaded managed model '{}'", model);
+                            let _ = emit_event(OutputEvent::Info {
+                                message: format!("Unloaded managed model '{}'", model),
+                                context: None,
+                            });
                             Ok(())
                         } else {
                             Err(anyhow::anyhow!("model '{model}' is not loaded"))
                         };
                         let _ = resp.send(result);
+                    }
+                    api::RuntimeControlRequest::Shutdown => {
+                        emit_shutdown(None);
+                        break;
                     }
                 }
             }
@@ -2489,15 +3344,26 @@ async fn run_auto(
                             .unwrap_or(false);
                         if matches {
                             if let Some(handle) = runtime_models.remove(&model) {
+                                upsert_dashboard_process(
+                                    &dashboard_processes,
+                                    runtime_process_payload_with_status(&model, &handle, "exited"),
+                                )
+                                .await;
+                                if let Some(ref cs) = console_state {
+                                    cs.upsert_local_process(runtime_process_payload_with_status(
+                                        &model, &handle, "exited",
+                                    ))
+                                    .await;
+                                }
                                 handle.shutdown().await;
                             }
                             remove_runtime_local_target(&target_tx, &model, port);
                             withdraw_advertised_model(&node, &model).await;
                             remove_serving_assignment(&node, &model).await;
-                            if let Some(ref cs) = console_state {
-                                cs.remove_local_process(&model).await;
-                            }
-                            eprintln!("⚠ Runtime model '{}' exited on :{}", model, port);
+                            let _ = emit_event(OutputEvent::Warning {
+                                message: format!("Runtime model '{model}' exited unexpectedly"),
+                                context: Some(format!("model={model} port={port}")),
+                            });
                         }
                     }
                 }
@@ -2514,7 +3380,10 @@ async fn run_auto(
             let relays = nostr_relays(&cli.nostr_relay);
             if let Ok(publisher) = nostr::Publisher::new(keys, &relays).await {
                 let _ = publisher.unpublish().await;
-                eprintln!("Removed Nostr listing");
+                let _ = emit_event(OutputEvent::Info {
+                    message: "Removed Nostr listing".to_string(),
+                    context: None,
+                });
             }
         }
     }
@@ -2522,14 +3391,30 @@ async fn run_auto(
         handle.abort();
     }
 
+    plugin_manager.shutdown().await;
+    api_proxy_handle.abort();
+    let _ = api_proxy_handle.await;
+    if let Some(handle) = console_server_handle {
+        handle.abort();
+        let _ = handle.await;
+    }
+
     for (name, handle) in runtime_models.drain() {
+        let shutting_down_payload =
+            runtime_process_payload_with_status(&name, &handle, "shutting down");
+        upsert_dashboard_process(&dashboard_processes, shutting_down_payload.clone()).await;
+        if let Some(ref cs) = console_state {
+            cs.upsert_local_process(shutting_down_payload).await;
+        }
         remove_runtime_local_target(&target_tx, &name, handle.port);
         withdraw_advertised_model(&node, &name).await;
         remove_serving_assignment(&node, &name).await;
-        if let Some(ref cs) = console_state {
-            cs.remove_local_process(&name).await;
-        }
+        let stopped_payload = runtime_process_payload_with_status(&name, &handle, "stopped");
         handle.shutdown().await;
+        upsert_dashboard_process(&dashboard_processes, stopped_payload.clone()).await;
+        if let Some(ref cs) = console_state {
+            cs.upsert_local_process(stopped_payload).await;
+        }
     }
 
     // Signal each election loop to stop, then give it a short window to drop
@@ -2601,8 +3486,8 @@ async fn run_passive(
                     nostr::publish_loop(
                         pub_node,
                         nostr_keys,
-                        relays,
-                        nostr::PublishLoopOptions {
+                        nostr::PublishLoopConfig {
+                            relays,
                             name: pub_name,
                             region: pub_region,
                             max_clients: pub_max_clients,
@@ -2614,10 +3499,12 @@ async fn run_passive(
                 });
             }
             Err(e) => {
-                eprintln!(
-                    "⚠️  Publishing to Nostr failed: {e}.\n\
-                     Standby node is running privately — add --publish after fixing the issue to make discoverable."
-                );
+                let _ = emit_event(OutputEvent::Warning {
+                    message: format!(
+                        "Publishing to Nostr failed: {e}. Standby node is running privately — add --publish after fixing the issue to make discoverable."
+                    ),
+                    context: cli.mesh_name.as_ref().map(|mesh_name| format!("mesh={mesh_name}")),
+                });
                 tracing::warn!("Passive Nostr publish failed: {e}");
                 passive_publication_state = Some(api::PublicationState::PublishFailed);
             }
@@ -2641,7 +3528,10 @@ async fn run_passive(
 
     let served = node.models_being_served().await;
     if !served.is_empty() {
-        eprintln!("Models available in mesh: {:?}", served);
+        let _ = emit_event(OutputEvent::Info {
+            message: format!("Models available in mesh: {:?}", served),
+            context: None,
+        });
     }
 
     let addr = if cli.listen_all {
@@ -2653,48 +3543,99 @@ async fn run_passive(
         .await
         .with_context(|| format!("Failed to bind to port {local_port}"))?;
     if is_client {
-        eprintln!("📡 Client ready:");
+        let _ = emit_event(OutputEvent::PassiveMode {
+            role: "client".to_string(),
+            status: RuntimeStatus::Ready,
+            capacity_gb: None,
+            models_on_disk: None,
+            detail: Some("Client ready".to_string()),
+        });
     } else {
-        eprintln!("💤 Standby ready:");
+        let _ = emit_event(OutputEvent::PassiveMode {
+            role: "standby".to_string(),
+            status: RuntimeStatus::Ready,
+            capacity_gb: Some(node.vram_bytes() as f64 / 1e9),
+            models_on_disk: None,
+            detail: Some("Standby ready".to_string()),
+        });
     }
-    eprintln!("  API:     http://localhost:{local_port}");
-    eprintln!("{}", format_console_ready_line(cli.headless, cli.console));
+    let _ = emit_event(OutputEvent::ApiReady {
+        url: format!("http://localhost:{local_port}"),
+    });
+    if cli.headless {
+        let _ = emit_event(OutputEvent::Info {
+            message: format!("Management API: http://localhost:{}", cli.console),
+            context: None,
+        });
+    } else {
+        let _ = emit_event(OutputEvent::WebserverReady {
+            url: format!("http://localhost:{}", cli.console),
+        });
+    }
 
     // Console
-    {
-        let cport = cli.console;
-        let label = if is_client {
-            "(client)".to_string()
-        } else {
-            "(standby)".to_string()
-        };
-        let cs = api::MeshApi::new(
+    let (control_tx, mut control_rx) =
+        tokio::sync::mpsc::unbounded_channel::<api::RuntimeControlRequest>();
+    let cport = cli.console;
+    let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let label = if is_client {
+        "(client)".to_string()
+    } else {
+        "(standby)".to_string()
+    };
+    let console_state = api::MeshApi::new(
+        node.clone(),
+        label,
+        local_port,
+        0,
+        plugin_manager.clone(),
+        affinity_router.clone(),
+    );
+    console_state
+        .set_nostr_relays(nostr_relays(&cli.nostr_relay))
+        .await;
+    console_state.set_nostr_discovery(cli.nostr_discovery).await;
+    if is_client {
+        console_state.set_client(true).await;
+    }
+    // Both clients and standby nodes can proxy requests through the mesh
+    console_state.update(false, true).await;
+    if let Some(state) = passive_publication_state {
+        console_state.set_publication_state(state).await;
+    }
+    if let Some(status_rx) = passive_publication_rx {
+        bridge_publication_state(console_state.clone(), status_rx);
+    }
+    let (_tx, rx) = tokio::sync::watch::channel(election::InferenceTarget::None);
+    let la = cli.listen_all;
+    let headless = cli.headless;
+    let console_state_for_server = console_state.clone();
+    let mut console_server_handle = Some(tokio::spawn(async move {
+        api::start(cport, console_state_for_server, rx, la, headless).await;
+    }));
+    crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
+        RuntimeDashboardSnapshotProvider::new(
             node.clone(),
-            label,
+            dashboard_processes,
+            Some(plugin_manager.clone()),
             local_port,
-            0,
-            plugin_manager,
-            affinity_router.clone(),
+            Some(cport),
+            headless,
+        ),
+    ));
+    if crate::cli::output::OutputManager::global()
+        .console_session_mode()
+        .is_some()
+        && std::io::stdin().is_terminal()
+    {
+        // Spawn input handler for both Dashboard and line-oriented Fallback modes;
+        // spawn_handler internally selects the variant.
+        interactive::spawn_handler(
+            control_tx.clone(),
+            console_state.clone(),
+            crate::cli::output::OutputManager::global(),
+            InitialPromptMode::Immediate,
         );
-        cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
-        cs.set_nostr_discovery(cli.nostr_discovery).await;
-        if is_client {
-            cs.set_client(true).await;
-        }
-        // Both clients and standby nodes can proxy requests through the mesh
-        cs.update(false, true).await;
-        if let Some(state) = passive_publication_state {
-            cs.set_publication_state(state).await;
-        }
-        if let Some(status_rx) = passive_publication_rx {
-            bridge_publication_state(cs.clone(), status_rx);
-        }
-        let (_tx, rx) = tokio::sync::watch::channel(election::InferenceTarget::None);
-        let la = cli.listen_all;
-        let headless = cli.headless;
-        tokio::spawn(async move {
-            api::start(cport, cs, rx, la, headless).await;
-        });
     }
 
     // Heartbeat (started in run_auto) handles periodic gossip via random-K.
@@ -2731,7 +3672,12 @@ async fn run_passive(
                 }
                 // Check if there's an unserved or demand-imbalanced model we can handle
                 if let Some(model_name) = check_unserved_model(&watch_node, &local_models).await {
-                    eprintln!("🚀 Promoting from standby — serving {model_name}");
+                    let _ = emit_event(OutputEvent::HostElected {
+                        model: model_name.clone(),
+                        host: watch_node.id().fmt_short().to_string(),
+                        role: Some("host".to_string()),
+                        capacity_gb: Some(watch_node.vram_bytes() as f64 / 1e9),
+                    });
                     let _ = promote_tx.send(model_name).await;
                     break;
                 }
@@ -2752,11 +3698,27 @@ async fn run_passive(
                 ));
             }
             Some(model_name) = promote_rx.recv() => {
-                eprintln!("⬆️  Standby promoting to serve: {model_name}");
                 return Ok(Some(model_name));
             }
+            Some(cmd) = control_rx.recv() => {
+                if let api::RuntimeControlRequest::Shutdown = cmd {
+                    emit_shutdown(None);
+                    plugin_manager.shutdown().await;
+                    if let Some(handle) = console_server_handle.take() {
+                        handle.abort();
+                        let _ = handle.await;
+                    }
+                    node.broadcast_leaving().await;
+                    return Ok(None);
+                }
+            }
             _ = wait_shutdown_signal() => {
-                eprintln!("\nShutting down...");
+                emit_shutdown(None);
+                plugin_manager.shutdown().await;
+                if let Some(handle) = console_server_handle.take() {
+                    handle.abort();
+                    let _ = handle.await;
+                }
                 node.broadcast_leaving().await;
                 return Ok(None);
             }
@@ -2893,8 +3855,7 @@ fn build_serving_list(resolved_models: &[PathBuf], model_name: &str) -> Vec<Stri
     all
 }
 
-/// Returns the console-port label line for ready-state output.
-/// In headless mode, advertises the management API; otherwise the web console.
+#[cfg(test)]
 fn format_console_ready_line(headless: bool, console_port: u16) -> String {
     if headless {
         format!("  Management API: http://localhost:{console_port}")
@@ -2913,6 +3874,7 @@ mod tests {
     use serial_test::serial;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;
 
     fn restore_env(key: &str, value: Option<std::ffi::OsString>) {
@@ -2949,6 +3911,111 @@ mod tests {
             plugin_manager,
             affinity::AffinityRouter::default(),
         )
+    }
+
+    #[test]
+    fn plugin_dashboard_command_name_trims_base_path() {
+        let summary = plugin::PluginSummary {
+            name: "browser".to_string(),
+            kind: "stdio".to_string(),
+            enabled: true,
+            status: "running".to_string(),
+            pid: Some(4242),
+            version: None,
+            capabilities: Vec::new(),
+            command: Some("/Users/test/dev/mesh/plugins/browser-tools".to_string()),
+            args: Vec::new(),
+            tools: Vec::new(),
+            manifest: None,
+            error: None,
+        };
+
+        assert_eq!(plugin_dashboard_command_name(&summary), "browser-tools");
+    }
+
+    #[tokio::test]
+    async fn dashboard_snapshot_provider_reuses_cached_inventory_within_ttl() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let local_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let load_count = Arc::new(AtomicUsize::new(0));
+        let load_count_for_loader = load_count.clone();
+        let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
+            node,
+            local_processes,
+            None,
+            RuntimeDashboardSnapshotProviderTestOptions {
+                api_port: 9337,
+                console_port: Some(3131),
+                headless: false,
+                inventory_snapshot_ttl: Duration::from_secs(60),
+                inventory_snapshot_loader: Arc::new(move || {
+                    load_count_for_loader.fetch_add(1, AtomicOrdering::SeqCst);
+                    crate::models::LocalModelInventorySnapshot::default()
+                }),
+            },
+        );
+
+        let _ = provider.snapshot().await;
+        let _ = provider.snapshot().await;
+
+        assert_eq!(load_count.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dashboard_snapshot_provider_uses_runtime_ctx_and_inventory_file_size() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let model_name = "Runtime-Model".to_string();
+        set_advertised_model_context(&node, &model_name, Some(8192)).await;
+        let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
+            name: model_name.clone(),
+            backend: "CUDA0".to_string(),
+            status: "ready".to_string(),
+            port: 4001,
+            pid: 1234,
+            slots: 4,
+        }]));
+        let inventory_model_name = model_name.clone();
+        let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
+            node,
+            local_processes,
+            None,
+            RuntimeDashboardSnapshotProviderTestOptions {
+                api_port: 9337,
+                console_port: Some(3131),
+                headless: false,
+                inventory_snapshot_ttl: Duration::from_secs(60),
+                inventory_snapshot_loader: Arc::new(move || {
+                    let mut snapshot = crate::models::LocalModelInventorySnapshot::default();
+                    snapshot
+                        .size_by_name
+                        .insert(inventory_model_name.clone(), 24_000_000_000);
+                    snapshot.metadata_by_name.insert(
+                        inventory_model_name.clone(),
+                        crate::proto::node::CompactModelMetadata {
+                            model_key: inventory_model_name.clone(),
+                            context_length: 4096,
+                            quantization_type: "Q4_K_M".to_string(),
+                            ..Default::default()
+                        },
+                    );
+                    snapshot
+                }),
+            },
+        );
+
+        let snapshot = provider.snapshot().await;
+        assert_eq!(snapshot.loaded_model_rows.len(), 1);
+        assert_eq!(snapshot.loaded_model_rows[0].slots, Some(4));
+        assert_eq!(snapshot.loaded_model_rows[0].ctx_size, Some(8192));
+        assert_eq!(snapshot.loaded_model_rows[0].file_size_gb, Some(24.0));
+        assert_eq!(
+            snapshot.loaded_model_rows[0].quantization.as_deref(),
+            Some("Q4_K_M")
+        );
     }
 
     fn synthetic_gpu(
@@ -3655,6 +4722,80 @@ mod tests {
             &cli,
             &startup_specs
         ));
+    }
+
+    #[test]
+    fn initial_pretty_session_mode_allows_dashboard_only_for_serve_surface() {
+        assert_eq!(
+            initial_console_session_mode_for_surface(
+                Some(RuntimeSurface::Serve),
+                ConsoleSessionMode::InteractiveDashboard
+            ),
+            ConsoleSessionMode::InteractiveDashboard
+        );
+
+        assert_eq!(
+            initial_console_session_mode_for_surface(
+                Some(RuntimeSurface::Client),
+                ConsoleSessionMode::InteractiveDashboard
+            ),
+            ConsoleSessionMode::Fallback
+        );
+
+        assert_eq!(
+            initial_console_session_mode_for_surface(
+                None,
+                ConsoleSessionMode::InteractiveDashboard
+            ),
+            ConsoleSessionMode::Fallback
+        );
+    }
+
+    #[test]
+    fn dashboard_endpoint_rows_keep_builtins_grouped_before_plugins() {
+        let mut rows = vec![
+            DashboardEndpointRow {
+                label: "Plugin: zebra".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "zebra".to_string(),
+                port: 0,
+                pid: Some(1001),
+            },
+            DashboardEndpointRow {
+                label: "Web console".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "http://localhost:3131".to_string(),
+                port: 3131,
+                pid: None,
+            },
+            DashboardEndpointRow {
+                label: "Plugin: alpha".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "alpha".to_string(),
+                port: 0,
+                pid: Some(1000),
+            },
+            DashboardEndpointRow {
+                label: "OpenAI-compatible API".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "http://localhost:9337".to_string(),
+                port: 9337,
+                pid: None,
+            },
+        ];
+
+        sort_dashboard_endpoint_rows(&mut rows);
+
+        let labels = rows.into_iter().map(|row| row.label).collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "OpenAI-compatible API".to_string(),
+                "Web console".to_string(),
+                "Plugin: alpha".to_string(),
+                "Plugin: zebra".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]

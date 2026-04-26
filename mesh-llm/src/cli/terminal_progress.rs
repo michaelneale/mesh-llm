@@ -8,6 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 pub(crate) fn clear_stderr_line() -> Result<()> {
+    if crate::cli::output::json_mode_enabled() {
+        return Ok(());
+    }
     eprint!("\r\x1b[2K");
     std::io::stderr()
         .flush()
@@ -44,6 +47,13 @@ impl Drop for SpinnerHandle {
 }
 
 pub(crate) fn start_spinner(message: &str) -> SpinnerHandle {
+    if crate::cli::output::json_mode_enabled() {
+        return SpinnerHandle {
+            done: Arc::new(AtomicBool::new(true)),
+            message: Arc::new(Mutex::new(message.to_string())),
+            thread: None,
+        };
+    }
     let done = Arc::new(AtomicBool::new(false));
     let done_thread = Arc::clone(&done);
     let message = Arc::new(Mutex::new(message.to_string()));
@@ -87,6 +97,9 @@ impl DeterminateProgressLine {
         total: usize,
         detail: Option<&str>,
     ) -> Result<()> {
+        if crate::cli::output::json_mode_enabled() {
+            return Ok(());
+        }
         let percent = if total > 0 {
             (current as f64 / total as f64) * 100.0
         } else {

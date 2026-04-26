@@ -1,4 +1,5 @@
 use crate::api;
+use crate::cli::output::{emit_event, OutputEvent};
 use crate::inference::{election, pipeline};
 use crate::mesh;
 use crate::network::affinity;
@@ -409,8 +410,14 @@ pub(crate) async fn bootstrap_proxy(
             return;
         }
     };
-    eprintln!("⚡ API ready (bootstrap): http://localhost:{port}");
-    eprintln!("  Requests tunneled to mesh while GPU loads...");
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("API ready (bootstrap): http://localhost:{port}"),
+        context: Some("bootstrap_proxy".to_string()),
+    });
+    let _ = emit_event(OutputEvent::Info {
+        message: "Requests tunneled to mesh while GPU loads...".to_string(),
+        context: Some("bootstrap_proxy".to_string()),
+    });
 
     loop {
         tokio::select! {
@@ -426,7 +433,10 @@ pub(crate) async fn bootstrap_proxy(
             }
             resp_tx = stop_rx.recv() => {
                 if let Some(tx) = resp_tx {
-                    eprintln!("⚡ Bootstrap proxy handing off to full API proxy");
+                    let _ = emit_event(OutputEvent::Info {
+                        message: "Bootstrap proxy handing off to full API proxy".to_string(),
+                        context: Some("bootstrap_proxy".to_string()),
+                    });
                     let _ = tx.send(listener);
                 }
                 return;

@@ -553,7 +553,6 @@ fn shuffle_in_place<T>(items: &mut [T], seed: u64) {
     }
 }
 
-// Legacy wrapper for tests that have category + tools but no complexity.
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]

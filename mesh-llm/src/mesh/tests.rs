@@ -62,6 +62,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inflight_change_tx,
         routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+        local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
         tunnel_tx,
         tunnel_http_tx,
         plugin_manager: Arc::new(Mutex::new(None)),
@@ -94,6 +95,23 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     });
 
     Ok(node)
+}
+
+#[tokio::test]
+async fn local_request_metrics_snapshot_tracks_accepted_and_completed_requests() {
+    let node = make_test_node(super::NodeRole::Worker)
+        .await
+        .expect("test node should initialize");
+
+    {
+        let _request = node.begin_inflight_request();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let snapshot = node.local_request_metrics_snapshot();
+    assert_eq!(snapshot.accepted_request_counts.len(), 24 * 60 * 60);
+    assert_eq!(snapshot.accepted_request_counts.iter().sum::<u64>(), 1);
+    assert_eq!(snapshot.latency_samples_ms.len(), 1);
 }
 
 #[test]
@@ -3223,6 +3241,7 @@ async fn make_test_node_with_owner(
         inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inflight_change_tx,
         routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+        local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
         tunnel_tx,
         tunnel_http_tx,
         plugin_manager: Arc::new(Mutex::new(None)),

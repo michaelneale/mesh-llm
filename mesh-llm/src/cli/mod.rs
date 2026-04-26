@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -217,9 +217,17 @@ pub(crate) mod benchmark;
 pub(crate) mod commands;
 pub mod models;
 pub(crate) mod moe;
+pub mod output;
 pub(crate) mod pager;
 pub(crate) mod runtime;
 pub(crate) mod terminal_progress;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -231,6 +239,10 @@ pub(crate) mod terminal_progress;
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
+
+    /// Terminal output format for app-owned runtime events.
+    #[arg(long, value_enum, default_value_t = LogFormat::Pretty)]
+    pub(crate) log_format: LogFormat,
 
     /// Show all options (including advanced/niche ones).
     #[arg(long, hide = true)]
@@ -615,21 +627,97 @@ where
     let mut normalized = original.clone();
     let mut explicit_surface = None;
 
-    match original.get(1).and_then(|arg| arg.to_str()) {
-        Some("serve") => match original.get(2).and_then(|arg| arg.to_str()) {
+    // Skip leading global flags to find the pseudo-subcommand position.
+    // Recognized value-taking flags: --log-format, --max-vram, --llama-flavor, --device,
+    // --tensor-split, --bind-port, --max-clients, --port, --console, --draft-max, --ctx-size.
+    // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
+    // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
+    // --no-console, --owner-required.
+    let value_taking_flags = [
+        "--log-format",
+        "--max-vram",
+        "--llama-flavor",
+        "--device",
+        "--tensor-split",
+        "--bind-port",
+        "--max-clients",
+        "--port",
+        "--console",
+        "--draft-max",
+        "--ctx-size",
+        "--model",
+        "--gguf",
+        "--mmproj",
+        "--join",
+        "--discover",
+        "--mesh-name",
+        "--region",
+        "--name",
+        "--plugin",
+        "--draft",
+        "--bin-dir",
+        "--relay",
+        "--nostr-relay",
+        "--config",
+        "--owner-key",
+        "--node-label",
+        "--trust-policy",
+        "--trust-owner",
+    ];
+
+    let mut pos = 1;
+    while pos < original.len() {
+        let arg_str = original.get(pos).and_then(|arg| arg.to_str()).unwrap_or("");
+
+        // Check for --flag=value form
+        if let Some(eq_idx) = arg_str.find('=') {
+            let flag_part = &arg_str[..eq_idx];
+            if value_taking_flags.contains(&flag_part) {
+                pos += 1;
+                continue;
+            }
+        }
+
+        // Check for --flag value form
+        if value_taking_flags.contains(&arg_str) {
+            // Advance by 2 if next token exists and doesn't start with '-'
+            if let Some(next) = original.get(pos + 1).and_then(|arg| arg.to_str()) {
+                if !next.starts_with('-') {
+                    pos += 2;
+                    continue;
+                }
+            }
+            // If next doesn't exist or starts with '-', advance by 1 (let Clap handle the error)
+            pos += 1;
+            continue;
+        }
+
+        // If it starts with '-' but isn't a recognized flag, it's likely a parse error or unknown flag
+        if arg_str.starts_with('-') {
+            pos += 1;
+            continue;
+        }
+
+        // Found the first positional argument (serve/client/other subcommand)
+        break;
+    }
+
+    // Now apply the serve/client normalization logic at the discovered position
+    match original.get(pos).and_then(|arg| arg.to_str()) {
+        Some("serve") => match original.get(pos + 1).and_then(|arg| arg.to_str()) {
             Some(arg) if arg.starts_with('-') => {
-                normalized.remove(1);
+                normalized.remove(pos);
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
             None => {
-                normalized[1] = OsString::from("--help");
+                normalized[pos] = OsString::from("--help");
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
             _ => {}
         },
         Some("client") => {
-            normalized.remove(1);
-            normalized.insert(1, OsString::from("--client"));
+            normalized.remove(pos);
+            normalized.insert(pos, OsString::from("--client"));
             explicit_surface = Some(RuntimeSurface::Client);
         }
         _ => {}
@@ -722,7 +810,7 @@ mod tests {
     use super::*;
     use crate::cli::models::{ModelSearchSort, ModelsCommand};
     use crate::cli::moe::MoeAnalyzeCommand;
-    use clap::{CommandFactory, Parser};
+    use clap::{error::ErrorKind, CommandFactory, Parser};
 
     #[test]
     fn normalize_runtime_surface_args_rewrites_serve_invocation() {
@@ -1034,6 +1122,113 @@ mod tests {
 
         let rendered = err.to_string();
         assert!(rendered.contains("--port"));
+    }
+
+    #[test]
+    fn cli_defaults_log_format_to_pretty() {
+        let normalized = normalize_runtime_surface_args(["mesh-llm", "serve", "--auto"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Pretty);
+    }
+
+    #[test]
+    fn cli_accepts_json_log_format() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "serve", "--log-format", "json", "--auto"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn cli_accepts_global_log_format_before_serve() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "--log-format", "json", "serve", "--auto"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+    }
+
+    #[test]
+    fn cli_accepts_global_log_format_before_serve_with_model() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--log-format",
+            "json",
+            "serve",
+            "--model",
+            "Qwen3-8B-Q4_K_M",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+        assert_eq!(cli.model, vec!["Qwen3-8B-Q4_K_M".to_string()]);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+    }
+
+    #[test]
+    fn cli_accepts_global_log_format_equals_before_serve() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "--log-format=json", "serve", "--auto"]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+    }
+
+    #[test]
+    fn cli_accepts_global_log_format_before_client() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--log-format",
+            "json",
+            "client",
+            "--auto",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Client));
+    }
+
+    #[test]
+    fn cli_rejects_invalid_log_format_values() {
+        let err = Cli::try_parse_from(["mesh-llm", "--log-format", "invalid"])
+            .expect_err("invalid log format should be rejected");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        let rendered = err.to_string();
+        assert!(rendered.contains("--log-format <LOG_FORMAT>"));
+        assert!(rendered.contains("pretty"));
+        assert!(rendered.contains("json"));
+    }
+
+    #[test]
+    fn cli_help_documents_log_format_flag() {
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+
+        assert!(help.contains("--log-format <LOG_FORMAT>"));
+        assert!(help.contains("Terminal output format for app-owned runtime events"));
+        assert!(help.contains("[default: pretty]"));
+        assert!(help.contains("[possible values: pretty, json]"));
+    }
+
+    #[test]
+    fn cli_log_format_selection_is_independent_across_runs() {
+        let pretty = Cli::parse_from(["mesh-llm", "--log-format", "pretty"]);
+        assert_eq!(pretty.log_format, LogFormat::Pretty);
+
+        let json = Cli::parse_from(["mesh-llm", "--log-format", "json"]);
+        assert_eq!(json.log_format, LogFormat::Json);
+
+        let pretty_again = Cli::parse_from(["mesh-llm", "--log-format", "pretty"]);
+        assert_eq!(pretty_again.log_format, LogFormat::Pretty);
+
+        let json_again = Cli::parse_from(["mesh-llm", "--log-format", "json"]);
+        assert_eq!(json_again.log_format, LogFormat::Json);
     }
 
     #[test]

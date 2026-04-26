@@ -7,7 +7,6 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
 use std::time::Duration;
 
 /// NIP-89 "Application Handler" kind — used for service advertisements.
@@ -21,6 +20,15 @@ pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://nostr.land",
     "wss://nostr.wine",
 ];
+
+pub struct PublishLoopConfig {
+    pub relays: Vec<String>,
+    pub name: Option<String>,
+    pub region: Option<String>,
+    pub max_clients: Option<usize>,
+    pub interval_secs: u64,
+    pub status_tx: Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
+}
 
 /// What we publish about a mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,27 +293,15 @@ impl Publisher {
 ///
 /// If `max_clients` is set, delists when that many clients are connected
 /// and re-publishes when clients drop below the cap.
-pub struct PublishLoopOptions {
-    pub name: Option<String>,
-    pub region: Option<String>,
-    pub max_clients: Option<usize>,
-    pub interval_secs: u64,
-    pub status_tx: Option<tokio::sync::watch::Sender<Option<PublishStateUpdate>>>,
-}
-
-pub async fn publish_loop(
-    node: crate::mesh::Node,
-    keys: Keys,
-    relays: Vec<String>,
-    options: PublishLoopOptions,
-) {
-    let PublishLoopOptions {
+pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLoopConfig) {
+    let PublishLoopConfig {
+        relays,
         name,
         region,
         max_clients,
         interval_secs,
         status_tx,
-    } = options;
+    } = config;
     let mut last_reported = None;
     let publisher = match Publisher::new(keys.clone(), &relays).await {
         Ok(p) => p,
@@ -631,8 +627,8 @@ pub async fn publish_watchdog(
                     publish_loop(
                         node,
                         keys,
-                        relays,
-                        PublishLoopOptions {
+                        PublishLoopConfig {
+                            relays,
                             name: mesh_name,
                             region,
                             max_clients: None,
@@ -996,7 +992,7 @@ pub fn smart_auto(
         .iter()
         .map(|m| (*m, score_mesh(m, now, last_mesh_id.as_deref())))
         .collect();
-    scored.sort_by_key(|b| Reverse(b.1));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     // Collect viable candidates.
     // If the user specified --mesh-name, take all candidates (they already

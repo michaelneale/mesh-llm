@@ -21,6 +21,6 @@ fn client_builder_builds_mesh_client() {
 #[test]
 fn mesh_client_has_reconnect_method() {
     fn _assert_reconnect(c: &mut MeshClient) {
-        let _ = c.reconnect();
+        std::mem::drop(c.reconnect());
     }
 }

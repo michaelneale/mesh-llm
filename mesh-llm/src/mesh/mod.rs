@@ -28,6 +28,22 @@ use crate::crypto::{
 use crate::inference::moe;
 use crate::protocol::*;
 
+const PRETTY_LOCAL_REQUEST_WINDOW_SECS: u64 = 24 * 60 * 60;
+
+fn emit_mesh_info(message: String) {
+    let _ = crate::cli::output::emit_event(crate::cli::output::OutputEvent::Info {
+        message,
+        context: None,
+    });
+}
+
+fn emit_mesh_warning(message: String) {
+    let _ = crate::cli::output::emit_event(crate::cli::output::OutputEvent::Warning {
+        message,
+        context: None,
+    });
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -996,6 +1012,7 @@ pub struct Node {
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
     routing_metrics: crate::network::metrics::RoutingMetrics,
+    local_request_metrics: Arc<LocalRequestMetricsSampler>,
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
     tunnel_http_tx:
         tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
@@ -1016,6 +1033,103 @@ pub struct Node {
     pub gpu_compute_tflops_fp16: Arc<tokio::sync::Mutex<Option<Vec<f64>>>>,
     config_state: Arc<tokio::sync::Mutex<crate::runtime::config_state::ConfigState>>,
     config_revision_tx: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LocalRequestMetricsSnapshot {
+    pub accepted_request_counts: Vec<u64>,
+    pub latency_samples_ms: Vec<u64>,
+}
+
+#[derive(Default)]
+struct LocalRequestMetricsSampler {
+    inner: std::sync::Mutex<LocalRequestMetricsWindow>,
+}
+
+#[derive(Default)]
+struct LocalRequestMetricsWindow {
+    accepted_by_second: VecDeque<(u64, u64)>,
+    completed_latencies_ms: VecDeque<(u64, u64)>,
+}
+
+impl LocalRequestMetricsSampler {
+    fn record_request_accepted(&self) {
+        let now_sec = now_secs();
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("pretty request metrics mutex poisoned");
+        guard.prune(now_sec);
+        if let Some((second, count)) = guard.accepted_by_second.back_mut() {
+            if *second == now_sec {
+                *count += 1;
+                return;
+            }
+        }
+        guard.accepted_by_second.push_back((now_sec, 1));
+    }
+
+    fn record_request_completed(&self, started_at: std::time::Instant) {
+        let now_sec = now_secs();
+        let latency_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("pretty request metrics mutex poisoned");
+        guard.prune(now_sec);
+        guard
+            .completed_latencies_ms
+            .push_back((now_sec, latency_ms));
+    }
+
+    fn snapshot(&self) -> LocalRequestMetricsSnapshot {
+        let now_sec = now_secs();
+        let window_start = now_sec.saturating_sub(PRETTY_LOCAL_REQUEST_WINDOW_SECS - 1);
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("pretty request metrics mutex poisoned");
+        guard.prune(now_sec);
+
+        let accepted_by_second = guard
+            .accepted_by_second
+            .iter()
+            .copied()
+            .collect::<HashMap<_, _>>();
+        let accepted_request_counts = (window_start..=now_sec)
+            .map(|second| accepted_by_second.get(&second).copied().unwrap_or(0))
+            .collect();
+        let latency_samples_ms = guard
+            .completed_latencies_ms
+            .iter()
+            .filter_map(|(second, latency_ms)| (*second >= window_start).then_some(*latency_ms))
+            .collect();
+
+        LocalRequestMetricsSnapshot {
+            accepted_request_counts,
+            latency_samples_ms,
+        }
+    }
+}
+
+impl LocalRequestMetricsWindow {
+    fn prune(&mut self, now_sec: u64) {
+        let oldest_kept_second = now_sec.saturating_sub(PRETTY_LOCAL_REQUEST_WINDOW_SECS - 1);
+        while let Some((second, _)) = self.accepted_by_second.front() {
+            if *second < oldest_kept_second {
+                self.accepted_by_second.pop_front();
+            } else {
+                break;
+            }
+        }
+        while let Some((second, _)) = self.completed_latencies_ms.front() {
+            if *second < oldest_kept_second {
+                self.completed_latencies_ms.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 struct MeshState {
@@ -1129,6 +1243,8 @@ pub struct TunnelChannels {
 pub struct InflightRequestGuard {
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
+    local_request_metrics: Arc<LocalRequestMetricsSampler>,
+    started_at: std::time::Instant,
 }
 
 impl Drop for InflightRequestGuard {
@@ -1142,11 +1258,14 @@ impl Drop for InflightRequestGuard {
             self.inflight_requests
                 .load(std::sync::atomic::Ordering::Relaxed) as u64,
         );
+        self.local_request_metrics
+            .record_request_completed(self.started_at);
     }
 }
 
 impl Node {
     pub fn begin_inflight_request(&self) -> InflightRequestGuard {
+        self.local_request_metrics.record_request_accepted();
         self.inflight_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let current = self
@@ -1157,6 +1276,8 @@ impl Node {
         InflightRequestGuard {
             inflight_requests: self.inflight_requests.clone(),
             inflight_change_tx: self.inflight_change_tx.clone(),
+            local_request_metrics: self.local_request_metrics.clone(),
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -1233,6 +1354,10 @@ impl Node {
     ) -> crate::network::metrics::RoutingMetricsStatusSnapshot {
         self.routing_metrics
             .status_snapshot(self.inflight_requests())
+    }
+
+    pub fn local_request_metrics_snapshot(&self) -> LocalRequestMetricsSnapshot {
+        self.local_request_metrics.snapshot()
     }
 
     pub fn model_routing_metrics(
@@ -1442,6 +1567,7 @@ impl Node {
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+            local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             tunnel_tx,
             tunnel_http_tx,
             plugin_manager: Arc::new(Mutex::new(None)),
@@ -1542,6 +1668,7 @@ impl Node {
             inflight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             inflight_change_tx,
             routing_metrics: crate::network::metrics::RoutingMetrics::default(),
+            local_request_metrics: Arc::new(LocalRequestMetricsSampler::default()),
             tunnel_tx,
             tunnel_http_tx,
             plugin_manager: Arc::new(Mutex::new(None)),
@@ -1979,12 +2106,12 @@ impl Node {
             // be included in split mode.
             let was_above = old_rtt.is_some_and(|r| r > MAX_SPLIT_RTT_MS);
             if was_above && rtt_ms <= MAX_SPLIT_RTT_MS {
-                eprintln!(
+                emit_mesh_info(format!(
                     "📡 Peer {} RTT improved ({}ms → {}ms) — re-electing for split",
                     id.fmt_short(),
                     old_rtt.unwrap_or(0),
                     rtt_ms
-                );
+                ));
                 let count = self.state.lock().await.peers.len();
                 let _ = self.peer_change_tx.send(count);
             }
@@ -2913,7 +3040,10 @@ impl Node {
             let mut state = self.state.lock().await;
             let was_dead = state.dead_peers.remove(&remote);
             if was_dead {
-                eprintln!("🔄 Previously dead peer {} reconnected", remote.fmt_short());
+                emit_mesh_info(format!(
+                    "🔄 Previously dead peer {} reconnected",
+                    remote.fmt_short()
+                ));
             }
             state.connections.insert(remote, conn.clone());
             was_dead
@@ -3175,11 +3305,11 @@ impl Node {
                         // may be broken/stale while the peer is genuinely alive on
                         // a different path).
                         if recently_seen {
-                            eprintln!(
+                            emit_mesh_info(format!(
                                 "ℹ️  Peer {} reported dead by {} but seen recently (direct alive), ignoring",
                                 dead_id.fmt_short(),
                                 remote.fmt_short()
-                            );
+                            ));
                         } else {
                             let should_remove = if let Some(conn) = conn_opt {
                                 // Have a connection — probe it. Treat both
@@ -3204,11 +3334,11 @@ impl Node {
                                 {
                                     Ok(Ok(new_conn)) => {
                                         // Peer is reachable — restore connection.
-                                        eprintln!(
+                                        emit_mesh_info(format!(
                                             "ℹ️  Peer {} reported dead by {} but we reached them, keeping",
                                             dead_id.fmt_short(),
                                             remote.fmt_short()
-                                        );
+                                        ));
                                         let mut state = node.state.lock().await;
                                         // Only insert if no other task raced and
                                         // established a connection while we were probing.
@@ -3235,21 +3365,21 @@ impl Node {
                             if let Some(id) =
                                 resolve_peer_down(node.endpoint.id(), dead_id, should_remove)
                             {
-                                eprintln!(
+                                emit_mesh_warning(format!(
                                     "⚠️  Peer {} reported dead by {}, confirmed, removing",
                                     id.fmt_short(),
                                     remote.fmt_short()
-                                );
+                                ));
                                 let mut state = node.state.lock().await;
                                 state.connections.remove(&id);
                                 drop(state);
                                 node.remove_peer(id).await;
                             } else if dead_id != node.endpoint.id() {
-                                eprintln!(
+                                emit_mesh_info(format!(
                                     "ℹ️  Peer {} reported dead by {} but still reachable, ignoring",
                                     dead_id.fmt_short(),
                                     remote.fmt_short()
-                                );
+                                ));
                             }
                         }
                     });
@@ -3291,10 +3421,10 @@ impl Node {
                                 return;
                             }
                         };
-                        eprintln!(
+                        emit_mesh_info(format!(
                             "👋 Peer {} announced clean shutdown",
                             leaving_id.fmt_short()
-                        );
+                        ));
                         let mut state = node.state.lock().await;
                         state.connections.remove(&leaving_id);
                         drop(state);
@@ -3921,12 +4051,12 @@ impl Node {
                         };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
-                            eprintln!(
+                            emit_mesh_info(format!(
                                 "📡 Peer {} RTT recheck: {}ms ({})",
                                 peer_id.fmt_short(),
                                 rtt_ms,
                                 path_type
-                            );
+                            ));
                             node_for_recheck.update_peer_rtt(peer_id, rtt_ms).await;
                         }
                         break;

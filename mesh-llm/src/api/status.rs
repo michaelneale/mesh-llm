@@ -343,7 +343,7 @@ pub(super) fn build_runtime_status_payload(
     llama_port: Option<u16>,
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeStatusPayload {
-    local_processes.sort_by_key(|a| a.name.to_lowercase());
+    local_processes.sort_by_key(|process| process.name.to_lowercase());
 
     let mut models: Vec<RuntimeModelPayload> = local_processes
         .into_iter()
@@ -374,7 +374,7 @@ pub(super) fn build_runtime_status_payload(
 pub(super) fn build_runtime_processes_payload(
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeProcessesPayload {
-    local_processes.sort_by_key(|a| a.name.to_lowercase());
+    local_processes.sort_by_key(|process| process.name.to_lowercase());
     RuntimeProcessesPayload {
         processes: local_processes,
     }

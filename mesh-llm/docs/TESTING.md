@@ -76,6 +76,30 @@ mesh-llm serve
 - Explicit `mesh-llm serve --model ...` should still bypass configured `[[models]]` and therefore bypass config-owned pinned IDs
 - Do not use GPU indexes, `index:*`, or backend-device names like `CUDA0` / `HIP0` / `MTL0` as `gpu_id`
 
+### 0c. Terminal dashboard smoke
+
+The pretty dashboard uses raw mode, the alternate screen, and mouse capture when both stdin and stderr are interactive TTYs and `TERM` supports a real terminal. It should fall back to line-oriented pretty output when stdin is not a TTY, stderr is not a TTY, or `TERM` is empty / `dumb`.
+
+Run these manual checks after changes to `runtime/interactive.rs` or `cli/output/mod.rs`:
+
+| Shell | Setup | Expected result |
+|---|---|---|
+| Plain terminal | `mesh-llm serve --model Qwen2.5-3B` | Dashboard renders, resizes cleanly, `h`/`i`/`q` work, and exit restores the prompt. |
+| Piped stdin | `true | mesh-llm serve --model Qwen2.5-3B` | No line reader is spawned; pretty output stays line-oriented. |
+| Unsupported terminal | `TERM=dumb mesh-llm serve --model Qwen2.5-3B` | Dashboard is disabled and pretty output uses fallback lines. |
+| tmux, mouse off | `tmux new 'mesh-llm serve --model Qwen2.5-3B'` | Dashboard renders and exits cleanly; keyboard navigation works. |
+| tmux, mouse on | Inside tmux: `set -g mouse on`, then run mesh-llm | Wheel events page the dashboard instead of disappearing into tmux history. |
+| GNU screen default | `screen mesh-llm serve --model Qwen2.5-3B` | If the alternate screen is unavailable, fallback behavior or clean restoration is acceptable. |
+| GNU screen altscreen | In `~/.screenrc`: `altscreen on`, then run mesh-llm | Dashboard enters/leaves the alternate screen cleanly. |
+
+For terminal restoration QA:
+
+- Resize during startup, after llama-server readiness, and while the dashboard has focus on different panels.
+- Detach and reattach tmux/screen while the dashboard is active.
+- Click dashboard panels and use the mouse wheel in terminal, tmux, and screen.
+- Press `q` and `Ctrl+C`; the cursor should be visible and the shell prompt should not remain in raw mode.
+- A `SIGKILL` (`kill -9`) cannot run in-process cleanup. If a terminal is left corrupted after a hard kill, recover with `reset` or by closing the terminal pane.
+
 ## Single-model permutations
 
 ### 1. Solo (single node)

@@ -5,6 +5,10 @@
 //! Every mesh change: kill llama-server, re-elect, winner starts fresh.
 //! mesh-llm owns :api_port and proxies to the right host by model name.
 
+use crate::cli::output::{
+    emit_event, MoeAnalysisProgressSummary, MoeDistributionSummary, MoeStatusSummary, MoeSummary,
+    OutputEvent,
+};
 use crate::inference::{launch, moe};
 use crate::mesh;
 use crate::models;
@@ -14,7 +18,7 @@ use launch::{BinaryFlavor, SplitMode};
 use mesh::NodeRole;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -270,6 +274,71 @@ fn stop_requested(stop_rx: &watch::Receiver<bool>) -> bool {
     *stop_rx.borrow()
 }
 
+fn emit_ready_events(model_name: &str, llama_port: u16, model_port: u16, ctx_size: u32) {
+    let _ = emit_event(OutputEvent::LlamaReady {
+        model: Some(model_name.to_string()),
+        port: llama_port,
+        ctx_size: Some(ctx_size),
+        log_path: None,
+    });
+    let _ = emit_event(OutputEvent::ModelReady {
+        model: model_name.to_string(),
+        internal_port: Some(model_port),
+        role: None,
+    });
+}
+
+fn emit_moe_status(model_name: &str, phase: &str, detail: impl Into<String>) {
+    let _ = emit_event(OutputEvent::MoeStatus {
+        model: model_name.to_string(),
+        status: MoeStatusSummary {
+            phase: phase.to_string(),
+            detail: detail.into(),
+        },
+    });
+}
+
+fn emit_warning(message: impl Into<String>, context: Option<String>) {
+    let _ = emit_event(OutputEvent::Warning {
+        message: message.into(),
+        context,
+    });
+}
+
+fn emit_error(message: impl Into<String>, context: Option<String>) {
+    let _ = emit_event(OutputEvent::Error {
+        message: message.into(),
+        context,
+    });
+}
+
+fn emit_info(message: impl Into<String>, context: Option<String>) {
+    let _ = emit_event(OutputEvent::Info {
+        message: message.into(),
+        context,
+    });
+}
+
+fn emit_moe_analysis_progress(
+    model_name: &str,
+    mode: &str,
+    spinner: &str,
+    current: usize,
+    total: Option<usize>,
+    elapsed_secs: u64,
+) {
+    let _ = emit_event(OutputEvent::MoeAnalysisProgress {
+        model: model_name.to_string(),
+        progress: MoeAnalysisProgressSummary {
+            mode: mode.to_string(),
+            spinner: spinner.to_string(),
+            current,
+            total,
+            elapsed_secs,
+        },
+    });
+}
+
 async fn wait_for_peer_moe_ranking(
     model_name: &str,
     model_path: &Path,
@@ -281,22 +350,31 @@ async fn wait_for_peer_moe_ranking(
         return;
     }
 
-    eprintln!(
-        "🧩 [{model_name}] Waiting up to {:.0}s for peer MoE ranking before local analysis",
-        timeout.as_secs_f64()
+    emit_moe_status(
+        model_name,
+        "waiting for peer ranking",
+        format!("up to {:.0}s before local analysis", timeout.as_secs_f64()),
     );
 
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            eprintln!("  No peer MoE ranking arrived in time — continuing with local analysis");
+            emit_moe_status(
+                model_name,
+                "peer ranking timeout",
+                "continuing with local analysis",
+            );
             return;
         }
 
         tokio::select! {
             _ = tokio::time::sleep(remaining) => {
-                eprintln!("  No peer MoE ranking arrived in time — continuing with local analysis");
+                emit_moe_status(
+                    model_name,
+                    "peer ranking timeout",
+                    "continuing with local analysis",
+                );
                 return;
             }
             res = peer_rx.changed() => {
@@ -304,10 +382,14 @@ async fn wait_for_peer_moe_ranking(
                     return;
                 }
                 if let Some(artifact) = moe::best_shared_ranking_artifact(model_path) {
-                    eprintln!(
-                        "  Using imported peer MoE ranking mode={} origin={}",
-                        artifact.kind.label(),
-                        artifact.origin.label()
+                    emit_moe_status(
+                        model_name,
+                        "using imported peer ranking",
+                        format!(
+                            "mode={} origin={}",
+                            artifact.kind.label(),
+                            artifact.origin.label()
+                        ),
                     );
                     return;
                 }
@@ -632,9 +714,13 @@ fn lookup_moe_config(
 
     // Tier 2: auto-detect from GGUF header
     let info = models::gguf::detect_moe(model_path)?;
-    eprintln!(
-        "🔍 Auto-detected MoE from GGUF: {} experts, top-{}",
-        info.expert_count, info.expert_used_count
+    emit_moe_status(
+        model_name,
+        "auto-detected MoE",
+        format!(
+            "{} experts, top-{}",
+            info.expert_count, info.expert_used_count
+        ),
     );
 
     // Conservative default: 50% shared core (safe floor for quality).
@@ -644,7 +730,11 @@ fn lookup_moe_config(
     // Check for cached ranking on disk
     let ranking_path = moe::ranking_cache_path(model_path);
     if let Some(ranking) = moe::load_cached_ranking(&ranking_path) {
-        eprintln!("  Using cached ranking from {}", ranking_path.display());
+        emit_moe_status(
+            model_name,
+            "using cached ranking",
+            format!("{}", ranking_path.display()),
+        );
         return Some(crate::models::catalog::MoeConfig {
             n_expert: info.expert_count,
             n_expert_used: info.expert_used_count,
@@ -673,10 +763,14 @@ fn should_attempt_local_micro_analyze(
     // Require roughly the same headroom we already use for "fits locally" checks.
     let fits_with_headroom = local_vram_budget >= (model_bytes as f64 * 1.1) as u64;
     if !fits_with_headroom {
-        eprintln!(
-            "🧩 [{model_name}] Skipping local micro-analyze: model needs about {:.1}GB with headroom, local capacity is {:.1}GB",
-            model_bytes as f64 * 1.1 / 1e9,
-            local_vram_budget as f64 / 1e9
+        emit_moe_status(
+            model_name,
+            "skipping local micro-analyze",
+            format!(
+                "model needs about {:.1}GB with headroom, local capacity is {:.1}GB",
+                model_bytes as f64 * 1.1 / 1e9,
+                local_vram_budget as f64 / 1e9
+            ),
         );
     }
     fits_with_headroom
@@ -711,14 +805,22 @@ fn resolve_runtime_moe_config(
                 }) {
                     Ok(Ok(resolved)) => Ok(resolved),
                     Ok(Err(err)) => {
-                        eprintln!(
-                            "⚠ [{model_name}] Failed to resolve shared MoE ranking ({err}); falling back to local analysis or sequential expert order"
+                        emit_moe_status(
+                            model_name,
+                            "shared ranking resolve failed",
+                            format!(
+                                "falling back to local analysis or sequential expert order ({err})"
+                            ),
                         );
                         Ok(None)
                     }
                     Err(err) => {
-                        eprintln!(
-                            "⚠ [{model_name}] Failed to join shared MoE ranking resolver ({err}); falling back to local analysis or sequential expert order"
+                        emit_moe_status(
+                            model_name,
+                            "shared ranking resolver join failed",
+                            format!(
+                                "falling back to local analysis or sequential expert order ({err})"
+                            ),
                         );
                         Ok(None)
                     }
@@ -731,18 +833,26 @@ fn resolve_runtime_moe_config(
             let resolved_ranking = match resolved_ranking_result {
                 Ok(resolved) => resolved,
                 Err(err) => {
-                    eprintln!(
-                        "⚠ [{model_name}] Failed to resolve shared MoE ranking ({err}); falling back to local analysis or sequential expert order"
+                    emit_moe_status(
+                        model_name,
+                        "shared ranking resolve failed",
+                        format!(
+                            "falling back to local analysis or sequential expert order ({err})"
+                        ),
                     );
                     None
                 }
             };
             if let Some(resolved) = resolved_ranking {
-                eprintln!(
-                    "🧩 [{model_name}] Using {} MoE ranking mode={} path={}",
-                    resolved.source.label(),
-                    resolved.analyzer_id,
-                    resolved.path.display()
+                emit_moe_status(
+                    model_name,
+                    "using shared ranking",
+                    format!(
+                        "mode={} path={} source={}",
+                        resolved.analyzer_id,
+                        resolved.path.display(),
+                        resolved.source.label()
+                    ),
                 );
                 (
                     moe::load_cached_ranking(&resolved.path).ok_or_else(|| {
@@ -763,8 +873,10 @@ fn resolve_runtime_moe_config(
                             artifact.origin.label().to_string(),
                         ),
                         Err(err) => {
-                            eprintln!(
-                                "⚠ [{model_name}] micro-analyze failed ({err}); falling back to sequential expert order"
+                            emit_moe_status(
+                                model_name,
+                                "micro-analyze failed",
+                                format!("falling back to sequential expert order ({err})"),
                             );
                             (
                                 (0..base.n_expert).collect(),
@@ -774,8 +886,10 @@ fn resolve_runtime_moe_config(
                         }
                     }
                 } else {
-                    eprintln!(
-                        "🧩 [{model_name}] Waiting for peer MoE ranking or using sequential fallback on this node"
+                    emit_moe_status(
+                        model_name,
+                        "waiting for peer ranking",
+                        "or using sequential fallback on this node",
                     );
                     (
                         (0..base.n_expert).collect(),
@@ -804,12 +918,15 @@ fn resolve_runtime_moe_config(
         }
     };
 
-    eprintln!(
-        "🧩 [{}] MoE ranking={} origin={} resolved in {:.1}s",
+    emit_moe_status(
         model_name,
-        ranking_source,
-        ranking_origin,
-        started.elapsed().as_secs_f64()
+        "ranking resolved",
+        format!(
+            "ranking={} origin={} in {:.1}s",
+            ranking_source,
+            ranking_origin,
+            started.elapsed().as_secs_f64()
+        ),
     );
 
     Ok(Some(ResolvedMoeConfig {
@@ -853,10 +970,14 @@ fn refresh_auto_moe_config_from_cache(
         return false;
     }
 
-    eprintln!(
-        "🧩 [{model_name}] Switching to better {} MoE ranking mode={}",
-        resolved.source.label(),
-        resolved.analyzer_id
+    emit_moe_status(
+        model_name,
+        "switching to better ranking",
+        format!(
+            "mode={} source={}",
+            resolved.analyzer_id,
+            resolved.source.label()
+        ),
     );
     cfg.config.ranking = ranking;
     cfg.ranking_source = resolved.analyzer_id;
@@ -868,19 +989,22 @@ fn print_runtime_submit_suggestion(model_name: &str, model_path: &Path, ranking_
     let Some(identity) = crate::models::huggingface_identity_for_path(model_path) else {
         return;
     };
-    eprintln!("🧠 [{model_name}] Generated a local MoE ranking");
-    eprintln!(
-        "📍 [{model_name}] Ranking cache: {}",
-        ranking_path.display()
+    emit_moe_status(model_name, "generated local ranking", "ready to share");
+    emit_moe_status(
+        model_name,
+        "ranking cache",
+        format!("{}", ranking_path.display()),
     );
-    eprintln!(
-        "☁️  [{model_name}] Published source: {}",
-        crate::system::moe_planner::DEFAULT_MOE_RANKINGS_DATASET
+    emit_moe_status(
+        model_name,
+        "published source",
+        crate::system::moe_planner::DEFAULT_MOE_RANKINGS_DATASET.to_string(),
     );
-    eprintln!("⚠️  [{model_name}] This run did not use a published ranking.");
-    eprintln!(
-        "📤 [{model_name}] Contribute it with: mesh-llm moe share '{}'",
-        identity.distribution_ref()
+    emit_moe_status(model_name, "published ranking", "not used on this run");
+    emit_moe_status(
+        model_name,
+        "contribute ranking",
+        format!("mesh-llm moe share '{}'", identity.distribution_ref()),
     );
 }
 
@@ -926,35 +1050,6 @@ struct MoeAnalyzeProgressState {
     done: bool,
 }
 
-fn format_moe_analysis_progress_line(
-    model_name: &str,
-    mode: &str,
-    spinner: &str,
-    current: usize,
-    total: Option<usize>,
-    elapsed: std::time::Duration,
-) -> String {
-    let mode_label = format!("MoE {mode}");
-    let progress = match total {
-        Some(total) if total > 0 => format!(
-            "{:>5.1}%  {}/{}",
-            (current as f64 / total as f64) * 100.0,
-            current,
-            total
-        ),
-        Some(total) => format!("       0/{}", total),
-        None => "starting".to_string(),
-    };
-    let spinner_progress = format!("{spinner} {progress}");
-    format!(
-        "🧩 [{}] {:<17} {}  {:>3}s",
-        model_name,
-        mode_label,
-        spinner_progress,
-        elapsed.as_secs()
-    )
-}
-
 struct MoeElectionParams {
     runtime: Arc<crate::runtime::instance::InstanceRuntime>,
     node: mesh::Node,
@@ -964,6 +1059,7 @@ struct MoeElectionParams {
     model: std::path::PathBuf,
     model_name: String,
     moe_cfg: ResolvedMoeConfig,
+    moe_summary: MoeSummary,
     my_vram: u64,
     model_bytes: u64,
     binary_flavor: Option<launch::BinaryFlavor>,
@@ -1033,18 +1129,15 @@ fn spawn_moe_analysis_spinner(
             } else {
                 FRAMES[frame_idx % FRAMES.len()]
             };
-            let line = format_moe_analysis_progress_line(
+            emit_moe_analysis_progress(
                 &model_name,
                 mode,
                 spinner,
                 current,
                 total,
-                started.elapsed(),
+                started.elapsed().as_secs(),
             );
-            eprint!("\r\x1b[2K{line}");
-            let _ = std::io::stderr().flush();
             if done {
-                eprintln!();
                 break;
             }
             frame_idx += 1;
@@ -1090,8 +1183,7 @@ fn spawn_moe_analyze_log_relay<R: std::io::Read + Send + 'static>(
                 continue;
             }
             if should_relay_moe_analyze_warning(&line) {
-                eprint!("\r\x1b[2K");
-                eprintln!("  [{model_name}] {line}");
+                emit_moe_status(&model_name, "moe-analyze warning", line);
             }
         }
     })
@@ -1111,10 +1203,14 @@ fn ensure_full_analyze_ranking(
         None,
         None,
     ) {
-        eprintln!(
-            "🧩 [{model_name}] Using cached MoE ranking mode=full-analyze origin={} cache={}",
-            artifact.origin.label(),
-            cached_path.display()
+        emit_moe_status(
+            model_name,
+            "using cached ranking",
+            format!(
+                "mode=full-analyze origin={} cache={}",
+                artifact.origin.label(),
+                cached_path.display()
+            ),
         );
         return Ok(artifact);
     }
@@ -1131,9 +1227,10 @@ fn ensure_full_analyze_ranking(
             .map(|duration| duration.as_nanos())
             .unwrap_or(0)
     ));
-    eprintln!(
-        "🧩 [{model_name}] MoE analysis mode=full-analyze cache={}",
-        cached_path.display()
+    emit_moe_status(
+        model_name,
+        "MoE analysis",
+        format!("mode=full-analyze cache={}", cached_path.display()),
     );
     let progress = Arc::new(Mutex::new(MoeAnalyzeProgressState::default()));
     let spinner = spawn_moe_analysis_spinner(
@@ -1197,15 +1294,21 @@ fn ensure_full_analyze_ranking(
     let wrote_cache = moe::cache_shared_ranking_if_stronger(model_path, &artifact)?;
     std::fs::copy(&temp_output, cached_path)?;
     let _ = std::fs::remove_file(&temp_output);
-    eprintln!(
-        "  Full moe-analyze cached at {} in {:.1}s (origin={})",
-        cached_path.display(),
-        started.elapsed().as_secs_f64(),
-        artifact.origin.label()
+    emit_moe_status(
+        model_name,
+        "full-analyze cached",
+        format!(
+            "{} in {:.1}s (origin={})",
+            cached_path.display(),
+            started.elapsed().as_secs_f64(),
+            artifact.origin.label()
+        ),
     );
     if !wrote_cache {
-        eprintln!(
-            "  A stronger or equivalent shared ranking already exists, so this full-v1 result was not promoted as the preferred shared artifact"
+        emit_moe_status(
+            model_name,
+            "shared ranking already preferred",
+            "full-v1 result was not promoted as the preferred shared artifact",
         );
     }
     print_runtime_submit_suggestion(model_name, model_path, cached_path);
@@ -1232,10 +1335,14 @@ fn ensure_micro_analyze_ranking(
         Some(options.micro_tokens),
         Some(options.micro_layer_scope),
     ) {
-        eprintln!(
-            "🧩 [{model_name}] Using cached MoE ranking mode=micro-analyze origin={} cache={}",
-            artifact.origin.label(),
-            cached_path.display()
+        emit_moe_status(
+            model_name,
+            "using cached ranking",
+            format!(
+                "mode=micro-analyze origin={} cache={}",
+                artifact.origin.label(),
+                cached_path.display()
+            ),
         );
         return Ok(artifact);
     }
@@ -1255,14 +1362,20 @@ fn ensure_micro_analyze_ranking(
         &analyze.rows,
         analyze.rows.iter().map(|(_, values)| values.0).sum::<f64>(),
     )?;
-    eprintln!(
-        "  Micro moe-analyze cached at {} (origin={})",
-        cached_path.display(),
-        artifact.origin.label()
+    emit_moe_status(
+        model_name,
+        "micro-analyze cached",
+        format!(
+            "{} (origin={})",
+            cached_path.display(),
+            artifact.origin.label()
+        ),
     );
     if !wrote_cache {
-        eprintln!(
-            "  A stronger or equivalent shared ranking already exists, so this micro-v1 result was not promoted as the preferred shared artifact"
+        emit_moe_status(
+            model_name,
+            "shared ranking already preferred",
+            "micro-v1 result was not promoted as the preferred shared artifact",
         );
     }
     print_runtime_submit_suggestion(model_name, model_path, &cached_path);
@@ -1302,14 +1415,18 @@ fn run_micro_analyze_ranking(
     std::fs::create_dir_all(&tmp_dir)?;
     let started = std::time::Instant::now();
     let mut mass_by_expert: HashMap<u32, (f64, u64)> = HashMap::new();
-    eprintln!(
-        "🧩 [{model_name}] MoE analysis mode=micro-analyze prompts={} tokens={} layers={} cache=pending",
-        prompt_count,
-        options.micro_tokens,
-        match options.micro_layer_scope {
-            moe::MoeMicroLayerScope::All => "all",
-            moe::MoeMicroLayerScope::First => "first",
-        }
+    emit_moe_status(
+        model_name,
+        "MoE analysis",
+        format!(
+            "mode=micro-analyze prompts={} tokens={} layers={} cache=pending",
+            prompt_count,
+            options.micro_tokens,
+            match options.micro_layer_scope {
+                moe::MoeMicroLayerScope::All => "all",
+                moe::MoeMicroLayerScope::First => "first",
+            }
+        ),
     );
     let progress = Arc::new(Mutex::new(MoeAnalyzeProgressState {
         current_prompt: 0,
@@ -1394,15 +1511,19 @@ fn run_micro_analyze_ranking(
     });
     let ranking = rows.iter().map(|(expert_id, _)| *expert_id).collect();
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    eprintln!(
-        "  Micro moe-analyze used {} prompt(s), {} token(s), {} in {:.1}s",
-        prompt_count,
-        options.micro_tokens,
-        match options.micro_layer_scope {
-            moe::MoeMicroLayerScope::All => "all layers",
-            moe::MoeMicroLayerScope::First => "first layer",
-        },
-        started.elapsed().as_secs_f64()
+    emit_moe_status(
+        model_name,
+        "micro-analyze complete",
+        format!(
+            "{} prompt(s), {} token(s), {} in {:.1}s",
+            prompt_count,
+            options.micro_tokens,
+            match options.micro_layer_scope {
+                moe::MoeMicroLayerScope::All => "all layers",
+                moe::MoeMicroLayerScope::First => "first layer",
+            },
+            started.elapsed().as_secs_f64()
+        ),
     );
     Ok(RuntimeMicroAnalyzeResult { ranking, rows })
 }
@@ -1540,11 +1661,20 @@ pub async fn election_loop(
 
     // Check if this is a MoE model with enough metadata to plan expert routing.
     let moe_config = lookup_moe_config(&model_name, &model);
-    if let Some(moe_config) = &moe_config {
-        eprintln!(
-            "🧩 [{}] MoE model detected ({} experts, top-{})",
-            model_name, moe_config.n_expert, moe_config.n_expert_used
-        );
+    let moe_summary = moe_config.as_ref().map(|moe_config| MoeSummary {
+        experts: moe_config.n_expert,
+        top_k: moe_config.n_expert_used,
+    });
+    if moe_summary.is_some() {
+        if let Some(moe_summary) = &moe_summary {
+            let _ = emit_event(OutputEvent::MoeDetected {
+                model: model_name.clone(),
+                moe: moe_summary.clone(),
+                fits_locally: None,
+                capacity_gb: None,
+                model_gb: None,
+            });
+        }
     }
 
     // MoE mode: each node runs its own llama-server with its expert shard.
@@ -1576,13 +1706,16 @@ pub async fn election_loop(
             ) {
                 Ok(Some(cfg)) => cfg,
                 Ok(None) => {
-                    eprintln!("⚠️  [{}] Failed to resolve MoE split config", model_name);
+                    emit_warning(
+                        "Failed to resolve MoE split config",
+                        Some(format!("model={model_name}")),
+                    );
                     return;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "⚠️  [{}] Failed to resolve MoE ranking/grouping: {e}",
-                        model_name
+                    emit_warning(
+                        format!("Failed to resolve MoE ranking/grouping: {e}"),
+                        Some(format!("model={model_name}")),
                     );
                     return;
                 }
@@ -1597,6 +1730,9 @@ pub async fn election_loop(
                     model,
                     model_name,
                     moe_cfg: resolved_moe_cfg,
+                    moe_summary: moe_summary
+                        .clone()
+                        .expect("MoE summary should exist when entering MoE mode"),
                     my_vram,
                     model_bytes,
                     binary_flavor,
@@ -1612,12 +1748,15 @@ pub async fn election_loop(
             .await;
             return;
         } else {
-            eprintln!(
-                "🧩 [{}] MoE model fits locally ({:.1}GB capacity for {:.1}GB model) — no split needed",
-                model_name,
-                my_vram as f64 / 1e9,
-                model_bytes as f64 / 1e9
-            );
+            if let Some(moe_summary) = &moe_summary {
+                let _ = emit_event(OutputEvent::MoeDetected {
+                    model: model_name.clone(),
+                    moe: moe_summary.clone(),
+                    fits_locally: Some(true),
+                    capacity_gb: Some(my_vram as f64 / 1e9),
+                    model_gb: Some(model_bytes as f64 / 1e9),
+                });
+            }
             // Fall through to normal election loop — each node runs full model independently
         }
     }
@@ -1677,14 +1816,16 @@ pub async fn election_loop(
                 == Some("1");
             let should_dup = force_duplicate_host || n_clients >= 2 || req_count >= 10;
             if !should_dup {
-                eprintln!(
-                    "💤 [{}] Peer already serving — standby (clients: {}, requests: {})",
-                    model_name, n_clients, req_count
+                emit_info(
+                    format!(
+                        "[{model_name}] Peer already serving — standby (clients: {n_clients}, requests: {req_count})"
+                    ),
+                    None,
                 );
             } else if force_duplicate_host {
-                eprintln!(
-                    "🧪 [{}] Forcing duplicate host for benchmark topology",
-                    model_name
+                emit_info(
+                    format!("[{model_name}] Forcing duplicate host for benchmark topology"),
+                    None,
                 );
             }
             should_dup
@@ -1706,7 +1847,10 @@ pub async fn election_loop(
             tokio::select! {
                 res = peer_rx.changed() => {
                     if res.is_err() { break; }
-                    eprintln!("⚡ Mesh changed — re-checking... (still host, no restart needed)");
+                    emit_info(
+                        "Mesh changed — re-checking... (still host, no restart needed)",
+                        Some(format!("model={model_name}")),
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     continue;
                 }
@@ -1717,7 +1861,13 @@ pub async fn election_loop(
                         std::future::pending::<()>().await;
                     }
                 } => {
-                    eprintln!("🔄 [{}] llama-server died — restarting...", model_name);
+                    if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
+                        break;
+                    }
+                    emit_warning(
+                        "llama-server died — restarting...",
+                        Some(format!("model={model_name}")),
+                    );
                     llama_process = None;
                     if let Some(proxy) = backend_proxy.take() {
                         proxy.shutdown().await;
@@ -1770,12 +1920,14 @@ pub async fn election_loop(
                     min_vram,
                     ..
                 } => {
-                    eprintln!(
-                        "⏳ [{}] Waiting for more peers — need {:.1}GB capacity, have {:.1}GB across eligible split workers",
-                        model_name,
-                        *min_vram as f64 / 1e9,
-                        *total_group_vram as f64 / 1e9
-                    );
+                    let _ = emit_event(OutputEvent::WaitingForPeers {
+                        detail: Some(format!(
+                            "[{}] Waiting for more peers — need {:.1}GB capacity, have {:.1}GB across eligible split workers",
+                            model_name,
+                            *min_vram as f64 / 1e9,
+                            *total_group_vram as f64 / 1e9
+                        )),
+                    });
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                     on_change(false, false);
                     if peer_rx.changed().await.is_err() {
@@ -1786,23 +1938,22 @@ pub async fn election_loop(
                 }
                 DenseLaunchPlan::Split {
                     total_group_vram,
-                    worker_ids,
+                    worker_ids: _worker_ids,
                 } => {
-                    eprintln!(
-                        "🗳 [{}] Elected as host ({:.1}GB capacity for {:.1}GB model, {} node(s), split)",
-                        model_name,
-                        *total_group_vram as f64 / 1e9,
-                        model_bytes as f64 / 1e9,
-                        worker_ids.len() + 1
-                    );
+                    let _ = emit_event(OutputEvent::HostElected {
+                        model: model_name.clone(),
+                        host: node.id().fmt_short().to_string(),
+                        role: Some("host".to_string()),
+                        capacity_gb: Some(*total_group_vram as f64 / 1e9),
+                    });
                 }
                 DenseLaunchPlan::Solo => {
-                    eprintln!(
-                        "🗳 [{}] Running as host ({:.1}GB capacity for {:.1}GB model, serving entirely)",
-                        model_name,
-                        local_launch_vram as f64 / 1e9,
-                        model_bytes as f64 / 1e9
-                    );
+                    let _ = emit_event(OutputEvent::HostElected {
+                        model: model_name.clone(),
+                        host: node.id().fmt_short().to_string(),
+                        role: Some("host".to_string()),
+                        capacity_gb: Some(local_launch_vram as f64 / 1e9),
+                    });
                 }
             }
             on_change(true, false);
@@ -1845,7 +1996,10 @@ pub async fn election_loop(
             {
                 Ok(proxy) => proxy,
                 Err(err) => {
-                    eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                    emit_error(
+                        format!("Failed to start local OpenAI backend proxy: {err}"),
+                        Some(format!("model={model_name} port={llama_port}")),
+                    );
                     process.handle.shutdown().await;
                     on_change(true, false);
                     let _ = peer_rx.changed().await;
@@ -1873,6 +2027,7 @@ pub async fn election_loop(
                 &target_tx,
             )
             .await;
+            let ctx_size = process.context_length;
             llama_process = Some(process);
             if let Some(ref process) = llama_process {
                 on_process(Some(LocalProcessInfo {
@@ -1882,11 +2037,8 @@ pub async fn election_loop(
                     context_length: process.context_length,
                 }));
             }
+            emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
             on_change(true, true);
-            eprintln!(
-                "✅ [{}] llama-server ready on internal port {llama_port}",
-                model_name
-            );
         } else {
             // We're a worker in split mode. Find who the host is.
             node.set_role(NodeRole::Worker).await;
@@ -1907,11 +2059,13 @@ pub async fn election_loop(
                         &target_tx,
                     )
                     .await;
-                    eprintln!(
-                        "📡 [{}] Worker — host is {} (split mode)",
-                        model_name,
-                        host.id.fmt_short()
-                    );
+                    let _ = emit_event(OutputEvent::WaitingForPeers {
+                        detail: Some(format!(
+                            "[{}] Worker — host is {} (split mode)",
+                            model_name,
+                            host.id.fmt_short()
+                        )),
+                    });
                 } else {
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                 }
@@ -1925,7 +2079,10 @@ pub async fn election_loop(
         tokio::select! {
             res = peer_rx.changed() => {
                 if res.is_err() { break; }
-                eprintln!("⚡ Mesh changed — re-electing...");
+                emit_info(
+                    "Mesh changed — re-electing...",
+                    Some(format!("model={model_name}")),
+                );
             }
             _ = async {
                 if let Some(ref mut process) = llama_process {
@@ -1934,7 +2091,13 @@ pub async fn election_loop(
                     std::future::pending::<()>().await;
                 }
             } => {
-                eprintln!("🔄 [{}] llama-server died — restarting...", model_name);
+                if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
+                    break;
+                }
+                emit_warning(
+                    "llama-server died — restarting...",
+                    Some(format!("model={model_name}")),
+                );
                 llama_process = None;
                 if let Some(proxy) = backend_proxy.take() {
                     proxy.shutdown().await;
@@ -1995,6 +2158,7 @@ async fn moe_election_loop(
         model,
         model_name,
         mut moe_cfg,
+        moe_summary,
         my_vram,
         model_bytes,
         binary_flavor,
@@ -2044,20 +2208,22 @@ async fn moe_election_loop(
             })
             .collect();
         let model_fits = my_vram >= (model_bytes as f64 * 1.1) as u64;
-        let placement_peers: Vec<mesh::PeerInfo> = if !currently_running
-            && !model_fits
-            && eligible_model_peers.is_empty()
-        {
-            if !declared_model_peers.is_empty() {
-                eprintln!(
-                        "🧩 [{model_name}] Bootstrapping MoE placement with {} declared peer(s) while active eligibility catches up",
-                        declared_model_peers.len()
+        let placement_peers: Vec<mesh::PeerInfo> =
+            if !currently_running && !model_fits && eligible_model_peers.is_empty() {
+                if !declared_model_peers.is_empty() {
+                    emit_moe_status(
+                        &model_name,
+                        "bootstrapping placement",
+                        format!(
+                            "{} declared peer(s) while active eligibility catches up",
+                            declared_model_peers.len()
+                        ),
                     );
-            }
-            declared_model_peers.clone()
-        } else {
-            eligible_model_peers.clone()
-        };
+                }
+                declared_model_peers.clone()
+            } else {
+                eligible_model_peers.clone()
+            };
         let recovering_peer_count = peers
             .iter()
             .filter(|p| p.is_assigned_model(&model_name))
@@ -2065,9 +2231,13 @@ async fn moe_election_loop(
             .filter(|peer| !peer.moe_recovery_ready())
             .count();
         if recovering_peer_count > 0 {
-            eprintln!(
-                "🧩 [{model_name}] Holding {} recovered peer(s) out of active MoE placement until stable",
-                recovering_peer_count
+            emit_moe_status(
+                &model_name,
+                "holding recovered peers",
+                format!(
+                    "{} recovered peer(s) out of active MoE placement until stable",
+                    recovering_peer_count
+                ),
             );
         }
 
@@ -2118,10 +2288,13 @@ async fn moe_election_loop(
                 let remaining = std::time::Duration::from_secs(MOE_SCALE_UP_QUIET_SECS)
                     .saturating_sub(last_plan_change_at.elapsed())
                     .as_secs();
-                eprintln!(
-                    "🧩 [{model_name}] Keeping {} healthy peer(s) in reserve for {}s before considering MoE scale-up",
-                    healthy_reserve_count,
-                    remaining
+                emit_moe_status(
+                    &model_name,
+                    "holding reserve peers",
+                    format!(
+                        "{} healthy peer(s) in reserve for {}s before considering MoE scale-up",
+                        healthy_reserve_count, remaining
+                    ),
                 );
             } else if provisional_best
                 .as_ref()
@@ -2132,9 +2305,13 @@ async fn moe_election_loop(
                 })
                 .is_none()
             {
-                eprintln!(
-                    "🧩 [{model_name}] Keeping {} healthy peer(s) in reserve; the current MoE plan is still preferred",
-                    healthy_reserve_count
+                emit_moe_status(
+                    &model_name,
+                    "holding reserve peers",
+                    format!(
+                        "{} healthy peer(s) in reserve; the current MoE plan is still preferred",
+                        healthy_reserve_count
+                    ),
                 );
             }
         }
@@ -2207,30 +2384,39 @@ async fn moe_election_loop(
             node.set_model_runtime_context_length(&model_name, None)
                 .await;
             node.regossip().await;
-            eprintln!(
-                "🧩 [{}] Standing by outside active MoE placement (leader={} active={} fallback={})",
-                model_name,
-                plan.leader_id.fmt_short(),
-                plan.active_ids.len(),
-                plan.fallback_ids.len()
+            emit_moe_status(
+                &model_name,
+                "standing by",
+                format!(
+                    "outside active MoE placement (leader={} active={} fallback={})",
+                    plan.leader_id.fmt_short(),
+                    plan.active_ids.len(),
+                    plan.fallback_ids.len()
+                ),
             );
             node.set_role(NodeRole::Worker).await;
             update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
             on_change(false, false);
         } else if matches!(role, MoePlacementRole::FullFallback) {
-            eprintln!(
-                "🧩 [{}] MoE full-coverage fallback — leader={} active-shards={} fallback-nodes={}",
-                model_name,
-                plan.leader_id.fmt_short(),
-                plan.active_ids.len(),
-                plan.fallback_ids.len()
+            emit_moe_status(
+                &model_name,
+                "full-coverage fallback",
+                format!(
+                    "leader={} active-shards={} fallback-nodes={}",
+                    plan.leader_id.fmt_short(),
+                    plan.active_ids.len(),
+                    plan.fallback_ids.len()
+                ),
             );
             on_change(true, false);
 
             let llama_port = match find_free_port().await {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("  Failed to find free port: {e}");
+                    emit_error(
+                        format!("Failed to find free port: {e}"),
+                        Some(format!("model={model_name} mode=moe-fallback")),
+                    );
                     if peer_rx.changed().await.is_err() {
                         break;
                     }
@@ -2273,7 +2459,10 @@ async fn moe_election_loop(
                     {
                         Ok(proxy) => proxy,
                         Err(err) => {
-                            eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                            emit_error(
+                                format!("Failed to start local OpenAI backend proxy: {err}"),
+                                Some(format!("model={model_name} port={llama_port}")),
+                            );
                             process.handle.shutdown().await;
                             if peer_rx.changed().await.is_err() {
                                 break;
@@ -2292,6 +2481,7 @@ async fn moe_election_loop(
                     tunnel_mgr.set_http_port(local_proxy_port);
                     currently_running = true;
                     current_local_port = Some(local_proxy_port);
+                    let ctx_size = process.context_length;
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         on_process(Some(LocalProcessInfo {
@@ -2311,14 +2501,14 @@ async fn moe_election_loop(
                         &model_name,
                     );
                     target_tx.send_replace(targets);
+                    emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
                     on_change(true, true);
-                    eprintln!(
-                        "✅ [{}] MoE fallback replica ready on port {llama_port}",
-                        model_name
-                    );
                 }
                 Err(e) => {
-                    eprintln!("  Failed to start fallback llama-server: {e}");
+                    emit_error(
+                        format!("Failed to start fallback llama-server: {e}"),
+                        Some(format!("model={model_name}")),
+                    );
                 }
             }
         } else if plan.active_ids.len() == 1 {
@@ -2326,18 +2516,22 @@ async fn moe_election_loop(
                 node.set_model_runtime_context_length(&model_name, None)
                     .await;
                 node.regossip().await;
-                eprintln!(
-                    "🧩 [{}] MoE model — serving entirely ({:.1}GB fits in {:.1}GB capacity)",
-                    model_name,
-                    model_bytes as f64 / 1e9,
-                    my_vram as f64 / 1e9
-                );
+                let _ = emit_event(OutputEvent::MoeDetected {
+                    model: model_name.clone(),
+                    moe: moe_summary.clone(),
+                    fits_locally: Some(true),
+                    capacity_gb: Some(my_vram as f64 / 1e9),
+                    model_gb: Some(model_bytes as f64 / 1e9),
+                });
                 on_change(true, false);
 
                 let llama_port = match find_free_port().await {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("  Failed to find free port: {e}");
+                        emit_error(
+                            format!("Failed to find free port: {e}"),
+                            Some(format!("model={model_name} mode=moe-solo")),
+                        );
                         if peer_rx.changed().await.is_err() {
                             break;
                         }
@@ -2380,8 +2574,11 @@ async fn moe_election_loop(
                             {
                                 Ok(proxy) => proxy,
                                 Err(err) => {
-                                    eprintln!(
-                                        "  Failed to start local OpenAI backend proxy: {err}"
+                                    emit_error(
+                                        format!(
+                                            "Failed to start local OpenAI backend proxy: {err}"
+                                        ),
+                                        Some(format!("model={model_name} port={llama_port}")),
                                     );
                                     process.handle.shutdown().await;
                                     continue;
@@ -2397,6 +2594,7 @@ async fn moe_election_loop(
                         tunnel_mgr.set_http_port(local_proxy_port);
                         currently_running = true;
                         current_local_port = Some(local_proxy_port);
+                        let ctx_size = process.context_length;
                         llama_process = Some(process);
                         if let Some(ref process) = llama_process {
                             on_process(Some(LocalProcessInfo {
@@ -2413,38 +2611,33 @@ async fn moe_election_loop(
                             &target_tx,
                         )
                         .await;
+                        emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
                         on_change(true, true);
-                        eprintln!(
-                            "✅ [{}] MoE — llama-server ready on port {llama_port}",
-                            model_name
-                        );
                     }
                     Err(e) => {
-                        eprintln!("  Failed to start llama-server: {e}");
+                        emit_error(
+                            format!("Failed to start llama-server: {e}"),
+                            Some(format!(
+                                "model={model_name} mode=moe-solo port={llama_port}"
+                            )),
+                        );
                     }
                 }
             } else {
                 node.set_model_runtime_context_length(&model_name, None)
                     .await;
                 node.regossip().await;
-                eprintln!("⚠️  [{}] MoE model too large to serve entirely ({:.1}GB model, {:.1}GB capacity) — waiting for peers",
-                    model_name, model_bytes as f64 / 1e9, my_vram as f64 / 1e9);
+                let _ = emit_event(OutputEvent::MoeDetected {
+                    model: model_name.clone(),
+                    moe: moe_summary.clone(),
+                    fits_locally: Some(false),
+                    capacity_gb: Some(my_vram as f64 / 1e9),
+                    model_gb: Some(model_bytes as f64 / 1e9),
+                });
                 on_change(false, false);
             }
         } else {
             let my_shard_index = plan.shard_index_for(my_id).unwrap_or(0);
-            eprintln!(
-                "🧩 [{}] MoE split mode — leader={} active={} fallback={} I am shard {}/{} (ranking={} origin={}, overlap={})",
-                model_name,
-                plan.leader_id.fmt_short(),
-                plan.active_ids.len(),
-                plan.fallback_ids.len(),
-                my_shard_index,
-                plan.active_ids.len(),
-                moe_cfg.ranking_source,
-                moe_cfg.ranking_origin,
-                plan.overlap
-            );
             on_change(true, false);
 
             let assignments = moe::compute_assignments_with_overlap(
@@ -2454,12 +2647,22 @@ async fn moe_election_loop(
                 plan.overlap,
             );
             let my_assignment = &assignments[my_shard_index];
-            eprintln!(
-                "  My experts: {} ({} shared + {} unique)",
-                my_assignment.experts.len(),
-                my_assignment.n_shared,
-                my_assignment.n_unique
-            );
+            let _ = emit_event(OutputEvent::MoeDistribution {
+                model: model_name.clone(),
+                moe: moe_summary.clone(),
+                distribution: MoeDistributionSummary {
+                    leader: plan.leader_id.fmt_short().to_string(),
+                    active_nodes: plan.active_ids.len(),
+                    fallback_nodes: plan.fallback_ids.len(),
+                    shard_index: my_shard_index,
+                    shard_count: plan.active_ids.len(),
+                    ranking_source: moe_cfg.ranking_source.clone(),
+                    ranking_origin: moe_cfg.ranking_origin.clone(),
+                    overlap: plan.overlap,
+                    shared_experts: my_assignment.n_shared,
+                    unique_experts: my_assignment.n_unique,
+                },
+            });
 
             // Advertise a non-ready local runtime before split generation / load so
             // peer liveness stays conservative during MoE convergence.
@@ -2469,14 +2672,33 @@ async fn moe_election_loop(
             let shard_path = moe::split_path(&model, plan.active_ids.len(), my_shard_index);
 
             if !shard_path.exists() {
-                eprintln!("  Splitting GGUF → {} ...", shard_path.display());
+                emit_warning(
+                    format!("Splitting GGUF → {} ...", shard_path.display()),
+                    Some(format!(
+                        "model={model_name} shard={}/{}",
+                        my_shard_index + 1,
+                        plan.active_ids.len()
+                    )),
+                );
                 match moe::run_split(&bin_dir, &model, my_assignment, &shard_path) {
                     Ok(()) => {
                         let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
-                        eprintln!("  Split complete: {:.1} GB", size as f64 / 1e9);
+                        emit_warning(
+                            format!("Split complete: {:.1} GB", size as f64 / 1e9),
+                            Some(format!(
+                                "model={model_name} shard_path={}",
+                                shard_path.display()
+                            )),
+                        );
                     }
                     Err(e) => {
-                        eprintln!("  ❌ moe-split failed: {e}");
+                        emit_error(
+                            format!("moe-split failed: {e}"),
+                            Some(format!(
+                                "model={model_name} shard_path={}",
+                                shard_path.display()
+                            )),
+                        );
                         node.set_model_runtime_context_length(&model_name, None)
                             .await;
                         node.regossip().await;
@@ -2489,10 +2711,10 @@ async fn moe_election_loop(
                 }
             } else {
                 let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
-                eprintln!(
-                    "  Using cached shard: {} ({:.1} GB)",
-                    shard_path.display(),
-                    size as f64 / 1e9
+                emit_moe_status(
+                    &model_name,
+                    "using cached shard",
+                    format!("{} ({:.1} GB)", shard_path.display(), size as f64 / 1e9),
                 );
             }
 
@@ -2500,7 +2722,10 @@ async fn moe_election_loop(
             let llama_port = match find_free_port().await {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("  Failed to find free port: {e}");
+                    emit_error(
+                        format!("Failed to find free port: {e}"),
+                        Some(format!("model={model_name} mode=moe-split")),
+                    );
                     if peer_rx.changed().await.is_err() {
                         break;
                     }
@@ -2544,7 +2769,10 @@ async fn moe_election_loop(
                     {
                         Ok(proxy) => proxy,
                         Err(err) => {
-                            eprintln!("  Failed to start local OpenAI backend proxy: {err}");
+                            emit_error(
+                                format!("Failed to start local OpenAI backend proxy: {err}"),
+                                Some(format!("model={model_name} port={llama_port}")),
+                            );
                             process.handle.shutdown().await;
                             continue;
                         }
@@ -2559,6 +2787,7 @@ async fn moe_election_loop(
                     tunnel_mgr.set_http_port(local_proxy_port);
                     currently_running = true;
                     current_local_port = Some(local_proxy_port);
+                    let ctx_size = process.context_length;
                     llama_process = Some(process);
                     if let Some(ref process) = llama_process {
                         on_process(Some(LocalProcessInfo {
@@ -2580,22 +2809,23 @@ async fn moe_election_loop(
                     );
                     target_tx.send_replace(targets);
 
+                    emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
                     on_change(true, true);
-                    eprintln!(
-                        "✅ [{}] MoE shard {} ready on port {llama_port} ({} experts)",
-                        model_name,
-                        my_shard_index,
-                        my_assignment.experts.len()
-                    );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "  ❌ MoE split validation failed for shard {}: {e}",
-                        shard_path.display()
+                    emit_error(
+                        format!(
+                            "MoE split validation failed for shard {}: {e}",
+                            shard_path.display()
+                        ),
+                        Some(format!("model={model_name}")),
                     );
-                    eprintln!(
-                        "  ⚠️  [{}] Refusing to enter MoE split mode on this node until the shard validates",
-                        model_name
+                    emit_warning(
+                        "Refusing to enter MoE split mode on this node until the shard validates",
+                        Some(format!(
+                            "model={model_name} shard_path={}",
+                            shard_path.display()
+                        )),
                     );
                     node.set_model_runtime_context_length(&model_name, None)
                         .await;
@@ -2618,10 +2848,7 @@ async fn moe_election_loop(
         if stop_requested(&stop_rx) {
             break;
         }
-        eprintln!(
-            "⚡ [{}] Mesh changed — re-checking MoE deployment...",
-            model_name
-        );
+        emit_moe_status(&model_name, "re-checking deployment", "mesh changed");
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 
@@ -2712,10 +2939,9 @@ async fn update_targets(
     if count > 1 {
         for (model, hosts) in &targets {
             if hosts.len() > 1 {
-                eprintln!(
-                    "⚡ [{}] {} hosts available (load balancing)",
-                    model,
-                    hosts.len()
+                emit_info(
+                    format!("[{model}] {} hosts available (load balancing)", hosts.len()),
+                    None,
                 );
             }
         }
@@ -2768,12 +2994,14 @@ async fn start_llama(
                 .filter(|p| !matches!(p.role, NodeRole::Client))
                 .count();
             if worker_count > 0 {
-                eprintln!(
-                    "  Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely",
-                    local_launch_vram as f64 / 1e9,
-                    model_bytes as f64 / 1e9
+                emit_info(
+                    format!(
+                        "Model fits on host ({:.1}GB capacity for {:.1}GB model) — serving entirely. Use --split to force distributed mode",
+                        local_launch_vram as f64 / 1e9,
+                        model_bytes as f64 / 1e9
+                    ),
+                    Some(format!("model={model_name}")),
                 );
-                eprintln!("  Use --split to force distributed mode");
             }
             Vec::new()
         }
@@ -2784,10 +3012,13 @@ async fn start_llama(
                         .rtt_ms
                         .map(|r| format!("{}ms", r))
                         .unwrap_or("?ms".to_string());
-                    eprintln!(
-                        "  ✓ Adding {} — {:.1}GB capacity, RTT {rtt_str}",
-                        peer.id.fmt_short(),
-                        split_peer_vram_bytes(peer, local_launch_vram) as f64 / 1e9
+                    emit_info(
+                        format!(
+                            "Adding {} — {:.1}GB capacity, RTT {rtt_str}",
+                            peer.id.fmt_short(),
+                            split_peer_vram_bytes(peer, local_launch_vram) as f64 / 1e9
+                        ),
+                        Some(format!("model={model_name}")),
                     );
                 }
             }
@@ -2800,7 +3031,10 @@ async fn start_llama(
 
     // Wait for tunnels to workers
     if !worker_ids.is_empty() {
-        eprintln!("  Waiting for tunnels to {} worker(s)...", worker_ids.len());
+        emit_info(
+            format!("Waiting for tunnels to {} worker(s)...", worker_ids.len()),
+            Some(format!("model={model_name}")),
+        );
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             tunnel_mgr.wait_for_peers(worker_ids.len()),
@@ -2823,13 +3057,16 @@ async fn start_llama(
     // through the local rpc-server (which would add unnecessary TCP round trips).
     let all_ports = tunnel_mgr.peer_ports_map().await;
     let Some(rpc_ports) = rpc_ports_for_worker_ids(&all_ports, &worker_ids) else {
-        eprintln!(
-            "  Waiting for selected worker tunnels ({}/{} ready)",
-            all_ports
-                .keys()
-                .filter(|id| worker_ids.contains(id))
-                .count(),
-            worker_ids.len()
+        emit_warning(
+            format!(
+                "Waiting for selected worker tunnels ({}/{} ready)",
+                all_ports
+                    .keys()
+                    .filter(|id| worker_ids.contains(id))
+                    .count(),
+                worker_ids.len()
+            ),
+            Some(format!("model={model_name}")),
         );
         return None;
     };
@@ -2850,15 +3087,8 @@ async fn start_llama(
             .iter()
             .map(|v| format!("{:.2}", v / total))
             .collect();
-        let split_str = s.join(",");
-        eprintln!(
-            "  Tensor split: {split_str} ({} node(s), {:.0}GB total)",
-            rpc_ports.len() + 1,
-            total / 1e9
-        );
-        Some(split_str)
+        Some(s.join(","))
     } else {
-        eprintln!("  Serving entirely ({:.0}GB capacity)", my_vram_f / 1e9);
         None
     };
 
@@ -2866,7 +3096,10 @@ async fn start_llama(
     let llama_port = match find_free_port().await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("  Failed to find free port: {e}");
+            emit_error(
+                format!("Failed to find free port: {e}"),
+                Some(format!("model={model_name} mode=dense")),
+            );
             return None;
         }
     };
@@ -2914,7 +3147,10 @@ async fn start_llama(
     {
         Ok(process) => Some((llama_port, process)),
         Err(e) => {
-            eprintln!("  Failed to start llama-server: {e}");
+            emit_error(
+                format!("Failed to start llama-server: {e}"),
+                Some(format!("model={model_name} mode=dense port={llama_port}")),
+            );
             None
         }
     }

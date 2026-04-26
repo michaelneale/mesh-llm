@@ -19,6 +19,7 @@ pub(super) struct LocalRuntimeModelHandle {
     pub(super) process: launch::InferenceServerHandle,
     pub(super) backend_proxy: backend::BackendProxyHandle,
     pub(super) context_length: u32,
+    pub(super) slots: usize,
 }
 
 impl LocalRuntimeModelHandle {
@@ -225,6 +226,7 @@ pub(super) async fn start_runtime_local_model(
             process: process.handle,
             backend_proxy,
             context_length: process.context_length,
+            slots: spec.slots,
         },
         process.death_rx,
     ))
@@ -235,6 +237,7 @@ pub(super) fn local_process_payload(
     backend: &str,
     port: u16,
     pid: u32,
+    slots: usize,
 ) -> api::RuntimeProcessPayload {
     api::RuntimeProcessPayload {
         name: model_name.to_string(),
@@ -242,5 +245,6 @@ pub(super) fn local_process_payload(
         status: "ready".into(),
         port,
         pid,
+        slots,
     }
 }

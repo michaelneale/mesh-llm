@@ -45,6 +45,7 @@ pub enum RuntimeControlRequest {
         model: String,
         resp: tokio::sync::oneshot::Sender<anyhow::Result<()>>,
     },
+    Shutdown,
 }
 
 #[derive(Clone, Serialize)]
@@ -62,6 +63,7 @@ pub struct RuntimeProcessPayload {
     pub status: String,
     pub port: u16,
     pub pid: u32,
+    pub slots: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

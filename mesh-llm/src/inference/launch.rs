@@ -10,6 +10,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 
+use crate::cli::output::{emit_event, OutputEvent};
+
 /// llama.cpp split mode for distributing tensors across devices.
 ///
 /// - `Layer` (default): each device gets a contiguous range of layers.
@@ -425,6 +427,20 @@ pub struct ModelLaunchSpec<'a> {
 
 pub(crate) const GB: u64 = 1_000_000_000;
 
+static RUNTIME_SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn mark_runtime_shutting_down() {
+    RUNTIME_SHUTTING_DOWN.store(true, Ordering::Relaxed);
+}
+
+pub(crate) fn clear_runtime_shutting_down() {
+    RUNTIME_SHUTTING_DOWN.store(false, Ordering::Relaxed);
+}
+
+pub(crate) fn runtime_shutting_down() -> bool {
+    RUNTIME_SHUTTING_DOWN.load(Ordering::Relaxed)
+}
+
 fn spawned_binary_name(path: &Path) -> String {
     #[cfg(windows)]
     {
@@ -439,6 +455,17 @@ fn spawned_binary_name(path: &Path) -> String {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned())
     }
+}
+
+fn model_label(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    crate::models::local::split_gguf_base_name(&stem)
+        .unwrap_or(stem.as_str())
+        .to_string()
 }
 
 fn compute_context_size(
@@ -875,16 +902,17 @@ pub async fn start_rpc_server(
     };
     let startup_polls = (startup_timeout.as_millis() / 500) as usize;
 
-    tracing::info!("Starting rpc-server on :{port} (device: {device})");
-
     let rpc_log = runtime.log_path(&format!("rpc-server-{port}"));
-    eprintln!(
-        "⏳ Starting rpc-server on port {port}... (logs: {})",
-        rpc_log.display()
-    );
     let rpc_log_file = std::fs::File::create(&rpc_log)
         .with_context(|| format!("Failed to create rpc-server log file {}", rpc_log.display()))?;
     let rpc_log_file2 = rpc_log_file.try_clone()?;
+
+    tracing::info!("Starting rpc-server on :{port} (device: {device})");
+    let _ = emit_event(OutputEvent::RpcServerStarting {
+        port,
+        device: device.clone(),
+        log_path: Some(rpc_log.display().to_string()),
+    });
 
     let mut args = vec![
         "-d".to_string(),
@@ -951,8 +979,11 @@ pub async fn start_rpc_server(
             tokio::spawn(async move {
                 let _ = child.wait().await;
                 let _ = std::fs::remove_file(&pidfile_path);
-                if !expected_exit_clone.load(Ordering::Relaxed) {
-                    eprintln!("⚠️  rpc-server process exited unexpectedly");
+                if !expected_exit_clone.load(Ordering::Relaxed) && !runtime_shutting_down() {
+                    let _ = emit_event(OutputEvent::Warning {
+                        message: "rpc-server process exited unexpectedly".to_string(),
+                        context: Some(format!("port={port} device={device}")),
+                    });
                 }
             });
             return Ok(RpcServerHandle {
@@ -1097,11 +1128,50 @@ fn send_signal_if_matches(
     }
 }
 
+/// Outcome of [`terminate_process_blocking`].
+///
+/// Callers can use [`TerminationOutcome::is_success`] for a coarse success/failure
+/// check equivalent to the old `bool` return, or match on individual variants when
+/// the distinction matters (e.g. deciding whether a runtime had a chance to clean up
+/// its children).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminationOutcome {
+    /// Process was already gone before we attempted to signal it.
+    NotRunning,
+    /// Process exited after SIGTERM, before kill escalation.
+    Graceful,
+    /// Process did not exit within the grace period and had to be SIGKILL'd.
+    Killed,
+    /// Signal call itself failed (e.g. identity mismatch or OS error).
+    Failed,
+}
+
+impl TerminationOutcome {
+    /// Returns `true` for any outcome where the process is no longer running.
+    ///
+    /// Equivalent to the old `bool` return from `terminate_process_blocking`:
+    /// `NotRunning | Graceful | Killed` → `true`, `Failed` → `false`.
+    pub(crate) fn is_success(self) -> bool {
+        !matches!(self, TerminationOutcome::Failed)
+    }
+}
+
+/// Attempts to terminate a process identified by `pid`, with identity validation
+/// and graceful-then-forceful signal escalation.
+///
+/// Returns a [`TerminationOutcome`] describing how the process was stopped:
+/// - [`TerminationOutcome::NotRunning`] — process was already dead.
+/// - [`TerminationOutcome::Graceful`] — process exited after SIGTERM within the grace period.
+/// - [`TerminationOutcome::Killed`] — process required SIGKILL after the grace period.
+/// - [`TerminationOutcome::Failed`] — could not signal the process (identity mismatch or OS error).
+///
+/// Sends SIGTERM first, then waits up to 5 s (20 × 250 ms). If the process is
+/// still alive, escalates to SIGKILL.
 pub(crate) fn terminate_process_blocking(
     pid: u32,
     expected_comm: &str,
     expected_start_time: Option<i64>,
-) -> bool {
+) -> TerminationOutcome {
     match send_signal_if_matches(
         pid,
         expected_comm,
@@ -1110,12 +1180,12 @@ pub(crate) fn terminate_process_blocking(
     ) {
         SignalOutcome::Sent => {}
         #[cfg(not(windows))]
-        SignalOutcome::AlreadyDead => return true,
+        SignalOutcome::AlreadyDead => return TerminationOutcome::NotRunning,
         // Identity mismatch: the PID belongs to a different process; do not
         // claim a successful stop.
         #[cfg(not(windows))]
-        SignalOutcome::Skipped => return false,
-        SignalOutcome::Failed => return false,
+        SignalOutcome::Skipped => return TerminationOutcome::Failed,
+        SignalOutcome::Failed => return TerminationOutcome::Failed,
     }
 
     for _ in 0..20 {
@@ -1123,15 +1193,15 @@ pub(crate) fn terminate_process_blocking(
         if crate::runtime::instance::validate::process_liveness(pid)
             == crate::runtime::instance::validate::Liveness::Dead
         {
-            return true;
+            return TerminationOutcome::Graceful;
         }
     }
 
     match send_signal_if_matches(pid, expected_comm, expected_start_time, ProcessSignal::Kill) {
-        SignalOutcome::Sent => true,
+        SignalOutcome::Sent => TerminationOutcome::Killed,
         #[cfg(not(windows))]
-        SignalOutcome::AlreadyDead => true,
-        _ => false,
+        SignalOutcome::AlreadyDead => TerminationOutcome::Graceful,
+        _ => TerminationOutcome::Failed,
     }
 }
 
@@ -1212,10 +1282,6 @@ pub async fn start_llama_server(
     );
 
     let llama_log = runtime.log_path(&format!("llama-server-{}", http_port));
-    eprintln!(
-        "⏳ Starting llama-server on :{http_port}... (logs: {})",
-        llama_log.display()
-    );
     let log_file = std::fs::File::create(&llama_log).with_context(|| {
         format!(
             "Failed to create llama-server log file {}",
@@ -1246,6 +1312,12 @@ pub async fn start_llama_server(
     ensure_selected_gpu_capacity(selected_gpu, host_model_bytes, "this local launch")?;
     let vram_after_model = my_vram.saturating_sub(host_model_bytes);
     let ctx_size = compute_context_size(ctx_size_override, model_bytes, my_vram, total_group_vram);
+    let _ = emit_event(OutputEvent::LlamaStarting {
+        model: Some(model_label(model)),
+        http_port,
+        ctx_size: Some(ctx_size),
+        log_path: Some(llama_log.display().to_string()),
+    });
     tracing::info!(
         "Context size: {ctx_size} tokens (model {:.1}GB, host weights ~{:.1}GB, {:.0}GB capacity, {:.1}GB free{})",
         model_bytes as f64 / GB as f64,
@@ -1529,11 +1601,15 @@ pub async fn start_llama_server(
             };
             let (death_tx, death_rx) = tokio::sync::oneshot::channel();
             let pidfile_path = runtime.pidfile_path(&format!("llama-server-{}", http_port));
+            let launched_model_label = model_label(model);
             tokio::spawn(async move {
                 let _ = child.wait().await;
                 let _ = std::fs::remove_file(&pidfile_path);
-                if !expected_exit.load(Ordering::Relaxed) {
-                    eprintln!("⚠️  llama-server process exited unexpectedly");
+                if !expected_exit.load(Ordering::Relaxed) && !runtime_shutting_down() {
+                    let _ = emit_event(OutputEvent::Warning {
+                        message: "llama-server process exited unexpectedly".to_string(),
+                        context: Some(format!("model={launched_model_label} port={http_port}")),
+                    });
                 }
                 let _ = death_tx.send(());
             });
@@ -1731,9 +1807,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_context_size, is_safe_kill_target, parse_available_devices, preferred_device,
-        terminate_process, wait_for_exit, BinaryFlavor, KvCacheQuant, KvCacheWarning, KvType,
-        RpcServerHandle, SplitMode, GB,
+        compute_context_size, is_safe_kill_target, model_label, parse_available_devices,
+        preferred_device, terminate_process, wait_for_exit, BinaryFlavor, KvCacheQuant,
+        KvCacheWarning, KvType, RpcServerHandle, SplitMode, GB,
     };
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1747,6 +1823,22 @@ mod tests {
         assert!(
             quant.validation_warnings().is_empty(),
             "small-model default should not trigger any upstream bug warnings"
+        );
+    }
+
+    #[test]
+    fn model_label_uses_clean_stem_for_gguf_paths() {
+        assert_eq!(
+            model_label(Path::new(
+                "/Users/example/.cache/huggingface/hub/Qwen3.5-27B-Q4_K_M.gguf"
+            )),
+            "Qwen3.5-27B-Q4_K_M"
+        );
+        assert_eq!(
+            model_label(Path::new(
+                "/Users/example/.cache/huggingface/hub/GLM-5-UD-IQ2_XXS-00001-of-00006.gguf"
+            )),
+            "GLM-5-UD-IQ2_XXS"
         );
     }
 

@@ -1,3 +1,4 @@
+use crate::cli::output::{emit_event, OutputEvent};
 use crate::cli::Cli;
 use crate::mesh;
 use crate::network::{nostr, router};
@@ -46,13 +47,18 @@ pub(super) async fn nostr_rediscovery(
             continue;
         }
 
-        eprintln!("🔍 No peers — re-discovering meshes via Nostr...");
+        let _ = emit_event(OutputEvent::DiscoveryStarting {
+            source: "Nostr re-discovery".to_string(),
+        });
 
         let filter = nostr::MeshFilter::default();
         let meshes = match nostr::discover(&nostr_relays, &filter, None).await {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("⚠️  Nostr re-discovery failed: {e}");
+                let _ = emit_event(OutputEvent::DiscoveryFailed {
+                    message: "Nostr re-discovery failed".to_string(),
+                    detail: Some(e.to_string()),
+                });
                 alone_since = Some(std::time::Instant::now());
                 continue;
             }
@@ -75,7 +81,10 @@ pub(super) async fn nostr_rediscovery(
 
         if filtered.is_empty() {
             let name_hint = mesh_name.as_deref().unwrap_or("any");
-            eprintln!("⚠️  No meshes found on Nostr matching \"{name_hint}\" — will retry");
+            let _ = emit_event(OutputEvent::DiscoveryFailed {
+                message: format!("No meshes found on Nostr matching \"{name_hint}\" — will retry"),
+                detail: None,
+            });
             alone_since = Some(std::time::Instant::now());
             continue;
         }
@@ -101,19 +110,31 @@ pub(super) async fn nostr_rediscovery(
                     continue;
                 }
             }
+            let mesh_label = mesh
+                .listing
+                .name
+                .as_deref()
+                .unwrap_or("unnamed")
+                .to_string();
+            let _ = emit_event(OutputEvent::MeshFound {
+                mesh: mesh_label.clone(),
+                peers: mesh.listing.node_count,
+                region: None,
+            });
             let token = &mesh.listing.invite_token;
-            eprintln!(
-                "✅ Re-joining: {} ({} nodes)",
-                mesh.listing.name.as_deref().unwrap_or("unnamed"),
-                mesh.listing.node_count
-            );
             match node.join(token).await {
                 Ok(()) => {
-                    eprintln!("📡 Re-joined mesh via Nostr re-discovery");
+                    let _ = emit_event(OutputEvent::DiscoveryJoined { mesh: mesh_label });
                     rejoined = true;
                 }
                 Err(e) => {
-                    eprintln!("⚠️  Re-join failed: {e}");
+                    let _ = emit_event(OutputEvent::DiscoveryFailed {
+                        message: format!(
+                            "Failed to re-join mesh {}",
+                            mesh.listing.name.as_deref().unwrap_or("unnamed")
+                        ),
+                        detail: Some(e.to_string()),
+                    });
                 }
             }
             if rejoined {
@@ -124,7 +145,10 @@ pub(super) async fn nostr_rediscovery(
         if rejoined {
             alone_since = None;
         } else {
-            eprintln!("⚠️  Could not re-join any mesh — will retry");
+            let _ = emit_event(OutputEvent::DiscoveryFailed {
+                message: "Could not re-join any mesh — will retry".to_string(),
+                detail: None,
+            });
             alone_since = Some(std::time::Instant::now());
         }
     }
@@ -139,21 +163,26 @@ pub(super) fn start_new_mesh(
 ) {
     let pack = nostr::auto_model_pack(my_vram_gb);
     let primary = pack.first().cloned().unwrap_or_default();
-    eprintln!("🆕 Starting a new mesh");
-    if has_startup_models {
-        eprintln!("   Using configured startup models");
-    } else {
-        eprintln!("   Serving: {primary}");
-    }
-    eprintln!("   Capacity: {:.0}GB", my_vram_gb);
     if !has_startup_models && cli.model.is_empty() {
-        cli.model.push(primary.into());
+        cli.model.push(primary.clone().into());
     }
-    if cli.publish {
-        eprintln!("   Publishing to Nostr for public discovery");
+    let detail = if has_startup_models {
+        "using configured startup models".to_string()
     } else {
-        eprintln!("   Mesh is PRIVATE — add --publish for public discovery");
-    }
+        format!("serving: {primary}")
+    };
+    let discovery = if cli.publish {
+        "publishing to Nostr for public discovery"
+    } else {
+        "mesh is private — add --publish for public discovery"
+    };
+    let _ = emit_event(OutputEvent::Info {
+        message: format!(
+            "Starting a new mesh — {detail} — capacity: {:.0}GB — {discovery}",
+            my_vram_gb
+        ),
+        context: None,
+    });
 }
 
 pub(crate) fn nostr_relays(cli_relays: &[String]) -> Vec<String> {
@@ -181,7 +210,10 @@ pub(crate) async fn check_mesh(
 
     let mut child: Option<std::process::Child> = None;
     if client.get(&url).send().await.is_err() {
-        eprintln!("🔍 No mesh-llm on port {port} — starting background auto-join node...");
+        let _ = emit_event(OutputEvent::Info {
+            message: format!("No mesh-llm on port {port} — starting background auto-join node"),
+            context: None,
+        });
         let exe = std::env::current_exe().unwrap_or_else(|_| "mesh-llm".into());
         child = Some(
             std::process::Command::new(&exe)
@@ -210,10 +242,10 @@ pub(crate) async fn check_mesh(
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if i % 5 == 4 {
-            eprintln!(
-                "   Waiting for mesh/models... ({:.0}s)",
-                (i + 1) as f64 * 3.0
-            );
+            let _ = emit_event(OutputEvent::Info {
+                message: format!("Waiting for mesh/models... ({:.0}s)", (i + 1) as f64 * 3.0),
+                context: Some(format!("port={port}")),
+            });
         }
     }
 
@@ -258,7 +290,13 @@ pub(crate) async fn check_mesh(
             .map(|s| s.to_string())
             .unwrap_or_else(|| models[0].clone())
     };
-    eprintln!("   Models: {}", models.join(", "));
-    eprintln!("   Using: {chosen}");
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("Models: {}", models.join(", ")),
+        context: Some(format!("port={port}")),
+    });
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("Using: {chosen}"),
+        context: Some(format!("port={port}")),
+    });
     Ok((models, chosen, child))
 }

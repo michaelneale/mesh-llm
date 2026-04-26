@@ -209,12 +209,12 @@ impl Node {
                         };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if path_rtt_ms > 0 && path_rtt_ms < rtt_ms {
-                            eprintln!(
+                            super::emit_mesh_info(format!(
                                 "📡 Peer {} RTT: {}ms ({}) [path info]",
                                 remote.fmt_short(),
                                 path_rtt_ms,
                                 path_type
-                            );
+                            ));
                             self.update_peer_rtt(remote, path_rtt_ms).await;
                         }
                         break;
@@ -263,10 +263,10 @@ impl Node {
         {
             let mut state = self.state.lock().await;
             if state.dead_peers.remove(&remote) {
-                eprintln!(
+                super::emit_mesh_info(format!(
                     "🔄 Dead peer {} is gossiping — clearing dead status",
                     remote.fmt_short()
-                );
+                ));
             }
         }
 
@@ -308,12 +308,12 @@ impl Node {
                         };
                         let path_type = if path_info.is_ip() { "direct" } else { "relay" };
                         if rtt_ms > 0 {
-                            eprintln!(
+                            super::emit_mesh_info(format!(
                                 "📡 Peer {} RTT: {}ms ({})",
                                 remote.fmt_short(),
                                 rtt_ms,
                                 path_type
-                            );
+                            ));
                             self.update_peer_rtt(remote, rtt_ms).await;
                         }
                         break;
@@ -411,10 +411,10 @@ impl Node {
         // after a successful gossip exchange, which is proof of life.
         let recovered = state.dead_peers.remove(&id);
         if recovered {
-            eprintln!(
+            super::emit_mesh_info(format!(
                 "🔄 Peer {} back from the dead (successful gossip)",
                 id.fmt_short()
-            );
+            ));
         }
         if let Some(existing) = state.peers.get_mut(&id) {
             let old_peer = existing.clone();

@@ -4,6 +4,7 @@ version = "0.65.0-rc2"
 edition = "2021"
 
 [dependencies]
+ansi-to-tui = "8"
 mesh-llm-plugin = { path = "plugin" }
 mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features = ["host-io"] }
 iroh = "0.98"
@@ -14,6 +15,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+arboard = "3"
 rand = "0.10"
 base64 = "0.22"
 biip = "0.9.2"
@@ -36,6 +38,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 chrono = { version = "0.4", features = ["serde"] }
 httparse = "1"
 tokio-stream = "0.1"
+crossterm = "0.28"
+ratatui = "0.30"
 url = "2"
 urlencoding = "2"
 libc = "0.2.183"

@@ -1,6 +1,7 @@
 //! Built-in model catalog plus managed acquisition helpers.
 
 use super::track_managed_model_usage;
+use crate::cli::output::{emit_event, interactive_tui_active, ModelProgressStatus, OutputEvent};
 use crate::cli::terminal_progress::{start_spinner, SpinnerHandle};
 use anyhow::{Context, Result};
 use hf_hub::{DownloadEvent, Progress, ProgressEvent, ProgressHandler, RepoDownloadFileParams};
@@ -343,7 +344,7 @@ type DownloadHfAssetsOverrideFn =
 type DownloadPlanObserverFn = Arc<dyn Fn(&str, Vec<(bool, String)>) + Send + Sync>;
 
 #[cfg(test)]
-type DownloadHfAssetsLabelFn = Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>;
+type DownloadHfAssetsLabelOverrideFn = Arc<dyn Fn(&str) -> Result<Vec<PathBuf>> + Send + Sync>;
 
 #[cfg(test)]
 static DOWNLOAD_HF_ASSETS_OVERRIDE: LazyLock<Mutex<HashMap<String, DownloadHfAssetsOverrideFn>>> =
@@ -371,7 +372,7 @@ impl DownloadHfAssetsOverrideGuard {
 #[cfg(test)]
 pub(crate) fn set_download_hf_assets_label_override(
     label: String,
-    func: DownloadHfAssetsLabelFn,
+    func: DownloadHfAssetsLabelOverrideFn,
 ) -> DownloadHfAssetsOverrideGuard {
     DownloadHfAssetsOverrideGuard::set(
         label,
@@ -453,8 +454,13 @@ struct MeshDownloadProgress {
 impl MeshDownloadProgress {
     fn new(filename: String) -> Self {
         let spinner_message = format!("Preparing download {}", filename);
+        let preflight_spinner = if interactive_tui_active() {
+            None
+        } else {
+            Some(start_spinner(&spinner_message))
+        };
         Self {
-            preflight_spinner: Mutex::new(Some(start_spinner(&spinner_message))),
+            preflight_spinner: Mutex::new(preflight_spinner),
             state: Mutex::new(MeshDownloadProgressState {
                 filename,
                 total: 0,
@@ -478,6 +484,16 @@ impl MeshDownloadProgress {
             return;
         }
         state.last_draw = Some(now);
+        if interactive_tui_active() {
+            emit_model_progress(
+                &state.filename,
+                Some(&state.filename),
+                Some(state.downloaded),
+                (state.total > 0).then_some(state.total),
+                ModelProgressStatus::Downloading,
+            );
+            return;
+        }
         let percent = if state.total == 0 {
             0
         } else {
@@ -600,6 +616,37 @@ fn format_download_bytes(bytes: u64) -> String {
     }
 }
 
+fn emit_model_progress(
+    label: &str,
+    file: Option<&str>,
+    downloaded_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+    status: ModelProgressStatus,
+) {
+    let _ = emit_event(OutputEvent::ModelDownloadProgress {
+        label: label.to_string(),
+        file: file.map(ToOwned::to_owned),
+        downloaded_bytes,
+        total_bytes,
+        status,
+    });
+}
+
+fn emit_or_print_model_progress(
+    label: &str,
+    file: Option<&str>,
+    downloaded_bytes: Option<u64>,
+    total_bytes: Option<u64>,
+    status: ModelProgressStatus,
+    fallback: impl FnOnce(),
+) {
+    if interactive_tui_active() {
+        emit_model_progress(label, file, downloaded_bytes, total_bytes, status);
+    } else {
+        fallback();
+    }
+}
+
 fn download_hf_assets_blocking(
     label: &str,
     assets: Vec<HfAsset>,
@@ -625,7 +672,14 @@ fn download_hf_assets_blocking(
         }
     }
     if progress {
-        eprintln!("📥 Ensuring {} is available locally...", label);
+        emit_or_print_model_progress(
+            label,
+            None,
+            None,
+            None,
+            ModelProgressStatus::Ensuring,
+            || eprintln!("📥 Ensuring {} is available locally...", label),
+        );
     }
 
     #[cfg(test)]
@@ -646,7 +700,14 @@ fn download_hf_assets_blocking(
         let (owner, name) = asset.repo_parts();
         let api_repo = api.model(owner, name);
         if progress && required {
-            eprintln!("   📥 Ensuring model {}", asset.file);
+            emit_or_print_model_progress(
+                label,
+                Some(&asset.file),
+                None,
+                None,
+                ModelProgressStatus::Ensuring,
+                || eprintln!("   📥 Ensuring model {}", asset.file),
+            );
         }
         let progress_tracker = if progress && required {
             Some(Arc::new(MeshDownloadProgress::new(asset.file.clone())))
@@ -672,15 +733,38 @@ fn download_hf_assets_blocking(
                             .as_ref()
                             .is_some_and(|tracker| tracker.showed_meaningful_progress());
                         if showed_progress {
-                            eprintln!("   ✅ Ready {}", asset.file);
+                            emit_or_print_model_progress(
+                                label,
+                                Some(&asset.file),
+                                None,
+                                None,
+                                ModelProgressStatus::Ready,
+                                || eprintln!("   ✅ Ready {}", asset.file),
+                            );
                         } else if let Ok(meta) = std::fs::metadata(&path) {
-                            eprintln!(
-                                "   ✅ Ready {} ({})",
-                                asset.file,
-                                format_download_bytes(meta.len())
+                            emit_or_print_model_progress(
+                                label,
+                                Some(&asset.file),
+                                Some(meta.len()),
+                                Some(meta.len()),
+                                ModelProgressStatus::Ready,
+                                || {
+                                    eprintln!(
+                                        "   ✅ Ready {} ({})",
+                                        asset.file,
+                                        format_download_bytes(meta.len())
+                                    )
+                                },
                             );
                         } else {
-                            eprintln!("   ✅ Ready {}", asset.file);
+                            emit_or_print_model_progress(
+                                label,
+                                Some(&asset.file),
+                                None,
+                                None,
+                                ModelProgressStatus::Ready,
+                                || eprintln!("   ✅ Ready {}", asset.file),
+                            );
                         }
                     } else {
                         eprintln!("   🧾 Downloaded model metadata");

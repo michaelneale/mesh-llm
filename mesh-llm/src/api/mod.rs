@@ -377,6 +377,20 @@ impl MeshApi {
         self.inner.lock().await.runtime_control = Some(tx);
     }
 
+    pub(crate) async fn status_snapshot_string(&self) -> String {
+        let status = self.status().await;
+        match serde_json::to_string_pretty(&status) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::warn!("failed to serialize local status snapshot: {err}");
+                format!(
+                    "{{\n  \"error\": \"status snapshot unavailable\",\n  \"detail\": {:?}\n}}",
+                    err.to_string()
+                )
+            }
+        }
+    }
+
     pub async fn upsert_local_process(&self, process: RuntimeProcessPayload) {
         {
             let mut inner = self.inner.lock().await;
@@ -1666,6 +1680,7 @@ mod tests {
                     status: "ready".into(),
                     port: 9337,
                     pid: 100,
+                    slots: 4,
                 },
                 RuntimeProcessPayload {
                     name: "Llama".into(),
@@ -1673,6 +1688,7 @@ mod tests {
                     status: "ready".into(),
                     port: 9444,
                     pid: 101,
+                    slots: 4,
                 },
             ],
         );
@@ -1707,6 +1723,7 @@ mod tests {
                 status: "ready".into(),
                 port: 9444,
                 pid: 11,
+                slots: 4,
             },
             RuntimeProcessPayload {
                 name: "Alpha".into(),
@@ -1714,6 +1731,7 @@ mod tests {
                 status: "ready".into(),
                 port: 9337,
                 pid: 10,
+                slots: 4,
             },
         ]);
 

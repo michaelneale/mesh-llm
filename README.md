@@ -120,6 +120,29 @@ mesh-llm serve --auto                      # find and join the best mesh
 mesh-llm client --auto                     # join as API-only client (no GPU)
 ```
 
+## Output
+
+`mesh-llm` has two terminal output modes:
+
+- `--log-format pretty` renders human-readable output. In `serve` on an interactive TTY, this becomes the full dashboard; otherwise it falls back to line-oriented pretty output.
+- `--log-format json` writes newline-delimited JSON records to `stdout`, which keeps it safe for `jq`, log shippers, and shell pipelines.
+
+JSON mode example:
+
+```json
+{"timestamp":"...","level":"info","event":"llama_ready","model":"Qwen3-32B","port":8001,"ctx_size":8192,"message":"Qwen3-32B ready on internal port 8001"}
+{"timestamp":"...","level":"info","event":"model_ready","model":"Qwen3-32B","port":38373,"internal_port":38373,"role":"host","message":"model Qwen3-32B ready on port 38373"}
+{"timestamp":"...","level":"info","event":"ready","api_url":"http://localhost:9337","console_url":"http://localhost:3131","api_port":9337,"console_port":3131,"models_count":2,"message":"mesh-llm runtime ready"}
+```
+
+Line-oriented pretty sessions accept these commands after startup is ready:
+
+- `h` shows help
+- `i` prints the current mesh status snapshot
+- `q` quits cleanly
+
+For the full event taxonomy and field reference, see [mesh-llm/src/cli/output/EVENTS.md](mesh-llm/src/cli/output/EVENTS.md).
+
 ## How it works
 
 Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribution is automatic — you just say `mesh-llm serve --model X` and the mesh figures out the best strategy:

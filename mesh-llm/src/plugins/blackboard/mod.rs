@@ -268,7 +268,12 @@ impl BlackboardStore {
             })
             .collect();
         // Sort by hits descending, then by timestamp descending
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.timestamp.cmp(&a.1.timestamp)));
+        scored.sort_by_key(|item| {
+            (
+                std::cmp::Reverse(item.0),
+                std::cmp::Reverse(item.1.timestamp),
+            )
+        });
         scored.into_iter().map(|(_, item)| item).collect()
     }
 
