@@ -1603,6 +1603,16 @@ async fn maybe_encrypt_for_host(
     host_id: iroh::EndpointId,
     prefetched: &[u8],
 ) -> Vec<u8> {
+    // Gate: if --require-attested-hosts, refuse to route to peers without an inference key
+    if node.require_attested_hosts {
+        if node.peer_inference_public_key(host_id).await.is_none() {
+            tracing::warn!(
+                "Refusing to route to unattested host {} (--require-attested-hosts)",
+                host_id.fmt_short()
+            );
+            return vec![]; // empty vec signals refusal
+        }
+    }
     let Some(host_key_b64) = node.peer_inference_public_key(host_id).await else {
         return prefetched.to_vec(); // no key, send plaintext
     };
@@ -1649,6 +1659,10 @@ async fn route_remote_attempt(
     match node.open_http_tunnel(host_id).await {
         Ok((mut quic_send, mut quic_recv)) => {
             let payload = maybe_encrypt_for_host(node, host_id, prefetched).await;
+            if payload.is_empty() {
+                // --require-attested-hosts refused this host
+                return RouteAttemptResult::RetryableUnavailable;
+            }
             let is_encrypted = payload.first() == Some(&ENCRYPTED_TUNNEL_MAGIC);
             if let Err(err) = quic_send.write_all(&payload).await {
                 tracing::warn!(

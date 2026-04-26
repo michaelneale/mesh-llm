@@ -395,6 +395,11 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) trust_policy: Option<TrustPolicy>,
 
+    /// Only route inference requests to peers with valid hardware attestation.
+    /// Peers without Secure Enclave attestation will not receive your prompts.
+    #[arg(long)]
+    pub(crate) require_attested_hosts: bool,
+
     /// Add trusted owner IDs on top of the local trust store.
     #[arg(long)]
     pub(crate) trust_owner: Vec<String>,

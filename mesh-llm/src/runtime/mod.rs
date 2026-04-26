@@ -1520,7 +1520,7 @@ async fn run_auto(
     let owner_config = owner_runtime_config(&cli)?;
     // Clients report 0 VRAM so they're never assigned a model to serve
     let max_vram = if is_client { Some(0.0) } else { cli.max_vram };
-    let (node, channels) = mesh::Node::start(
+    let (mut node, channels) = mesh::Node::start(
         role,
         &cli.relay,
         cli.bind_port,
@@ -1530,6 +1530,7 @@ async fn run_auto(
         cli.config.as_deref(),
     )
     .await?;
+    node.require_attested_hosts = cli.require_attested_hosts;
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;
