@@ -1152,6 +1152,23 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_global_log_format_before_serve_with_model() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "--log-format",
+            "json",
+            "serve",
+            "--model",
+            "Qwen3-8B-Q4_K_M",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+
+        assert_eq!(cli.log_format, LogFormat::Json);
+        assert_eq!(cli.model, vec!["Qwen3-8B-Q4_K_M".to_string()]);
+        assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
+    }
+
+    #[test]
     fn cli_accepts_global_log_format_equals_before_serve() {
         let normalized =
             normalize_runtime_surface_args(["mesh-llm", "--log-format=json", "serve", "--auto"]);
