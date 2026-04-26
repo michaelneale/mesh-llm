@@ -260,6 +260,21 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) auto: bool,
 
+    /// Refuse to publish or discover this mesh on any public network.
+    ///
+    /// Intended for single-tenant / company-fleet deployments where the
+    /// operator wants to assert "this binary will never publish to Nostr
+    /// or auto-join a public mesh by accident." Hard-conflicts with
+    /// `--auto`, `--publish`, `--discover`, `--mesh-name`, and `--region`
+    /// at parse time, so a misconfigured invocation fails fast with a
+    /// clear error instead of silently joining the wrong mesh.
+    /// Joining via an explicit `--join <token>` is unaffected.
+    #[arg(
+        long,
+        conflicts_with_all = ["auto", "publish", "discover", "mesh_name", "region"]
+    )]
+    pub(crate) private_only: bool,
+
     /// Model to serve (path, catalog name, HF exact ref, or HuggingFace URL).
     #[arg(long)]
     pub(crate) model: Vec<PathBuf>,
@@ -630,9 +645,9 @@ where
     // Skip leading global flags to find the pseudo-subcommand position.
     // Recognized value-taking flags: --log-format, --max-vram, --llama-flavor, --device,
     // --tensor-split, --bind-port, --max-clients, --port, --console, --draft-max, --ctx-size.
-    // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
-    // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
-    // --no-console, --owner-required.
+    // Boolean flags: --help-advanced, --auto, --private-only, --client, --headless,
+    // --publish, --blackboard, --plugin, --auto-update, --no-draft, --split,
+    // --no-enumerate-host, --listen-all, --no-console, --owner-required.
     let value_taking_flags = [
         "--log-format",
         "--max-vram",
@@ -1275,5 +1290,102 @@ mod tests {
             } => {}
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_accepts_private_only_flag() {
+        let normalized = normalize_runtime_surface_args(["mesh-llm", "serve", "--private-only"]);
+        let cli = Cli::parse_from(normalized.normalized);
+        assert!(cli.private_only);
+        assert!(!cli.auto);
+        assert!(!cli.publish);
+        assert!(cli.discover.is_none());
+        assert!(cli.mesh_name.is_none());
+        assert!(cli.region.is_none());
+    }
+
+    #[test]
+    fn cli_private_only_allows_explicit_invite_join() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--private-only",
+            "--join",
+            "TOKEN",
+        ]);
+        let cli = Cli::parse_from(normalized.normalized);
+        assert!(cli.private_only);
+        assert_eq!(cli.join, vec!["TOKEN".to_string()]);
+    }
+
+    #[test]
+    fn cli_private_only_conflicts_with_auto() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "serve", "--private-only", "--auto"]);
+        let err =
+            Cli::try_parse_from(normalized.normalized).expect_err("--private-only --auto must err");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+        let rendered = err.to_string();
+        assert!(rendered.contains("--private-only"));
+        assert!(rendered.contains("--auto"));
+    }
+
+    #[test]
+    fn cli_private_only_conflicts_with_publish() {
+        let normalized =
+            normalize_runtime_surface_args(["mesh-llm", "serve", "--private-only", "--publish"]);
+        let err = Cli::try_parse_from(normalized.normalized)
+            .expect_err("--private-only --publish must err");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_private_only_conflicts_with_discover() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--private-only",
+            "--discover",
+            "poker-night",
+        ]);
+        let err = Cli::try_parse_from(normalized.normalized)
+            .expect_err("--private-only --discover must err");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_private_only_conflicts_with_mesh_name() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--private-only",
+            "--mesh-name",
+            "office",
+        ]);
+        let err = Cli::try_parse_from(normalized.normalized)
+            .expect_err("--private-only --mesh-name must err");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_private_only_conflicts_with_region() {
+        let normalized = normalize_runtime_surface_args([
+            "mesh-llm",
+            "serve",
+            "--private-only",
+            "--region",
+            "EU",
+        ]);
+        let err = Cli::try_parse_from(normalized.normalized)
+            .expect_err("--private-only --region must err");
+        assert_eq!(err.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn cli_help_documents_private_only_flag() {
+        let mut command = Cli::command();
+        let help = command.render_long_help().to_string();
+        assert!(help.contains("--private-only"));
+        assert!(help.contains("Refuse to publish or discover"));
     }
 }

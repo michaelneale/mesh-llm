@@ -82,7 +82,15 @@ mesh-llm serve --model Qwen2.5-32B
 
 This starts serving a model, opens the local API and console, and prints an invite token for other machines.
 
-### 3. Build from source
+### 3. Lock to private-only (single-tenant / company fleet)
+
+```bash
+mesh-llm serve --private-only --model Qwen2.5-32B
+```
+
+`--private-only` is a hard lock for deployments that must never accidentally publish to or auto-join a public mesh — internal company fleets, on-prem clusters, regulated environments. It conflicts at parse time with `--auto`, `--publish`, `--discover`, `--mesh-name`, and `--region`, so a misconfigured invocation fails fast instead of silently joining the wrong mesh. Joining via an explicit invite token (`--join <token>`) still works; only Nostr-based discovery and publishing are disabled.
+
+### 4. Build from source
 
 ```bash
 git clone https://github.com/Mesh-LLM/mesh-llm

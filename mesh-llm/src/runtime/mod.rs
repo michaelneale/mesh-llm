@@ -824,6 +824,13 @@ pub(crate) async fn run() -> Result<()> {
         initial_console_session_mode(normalized_args.explicit_surface),
     );
 
+    if cli.private_only {
+        let _ = emit_event(OutputEvent::Info {
+            message: "private-only mode: Nostr publish and public-mesh discovery are disabled for this process".to_string(),
+            context: Some("private-only".to_string()),
+        });
+    }
+
     if let Some(warning) = crate::cli::legacy_runtime_surface_warning(
         &cli,
         &normalized_args.original,
