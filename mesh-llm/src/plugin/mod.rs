@@ -45,7 +45,6 @@ use mesh_llm_plugin::MeshVisibility;
 
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
-pub const LEMONADE_PLUGIN_ID: &str = "lemonade";
 pub const OPENAI_ENDPOINT_PLUGIN_ID: &str = "openai-endpoint";
 #[allow(dead_code)]
 pub const BLACKBOARD_CAPABILITY: &str = "blackboard.v1";
@@ -1575,7 +1574,6 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
     match name.as_str() {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
-        LEMONADE_PLUGIN_ID => crate::plugins::lemonade::run_plugin(name).await,
         OPENAI_ENDPOINT_PLUGIN_ID => crate::plugins::openai_endpoint::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
@@ -1639,6 +1637,7 @@ mod tests {
                 enabled: Some(false),
                 command: None,
                 args: Vec::new(),
+                url: None,
             }],
             ..MeshConfig::default()
         };
@@ -1656,6 +1655,7 @@ mod tests {
                 enabled: Some(false),
                 command: None,
                 args: Vec::new(),
+                url: None,
             }],
             ..MeshConfig::default()
         };
@@ -1666,21 +1666,24 @@ mod tests {
     }
 
     #[test]
-    fn lemonade_can_be_enabled_explicitly() {
+    fn openai_endpoint_can_be_enabled_with_url() {
         let config = MeshConfig {
             plugins: vec![PluginConfigEntry {
-                name: LEMONADE_PLUGIN_ID.into(),
+                name: OPENAI_ENDPOINT_PLUGIN_ID.into(),
                 enabled: Some(true),
                 command: None,
                 args: Vec::new(),
+                url: Some("http://gpu-box:8000/v1".into()),
             }],
             ..MeshConfig::default()
         };
         let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
         assert_eq!(resolved.externals.len(), 3);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
-        assert_eq!(resolved.externals[1].name, LEMONADE_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, OPENAI_ENDPOINT_PLUGIN_ID);
         assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        let spec = &resolved.externals[1];
+        assert!(spec.args.contains(&"openai-endpoint".to_string()));
     }
 
     #[test]
@@ -1691,6 +1694,7 @@ mod tests {
                 enabled: Some(true),
                 command: None,
                 args: Vec::new(),
+                url: None,
             }],
             ..MeshConfig::default()
         };
@@ -1713,6 +1717,7 @@ mod tests {
                 enabled: Some(true),
                 command: Some("/usr/bin/something".into()),
                 args: Vec::new(),
+                url: None,
             }],
             ..MeshConfig::default()
         };
@@ -1743,6 +1748,7 @@ mod tests {
                 enabled: Some(true),
                 command: Some("/tmp/demo".into()),
                 args: vec!["--flag".into()],
+                url: None,
             }],
             ..MeshConfig::default()
         };

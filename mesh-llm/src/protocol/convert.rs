@@ -753,6 +753,7 @@ pub(crate) fn proto_config_to_mesh(
             enabled: p.enabled,
             command: p.command.clone(),
             args: p.args.clone(),
+            url: None,
         })
         .collect();
     MeshConfig {

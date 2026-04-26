@@ -1581,6 +1581,7 @@ mod tests {
                 enabled: Some(true),
                 command: Some("mesh-llm".to_string()),
                 args: vec!["--plugin".to_string()],
+                url: None,
             }],
         };
         let snapshot = mesh_config_to_proto(&config);

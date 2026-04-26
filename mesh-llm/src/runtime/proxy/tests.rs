@@ -282,7 +282,7 @@ async fn start_inference_endpoint_plugin_manager(
     let plugin_manager = plugin::PluginManager::for_test_bridge(&[], Arc::new(NoopTestBridge));
     plugin_manager
         .set_test_inference_endpoints(vec![plugin::InferenceEndpointRoute {
-            plugin_name: plugin::LEMONADE_PLUGIN_ID.into(),
+            plugin_name: plugin::OPENAI_ENDPOINT_PLUGIN_ID.into(),
             endpoint_id: "lemonade".into(),
             address,
             models,
