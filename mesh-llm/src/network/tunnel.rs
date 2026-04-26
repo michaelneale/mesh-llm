@@ -320,20 +320,69 @@ async fn handle_inbound_stream(
     Ok(())
 }
 
+/// Magic byte prefix for E2E encrypted tunnel payloads.
+/// Must match the constant in `network::openai::transport`.
+const ENCRYPTED_TUNNEL_MAGIC: u8 = 0xE1;
+
 /// Handle an inbound HTTP tunnel bi-stream: connect to the local backend proxy and relay.
+///
+/// If the first byte is `ENCRYPTED_TUNNEL_MAGIC` (0xE1), the rest of the initial data is a
+/// JSON-serialized `EncryptedInferencePayload`. We decrypt with this node's inference key
+/// and forward the plaintext HTTP request to the local backend. Otherwise the stream is
+/// forwarded as-is (backward compatible with unencrypted peers).
 async fn handle_inbound_http_stream(
     node: Node,
     quic_send: iroh::endpoint::SendStream,
-    quic_recv: iroh::endpoint::RecvStream,
+    mut quic_recv: iroh::endpoint::RecvStream,
     http_port: u16,
 ) -> Result<()> {
     tracing::info!("Inbound HTTP tunnel stream → backend proxy :{http_port}");
+
+    // Peek at the first byte to decide encrypted vs plaintext.
+    let mut first = [0u8; 1];
+    quic_recv.read_exact(&mut first).await?;
+
     let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
     tcp_stream.set_nodelay(true)?;
     let _inflight = node.begin_inflight_request();
 
-    let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
-    relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
+    if first[0] == ENCRYPTED_TUNNEL_MAGIC {
+        // Encrypted path: read the rest of the request-direction data, decrypt, forward.
+        let encrypted_json = quic_recv
+            .read_to_end(16 * 1024 * 1024)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read encrypted tunnel payload: {e}"))?;
+
+        let payload: crate::crypto::inference_encryption::EncryptedInferencePayload =
+            serde_json::from_slice(&encrypted_json)
+                .map_err(|e| anyhow::anyhow!("invalid encrypted tunnel payload JSON: {e}"))?;
+
+        let plaintext = crate::crypto::inference_encryption::decrypt_inference_request(
+            &payload,
+            node.inference_keypair().secret_key(),
+        )
+        .map_err(|e| anyhow::anyhow!("tunnel decryption failed: {e}"))?;
+
+        tracing::debug!(
+            "Decrypted inbound HTTP tunnel payload ({} bytes plaintext)",
+            plaintext.len()
+        );
+
+        // Forward decrypted plaintext to the local backend and relay response back.
+        let (tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+        tcp_write.write_all(&plaintext).await?;
+        // Signal we're done writing the request direction.
+        tcp_write.shutdown().await?;
+
+        // Relay only the response direction: tcp→quic.
+        relay_tcp_to_quic(tcp_read, quic_send).await
+    } else {
+        // Plaintext path: prepend the byte we already consumed, then relay normally.
+        let (tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+        // Write the first byte we consumed to the TCP side.
+        tcp_write.write_all(&first).await?;
+        relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
+    }
 }
 
 /// Bidirectional relay between a TCP stream and a QUIC bi-stream.

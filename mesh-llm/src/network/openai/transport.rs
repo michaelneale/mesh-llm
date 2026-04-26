@@ -1593,6 +1593,61 @@ async fn route_local_attempt(
     }
 }
 
+/// Magic byte prefix for E2E encrypted tunnel payloads.
+const ENCRYPTED_TUNNEL_MAGIC: u8 = 0xE1;
+
+/// Encrypt prefetched HTTP request bytes for a remote host if they have an inference key.
+/// Falls back to plaintext if no key is available or encryption fails.
+async fn maybe_encrypt_for_host(
+    node: &mesh::Node,
+    host_id: iroh::EndpointId,
+    prefetched: &[u8],
+) -> Vec<u8> {
+    // Gate: if --require-attested-hosts, refuse to route to peers without an inference key
+    if node.require_attested_hosts {
+        if node.peer_inference_public_key(host_id).await.is_none() {
+            tracing::warn!(
+                "Refusing to route to unattested host {} (--require-attested-hosts)",
+                host_id.fmt_short()
+            );
+            return vec![]; // empty vec signals refusal
+        }
+    }
+    let Some(host_key_b64) = node.peer_inference_public_key(host_id).await else {
+        return prefetched.to_vec(); // no key, send plaintext
+    };
+    let Ok(host_pub) = crate::crypto::inference_encryption::parse_public_key(&host_key_b64) else {
+        tracing::warn!(
+            "Invalid inference key for host {}, sending plaintext",
+            host_id.fmt_short()
+        );
+        return prefetched.to_vec();
+    };
+    // Encrypt the entire HTTP payload
+    match crate::crypto::inference_encryption::encrypt_inference_request(prefetched, "", &host_pub)
+    {
+        Ok((payload, _session)) => {
+            // Wire format: MAGIC byte + JSON-serialized EncryptedInferencePayload
+            let json = serde_json::to_vec(&payload).expect("serialize encrypted payload");
+            let mut out = Vec::with_capacity(1 + json.len());
+            out.push(ENCRYPTED_TUNNEL_MAGIC);
+            out.extend_from_slice(&json);
+            tracing::debug!(
+                "Encrypted inference request for host {}",
+                host_id.fmt_short()
+            );
+            out
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Encryption failed for host {}: {err}, sending plaintext",
+                host_id.fmt_short()
+            );
+            prefetched.to_vec()
+        }
+    }
+}
+
 async fn route_remote_attempt(
     node: &mesh::Node,
     tcp_stream: &mut TcpStream,
@@ -1603,12 +1658,30 @@ async fn route_remote_attempt(
 ) -> RouteAttemptResult {
     match node.open_http_tunnel(host_id).await {
         Ok((mut quic_send, mut quic_recv)) => {
-            if let Err(err) = quic_send.write_all(prefetched).await {
+            let payload = maybe_encrypt_for_host(node, host_id, prefetched).await;
+            if payload.is_empty() {
+                // --require-attested-hosts refused this host
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+            let is_encrypted = payload.first() == Some(&ENCRYPTED_TUNNEL_MAGIC);
+            if let Err(err) = quic_send.write_all(&payload).await {
                 tracing::warn!(
                     "API proxy: failed to forward buffered request to host {}: {err}",
                     host_id.fmt_short()
                 );
                 return RouteAttemptResult::RetryableUnavailable;
+            }
+            // For encrypted payloads, finish the send stream so the receiver's
+            // read_to_end() can return. Plaintext uses bidirectional relay which
+            // handles stream lifecycle itself.
+            if is_encrypted {
+                if let Err(err) = quic_send.finish() {
+                    tracing::warn!(
+                        "API proxy: failed to finish send stream to host {}: {err}",
+                        host_id.fmt_short()
+                    );
+                    return RouteAttemptResult::RetryableUnavailable;
+                }
             }
             match probe_http_response(&mut quic_recv).await {
                 Ok(probe) => {

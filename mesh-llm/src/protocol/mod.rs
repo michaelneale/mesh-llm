@@ -553,6 +553,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
             owner_summary: OwnershipSummary::default(),
         }
     }
@@ -1230,6 +1231,7 @@ mod tests {
                 },
                 signature: "33".repeat(64),
             }),
+            inference_public_key: None,
         };
         let proto_pa = local_ann_to_proto_ann(&ann);
         assert_eq!(
@@ -1284,6 +1286,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann);
@@ -1976,6 +1979,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_with_timestamp);
@@ -2019,6 +2023,7 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
         };
 
         let proto_pa = local_ann_to_proto_ann(&ann_without_timestamp);

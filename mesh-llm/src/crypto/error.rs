@@ -11,6 +11,9 @@ pub enum CryptoError {
     #[error("wrong passphrase or corrupted keystore")]
     DecryptionFailed,
 
+    #[error("encryption failed")]
+    EncryptionFailed,
+
     #[error("invalid signature")]
     InvalidSignature,
 
