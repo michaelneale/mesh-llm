@@ -763,7 +763,7 @@ impl Node {
             owner_attestation: my_owner_attestation,
             inference_public_key: Some(self.inference_keypair.public_key_base64()),
             security_posture: self.local_security_posture.clone(),
-            hardware_attestation: None,
+            hardware_attestation: self.local_hardware_attestation.clone(),
         });
         announcements
     }

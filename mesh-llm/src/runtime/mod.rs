@@ -1532,6 +1532,47 @@ async fn run_auto(
     node.require_attested_hosts = cli.require_attested_hosts;
     node.local_security_posture =
         crate::system::hardening::harden_runtime(false, cli.require_attested_hosts).ok();
+
+    #[cfg(target_os = "macos")]
+    {
+        if crate::crypto::se_attestation::secure_enclave_available() {
+            match crate::crypto::se_attestation::SecureEnclaveIdentity::create() {
+                Ok(se_identity) => {
+                    let posture = node.local_security_posture.as_ref();
+                    let attestation = crate::crypto::se_attestation::HardwareAttestation {
+                        chip_name: node.gpu_name.clone().unwrap_or_default(),
+                        hardware_model: String::new(),
+                        unified_memory_bytes: node.vram_bytes(),
+                        sip_enabled: posture.map_or(false, |p| p.sip_enabled),
+                        secure_boot_enabled: true,
+                        rdma_disabled: posture.map_or(true, |p| p.rdma_disabled),
+                        node_endpoint_id: hex::encode(node.id().as_bytes()),
+                        inference_public_key: node.inference_keypair().public_key_base64(),
+                        se_public_key: se_identity.public_key_base64().to_string(),
+                        binary_hash: posture
+                            .and_then(|p| p.binary_hash.clone())
+                            .unwrap_or_default(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    };
+                    match se_identity.sign_attestation(&attestation) {
+                        Ok(signed) => {
+                            tracing::info!(
+                                "Hardware attestation created and signed by Secure Enclave"
+                            );
+                            node.local_hardware_attestation = Some(signed);
+                        }
+                        Err(err) => {
+                            tracing::warn!("Failed to sign hardware attestation: {err}");
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::info!("Secure Enclave not available: {err}");
+                }
+            }
+        }
+    }
+
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;

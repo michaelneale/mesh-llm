@@ -830,6 +830,25 @@ impl PeerInfo {
         self.hardware_attestation.is_some() && self.inference_public_key.is_some()
     }
 
+    /// Returns true if this peer's hardware attestation passes full cryptographic verification.
+    pub fn is_verified_attested(&self) -> bool {
+        let Some(ref att) = self.hardware_attestation else {
+            return false;
+        };
+        let Some(ref inference_key) = self.inference_public_key else {
+            return false;
+        };
+        let node_id = hex::encode(self.id.as_bytes());
+        let status = crate::crypto::se_attestation::verify_attestation(
+            att,
+            &node_id,
+            inference_key,
+            600,
+            None,
+        );
+        status.is_verified()
+    }
+
     /// Returns attested unified memory bytes if hardware attestation exists.
     pub fn attested_memory_bytes(&self) -> Option<u64> {
         self.hardware_attestation
@@ -1037,6 +1056,8 @@ pub struct Node {
     trust_policy: TrustPolicy,
     pub require_attested_hosts: bool,
     pub local_security_posture: Option<crate::system::hardening::SecurityPosture>,
+    pub local_hardware_attestation:
+        Option<crate::crypto::se_attestation::SignedHardwareAttestation>,
     pub enumerate_host: bool,
     pub gpu_name: Option<String>,
     pub hostname: Option<String>,
@@ -1487,6 +1508,7 @@ impl Node {
             trust_policy,
             require_attested_hosts: false,
             local_security_posture: None,
+            local_hardware_attestation: None,
             enumerate_host,
             gpu_name,
             hostname,
@@ -1592,6 +1614,7 @@ impl Node {
             trust_policy: TrustPolicy::Off,
             require_attested_hosts: false,
             local_security_posture: None,
+            local_hardware_attestation: None,
             enumerate_host: true,
             gpu_name: None,
             hostname: None,

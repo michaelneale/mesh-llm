@@ -109,7 +109,7 @@ pub fn should_be_host_for_model(
             continue;
         }
         // Skip unattested peers when attestation is required
-        if require_attested && !peer.is_hardware_attested() {
+        if require_attested && !peer.is_verified_attested() {
             continue;
         }
         let peer_vram = if require_attested {
