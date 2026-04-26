@@ -369,13 +369,39 @@ async fn handle_inbound_http_stream(
         );
 
         // Forward decrypted plaintext to the local backend and relay response back.
-        let (tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+        let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
         tcp_write.write_all(&plaintext).await?;
         // Signal we're done writing the request direction.
         tcp_write.shutdown().await?;
 
-        // Relay only the response direction: tcp→quic.
-        relay_tcp_to_quic(tcp_read, quic_send).await
+        // Read the full response from the backend.
+        let mut response_bytes = Vec::new();
+        tcp_read.read_to_end(&mut response_bytes).await?;
+
+        // Encrypt the response back to the sender using host_priv + ephemeral_pub.
+        let ephemeral_pub =
+            crate::crypto::inference_encryption::parse_public_key(&payload.ephemeral_public_key)
+                .map_err(|e| anyhow::anyhow!("failed to parse ephemeral public key: {e}"))?;
+        let encrypted_chunk = crate::crypto::inference_encryption::encrypt_response_chunk(
+            &response_bytes,
+            node.inference_keypair(),
+            &ephemeral_pub,
+        )
+        .map_err(|e| anyhow::anyhow!("tunnel response encryption failed: {e}"))?;
+
+        let json =
+            serde_json::to_vec(&encrypted_chunk).expect("serialize encrypted response chunk");
+        let mut quic_send = quic_send;
+        quic_send.write_all(&[ENCRYPTED_TUNNEL_MAGIC]).await?;
+        quic_send.write_all(&json).await?;
+        quic_send.finish()?;
+
+        tracing::debug!(
+            "Encrypted response ({} bytes plaintext → {} bytes ciphertext) sent back over QUIC",
+            response_bytes.len(),
+            json.len() + 1,
+        );
+        Ok(())
     } else {
         // Plaintext path: prepend the byte we already consumed, then relay normally.
         let (tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);

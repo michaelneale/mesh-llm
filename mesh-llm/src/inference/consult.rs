@@ -151,7 +151,9 @@ async fn chat_completion_inner(
     let mut raw = http_request.into_bytes();
     raw.extend_from_slice(&body_bytes);
 
-    // Open QUIC tunnel to peer and send request
+    // Open QUIC tunnel to peer and send request.
+    // TODO: encrypt consult requests once ephemeral session saving is wired
+    // (request encryption works but response decryption requires the session).
     let (mut send, mut recv) = node.open_http_tunnel(peer_id).await?;
     send.write_all(&raw).await?;
     send.finish()?;

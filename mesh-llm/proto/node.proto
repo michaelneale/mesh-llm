@@ -44,6 +44,8 @@ message PeerAnnouncement {
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
   optional uint64 first_joined_mesh_ts = 34;
   optional string inference_public_key = 35;
+  optional bytes security_posture = 36;
+  optional bytes hardware_attestation = 37;
 }
 
 message HardwareInfo {

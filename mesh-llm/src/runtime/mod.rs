@@ -275,10 +275,9 @@ pub(crate) async fn run() -> Result<()> {
         return plugin::run_plugin_process(name).await;
     }
 
-    // Runtime security hardening — blocks debuggers, disables core dumps, checks SIP/RDMA.
+    // Runtime security hardening (result stored on Node in run_auto)
     if let Err(err) = crate::system::hardening::harden_runtime(false, false) {
         tracing::warn!("Security hardening failed: {err}");
-        // Don't block startup — hardening is advisory until --require-attested-hosts is set
     } else {
         tracing::info!("Runtime security hardening applied");
     }
@@ -1531,6 +1530,7 @@ async fn run_auto(
     )
     .await?;
     node.require_attested_hosts = cli.require_attested_hosts;
+    node.local_security_posture = crate::system::hardening::harden_runtime(false, false).ok();
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;

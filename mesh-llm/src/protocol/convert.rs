@@ -485,6 +485,14 @@ pub(crate) fn local_ann_to_proto_ann(
         hardware,
         first_joined_mesh_ts: ann.first_joined_mesh_ts,
         inference_public_key: ann.inference_public_key.clone(),
+        security_posture: ann
+            .security_posture
+            .as_ref()
+            .and_then(|sp| serde_json::to_vec(sp).ok()),
+        hardware_attestation: ann
+            .hardware_attestation
+            .as_ref()
+            .and_then(|ha| serde_json::to_vec(ha).ok()),
     }
 }
 
@@ -646,6 +654,14 @@ pub(crate) fn proto_ann_to_local(
             .as_ref()
             .map(proto_owner_attestation_to_local),
         inference_public_key: pa.inference_public_key.clone(),
+        security_posture: pa
+            .security_posture
+            .as_ref()
+            .and_then(|b| serde_json::from_slice(b).ok()),
+        hardware_attestation: pa
+            .hardware_attestation
+            .as_ref()
+            .and_then(|b| serde_json::from_slice(b).ok()),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

@@ -25,7 +25,7 @@ use std::io::Read;
 
 /// Security posture of this node, reported in gossip so peers can
 /// make trust decisions.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SecurityPosture {
     /// macOS System Integrity Protection is enabled.
     pub sip_enabled: bool,
