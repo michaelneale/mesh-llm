@@ -1684,6 +1684,7 @@ mod tests {
         assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
         let spec = &resolved.externals[1];
         assert!(spec.args.contains(&"openai-endpoint".to_string()));
+        assert_eq!(spec.url.as_deref(), Some("http://gpu-box:8000/v1"));
     }
 
     #[test]

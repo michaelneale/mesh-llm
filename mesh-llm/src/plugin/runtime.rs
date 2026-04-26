@@ -168,6 +168,9 @@ impl ExternalPlugin {
         child.env("MESH_LLM_PLUGIN_ENDPOINT", &endpoint);
         child.env("MESH_LLM_PLUGIN_TRANSPORT", transport);
         child.env("MESH_LLM_PLUGIN_NAME", &self.spec.name);
+        if let Some(ref url) = self.spec.url {
+            child.env("MESH_LLM_OPENAI_ENDPOINT_URL", url);
+        }
         child.stdin(std::process::Stdio::null());
         child.stdout(std::process::Stdio::null());
         child.stderr(std::process::Stdio::inherit());

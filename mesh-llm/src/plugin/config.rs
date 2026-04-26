@@ -71,6 +71,8 @@ pub struct ExternalPluginSpec {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    /// Backend URL for inference endpoint plugins.
+    pub url: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -160,7 +162,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
         }
         let enabled = entry.enabled.unwrap_or(true);
         if entry.name == BLACKBOARD_PLUGIN_ID {
-            if entry.command.is_some() || !entry.args.is_empty() {
+            if entry.command.is_some() || !entry.args.is_empty() || entry.url.is_some() {
                 bail!(
                     "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
                     BLACKBOARD_PLUGIN_ID
@@ -170,7 +172,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
             continue;
         }
         if entry.name == BLOBSTORE_PLUGIN_ID {
-            if entry.command.is_some() || !entry.args.is_empty() {
+            if entry.command.is_some() || !entry.args.is_empty() || entry.url.is_some() {
                 bail!(
                     "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
                     BLOBSTORE_PLUGIN_ID
@@ -203,6 +205,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
             name: entry.name.clone(),
             command,
             args: entry.args.clone(),
+            url: None,
         });
     }
 
@@ -210,10 +213,9 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
         externals.insert(0, blackboard_plugin_spec()?);
     }
     if openai_endpoint_enabled {
-        if let Some(ref url) = openai_endpoint_url {
-            std::env::set_var("MESH_LLM_OPENAI_ENDPOINT_URL", url);
-        }
-        externals.push(openai_endpoint_plugin_spec()?);
+        let mut spec = openai_endpoint_plugin_spec()?;
+        spec.url = openai_endpoint_url;
+        externals.push(spec);
     }
     if blobstore_enabled {
         externals.push(blobstore_plugin_spec()?);
@@ -234,6 +236,7 @@ pub fn blackboard_plugin_spec() -> Result<ExternalPluginSpec> {
         name: BLACKBOARD_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), BLACKBOARD_PLUGIN_ID.into()],
+        url: None,
     })
 }
 
@@ -246,6 +249,7 @@ pub fn blobstore_plugin_spec() -> Result<ExternalPluginSpec> {
         name: BLOBSTORE_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), BLOBSTORE_PLUGIN_ID.into()],
+        url: None,
     })
 }
 
@@ -258,6 +262,7 @@ pub fn openai_endpoint_plugin_spec() -> Result<ExternalPluginSpec> {
         name: OPENAI_ENDPOINT_PLUGIN_ID.to_string(),
         command,
         args: vec!["--plugin".into(), OPENAI_ENDPOINT_PLUGIN_ID.into()],
+        url: None,
     })
 }
 
