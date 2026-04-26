@@ -85,6 +85,8 @@ Runtime switches:
 - `--node-label <NODE_LABEL>`: attach a human label to this runtime node certificate.
 - `--trust-policy <TRUST_POLICY>`: override peer ownership trust policy.
 - `--trust-owner <TRUST_OWNER>`: add trusted owner IDs on top of the local trust store.
+- `--external-backend <URL>`: proxy to an external OpenAI-compatible backend (vLLM, TGI, Ollama). Skips llama.cpp entirely — the external server does all the inference work. mesh-llm probes `/v1/models` on startup to discover the model name.
+- `--external-model <NAME>`: override the model name advertised to the mesh when using `--external-backend`. Use this if the backend's `/v1/models` returns an unhelpful name or you want to control what peers see.
 
 ## Commands
 

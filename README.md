@@ -467,6 +467,30 @@ curl localhost:9337/v1/chat/completions \
   -d '{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+### 6. Use an existing vLLM / TGI / Ollama server
+
+If you already have an OpenAI-compatible inference server running (vLLM, TGI, Ollama, etc.), mesh-llm can surface it to the mesh without managing the server itself:
+
+```bash
+mesh-llm serve --external-backend http://gpu-box:8000
+```
+
+mesh-llm probes `/v1/models` on the backend, discovers the model name, joins the mesh, and starts routing requests. It does **not** start, stop, download, or configure anything on the backend — that server is entirely your responsibility.
+
+Override the advertised model name:
+
+```bash
+mesh-llm serve --external-backend http://gpu-box:8000 --external-model my-llama-70b
+```
+
+Join an existing mesh while fronting an external backend:
+
+```bash
+mesh-llm serve --external-backend http://gpu-box:8000 --join <token>
+```
+
+See [mesh-llm/docs/EXTERNAL_BACKENDS.md](mesh-llm/docs/EXTERNAL_BACKENDS.md) for details.
+
 ## How it works
 
 Mesh LLM keeps the user-facing surface simple: talk to `localhost:9337`, pick a model, and let the mesh decide how to serve it.
@@ -547,6 +571,7 @@ You can also try the hosted demo:
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for benchmark numbers and context
 - [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
 - [PLUGINS.md](PLUGINS.md) for the plugin system and blackboard internals
+- [mesh-llm/docs/EXTERNAL_BACKENDS.md](mesh-llm/docs/EXTERNAL_BACKENDS.md) for using vLLM, TGI, Ollama, or any OpenAI-compatible server as a mesh backend
 - [mesh-llm/docs/VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md) for inter-model collaboration design
 - [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md) for llama.cpp patch queue maintenance
 - [mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md](mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md) for the planned llama-stage-runtime integration
