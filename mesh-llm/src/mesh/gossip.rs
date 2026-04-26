@@ -458,6 +458,9 @@ impl Node {
                 existing.moe_recovered_at = Some(now);
             }
             existing.owner_attestation = ann.owner_attestation.clone();
+            existing.inference_public_key = ann.inference_public_key.clone();
+            existing.security_posture = ann.security_posture.clone();
+            existing.hardware_attestation = ann.hardware_attestation.clone();
             existing.owner_summary = owner_summary.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
             existing.served_model_runtime = ann.served_model_runtime.clone();

@@ -2753,11 +2753,28 @@ impl Node {
         &self.inference_keypair
     }
 
-    /// Returns true if a peer has both an inference public key and hardware attestation.
+    /// Returns true if a peer has a cryptographically verified hardware attestation.
+    ///
+    /// Checks that the attestation signature is valid, the node ID and inference key
+    /// match the peer, the attestation is fresh (≤10 min), and security posture is OK.
     pub async fn peer_is_attested(&self, peer_id: iroh::EndpointId) -> bool {
         let state = self.state.lock().await;
         state.peers.get(&peer_id).map_or(false, |p| {
-            p.inference_public_key.is_some() && p.hardware_attestation.is_some()
+            let Some(ref att) = p.hardware_attestation else {
+                return false;
+            };
+            let Some(ref inference_key) = p.inference_public_key else {
+                return false;
+            };
+            let node_id = endpoint_id_hex(peer_id);
+            let status = crate::crypto::se_attestation::verify_attestation(
+                att,
+                &node_id,
+                inference_key,
+                600,  // 10 minute max age
+                None, // no blessed hashes for now
+            );
+            status.is_verified()
         })
     }
 

@@ -1660,7 +1660,12 @@ pub async fn election_loop(
         let i_am_host = if requires_split {
             // Distributed mode: elect one host from the model group using the
             // same advertised node capacity every peer observes through gossip.
-            should_be_host_for_model(node.id(), my_vram, &model_peers, false)
+            should_be_host_for_model(
+                node.id(),
+                my_vram,
+                &model_peers,
+                node.require_attested_hosts,
+            )
         } else if model_peers.is_empty() {
             // No other node serving this model — we must host
             true
@@ -1909,7 +1914,12 @@ pub async fn election_loop(
                 .max_by_key(|p| (p.vram_bytes, p.id));
 
             if let Some(host) = host_peer {
-                if should_be_host_for_model(host.id, host.vram_bytes, &model_peers, false) {
+                if should_be_host_for_model(
+                    host.id,
+                    host.vram_bytes,
+                    &model_peers,
+                    node.require_attested_hosts,
+                ) {
                     update_targets(
                         &node,
                         &model_name,
