@@ -283,7 +283,7 @@ async fn start_inference_endpoint_plugin_manager(
     plugin_manager
         .set_test_inference_endpoints(vec![plugin::InferenceEndpointRoute {
             plugin_name: plugin::OPENAI_ENDPOINT_PLUGIN_ID.into(),
-            endpoint_id: "lemonade".into(),
+            endpoint_id: "openai-endpoint".into(),
             address,
             models,
         }])

@@ -423,10 +423,6 @@ mesh-llm client --auto --port 9337
 curl -s http://localhost:9337/v1/models | jq '.data[].id'
 ```
 
-### Lemonade
-
-mesh-llm ships a built-in `lemonade` plugin that registers a local [Lemonade Server](https://lemonade-server.ai) as another OpenAI-compatible backend. For setup and verification steps, see [docs/USAGE.md](docs/USAGE.md#lemonade-integration).
-
 ### External OpenAI-compatible backends (vLLM, TGI, Ollama, etc.)
 
 The `openai-endpoint` plugin routes inference to any server that speaks the OpenAI `/v1/chat/completions` API. The server does all the inference work — mesh-llm just discovers its models and routes requests to it.
