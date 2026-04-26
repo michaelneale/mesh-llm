@@ -1684,6 +1684,43 @@ mod tests {
     }
 
     #[test]
+    fn openai_endpoint_can_be_enabled_explicitly() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: OPENAI_ENDPOINT_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: None,
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, OPENAI_ENDPOINT_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        // Verify the spec args dispatch to the right plugin binary
+        let spec = &resolved.externals[1];
+        assert!(spec.args.contains(&"--plugin".to_string()));
+        assert!(spec.args.contains(&"openai-endpoint".to_string()));
+    }
+
+    #[test]
+    fn openai_endpoint_rejects_custom_command() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: OPENAI_ENDPOINT_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some("/usr/bin/something".into()),
+                args: Vec::new(),
+            }],
+            ..MeshConfig::default()
+        };
+        let result = resolve_plugins(&config, private_host_mode());
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn blackboard_is_resolved_on_public_meshes() {
         let resolved = resolve_plugins(
             &MeshConfig::default(),
