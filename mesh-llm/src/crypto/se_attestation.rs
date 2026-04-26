@@ -305,6 +305,128 @@ pub fn secure_enclave_available() -> bool {
     }
 }
 
+// ── Secure Enclave identity (macOS with Security.framework) ───────
+
+/// A P-256 key held in the Apple Secure Enclave.
+///
+/// The private key never leaves hardware. All signing happens inside
+/// the SE — only the signature bytes come out.
+#[cfg(target_os = "macos")]
+pub struct SecureEnclaveIdentity {
+    key: security_framework::key::SecKey,
+    public_key_base64: String,
+}
+
+#[cfg(target_os = "macos")]
+impl SecureEnclaveIdentity {
+    /// Create a new ephemeral P-256 key in the Secure Enclave.
+    pub fn create() -> Result<Self, CryptoError> {
+        use core_foundation::base::TCFType;
+        use core_foundation::boolean::CFBoolean;
+        use core_foundation::dictionary::CFDictionary;
+        use core_foundation::number::CFNumber;
+        use core_foundation::string::CFString;
+        use security_framework::key::SecKey;
+        use security_framework_sys::base::errSecSuccess;
+
+        unsafe {
+            let keys: Vec<_> = vec![
+                security_framework_sys::item::kSecAttrKeyType,
+                security_framework_sys::item::kSecAttrKeySizeInBits,
+                security_framework_sys::item::kSecAttrTokenID,
+                security_framework_sys::item::kSecAttrIsPermanent,
+            ];
+            let k_type = security_framework_sys::item::kSecAttrKeyTypeECSECPrimeRandom;
+            let size = CFNumber::from(256i32);
+            let k_token = security_framework_sys::item::kSecAttrTokenIDSecureEnclave;
+            let values: Vec<_> = vec![
+                k_type as *const _,
+                size.as_concrete_TypeRef() as *const _,
+                k_token as *const _,
+                core_foundation::boolean::kCFBooleanFalse as *const _,
+            ];
+
+            let dict = core_foundation_sys::dictionary::CFDictionaryCreate(
+                std::ptr::null(),
+                keys.as_ptr() as *const *const _,
+                values.as_ptr() as *const *const _,
+                keys.len() as _,
+                &core_foundation_sys::dictionary::kCFTypeDictionaryKeyCallBacks,
+                &core_foundation_sys::dictionary::kCFTypeDictionaryValueCallBacks,
+            );
+
+            let mut error = std::ptr::null_mut();
+            let key_ref = security_framework_sys::key::SecKeyCreateRandomKey(dict, &mut error);
+            core_foundation_sys::base::CFRelease(dict as *const _);
+
+            if key_ref.is_null() {
+                let err_desc = if !error.is_null() {
+                    let cf_err = core_foundation::error::CFError::wrap_under_create_rule(error);
+                    cf_err.description().to_string()
+                } else {
+                    "unknown error".to_string()
+                };
+                return Err(CryptoError::InvalidKeyMaterial {
+                    reason: format!("SE key creation failed: {err_desc}"),
+                });
+            }
+
+            let key = SecKey::wrap_under_create_rule(key_ref);
+            let pub_key = key.public_key().ok_or(CryptoError::InvalidKeyMaterial {
+                reason: "failed to get SE public key".into(),
+            })?;
+            let pub_data =
+                pub_key
+                    .external_representation()
+                    .ok_or(CryptoError::InvalidKeyMaterial {
+                        reason: "failed to export SE public key".into(),
+                    })?;
+
+            let pub_b64 = base64::engine::general_purpose::STANDARD.encode(pub_data.bytes());
+
+            Ok(Self {
+                key,
+                public_key_base64: pub_b64,
+            })
+        }
+    }
+
+    /// The public key as base64 (SEC1 uncompressed).
+    pub fn public_key_base64(&self) -> &str {
+        &self.public_key_base64
+    }
+
+    /// Sign raw bytes with the SE private key (ECDSA-SHA256).
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        use security_framework::key::Algorithm;
+        self.key
+            .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
+            .map_err(|e| CryptoError::InvalidKeyMaterial {
+                reason: format!("SE signing failed: {e}"),
+            })
+    }
+
+    /// Sign a hardware attestation blob with the SE key.
+    pub fn sign_attestation(
+        &self,
+        attestation: &HardwareAttestation,
+    ) -> Result<SignedHardwareAttestation, CryptoError> {
+        let msg = attestation_signing_bytes(attestation);
+        let signature = self.sign(&msg)?;
+        Ok(SignedHardwareAttestation {
+            attestation: attestation.clone(),
+            signature: base64::engine::general_purpose::STANDARD.encode(&signature),
+        })
+    }
+
+    /// Sign a challenge nonce with the SE key.
+    pub fn sign_challenge(&self, nonce: &[u8]) -> Result<String, CryptoError> {
+        let msg = challenge_signing_bytes(nonce, &self.public_key_base64);
+        let signature = self.sign(&msg)?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(&signature))
+    }
+}
+
 /// Sign an attestation blob using a **software** P-256 signing key.
 ///
 /// **Testing / development only.** In production on macOS the Secure
