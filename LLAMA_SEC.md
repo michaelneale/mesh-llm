@@ -502,36 +502,47 @@ if !check_rdma_disabled() {
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-Phase 1: E2E inference encryption        ~1-2 weeks
-  - inference_public_key in gossip
-  - NaCl box encrypt/decrypt in transport.rs
-  - Encrypted wire format
-  - --encrypt-inference flag
+Phase 1: E2E inference encryption        ✅ DONE (partial)
+  ✅ inference_public_key in gossip
+  ✅ NaCl box encrypt/decrypt in transport.rs
+  ✅ Encrypted wire format (0xE1 magic prefix)
+  ✅ Response encryption (both directions)
+  ✅ Backward compatible (plaintext fallback for old nodes)
+  ⚠️  --encrypt-inference flag NOT IMPLEMENTED (encryption is automatic
+     when host has inference key, not opt-in)
+  ⚠️  Consult/virtual-LLM requests still plaintext (TODO: needs session saving)
+  ⚠️  Encrypted path buffers full response — loses SSE streaming
 
-Phase 2: Runtime hardening               ~2-3 days
-  - system/hardening.rs module
-  - PT_DENY_ATTACH, SIP check, RDMA check, env scrub, binary hash
-  - SecurityPosture in gossip
-  - RDMA refuse-to-serve gate
+Phase 2: Runtime hardening               ✅ DONE (partial)
+  ✅ system/hardening.rs module
+  ✅ PT_DENY_ATTACH, SIP check, RDMA check, env scrub, binary hash
+  ✅ SecurityPosture captured at startup, gossiped to peers
+  ⚠️  Hardening is advisory — startup continues on failure
+  ⚠️  Only hardens mesh-llm process, not child llama-server
+  ❌ RDMA refuse-to-serve gate NOT IMPLEMENTED (just reports status)
 
-Phase 3: SE attestation                  ~1-2 weeks
-  - SE helper (Swift binary or Rust native)
-  - HardwareAttestation struct + signing
-  - Gossip integration
-  - Peer-side verification
-  - Challenge-response in heartbeats
-  - X25519 key sealing
-  - TrustPolicy extensions
+Phase 3: SE attestation                  🔧 PARTIAL (structs + verification only)
+  ✅ HardwareAttestation struct + P-256 signing + verification
+  ✅ Challenge-response nonce signing primitives
+  ✅ Gossip fields for hardware_attestation (proto field 37)
+  ✅ peer_is_attested() presence check
+  ❌ NO Secure Enclave integration (no Security.framework, no SE key creation)
+  ❌ Attestation is self-signed — any software P-256 key passes verification
+  ❌ peer_is_attested() does NOT call verify_attestation()
+  ❌ No node gossips hardware_attestation yet (always None)
+  ❌ Challenge-response not wired into heartbeats
+  ❌ X25519 key sealing not implemented
+  ❌ TrustPolicy extensions not implemented
 
-Phase 4: Verified election               ~2-3 days
-  - Attestation-aware election
-  - Routing gate
-  - Attested memory instead of self-reported VRAM
+Phase 4: Verified election               ❌ NOT STARTED
+  ❌ Attestation-aware election
+  ❌ Routing gate in election
+  ❌ Attested memory instead of self-reported VRAM
 
-Phase 5: RDMA / memory isolation         future
-  - Hypervisor.framework pool (requires in-process inference)
+Phase 5: RDMA / memory isolation         ❌ FUTURE
+  ❌ Hypervisor.framework pool (requires in-process inference)
   - Or: Virtualization.framework for llama-server isolation
 
 ---
