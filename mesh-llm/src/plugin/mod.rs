@@ -514,6 +514,7 @@ impl PluginManager {
             kind: "bridge".into(),
             enabled: true,
             status: "running".into(),
+            pid: None,
             version: None,
             capabilities: manifest.capabilities.clone(),
             command: None,

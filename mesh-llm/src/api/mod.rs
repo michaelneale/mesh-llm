@@ -2269,7 +2269,8 @@ mod tests {
         plugin_manager
     }
 
-    pub(crate) async fn runtime_data_api_routes_remain_payload_stable() {
+    #[tokio::test]
+    async fn runtime_data_api_routes_remain_payload_stable() {
         let plugin_manager = build_collector_backed_plugin_manager().await;
         let state = build_test_mesh_api_with_plugin_manager(3131, plugin_manager).await;
 
@@ -2540,7 +2541,8 @@ mod tests {
         manifest_handle.abort();
     }
 
-    pub(crate) async fn runtime_data_sse_bridge_delivers_initial_and_incremental_updates() {
+    #[tokio::test]
+    async fn runtime_data_sse_bridge_delivers_initial_and_incremental_updates() {
         let state = build_test_mesh_api().await;
         let (addr, handle) = spawn_management_test_server(state.clone()).await;
 
@@ -3717,55 +3719,9 @@ data: [DONE]
             "/v1/chat/completions must not be blocked"
         );
     }
-}
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-    use crate::network::affinity;
-    use crate::plugin;
-    use mesh_llm_plugin::MeshVisibility;
-    use tokio::sync::mpsc;
-
-    async fn build_test_mesh_api() -> MeshApi {
-        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
-            .await
-            .unwrap();
-        let resolved_plugins = plugin::ResolvedPlugins {
-            externals: vec![],
-            inactive: vec![],
-        };
-        let (mesh_tx, _mesh_rx) = mpsc::channel(1);
-        let plugin_manager = plugin::PluginManager::start(
-            &resolved_plugins,
-            plugin::PluginHostMode {
-                mesh_visibility: MeshVisibility::Private,
-            },
-            mesh_tx,
-        )
-        .await
-        .unwrap();
-        let runtime_data_collector = runtime_data::RuntimeDataCollector::new();
-        let runtime_data_producer =
-            runtime_data_collector.producer(runtime_data::RuntimeDataSource {
-                scope: "runtime",
-                plugin_data_key: None,
-                plugin_endpoint_key: None,
-            });
-
-        MeshApi::new(MeshApiConfig {
-            node,
-            model_name: "legacy-model".to_string(),
-            api_port: 3131,
-            model_size_bytes: 0,
-            plugin_manager,
-            affinity_router: affinity::AffinityRouter::default(),
-            runtime_data_collector,
-            runtime_data_producer,
-        })
-    }
-
-    pub(crate) async fn api_runtime_reads_from_collector_snapshot() {
+    #[tokio::test]
+    async fn api_runtime_reads_from_collector_snapshot() {
         let state = build_test_mesh_api().await;
 
         {
@@ -3826,19 +3782,5 @@ pub(crate) mod test_support {
         assert_eq!(runtime_processes.processes[0].status, "ready");
         assert_eq!(runtime_processes.processes[0].port, 9337);
         assert_eq!(runtime_processes.processes[0].pid, 777);
-    }
-
-    pub(crate) async fn runtime_data_api_routes_remain_payload_stable() {
-        super::tests::runtime_data_api_routes_remain_payload_stable().await;
-    }
-
-    pub(crate) async fn runtime_data_public_payload_shapes_remain_unchanged() {
-        super::tests::runtime_data_api_routes_remain_payload_stable().await;
-        crate::runtime_data::test_support::runtime_data_status_snapshot_matches_api_payloads();
-        crate::runtime_data::test_support::runtime_data_model_snapshot_matches_api_payloads();
-    }
-
-    pub(crate) async fn runtime_data_sse_bridge_delivers_initial_and_incremental_updates() {
-        super::tests::runtime_data_sse_bridge_delivers_initial_and_incremental_updates().await;
     }
 }

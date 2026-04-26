@@ -31,7 +31,7 @@ pub(crate) use self::snapshots::{
 pub(crate) use self::subscriptions::RuntimeDataDirty;
 
 #[cfg(test)]
-pub(crate) mod test_support {
+mod tests {
     use super::api_views::{collect_views, mesh_models, status_payload};
     use super::processes::{runtime_process_payloads, RuntimeProcessSnapshot};
     use super::snapshots::{
@@ -65,7 +65,8 @@ pub(crate) mod test_support {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
-    pub(crate) fn runtime_data_collector_shell_constructs_and_clones() {
+    #[test]
+    fn runtime_data_collector_shell_constructs_and_clones() {
         let collector = RuntimeDataCollector::new();
         let clone = collector.clone();
         let producer = collector.producer(RuntimeDataSource {
@@ -119,7 +120,8 @@ pub(crate) mod test_support {
             .is_empty());
     }
 
-    pub(crate) fn runtime_data_collector_exposes_initial_snapshots() {
+    #[test]
+    fn runtime_data_collector_exposes_initial_snapshots() {
         let collector = RuntimeDataCollector::new();
         let views = collect_views(&collector);
 
@@ -142,7 +144,8 @@ pub(crate) mod test_support {
         assert!(views.plugin_endpoints.entries.is_empty());
     }
 
-    pub(crate) fn runtime_data_version_advances_and_marks_dirty_bits() {
+    #[test]
+    fn runtime_data_version_advances_and_marks_dirty_bits() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -216,7 +219,8 @@ pub(crate) mod test_support {
         assert!(final_state.dirty.contains(RuntimeDataDirty::STATUS));
     }
 
-    pub(crate) async fn runtime_data_subscribe_notifies_once_per_update() {
+    #[tokio::test]
+    async fn runtime_data_subscribe_notifies_once_per_update() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -253,7 +257,8 @@ pub(crate) mod test_support {
         assert!(!subscription.has_changed().expect("watch channel open"));
     }
 
-    pub(crate) fn runtime_data_process_snapshot_matches_existing_runtime_views() {
+    #[test]
+    fn runtime_data_process_snapshot_matches_existing_runtime_views() {
         let legacy_processes = vec![
             RuntimeProcessPayload {
                 name: "Zulu".into(),
@@ -290,7 +295,8 @@ pub(crate) mod test_support {
         assert_eq!(round_trip, legacy_processes);
     }
 
-    pub(crate) fn runtime_data_status_snapshot_matches_api_payloads() {
+    #[test]
+    fn runtime_data_status_snapshot_matches_api_payloads() {
         let collector = RuntimeDataCollector::new();
         collector.replace_local_instances_snapshot(vec![LocalInstanceSnapshot {
             pid: 111,
@@ -402,7 +408,8 @@ pub(crate) mod test_support {
         );
     }
 
-    pub(crate) fn runtime_data_model_snapshot_matches_api_payloads() {
+    #[test]
+    fn runtime_data_model_snapshot_matches_api_payloads() {
         let collector = RuntimeDataCollector::new();
         let local_inventory = LocalModelInventorySnapshot {
             model_names: HashSet::from(["Example-Model".to_string()]),
@@ -447,7 +454,8 @@ pub(crate) mod test_support {
         assert_eq!(payload[0].fit_label, "Likely comfortable");
     }
 
-    pub(crate) async fn runtime_data_inventory_single_flight_scan_coalesces() {
+    #[tokio::test]
+    async fn runtime_data_inventory_single_flight_scan_coalesces() {
         let collector = RuntimeDataCollector::new();
         let scan_count = Arc::new(AtomicUsize::new(0));
 
@@ -495,7 +503,8 @@ pub(crate) mod test_support {
             .contains("Qwen3-8B"));
     }
 
-    pub(crate) async fn runtime_data_llama_metrics_polling_records_success_and_samples() {
+    #[tokio::test]
+    async fn runtime_data_llama_metrics_polling_records_success_and_samples() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -571,7 +580,8 @@ pub(crate) mod test_support {
         assert_eq!(snapshot.items.metrics.len(), 2);
     }
 
-    pub(crate) async fn runtime_data_llama_metrics_polling_marks_unavailable_nonfatally() {
+    #[tokio::test]
+    async fn runtime_data_llama_metrics_polling_marks_unavailable_nonfatally() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -619,7 +629,8 @@ pub(crate) mod test_support {
         assert_eq!(collector.runtime_processes_snapshot()[0].model, "Qwen3-8B");
     }
 
-    pub(crate) async fn runtime_data_llama_failed_refresh_preserves_previous_payloads() {
+    #[tokio::test]
+    async fn runtime_data_llama_failed_refresh_preserves_previous_payloads() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -700,7 +711,8 @@ pub(crate) mod test_support {
         assert_eq!(snapshot.items.slots_total, 1);
     }
 
-    pub(crate) fn runtime_data_llama_slots_json_parses_permissively() {
+    #[test]
+    fn runtime_data_llama_slots_json_parses_permissively() {
         let slots = crate::inference::launch::parse_llama_slots(&json!([
             {
                 "id": 3,
@@ -739,7 +751,8 @@ pub(crate) mod test_support {
         assert_eq!(slot.extra.get("kv"), Some(&json!({"used": 17})));
     }
 
-    pub(crate) fn runtime_data_llama_slots_parsing_bounds_entries_and_large_json() {
+    #[test]
+    fn runtime_data_llama_slots_parsing_bounds_entries_and_large_json() {
         let mut slot_entries = Vec::new();
         for id in 0..70_u64 {
             slot_entries.push(json!({
@@ -761,7 +774,8 @@ pub(crate) mod test_support {
         assert!(!slots.iter().any(|slot| slot.id == Some(69)));
     }
 
-    pub(crate) fn runtime_data_llama_items_preserve_slot_index_and_busy_state() {
+    #[test]
+    fn runtime_data_llama_items_preserve_slot_index_and_busy_state() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -801,7 +815,8 @@ pub(crate) mod test_support {
         assert!(snapshot.items.slots[1].is_processing);
     }
 
-    pub(crate) fn runtime_data_local_instance_snapshot_replaces_existing_scan_results() {
+    #[test]
+    fn runtime_data_local_instance_snapshot_replaces_existing_scan_results() {
         let collector = RuntimeDataCollector::new();
         let producer = collector.producer(RuntimeDataSource {
             scope: "runtime",
@@ -849,7 +864,8 @@ pub(crate) mod test_support {
         );
     }
 
-    pub(crate) fn runtime_data_plugin_reports_are_scoped_by_name_and_endpoint() {
+    #[test]
+    fn runtime_data_plugin_reports_are_scoped_by_name_and_endpoint() {
         let collector = RuntimeDataCollector::new();
         let alpha = collector.producer(RuntimeDataSource {
             scope: "plugin",
@@ -1036,7 +1052,8 @@ pub(crate) mod test_support {
         assert!(collector.plugin_endpoint_snapshot("beta", "chat").is_none());
     }
 
-    pub(crate) fn runtime_data_plugin_clear_removes_only_target_plugin_reports() {
+    #[test]
+    fn runtime_data_plugin_clear_removes_only_target_plugin_reports() {
         let collector = RuntimeDataCollector::new();
         let alpha = collector.producer(RuntimeDataSource {
             scope: "plugin",
@@ -1210,7 +1227,8 @@ pub(crate) mod test_support {
         (server, client_reader)
     }
 
-    pub(crate) async fn runtime_data_routing_snapshot_reflects_proxy_attempts_and_inflight() {
+    #[tokio::test]
+    async fn runtime_data_routing_snapshot_reflects_proxy_attempts_and_inflight() {
         let node = crate::mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
             .await
             .unwrap();
@@ -1258,7 +1276,8 @@ pub(crate) mod test_support {
         assert_eq!(model.targets[0].success_count, 1);
     }
 
-    pub(crate) async fn runtime_data_request_updates_stay_non_blocking() {
+    #[tokio::test]
+    async fn runtime_data_request_updates_stay_non_blocking() {
         let node = crate::mesh::Node::new_for_tests(crate::mesh::NodeRole::Worker)
             .await
             .unwrap();
@@ -1318,17 +1337,5 @@ pub(crate) mod test_support {
         assert_eq!(snapshot.status.local_node.local_attempt_count, 1);
         assert_eq!(snapshot.models["glm"].request_count, 1);
         assert_eq!(snapshot.models["glm"].targets[0].success_count, 1);
-    }
-
-    pub(crate) async fn runtime_data_collector_rule_guardrails_hold() {
-        crate::api::test_support::api_runtime_reads_from_collector_snapshot().await;
-        runtime_data_subscribe_notifies_once_per_update().await;
-        runtime_data_request_updates_stay_non_blocking().await;
-    }
-
-    pub(crate) async fn runtime_data_inventory_and_plugin_contracts_hold() {
-        runtime_data_inventory_single_flight_scan_coalesces().await;
-        runtime_data_plugin_reports_are_scoped_by_name_and_endpoint();
-        runtime_data_plugin_clear_removes_only_target_plugin_reports();
     }
 }
