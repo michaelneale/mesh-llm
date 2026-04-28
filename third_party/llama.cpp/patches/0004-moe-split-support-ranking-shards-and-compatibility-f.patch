@@ -1,7 +1,7 @@
-From 8127cfc0a1351f6d60bba464c7cb7f1b20f9c549 Mon Sep 17 00:00:00 2001
+From f4b2591f81a0edd2bbe5d41a0ccc673d95a1d124 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 08:25:17 +1000
-Subject: [PATCH 4/6] moe-split: support ranking, shards, and compatibility
+Subject: [PATCH 4/7] moe-split: support ranking, shards, and compatibility
  fixes
 
 ---
@@ -10,7 +10,7 @@ Subject: [PATCH 4/6] moe-split: support ranking, shards, and compatibility
  2 files changed, 661 insertions(+), 209 deletions(-)
 
 diff --git a/tools/moe-analyze/moe-analyze.cpp b/tools/moe-analyze/moe-analyze.cpp
-index d80b4bcb..4428e55c 100644
+index d80b4bcbd..4428e55ce 100644
 --- a/tools/moe-analyze/moe-analyze.cpp
 +++ b/tools/moe-analyze/moe-analyze.cpp
 @@ -51,6 +51,8 @@ struct callback_data {
@@ -101,7 +101,7 @@ index d80b4bcb..4428e55c 100644
      LOG_INF("For each group count, what fraction of the unrestricted top-%d mass\n", n_expert_used);
      LOG_INF("is captured by the best single group?\n\n");
 diff --git a/tools/moe-split/moe-split.cpp b/tools/moe-split/moe-split.cpp
-index f0ffc98b..9fabef2f 100644
+index f0ffc98b5..9fabef2f3 100644
 --- a/tools/moe-split/moe-split.cpp
 +++ b/tools/moe-split/moe-split.cpp
 @@ -7,20 +7,19 @@
@@ -1179,5 +1179,5 @@ index f0ffc98b..9fabef2f 100644
      printf("\nDone.\n");
      return 0;
 -- 
-2.50.1 (Apple Git-155)
+2.39.5 (Apple Git-154)
 

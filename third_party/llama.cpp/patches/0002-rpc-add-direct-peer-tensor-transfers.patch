@@ -1,7 +1,7 @@
-From 17efeba42ac263badcff031ce43c2fbfa8997684 Mon Sep 17 00:00:00 2001
+From c760a80cd78e2eaf3725a58d04b70ec58c0d93d6 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 08:25:17 +1000
-Subject: [PATCH 2/6] rpc: add direct peer tensor transfers
+Subject: [PATCH 2/7] rpc: add direct peer tensor transfers
 
 ---
  ggml/include/ggml-rpc.h          |   2 +-
@@ -16,7 +16,7 @@ Subject: [PATCH 2/6] rpc: add direct peer tensor transfers
  create mode 100644 tests/test-rpc-peer-transfer.cpp
 
 diff --git a/ggml/include/ggml-rpc.h b/ggml/include/ggml-rpc.h
-index 02417ab1..bfefadda 100644
+index 02417ab13..bfefaddac 100644
 --- a/ggml/include/ggml-rpc.h
 +++ b/ggml/include/ggml-rpc.h
 @@ -7,7 +7,7 @@ extern "C" {
@@ -29,7 +29,7 @@ index 02417ab1..bfefadda 100644
  
  #ifdef  __cplusplus
 diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
-index d67c9f68..c72aae0c 100644
+index d67c9f683..c72aae0c2 100644
 --- a/ggml/src/ggml-rpc/ggml-rpc.cpp
 +++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
 @@ -12,6 +12,7 @@
@@ -799,7 +799,7 @@ index d67c9f68..c72aae0c 100644
      ctx->name = "RPC[" + std::string(endpoint) + "]";
      for (uint32_t ind = 0; ind < dev_count; ind++) {
 diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
-index edb585b9..41f41094 100644
+index edb585b9f..41f410946 100644
 --- a/tests/CMakeLists.txt
 +++ b/tests/CMakeLists.txt
 @@ -300,3 +300,21 @@ if (TARGET gguf-model-data)
@@ -826,7 +826,7 @@ index edb585b9..41f41094 100644
 +endif()
 diff --git a/tests/test-rpc-peer-inference.sh b/tests/test-rpc-peer-inference.sh
 new file mode 100755
-index 00000000..315a79bb
+index 000000000..315a79bbc
 --- /dev/null
 +++ b/tests/test-rpc-peer-inference.sh
 @@ -0,0 +1,140 @@
@@ -972,7 +972,7 @@ index 00000000..315a79bb
 +echo "=== Test complete ==="
 diff --git a/tests/test-rpc-peer-transfer.cpp b/tests/test-rpc-peer-transfer.cpp
 new file mode 100644
-index 00000000..0e2a2c7a
+index 000000000..0e2a2c7a1
 --- /dev/null
 +++ b/tests/test-rpc-peer-transfer.cpp
 @@ -0,0 +1,970 @@
@@ -1947,7 +1947,7 @@ index 00000000..0e2a2c7a
 +    return g_tests_failed > 0 ? 1 : 0;
 +}
 diff --git a/tools/rpc/README.md b/tools/rpc/README.md
-index 05b7292c..4e10152d 100644
+index 05b7292c0..4e10152de 100644
 --- a/tools/rpc/README.md
 +++ b/tools/rpc/README.md
 @@ -2,7 +2,8 @@
@@ -1990,7 +1990,7 @@ index 05b7292c..4e10152d 100644
  ```
 -
 diff --git a/tools/rpc/rpc-server.cpp b/tools/rpc/rpc-server.cpp
-index 14910caf..ff757876 100644
+index 14910caf5..ff7578767 100644
 --- a/tools/rpc/rpc-server.cpp
 +++ b/tools/rpc/rpc-server.cpp
 @@ -189,6 +189,12 @@ static void print_usage(int /*argc*/, char ** argv, rpc_server_params params) {
@@ -2021,5 +2021,5 @@ index 14910caf..ff757876 100644
          fprintf(stderr, "\n");
      }
 -- 
-2.50.1 (Apple Git-155)
+2.39.5 (Apple Git-154)
 

@@ -1,7 +1,7 @@
-From a67bbf7ebd38de3a5e883690e52e341180b5b54d Mon Sep 17 00:00:00 2001
+From 0abb586a5996b5f5b007d6bb35e8a7870fb019c0 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 08:25:17 +1000
-Subject: [PATCH 3/6] moe: add expert analysis and split tools
+Subject: [PATCH 3/7] moe: add expert analysis and split tools
 
 ---
  common/common.h                   |   3 +
@@ -22,7 +22,7 @@ Subject: [PATCH 3/6] moe: add expert analysis and split tools
  create mode 100644 tools/moe-split/moe-split.cpp
 
 diff --git a/common/common.h b/common/common.h
-index d2d3c106..f19ff608 100644
+index d2d3c1061..f19ff6081 100644
 --- a/common/common.h
 +++ b/common/common.h
 @@ -428,6 +428,9 @@ struct common_params {
@@ -36,7 +36,7 @@ index d2d3c106..f19ff608 100644
      std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(), 1024 * 1024*1024);
  
 diff --git a/include/llama.h b/include/llama.h
-index eb869814..aa8cb98d 100644
+index eb8698140..aa8cb98da 100644
 --- a/include/llama.h
 +++ b/include/llama.h
 @@ -602,6 +602,12 @@ extern "C" {
@@ -53,7 +53,7 @@ index eb869814..aa8cb98d 100644
      LLAMA_API bool llama_model_has_encoder(const struct llama_model * model);
  
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 2ff23f87..43ab9f05 100644
+index 2ff23f87c..43ab9f05b 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -770,6 +770,22 @@ void llm_graph_input_sampling::set_input(const llama_ubatch * ubatch) {
@@ -107,7 +107,7 @@ index 2ff23f87..43ab9f05 100644
      ggml_tensor * selected_experts = ggml_argsort_top_k(ctx0, selection_probs, n_expert_used); // [n_expert_used, n_tokens]
      cb(selected_experts->src[0], "ffn_moe_argsort", il);
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index 5cb1756c..4f421eb1 100644
+index 5cb1756c6..4f421eb10 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
 @@ -500,6 +500,18 @@ public:
@@ -140,7 +140,7 @@ index 5cb1756c..4f421eb1 100644
      virtual ~llm_graph_context() = default;
  
 diff --git a/src/llama-hparams.h b/src/llama-hparams.h
-index ac7f9ee8..072f9617 100644
+index ac7f9ee86..072f96170 100644
 --- a/src/llama-hparams.h
 +++ b/src/llama-hparams.h
 @@ -92,6 +92,12 @@ struct llama_hparams {
@@ -157,7 +157,7 @@ index ac7f9ee8..072f9617 100644
      float f_norm_rms_eps;
      float f_norm_group_eps;
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index eb75384d..97773155 100644
+index eb75384d1..977731557 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -9445,6 +9445,22 @@ uint64_t llama_model_n_params(const llama_model * model) {
@@ -184,7 +184,7 @@ index eb75384d..97773155 100644
      switch (model->arch) {
          case LLM_ARCH_T5:        return true;
 diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
-index b433c91d..78e9d688 100644
+index b433c91d8..78e9d6886 100644
 --- a/tools/CMakeLists.txt
 +++ b/tools/CMakeLists.txt
 @@ -39,4 +39,6 @@ else()
@@ -196,7 +196,7 @@ index b433c91d..78e9d688 100644
  endif()
 diff --git a/tools/moe-analyze/CMakeLists.txt b/tools/moe-analyze/CMakeLists.txt
 new file mode 100644
-index 00000000..63f4a85f
+index 000000000..63f4a85fb
 --- /dev/null
 +++ b/tools/moe-analyze/CMakeLists.txt
 @@ -0,0 +1,5 @@
@@ -207,7 +207,7 @@ index 00000000..63f4a85f
 +target_compile_features(${TARGET} PRIVATE cxx_std_17)
 diff --git a/tools/moe-analyze/moe-analyze.cpp b/tools/moe-analyze/moe-analyze.cpp
 new file mode 100644
-index 00000000..d80b4bcb
+index 000000000..d80b4bcbd
 --- /dev/null
 +++ b/tools/moe-analyze/moe-analyze.cpp
 @@ -0,0 +1,577 @@
@@ -790,7 +790,7 @@ index 00000000..d80b4bcb
 +}
 diff --git a/tools/moe-split/CMakeLists.txt b/tools/moe-split/CMakeLists.txt
 new file mode 100644
-index 00000000..b708c041
+index 000000000..b708c041f
 --- /dev/null
 +++ b/tools/moe-split/CMakeLists.txt
 @@ -0,0 +1,5 @@
@@ -801,7 +801,7 @@ index 00000000..b708c041
 +target_compile_features(${TARGET} PRIVATE cxx_std_17)
 diff --git a/tools/moe-split/moe-split.cpp b/tools/moe-split/moe-split.cpp
 new file mode 100644
-index 00000000..f0ffc98b
+index 000000000..f0ffc98b5
 --- /dev/null
 +++ b/tools/moe-split/moe-split.cpp
 @@ -0,0 +1,551 @@
@@ -1357,5 +1357,5 @@ index 00000000..f0ffc98b
 +    return 0;
 +}
 -- 
-2.50.1 (Apple Git-155)
+2.39.5 (Apple Git-154)
 

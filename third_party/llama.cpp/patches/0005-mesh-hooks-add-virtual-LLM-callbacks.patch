@@ -1,7 +1,7 @@
-From 2f2eb75fda5675085886b5d95b649bfc3541c446 Mon Sep 17 00:00:00 2001
+From 02e91deb6b29d2c2237b657355c914466994b7a1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 08:25:17 +1000
-Subject: [PATCH 5/6] mesh hooks: add virtual LLM callbacks
+Subject: [PATCH 5/7] mesh hooks: add virtual LLM callbacks
 
 ---
  common/arg.cpp                  |  14 ++
@@ -16,7 +16,7 @@ Subject: [PATCH 5/6] mesh hooks: add virtual LLM callbacks
  create mode 100644 tools/server/server-mesh-hook.h
 
 diff --git a/common/arg.cpp b/common/arg.cpp
-index 85d84e5c..dc96849c 100644
+index 85d84e5cc..dc96849cd 100644
 --- a/common/arg.cpp
 +++ b/common/arg.cpp
 @@ -3023,6 +3023,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
@@ -41,7 +41,7 @@ index 85d84e5c..dc96849c 100644
          {"--slot-save-path"}, "PATH",
          "path to save slot kv cache (default: disabled)",
 diff --git a/common/common.h b/common/common.h
-index f19ff608..54b65da3 100644
+index f19ff6081..54b65da3d 100644
 --- a/common/common.h
 +++ b/common/common.h
 @@ -600,6 +600,10 @@ struct common_params {
@@ -56,7 +56,7 @@ index f19ff608..54b65da3 100644
      bool endpoint_slots   = true;
      bool endpoint_props   = false; // only control POST requests, not GET
 diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
-index 21c843c0..dac14490 100644
+index 21c843c0d..dac14490f 100644
 --- a/tools/server/server-common.cpp
 +++ b/tools/server/server-common.cpp
 @@ -992,6 +992,18 @@ json oaicompat_chat_params_parse(
@@ -92,7 +92,7 @@ index 21c843c0..dac14490 100644
                  }
  
 diff --git a/tools/server/server-common.h b/tools/server/server-common.h
-index 4681f9c5..dd15e6b6 100644
+index 4681f9c51..dd15e6b67 100644
 --- a/tools/server/server-common.h
 +++ b/tools/server/server-common.h
 @@ -201,6 +201,9 @@ public:
@@ -114,7 +114,7 @@ index 4681f9c5..dd15e6b6 100644
      int  reasoning_budget = -1;
      std::string reasoning_budget_message;
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 08ff1e36..cdc2229a 100644
+index 08ff1e362..cdc2229ad 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -5,6 +5,7 @@
@@ -446,7 +446,7 @@ index 08ff1e36..cdc2229a 100644
  
 diff --git a/tools/server/server-mesh-hook.h b/tools/server/server-mesh-hook.h
 new file mode 100644
-index 00000000..8022b800
+index 000000000..8022b8004
 --- /dev/null
 +++ b/tools/server/server-mesh-hook.h
 @@ -0,0 +1,350 @@
@@ -801,7 +801,7 @@ index 00000000..8022b800
 +    return h;
 +}
 diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
-index 4c341d7c..3b16ff97 100644
+index 4c341d7c5..3b16ff972 100644
 --- a/tools/server/server-task.cpp
 +++ b/tools/server/server-task.cpp
 @@ -277,6 +277,18 @@ task_params server_task::params_from_json_cmpl(
@@ -824,7 +824,7 @@ index 4c341d7c..3b16ff97 100644
      params.sampling.top_p              = json_value(data, "top_p",               defaults.sampling.top_p);
      params.sampling.min_p              = json_value(data, "min_p",               defaults.sampling.min_p);
 diff --git a/tools/server/server-task.h b/tools/server/server-task.h
-index 289e1fb8..b0a7657c 100644
+index 289e1fb8d..b0a7657c5 100644
 --- a/tools/server/server-task.h
 +++ b/tools/server/server-task.h
 @@ -84,6 +84,13 @@ struct task_params {
@@ -842,5 +842,5 @@ index 289e1fb8..b0a7657c 100644
      int32_t embd_normalize = 2; // (-1=none, 0=max absolute int16, 1=taxicab, 2=Euclidean/L2, >2=p-norm)
  
 -- 
-2.50.1 (Apple Git-155)
+2.39.5 (Apple Git-154)
 

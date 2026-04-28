@@ -29,10 +29,14 @@ use tokio::sync::RwLock;
 
 const RPC_CMD_REGISTER_PEER: u8 = 18; // enum position after SET_TENSOR_GGUF (17)
 const REGISTER_PEER_PAYLOAD_SIZE: usize = 4 + 128; // peer_id + endpoint
-const MAX_RPC_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+// Match llama.cpp's ggml-rpc transport chunk ceiling. Large models can send
+// SET_TENSOR payloads above 256 MiB when local-GGUF loading falls back to raw
+// tensor transfer; the tunnel must not close those otherwise-valid frames.
+const MAX_RPC_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 const RPC_PAYLOAD_GRACE_SECS: u64 = 10;
 const RPC_PAYLOAD_RATE_BYTES_PER_SEC: u64 = 4 * 1024 * 1024;
-const RPC_PAYLOAD_MAX_SECS: u64 = 120;
+const RPC_PAYLOAD_MAX_SECS: u64 = 600;
 
 /// Shared map from orchestrator's tunnel port → worker's local tunnel port.
 /// Built by combining the orchestrator's tunnel map (received via gossip)

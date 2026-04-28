@@ -1,0 +1,218 @@
+From a9ba6f1fd531a721f667273b13104fd66984e467 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 28 Apr 2026 16:00:40 +0800
+Subject: [PATCH 7/7] rpc: index split GGUF shards for local tensor loads
+
+---
+ ggml/src/ggml-rpc/ggml-rpc.cpp | 145 +++++++++++++++++++++++++++++----
+ 1 file changed, 127 insertions(+), 18 deletions(-)
+
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index c72aae0c2..2b7526a5c 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -1050,6 +1050,7 @@ public:
+     ~rpc_server();
+ 
+     void hello(rpc_msg_hello_rsp & response);
++    bool ensure_gguf_index();
+     bool alloc_buffer(const rpc_msg_alloc_buffer_req & request, rpc_msg_alloc_buffer_rsp & response);
+     bool get_alignment(const rpc_msg_get_alignment_req & request, rpc_msg_get_alignment_rsp & response);
+     bool get_max_size(const rpc_msg_get_max_size_req & request, rpc_msg_get_max_size_rsp & response);
+@@ -1090,7 +1091,11 @@ private:
+     std::vector<ggml_backend_t> backends;
+     const char * cache_dir;
+     std::string  gguf_path;   // local GGUF file for SET_TENSOR_GGUF
+-    gguf_context_ptr gguf_ctx; // parsed GGUF index (lazy-initialized)
++    struct gguf_file {
++        std::string path;
++        gguf_context_ptr ctx;
++    };
++    std::vector<gguf_file> gguf_files; // parsed GGUF shard indices (lazy-initialized)
+     std::unordered_set<ggml_backend_buffer_t> buffers;
+     // store the last computed graph for each backend
+     std::vector<stored_graph> stored_graphs;
+@@ -1411,6 +1416,103 @@ bool rpc_server::set_tensor_hash(const rpc_msg_set_tensor_hash_req & request, rp
+     return true;
+ }
+ 
++static bool gguf_split_path_for_index(
++        const std::string & first_path,
++        uint16_t first_idx,
++        uint16_t idx,
++        uint16_t n_split,
++        std::string & out) {
++    char first_suffix[32];
++    snprintf(first_suffix, sizeof(first_suffix), "-%05u-of-%05u.gguf",
++             (unsigned) first_idx + 1, (unsigned) n_split);
++
++    if (first_path.size() < strlen(first_suffix)) {
++        return false;
++    }
++
++    size_t suffix_pos = first_path.size() - strlen(first_suffix);
++    if (first_path.compare(suffix_pos, std::string::npos, first_suffix) != 0) {
++        return false;
++    }
++
++    char suffix[32];
++    snprintf(suffix, sizeof(suffix), "-%05u-of-%05u.gguf",
++             (unsigned) idx + 1, (unsigned) n_split);
++    out = first_path.substr(0, suffix_pos) + suffix;
++    return true;
++}
++
++bool rpc_server::ensure_gguf_index() {
++    if (!gguf_files.empty()) {
++        return true;
++    }
++
++    if (gguf_path.empty()) {
++        return false;
++    }
++
++    struct gguf_init_params gparams = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
++    gguf_context_ptr first_ctx { gguf_init_from_file(gguf_path.c_str(), gparams) };
++    if (!first_ctx) {
++        GGML_LOG_ERROR("[%s] failed to parse GGUF file: %s\n", __func__, gguf_path.c_str());
++        gguf_path.clear(); // don't try again
++        return false;
++    }
++
++    uint16_t first_idx = 0;
++    if (int64_t key = gguf_find_key(first_ctx.get(), "split.no"); key >= 0) {
++        first_idx = gguf_get_val_u16(first_ctx.get(), key);
++    }
++
++    uint16_t n_split = 1;
++    if (int64_t key = gguf_find_key(first_ctx.get(), "split.count"); key >= 0) {
++        n_split = gguf_get_val_u16(first_ctx.get(), key);
++    }
++
++    gguf_files.push_back({gguf_path, std::move(first_ctx)});
++
++    if (n_split > 1) {
++        for (uint16_t idx = 0; idx < n_split; ++idx) {
++            if (idx == first_idx) {
++                continue;
++            }
++
++            std::string split_path;
++            if (!gguf_split_path_for_index(gguf_path, first_idx, idx, n_split, split_path)) {
++                GGML_LOG_ERROR("[%s] failed to derive GGUF split path from %s (split %u/%u)\n",
++                               __func__, gguf_path.c_str(), (unsigned) idx + 1, (unsigned) n_split);
++                continue;
++            }
++
++            gguf_context_ptr split_ctx { gguf_init_from_file(split_path.c_str(), gparams) };
++            if (!split_ctx) {
++                GGML_LOG_ERROR("[%s] failed to parse GGUF split: %s\n", __func__, split_path.c_str());
++                continue;
++            }
++
++            if (int64_t key = gguf_find_key(split_ctx.get(), "split.no"); key >= 0) {
++                uint16_t split_no = gguf_get_val_u16(split_ctx.get(), key);
++                if (split_no != idx) {
++                    GGML_LOG_ERROR("[%s] GGUF split has index %u, expected %u: %s\n",
++                                   __func__, (unsigned) split_no, (unsigned) idx, split_path.c_str());
++                    continue;
++                }
++            }
++
++            gguf_files.push_back({split_path, std::move(split_ctx)});
++        }
++    }
++
++    int64_t n_tensors = 0;
++    for (const gguf_file & file : gguf_files) {
++        n_tensors += gguf_get_n_tensors(file.ctx.get());
++    }
++    GGML_LOG_INFO("[%s] indexed %zu GGUF file(s) from %s (%" PRId64 " tensors)\n",
++                  __func__, gguf_files.size(), gguf_path.c_str(), n_tensors);
++
++    return true;
++}
++
+ bool rpc_server::set_tensor_gguf(const rpc_msg_set_tensor_gguf_req & request, rpc_msg_set_tensor_gguf_rsp & response) {
+     response.result = 0;
+ 
+@@ -1421,27 +1523,27 @@ bool rpc_server::set_tensor_gguf(const rpc_msg_set_tensor_gguf_req & request, rp
+ 
+     const char * tensor_name = request.tensor.name;
+ 
+-    // Build GGUF index on first use
+-    if (!gguf_ctx) {
+-        struct gguf_init_params gparams = { /*.no_alloc =*/ true, /*.ctx =*/ nullptr };
+-        gguf_ctx.reset(gguf_init_from_file(gguf_path.c_str(), gparams));
+-        if (!gguf_ctx) {
+-            GGML_LOG_ERROR("[%s] failed to parse GGUF file: %s\n", __func__, gguf_path.c_str());
+-            gguf_path.clear(); // don't try again
+-            return true;
+-        }
+-        GGML_LOG_INFO("[%s] indexed GGUF file: %s (%" PRId64 " tensors)\n",
+-                      __func__, gguf_path.c_str(), gguf_get_n_tensors(gguf_ctx.get()));
++    if (!ensure_gguf_index()) {
++        return true;
+     }
+ 
+     // Look up tensor in GGUF by name
+-    int64_t tensor_idx = gguf_find_tensor(gguf_ctx.get(), tensor_name);
+-    if (tensor_idx < 0) {
++    const gguf_file * gguf = nullptr;
++    int64_t tensor_idx = -1;
++    for (const gguf_file & file : gguf_files) {
++        int64_t idx = gguf_find_tensor(file.ctx.get(), tensor_name);
++        if (idx >= 0) {
++            gguf = &file;
++            tensor_idx = idx;
++            break;
++        }
++    }
++    if (gguf == nullptr) {
+         LOG_DBG("[%s] tensor '%s' not found in GGUF\n", __func__, tensor_name);
+         return true;
+     }
+ 
+-    size_t data_offset = gguf_get_data_offset(gguf_ctx.get()) + gguf_get_tensor_offset(gguf_ctx.get(), tensor_idx);
++    size_t data_offset = gguf_get_data_offset(gguf->ctx.get()) + gguf_get_tensor_offset(gguf->ctx.get(), tensor_idx);
+ 
+     // Deserialize the tensor to get the buffer pointer and size
+     struct ggml_init_params params {
+@@ -1459,6 +1561,12 @@ bool rpc_server::set_tensor_gguf(const rpc_msg_set_tensor_gguf_req & request, rp
+     }
+ 
+     size_t size = ggml_nbytes(tensor);
++    size_t gguf_size = gguf_get_tensor_size(gguf->ctx.get(), tensor_idx);
++    if (gguf_size != size) {
++        GGML_LOG_ERROR("[%s] tensor '%s' size mismatch in local GGUF: got %zu, expected %zu\n",
++                       __func__, tensor_name, gguf_size, size);
++        return true;
++    }
+ 
+     // Sanitize tensor->data against buffer bounds
+     {
+@@ -1474,9 +1582,9 @@ bool rpc_server::set_tensor_gguf(const rpc_msg_set_tensor_gguf_req & request, rp
+     }
+ 
+     // Read from local GGUF file
+-    std::ifstream ifs(gguf_path, std::ios::binary);
++    std::ifstream ifs(gguf->path, std::ios::binary);
+     if (!ifs.is_open()) {
+-        GGML_LOG_ERROR("[%s] failed to open GGUF file: %s\n", __func__, gguf_path.c_str());
++        GGML_LOG_ERROR("[%s] failed to open GGUF file: %s\n", __func__, gguf->path.c_str());
+         return true;
+     }
+ 
+@@ -1496,7 +1604,8 @@ bool rpc_server::set_tensor_gguf(const rpc_msg_set_tensor_gguf_req & request, rp
+     ggml_backend_tensor_set(tensor, data.data(), request.offset, size);
+     response.result = 1;
+ 
+-    GGML_LOG_INFO("[%s] loaded '%s' (%zu bytes) from local GGUF\n", __func__, tensor_name, size);
++    GGML_LOG_INFO("[%s] loaded '%s' (%zu bytes) from local GGUF: %s\n",
++                  __func__, tensor_name, size, gguf->path.c_str());
+     return true;
+ }
+ 
+-- 
+2.39.5 (Apple Git-154)
+
