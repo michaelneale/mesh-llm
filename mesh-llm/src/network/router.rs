@@ -366,6 +366,14 @@ pub fn media_requirements(body: &Value) -> MediaRequirements {
     requirements
 }
 
+pub(crate) fn model_satisfies_media_requirements(
+    caps: &crate::models::ModelCapabilities,
+    media: &MediaRequirements,
+) -> bool {
+    (!media.needs_vision || caps.vision_label().is_some())
+        && (!media.needs_audio || caps.audio_label().is_some())
+}
+
 /// Length of last user message in characters (rough complexity proxy).
 fn last_user_message_len(body: &Value) -> usize {
     body.get("messages")
@@ -762,6 +770,57 @@ mod tests {
         assert!(media.needs_vision);
         assert!(!media.needs_audio);
         assert!(classify(&body).has_media_inputs);
+    }
+
+    #[test]
+    fn test_model_satisfies_media_requirements_matches_required_modalities() {
+        use crate::models::{CapabilityLevel, ModelCapabilities};
+
+        let text_caps = ModelCapabilities::default();
+        let vision_caps = ModelCapabilities {
+            vision: CapabilityLevel::Supported,
+            ..Default::default()
+        };
+        let audio_caps = ModelCapabilities {
+            audio: CapabilityLevel::Supported,
+            ..Default::default()
+        };
+        let vision_audio_caps = ModelCapabilities {
+            vision: CapabilityLevel::Supported,
+            audio: CapabilityLevel::Supported,
+            ..Default::default()
+        };
+
+        let text_only = MediaRequirements::default();
+        let image = MediaRequirements {
+            has_media: true,
+            needs_vision: true,
+            needs_audio: false,
+        };
+        let audio = MediaRequirements {
+            has_media: true,
+            needs_vision: false,
+            needs_audio: true,
+        };
+        let image_and_audio = MediaRequirements {
+            has_media: true,
+            needs_vision: true,
+            needs_audio: true,
+        };
+
+        assert!(model_satisfies_media_requirements(&text_caps, &text_only));
+        assert!(!model_satisfies_media_requirements(&text_caps, &image));
+        assert!(model_satisfies_media_requirements(&vision_caps, &image));
+        assert!(!model_satisfies_media_requirements(&vision_caps, &audio));
+        assert!(model_satisfies_media_requirements(&audio_caps, &audio));
+        assert!(!model_satisfies_media_requirements(
+            &vision_caps,
+            &image_and_audio
+        ));
+        assert!(model_satisfies_media_requirements(
+            &vision_audio_caps,
+            &image_and_audio
+        ));
     }
 
     #[test]
