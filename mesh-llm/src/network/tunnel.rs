@@ -87,17 +87,18 @@ impl Manager {
         });
 
         // Handle inbound RPC tunnel streams (with REGISTER_PEER rewriting)
-        let rpc_port_ref = mgr.rpc_port.clone();
-        let rewrite_map = mgr.port_rewrite_map.clone();
+        let rpc_mgr = mgr.clone();
         tokio::spawn(async move {
             while let Some((send, recv)) = tunnel_stream_rx.recv().await {
-                let port = rpc_port_ref.load(Ordering::Relaxed);
+                let port = rpc_mgr.rpc_port.load(Ordering::Relaxed);
                 if port == 0 {
                     tracing::warn!("Inbound RPC tunnel but no rpc-server running, dropping");
                     continue;
                 }
-                let rewrite_map = rewrite_map.clone();
+                let mgr = rpc_mgr.clone();
                 tokio::spawn(async move {
+                    mgr.refresh_rewrite_map().await;
+                    let rewrite_map = mgr.port_rewrite_map.clone();
                     if let Err(e) = handle_inbound_stream(send, recv, port, rewrite_map).await {
                         tracing::warn!("Inbound RPC tunnel stream error: {e}");
                     }
@@ -175,7 +176,18 @@ impl Manager {
 
         for (remote_peer, their_map) in remote_maps {
             for (target_id, &their_port) in their_map {
-                if let Some(handle) = my_tunnels.get(target_id) {
+                if *target_id == self.node.id() {
+                    let local_rpc_port = self.rpc_port.load(Ordering::Relaxed);
+                    if local_rpc_port != 0 {
+                        rewrite.insert(their_port, local_rpc_port);
+                        tracing::info!(
+                            "B2B rewrite: peer {}'s port {} → my rpc-server port {} (target self)",
+                            remote_peer.fmt_short(),
+                            their_port,
+                            local_rpc_port
+                        );
+                    }
+                } else if let Some(handle) = my_tunnels.get(target_id) {
                     rewrite.insert(their_port, handle.port);
                     tracing::info!(
                         "B2B rewrite: peer {}'s port {} → my port {} (target {})",
@@ -191,6 +203,11 @@ impl Manager {
         tracing::info!("B2B port rewrite map: {} entries", rewrite.len());
     }
 
+    async fn refresh_rewrite_map(&self) {
+        let remote_maps = self.node.all_remote_tunnel_maps().await;
+        self.update_rewrite_map(&remote_maps).await;
+    }
+
     /// Allocate a free port by binding to :0
     async fn alloc_listener(&self) -> Result<(u16, TcpListener)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -202,9 +219,21 @@ impl Manager {
     /// tunnels for departed peers (reclaiming the `TcpListener` fd).
     async fn watch_peers(&self) {
         let mut rx = self.node.peer_change_rx.clone();
+        let mut reconcile_tick = tokio::time::interval(Duration::from_secs(1));
+        reconcile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut first_pass = true;
         loop {
-            if rx.changed().await.is_err() {
-                break;
+            if first_pass {
+                first_pass = false;
+            } else {
+                tokio::select! {
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                    }
+                    _ = reconcile_tick.tick() => {}
+                }
             }
 
             let peers = self.node.peers().await;

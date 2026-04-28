@@ -3050,6 +3050,10 @@ async fn start_llama(
         }
     };
 
+    // Push fresh peer announcements before split launch so workers that joined
+    // through the host can discover each other and build B2B RPC tunnels.
+    node.regossip().await;
+
     // Wait for tunnels to workers
     if !worker_ids.is_empty() {
         emit_info(
