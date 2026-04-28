@@ -56,6 +56,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         llama_ready: Arc::new(Mutex::new(false)),
         available_models: Arc::new(Mutex::new(Vec::new())),
         requested_models: Arc::new(Mutex::new(Vec::new())),
+        explicit_model_interests: Arc::new(Mutex::new(Vec::new())),
         model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
         mesh_id: Arc::new(Mutex::new(None)),
         first_joined_mesh_ts: Arc::new(Mutex::new(None)),
@@ -559,6 +560,7 @@ fn make_test_peer_info(peer_id: EndpointId) -> PeerInfo {
         hosted_models_known: false,
         available_models: vec![],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         last_seen: std::time::Instant::now(),
         last_mentioned: std::time::Instant::now(),
         moe_recovered_at: None,
@@ -1205,6 +1207,7 @@ fn gossip_frame_roundtrip_preserves_scanned_model_metadata() {
         hosted_models: Some(vec!["Qwen3-8B-Q4_K_M".to_string()]),
         available_models: vec!["Qwen3-8B-Q4_K_M".to_string()],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         version: Some("0.42.0".to_string()),
         model_demand: HashMap::new(),
         mesh_id: Some("deadbeef12345678".to_string()),
@@ -1445,6 +1448,7 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         hosted_models: Some(vec!["NewModel-Q4_K_M".to_string()]),
         available_models: vec!["NewModel-Q4_K_M".to_string()],
         requested_models: vec!["NewModel-Q4_K_M".to_string()],
+        explicit_model_interests: vec!["Org/NewModel-GGUF@main:Q4_K_M".to_string()],
         version: None,
         model_demand: HashMap::new(),
         mesh_id: None,
@@ -1479,6 +1483,11 @@ fn transitive_peer_update_refreshes_metadata_fields() {
         existing.requested_models,
         vec!["NewModel-Q4_K_M".to_string()],
         "requested_models must be refreshed from transitive gossip"
+    );
+    assert_eq!(
+        existing.explicit_model_interests,
+        vec!["Org/NewModel-GGUF@main:Q4_K_M".to_string()],
+        "explicit_model_interests must be refreshed from transitive gossip"
     );
     assert!(existing.available_model_metadata.is_empty());
     assert!(existing.available_model_sizes.is_empty());
@@ -1517,6 +1526,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         hosted_models: None,
         available_models: vec!["SomeModel-Q4_K_M".to_string()],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         version: None,
         model_demand: HashMap::new(),
         mesh_id: None,
@@ -1568,6 +1578,7 @@ fn transitive_peer_merge_preserves_richer_direct_address() {
         hosted_models: None,
         available_models: vec!["SomeModel-Q4_K_M".to_string()],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         version: None,
         model_demand: HashMap::new(),
         mesh_id: None,
@@ -2113,6 +2124,7 @@ fn transitive_peer_update_refreshes_last_mentioned() {
         hosted_models: None,
         available_models: vec![],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         version: None,
         model_demand: HashMap::new(),
         mesh_id: None,
@@ -2769,6 +2781,7 @@ fn make_test_peer(id: EndpointId, rtt_ms: Option<u32>, vram_gb: u64) -> PeerInfo
         hosted_models_known: false,
         available_models: vec![],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         last_seen: std::time::Instant::now(),
         last_mentioned: std::time::Instant::now(),
         moe_recovered_at: None,
@@ -3243,6 +3256,7 @@ async fn make_test_node_with_owner(
         llama_ready: Arc::new(Mutex::new(false)),
         available_models: Arc::new(Mutex::new(Vec::new())),
         requested_models: Arc::new(Mutex::new(Vec::new())),
+        explicit_model_interests: Arc::new(Mutex::new(Vec::new())),
         model_demand: Arc::new(std::sync::Mutex::new(HashMap::new())),
         mesh_id: Arc::new(Mutex::new(None)),
         first_joined_mesh_ts: Arc::new(Mutex::new(None)),

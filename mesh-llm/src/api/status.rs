@@ -246,6 +246,8 @@ pub(crate) struct StatusPayload {
     pub(crate) models: Vec<String>,
     pub(crate) available_models: Vec<String>,
     pub(crate) requested_models: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub(crate) wanted_model_refs: Vec<String>,
     pub(crate) serving_models: Vec<String>,
     pub(crate) hosted_models: Vec<String>,
     pub(crate) draft_name: Option<String>,
@@ -412,6 +414,12 @@ pub(crate) struct MeshModelPayload {
     pub(crate) request_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_active_secs_ago: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target_rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) explicit_interest_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) wanted: Option<bool>,
     /// Local-only per-model routing outcome snapshot measured on the current
     /// node only; not mesh-wide aggregates.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -431,6 +439,21 @@ pub(crate) struct MeshModelPayload {
     pub(crate) download_command: String,
     pub(crate) run_command: String,
     pub(crate) auto_command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct ModelTargetPayload {
+    pub(crate) rank: usize,
+    pub(crate) model_ref: String,
+    pub(crate) display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model_name: Option<String>,
+    pub(crate) explicit_interest_count: usize,
+    pub(crate) request_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) last_active_secs_ago: Option<u64>,
+    pub(crate) serving_node_count: usize,
+    pub(crate) wanted: bool,
 }
 
 pub(crate) fn build_runtime_status_payload(
@@ -692,6 +715,7 @@ mod tests {
             models: vec![],
             available_models: vec![],
             requested_models: vec![],
+            wanted_model_refs: vec![],
             serving_models: vec![],
             hosted_models: vec![],
             draft_name: None,
@@ -738,6 +762,7 @@ mod tests {
             models: vec!["Qwen".to_string()],
             available_models: vec!["Qwen".to_string()],
             requested_models: vec!["Qwen".to_string()],
+            wanted_model_refs: vec![],
             serving_models: vec!["Qwen".to_string()],
             hosted_models: vec!["Qwen".to_string()],
             draft_name: None,
@@ -784,6 +809,7 @@ mod tests {
             models: vec![],
             available_models: vec![],
             requested_models: vec![],
+            wanted_model_refs: vec![],
             serving_models: vec![],
             hosted_models: vec![],
             draft_name: None,
@@ -839,6 +865,7 @@ mod tests {
             models: vec![],
             available_models: vec![],
             requested_models: vec![],
+            wanted_model_refs: vec![],
             serving_models: vec![],
             hosted_models: vec![],
             draft_name: None,
