@@ -193,6 +193,23 @@ export function DashboardPage({
       .filter((model) => (modelFilter === "all" ? true : model.status === modelFilter))
       .sort((a, b) => b.node_count - a.node_count || a.name.localeCompare(b.name));
   }, [meshModels, modelFilter]);
+  const modelSizeGbForCard = useCallback(
+    (model: MeshModel): number | null => {
+      if (Number.isFinite(model.size_gb) && model.size_gb > 0) {
+        return model.size_gb;
+      }
+      if (
+        status &&
+        status.model_name === model.name &&
+        Number.isFinite(status.model_size_gb) &&
+        status.model_size_gb > 0
+      ) {
+        return status.model_size_gb;
+      }
+      return null;
+    },
+    [status],
+  );
   const totalMeshVramGb = useMemo(() => meshGpuVram(status), [status]);
   const distinctMeshVersions = useMemo(() => {
     const versions = new Set<string>();
@@ -553,7 +570,7 @@ export function DashboardPage({
                       key={model.name}
                       name={model.name}
                       displayName={modelDisplayName(model)}
-                      sizeGb={model.size_gb}
+                      sizeGb={modelSizeGbForCard(model)}
                       nodeCount={model.node_count}
                       status={model.status}
                       vision={model.vision}

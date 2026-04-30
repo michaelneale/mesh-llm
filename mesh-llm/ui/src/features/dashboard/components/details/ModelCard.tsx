@@ -10,7 +10,7 @@ interface ModelCardProps {
   name: string;
   displayName?: string;
   subtitle?: ReactNode;
-  sizeGb: number;
+  sizeGb: number | null;
   nodeCount: number;
   status: ModelStatus;
   vision?: boolean;
@@ -33,6 +33,10 @@ export function ModelCard({
 }: ModelCardProps) {
   const shortName = (nameOrDisplay: string) => nameOrDisplay.split("/").pop() ?? nameOrDisplay;
   const displayText = displayName ? shortName(displayName) : shortName(name);
+  const sizeLabel =
+    sizeGb != null && Number.isFinite(sizeGb) && sizeGb > 0
+      ? `${sizeGb.toFixed(1)} GB`
+      : "n/a";
 
   return (
     <button
@@ -70,7 +74,7 @@ export function ModelCard({
         <span>{nodeCount} node{nodeCount === 1 ? "" : "s"}</span>
         <span className="flex items-center gap-2">
           {vision && <span role="img" aria-label="Vision">👁</span>}
-          {sizeGb.toFixed(1)} GB
+          {sizeLabel}
         </span>
       </div>
     </button>
