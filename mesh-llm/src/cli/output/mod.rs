@@ -746,14 +746,38 @@ impl OutputEvent {
                 Some(role) => format!("{model} elected {host} as {role}"),
                 None => format!("{model} elected {host} as host"),
             },
-            OutputEvent::RpcServerStarting { port, .. } => {
-                format!("rpc-server starting on port {port}")
+            OutputEvent::RpcServerStarting { port, log_path, .. } => {
+                let msg = format!("rpc-server starting on port {port}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
             }
-            OutputEvent::RpcReady { port, .. } => format!("rpc-server ready on port {port}"),
-            OutputEvent::LlamaStarting { http_port, .. } => {
-                format!("llama-server starting on port {http_port}")
+            OutputEvent::RpcReady { port, log_path, .. } => {
+                let msg = format!("rpc-server ready on port {port}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
             }
-            OutputEvent::LlamaReady { port, .. } => format!("llama-server ready on port {port}"),
+            OutputEvent::LlamaStarting { http_port, log_path, .. } => {
+                let msg = format!("llama-server starting on port {http_port}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
+            }
+            OutputEvent::LlamaReady { port, log_path, .. } => {
+                let msg = format!("llama-server ready on port {port}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
+            }
             OutputEvent::ModelReady {
                 model,
                 internal_port,

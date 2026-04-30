@@ -274,12 +274,18 @@ fn stop_requested(stop_rx: &watch::Receiver<bool>) -> bool {
     *stop_rx.borrow()
 }
 
-fn emit_ready_events(model_name: &str, llama_port: u16, model_port: u16, ctx_size: u32) {
+fn emit_ready_events(
+    model_name: &str,
+    llama_port: u16,
+    model_port: u16,
+    ctx_size: u32,
+    log_path: Option<String>,
+) {
     let _ = emit_event(OutputEvent::LlamaReady {
         model: Some(model_name.to_string()),
         port: llama_port,
         ctx_size: Some(ctx_size),
-        log_path: None,
+        log_path,
     });
     let _ = emit_event(OutputEvent::ModelReady {
         model: model_name.to_string(),
@@ -2037,7 +2043,14 @@ pub async fn election_loop(
                     context_length: process.context_length,
                 }));
             }
-            emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
+            let lp = runtime.log_path(&format!("llama-server-{}", llama_port));
+            emit_ready_events(
+                &model_name,
+                llama_port,
+                local_proxy_port,
+                ctx_size,
+                Some(lp.display().to_string()),
+            );
             on_change(true, true);
         } else {
             // We're a worker in split mode. Find who the host is.
@@ -2508,7 +2521,14 @@ async fn moe_election_loop(
                         &model_name,
                     );
                     target_tx.send_replace(targets);
-                    emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
+                    let lp = runtime.log_path(&format!("llama-server-{}", llama_port));
+                    emit_ready_events(
+                        &model_name,
+                        llama_port,
+                        local_proxy_port,
+                        ctx_size,
+                        Some(lp.display().to_string()),
+                    );
                     on_change(true, true);
                 }
                 Err(e) => {
@@ -2625,7 +2645,14 @@ async fn moe_election_loop(
                             &target_tx,
                         )
                         .await;
-                        emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
+                        let lp = runtime.log_path(&format!("llama-server-{}", llama_port));
+                        emit_ready_events(
+                            &model_name,
+                            llama_port,
+                            local_proxy_port,
+                            ctx_size,
+                            Some(lp.display().to_string()),
+                        );
                         on_change(true, true);
                     }
                     Err(e) => {
@@ -2830,7 +2857,14 @@ async fn moe_election_loop(
                     );
                     target_tx.send_replace(targets);
 
-                    emit_ready_events(&model_name, llama_port, local_proxy_port, ctx_size);
+                    let lp = runtime.log_path(&format!("llama-server-{}", llama_port));
+                    emit_ready_events(
+                        &model_name,
+                        llama_port,
+                        local_proxy_port,
+                        ctx_size,
+                        Some(lp.display().to_string()),
+                    );
                     on_change(true, true);
                 }
                 Err(e) => {

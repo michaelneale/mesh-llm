@@ -979,15 +979,21 @@ pub async fn start_rpc_server(
     for _ in 0..startup_polls {
         if is_port_open(port).await {
             let pidfile_path = runtime.pidfile_path(&format!("rpc-server-{port}"));
+            let device_for_spawn = device.clone();
             tokio::spawn(async move {
                 let _ = child.wait().await;
                 let _ = std::fs::remove_file(&pidfile_path);
                 if !expected_exit_clone.load(Ordering::Relaxed) && !runtime_shutting_down() {
                     let _ = emit_event(OutputEvent::Warning {
                         message: "rpc-server process exited unexpectedly".to_string(),
-                        context: Some(format!("port={port} device={device}")),
+                        context: Some(format!("port={port} device={device_for_spawn}")),
                     });
                 }
+            });
+            let _ = emit_event(OutputEvent::RpcReady {
+                port,
+                device: device.clone(),
+                log_path: Some(rpc_log.display().to_string()),
             });
             return Ok(RpcServerHandle {
                 pid,
