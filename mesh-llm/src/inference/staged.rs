@@ -582,3 +582,195 @@ pub async fn launch_driver(config: DriverLaunchConfig) -> Result<DriverProcess> 
         child,
     })
 }
+
+// ─── Integration with Election Loop ─────────────────────────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+/// Parameters for starting staged inference (replaces StartLlamaParams).
+pub struct StartStagedParams<'a> {
+    pub bin_dir: &'a Path,
+    pub model_path: &'a Path,
+    pub model_name: &'a str,
+    /// Available memory per node: (peer_id, available_bytes).
+    /// None peer_id = local node.
+    pub node_capacities: Vec<NodeCapability>,
+    /// Tunnel ports for each peer (peer_id → local tunnel port).
+    /// Stage downstream connections go through these.
+    pub tunnel_ports: &'a std::collections::HashMap<iroh::EndpointId, u16>,
+    pub ctx_size: u32,
+}
+
+/// Result of starting staged inference — compatible with election loop expectations.
+pub struct StagedInferenceResult {
+    /// Port where OpenAI HTTP is available (same as llama-server would provide)
+    pub http_port: u16,
+    /// All spawned processes (stages + driver)
+    pub processes: Vec<StageProcess>,
+    pub driver: DriverProcess,
+    /// Context length
+    pub context_length: u32,
+}
+
+/// Start staged inference: plan topology, launch stages, launch driver.
+/// Returns the HTTP port for the OpenAI endpoint.
+pub async fn start_staged(params: StartStagedParams<'_>) -> Result<StagedInferenceResult> {
+    let binary_path = params.bin_dir.join("skippy-server");
+    anyhow::ensure!(
+        binary_path.exists(),
+        "skippy-server not found at {}",
+        binary_path.display()
+    );
+
+    // Determine if this is a layer package or plain GGUF
+    let is_layer_package = params.model_path.join("model-package.json").is_file();
+
+    let run_id = format!("mesh-{}", std::process::id());
+    let run_dir = std::env::temp_dir().join("mesh-llm-staged").join(&run_id);
+    std::fs::create_dir_all(&run_dir)?;
+
+    if !is_layer_package {
+        // Single GGUF, single stage — just run serve-openai directly
+        let http_port = find_free_port().await?;
+        let config_json = serde_json::json!({
+            "run_id": &run_id,
+            "model_id": params.model_name,
+            "model_path": params.model_path.to_str().unwrap_or(""),
+            "load_mode": "runtime-slice",
+            "stage_id": "stage-0",
+            "stage_index": 0,
+            "topology_id": &run_id,
+            "layer_start": 0,
+            "layer_end": 999, // Will be clamped by the model's actual layer count
+            "n_gpu_layers": -1,
+            "ctx_size": params.ctx_size,
+            "filter_tensors_on_load": true,
+            "bind_addr": format!("127.0.0.1:{}", http_port + 100),
+        });
+        let config_path = run_dir.join("stage-0.json");
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
+
+        let log_path = run_dir.join("driver.log");
+        let log_file = std::fs::File::create(&log_path)?;
+
+        let child = Command::new(&binary_path)
+            .arg("serve-openai")
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--bind-addr")
+            .arg(format!("127.0.0.1:{http_port}"))
+            .stdout(Stdio::from(log_file.try_clone()?))
+            .stderr(Stdio::from(log_file))
+            .kill_on_drop(true)
+            .spawn()
+            .context("spawn skippy-server serve-openai (solo)")?;
+
+        // Wait for it to be ready
+        wait_for_http_ready(http_port, 120).await?;
+
+        return Ok(StagedInferenceResult {
+            http_port,
+            processes: vec![],
+            driver: DriverProcess { port: http_port, child },
+            context_length: params.ctx_size,
+        });
+    }
+
+    // Layer package: plan topology and launch stages
+    let manifest = PackageManifest::from_dir(params.model_path)?;
+    let plan = plan_topology(&manifest, &params.node_capacities)?;
+
+    let base_port: u16 = find_free_port().await?;
+    let mut stage_processes = Vec::new();
+
+    // Launch stages in reverse order (last stage first, so it's listening when upstream connects)
+    for (i, stage) in plan.stages.iter().enumerate().rev() {
+        let stage_port = base_port + 1 + i as u16;
+        let downstream_addr = if i < plan.stages.len() - 1 {
+            let next_stage = &plan.stages[i + 1];
+            if let Some(peer_id) = next_stage.peer_id {
+                // Remote stage: connect through tunnel
+                let tunnel_port = params.tunnel_ports.get(&peer_id)
+                    .with_context(|| format!("no tunnel port for peer running stage-{}", i + 1))?;
+                Some(format!("tcp://127.0.0.1:{tunnel_port}"))
+            } else {
+                // Local stage: direct connection
+                Some(format!("tcp://127.0.0.1:{}", base_port + 2 + i as u16))
+            }
+        } else {
+            None
+        };
+
+        if stage.peer_id.is_some() {
+            // Remote stage — peer launches it. Skip for now (gossip coordination).
+            // TODO: tell peer to start its stage via gossip command
+            continue;
+        }
+
+        let process = launch_stage_server(StageLaunchConfig {
+            binary_path: binary_path.clone(),
+            package_dir: params.model_path.to_path_buf(),
+            stage: stage.clone(),
+            bind_port: stage_port,
+            activation_width: 4096, // TODO: read from manifest/metadata
+            activation_wire_dtype: "f16".to_string(),
+            downstream_addr,
+            upstream_addr: None, // Stages accept upstream connections, don't initiate
+            run_dir: run_dir.clone(),
+            run_id: run_id.clone(),
+            model_id: manifest.model_id.clone(),
+        }).await?;
+
+        stage_processes.push(process);
+    }
+
+    // Wait for stages to be ready (they need to load models + materialize)
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // Launch the OpenAI driver connecting to stage-0
+    let first_stage_port = base_port + 1;
+    let http_port = base_port;
+
+    let driver = launch_driver(DriverLaunchConfig {
+        binary_path,
+        package_dir: params.model_path.to_path_buf(),
+        first_stage_addr: format!("tcp://127.0.0.1:{first_stage_port}"),
+        bind_port: http_port,
+        activation_width: 4096,
+        activation_wire_dtype: "f16".to_string(),
+        model_id: manifest.model_id.clone(),
+        run_dir: run_dir.clone(),
+        run_id,
+        layer_start: 0,
+        layer_end: 1,
+    }).await?;
+
+    // Wait for driver to be ready
+    wait_for_http_ready(http_port, 120).await?;
+
+    Ok(StagedInferenceResult {
+        http_port,
+        processes: stage_processes,
+        driver,
+        context_length: params.ctx_size,
+    })
+}
+
+async fn find_free_port() -> Result<u16> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    Ok(listener.local_addr()?.port())
+}
+
+async fn wait_for_http_ready(port: u16, timeout_secs: u64) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("staged inference server not ready after {timeout_secs}s on port {port}");
+        }
+        match tokio::net::TcpStream::connect(format!("127.0.0.1:{port}")).await {
+            Ok(_) => return Ok(()),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+        }
+    }
+}
