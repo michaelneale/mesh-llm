@@ -1,1 +1,1 @@
-./target/release/mesh-llm serve --offline --model unsloth/gemma-4-31B-it-GGUF:UD-IQ2_XXS
+./target/release/mesh-llm serve --offline --model unsloth/gemma-4-31B-it-GGUF:UD-IQ2_XXS --join eyJpZCI6IjYyYjU3YjVhYjg0MTZhNjI2OTAxMDJkMjJlOGJjOWY1ZGY4Y2YxYjljYjQxODQ1YjM1OTlkMmQ5N2VmMjY0NWMiLCJhZGRycyI6W3siSXAiOiIxOTIuMTY4LjEuMjA2OjQxOTQ0In1dfQ

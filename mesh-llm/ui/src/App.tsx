@@ -115,6 +115,13 @@ function modelCommandBarSearchText(model: MeshModel) {
     .join(" ");
 }
 
+function webUiVersionLabel(version?: string | null) {
+  if (!version) return null;
+  return version.endsWith("-marinabuild")
+    ? version
+    : `${version}-marinabuild`;
+}
+
 function ModelCommandBarResultContainer({
   children,
 }: CommandBarResultContainerProps<MeshModel>) {
@@ -742,7 +749,9 @@ export function App() {
             >
               <div className="mx-auto flex h-8 w-full max-w-7xl items-center justify-center gap-2 px-4 text-xs text-muted-foreground">
                 Mesh LLM{" "}
-                {status?.version ? `v${status.version}` : "version loading..."}
+                {status?.version
+                  ? `v${webUiVersionLabel(status.version)}`
+                  : "version loading..."}
                 {status?.latest_version ? (
                   <>
                     <span>·</span>
@@ -754,7 +763,7 @@ export function App() {
                       title="A newer mesh-llm version is available"
                     >
                       {status?.version
-                        ? `Update available: v${status.version} -> v${status.latest_version}`
+                        ? `Update available: v${webUiVersionLabel(status.version)} -> v${status.latest_version}`
                         : `Update available: v${status.latest_version}`}
                     </a>
                   </>
