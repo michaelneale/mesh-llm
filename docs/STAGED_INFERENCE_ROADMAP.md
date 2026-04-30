@@ -3,6 +3,33 @@
 Replace `llama-server` + `rpc-server` + MoE expert sharding with a unified
 `skippy-server` stage pipeline as the sole inference engine in mesh-llm.
 
+## Decision: In-Process vs Sidecar
+
+**Option A — Pull skippy crates into mesh workspace (in-process):**
+- mesh-llm calls `serve_binary()` / `serve_openai()` directly as tokio tasks
+- No child processes, no config JSONs on disk, no binary distribution
+- Requires: add patched llama.cpp C++ build to mesh build system
+- The C++ build already exists in skippy (`prepare-llama.sh` + CMake)
+- Eliminates: binary bundling, version management, process lifecycle
+
+**Option B — Keep skippy separate, spawn as sidecar binary:**
+- mesh-llm spawns `skippy-server` as child processes (like llama-server today)
+- Simpler build (no C++ in mesh), but adds binary distribution + version sync
+- Config JSONs written to disk, logs in separate files
+
+**Recommendation:** Option A. The C++ build is already solved in skippy. Moving
+the crates into the mesh workspace means one `cargo build` produces everything.
+No version drift, no binary distribution, no IPC overhead. The stage loop
+becomes just another async task inside mesh-llm.
+
+**Investigation needed:**
+- [ ] Can `skippy-ffi/build.rs` work as-is inside the mesh workspace?
+- [ ] Does the patched llama.cpp build integrate with mesh CI?
+- [ ] Size impact on the mesh-llm binary (llama.cpp adds ~20-30 MB)
+- [ ] Can we feature-gate it (`--features staged`) during transition?
+
+---
+
 ## Current State
 
 `inference/staged.rs` exists on branch `micn/staged-inference` with:
