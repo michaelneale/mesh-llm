@@ -1464,14 +1464,36 @@ impl Node {
             tracing::info!("Offline mode enabled: skipping relay warmup and STUN");
             None
         } else {
-            // Wait briefly for relay connection so the invite token includes the relay URL.
-            // On sinkholed networks this times out and we proceed without relay (direct UDP only).
-            match tokio::time::timeout(std::time::Duration::from_secs(5), endpoint.online()).await {
+
+          // Wait briefly for relay connection so the invite token includes the relay URL.
+          // On sinkholed networks this times out and we proceed without relay (direct UDP only).
+          //
+          // We avoid `endpoint.online()` because iroh 0.98's implementation has a
+          // double-free in the `Flatten<IntoIter<Option<(RelayUrl, HomeRelayStatus)>>>`
+          // drop path, causing SIGABRT on some hardware (deterministically on Apple
+          // M3 Ultra / macOS 26.3).  Fixed on iroh main by PR #4149 which changed the
+          // type, but not yet released.  Instead we poll `watch_addr()` and wait until
+          // it advertises at least one relay address.
+          {
+              let mut watcher = endpoint.watch_addr();
+              let wait_relay = async {
+                  loop {
+                      let addr = iroh::Watcher::get(&mut watcher);
+                      if addr.relay_urls().next().is_some() {
+                          return;
+                      }
+                      if iroh::Watcher::updated(&mut watcher).await.is_err() {
+                          std::future::pending::<()>().await;
+                      }
+                  }
+              };
+              match tokio::time::timeout(std::time::Duration::from_secs(5), wait_relay).await {
                 Ok(()) => tracing::info!("Relay connected"),
                 Err(_) => {
                     tracing::warn!("Relay connection timed out (5s) — proceeding without relay")
                 }
             }
+        }
 
             // Discover public IP via STUN so the invite token includes it.
             // With --bind-port, the advertised port is the bound port (for port forwarding).
