@@ -66,6 +66,7 @@ impl RuntimeStatus {
 pub enum ConsoleSessionMode {
     InteractiveDashboard,
     Fallback,
+    None,
 }
 
 #[allow(dead_code)]
@@ -6381,9 +6382,18 @@ impl Formatter for JsonFormatter {
     }
 }
 
+pub struct PrettyFormatter;
+
+impl Formatter for PrettyFormatter {
+    fn format(&mut self, event: &OutputEvent) -> io::Result<String> {
+        Ok(format!("{}\n", event.summary_line()))
+    }
+}
+
 enum FormatterSelection {
     InteractiveDashboard(InteractiveDashboardFormatter),
     DashboardFallback(DashboardFormatter),
+    Plain(PrettyFormatter),
     Json(JsonFormatter),
 }
 
@@ -6393,13 +6403,16 @@ impl FormatterSelection {
         match self {
             Self::InteractiveDashboard(_) => "interactive_dashboard",
             Self::DashboardFallback(_) => "pretty_fallback",
+            Self::Plain(_) => "plain",
             Self::Json(_) => "json",
         }
     }
 
     fn mode(&self) -> LogFormat {
         match self {
-            Self::InteractiveDashboard(_) | Self::DashboardFallback(_) => LogFormat::Pretty,
+            Self::InteractiveDashboard(_) | Self::DashboardFallback(_) | Self::Plain(_) => {
+                LogFormat::Pretty
+            }
             Self::Json(_) => LogFormat::Json,
         }
     }
@@ -6467,6 +6480,7 @@ impl Formatter for FormatterSelection {
         match self {
             Self::InteractiveDashboard(formatter) => formatter.format(event),
             Self::DashboardFallback(formatter) => formatter.format(event),
+            Self::Plain(formatter) => formatter.format(event),
             Self::Json(formatter) => formatter.format(event),
         }
     }
@@ -6484,6 +6498,7 @@ fn select_formatter(
             ConsoleSessionMode::Fallback => {
                 FormatterSelection::DashboardFallback(DashboardFormatter::default())
             }
+            ConsoleSessionMode::None => FormatterSelection::Plain(PrettyFormatter),
         },
         LogFormat::Json => FormatterSelection::Json(JsonFormatter),
     }
@@ -11540,5 +11555,47 @@ mod tests {
         assert!(dashboard
             .lines()
             .any(|line| line.starts_with("┌ Mesh events (latest 8) ")));
+    }
+
+    #[test]
+    fn test_select_formatter_for_console_session_mode_none() {
+        let formatter = select_formatter(LogFormat::Pretty, ConsoleSessionMode::None);
+        assert!(matches!(formatter, FormatterSelection::Plain(_)));
+    }
+
+    #[test]
+    fn test_select_formatter_for_console_session_mode_interactive_dashboard() {
+        let formatter =
+            select_formatter(LogFormat::Pretty, ConsoleSessionMode::InteractiveDashboard);
+        assert!(matches!(
+            formatter,
+            FormatterSelection::InteractiveDashboard(_)
+        ));
+    }
+
+    #[test]
+    fn test_select_formatter_for_console_session_mode_fallback() {
+        let formatter = select_formatter(LogFormat::Pretty, ConsoleSessionMode::Fallback);
+        assert!(matches!(
+            formatter,
+            FormatterSelection::DashboardFallback(_)
+        ));
+    }
+
+    #[test]
+    fn test_select_formatter_for_json_mode() {
+        let formatter = select_formatter(LogFormat::Json, ConsoleSessionMode::InteractiveDashboard);
+        assert!(matches!(formatter, FormatterSelection::Json(_)));
+    }
+
+    #[test]
+    fn test_pretty_formatter_outputs_simple_line() {
+        let mut formatter = PrettyFormatter;
+        let event = OutputEvent::Info {
+            message: "test message".to_string(),
+            context: None,
+        };
+        let result = formatter.format(&event).unwrap();
+        assert_eq!(result, "test message\n");
     }
 }
