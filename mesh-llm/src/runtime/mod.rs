@@ -1573,7 +1573,7 @@ fn initial_console_session_mode_for_surface(
 ) -> ConsoleSessionMode {
     match explicit_surface {
         Some(RuntimeSurface::Serve) => current_mode,
-        _ => ConsoleSessionMode::Fallback,
+        _ => ConsoleSessionMode::None,
     }
 }
 
@@ -4769,7 +4769,7 @@ mod tests {
                 Some(RuntimeSurface::Client),
                 ConsoleSessionMode::InteractiveDashboard
             ),
-            ConsoleSessionMode::Fallback
+            ConsoleSessionMode::None
         );
 
         assert_eq!(
@@ -4777,7 +4777,7 @@ mod tests {
                 None,
                 ConsoleSessionMode::InteractiveDashboard
             ),
-            ConsoleSessionMode::Fallback
+            ConsoleSessionMode::None
         );
     }
 
@@ -5289,5 +5289,39 @@ mod tests {
             async move { state.publication_state().await.as_str() == "publish_failed" }
         })
         .await;
+    }
+
+    #[test]
+    fn test_console_session_mode_serve_uses_interactive_mode() {
+        use crate::cli::RuntimeSurface;
+
+        // When explicit_surface is Some(RuntimeSurface::Serve), should preserve current mode
+        let result = initial_console_session_mode_for_surface(
+            Some(RuntimeSurface::Serve),
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::InteractiveDashboard);
+    }
+
+    #[test]
+    fn test_console_session_mode_non_serve_uses_none() {
+        use crate::cli::RuntimeSurface;
+
+        // When explicit_surface is Some(RuntimeSurface::Client), should use None mode
+        let result = initial_console_session_mode_for_surface(
+            Some(RuntimeSurface::Client),
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::None);
+    }
+
+    #[test]
+    fn test_console_session_mode_no_explicit_surface_uses_none() {
+        // When explicit_surface is None, should use None mode
+        let result = initial_console_session_mode_for_surface(
+            None,
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::None);
     }
 }
