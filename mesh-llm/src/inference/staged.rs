@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Staged pipeline inference: split models across mesh nodes by layer range.
 //!
 //! Each node runs a `skippy-server` stage with a contiguous range of layers.
@@ -409,4 +410,175 @@ mod tests {
         assert!(files.contains(&"layers/layer-003.gguf".to_string()));
         assert!(!files.contains(&"layers/layer-000.gguf".to_string()));
     }
+}
+
+// ─── Stage Process Launch ────────────────────────────────────────────────────
+
+use std::process::Stdio;
+use tokio::process::{Child, Command};
+
+/// A running stage server process.
+pub struct StageProcess {
+    pub stage_index: u32,
+    pub port: u16,
+    pub child: Child,
+    pub config_path: PathBuf,
+}
+
+impl Drop for StageProcess {
+    fn drop(&mut self) {
+        // Best-effort kill on drop
+        let _ = self.child.start_kill();
+    }
+}
+
+/// Configuration for launching a stage server.
+pub struct StageLaunchConfig {
+    pub binary_path: PathBuf,
+    pub package_dir: PathBuf,
+    pub stage: StageAssignment,
+    pub bind_port: u16,
+    pub activation_width: u32,
+    pub activation_wire_dtype: String,
+    pub downstream_addr: Option<String>,
+    pub upstream_addr: Option<String>,
+    pub run_dir: PathBuf,
+    pub run_id: String,
+    pub model_id: String,
+}
+
+/// Launch a stage server process.
+pub async fn launch_stage_server(config: StageLaunchConfig) -> Result<StageProcess> {
+    let stage_id = format!("stage-{}", config.stage.stage_index);
+
+    // Write config JSON
+    let config_json = serde_json::json!({
+        "run_id": config.run_id,
+        "model_id": config.model_id,
+        "model_path": config.package_dir.to_str().unwrap_or(""),
+        "load_mode": "layer-package",
+        "stage_id": &stage_id,
+        "stage_index": config.stage.stage_index,
+        "topology_id": &config.run_id,
+        "layer_start": config.stage.layer_start,
+        "layer_end": config.stage.layer_end,
+        "n_gpu_layers": -1,
+        "ctx_size": 4096,
+        "filter_tensors_on_load": true,
+        "bind_addr": format!("0.0.0.0:{}", config.bind_port),
+        "downstream": config.downstream_addr.as_ref().map(|addr| serde_json::json!({
+            "endpoint": addr,
+            "stage_id": format!("stage-{}", config.stage.stage_index + 1),
+            "stage_index": config.stage.stage_index + 1,
+        })),
+        "upstream": config.upstream_addr.as_ref().map(|addr| serde_json::json!({
+            "endpoint": addr,
+            "stage_id": format!("stage-{}", config.stage.stage_index.saturating_sub(1)),
+            "stage_index": config.stage.stage_index.saturating_sub(1),
+        })),
+    });
+
+    let config_path = config.run_dir.join(format!("{stage_id}.json"));
+    std::fs::create_dir_all(&config.run_dir)?;
+    std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
+
+    let log_path = config.run_dir.join(format!("{stage_id}.log"));
+    let log_file = std::fs::File::create(&log_path)?;
+
+    let child = Command::new(&config.binary_path)
+        .arg("serve-binary")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--activation-width")
+        .arg(config.activation_width.to_string())
+        .arg("--activation-wire-dtype")
+        .arg(&config.activation_wire_dtype)
+        .stdout(Stdio::from(log_file.try_clone()?))
+        .stderr(Stdio::from(log_file))
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawn skippy-server for {stage_id}"))?;
+
+    Ok(StageProcess {
+        stage_index: config.stage.stage_index,
+        port: config.bind_port,
+        child,
+        config_path,
+    })
+}
+
+/// Configuration for launching the OpenAI driver (connects to stage chain).
+pub struct DriverLaunchConfig {
+    pub binary_path: PathBuf,
+    pub package_dir: PathBuf,
+    pub first_stage_addr: String,
+    pub bind_port: u16,
+    pub activation_width: u32,
+    pub activation_wire_dtype: String,
+    pub model_id: String,
+    pub run_dir: PathBuf,
+    pub run_id: String,
+    pub layer_start: u32,
+    pub layer_end: u32,
+}
+
+/// A running OpenAI driver process.
+pub struct DriverProcess {
+    pub port: u16,
+    pub child: Child,
+}
+
+impl Drop for DriverProcess {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+    }
+}
+
+/// Launch the OpenAI driver that connects to the stage chain.
+/// This provides the /v1/chat/completions endpoint.
+pub async fn launch_driver(config: DriverLaunchConfig) -> Result<DriverProcess> {
+    // The driver needs a stage config for the first stage (to load tokenizer)
+    let driver_config = serde_json::json!({
+        "run_id": config.run_id,
+        "model_id": config.model_id,
+        "model_path": config.package_dir.to_str().unwrap_or(""),
+        "load_mode": "layer-package",
+        "stage_id": "driver",
+        "stage_index": 0,
+        "topology_id": &config.run_id,
+        "layer_start": config.layer_start,
+        "layer_end": config.layer_end,
+        "n_gpu_layers": 0,
+        "ctx_size": 4096,
+        "filter_tensors_on_load": true,
+        "bind_addr": format!("127.0.0.1:{}", config.bind_port + 100),
+    });
+
+    let config_path = config.run_dir.join("driver.json");
+    std::fs::create_dir_all(&config.run_dir)?;
+    std::fs::write(&config_path, serde_json::to_string_pretty(&driver_config)?)?;
+
+    let log_path = config.run_dir.join("driver.log");
+    let log_file = std::fs::File::create(&log_path)?;
+
+    let child = Command::new(&config.binary_path)
+        .arg("serve-openai")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--bind-addr")
+        .arg(format!("127.0.0.1:{}", config.bind_port))
+        .arg("--first-stage-addr")
+        .arg(&config.first_stage_addr)
+        .arg("--activation-wire-dtype")
+        .arg(&config.activation_wire_dtype)
+        .stdout(Stdio::from(log_file.try_clone()?))
+        .stderr(Stdio::from(log_file))
+        .kill_on_drop(true)
+        .spawn()
+        .context("spawn skippy-server serve-openai driver")?;
+
+    Ok(DriverProcess {
+        port: config.bind_port,
+        child,
+    })
 }
