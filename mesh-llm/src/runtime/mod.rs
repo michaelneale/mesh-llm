@@ -2360,12 +2360,14 @@ async fn run_auto(
     node.set_available_models(local_models.clone()).await;
     node.set_requested_models(requested_model_names.clone())
         .await;
-    crate::network::lan::start_announce_loop(
-        node.clone(),
-        cli.mesh_name.clone(),
-        cli.region.clone(),
-        cli.max_clients,
-    );
+    if cli.offline {
+        crate::network::lan::start_announce_loop(
+            node.clone(),
+            cli.mesh_name.clone(),
+            cli.region.clone(),
+            cli.max_clients,
+        );
+    }
 
     // Start periodic health check to detect dead peers
     node.start_heartbeat();
