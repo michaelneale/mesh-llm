@@ -115,13 +115,18 @@ function modelCommandBarSearchText(model: MeshModel) {
     .join(" ");
 }
 
-function webUiVersionLabel(version?: string | null) {
+const MARINA_BUILD_VERSION_SUFFIX = "-marinabuild";
+
+function formatMarinaBuildVersion(version?: string | null) {
   if (!version) return null;
-  return version.endsWith("-marinabuild")
+  return version.endsWith(MARINA_BUILD_VERSION_SUFFIX)
     ? version
-    : `${version}-marinabuild`;
+    : `${version}${MARINA_BUILD_VERSION_SUFFIX}`;
 }
 
+function webUiVersionLabel(version?: string | null) {
+  return formatMarinaBuildVersion(version);
+}
 function ModelCommandBarResultContainer({
   children,
 }: CommandBarResultContainerProps<MeshModel>) {
