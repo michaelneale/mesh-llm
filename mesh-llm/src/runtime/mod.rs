@@ -630,6 +630,96 @@ async fn record_first_joined_mesh_ts(node: &mesh::Node) {
     node.set_first_joined_mesh_ts_if_absent(now_ms).await;
 }
 
+const CLIENT_SELF_HEAL_RETRY_SECS: u64 = 15;
+
+fn spawn_client_gateway_self_heal_loop(
+    node: mesh::Node,
+    bootstrap_tokens: Vec<String>,
+    offline_mode: bool,
+) {
+    tokio::spawn(async move {
+        let mut known_tokens: Vec<String> = Vec::new();
+        for token in bootstrap_tokens {
+            if !known_tokens.iter().any(|existing| existing == &token) {
+                known_tokens.push(token);
+            }
+        }
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(CLIENT_SELF_HEAL_RETRY_SECS)).await;
+
+            if !node.peers().await.is_empty() {
+                continue;
+            }
+
+            let mut joined = false;
+            for token in &known_tokens {
+                match node.join(token).await {
+                    Ok(()) => {
+                        if node.mesh_id().await.is_some() {
+                            record_first_joined_mesh_ts(&node).await;
+                        }
+                        let _ = emit_event(OutputEvent::Info {
+                            message: "Rejoined mesh via bootstrap token".to_string(),
+                            context: None,
+                        });
+                        joined = true;
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::debug!("Client self-heal bootstrap join failed: {err}");
+                    }
+                }
+            }
+
+            if joined || !offline_mode {
+                continue;
+            }
+
+            let discovered = match crate::network::lan::discover(
+                &crate::network::lan::MeshFilter::default(),
+                crate::network::lan::DEFAULT_DISCOVERY_WAIT_SECS,
+            )
+            .await
+            {
+                Ok(meshes) => meshes,
+                Err(err) => {
+                    tracing::debug!("Client self-heal LAN discovery failed: {err}");
+                    continue;
+                }
+            };
+
+            let own_token = node.invite_token();
+            for mesh in discovered {
+                let token = mesh.listing.invite_token;
+                if token == own_token {
+                    continue;
+                }
+
+                if !known_tokens.iter().any(|existing| existing == &token) {
+                    known_tokens.push(token.clone());
+                }
+
+                match node.join(&token).await {
+                    Ok(()) => {
+                        if node.mesh_id().await.is_some() {
+                            record_first_joined_mesh_ts(&node).await;
+                        }
+                        let _ = emit_event(OutputEvent::Info {
+                            message: "Rejoined mesh via LAN discovery".to_string(),
+                            context: None,
+                        });
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::debug!("Client self-heal LAN join failed: {err}");
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct StartupModelSpec {
     model_ref: PathBuf,
@@ -2430,21 +2520,27 @@ async fn run_auto(
             mesh_name: cli.mesh_name.clone(),
         });
 
-        // Periodic rejoin: re-connect to bootstrap tokens every 60s.
-        // No-op if already connected (connect_to_peer returns early).
-        // Recovers from dropped connections without manual intervention.
-        let rejoin_node = node.clone();
-        let rejoin_tokens: Vec<String> = cli.join.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                for t in &rejoin_tokens {
-                    if let Err(e) = rejoin_node.join(t).await {
-                        tracing::debug!("Rejoin failed: {e}");
+        // Built-in self-healing for client gateways.
+        // Retries bootstrap tokens and (offline mode) can rediscover LAN peers.
+        if cli.client {
+            spawn_client_gateway_self_heal_loop(node.clone(), cli.join.clone(), cli.offline);
+        } else {
+            // Periodic rejoin: re-connect to bootstrap tokens every 60s.
+            // No-op if already connected (connect_to_peer returns early).
+            // Recovers from dropped connections without manual intervention.
+            let rejoin_node = node.clone();
+            let rejoin_tokens: Vec<String> = cli.join.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    for t in &rejoin_tokens {
+                        if let Err(e) = rejoin_node.join(t).await {
+                            tracing::debug!("Rejoin failed: {e}");
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         // Nostr re-discovery: if we joined via --auto (Nostr discovery) and lose
         // all peers, re-discover and join a new mesh. This handles the case where
@@ -2483,6 +2579,11 @@ async fn run_auto(
             mesh_id: mesh_id.clone(),
             mesh_name: cli.mesh_name.clone(),
         });
+
+        // Client gateway self-heal still applies when startup had no bootstrap token.
+        if cli.client {
+            spawn_client_gateway_self_heal_loop(node.clone(), Vec::new(), cli.offline);
+        }
         let _ = emit_event(OutputEvent::WaitingForPeers { detail: None });
 
         // Originator also re-discovers: if we started solo and a matching mesh
