@@ -126,7 +126,7 @@ type NodeSidebarRecord = {
 
 function dashboardVersionLabel(version?: string) {
   if (!version) return null;
-  return version.endsWith("-marinabuild") ? version : `${version}-marinabuild`;
+  return version;
 }
 
 function peerFriendlyName(peer: { hostname?: string; id: string; role: string }) {
