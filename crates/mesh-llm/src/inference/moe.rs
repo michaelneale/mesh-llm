@@ -2183,5 +2183,206 @@ mod tests {
             first_done.duration_since(started)
         );
     }
+
+    // ── find_pinned_manifest tests ──────────────────────────────────────
+
+    fn write_test_manifest(
+        dir: &Path,
+        stem: &str,
+        version: &str,
+        n_nodes: usize,
+    ) -> PathBuf {
+        let p = dir
+            .join("manifests")
+            .join(stem)
+            .join(format!("{version}.json"));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut experts = BTreeMap::new();
+        let mut assignments: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
+        for i in 0..n_nodes {
+            assignments.insert(i, vec![i as u32]);
+            experts.insert(
+                i,
+                ExpertEntry {
+                    path: dir.join(format!("e{i}.gguf")),
+                    sha256: format!("{:0>64}", i),
+                    size_bytes: 100,
+                },
+            );
+        }
+        let manifest = SplitManifest {
+            version: version.into(),
+            source_model_sha256: "deadbeef".into(),
+            splitter_version: "trunk-experts/v1".into(),
+            n_nodes,
+            assignments,
+            trunk: TrunkEntry {
+                path: dir.join("trunk.gguf"),
+                sha256: "cafebabe".into(),
+                size_bytes: 50,
+            },
+            experts,
+            created_at: Utc::now(),
+        };
+        write_manifest_atomic(&p, &manifest).unwrap();
+        p
+    }
+
+    fn split_cfg_for(root: &Path) -> crate::plugin::MoeStorageConfig {
+        crate::plugin::MoeStorageConfig {
+            mode: crate::plugin::MoeStorageMode::Split,
+            trunk_path: Some(root.to_path_buf()),
+            experts_path: Some(root.to_path_buf()),
+            experts_local_override: None,
+            prefault_trunk: false,
+            mlock_trunk: false,
+        }
+    }
+
+    #[test]
+    fn find_pinned_manifest_returns_none_when_no_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("missing.gguf");
+        assert!(find_pinned_manifest(&cfg, &model, None).is_none());
+        assert!(find_pinned_manifest(&cfg, &model, Some(8)).is_none());
+    }
+
+    #[test]
+    fn find_pinned_manifest_loads_single_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("qwen3.gguf");
+        let stem = "qwen3";
+        write_test_manifest(dir.path(), stem, "abc123def456", 4);
+        let (path, m) = find_pinned_manifest(&cfg, &model, None).unwrap();
+        assert!(path.ends_with("manifests/qwen3/abc123def456.json"));
+        assert_eq!(m.n_nodes, 4);
+        assert_eq!(m.version, "abc123def456");
+    }
+
+    #[test]
+    fn find_pinned_manifest_prefers_exact_n_nodes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("qwen3.gguf");
+        let stem = "qwen3";
+        // Two manifests for the same model: 4-node and 8-node. Operator runs
+        // a 4-node mesh; we should pick the 4-node manifest even though 8 is
+        // larger and would otherwise win the tiebreak.
+        write_test_manifest(dir.path(), stem, "ver8nodes000", 8);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        write_test_manifest(dir.path(), stem, "ver4nodes000", 4);
+        let (_, m) = find_pinned_manifest(&cfg, &model, Some(4)).unwrap();
+        assert_eq!(m.n_nodes, 4);
+        let (_, m) = find_pinned_manifest(&cfg, &model, Some(8)).unwrap();
+        assert_eq!(m.n_nodes, 8);
+    }
+
+    #[test]
+    fn find_pinned_manifest_falls_back_to_largest_then_newest() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("qwen3.gguf");
+        let stem = "qwen3";
+        write_test_manifest(dir.path(), stem, "ver4_a0000000", 4);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Larger n_nodes wins regardless of being older.
+        write_test_manifest(dir.path(), stem, "ver8_b0000000", 8);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        write_test_manifest(dir.path(), stem, "ver4_c0000000", 4);
+        // No exact preference → largest n_nodes wins.
+        let (_, m) = find_pinned_manifest(&cfg, &model, None).unwrap();
+        assert_eq!(m.n_nodes, 8);
+        // With prefer=4 and two 4-node candidates, newer wins.
+        let (path, m) = find_pinned_manifest(&cfg, &model, Some(4)).unwrap();
+        assert_eq!(m.n_nodes, 4);
+        assert!(path.to_string_lossy().contains("ver4_c0000000"));
+    }
+
+    #[test]
+    fn find_pinned_manifest_skips_non_json_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("qwen3.gguf");
+        let stem = "qwen3";
+        write_test_manifest(dir.path(), stem, "real00000000", 2);
+        // Stray non-JSON files in the manifest dir must be ignored.
+        let stray = dir
+            .path()
+            .join("manifests")
+            .join(stem)
+            .join("README.txt");
+        std::fs::write(&stray, b"not a manifest").unwrap();
+        let stray2 = dir
+            .path()
+            .join("manifests")
+            .join(stem)
+            .join(".gitignore");
+        std::fs::write(&stray2, b"*.tmp").unwrap();
+        let (_, m) = find_pinned_manifest(&cfg, &model, None).unwrap();
+        assert_eq!(m.version, "real00000000");
+    }
+
+    #[test]
+    fn find_pinned_manifest_skips_corrupt_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir.path().join("qwen3.gguf");
+        let stem = "qwen3";
+        // Corrupt JSON next to a valid manifest must be skipped silently.
+        std::fs::create_dir_all(dir.path().join("manifests").join(stem)).unwrap();
+        std::fs::write(
+            dir.path().join("manifests").join(stem).join("garbage.json"),
+            b"{not valid json",
+        )
+        .unwrap();
+        write_test_manifest(dir.path(), stem, "good00000000", 3);
+        let (_, m) = find_pinned_manifest(&cfg, &model, None).unwrap();
+        assert_eq!(m.version, "good00000000");
+    }
+
+    #[test]
+    fn find_pinned_manifest_uses_stem_for_multifile_gguf() {
+        // Multi-file GGUF source like `Kimi-K2.5-Q4_K_M-00001-of-00013.gguf`
+        // must look under `manifests/Kimi-K2.5-Q4_K_M/` (stem-stripped), not
+        // the literal filename.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = split_cfg_for(dir.path());
+        let model = dir
+            .path()
+            .join("Kimi-K2.5-Q4_K_M-00001-of-00013.gguf");
+        write_test_manifest(dir.path(), "Kimi-K2.5-Q4_K_M", "kimi00000000", 16);
+        let (_, m) = find_pinned_manifest(&cfg, &model, Some(16)).unwrap();
+        assert_eq!(m.version, "kimi00000000");
+    }
+
+    #[test]
+    fn find_pinned_manifest_returns_none_when_trunk_root_unconfigured() {
+        // Without a trunk root and no MESH_LLM_NAS_ROOT, we should not panic;
+        // we should just return None.
+        let cfg = crate::plugin::MoeStorageConfig {
+            mode: crate::plugin::MoeStorageMode::Split,
+            trunk_path: None,
+            experts_path: None,
+            experts_local_override: None,
+            prefault_trunk: false,
+            mlock_trunk: false,
+        };
+        // Save & clear env var to avoid contamination from outer environment.
+        let prev = std::env::var_os("MESH_LLM_NAS_ROOT");
+        // SAFETY: tests in this crate are run with `--test-threads=1` for
+        // env-var manipulation? Best-effort: only clear; restore at end.
+        unsafe {
+            std::env::remove_var("MESH_LLM_NAS_ROOT");
+        }
+        let model = std::path::PathBuf::from("/tmp/never-exists.gguf");
+        assert!(find_pinned_manifest(&cfg, &model, None).is_none());
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("MESH_LLM_NAS_ROOT", v);
+            }
+        }
+    }
 }
 
