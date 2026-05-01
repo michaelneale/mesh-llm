@@ -191,6 +191,9 @@ fn parse_huggingface_repo_ref(input: &str) -> Option<ModelRef> {
         return None;
     }
     let (repo_tail, revision, selector) = parse_repo_tail_selector_and_revision(parts[1])?;
+    if repo_tail.contains('/') {
+        return None;
+    }
     Some(ModelRef {
         repo: format!("{}/{}", parts[0], repo_tail),
         revision,
@@ -316,6 +319,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_mesh_exact_file_refs() {
+        assert!(parse_model_ref("org/repo/file.gguf").is_err());
+        assert!(parse_model_ref("org/repo/model.safetensors").is_err());
+        assert!(parse_model_ref("https://huggingface.co/org/repo/resolve/main/file.gguf").is_err());
+    }
+
+    #[test]
     fn parses_huggingface_repo_urls() {
         assert_eq!(
             parse_model_ref("https://huggingface.co/org/repo:BF16")
@@ -356,6 +366,10 @@ mod tests {
         assert_eq!(
             quant_selector_from_gguf_file("qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf"),
             Some("Q2_K".to_string())
+        );
+        assert_eq!(
+            quant_selector_from_gguf_file("gemma-4-31B-it-Q4_0.gguf"),
+            Some("Q4_0".to_string())
         );
     }
 

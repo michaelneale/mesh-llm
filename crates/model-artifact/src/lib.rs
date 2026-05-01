@@ -369,6 +369,10 @@ mod tests {
         }
     }
 
+    fn files(paths: &[&str]) -> Vec<ModelArtifactFile> {
+        paths.iter().copied().map(ModelArtifactFile::new).collect()
+    }
+
     #[tokio::test]
     async fn resolves_quant_selector_to_gguf_file() {
         let repository = repo(vec!["Model-Q5_K_M.gguf", "Model-Q4_K_M.gguf", "README.md"]);
@@ -407,6 +411,104 @@ mod tests {
         assert_eq!(
             resolved.files[2].path,
             "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00003-of-00003.gguf"
+        );
+    }
+
+    #[test]
+    fn public_selector_api_resolves_mesh_split_stem_to_first_part() {
+        let files = files(&[
+            "zai-org.GLM-5.1.Q2_K-00002-of-00018.gguf",
+            "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf",
+        ]);
+
+        let selected = select_primary_artifact_file(Some("zai-org.GLM-5.1.Q2_K"), &files).unwrap();
+
+        assert_eq!(selected.path, "zai-org.GLM-5.1.Q2_K-00001-of-00018.gguf");
+    }
+
+    #[test]
+    fn public_selector_api_resolves_mesh_quant_aliases() {
+        let files = files(&[
+            "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf",
+            "gemma-4-31B-it-Q4_0.gguf",
+            "Qwen3-8B-Q4_K_M.gguf",
+        ]);
+
+        assert_eq!(
+            select_primary_artifact_file(Some("Q2_K"), &files)
+                .unwrap()
+                .path,
+            "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf"
+        );
+        assert_eq!(
+            select_primary_artifact_file(Some("Q4_0"), &files)
+                .unwrap()
+                .path,
+            "gemma-4-31B-it-Q4_0.gguf"
+        );
+    }
+
+    #[test]
+    fn public_selector_api_resolves_mesh_mlx_shorthand() {
+        let files = files(&[
+            "model-00002-of-00048.safetensors",
+            "model-00001-of-00048.safetensors",
+            "model.safetensors.index.json",
+        ]);
+
+        let selected = select_primary_artifact_file(Some("model"), &files).unwrap();
+
+        assert_eq!(selected.path, "model-00001-of-00048.safetensors");
+    }
+
+    #[test]
+    fn public_default_api_preserves_mesh_default_ordering() {
+        let files = files(&[
+            "Qwen3-8B-Q8_0.gguf",
+            "mmproj-BF16.gguf",
+            "Qwen3-8B-Q4_K_M.gguf",
+        ]);
+
+        let selected = select_primary_artifact_file(None, &files).unwrap();
+
+        assert_eq!(selected.path, "Qwen3-8B-Q4_K_M.gguf");
+    }
+
+    #[test]
+    fn public_default_api_prefers_mlx_weights_over_gguf() {
+        let files = files(&[
+            "Qwen3-8B-Q4_K_M.gguf",
+            "model.safetensors",
+            "model.safetensors.index.json",
+        ]);
+
+        let selected = select_primary_artifact_file(None, &files).unwrap();
+
+        assert_eq!(selected.path, "model.safetensors");
+    }
+
+    #[test]
+    fn public_artifact_set_returns_all_split_gguf_shards() {
+        let files = files(&[
+            "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00002-of-00003.gguf",
+            "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00001-of-00003.gguf",
+            "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00003-of-00003.gguf",
+            "UD-Q4_K_M/GLM-5.1-UD-Q4_K_M-00001-of-00003.gguf",
+        ]);
+
+        let shards =
+            artifact_files_for_primary("UD-IQ2_M/GLM-5.1-UD-IQ2_M-00001-of-00003.gguf", &files);
+
+        assert_eq!(
+            shards
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00001-of-00003.gguf",
+                "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00002-of-00003.gguf",
+                "UD-IQ2_M/GLM-5.1-UD-IQ2_M-00003-of-00003.gguf",
+            ]
         );
     }
 
