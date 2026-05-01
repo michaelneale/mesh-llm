@@ -1975,8 +1975,10 @@ pub async fn election_loop(
             }
             on_change(true, false);
 
-            // Decision: layer package + needs split → skippy. Everything else → llama-server.
-            let needs_split = matches!(desired_launch, DenseLaunchPlan::Split { .. });
+            // Decision: layer package + force_split → skippy. Everything else → llama-server.
+            // For layer packages with --split, always use skippy even if the plan says Solo
+            // (the plan may say Solo because peers haven't fully propagated yet).
+            let needs_split = force_split || matches!(desired_launch, DenseLaunchPlan::Split { .. });
 
             let (llama_port, process) = if is_layer_package && needs_split {
                 // Layer package that doesn't fit on one node: skippy stage pipeline

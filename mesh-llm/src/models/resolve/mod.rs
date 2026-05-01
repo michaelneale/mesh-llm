@@ -197,22 +197,24 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
     let raw = input.to_string_lossy();
 
     // Handle hf:// layer package refs — resolve to skippy's cache directory.
-    // If the package is already cached, return immediately. Otherwise download.
+    // Only downloads the manifest + shared files here. Layer files are downloaded
+    // later by each node based on its assigned layer range.
     if let Some(hf_ref) = raw.strip_prefix("hf://") {
         let cache_dir = skippy_hf_package_cache_dir(hf_ref);
         if cache_dir.join("model-package.json").is_file() {
             record_resolved_model_usage(&cache_dir, Some(&raw));
             return Ok(cache_dir);
         }
-        // Not cached — download via `hf download` to the cache dir
+        // Download manifest + shared files only (not layers)
         std::fs::create_dir_all(&cache_dir)?;
         let status = tokio::process::Command::new("hf")
             .args(["download", hf_ref, "--local-dir"])
             .arg(&cache_dir)
+            .args(["--include", "model-package.json", "shared/*"])
             .args(["--quiet"])
             .status()
             .await
-            .context("run hf download for layer package")?;
+            .context("run hf download for layer package manifest")?;
         if !status.success() {
             anyhow::bail!("hf download failed for {hf_ref}");
         }
