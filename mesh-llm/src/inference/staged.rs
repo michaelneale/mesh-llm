@@ -585,8 +585,6 @@ pub async fn launch_driver(config: DriverLaunchConfig) -> Result<DriverProcess> 
 
 // ─── Integration with Election Loop ─────────────────────────────────────────
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// Parameters for starting staged inference (replaces StartLlamaParams).
 pub struct StartSkippyParams<'a> {

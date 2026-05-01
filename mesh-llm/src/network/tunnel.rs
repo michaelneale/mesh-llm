@@ -46,7 +46,7 @@ pub fn bytes_transferred() -> u64 {
 #[derive(Clone)]
 pub struct Manager {
     node: Node,
-    rpc_port: Arc<AtomicU16>,
+    inbound_port: Arc<AtomicU16>,
     http_port: Arc<AtomicU16>,
     /// EndpointId → tunnel handle (port + task abort handle)
     tunnels: Arc<Mutex<HashMap<EndpointId, TunnelHandle>>>,
@@ -56,12 +56,12 @@ pub struct Manager {
 
 impl Manager {
     /// Start the tunnel manager.
-    /// `rpc_port` is the local rpc-server port (for inbound RPC tunnel streams).
-    /// The llama-server port for inbound HTTP tunnels is set dynamically via
-    /// `set_http_port()` when the election loop starts/stops llama-server.
+    /// `inbound_port` is the local stage server port (for inbound tunnel streams).
+    /// The OpenAI driver port for inbound HTTP tunnels is set dynamically via
+    /// `set_http_port()` when the election loop starts/stops the inference backend.
     pub async fn start(
         node: Node,
-        rpc_port: u16,
+        inbound_port: u16,
         mut tunnel_stream_rx: tokio::sync::mpsc::Receiver<(
             iroh::endpoint::SendStream,
             iroh::endpoint::RecvStream,
@@ -74,7 +74,7 @@ impl Manager {
         let port_rewrite_map = rewrite::new_rewrite_map();
         let mgr = Manager {
             node: node.clone(),
-            rpc_port: Arc::new(AtomicU16::new(rpc_port)),
+            inbound_port: Arc::new(AtomicU16::new(inbound_port)),
             http_port: Arc::new(AtomicU16::new(0)),
             tunnels: Arc::new(Mutex::new(HashMap::new())),
             port_rewrite_map,
@@ -87,11 +87,11 @@ impl Manager {
         });
 
         // Handle inbound RPC tunnel streams (with REGISTER_PEER rewriting)
-        let rpc_port_ref = mgr.rpc_port.clone();
+        let inbound_port_ref = mgr.inbound_port.clone();
         let rewrite_map = mgr.port_rewrite_map.clone();
         tokio::spawn(async move {
             while let Some((send, recv)) = tunnel_stream_rx.recv().await {
-                let port = rpc_port_ref.load(Ordering::Relaxed);
+                let port = inbound_port_ref.load(Ordering::Relaxed);
                 if port == 0 {
                     tracing::warn!("Inbound RPC tunnel but no rpc-server running, dropping");
                     continue;
@@ -297,11 +297,11 @@ async fn relay_outbound(node: Node, peer_id: EndpointId, tcp_stream: TcpStream) 
 async fn handle_inbound_stream(
     quic_send: iroh::endpoint::SendStream,
     quic_recv: iroh::endpoint::RecvStream,
-    rpc_port: u16,
+    inbound_port: u16,
     port_rewrite_map: PortRewriteMap,
 ) -> Result<()> {
-    tracing::info!("Inbound tunnel stream → rpc-server :{rpc_port}");
-    let tcp_stream = TcpStream::connect(format!("127.0.0.1:{rpc_port}")).await?;
+    tracing::info!("Inbound tunnel stream → stage-server :{inbound_port}");
+    let tcp_stream = TcpStream::connect(format!("127.0.0.1:{inbound_port}")).await?;
     tcp_stream.set_nodelay(true)?;
     tracing::info!("Connected to rpc-server, starting relay");
 

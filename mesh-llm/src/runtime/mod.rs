@@ -2619,22 +2619,9 @@ async fn run_auto(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("serve mode requires an instance runtime"))?
         .clone();
-    let rpc_handle = launch::start_rpc_server(
-        &runtime_arc,
-        &bin_dir,
-        cli.llama_flavor,
-        startup_rpc_backend_device(cli.device.as_deref(), primary_startup_model.as_ref())?,
-        Some(&model),
-    )
-    .await?;
-    tracing::info!(
-        "rpc-server on 127.0.0.1:{} (pid {}) serving {model_name}",
-        rpc_handle.port,
-        rpc_handle.pid
-    );
-
+    // Inbound port starts at 0 — set dynamically when skippy stage server starts.
     let tunnel_mgr =
-        tunnel::Manager::start(node.clone(), rpc_handle.port, channels.rpc, channels.http).await?;
+        tunnel::Manager::start(node.clone(), 0, channels.rpc, channels.http).await?;
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -2841,7 +2828,6 @@ async fn run_auto(
                 node: node2,
                 tunnel_mgr: tunnel_mgr2,
                 ingress_http_port: api_port,
-                rpc_port: rpc_handle.port,
                 bin_dir: bin_dir2,
                 model: model2,
                 model_name: model_name_for_election,
@@ -3021,7 +3007,6 @@ async fn run_auto(
                         node: extra_node,
                         tunnel_mgr: extra_tunnel,
                         ingress_http_port: api_port_extra,
-                        rpc_port: 0,
                         bin_dir: extra_bin,
                         model: extra_path,
                         model_name: extra_model_name.clone(),
@@ -3449,7 +3434,6 @@ async fn run_auto(
 
     node.set_serving_models(Vec::new()).await;
     node.set_hosted_models(Vec::new()).await;
-    rpc_handle.shutdown().await;
     if let Some(rt) = runtime {
         let outstanding_refs = std::sync::Arc::strong_count(&rt);
         if outstanding_refs == 1 {
