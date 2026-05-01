@@ -240,9 +240,13 @@
             <div class="code-block" style="margin-top:0.5rem;">
                 <span class="cmd">mesh-llm</span> pi<br><br>
                 <span class="comment"># Or pick a specific model</span><br>
-                <span class="cmd">mesh-llm</span> pi <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span><br><br>
+                <span class="comment"># Only write ~/.pi/agent/models.json</span><br>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span><br><br>
+                <span class="comment"># Target a remote mesh host or URL</span><br>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span> <span class="flag">--host</span> <span class="val">carrack.patio51.com:9337</span>
             </div>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Writes a mesh provider into <code>~/.pi/agent/models.json</code> and launches pi. Picks the strongest model automatically.</p>
+            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Writes every mesh model into <code>~/.pi/agent/models.json</code>, including Pi <code>contextWindow</code>/<code>maxTokens</code> when mesh metadata is available, and launches pi unless <code>--write</code> is set. Use <code>--host</code> for a remote mesh host or full URL.</p>
         </details>
 
         <details style="margin-bottom:1rem;">
