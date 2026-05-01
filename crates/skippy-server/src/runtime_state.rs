@@ -17,22 +17,39 @@ use crate::package::materialize_layer_package;
 pub struct RuntimeState {
     pub model: StageModel,
     lane_count: u32,
-    sessions: BTreeMap<String, StageSession>,
-    idle_sessions: Vec<StageSession>,
+    next_lane_index: usize,
+    sessions: BTreeMap<String, RuntimeLaneSession>,
+    idle_sessions: Vec<RuntimeLaneSession>,
     session_token_counts: BTreeMap<String, u64>,
     session_checkpoints: BTreeMap<String, StageSessionCheckpoint>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RuntimeLaneSession {
+    index: usize,
+    session: StageSession,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeSessionLaneStats {
+    pub index: usize,
+    pub active: bool,
+    pub session_id: Option<String>,
+    pub token_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeSessionStats {
     pub lane_count: usize,
     pub active_sessions: usize,
     pub idle_sessions: usize,
     pub tracked_token_counts: usize,
+    pub max_session_tokens: u64,
+    pub total_session_tokens: u64,
     pub checkpoints: usize,
+    pub lanes: Vec<RuntimeSessionLaneStats>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RuntimeSessionDropStats {
     pub reset_session: bool,
     pub reset_ms: f64,
@@ -222,18 +239,19 @@ impl RuntimeState {
 
     fn session(&mut self, session_id: &str) -> Result<&mut StageSession> {
         if !self.sessions.contains_key(session_id) {
-            let session = self.idle_sessions.pop().map(Ok).unwrap_or_else(|| {
+            let lane_session = self.idle_sessions.pop().map(Ok).unwrap_or_else(|| {
                 if self.sessions.len() >= self.lane_count as usize {
                     bail!("all execution lanes are busy");
                 }
-                self.model.create_session()
+                self.create_lane_session()
             })?;
-            self.sessions.insert(session_id.to_string(), session);
+            self.sessions.insert(session_id.to_string(), lane_session);
         }
-        Ok(self
+        Ok(&mut self
             .sessions
             .get_mut(session_id)
-            .expect("session inserted above"))
+            .expect("session inserted above")
+            .session)
     }
 
     pub fn prewarm_idle_sessions(
@@ -244,7 +262,8 @@ impl RuntimeState {
             if self.sessions.len() + self.idle_sessions.len() >= self.lane_count as usize {
                 break;
             }
-            self.idle_sessions.push(self.model.create_session()?);
+            let lane_session = self.create_lane_session()?;
+            self.idle_sessions.push(lane_session);
         }
         Ok(self.session_stats())
     }
@@ -252,10 +271,10 @@ impl RuntimeState {
     pub fn drop_session_timed(&mut self, session_id: &str) -> Result<RuntimeSessionDropStats> {
         let reset_started = Instant::now();
         let mut reset_session = false;
-        if let Some(mut session) = self.sessions.remove(session_id) {
+        if let Some(mut lane_session) = self.sessions.remove(session_id) {
             reset_session = true;
-            session.reset()?;
-            self.idle_sessions.push(session);
+            lane_session.session.reset()?;
+            self.idle_sessions.push(lane_session);
         }
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
@@ -267,12 +286,38 @@ impl RuntimeState {
     }
 
     pub fn session_stats(&self) -> RuntimeSessionStats {
+        let mut max_session_tokens = 0u64;
+        let mut total_session_tokens = 0u64;
+        let mut lanes = (0..self.lane_count as usize)
+            .map(|index| RuntimeSessionLaneStats {
+                index,
+                active: false,
+                session_id: None,
+                token_count: None,
+            })
+            .collect::<Vec<_>>();
+
+        for (session_id, lane_session) in &self.sessions {
+            if let Some(token_count) = self.session_token_counts.get(session_id).copied() {
+                max_session_tokens = max_session_tokens.max(token_count);
+                total_session_tokens = total_session_tokens.saturating_add(token_count);
+            }
+            if let Some(lane) = lanes.get_mut(lane_session.index) {
+                lane.active = true;
+                lane.session_id = Some(session_id.clone());
+                lane.token_count = self.session_token_counts.get(session_id).copied();
+            }
+        }
+
         RuntimeSessionStats {
             lane_count: self.lane_count as usize,
             active_sessions: self.sessions.len(),
             idle_sessions: self.idle_sessions.len(),
             tracked_token_counts: self.session_token_counts.len(),
+            max_session_tokens,
+            total_session_tokens,
             checkpoints: self.session_checkpoints.len(),
+            lanes,
         }
     }
 
@@ -292,6 +337,28 @@ impl RuntimeState {
             .and_modify(|current| *current = current.saturating_add(count))
             .or_insert(count);
     }
+
+    fn create_lane_session(&mut self) -> Result<RuntimeLaneSession> {
+        let (index, session) =
+            create_indexed_lane_resource(&mut self.next_lane_index, self.lane_count, || {
+                self.model.create_session()
+            })?;
+        Ok(RuntimeLaneSession { index, session })
+    }
+}
+
+fn create_indexed_lane_resource<T>(
+    next_lane_index: &mut usize,
+    lane_count: u32,
+    create: impl FnOnce() -> Result<T>,
+) -> Result<(usize, T)> {
+    if *next_lane_index >= lane_count as usize {
+        bail!("all execution lanes are busy");
+    }
+    let index = *next_lane_index;
+    let resource = create()?;
+    *next_lane_index = index + 1;
+    Ok((index, resource))
 }
 
 impl Drop for RuntimeState {
@@ -321,6 +388,7 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
     Ok(Some(Arc::new(Mutex::new(RuntimeState {
         model,
         lane_count: config.lane_count,
+        next_lane_index: 0,
         sessions: BTreeMap::new(),
         idle_sessions: Vec::new(),
         session_token_counts: BTreeMap::new(),
@@ -371,10 +439,32 @@ fn open_stage_model(path: &std::path::Path, runtime_config: &RuntimeConfig) -> R
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{bail, Result};
     use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig, StageDevice};
     use skippy_runtime::FlashAttentionType as RuntimeFlashAttentionType;
 
-    use super::runtime_config_from_stage_config;
+    use super::{create_indexed_lane_resource, runtime_config_from_stage_config};
+
+    #[test]
+    fn create_indexed_lane_resource_keeps_index_available_when_creation_fails() {
+        let mut next_lane_index = 0;
+
+        let error = create_indexed_lane_resource(&mut next_lane_index, 2, || -> Result<()> {
+            bail!("transient session creation failure")
+        })
+        .expect_err("failed creation should propagate the original error");
+
+        assert_eq!(error.to_string(), "transient session creation failure");
+        assert_eq!(next_lane_index, 0);
+
+        let (index, resource) =
+            create_indexed_lane_resource(&mut next_lane_index, 2, || Ok("lane"))
+                .expect("successful retry should reuse the unconsumed lane index");
+
+        assert_eq!(index, 0);
+        assert_eq!(resource, "lane");
+        assert_eq!(next_lane_index, 1);
+    }
 
     #[test]
     fn runtime_config_preserves_selected_backend_device() {

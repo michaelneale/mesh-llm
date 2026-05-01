@@ -8,7 +8,8 @@ use super::snapshots::RuntimeDataSnapshots;
 use super::snapshots::{PluginDataKey, PluginEndpointKey, RuntimeStatusSnapshot};
 use super::subscriptions::{RuntimeDataDirty, RuntimeDataSubscriptionState};
 #[cfg(test)]
-use super::{RuntimeLlamaMetricsSnapshot, RuntimeLlamaSlotsSnapshot};
+use super::RuntimeLlamaMetricsSnapshot;
+use super::RuntimeLlamaSlotsSnapshot;
 use crate::network::metrics::RoutingCollectorSnapshot;
 use crate::plugin::{
     PluginCapabilityProvider, PluginEndpointSummary, PluginManifestOverview, PluginSummary,
@@ -118,7 +119,6 @@ impl RuntimeDataProducer {
         self.collector.replace_llama_metrics_snapshot(snapshot)
     }
 
-    #[cfg(test)]
     pub(crate) fn publish_llama_slots_snapshot(&self, snapshot: RuntimeLlamaSlotsSnapshot) -> bool {
         self.collector.replace_llama_slots_snapshot(snapshot)
     }

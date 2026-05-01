@@ -18,6 +18,7 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 - `model_download_progress` is emitted during catalog preparation when the interactive TUI is active and drives the model-progress panel.
 - `ready` may include `pi_command` and `goose_command`; these are operational hints shown after startup.
 - Some variants are schema/dashboard-supported before all of them have production emitters. Mark that explicitly rather than leaving stale source-search notes.
+- Embedded skippy/llama.cpp native logs are process-global and are redirected before model load into `<runtime-root>/<pid>/logs/skippy-native.log`; do not stream those native logs through `OutputEvent` or the TUI.
 
 ## Events
 
@@ -41,11 +42,11 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 | `model_loading` | `model`, `source?` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
 | `model_loaded` | `model`, `bytes?` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
 | `host_elected` | `model`, `host`, `role?`, `capacity_gb?` | Model host election, including demand-based rebalancing. |
-| `rpc_server_starting` | `port`, `device`, `log_path?` | `rpc-server` launch started in `inference/launch.rs`. |
-| `rpc_ready` | `port`, `device`, `log_path?` | Formatter/dashboard-supported ready transition; no production emitter was found in this pass. |
-| `llama_starting` | `model?`, `http_port`, `ctx_size?`, `log_path?` | `llama-server` launch started in `inference/launch.rs`. |
-| `llama_ready` | `model?`, `port`, `ctx_size?`, `log_path?` | `llama-server` is ready, before aggregate `ready`. |
-| `model_ready` | `model`, `internal_port?`, `role?` | Model-serving readiness. JSON includes both `port` and `internal_port` for compatibility when a port exists. |
+| `rpc_server_starting` | `port`, `device`, `log_path?` | Legacy/dashboard-supported external `rpc-server` transition; embedded skippy does not emit this. |
+| `rpc_ready` | `port`, `device`, `log_path?` | Legacy/dashboard-supported external `rpc-server` ready transition; embedded skippy does not emit this. |
+| `llama_starting` | `model?`, `http_port`, `ctx_size?`, `log_path?` | Legacy/dashboard-supported external `llama-server` transition; embedded skippy native logs use the process-level runtime log instead. |
+| `llama_ready` | `model?`, `port`, `ctx_size?`, `log_path?` | Legacy/dashboard-supported external `llama-server` ready transition; embedded skippy readiness is represented by `model_ready`. |
+| `model_ready` | `model`, `internal_port?`, `role?` | Embedded model-serving readiness. JSON includes both `port` and `internal_port` for compatibility when a port exists. |
 | `multi_model_mode` | `count`, `models` | Startup declared more than one model. |
 | `webserver_starting` | `url` | Formatter/dashboard-supported console startup state; no production emitter was found in this pass. |
 | `webserver_ready` | `url` | Web console ready. |
