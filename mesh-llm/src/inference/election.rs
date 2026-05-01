@@ -79,6 +79,14 @@ fn split_mode_for_local_launch(
 /// Calculate total model size, summing all split files if present.
 /// Split files follow the pattern: name-00001-of-00004.gguf
 pub fn total_model_bytes(model: &Path) -> u64 {
+    // Layer package: read total from manifest
+    let manifest_path = model.join("model-package.json");
+    if manifest_path.is_file() {
+        if let Ok(manifest) = staged::PackageManifest::from_dir(model) {
+            return manifest.total_bytes();
+        }
+    }
+
     let name = model.to_string_lossy();
     // Check for split pattern: *-00001-of-NNNNN.gguf
     if let Some(pos) = name.find("-00001-of-") {
