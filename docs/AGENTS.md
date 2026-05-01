@@ -212,4 +212,4 @@ Exposed tools:
 - `blackboard_search`
 - `blackboard_feed`
 
-For plugin internals and plugin development, see [PLUGINS.md](../PLUGINS.md).
+For plugin internals and plugin development, see [plugins/README.md](plugins/README.md).

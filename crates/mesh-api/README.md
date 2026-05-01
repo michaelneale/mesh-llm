@@ -12,10 +12,10 @@ This is the crate that Rust-native consumers should depend on when they want to:
 
 Layering:
 
-- `mesh-client/` implements the low-level client behavior
-- `mesh-api/` exposes the stable Rust SDK surface
-- `mesh-api-ffi/` wraps `mesh-api/` for Swift, Kotlin, and other native
+- `crates/mesh-client/` implements the low-level client behavior
+- `crates/mesh-api/` exposes the stable Rust SDK surface
+- `crates/mesh-api-ffi/` wraps `crates/mesh-api/` for Swift, Kotlin, and other native
   bindings
 
 If an API is meant for app integration, it should live here rather than in
-`mesh-client/`.
+`crates/mesh-client/`.

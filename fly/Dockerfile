@@ -8,10 +8,10 @@
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
-COPY mesh-llm/ui/package.json mesh-llm/ui/package-lock.json ./
+COPY crates/mesh-llm/ui/package.json crates/mesh-llm/ui/package-lock.json ./
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
-COPY mesh-llm/ui/ ./
+COPY crates/mesh-llm/ui/ ./
 RUN npm run build
 
 FROM debian:bookworm-slim AS builder
@@ -22,19 +22,20 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
-COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
-COPY mesh-llm/build.rs mesh-llm/build.rs
-COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
-COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
-COPY mesh-llm/proto/ mesh-llm/proto/
-COPY mesh-llm/ mesh-llm/
-COPY mesh-client/ mesh-client/
-COPY mesh-api/ mesh-api/
-COPY mesh-host-core/ mesh-host-core/
-COPY mesh-api-ffi/ mesh-api-ffi/
-COPY mesh-llm-test-harness/ mesh-llm-test-harness/
+COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
+COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
+COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
+COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
 COPY tools/xtask/ tools/xtask/
-COPY --from=ui-builder /app/dist mesh-llm/ui/dist
+COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \

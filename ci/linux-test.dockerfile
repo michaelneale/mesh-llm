@@ -2,7 +2,7 @@
 # Run from repo root: docker build -f ci/linux-test.dockerfile -t mesh-llm-ci .
 #
 # NOTE: npm ci may fail behind SSL-intercepting proxies. If so, pre-build the
-# UI on the host (npm run build in mesh-llm/ui/) — the dist/ is COPY'd in.
+# UI on the host (npm run build in crates/mesh-llm/ui/) — the dist/ is COPY'd in.
 FROM rust:latest
 
 RUN apt-get update && apt-get install -y cmake pkg-config git && rm -rf /var/lib/apt/lists/*
@@ -20,12 +20,20 @@ RUN cmake -B llama.cpp/build -S llama.cpp \
     && cmake --build llama.cpp/build --config Release -j$(nproc)
 
 # Build mesh-llm (UI already built on host via npm run build, dist/ included)
-COPY mesh-llm/ mesh-llm/
-RUN cd mesh-llm && cargo build --release
-RUN cd mesh-llm && cargo test
+COPY Cargo.toml Cargo.lock ./
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY tools/xtask/ tools/xtask/
+RUN cargo build --release -p mesh-llm
+RUN cargo test -p mesh-llm
 
 # Verify all binaries
-RUN ls -lh mesh-llm/target/release/mesh-llm llama.cpp/build/bin/llama-server llama.cpp/build/bin/rpc-server
-RUN mesh-llm/target/release/mesh-llm --version
-RUN mesh-llm/target/release/mesh-llm --help | head -5
+RUN ls -lh target/release/mesh-llm llama.cpp/build/bin/llama-server llama.cpp/build/bin/rpc-server
+RUN target/release/mesh-llm --version
+RUN target/release/mesh-llm --help | head -5
 RUN llama.cpp/build/bin/llama-server --version

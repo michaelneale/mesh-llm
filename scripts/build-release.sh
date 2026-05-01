@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
 BUILD_DIR="$LLAMA_DIR/build"
-UI_DIR="$REPO_ROOT/mesh-llm/ui"
+UI_DIR="$REPO_ROOT/crates/mesh-llm/ui"
 
 detect_jobs() {
     if command -v nproc >/dev/null 2>&1; then

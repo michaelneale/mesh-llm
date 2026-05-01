@@ -12,7 +12,7 @@ The paper shows ensemble routing across heterogeneous models outperforms any sin
 
 ## Node Owner Identity
 
-Design: [NODE_OWNER_IDENTITY.md](docs/NODE_OWNER_IDENTITY.md)
+Design: [NODE_OWNER_IDENTITY.md](../../docs/design/NODE_OWNER_IDENTITY.md)
 
 - [x] Add non-breaking owner attestation for node identities.
 - [x] Surface verified owner state in gossip, `/api/status`, and the console.
@@ -49,13 +49,13 @@ Fetch model files directly from mesh peers instead of HuggingFace. Peers already
 
 Run giant MoE models on a single node by streaming active experts from NVMe instead of fitting everything in RAM.
 
-[flash-moe](https://github.com/danveloper/flash-moe) already does this — runs Qwen3.5-397B-A17B at 5.5 tok/s on a 48GB M3 Max with 6GB resident memory. See [ROADMAP.md](../ROADMAP.md).
+[flash-moe](https://github.com/danveloper/flash-moe) already does this — runs Qwen3.5-397B-A17B at 5.5 tok/s on a 48GB M3 Max with 6GB resident memory. See [ROADMAP.md](../../ROADMAP.md).
 
 **Plan:** Use flash-moe as an alternative backend. Mesh-llm spawns it like llama-server. Needs HTTP/SSE endpoint (currently CLI only) and OpenAI-compatible `/v1/chat/completions`.
 
 ## MoE Expert Sharding
 
-Design: [MoE_PLAN.md](docs/MoE_PLAN.md) · Auto-deploy: [MoE_DEPLOY_DESIGN.md](docs/MoE_DEPLOY_DESIGN.md) · Validation: [MoE_SPLIT_REPORT.md](docs/MoE_SPLIT_REPORT.md)
+Design: [MoE_PLAN.md](../../docs/design/MoE_PLAN.md) · Auto-deploy: [MoE_DEPLOY_DESIGN.md](../../docs/design/MoE_DEPLOY_DESIGN.md) · Validation: [MoE_SPLIT_REPORT.md](../../docs/design/MoE_SPLIT_REPORT.md)
 
 - [ ] **Lazy `moe-analyze`** — auto-run ranking for unknown MoE models.
 - [ ] **Scale testing** — Mixtral 8×22B, Qwen3-235B-A22B across multi-node.
@@ -69,7 +69,7 @@ Design: [MoE_PLAN.md](docs/MoE_PLAN.md) · Auto-deploy: [MoE_DEPLOY_DESIGN.md](d
 
 ## Multi-Modal — Remaining
 
-Core multimodal is shipped: capability model, gossip advertisement, vision/audio-aware routing, blob plugin, console uploads with attachment state, multimodal `/v1/chat/completions` and `/v1/responses`. See [MULTI_MODAL.md](docs/MULTI_MODAL.md).
+Core multimodal is shipped: capability model, gossip advertisement, vision/audio-aware routing, blob plugin, console uploads with attachment state, multimodal `/v1/chat/completions` and `/v1/responses`. See [MULTI_MODAL.md](../../docs/design/MULTI_MODAL.md).
 
 - [ ] **Runtime vision validation**: When mmproj is missing at launch time, downgrade vision capability and re-gossip corrected descriptor. Today the node advertises `vision: supported` even when mmproj wasn't loaded.
 - [ ] **Audio transcription shim**: Optional `/v1/audio/transcriptions` compatibility layer.
@@ -77,7 +77,7 @@ Core multimodal is shipped: capability model, gossip advertisement, vision/audio
 
 ## Virtual LLM — Remaining
 
-Core virtual LLM hooks working end-to-end: Hook 1 (image captioning on text-only models), Hook 2 (post-prefill uncertainty), Hook 2b (mid-gen triggers: repetition loop, entropy spike, surprise break). See [VIRTUAL_LLM.md](docs/VIRTUAL_LLM.md), PR #225.
+Core virtual LLM hooks working end-to-end: Hook 1 (image captioning on text-only models), Hook 2 (post-prefill uncertainty), Hook 2b (mid-gen triggers: repetition loop, entropy spike, surprise break). See [VIRTUAL_LLM.md](../../docs/design/VIRTUAL_LLM.md), PR #225.
 
 - [ ] **Use TTFT perf data for peer selection**: PR #271 adds `InferenceTracker` with per-model per-target TTFT ring buffers. Use `best_ttft_for_target()` in `consult::find_different_model_peers()` to score candidates by observed inference speed instead of QUIC RTT. Peers like MiniMax that have low RTT but take 7-10s for actual inference would get deprioritized naturally.
 - [ ] **Wire audio extraction**: `find_audio_peer` works but extracting audio data from the request payload isn't implemented. Same approach as image: strip in content parser, preserve original data, hook consults audio peer.

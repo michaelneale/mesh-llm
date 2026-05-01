@@ -59,7 +59,7 @@ A newly connected peer is quarantined until it sends a valid `GossipFrame` with 
 The control plane uses QUIC ALPN `mesh-llm/1` with the `meshllm.node.v1` protobuf schema. Scoped control-plane streams use 4-byte LE framing followed by protobuf bytes.
 
 
-See [message_protocol.md](../../message_protocol.md) for the full wire format specification.
+See [message_protocol.md](message_protocol.md) for the full wire format specification.
 
 ## QUIC Stream Types
 

@@ -9,12 +9,12 @@ integration boundary.
 
 Most consumers should depend on:
 
-- `mesh-api/` for the public Rust client SDK
+- `crates/mesh-api/` for the public Rust client SDK
 
 Language bindings should generally reach this crate through:
 
-- `mesh-api/`
-- `mesh-api-ffi/`
+- `crates/mesh-api/`
+- `crates/mesh-api-ffi/`
 
 Keep this crate implementation-focused. Public, app-facing ergonomics should be
-added in `mesh-api/`, not here.
+added in `crates/mesh-api/`, not here.

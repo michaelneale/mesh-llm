@@ -125,19 +125,19 @@ If we derived the node key from the owner key, we would lose:
 
 ## Proposed Architecture Changes
 
-### `mesh-llm/src/crypto/`
+### `crates/mesh-llm/src/crypto/`
 
 Add a new ownership module that owns the attestation format and verification
 logic for the existing keystore owner identity.
 
 Suggested files:
 
-- `mesh-llm/src/crypto/ownership.rs`
+- `crates/mesh-llm/src/crypto/ownership.rs`
   - `NodeOwnershipClaim`
   - `SignedNodeOwnership`
   - canonical serialization for signing
   - sign/verify helpers
-- `mesh-llm/src/crypto/mod.rs`
+- `crates/mesh-llm/src/crypto/mod.rs`
   - re-export ownership helpers
 
 Suggested data shape:
@@ -178,7 +178,7 @@ Suggested signing domain tag:
 mesh-llm-node-ownership-v1
 ```
 
-### `mesh-llm/src/runtime/`
+### `crates/mesh-llm/src/runtime/`
 
 Runtime startup gains optional binding from the existing keystore owner identity
 to the current node key.
@@ -236,7 +236,7 @@ Suggested behavior:
 - `auth rotate-owner`
   - create a new owner identity and begin re-enrollment under that owner
 
-### `mesh-llm/src/mesh/`
+### `crates/mesh-llm/src/mesh/`
 
 Peer state stores ownership verification results next to the existing node ID.
 
@@ -273,7 +273,7 @@ Suggested verification order:
 7. optionally reject revoked node endpoint IDs
 8. apply local trust policy / allowlist
 
-### `mesh-llm/src/api/`
+### `crates/mesh-llm/src/api/`
 
 Expose ownership data through `/api/status` so the console and CLI can display it.
 
@@ -284,7 +284,7 @@ Suggested additions:
 - counters for verified/unverified/invalid peers
 - owner certificate ID for the local node and peers
 
-### `mesh-llm/ui/`
+### `crates/mesh-llm/ui/`
 
 The console consumes the new `/api/status` fields and surfaces operator
 attribution, trust state, and warnings.

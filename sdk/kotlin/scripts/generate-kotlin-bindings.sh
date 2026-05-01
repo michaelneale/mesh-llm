@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regenerate Kotlin UniFFI bindings from mesh-api-ffi/src/mesh_ffi.udl.
+# Regenerate Kotlin UniFFI bindings from crates/mesh-api-ffi/src/mesh_ffi.udl.
 #
 # Uses the uniffi-bindgen CLI installed on demand into a cached cargo root.
 # The generated bindings are copied into the library source set AND the
@@ -9,7 +9,7 @@ set -euo pipefail
 # keeps them in lockstep.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-UDL="$REPO_ROOT/mesh-api-ffi/src/mesh_ffi.udl"
+UDL="$REPO_ROOT/crates/mesh-api-ffi/src/mesh_ffi.udl"
 KOTLIN_LIB_DIR="$REPO_ROOT/sdk/kotlin/src/main/kotlin/uniffi/mesh_ffi"
 KOTLIN_EXAMPLE_DIR="$REPO_ROOT/sdk/kotlin/example/example-jvm/src/main/kotlin/uniffi/mesh_ffi"
 

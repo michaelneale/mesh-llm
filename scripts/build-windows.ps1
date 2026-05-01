@@ -10,7 +10,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join-Path $repoRoot ".deps\llama.cpp" }
 $buildDir = Join-Path $llamaDir "build"
-$meshUiDir = Join-Path $repoRoot "mesh-llm\ui"
+$meshUiDir = Join-Path $repoRoot "crates\mesh-llm\ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
 

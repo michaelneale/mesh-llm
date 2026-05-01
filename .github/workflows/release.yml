@@ -131,7 +131,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -234,7 +234,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -311,7 +311,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Install system dependencies (Linux ARM64)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
@@ -380,7 +380,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -448,7 +448,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -517,7 +517,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -76,6 +76,6 @@ When adding or changing an event:
 
 1. Update the `OutputEvent` variant and `event_name()`, `message()`, `summary_line()`, and `json_fields()`.
 2. If it affects the TUI, update `PrettyDashboardState::apply_output_event()` and any snapshot/provider fields it depends on.
-3. Add or update pretty and JSON tests in `mesh-llm/src/cli/output/mod.rs`.
+3. Add or update pretty and JSON tests in `crates/mesh-llm/src/cli/output/mod.rs`.
 4. Emit through the shared output manager/helper path; do not write directly to `stdout` or `stderr` for user-facing output.
 5. For startup readiness, preserve `stdout` JSON / `stderr` pretty separation and keep aggregate `ready` last.

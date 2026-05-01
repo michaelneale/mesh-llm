@@ -11,7 +11,7 @@ REPO_ROOT="${SCRIPT_DIR:h}"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
 BUILD_DIR="$LLAMA_DIR/build"
-MESH_DIR="$REPO_ROOT/mesh-llm"
+MESH_DIR="$REPO_ROOT/crates/mesh-llm"
 UI_DIR="$MESH_DIR/ui"
 
 compiler_launcher_flags=()

@@ -9,7 +9,7 @@ private-note.txt
 mesh-bundle.tar.gz
 .idea/
 .DS_Store
-mesh-llm/ui/dist/
+crates/mesh-llm/ui/dist/
 evals/results/
 .sisyphus/
 .playwright-mcp/

@@ -258,7 +258,7 @@ curl -X DELETE localhost:3131/api/runtime/models/Llama-3.2-1B-Instruct-Q4_K_M
 ### 11. Console live-state and wakeable capacity
 
 ```bash
-cd mesh-llm/ui/
+cd crates/mesh-llm/ui/
 npm run test:run
 npm run typecheck
 just build

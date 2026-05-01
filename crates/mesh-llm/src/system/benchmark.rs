@@ -163,10 +163,11 @@ fn benchmark_search_dirs(bin_dir: &Path, exe_dir: Option<&Path>) -> Vec<PathBuf>
 
     if let Some(exe_dir) = exe_dir {
         push_search_dir(&mut dirs, exe_dir.to_path_buf());
-        push_search_dir(&mut dirs, exe_dir.join("../../mesh-llm/target/release"));
+        push_search_dir(&mut dirs, exe_dir.join("../../target/release"));
     }
 
-    push_search_dir(&mut dirs, bin_dir.join("../../../mesh-llm/target/release"));
+    push_search_dir(&mut dirs, bin_dir.join("../../../target/release"));
+    push_search_dir(&mut dirs, bin_dir.join("../../../../target/release"));
     dirs
 }
 
@@ -804,7 +805,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let bin_dir = root.join("llama.cpp/build/bin");
         let exe_dir = root.join("target/release");
-        let crate_release = root.join("mesh-llm/target/release");
+        let crate_release = root.join("target/release");
         std::fs::create_dir_all(&bin_dir).expect("create bin dir");
         std::fs::create_dir_all(&exe_dir).expect("create exe dir");
         std::fs::create_dir_all(&crate_release).expect("create crate release dir");
@@ -835,7 +836,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let bin_dir = root.join("llama.cpp/build/bin");
         let exe_dir = root.join("target/release");
-        let crate_release = root.join("mesh-llm/target/release");
+        let crate_release = root.join("target/release");
         std::fs::create_dir_all(&bin_dir).expect("create bin dir");
         std::fs::create_dir_all(&exe_dir).expect("create exe dir");
         std::fs::create_dir_all(&crate_release).expect("create crate release dir");

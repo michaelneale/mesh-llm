@@ -12,15 +12,18 @@ This repo (`mesh-llm`) contains mesh-llm — a Rust binary that pools GPUs over 
 | `CONTRIBUTING.md` | Build from source, dev workflow, UI dev |
 | `RELEASE.md` | Release process (build, bundle, tag, GitHub release) |
 | `ROADMAP.md` | Future directions |
-| `mesh-llm/TODO.md` | Current work items and backlog |
-| `mesh-llm/README.md` | Rust crate overview and file map |
-| `mesh-llm/docs/DESIGN.md` | Architecture, protocols, features |
-| `mesh-llm/docs/TESTING.md` | Test playbook, scenarios, remote deploy |
-| `mesh-llm/docs/MULTI_MODAL.md` | Multimodal design: capability model, blob plugin, console, routing |
-| `mesh-llm/docs/MoE_PLAN.md` | MoE expert sharding design |
-| `mesh-llm/docs/MoE_DEPLOY_DESIGN.md` | MoE auto-deploy UX |
-| `mesh-llm/docs/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
-| `mesh-llm/docs/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
+| `crates/mesh-llm/TODO.md` | Current work items and backlog |
+| `crates/mesh-llm/README.md` | Rust crate overview and file map |
+| `docs/README.md` | Documentation map and topic directory guide |
+| `docs/design/DESIGN.md` | Architecture, protocols, features |
+| `docs/design/TESTING.md` | Test playbook, scenarios, remote deploy |
+| `docs/design/MULTI_MODAL.md` | Multimodal design: capability model, blob plugin, console, routing |
+| `docs/design/MoE_PLAN.md` | MoE expert sharding design |
+| `docs/design/MoE_DEPLOY_DESIGN.md` | MoE auto-deploy UX |
+| `docs/design/VIRTUAL_LLM.md` | Virtual LLM engine (inter-model collaboration) |
+| `docs/design/LLAMA_CPP_FORK.md` | llama.cpp fork: what's patched, how to update, how to sync |
+| `docs/moe/README.md` | MoE analyzer, placement, and CLI planning notes |
+| `docs/plugins/README.md` | Plugin architecture and plugin development |
 | `fly/README.md` | Fly.io deployment (console + API apps) |
 | `tools/relay-fly-legacy/README.md` | Legacy self-hosted iroh relay (not in use — now using services.iroh.computer) |
 
@@ -60,15 +63,18 @@ mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.
 - The pinned commit SHA lives in `LLAMA_CPP_SHA` at the repo root. All build scripts and CI read from this file.
 - `just build` clones/pulls the fork automatically. You do not need to touch it for normal Rust or UI work.
 - **Do not update the fork to upstream HEAD unless explicitly asked.** Upstream llama.cpp changes frequently and rebasing our patches can introduce conflicts.
-- If you need to update the fork, read `mesh-llm/docs/LLAMA_CPP_FORK.md` first. It has the full procedure: rebase, resolve conflicts, push, bump SHA, rebuild, test.
+- If you need to update the fork, read `docs/design/LLAMA_CPP_FORK.md` first. It has the full procedure: rebase, resolve conflicts, push, bump SHA, rebuild, test.
 - If you need to add a new C++ patch, work in the fork checkout, commit, push, then bump `LLAMA_CPP_SHA`.
 - The fork's `master` is always: upstream HEAD + our patches rebased on top. Linear history, never merge commits.
 
 ## Project Structure
 
-- `mesh-llm/src/` — Rust source
-- `mesh-llm/ui/` — React web console (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
-- `mesh-llm/docs/` — Design and testing docs
+- `crates/mesh-llm/src/` — Rust source
+- `crates/mesh-llm/ui/` — React web console (shadcn/ui patterns, see https://ui.shadcn.com/llms.txt)
+- `docs/` — Project docs, grouped by topic
+- `docs/design/` — Architecture, protocol, and testing docs
+- `docs/moe/` — MoE ranking, placement, and CLI plans
+- `docs/plugins/` — Plugin architecture docs and plans
 - `fly/` — Fly.io deployment (console + API client apps)
 - `tools/relay-fly-legacy/` — Legacy self-hosted iroh relay (not in use — now using services.iroh.computer)
 - `evals/` — Benchmarking and evaluation scripts
@@ -77,25 +83,25 @@ mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.
 
 The crate root should stay minimal.
 
-- Keep `mesh-llm/src/lib.rs` and `mesh-llm/src/main.rs` as the only root `.rs` files unless there is a strong reason otherwise.
+- Keep `crates/mesh-llm/src/lib.rs` and `crates/mesh-llm/src/main.rs` as the only root `.rs` files unless there is a strong reason otherwise.
 - New code should go into an existing domain directory when possible.
 
 Use semantic ownership for module placement.
 
-- `mesh-llm/src/cli/` — Clap types, command parsing, command dispatch, and user-facing command handlers.
-- `mesh-llm/src/runtime/` — top-level process orchestration and startup/runtime coordination.
-- `mesh-llm/src/network/` — request routing, proxying, tunneling, relay/discovery networking, request-affinity logic, and endpoint rewrite support.
-- `mesh-llm/src/inference/` — model-serving logic, election, launch, pipeline, and MoE behavior.
-- `mesh-llm/src/system/` — machine-local environment and platform concerns such as hardware detection, benchmarking, self-update, and local system integration.
-- `mesh-llm/src/models/` — model catalog, resolution, downloads, local model storage, and model metadata.
-- `mesh-llm/src/mesh/` — peer membership, gossip, identity, peer state, and mesh node behavior.
-- `mesh-llm/src/plugin/` — plugin host, plugin runtime, transport, config, and MCP bridge support.
-- `mesh-llm/src/api/` — management API surface and route handling.
-- `mesh-llm/src/protocol/` — wire protocol types, encoding/decoding, and conversions.
+- `crates/mesh-llm/src/cli/` — Clap types, command parsing, command dispatch, and user-facing command handlers.
+- `crates/mesh-llm/src/runtime/` — top-level process orchestration and startup/runtime coordination.
+- `crates/mesh-llm/src/network/` — request routing, proxying, tunneling, relay/discovery networking, request-affinity logic, and endpoint rewrite support.
+- `crates/mesh-llm/src/inference/` — model-serving logic, election, launch, pipeline, and MoE behavior.
+- `crates/mesh-llm/src/system/` — machine-local environment and platform concerns such as hardware detection, benchmarking, self-update, and local system integration.
+- `crates/mesh-llm/src/models/` — model catalog, resolution, downloads, local model storage, and model metadata.
+- `crates/mesh-llm/src/mesh/` — peer membership, gossip, identity, peer state, and mesh node behavior.
+- `crates/mesh-llm/src/plugin/` — plugin host, plugin runtime, transport, config, and MCP bridge support.
+- `crates/mesh-llm/src/api/` — management API surface and route handling.
+- `crates/mesh-llm/src/protocol/` — wire protocol types, encoding/decoding, and conversions.
 
 CLI ownership rule.
 
-- All command handlers belong under `mesh-llm/src/cli/`, usually `mesh-llm/src/cli/commands/`.
+- All command handlers belong under `crates/mesh-llm/src/cli/`, usually `crates/mesh-llm/src/cli/commands/`.
 - Domain modules should not own Clap parsing or top-level command dispatch.
 - Domain modules may expose reusable functions that CLI handlers call.
 
@@ -135,26 +141,26 @@ Naming rule.
 Current structure notes.
 
 - Request-affinity code belongs with networking/routing behavior, not `system/`.
-- Plugin MCP support belongs inside `mesh-llm/src/plugin/`, not as a separate root module.
-- Model command handlers belong in `mesh-llm/src/cli/commands/`; `mesh-llm/src/models/` should stay domain-focused.
+- Plugin MCP support belongs inside `crates/mesh-llm/src/plugin/`, not as a separate root module.
+- Model command handlers belong in `crates/mesh-llm/src/cli/commands/`; `crates/mesh-llm/src/models/` should stay domain-focused.
 
 ## Key Source Files
 
-- `mesh-llm/src/main.rs` — Binary entrypoint; calls `mesh_llm::run()`
-- `mesh-llm/src/runtime/mod.rs` — Top-level startup flows, runtime orchestration, and command dispatch
-- `mesh-llm/src/mesh/mod.rs` — `Node` struct, gossip, mesh_id, peer management
-- `mesh-llm/src/inference/election.rs` — Host election, tensor split calculation
-- `mesh-llm/src/inference/launch.rs` — llama-server/rpc-server process management
-- `mesh-llm/src/inference/moe.rs` — MoE detection, expert rankings, split orchestration
-- `mesh-llm/src/network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers
-- `mesh-llm/src/network/router.rs` — Request classification, model scoring, multimodal routing
-- `mesh-llm/src/network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`
-- `mesh-llm/src/network/tunnel.rs` — TCP ↔ QUIC relay (RPC + HTTP)
-- `mesh-llm/src/api/mod.rs` — Management API (:3131): `/api/status`, `/api/events`, `/api/discover`, `/api/join`
-- `mesh-llm/src/models/catalog.rs` — Model catalog, HuggingFace downloads
-- `mesh-llm/src/models/capabilities.rs` — Multimodal/vision/audio/reasoning capability inference
-- `mesh-llm/src/plugins/blobstore/mod.rs` — Request-scoped media object storage for multimodal
-- `mesh-llm/src/runtime/instance.rs` — Per-instance runtime directory management: `InstanceRuntime`, pidfiles, flock liveness, scoped orphan reaping, local instance scanning
+- `crates/mesh-llm/src/main.rs` — Binary entrypoint; calls `mesh_llm::run()`
+- `crates/mesh-llm/src/runtime/mod.rs` — Top-level startup flows, runtime orchestration, and command dispatch
+- `crates/mesh-llm/src/mesh/mod.rs` — `Node` struct, gossip, mesh_id, peer management
+- `crates/mesh-llm/src/inference/election.rs` — Host election, tensor split calculation
+- `crates/mesh-llm/src/inference/launch.rs` — llama-server/rpc-server process management
+- `crates/mesh-llm/src/inference/moe.rs` — MoE detection, expert rankings, split orchestration
+- `crates/mesh-llm/src/network/proxy.rs` — HTTP proxy: request parsing, model routing, response helpers
+- `crates/mesh-llm/src/network/router.rs` — Request classification, model scoring, multimodal routing
+- `crates/mesh-llm/src/network/nostr.rs` — Nostr discovery, `score_mesh()`, `smart_auto()`
+- `crates/mesh-llm/src/network/tunnel.rs` — TCP ↔ QUIC relay (RPC + HTTP)
+- `crates/mesh-llm/src/api/mod.rs` — Management API (:3131): `/api/status`, `/api/events`, `/api/discover`, `/api/join`
+- `crates/mesh-llm/src/models/catalog.rs` — Model catalog, HuggingFace downloads
+- `crates/mesh-llm/src/models/capabilities.rs` — Multimodal/vision/audio/reasoning capability inference
+- `crates/mesh-llm/src/plugins/blobstore/mod.rs` — Request-scoped media object storage for multimodal
+- `crates/mesh-llm/src/runtime/instance.rs` — Per-instance runtime directory management: `InstanceRuntime`, pidfiles, flock liveness, scoped orphan reaping, local instance scanning
 
 ## Mesh Protocol Compatibility
 
@@ -177,11 +183,11 @@ When iterating on the plugin protocol, always consider protocol compatibility.
 
 ## UI Notes
 
-For changes in `mesh-llm/ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `ui/src/components/ui/` over ad-hoc markup.
+For changes in `crates/mesh-llm/ui/`, use components and compose interfaces consistently with shadcn/ui patterns. Prefer extending existing primitives in `ui/src/components/ui/` over ad-hoc markup.
 
 ## Testing
 
-Read `mesh-llm/docs/TESTING.md` before running tests. It has all test scenarios, remote deploy instructions, and cleanup commands.
+Read `docs/design/TESTING.md` before running tests. It has all test scenarios, remote deploy instructions, and cleanup commands.
 
 Testing matters more than usual in this project because:
 
@@ -212,7 +218,7 @@ Before committing, run the local checks most likely to fail in CI for the files 
 - Before committing Rust changes, ensure the formatting check passes with `cargo fmt --all -- --check`.
 - After Rust changes, run `cargo check -p mesh-llm`.
 - If you touched tests, public APIs, routing, inference, gossip, plugin protocol, or CLI behavior, run the relevant tests before committing.
-- If you touched `proto/`, `mesh-llm/src/protocol/`, `mesh-llm/src/mesh/gossip.rs`, `mesh-llm/src/mesh/mod.rs`, routing, election, or API serialization, do not stop at build-only validation: run at least `cargo test -p mesh-llm --lib` and wait for it to exit successfully before committing.
+- If you touched `proto/`, `crates/mesh-llm/src/protocol/`, `crates/mesh-llm/src/mesh/gossip.rs`, `crates/mesh-llm/src/mesh/mod.rs`, routing, election, or API serialization, do not stop at build-only validation: run at least `cargo test -p mesh-llm --lib` and wait for it to exit successfully before committing.
 - Do not report a build or test step as complete until the command has actually exited with code `0`.
 - Run Rust validation serially. Do not run multiple `cargo` commands at the same time.
 

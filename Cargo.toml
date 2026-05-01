@@ -1,16 +1,16 @@
 [workspace]
 members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
-    "mesh-client",
-    "mesh-api",
-    "mesh-host-core",
-    "mesh-api-ffi",
-    "mesh-llm-test-harness",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
+    "crates/mesh-client",
+    "crates/mesh-api",
+    "crates/mesh-host-core",
+    "crates/mesh-api-ffi",
+    "crates/mesh-llm-test-harness",
     "tools/xtask",
 ]
 default-members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
 ]
 resolver = "2"
