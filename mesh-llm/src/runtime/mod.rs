@@ -1315,6 +1315,13 @@ async fn preflight_remote_startup_model(
     }
 
     let declared_ref = spec.model_ref.to_string_lossy().to_string();
+
+    // hf:// layer package refs are handled by the staged inference path,
+    // not the MoE fit checker.
+    if declared_ref.starts_with("hf://") {
+        return Ok(());
+    }
+
     if !declared_ref.contains('/') {
         let installed_name = declared_ref.strip_suffix(".gguf").unwrap_or(&declared_ref);
         if models::find_model_path(installed_name).exists() {

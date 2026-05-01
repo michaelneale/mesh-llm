@@ -182,6 +182,7 @@ fn build_dense_launch_plan(
     force_split: bool,
     model_name: &str,
     model_peers: &[mesh::PeerInfo],
+    is_layer_package: bool,
 ) -> DenseLaunchPlan {
     let min_vram = (model_bytes as f64 * 1.1) as u64;
     if !force_split && my_vram >= min_vram {
@@ -192,7 +193,8 @@ fn build_dense_launch_plan(
         .iter()
         .filter(|p| matches!(p.role, NodeRole::Worker) || p.is_assigned_model(model_name))
         .filter(|p| !matches!(p.role, NodeRole::Client))
-        .filter(|p| !matches!(p.rtt_ms, Some(rtt) if rtt > mesh::MAX_SPLIT_RTT_MS))
+        // Layer-parallel splits tolerate higher RTT (pipeline, not tensor-parallel).
+        .filter(|p| is_layer_package || !matches!(p.rtt_ms, Some(rtt) if rtt > mesh::MAX_SPLIT_RTT_MS))
         .collect();
     candidates.sort_by_key(|p| (p.rtt_ms.unwrap_or(u32::MAX), p.id));
 
@@ -1784,12 +1786,14 @@ pub async fn election_loop(
             .filter(|p| p.is_assigned_model(&model_name))
             .cloned()
             .collect();
+        let is_layer_package = model.join("model-package.json").is_file();
         let desired_launch = build_dense_launch_plan(
             local_launch_vram,
             model_bytes,
             force_split,
             &model_name,
             &model_peers,
+            is_layer_package,
         );
 
         // Splitting decision: only split when forced OR when the model
@@ -1971,7 +1975,6 @@ pub async fn election_loop(
             on_change(true, false);
 
             // Decision: layer package + needs split → skippy. Everything else → llama-server.
-            let is_layer_package = model.join("model-package.json").is_file();
             let needs_split = matches!(desired_launch, DenseLaunchPlan::Split { .. });
 
             let (llama_port, process) = if is_layer_package && needs_split {
@@ -3103,12 +3106,14 @@ async fn start_llama(
     let my_vram = node.vram_bytes();
     let local_launch_vram = effective_local_launch_vram(my_vram, pinned_gpu);
     let model_bytes = total_model_bytes(model);
+    let is_layer_pkg = model.join("model-package.json").is_file();
     let launch_plan = build_dense_launch_plan(
         local_launch_vram,
         model_bytes,
         force_split,
         model_name,
         model_peers,
+        is_layer_pkg,
     );
     let worker_ids = match launch_plan {
         DenseLaunchPlan::Solo => {
@@ -3365,7 +3370,7 @@ mod tests {
             make_dense_peer(id_d, 30, Some(40), model),
         ];
 
-        let plan = build_dense_launch_plan(60, 100, false, model, &peers);
+        let plan = build_dense_launch_plan(60, 100, false, model, &peers, false);
         assert_eq!(
             plan,
             DenseLaunchPlan::Split {
@@ -3410,6 +3415,7 @@ mod tests {
             false,
             model,
             std::slice::from_ref(&peer),
+            false,
         );
 
         assert_eq!(
@@ -3444,8 +3450,8 @@ mod tests {
         let mut with_spare = base.clone();
         with_spare.push(make_dense_peer(id_d, 50, Some(70), model));
 
-        let base_plan = build_dense_launch_plan(60, 100, false, model, &base);
-        let spare_plan = build_dense_launch_plan(60, 100, false, model, &with_spare);
+        let base_plan = build_dense_launch_plan(60, 100, false, model, &base, false);
+        let spare_plan = build_dense_launch_plan(60, 100, false, model, &with_spare, false);
 
         assert_eq!(base_plan.running_plan(), spare_plan.running_plan());
         assert_eq!(
@@ -3472,8 +3478,8 @@ mod tests {
             make_dense_peer(id_d, 30, Some(30), model),
         ];
 
-        let initial_plan = build_dense_launch_plan(50, 100, false, model, &initial);
-        let survivor_plan = build_dense_launch_plan(50, 100, false, model, &survivors);
+        let initial_plan = build_dense_launch_plan(50, 100, false, model, &initial, false);
+        let survivor_plan = build_dense_launch_plan(50, 100, false, model, &survivors, false);
 
         assert_eq!(
             initial_plan.running_plan(),
@@ -3499,7 +3505,7 @@ mod tests {
             make_dense_peer(id_c, 40, Some(mesh::MAX_SPLIT_RTT_MS + 1), model),
         ];
 
-        let plan = build_dense_launch_plan(50, 100, false, model, &peers);
+        let plan = build_dense_launch_plan(50, 100, false, model, &peers, false);
         assert_eq!(
             plan,
             DenseLaunchPlan::WaitingForCapacity {

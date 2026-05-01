@@ -196,6 +196,30 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
 pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> Result<PathBuf> {
     let raw = input.to_string_lossy();
 
+    // Handle hf:// layer package refs — resolve to skippy's cache directory.
+    // If the package is already cached, return immediately. Otherwise download.
+    if let Some(hf_ref) = raw.strip_prefix("hf://") {
+        let cache_dir = skippy_hf_package_cache_dir(hf_ref);
+        if cache_dir.join("model-package.json").is_file() {
+            record_resolved_model_usage(&cache_dir, Some(&raw));
+            return Ok(cache_dir);
+        }
+        // Not cached — download via `hf download` to the cache dir
+        std::fs::create_dir_all(&cache_dir)?;
+        let status = tokio::process::Command::new("hf")
+            .args(["download", hf_ref, "--local-dir"])
+            .arg(&cache_dir)
+            .args(["--quiet"])
+            .status()
+            .await
+            .context("run hf download for layer package")?;
+        if !status.success() {
+            anyhow::bail!("hf download failed for {hf_ref}");
+        }
+        record_resolved_model_usage(&cache_dir, Some(&raw));
+        return Ok(cache_dir);
+    }
+
     if input.exists() {
         record_resolved_model_usage(input, Some(raw.as_ref()));
         return Ok(input.to_path_buf());
@@ -1645,6 +1669,25 @@ pub(super) async fn remote_hf_size_label_with_api(
 
     let url = huggingface_resolve_url(repo, revision, file);
     remote_size_label(&url).await
+}
+
+/// Compute the local cache directory for an hf:// layer package ref.
+/// Uses the same path scheme as skippy-runtime so files are shared.
+fn skippy_hf_package_cache_dir(hf_ref: &str) -> PathBuf {
+    let sanitized: String = format!("{}-main", hf_ref)
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache/skippy-runtime/hf-packages")
+        .join(sanitized)
 }
 
 #[cfg(test)]
