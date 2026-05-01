@@ -92,6 +92,9 @@ jobs:
             crates/mesh-host-core/ \
             crates/mesh-api-ffi/ \
             crates/mesh-llm-test-harness/ \
+            crates/model-ref/ \
+            crates/model-artifact/ \
+            crates/model-hf/ \
             tools/xtask/
           do
             grep -q "COPY ${path} ${path}" "$file"

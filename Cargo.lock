@@ -3648,6 +3648,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-artifact"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "model-ref",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "model-hf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "huggingface-hub",
+ "model-artifact",
+ "model-ref",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "model-ref"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "moka"
 version = "0.12.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

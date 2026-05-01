@@ -28,6 +28,9 @@ COPY crates/mesh-api/ crates/mesh-api/
 COPY crates/mesh-host-core/ crates/mesh-host-core/
 COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
 COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY crates/model-ref/ crates/model-ref/
+COPY crates/model-artifact/ crates/model-artifact/
+COPY crates/model-hf/ crates/model-hf/
 COPY tools/xtask/ tools/xtask/
 RUN cargo build --release -p mesh-llm
 RUN cargo test -p mesh-llm
