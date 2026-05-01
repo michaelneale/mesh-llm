@@ -980,6 +980,67 @@ pub fn manifest_file_path(
     )
 }
 
+/// Search the configured trunk root's `manifests/<stem>/` directory for any
+/// previously-built `SplitManifest` for this source model. Used by the runtime
+/// planner to *pin* assignments to a pre-built layout when
+/// `moe.storage.mode == Split`. Without this, the planner would compute fresh
+/// `(n_nodes, overlap, ranking)` from peer state and almost always disagree
+/// with the manifest's hash-derived `version`, causing the manifest to be
+/// ignored and the legacy local per-node split to run.
+///
+/// Selection rule when multiple manifests exist for the same stem:
+/// 1. Prefer the manifest whose `n_nodes` exactly matches `prefer_n_nodes`
+///    if provided.
+/// 2. Otherwise prefer the largest `n_nodes` (more parallelism is usually
+///    the operator's intent when they pre-built it).
+/// 3. Tie-break by mtime (newest wins).
+///
+/// Cheap-by-design: opens at most a few small JSON files and compares
+/// `source_model_sha256` to the stem; the source GGUF is *not* re-hashed.
+pub fn find_pinned_manifest(
+    cfg: &crate::plugin::MoeStorageConfig,
+    model_path: &Path,
+    prefer_n_nodes: Option<usize>,
+) -> Option<(PathBuf, SplitManifest)> {
+    let root = crate::plugin::resolve_trunk_root(cfg)?;
+    let stem = model_stem_for_split(model_path);
+    let dir = root.join("manifests").join(&stem);
+    let entries = std::fs::read_dir(&dir).ok()?;
+
+    let mut candidates: Vec<(PathBuf, SplitManifest, std::time::SystemTime)> = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if let Ok(m) = load_manifest(&p) {
+            candidates.push((p, m, mtime));
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| {
+        let exact_a = prefer_n_nodes.map(|n| a.1.n_nodes == n).unwrap_or(false);
+        let exact_b = prefer_n_nodes.map(|n| b.1.n_nodes == n).unwrap_or(false);
+        match exact_b.cmp(&exact_a) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        match b.1.n_nodes.cmp(&a.1.n_nodes) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        b.2.cmp(&a.2)
+    });
+    let (path, manifest, _) = candidates.into_iter().next()?;
+    Some((path, manifest))
+}
+
 /// Reuse the same stem-stripping rule as monolithic `split_path` so that
 /// multi-file source GGUFs (e.g. `Kimi-K2.5-Q4_K_M-00001-of-00013.gguf`) map
 /// to a single stem (`Kimi-K2.5-Q4_K_M`).

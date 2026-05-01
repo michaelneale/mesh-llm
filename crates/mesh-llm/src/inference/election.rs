@@ -2723,12 +2723,89 @@ async fn moe_election_loop(
             let my_shard_index = plan.shard_index_for(my_id).unwrap_or(0);
             on_change(true, false);
 
-            let assignments = moe::compute_assignments_with_overlap(
-                &moe_cfg.config.ranking,
-                plan.active_ids.len(),
-                moe_cfg.config.min_experts_per_node,
-                plan.overlap,
-            );
+            // Manifest-pin: when storage.mode=split AND a pre-built manifest
+            // exists for this source model with n_nodes matching the runtime
+            // peer count, adopt the manifest's assignments verbatim. Without
+            // this, the runtime ranking/overlap will almost never reproduce
+            // the exact assignments hash that derived the manifest's
+            // `version` string, so the manifest is ignored and the legacy
+            // local-cache split runs instead.
+            let pinned: Option<moe::SplitManifest> = if moe_storage
+                .as_ref()
+                .map(|c| matches!(c.mode, crate::plugin::MoeStorageMode::Split))
+                .unwrap_or(false)
+            {
+                let cfg = moe_storage.as_ref().expect("split-mode set above");
+                match moe::find_pinned_manifest(cfg, &model, Some(plan.active_ids.len())) {
+                    Some((path, m)) if m.n_nodes == plan.active_ids.len() => {
+                        eprintln!(
+                            "  📌 Pinned to manifest {} ({}, n_nodes={}); skipping runtime ranking.",
+                            m.version,
+                            path.display(),
+                            m.n_nodes
+                        );
+                        Some(m)
+                    }
+                    Some((path, m)) => {
+                        eprintln!(
+                            "  ℹ️  Found manifest {} (n_nodes={}) at {}, but runtime active={} — not pinning. Re-run `mesh-llm moe migrate --n-nodes {}` to make it reusable, or proceed and a fresh split will be built.",
+                            m.version,
+                            m.n_nodes,
+                            path.display(),
+                            plan.active_ids.len(),
+                            plan.active_ids.len()
+                        );
+                        None
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            let assignments: Vec<moe::NodeAssignment> = if let Some(m) = pinned.as_ref() {
+                let mut out: Vec<moe::NodeAssignment> = Vec::with_capacity(m.n_nodes);
+                // Build NodeAssignment per node from manifest. n_shared/n_unique
+                // are cosmetic (log only) — derive cheaply: shared = experts
+                // present on every node; unique = experts not on any other
+                // node.
+                let all_sets: Vec<std::collections::BTreeSet<u32>> = (0..m.n_nodes)
+                    .map(|i| {
+                        m.assignments
+                            .get(&i)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect();
+                for i in 0..m.n_nodes {
+                    let mine = &all_sets[i];
+                    let shared = mine
+                        .iter()
+                        .filter(|e| all_sets.iter().enumerate().all(|(j, s)| j == i || s.contains(*e)))
+                        .count();
+                    let unique = mine
+                        .iter()
+                        .filter(|e| !all_sets.iter().enumerate().any(|(j, s)| j != i && s.contains(*e)))
+                        .count();
+                    let mut experts: Vec<u32> = mine.iter().copied().collect();
+                    experts.sort_unstable();
+                    out.push(moe::NodeAssignment {
+                        experts,
+                        n_shared: shared,
+                        n_unique: unique,
+                    });
+                }
+                out
+            } else {
+                moe::compute_assignments_with_overlap(
+                    &moe_cfg.config.ranking,
+                    plan.active_ids.len(),
+                    moe_cfg.config.min_experts_per_node,
+                    plan.overlap,
+                )
+            };
             let my_assignment = &assignments[my_shard_index];
             let _ = emit_event(OutputEvent::MoeDistribution {
                 model: model_name.clone(),
@@ -2746,6 +2823,16 @@ async fn moe_election_loop(
                     unique_experts: my_assignment.n_unique,
                 },
             });
+            if pinned.is_some() {
+                emit_warning(
+                    "Using pinned MoE expert assignments from manifest",
+                    Some(format!(
+                        "model={model_name} shard={}/{}",
+                        my_shard_index + 1,
+                        plan.active_ids.len()
+                    )),
+                );
+            }
 
             // Advertise a non-ready local runtime before split generation / load so
             // peer liveness stays conservative during MoE convergence.
