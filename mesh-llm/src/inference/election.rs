@@ -1996,6 +1996,7 @@ pub async fn election_loop(
                     model_name: &model_name,
                     node_capacities: node_caps,
                     tunnel_ports: &tunnel_ports,
+                    node: &node,
                     ctx_size: ctx_size_override.unwrap_or(4096),
                 }).await {
                     Ok(result) => {

@@ -1891,6 +1891,13 @@ impl Node {
         self.state.lock().await.bin_dir = dir;
     }
 
+    /// Get an existing connection to a peer, or return an error.
+    pub async fn get_connection(&self, peer_id: EndpointId) -> anyhow::Result<Connection> {
+        let state = self.state.lock().await;
+        state.connections.get(&peer_id).cloned()
+            .ok_or_else(|| anyhow::anyhow!("no connection to peer {}", peer_id.fmt_short()))
+    }
+
     pub async fn set_role(&self, role: NodeRole) {
         *self.role.lock().await = role;
     }

@@ -597,6 +597,8 @@ pub struct StartSkippyParams<'a> {
     /// Tunnel ports for each peer (peer_id → local tunnel port).
     /// Stage downstream connections go through these.
     pub tunnel_ports: &'a std::collections::HashMap<iroh::EndpointId, u16>,
+    /// Mesh node for sending stage commands to peers.
+    pub node: &'a crate::mesh::Node,
     pub ctx_size: u32,
 }
 
@@ -751,9 +753,34 @@ pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferen
             None
         };
 
-        if stage.peer_id.is_some() {
-            // Remote stage — peer launches it. Skip for now (gossip coordination).
-            // TODO: tell peer to start its stage via gossip command
+        if let Some(peer_id) = stage.peer_id {
+            // Remote stage: send command to peer via STREAM_STAGE_COMMAND
+            let stage_port = stage_port;
+            let command = StartStageCommand {
+                package_ref: params.model_path.to_string_lossy().to_string(),
+                layer_start: stage.layer_start,
+                layer_end: stage.layer_end,
+                stage_index: stage.stage_index,
+                bind_port: stage_port,
+                activation_width: 4096,
+                activation_wire_dtype: "f16".to_string(),
+                model_id: manifest.model_id.clone(),
+                run_id: run_id.clone(),
+            };
+
+            let conn = params.node.get_connection(peer_id).await
+                .with_context(|| format!("no connection to peer for stage-{}", stage.stage_index))?;
+            tracing::info!("sending stage command to peer {} for stage-{} layers {}..{}",
+                peer_id.fmt_short(), stage.stage_index, stage.layer_start, stage.layer_end);
+
+            let response = send_stage_command(&conn, &command).await
+                .with_context(|| format!("stage command to peer for stage-{}", stage.stage_index))?;
+
+            if response.status != "ready" {
+                anyhow::bail!("peer failed to start stage-{}: {}",
+                    stage.stage_index, response.error.unwrap_or_default());
+            }
+            tracing::info!("peer ready for stage-{} on port {}", stage.stage_index, response.port);
             continue;
         }
 
