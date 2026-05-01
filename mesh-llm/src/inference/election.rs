@@ -1978,6 +1978,7 @@ pub async fn election_loop(
                     is_local: false,
                 });
             }
+            tracing::info!("starting skippy inference for model={} path={}", model_name, model.display());
             let (llama_port, process) = match staged::start_skippy(staged::StartSkippyParams {
                 bin_dir: &bin_dir,
                 model_path: &model,

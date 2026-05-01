@@ -676,7 +676,9 @@ pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferen
     }
 
     // Layer package: plan topology and launch stages
+    tracing::info!("parsing layer package manifest from {}", params.model_path.display());
     let manifest = PackageManifest::from_dir(params.model_path)?;
+    tracing::info!("manifest parsed: {} layers, model_id={}", manifest.layer_count, manifest.model_id);
     let plan = plan_topology(&manifest, &params.node_capacities)?;
 
     let base_port: u16 = find_free_port().await?;
