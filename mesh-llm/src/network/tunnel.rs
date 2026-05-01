@@ -316,11 +316,10 @@ async fn handle_inbound_stream(
 
     let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
 
-    // QUIC→TCP: use rewrite relay (intercepts REGISTER_PEER)
+    // Plain bidirectional relay — no rewriting needed for stage protocol
     let mut t1 = tokio::spawn(async move {
-        rewrite::relay_with_rewrite(quic_recv, tcp_write, port_rewrite_map).await
+        relay_bidirectional_half(quic_recv, tcp_write).await
     });
-    // TCP→QUIC: plain byte relay (responses from rpc-server)
     let mut t2 = tokio::spawn(async move { relay_tcp_to_quic(tcp_read, quic_send).await });
     tokio::select! {
         _ = &mut t1 => { t2.abort(); }
@@ -383,6 +382,25 @@ pub async fn relay_bidirectional(
         }
     };
     result
+}
+
+async fn relay_bidirectional_half(
+    mut quic_recv: iroh::endpoint::RecvStream,
+    mut tcp_write: tokio::io::WriteHalf<TcpStream>,
+) -> Result<()> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = quic_recv.read(&mut buf).await?.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        tcp_write.write_all(&buf[..n]).await?;
+        total += n as u64;
+        BYTES_TRANSFERRED.fetch_add(n as u64, Ordering::Relaxed);
+    }
+    tracing::debug!("QUIC→TCP: relay done after {total} bytes");
+    Ok(())
 }
 
 async fn relay_tcp_to_quic(
