@@ -7,6 +7,7 @@
 //!   GET  /api/model-interests — local explicit-interest readback (JSON)
 //!   POST /api/model-interests — register local explicit interest for a canonical model ref
 //!   DELETE /api/model-interests/{model_ref} — clear local explicit interest
+//!   GET  /api/model-targets — ranked model targets from explicit interest and demand
 //!   GET  /api/runtime   — local model state (JSON)
 //!   GET  /api/runtime/llama — local llama.cpp runtime metrics + slots snapshots (JSON)
 //!   GET  /api/runtime/events — SSE stream of llama.cpp runtime metrics + slots snapshots
@@ -33,6 +34,7 @@
 
 mod assets;
 mod http;
+mod model_targets;
 mod routes;
 mod state;
 pub(crate) mod status;
@@ -241,39 +243,57 @@ impl MeshApi {
         submission_source: Option<String>,
     ) -> (LocalModelInterest, bool) {
         let now = current_unix_secs();
-        let mut inner = self.inner.lock().await;
-        match inner.model_interests.entry(model_ref.clone()) {
-            std::collections::hash_map::Entry::Occupied(mut entry) => {
-                let existing = entry.get().clone();
-                let updated = LocalModelInterest {
-                    model_ref,
-                    submission_source: submission_source.or(existing.submission_source),
-                    created_at_unix: existing.created_at_unix,
-                    updated_at_unix: now,
-                };
-                entry.insert(updated.clone());
-                (updated, false)
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let created = LocalModelInterest {
-                    model_ref,
-                    submission_source,
-                    created_at_unix: now,
-                    updated_at_unix: now,
-                };
-                entry.insert(created.clone());
-                (created, true)
-            }
-        }
+        let (interest, created, model_refs) = {
+            let mut inner = self.inner.lock().await;
+            let (interest, created) = match inner.model_interests.entry(model_ref.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let existing = entry.get().clone();
+                    let updated = LocalModelInterest {
+                        model_ref,
+                        submission_source: submission_source.or(existing.submission_source),
+                        created_at_unix: existing.created_at_unix,
+                        updated_at_unix: now,
+                    };
+                    entry.insert(updated.clone());
+                    (updated, false)
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let created = LocalModelInterest {
+                        model_ref,
+                        submission_source,
+                        created_at_unix: now,
+                        updated_at_unix: now,
+                    };
+                    entry.insert(created.clone());
+                    (created, true)
+                }
+            };
+            let mut model_refs = inner.model_interests.keys().cloned().collect::<Vec<_>>();
+            model_refs.sort();
+            (interest, created, model_refs)
+        };
+        self.sync_node_model_interests(model_refs).await;
+        (interest, created)
     }
 
     pub(super) async fn remove_model_interest(&self, model_ref: &str) -> bool {
-        self.inner
-            .lock()
-            .await
-            .model_interests
-            .remove(model_ref)
-            .is_some()
+        let (removed, model_refs) = {
+            let mut inner = self.inner.lock().await;
+            let removed = inner.model_interests.remove(model_ref).is_some();
+            let mut model_refs = inner.model_interests.keys().cloned().collect::<Vec<_>>();
+            model_refs.sort();
+            (removed, model_refs)
+        };
+        if removed {
+            self.sync_node_model_interests(model_refs).await;
+        }
+        removed
+    }
+
+    async fn sync_node_model_interests(&self, model_refs: Vec<String>) {
+        let node = { self.inner.lock().await.node.clone() };
+        node.set_explicit_model_interests(model_refs).await;
+        self.push_status().await;
     }
 
     pub async fn set_primary_backend(&self, backend: String) {
@@ -521,7 +541,8 @@ impl MeshApi {
         let runtime_status = runtime_data_collector.runtime_status_snapshot();
         let model_name = runtime_status.primary_model.unwrap_or(fallback_model_name);
 
-        runtime_data::mesh_models(runtime_data_collector.build_model_view(
+        let target_lookup = self.model_target_lookup().await;
+        let mut models = runtime_data::mesh_models(runtime_data_collector.build_model_view(
             runtime_data::ModelViewInput {
                 peers: node.peers().await,
                 catalog: node.mesh_catalog_entries().await,
@@ -536,7 +557,19 @@ impl MeshApi {
                 model_size_bytes,
                 now_unix_secs: now_ts,
             },
-        ))
+        ));
+        for model in &mut models {
+            let target = target_lookup
+                .by_model_name
+                .get(&model.name)
+                .or_else(|| target_lookup.by_model_ref.get(&model.name));
+            if let Some(target) = target {
+                model.target_rank = Some(target.rank);
+                model.explicit_interest_count = Some(target.explicit_interest_count);
+                model.wanted = Some(target.wanted);
+            }
+        }
+        models
     }
 
     #[cfg(test)]
@@ -694,7 +727,7 @@ impl MeshApi {
             })
         };
 
-        runtime_data::status_payload(runtime_data_collector.build_status_view(
+        let mut payload = runtime_data::status_payload(runtime_data_collector.build_status_view(
             runtime_data::StatusViewInput {
                 version: MESH_LLM_VERSION.to_string(),
                 latest_version,
@@ -737,7 +770,9 @@ impl MeshApi {
                     },
                 ),
             },
-        ))
+        ));
+        payload.wanted_model_refs = self.wanted_model_refs().await;
+        payload
     }
 
     async fn push_status(&self) {
@@ -1486,6 +1521,7 @@ mod tests {
             hosted_models_known: false,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             last_seen: Instant::now(),
             last_mentioned: Instant::now(),
             moe_recovered_at: None,
@@ -1765,6 +1801,7 @@ mod tests {
             hosted_models_known,
             available_models: Vec::new(),
             requested_models: Vec::new(),
+            explicit_model_interests: Vec::new(),
             last_seen: std::time::Instant::now(),
             last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
@@ -2918,6 +2955,114 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_model_targets_combine_interest_demand_and_serving_visibility() {
+        let state = build_test_mesh_api().await;
+        let node = {
+            let inner = state.inner.lock().await;
+            inner.node.clone()
+        };
+        let model_name = crate::models::catalog::MODEL_CATALOG[0].name.to_string();
+        let (interest, _) = state
+            .upsert_model_interest(model_name.clone(), Some("ui".to_string()))
+            .await;
+        assert_eq!(
+            node.explicit_model_interests().await,
+            vec![model_name.clone()]
+        );
+
+        node.record_request(&model_name);
+
+        let mut peer = make_test_peer(
+            0x44,
+            mesh::NodeRole::Host { http_port: 9337 },
+            vec![model_name.as_str()],
+            vec![model_name.as_str()],
+            true,
+        );
+        peer.explicit_model_interests = vec![interest.model_ref.clone()];
+        node.insert_test_peer(peer).await;
+
+        let (addr, handle) = spawn_management_test_server(state).await;
+        let response = send_management_request(
+            addr,
+            "GET /api/model-targets HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let payload = json_body(&response);
+        let targets = payload["model_targets"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let target = targets
+            .into_iter()
+            .find(|entry| entry["model_ref"] == interest.model_ref)
+            .expect("target for explicit interest present");
+        assert_eq!(target["derived"]["target_rank"], json!(1));
+        assert_eq!(target["signals"]["explicit_interest_count"], json!(2));
+        assert_eq!(target["signals"]["request_count"], json!(1));
+        assert_eq!(target["signals"]["serving_node_count"], json!(1));
+        assert_eq!(target["signals"]["requested"], json!(false));
+        assert_eq!(target["derived"]["wanted"], json!(false));
+        assert!(target.get("rank").is_none());
+        assert!(target.get("explicit_interest_count").is_none());
+        assert!(target.get("wanted").is_none());
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_api_status_and_models_surface_wanted_targets() {
+        let state = build_test_mesh_api().await;
+        let node = {
+            let inner = state.inner.lock().await;
+            inner.node.clone()
+        };
+        let model_name = crate::models::catalog::MODEL_CATALOG[0].name.to_string();
+        let (interest, _) = state
+            .upsert_model_interest(model_name.clone(), Some("ui".to_string()))
+            .await;
+        node.set_requested_models(vec![model_name.clone()]).await;
+
+        let (status_addr, status_handle) = spawn_management_test_server(state.clone()).await;
+        let status_response = send_management_request(
+            status_addr,
+            "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+        assert!(status_response.starts_with("HTTP/1.1 200"));
+        let status_payload = json_body(&status_response);
+        assert_eq!(
+            status_payload["wanted_model_refs"],
+            json!([interest.model_ref.clone()])
+        );
+        status_handle.abort();
+
+        let (models_addr, models_handle) = spawn_management_test_server(state).await;
+        let models_response = send_management_request(
+            models_addr,
+            "GET /api/models HTTP/1.1\r\nHost: localhost\r\n\r\n".into(),
+        )
+        .await;
+        assert!(models_response.starts_with("HTTP/1.1 200"));
+        let models_payload = json_body(&models_response);
+        let models = models_payload["mesh_models"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let model = models
+            .into_iter()
+            .find(|entry| entry["name"] == model_name)
+            .expect("catalog model present");
+        assert_eq!(model["target_rank"], json!(1));
+        assert_eq!(model["explicit_interest_count"], json!(1));
+        assert_eq!(model["wanted"], json!(true));
+
+        models_handle.abort();
     }
 
     #[test]

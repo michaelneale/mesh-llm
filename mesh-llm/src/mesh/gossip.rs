@@ -32,6 +32,7 @@ pub(super) fn peer_meaningfully_changed(old: &PeerInfo, new: &PeerInfo) -> bool 
         || old.hosted_models != new.hosted_models
         || old.available_models != new.available_models
         || old.requested_models != new.requested_models
+        || old.explicit_model_interests != new.explicit_model_interests
         || old.served_model_descriptors != new.served_model_descriptors
         || old.served_model_runtime != new.served_model_runtime
         || old.version != new.version
@@ -98,6 +99,7 @@ pub(super) fn apply_transitive_ann(
     existing.models = ann.models.clone();
     existing.available_models.clear();
     existing.requested_models = ann.requested_models.clone();
+    existing.explicit_model_interests = ann.explicit_model_interests.clone();
     existing.owner_attestation = ann.owner_attestation.clone();
     if ann.model_source.is_some() {
         existing.model_source = ann.model_source.clone();
@@ -450,6 +452,7 @@ impl Node {
             existing.hosted_models_known = ann.hosted_models.is_some();
             existing.available_models.clear();
             existing.requested_models = ann.requested_models.clone();
+            existing.explicit_model_interests = ann.explicit_model_interests.clone();
             existing.last_seen = now;
             if recovered {
                 existing.moe_recovered_at = Some(now);
@@ -649,6 +652,7 @@ impl Node {
         let my_hosted_models = self.hosted_models.lock().await.clone();
         let my_available = self.available_models.lock().await.clone();
         let my_requested = self.requested_models.lock().await.clone();
+        let my_explicit_model_interests = self.explicit_model_interests.lock().await.clone();
         let my_mesh_id = self.mesh_id.lock().await.clone();
         let my_owner_attestation = self.owner_attestation.lock().await.clone();
         let my_demand = self.get_demand();
@@ -676,6 +680,7 @@ impl Node {
                     hosted_models: p.hosted_models_known.then(|| p.hosted_models.clone()),
                     available_models: p.available_models.clone(),
                     requested_models: p.requested_models.clone(),
+                    explicit_model_interests: p.explicit_model_interests.clone(),
                     version: p.version.clone(),
                     model_demand: HashMap::new(),
                     mesh_id: None,
@@ -708,6 +713,7 @@ impl Node {
             hosted_models: Some(my_hosted_models),
             available_models: my_available,
             requested_models: my_requested,
+            explicit_model_interests: my_explicit_model_interests,
             version: Some(crate::VERSION.to_string()),
             model_demand: my_demand,
             mesh_id: my_mesh_id,
@@ -791,6 +797,7 @@ mod tests {
             hosted_models: None,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
@@ -876,5 +883,49 @@ mod tests {
         let new_peer = test_peer(Some(200));
 
         assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+    }
+
+    #[test]
+    fn test_meaningfully_changed_explicit_model_interests() {
+        let old_peer = test_peer(Some(100));
+        let mut new_peer = test_peer(Some(100));
+        new_peer.explicit_model_interests = vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".into()];
+
+        assert!(peer_meaningfully_changed(&old_peer, &new_peer));
+    }
+
+    #[test]
+    fn test_apply_transitive_ann_refreshes_explicit_model_interests() {
+        let mut existing = test_peer(Some(100));
+        let mut ann = test_announcement(Some(100));
+        ann.explicit_model_interests = vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".into()];
+
+        apply_transitive_ann(&mut existing, &test_addr(0x33), &ann);
+
+        assert_eq!(
+            existing.explicit_model_interests,
+            vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_collect_announcements_includes_self_explicit_model_interests() {
+        let node = Node::new_for_tests(NodeRole::Worker).await.unwrap();
+        node.set_explicit_model_interests(vec![
+            "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".into(),
+            "Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".into(),
+        ])
+        .await;
+
+        let announcements = node.collect_announcements().await;
+        let self_announcement = announcements
+            .iter()
+            .find(|announcement| announcement.addr.id == node.id())
+            .expect("self announcement must be present");
+
+        assert_eq!(
+            self_announcement.explicit_model_interests,
+            vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()]
+        );
     }
 }

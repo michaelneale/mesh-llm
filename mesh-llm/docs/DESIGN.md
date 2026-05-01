@@ -67,7 +67,7 @@ Single QUIC connection per peer, multiplexed by 1-byte prefix:
 
 | Byte | Type | Purpose | Format |
 |------|------|---------|--------|
-| 0x01 | GOSSIP | Peer announcements (role, serving, VRAM, models, demand, mesh_id) | protobuf `GossipFrame` |
+| 0x01 | GOSSIP | Peer announcements (role, serving, VRAM, models, explicit interest, demand, mesh_id) | protobuf `GossipFrame` |
 | 0x02 | TUNNEL_RPC | TCP relay to remote rpc-server | raw TCP relay |
 | 0x03 | TUNNEL_MAP | B2B tunnel port map exchange | protobuf `TunnelMap` |
 | 0x04 | TUNNEL_HTTP | TCP relay to remote llama-server HTTP | raw TCP relay |
@@ -206,6 +206,7 @@ and the embedded web dashboard.
 | `/api/search` | GET | Search the built-in catalog or Hugging Face with the same JSON payload shape as `mesh-llm models search --json` |
 | `/api/model-interests` | GET, POST | Read back or register local explicit interest keyed by canonical model refs |
 | `/api/model-interests/{model_ref}` | DELETE | Clear local explicit interest for one canonical model ref |
+| `/api/model-targets` | GET | Ranked model targets from explicit interest, active demand, and serving visibility |
 | `/api/events` | GET | SSE stream of status updates (2s interval + on change) |
 | `/api/discover` | GET | Browse Nostr-published meshes |
 | `/api/join` | POST | Join a mesh by invite token `{"token":"..."}` |
@@ -217,9 +218,25 @@ The dashboard is a thin client. Live node state comes from `/api/status` and
 provides the same read-only model search payload as `mesh-llm models search --json`
 to operators and future UI flows without requiring CLI output parsing.
 `/api/model-interests` is intentionally local-node-only in phase 2: it stores
-explicit interest on the connected host without changing mesh gossip or runtime
-demand semantics yet. Entries should use canonical refs such as
-`org/repo@rev:variant`. Mesh management works without the HTML via curl/scripts.
+explicit interest on the connected host and advertises those canonical refs
+through gossip for read-only mesh target ranking. `/api/model-targets` combines
+local and peer explicit interest with active demand and current serving
+visibility; it does not launch, unload, or auto-assign models by itself. Entries
+should use canonical refs such as `org/repo@rev:variant`. Mesh management works
+without the HTML via curl/scripts.
+
+`/api/model-targets` keeps raw inputs and computed hints separate. Each target
+reports `signals` from observed mesh state (`explicit_interest_count`,
+`request_count`, `last_active_secs_ago`, `serving_node_count`, and `requested`)
+alongside `derived` hints (`target_rank`, `wanted`, and optional
+`wanted_reason`). Ranking is advisory and deterministic: explicit interest is
+ordered first, active request demand second, requested-only unserved models
+third, then recent activity, display name, and canonical ref. A `requested`
+signal does not add a second rank boost when request demand is already present;
+it only breaks into the ranking as its own requested-only signal. `wanted` means
+the model is currently unserved and has at least one explicit-interest, active
+demand, or requested-model signal. It is not a desired replica count, a capacity
+decision, or an unload/load command.
 
 Always enabled on port 3131 (configurable with `--console <port>`).
 

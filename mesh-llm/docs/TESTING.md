@@ -367,6 +367,7 @@ curl -X POST localhost:3131/api/model-interests \
   -H 'Content-Type: application/json' \
   -d '{"model_ref":"Qwen3-Coder-Next-Q4_K_M","source":"ui"}'
 curl localhost:3131/api/model-interests
+curl localhost:3131/api/model-targets
 curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 ```
 
@@ -374,6 +375,7 @@ curl localhost:3131/api/discover # Nostr meshes (current mesh marked by mesh_id)
 - SSE events push every 2s and on topology changes
 - `/api/search` returns 200 JSON with canonical model refs for matching results
 - `/api/model-interests` stores and returns local explicit-interest entries keyed by canonical model refs
+- `/api/model-targets` returns ranked targets with explicit-interest counts, request counts, serving-node counts, and `wanted` for targets not currently served
 - Discover results can be matched to current mesh by `mesh_id`
 
 ### 24. HTTP proxy single-request connection contract

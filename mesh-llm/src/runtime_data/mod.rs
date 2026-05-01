@@ -367,6 +367,7 @@ mod tests {
             models: vec!["Qwen-Test".into()],
             available_models: vec!["Qwen-Test".into()],
             requested_models: vec![],
+            wanted_model_refs: vec![],
             serving_models: vec![],
             hosted_models: vec![],
             draft_name: None,

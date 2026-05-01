@@ -535,6 +535,7 @@ mod tests {
             hosted_models_known: false,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             last_seen: std::time::Instant::now(),
             last_mentioned: std::time::Instant::now(),
             moe_recovered_at: None,
@@ -1200,6 +1201,7 @@ mod tests {
             hosted_models: None,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
@@ -1267,6 +1269,7 @@ mod tests {
             hosted_models: Some(vec!["Qwen".to_string()]),
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()],
             version: Some("0.52.0".to_string()),
             model_demand: HashMap::new(),
             mesh_id: Some("mesh-proto-roundtrip".to_string()),
@@ -1330,6 +1333,10 @@ mod tests {
         assert_eq!(
             roundtripped.gpu_compute_tflops_fp16.as_deref(),
             Some("312.00")
+        );
+        assert_eq!(
+            roundtripped.explicit_model_interests,
+            vec!["Qwen/Qwen3-Coder-Next-GGUF@main:Q4_K_M".to_string()]
         );
     }
 
@@ -1960,6 +1967,7 @@ mod tests {
             hosted_models: None,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,
@@ -2003,6 +2011,7 @@ mod tests {
             hosted_models: None,
             available_models: vec![],
             requested_models: vec![],
+            explicit_model_interests: vec![],
             version: None,
             model_demand: HashMap::new(),
             mesh_id: None,

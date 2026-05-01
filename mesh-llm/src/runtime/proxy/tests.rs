@@ -621,6 +621,7 @@ async fn test_moe_remote_failure_removes_peer_for_faildown() {
         hosted_models_known: true,
         available_models: vec![],
         requested_models: vec![],
+        explicit_model_interests: vec![],
         last_seen: std::time::Instant::now(),
         last_mentioned: std::time::Instant::now(),
         moe_recovered_at: None,
