@@ -10,7 +10,7 @@ on:
       - 'Justfile'
       - 'docker/**'
       - 'fly/Dockerfile'
-      - 'mesh-llm/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/docker.yml'

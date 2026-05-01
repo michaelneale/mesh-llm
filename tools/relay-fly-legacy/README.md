@@ -9,7 +9,7 @@ mesh-llm now uses managed iroh relay infrastructure via [services.iroh.computer]
 | USW1-2 | US West | `https://usw1-2.relay.michaelneale.mesh-llm.iroh.link./` |
 | APS1-1 | Asia-Pacific South | `https://aps1-1.relay.michaelneale.mesh-llm.iroh.link./` |
 
-These are configured as defaults in `mesh-llm/src/mesh/mod.rs`.
+These are configured as defaults in `crates/mesh-llm/src/mesh/mod.rs`.
 
 The old Fly.io relay (`mesh-llm-relay.fly.dev`) can be decommissioned.
 

@@ -1,7 +1,7 @@
-How many Rust source files are in mesh-llm/src/ and how many total lines of code? Use bash tools.
+How many Rust source files are in crates/mesh-llm/src/ and how many total lines of code? Use bash tools.
 #wait:20
-What are the main external crates in mesh-llm/Cargo.toml? Just list the important ones.
+What are the main external crates in crates/mesh-llm/Cargo.toml? Just list the important ones.
 #wait:20
 Which source file is the largest? Read the first 30 lines of it and tell me what it does.
 #wait:25
-Give me a one-line summary of what each .rs file in mesh-llm/src/ does.
+Give me a one-line summary of what each .rs file in crates/mesh-llm/src/ does.

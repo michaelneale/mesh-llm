@@ -1,0 +1,14 @@
+[package]
+name = "model-artifact"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+model-ref = { path = "../model-ref" }
+serde.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

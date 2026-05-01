@@ -1,4 +1,4 @@
-Explore the mesh-llm source code in this repo (mesh-llm/src/). Give me a summary of:
+Explore the mesh-llm source code in this repo (crates/mesh-llm/src/). Give me a summary of:
 
 1. How many Rust source files are there and what does each one do? (one line per file)
 2. What is the approximate total lines of code?

@@ -64,7 +64,7 @@ just release-bundle-vulkan-windows v0.X.0
 ```
 
 Those commands emit `.zip` assets in `dist/` with `mesh-llm.exe`, plus flavor-specific `rpc-server-<flavor>.exe` and `llama-server-<flavor>.exe`.
-If optional Windows benchmark binaries such as `membench-fingerprint-cuda.exe` or `membench-fingerprint-hip.exe` are present in `mesh-llm/target/release/`, the PowerShell packager also includes them in the `.zip`.
+If optional Windows benchmark binaries such as `membench-fingerprint-cuda.exe` or `membench-fingerprint-hip.exe` are present in `target/release/`, the PowerShell packager also includes them in the `.zip`.
 
 ### 4. Smoke test the bundle
 

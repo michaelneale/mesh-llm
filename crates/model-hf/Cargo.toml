@@ -1,0 +1,18 @@
+[package]
+name = "model-hf"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+hf_hub = { package = "huggingface-hub", git = "https://github.com/huggingface/huggingface_hub_rust.git", rev = "c9749ef76a294d5e97acae6b644071e39854aeb8", default-features = false, features = ["blocking", "xet"] }
+model-artifact = { path = "../model-artifact" }
+model-ref = { path = "../model-ref" }
+serde.workspace = true
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }

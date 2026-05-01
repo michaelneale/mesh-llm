@@ -453,7 +453,7 @@ index 00000000..8022b800
 +#pragma once
 +
 +// Mesh hook system — callbacks from llama-server into mesh-llm during inference.
-+// See mesh-llm/docs/VIRTUAL_LLM.md for the full design.
++// See docs/design/VIRTUAL_LLM.md for the full design.
 +//
 +// Three hooks, all synchronous:
 +//   Hook 1 (pre_inference)  — before generation starts, can inject into prompt

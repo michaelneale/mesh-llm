@@ -1,16 +1,28 @@
 [workspace]
 members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
-    "mesh-client",
-    "mesh-api",
-    "mesh-host-core",
-    "mesh-api-ffi",
-    "mesh-llm-test-harness",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
+    "crates/mesh-client",
+    "crates/mesh-api",
+    "crates/mesh-host-core",
+    "crates/mesh-api-ffi",
+    "crates/mesh-llm-test-harness",
+    "crates/model-ref",
+    "crates/model-artifact",
+    "crates/model-hf",
     "tools/xtask",
 ]
 default-members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
 ]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }

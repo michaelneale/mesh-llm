@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
 BUILD_DIR="$LLAMA_DIR/build"
-MESH_DIR="$REPO_ROOT/mesh-llm"
+MESH_DIR="$REPO_ROOT/crates/mesh-llm"
 UI_DIR="$MESH_DIR/ui"
 
 AMDGPU_TARGETS="${1:-gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201}"

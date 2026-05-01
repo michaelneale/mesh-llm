@@ -3522,6 +3522,8 @@ dependencies = [
  "libc",
  "mesh-llm-client",
  "mesh-llm-plugin",
+ "model-artifact",
+ "model-ref",
  "nostr-sdk",
  "prost",
  "prost-build",
@@ -3645,6 +3647,38 @@ dependencies = [
  "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "model-artifact"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "model-ref",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "model-hf"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "huggingface-hub",
+ "model-artifact",
+ "model-ref",
+ "serde",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "model-ref"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

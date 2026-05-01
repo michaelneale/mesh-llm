@@ -41,14 +41,17 @@ jobs:
         with:
           filters: |
             rust:
-              - 'mesh-llm/src/**'
-              - 'mesh-llm/build.rs'
-              - 'mesh-llm/plugin/**'
-              - 'mesh-llm/tests/**'
-              - 'mesh-llm/proto/**'
+              - 'crates/mesh-llm/src/**'
+              - 'crates/mesh-llm/build.rs'
+              - 'crates/mesh-llm-plugin/**'
+              - 'crates/model-ref/**'
+              - 'crates/model-artifact/**'
+              - 'crates/model-hf/**'
+              - 'crates/mesh-llm/tests/**'
+              - 'crates/mesh-llm/proto/**'
               - 'tools/xtask/**'
-              - 'mesh-llm/Cargo.toml'
-              - 'mesh-llm/Cargo.lock'
+              - 'crates/mesh-llm/Cargo.toml'
+              - 'Cargo.lock'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'Justfile'
@@ -60,14 +63,14 @@ jobs:
               - '.github/workflows/llama-cache-keys.yml'
               - '.github/workflows/smoke.yml'
             benchmarks:
-              - 'mesh-llm/benchmarks/**'
+              - 'crates/mesh-llm/benchmarks/**'
               - '.github/workflows/ci.yml'
             ui:
-              - 'mesh-llm/ui/**'
+              - 'crates/mesh-llm/ui/**'
             sdk:
-              - 'mesh-api/**'
-              - 'mesh-api-ffi/**'
-              - 'mesh-client/**'
+              - 'crates/mesh-api/**'
+              - 'crates/mesh-api-ffi/**'
+              - 'crates/mesh-client/**'
               - 'sdk/**'
               - 'Package.swift'
               - 'scripts/ci-native-sdk-smoke.sh'
@@ -95,7 +98,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: actions/setup-python@v6
         with:
@@ -107,12 +110,12 @@ jobs:
 
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         run: npm ci && npm run build
 
       - name: Test UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         run: npm test
 
       - name: Install Python SDKs
@@ -178,8 +181,7 @@ jobs:
           cargo test -p mesh-llm --test protocol_convert_matrix
 
       - name: Clippy
-        working-directory: mesh-llm
-        run: cargo clippy -- -D warnings || true
+        run: cargo clippy -p mesh-llm -- -D warnings || true
 
       # ── llama.cpp (CPU-only for CI) ──
       - name: Prepare patched llama.cpp
@@ -430,16 +432,16 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         run: npm ci && npm run build
 
       - name: Test UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         run: npm test
 
       # ── Rust ──
@@ -593,7 +595,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
         run: |
           mkdir -p target/release
-          swiftc -O mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
+          swiftc -O crates/mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
 
       - name: Upload Swift benchmark artifact
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
@@ -659,11 +661,11 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         shell: bash
         run: |
           npm ci
@@ -796,7 +798,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/release
-          nvcc -O3 -o target/release/membench-fingerprint-cuda mesh-llm/benchmarks/membench-fingerprint.cu
+          nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu
 
       - name: Upload CUDA benchmark artifact
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
@@ -859,11 +861,11 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Build UI
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         shell: bash
         run: |
           npm ci
@@ -934,7 +936,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p target/release
-          hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip mesh-llm/benchmarks/membench-fingerprint.hip
+          hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip crates/mesh-llm/benchmarks/membench-fingerprint.hip
 
       - name: Upload ROCm benchmark artifact
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
@@ -1021,10 +1023,10 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Build UI
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         shell: bash
         run: |
           npm ci

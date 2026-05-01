@@ -141,7 +141,7 @@ Line-oriented pretty sessions accept these commands after startup is ready:
 - `i` prints the current mesh status snapshot
 - `q` quits cleanly
 
-For the full event taxonomy and field reference, see [mesh-llm/src/cli/output/EVENTS.md](mesh-llm/src/cli/output/EVENTS.md).
+For the full event taxonomy and field reference, see [crates/mesh-llm/src/cli/output/EVENTS.md](crates/mesh-llm/src/cli/output/EVENTS.md).
 
 ## How it works
 
@@ -152,7 +152,7 @@ Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribu
 - **MoE model too big?** → expert parallelism — experts split across nodes, zero cross-node traffic
 
 If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
-Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md).
+Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [docs/design/LLAMA_CPP_FORK.md](docs/design/LLAMA_CPP_FORK.md).
 
 **Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. llama-server runs on the highest-VRAM node and coordinates via RPC. Each rpc-server loads only its assigned layers from local disk. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
 
@@ -162,7 +162,7 @@ Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [mesh
 
 **Demand-aware rebalancing** — a unified demand map tracks which models the mesh wants (from `--model` flags, API requests, and gossip). Demand signals propagate infectiously across all nodes and decay naturally via TTL. Standby nodes auto-promote to serve unserved models with active demand, or rebalance when one model is significantly hotter than others. When a model loses its last server, standby nodes detect it within ~60s.
 
-**Inter-model collaboration** — models on the mesh help each other during inference. When a text-only model receives an image, it silently consults a vision model on the mesh for a caption and generates from that. When a small model is uncertain, it races two peers for a second opinion and injects the winner's answer as context. When a model gets stuck in a repetition loop, another model nudges it out. The caller sees one seamless response — they don't know multiple models collaborated. Inspired by [Mixture of Models (NSED)](https://arxiv.org/pdf/2601.16863) — the mesh is the ensemble. See [VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md).
+**Inter-model collaboration** — models on the mesh help each other during inference. When a text-only model receives an image, it silently consults a vision model on the mesh for a caption and generates from that. When a small model is uncertain, it races two peers for a second opinion and injects the winner's answer as context. When a model gets stuck in a repetition loop, another model nudges it out. The caller sees one seamless response — they don't know multiple models collaborated. Inspired by [Mixture of Models (NSED)](https://arxiv.org/pdf/2601.16863) — the mesh is the ensemble. See [VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md).
 
 **Latency design** — the key insight is that HTTP streaming is latency-tolerant while RPC is latency-multiplied. llama-server always runs on the same box as the GPU. The mesh tunnels HTTP, so cross-network latency only affects time-to-first-token, not per-token throughput. RPC only crosses the network for pipeline splits where the model physically doesn't fit on one machine.
 
@@ -375,7 +375,7 @@ Notes:
 - Mixed image+audio requests work only when the selected model/runtime actually supports both modalities.
 - Non-goals: `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, and `v1/realtime`.
 
-For the full capability and transport details, see [mesh-llm/docs/MULTI_MODAL.md](mesh-llm/docs/MULTI_MODAL.md).
+For the full capability and transport details, see [docs/design/MULTI_MODAL.md](docs/design/MULTI_MODAL.md).
 
 ### Development
 
@@ -596,15 +596,17 @@ You can also try the hosted demo:
 
 ## More docs
 
+- [docs/README.md](docs/README.md) for the docs map and topic directories
 - [docs/USAGE.md](docs/USAGE.md) for service installs, model commands, storage, and runtime control
 - [docs/AGENTS.md](docs/AGENTS.md) for Goose, Claude Code, pi, OpenCode, curl, and blackboard usage
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for benchmark numbers and context
 - [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
-- [PLUGINS.md](PLUGINS.md) for the plugin system and blackboard internals
-- [mesh-llm/docs/VIRTUAL_LLM.md](mesh-llm/docs/VIRTUAL_LLM.md) for inter-model collaboration design
-- [mesh-llm/docs/LLAMA_CPP_FORK.md](mesh-llm/docs/LLAMA_CPP_FORK.md) for llama.cpp patch queue maintenance
-- [mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md](mesh-llm/docs/LLAMA_STAGE_INTEGRATION_PLAN.md) for the planned llama-stage-runtime integration
-- [mesh-llm/README.md](mesh-llm/README.md) for Rust crate structure
+- [docs/plugins/README.md](docs/plugins/README.md) for the plugin system and blackboard internals
+- [docs/moe/README.md](docs/moe/README.md) for MoE ranking and placement planning
+- [docs/design/VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md) for inter-model collaboration design
+- [docs/design/LLAMA_CPP_FORK.md](docs/design/LLAMA_CPP_FORK.md) for llama.cpp patch queue maintenance
+- [docs/design/LLAMA_STAGE_INTEGRATION_PLAN.md](docs/design/LLAMA_STAGE_INTEGRATION_PLAN.md) for the planned llama-stage-runtime integration
+- [crates/mesh-llm/README.md](crates/mesh-llm/README.md) for Rust crate structure
 - [ROADMAP.md](ROADMAP.md) for future work
 
 ## Community

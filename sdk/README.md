@@ -11,9 +11,9 @@ Current SDKs:
 These SDK packages should stay thin. Shared client behavior belongs in the Rust
 SDK crates:
 
-- `mesh-client/` for the low-level client implementation
-- `mesh-api/` for the public Rust client API
-- `mesh-api-ffi/` for the UniFFI/native bridge used by language SDKs
+- `crates/mesh-client/` for the low-level client implementation
+- `crates/mesh-api/` for the public Rust client API
+- `crates/mesh-api-ffi/` for the UniFFI/native bridge used by language SDKs
 
 If you add another top-level SDK here, include a `README.md` in that SDK
 directory explaining its packaging and public surface.

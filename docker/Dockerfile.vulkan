@@ -12,10 +12,10 @@
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
-COPY mesh-llm/ui/package.json mesh-llm/ui/package-lock.json ./
+COPY crates/mesh-llm/ui/package.json crates/mesh-llm/ui/package-lock.json ./
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
-COPY mesh-llm/ui/ ./
+COPY crates/mesh-llm/ui/ ./
 RUN npm run build
 # Output: /app/dist
 
@@ -31,20 +31,24 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 WORKDIR /src
 # Satisfy GitHub Actions preflight checks (exact strings required)
 COPY Cargo.toml Cargo.lock ./
-COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
-COPY mesh-llm/build.rs mesh-llm/build.rs
-COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
-COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
-COPY mesh-llm/proto/ mesh-llm/proto/
+COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
+COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
+COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
+COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
 # Satisfy Cargo workspace member resolution
-COPY mesh-llm/ mesh-llm/
-COPY mesh-client/ mesh-client/
-COPY mesh-api/ mesh-api/
-COPY mesh-host-core/ mesh-host-core/
-COPY mesh-api-ffi/ mesh-api-ffi/
-COPY mesh-llm-test-harness/ mesh-llm-test-harness/
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY crates/model-ref/ crates/model-ref/
+COPY crates/model-artifact/ crates/model-artifact/
+COPY crates/model-hf/ crates/model-hf/
 COPY tools/xtask/ tools/xtask/
-RUN mkdir -p mesh-llm/ui/dist && echo '<html></html>' > mesh-llm/ui/dist/index.html
+RUN mkdir -p crates/mesh-llm/ui/dist && echo '<html></html>' > crates/mesh-llm/ui/dist/index.html
 RUN cargo chef prepare --recipe-path recipe.json
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
@@ -53,23 +57,27 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 
 FROM rust-deps AS rust-builder
 WORKDIR /src
-RUN rm -rf mesh-llm/ui/dist
-COPY --from=ui-builder /app/dist mesh-llm/ui/dist
+RUN rm -rf crates/mesh-llm/ui/dist
+COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
 # Restore real build scripts (cargo-chef stubs them during cook)
 # Satisfy GitHub Actions preflight checks (exact strings required)
 COPY Cargo.toml Cargo.lock ./
-COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
-COPY mesh-llm/build.rs mesh-llm/build.rs
-COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
-COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
-COPY mesh-llm/proto/ mesh-llm/proto/
+COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
+COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
+COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
+COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
 # Satisfy Cargo workspace member resolution
-COPY mesh-llm/ mesh-llm/
-COPY mesh-client/ mesh-client/
-COPY mesh-api/ mesh-api/
-COPY mesh-host-core/ mesh-host-core/
-COPY mesh-api-ffi/ mesh-api-ffi/
-COPY mesh-llm-test-harness/ mesh-llm-test-harness/
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY crates/model-ref/ crates/model-ref/
+COPY crates/model-artifact/ crates/model-artifact/
+COPY crates/model-hf/ crates/model-hf/
 COPY tools/xtask/ tools/xtask/
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \

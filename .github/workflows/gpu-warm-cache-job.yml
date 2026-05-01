@@ -75,10 +75,10 @@ jobs:
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - name: Build UI
-        working-directory: mesh-llm/ui
+        working-directory: crates/mesh-llm/ui
         shell: bash
         run: |
           npm ci

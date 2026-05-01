@@ -4,13 +4,13 @@
 
 This file is the human-readable counterpart to `.github/workflows/docker-precheck.yml`. Both must agree. If they disagree, the reusable workflow is authoritative.
 
-> **Spec Correction #1**: The spec says `COPY proto/ proto/` but the actual path is `mesh-llm/proto/` (verified via filesystem inspection: `mesh-llm/proto/node.proto`, `mesh-llm/proto/plugin.proto` exist; no root-level `proto/`). All Dockerfiles use the corrected path `COPY mesh-llm/proto/ mesh-llm/proto/`.
+> **Spec Correction #1**: The spec says `COPY proto/ proto/` but the actual path is `crates/mesh-llm/proto/` (verified via filesystem inspection: `crates/mesh-llm/proto/node.proto`, `crates/mesh-llm/proto/plugin.proto` exist; no root-level `proto/`). All Dockerfiles use the corrected path `COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/`.
 
 ## Open Question Resolutions
 
 | Question | Answer | Evidence |
 |----------|--------|----------|
-| Q1: CLI form | `mesh-llm --client --auto --port 9337 --console 3131 --listen-all` (bare flags) | mesh-llm/src/cli/mod.rs — top-level Cli struct accepts bare flags |
+| Q1: CLI form | `mesh-llm --client --auto --port 9337 --console 3131 --listen-all` (bare flags) | crates/mesh-llm/src/cli/mod.rs — top-level Cli struct accepts bare flags |
 | Q2: :latest tag target | `client` (most portable, smallest, no GPU dependency) | Design decision |
 | Q3: CUDA compute_120 (Blackwell) | Works with CUDA 12.8.0 (compute_120 included in Justfile release-build-cuda) | Justfile line 53, release.yml line 78 |
 | Q4: Non-root user policy | Stay root (matches existing fly/Dockerfile; K3S users override via securityContext) | Design decision |
@@ -20,7 +20,7 @@ This file is the human-readable counterpart to `.github/workflows/docker-prechec
 | # | Spec Requirement | Enforcing File:Line | Grep Verifier | Status |
 |---|------------------|---------------------|---------------|--------|
 | 1 | ui-builder runs before rust-builder in every Dockerfile | docker/Dockerfile.client:46,53; docker/Dockerfile.cpu:50,57; docker/Dockerfile.vulkan:45,52; docker/Dockerfile.rocm:48,55; fly/Dockerfile:49,56 | `grep -n "COPY --from=ui-builder"` | ✅ verified (client, cpu, vulkan, rocm, fly) |
-| 2 | cargo-chef full workspace copy (incl. mesh-llm/proto/ corrected path) — NO stub lib.rs | docker/Dockerfile.client:30-36; docker/Dockerfile.cpu:29-37; docker/Dockerfile.vulkan:29-37; docker/Dockerfile.rocm:30-38; fly/Dockerfile:34-40 | `grep -n "COPY mesh-llm/proto"` | ✅ verified (client, cpu, vulkan, rocm, fly) |
+| 2 | cargo-chef full workspace copy (incl. crates/mesh-llm/proto/ corrected path) — NO stub lib.rs | docker/Dockerfile.client:30-36; docker/Dockerfile.cpu:29-37; docker/Dockerfile.vulkan:29-37; docker/Dockerfile.rocm:30-38; fly/Dockerfile:34-40 | `grep -n "COPY crates/mesh-llm/proto"` | ✅ verified (client, cpu, vulkan, rocm, fly) |
 | 3 | libdbus-1-dev in rust-builder apt | docker/Dockerfile.client:24; docker/Dockerfile.cpu:28; docker/Dockerfile.vulkan:23; docker/Dockerfile.rocm:28; fly/Dockerfile:27 | `grep -n "libdbus-1-dev"` | ✅ verified (client, cpu, vulkan, rocm, fly) |
 | 4 | master branch (NOT rebase-upstream-master) | docker/Dockerfile.cpu:66; docker/Dockerfile.vulkan:69; docker/Dockerfile.rocm:65 | `grep -n "master"` | ✅ verified (cpu, vulkan, rocm) |
 | 5 | GGML_CUDA_FA_ALL_QUANTS=ON in Dockerfile.cuda | docker/Dockerfile.cuda (cmake flags section) | `grep -n "GGML_CUDA_FA_ALL_QUANTS=ON"` | ✅ verified (cuda) |
