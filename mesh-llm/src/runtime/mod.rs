@@ -1160,8 +1160,19 @@ pub(crate) async fn run() -> Result<()> {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
     };
-    let rpc_binary_flavor =
-        launch::resolve_binary_flavor(&bin_dir, "rpc-server", cli.llama_flavor)?;
+    let rpc_backend_probe = if config.gpu.assignment == plugin::GpuAssignment::Pinned {
+        Some(launch::probe_backend_devices_for_binary(
+            &bin_dir,
+            "rpc-server",
+            cli.llama_flavor,
+        )?)
+    } else {
+        None
+    };
+    let rpc_binary_flavor = match &rpc_backend_probe {
+        Some(probe) => probe.flavor,
+        None => launch::resolve_binary_flavor(&bin_dir, "rpc-server", cli.llama_flavor)?,
+    };
     if cli.llama_flavor.is_none() {
         cli.llama_flavor = rpc_binary_flavor;
     }
@@ -1169,7 +1180,7 @@ pub(crate) async fn run() -> Result<()> {
         &config,
         &startup_specs,
         &mut startup_models,
-        rpc_binary_flavor,
+        rpc_backend_probe.as_ref(),
     )?;
     let resolved_models: Vec<PathBuf> = startup_models
         .iter()
@@ -1449,15 +1460,24 @@ fn preflight_config_owned_startup_models(
     config: &plugin::MeshConfig,
     specs: &[StartupModelSpec],
     plans: &mut [StartupModelPlan],
-    binary_flavor: Option<launch::BinaryFlavor>,
+    backend_probe: Option<&launch::BinaryBackendDeviceProbe>,
 ) -> Result<()> {
     if config.gpu.assignment != plugin::GpuAssignment::Pinned {
         return Ok(());
     }
 
     let mut survey = hardware::query(pinned_startup_preflight_metrics());
-    apply_backend_devices_for_flavor(&mut survey.gpus, binary_flavor);
-    preflight_config_owned_startup_models_with_gpus(config, specs, plans, &survey.gpus)
+    apply_backend_devices_for_flavor(
+        &mut survey.gpus,
+        backend_probe.and_then(|probe| probe.flavor),
+    );
+    preflight_config_owned_startup_models_with_gpus(
+        config,
+        specs,
+        plans,
+        &survey.gpus,
+        backend_probe,
+    )
 }
 
 fn apply_backend_devices_for_flavor(
@@ -1487,6 +1507,7 @@ fn preflight_config_owned_startup_models_with_gpus(
     specs: &[StartupModelSpec],
     plans: &mut [StartupModelPlan],
     gpus: &[hardware::GpuFacts],
+    backend_probe: Option<&launch::BinaryBackendDeviceProbe>,
 ) -> Result<()> {
     if config.gpu.assignment != plugin::GpuAssignment::Pinned {
         return Ok(());
@@ -1536,6 +1557,21 @@ fn preflight_config_owned_startup_models_with_gpus(
                     plan.declared_ref
                 )
             })?;
+        let backend_device = if let Some(probe) = backend_probe {
+            launch::resolve_requested_device_from_available(
+                &probe.available_devices,
+                &probe.path,
+                &backend_device,
+            )
+            .with_context(|| {
+                format!(
+                    "startup model '{}' failed pinned GPU preflight",
+                    plan.declared_ref
+                )
+            })?
+        } else {
+            backend_device
+        };
 
         plan.pinned_gpu = Some(StartupPinnedGpuTarget {
             index: resolved_gpu.index,
@@ -4352,7 +4388,7 @@ mod tests {
             synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("CUDA1")),
         ];
 
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
+        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
             .unwrap();
 
         assert_eq!(plans[0].gpu_id.as_deref(), Some("pci:0000:65:00.0"));
@@ -4368,7 +4404,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_gpu_startup_preflight_uses_backend_available_from_binary_flavor() {
+    fn pinned_gpu_startup_preflight_synthesizes_backend_from_binary_flavor() {
         let mut gpus = vec![
             synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0")),
             synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1")),
@@ -4378,6 +4414,99 @@ mod tests {
 
         assert_eq!(gpus[0].backend_device.as_deref(), Some("Vulkan0"));
         assert_eq!(gpus[1].backend_device.as_deref(), Some("Vulkan1"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_preflight_rejects_synthesized_backend_missing_from_probe() {
+        let config = plugin::MeshConfig {
+            gpu: plugin::GpuConfig {
+                assignment: plugin::GpuAssignment::Pinned,
+                parallel: None,
+            },
+            ..plugin::MeshConfig::default()
+        };
+        let specs = vec![StartupModelSpec {
+            model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
+            mmproj_ref: None,
+            ctx_size: Some(4096),
+            gpu_id: Some("pci:0000:b3:00.0".into()),
+            config_owned: true,
+            parallel: None,
+        }];
+        let mut plans = vec![StartupModelPlan {
+            declared_ref: "Qwen3-8B-Q4_K_M".into(),
+            resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(4096),
+            gpu_id: Some("pci:0000:b3:00.0".into()),
+            pinned_gpu: None,
+            parallel: None,
+        }];
+        let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("Vulkan1"))];
+        let backend_probe = launch::BinaryBackendDeviceProbe {
+            path: PathBuf::from("/tmp/rpc-server-vulkan"),
+            flavor: Some(launch::BinaryFlavor::Vulkan),
+            available_devices: vec!["Vulkan0".into(), "CPU".into()],
+        };
+
+        let err = preflight_config_owned_startup_models_with_gpus(
+            &config,
+            &specs,
+            &mut plans,
+            &gpus,
+            Some(&backend_probe),
+        )
+        .unwrap_err();
+        let message = format!("{err:#}");
+
+        assert!(message.contains("failed pinned GPU preflight"));
+        assert!(message.contains("requested device Vulkan1 is not supported"));
+        assert!(message.contains("Available devices: Vulkan0, CPU"));
+    }
+
+    #[test]
+    fn pinned_gpu_startup_preflight_canonicalizes_rocm_hip_alias_from_probe() {
+        let config = plugin::MeshConfig {
+            gpu: plugin::GpuConfig {
+                assignment: plugin::GpuAssignment::Pinned,
+                parallel: None,
+            },
+            ..plugin::MeshConfig::default()
+        };
+        let specs = vec![StartupModelSpec {
+            model_ref: PathBuf::from("Qwen3-8B-Q4_K_M"),
+            mmproj_ref: None,
+            ctx_size: Some(4096),
+            gpu_id: Some("pci:0000:b3:00.0".into()),
+            config_owned: true,
+            parallel: None,
+        }];
+        let mut plans = vec![StartupModelPlan {
+            declared_ref: "Qwen3-8B-Q4_K_M".into(),
+            resolved_path: PathBuf::from("/tmp/Qwen3-8B-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(4096),
+            gpu_id: Some("pci:0000:b3:00.0".into()),
+            pinned_gpu: None,
+            parallel: None,
+        }];
+        let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1"))];
+        let backend_probe = launch::BinaryBackendDeviceProbe {
+            path: PathBuf::from("/tmp/rpc-server-rocm"),
+            flavor: Some(launch::BinaryFlavor::Rocm),
+            available_devices: vec!["HIP1".into(), "CPU".into()],
+        };
+
+        preflight_config_owned_startup_models_with_gpus(
+            &config,
+            &specs,
+            &mut plans,
+            &gpus,
+            Some(&backend_probe),
+        )
+        .unwrap();
+
+        assert_eq!(plans[0].pinned_gpu.as_ref().unwrap().backend_device, "HIP1");
     }
 
     #[test]
@@ -4429,7 +4558,7 @@ mod tests {
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
+        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
             .unwrap();
 
         assert_eq!(specs[0].gpu_id, None);
@@ -4466,9 +4595,10 @@ mod tests {
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-        let err =
-            preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
-                .unwrap_err();
+        let err = preflight_config_owned_startup_models_with_gpus(
+            &config, &specs, &mut plans, &gpus, None,
+        )
+        .unwrap_err();
         let message = format!("{err:#}");
 
         assert!(message.contains("failed pinned GPU preflight"));
@@ -4503,7 +4633,7 @@ mod tests {
         }];
         let gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), Some("CUDA3"))];
 
-        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
+        preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus, None)
             .unwrap();
 
         let pinned_gpu = plans[0].pinned_gpu.as_ref().unwrap();
@@ -4541,9 +4671,10 @@ mod tests {
         }];
         let gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), None)];
 
-        let err =
-            preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
-                .unwrap_err();
+        let err = preflight_config_owned_startup_models_with_gpus(
+            &config, &specs, &mut plans, &gpus, None,
+        )
+        .unwrap_err();
         let message = format!("{err:#}");
 
         assert!(message.contains("failed pinned GPU preflight"));
@@ -4578,9 +4709,10 @@ mod tests {
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
-        let err =
-            preflight_config_owned_startup_models_with_gpus(&config, &specs, &mut plans, &gpus)
-                .unwrap_err();
+        let err = preflight_config_owned_startup_models_with_gpus(
+            &config, &specs, &mut plans, &gpus, None,
+        )
+        .unwrap_err();
         let message = format!("{err:#}");
 
         assert!(message.contains("failed pinned GPU preflight"));

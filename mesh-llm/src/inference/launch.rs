@@ -87,6 +87,13 @@ struct ResolvedBinary {
     flavor: Option<BinaryFlavor>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BinaryBackendDeviceProbe {
+    pub(crate) path: PathBuf,
+    pub(crate) flavor: Option<BinaryFlavor>,
+    pub(crate) available_devices: Vec<String>,
+}
+
 pub(crate) fn platform_bin_name(name: &str) -> String {
     #[cfg(windows)]
     {
@@ -221,6 +228,53 @@ pub(crate) fn resolve_binary_flavor(
     requested_flavor: Option<BinaryFlavor>,
 ) -> Result<Option<BinaryFlavor>> {
     resolve_binary_path(bin_dir, name, requested_flavor).map(|binary| binary.flavor)
+}
+
+pub(crate) fn probe_backend_devices_for_binary(
+    bin_dir: &Path,
+    name: &str,
+    requested_flavor: Option<BinaryFlavor>,
+) -> Result<BinaryBackendDeviceProbe> {
+    let binary = resolve_binary_path(bin_dir, name, requested_flavor)?;
+    let available_devices = probe_available_devices(&binary.path);
+    Ok(BinaryBackendDeviceProbe {
+        path: binary.path,
+        flavor: binary.flavor,
+        available_devices,
+    })
+}
+
+pub(crate) fn resolve_requested_device_from_available(
+    available: &[String],
+    binary: &Path,
+    requested: &str,
+) -> Result<String> {
+    if !available.is_empty() {
+        if available.iter().any(|candidate| candidate == requested) {
+            return Ok(requested.to_string());
+        }
+
+        // Dual support for ROCm/HIP transition.
+        let is_amd_requested = requested.starts_with("ROCm") || requested.starts_with("HIP");
+        if is_amd_requested {
+            let alt_device = if requested.starts_with("ROCm") {
+                requested.replace("ROCm", "HIP")
+            } else {
+                requested.replace("HIP", "ROCm")
+            };
+            if available.iter().any(|candidate| candidate == &alt_device) {
+                return Ok(alt_device);
+            }
+        }
+
+        anyhow::bail!(
+            "requested device {requested} is not supported by {}. Available devices: {}",
+            binary.display(),
+            available.join(", ")
+        );
+    }
+
+    Ok(requested.to_string())
 }
 
 pub(crate) fn backend_device_for_flavor(
@@ -804,31 +858,7 @@ fn resolve_device_for_binary(
     let available = probe_available_devices(binary);
 
     if let Some(device) = requested {
-        if !available.is_empty() {
-            if available.iter().any(|candidate| candidate == device) {
-                return Ok(device.to_string());
-            }
-
-            // Dual support for ROCm/HIP transition
-            let is_amd_requested = device.starts_with("ROCm") || device.starts_with("HIP");
-            if is_amd_requested {
-                let alt_device = if device.starts_with("ROCm") {
-                    device.replace("ROCm", "HIP")
-                } else {
-                    device.replace("HIP", "ROCm")
-                };
-                if available.iter().any(|candidate| candidate == &alt_device) {
-                    return Ok(alt_device);
-                }
-            }
-
-            anyhow::bail!(
-                "requested device {device} is not supported by {}. Available devices: {}",
-                binary.display(),
-                available.join(", ")
-            );
-        }
-        return Ok(device.to_string());
+        return resolve_requested_device_from_available(&available, binary, device);
     }
 
     if let Some(selected) = preferred_device(&available, flavor) {
@@ -2621,6 +2651,47 @@ No devices found
             preferred_device(&available, Some(BinaryFlavor::Vulkan)),
             Some("Vulkan0".to_string())
         );
+    }
+
+    #[test]
+    fn resolve_requested_device_from_available_rejects_missing_device() {
+        let available = vec!["Vulkan0".to_string(), "CPU".to_string()];
+        let err = super::resolve_requested_device_from_available(
+            &available,
+            Path::new("/tmp/rpc-server-vulkan"),
+            "Vulkan1",
+        )
+        .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("requested device Vulkan1 is not supported"));
+        assert!(message.contains("Available devices: Vulkan0, CPU"));
+    }
+
+    #[test]
+    fn resolve_requested_device_from_available_preserves_rocm_hip_alias() {
+        let available = vec!["HIP1".to_string(), "CPU".to_string()];
+        let resolved = super::resolve_requested_device_from_available(
+            &available,
+            Path::new("/tmp/rpc-server-rocm"),
+            "ROCm1",
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "HIP1");
+    }
+
+    #[test]
+    fn resolve_requested_device_from_available_keeps_request_when_probe_empty() {
+        let available = Vec::new();
+        let resolved = super::resolve_requested_device_from_available(
+            &available,
+            Path::new("/tmp/rpc-server-vulkan"),
+            "Vulkan1",
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "Vulkan1");
     }
 
     #[test]

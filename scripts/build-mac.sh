@@ -50,7 +50,7 @@ stage_dev_runtime_binaries() {
 
     mkdir -p "$target_dir"
     rm -f "$target_dir/rpc-server" "$target_dir/llama-server"
-    rm -f "$target_dir"/rpc-server-* "$target_dir"/llama-server-*
+    rm -f "$target_dir"/rpc-server-*(N) "$target_dir"/llama-server-*(N)
 
     for name in rpc-server llama-server; do
         local source="$source_bin_dir/$name"
