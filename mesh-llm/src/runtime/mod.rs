@@ -2632,6 +2632,9 @@ async fn run_auto(
     let tunnel_mgr =
         tunnel::Manager::start(node.clone(), 0, channels.rpc, channels.http).await?;
 
+    // Share the tunnel's inbound port with the node so stage command handlers can update it
+    node.set_stage_inbound_port_ref(tunnel_mgr.inbound_port_ref()).await;
+
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
     let target_tx = std::sync::Arc::new(target_tx);

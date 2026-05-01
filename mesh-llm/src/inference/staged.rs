@@ -538,6 +538,10 @@ impl Drop for DriverProcess {
 /// This provides the /v1/chat/completions endpoint.
 pub async fn launch_driver(config: DriverLaunchConfig) -> Result<DriverProcess> {
     // The driver needs a stage config for the first stage (to load tokenizer)
+    // Driver only needs tokenizer (embeddings + vocab metadata).
+    // Load just 1 layer to satisfy the model loader, with filter_tensors_on_load
+    // to skip everything except embeddings.
+    // Set downstream so it knows it's not the final stage (avoids include_output).
     let driver_config = serde_json::json!({
         "run_id": config.run_id,
         "model_id": config.model_id,
@@ -546,12 +550,17 @@ pub async fn launch_driver(config: DriverLaunchConfig) -> Result<DriverProcess> 
         "stage_id": "driver",
         "stage_index": 0,
         "topology_id": &config.run_id,
-        "layer_start": config.layer_start,
-        "layer_end": config.layer_end,
+        "layer_start": 0,
+        "layer_end": 1,
         "n_gpu_layers": 0,
         "ctx_size": 4096,
         "filter_tensors_on_load": true,
         "bind_addr": format!("127.0.0.1:{}", config.bind_port + 100),
+        "downstream": {
+            "stage_id": "stage-0",
+            "stage_index": 1,
+            "endpoint": &config.first_stage_addr,
+        },
     });
 
     let config_path = config.run_dir.join("driver.json");

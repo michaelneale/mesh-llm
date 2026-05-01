@@ -136,6 +136,15 @@ impl Manager {
         tracing::info!("Tunnel manager: http_port updated to {port}");
     }
 
+    pub fn set_inbound_port(&self, port: u16) {
+        self.inbound_port.store(port, Ordering::Relaxed);
+        tracing::info!("Tunnel manager: inbound_port updated to {port} (stage server)");
+    }
+
+    pub fn inbound_port_ref(&self) -> Arc<AtomicU16> {
+        self.inbound_port.clone()
+    }
+
     /// Wait until we have at least `n` peers with active tunnels
     pub async fn wait_for_peers(&self, n: usize) -> Result<()> {
         let mut rx = self.node.peer_change_rx.clone();

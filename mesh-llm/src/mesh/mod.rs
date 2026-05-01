@@ -1145,6 +1145,9 @@ struct MeshState {
     connections: HashMap<EndpointId, Connection>,
     /// Path to directory containing skippy-server and other binaries.
     bin_dir: PathBuf,
+    /// Port of the local stage server (set when a stage command is received).
+    /// The tunnel manager reads this to route inbound stage traffic.
+    stage_inbound_port: Arc<std::sync::atomic::AtomicU16>,
     /// Remote peers' tunnel maps: peer_endpoint_id → { target_endpoint_id → tunnel_port_on_that_peer }
     remote_tunnel_maps: HashMap<EndpointId, HashMap<EndpointId, u16>>,
     /// Peers confirmed dead — don't reconnect from gossip discovery.
@@ -1178,7 +1181,9 @@ pub(crate) fn is_peer_admitted(peers: &HashMap<EndpointId, PeerInfo>, id: &Endpo
 /// Every other stream — including tunnel (0x02 / 0x04) — requires the
 /// remote to have completed gossip first.
 pub(crate) fn stream_allowed_before_admission(stream_type: u8) -> bool {
-    stream_type == STREAM_GOSSIP || stream_type == STREAM_ROUTE_REQUEST
+    stream_type == STREAM_GOSSIP
+        || stream_type == STREAM_ROUTE_REQUEST
+        || stream_type == STREAM_STAGE_COMMAND
 }
 
 pub(crate) fn ingest_tunnel_map(
@@ -1601,6 +1606,7 @@ impl Node {
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
                 bin_dir: PathBuf::new(),
+                stage_inbound_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
                 connections: HashMap::new(),
                 remote_tunnel_maps: HashMap::new(),
                 dead_peers: HashMap::new(),
@@ -1711,6 +1717,7 @@ impl Node {
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
                 bin_dir: PathBuf::new(),
+                stage_inbound_port: Arc::new(std::sync::atomic::AtomicU16::new(0)),
                 connections: HashMap::new(),
                 remote_tunnel_maps: HashMap::new(),
                 dead_peers: HashMap::new(),
@@ -1889,6 +1896,12 @@ impl Node {
 
     pub async fn set_bin_dir(&self, dir: PathBuf) {
         self.state.lock().await.bin_dir = dir;
+    }
+
+    /// Share the tunnel manager's inbound port Arc with this node,
+    /// so stage command handlers can update it when a stage starts.
+    pub async fn set_stage_inbound_port_ref(&self, port_ref: Arc<std::sync::atomic::AtomicU16>) {
+        self.state.lock().await.stage_inbound_port = port_ref;
     }
 
     /// Get an existing connection to a peer, or return an error.
@@ -4092,7 +4105,16 @@ impl Node {
             state.bin_dir.clone()
         };
 
+        let stage_index = command.stage_index;
         let response = crate::inference::staged::handle_stage_command(command, &bin_dir).await;
+
+        // Update tunnel inbound port so the host can reach our stage server
+        if response.status == "ready" {
+            let state = self.state.lock().await;
+            state.stage_inbound_port.store(response.port, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("stage-{} ready on port {}, updated inbound routing",
+                stage_index, response.port);
+        }
 
         // Send response
         let resp_bytes = serde_json::to_vec(&response)?;
