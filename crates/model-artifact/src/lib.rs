@@ -135,6 +135,20 @@ pub async fn resolve_model_artifact(
     })
 }
 
+pub fn select_primary_artifact_file(
+    selector: Option<&str>,
+    files: &[ModelArtifactFile],
+) -> Result<ModelArtifactFile> {
+    select_primary_file(selector, files)
+}
+
+pub fn artifact_files_for_primary(
+    primary_file: &str,
+    files: &[ModelArtifactFile],
+) -> Vec<ModelArtifactFile> {
+    artifact_file_set(primary_file, files)
+}
+
 fn select_primary_file(
     selector: Option<&str>,
     files: &[ModelArtifactFile],
@@ -171,10 +185,15 @@ fn select_primary_file(
             } else {
                 return None;
             };
-            Some((rank, file.path.clone(), file.clone()))
+            Some((
+                rank,
+                artifact_preference_score(&file.path),
+                file.path.clone(),
+                file.clone(),
+            ))
         })
-        .min_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)))
-        .map(|(_, _, file)| file)
+        .min_by(|left, right| (left.0, left.1, &left.2).cmp(&(right.0, right.1, &right.2)))
+        .map(|(_, _, _, file)| file)
         .ok_or_else(|| {
             anyhow::anyhow!("no model artifact matching selector '{selector}' in repository")
         })
@@ -205,10 +224,15 @@ fn select_default_file(files: &[ModelArtifactFile]) -> Result<ModelArtifactFile>
             } else {
                 return None;
             };
-            Some((rank, file.path.clone(), file.clone()))
+            Some((
+                rank,
+                artifact_preference_score(&file.path),
+                file.path.clone(),
+                file.clone(),
+            ))
         })
-        .min_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)))
-        .map(|(_, _, file)| file)
+        .min_by(|left, right| (left.0, left.1, &left.2).cmp(&(right.0, right.1, &right.2)))
+        .map(|(_, _, _, file)| file)
         .ok_or_else(|| anyhow::anyhow!("no supported model artifact files found in repository"))
 }
 
@@ -269,6 +293,20 @@ fn basename_lower(path: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or(path)
         .to_ascii_lowercase()
+}
+
+fn artifact_preference_score(file: &str) -> usize {
+    if file.contains("-00001-of-") {
+        return 0;
+    }
+    const PREFERRED: &[&str] = &[
+        "Q4_K_M", "Q4_K_S", "Q4_1", "Q5_K_M", "Q5_K_S", "Q8_0", "BF16",
+    ];
+    PREFERRED
+        .iter()
+        .position(|needle| file.contains(needle))
+        .map(|pos| pos + 1)
+        .unwrap_or(PREFERRED.len() + 2)
 }
 
 fn is_known_gguf_sidecar(basename_lower: &str) -> bool {

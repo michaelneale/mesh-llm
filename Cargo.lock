@@ -3522,6 +3522,8 @@ dependencies = [
  "libc",
  "mesh-llm-client",
  "mesh-llm-plugin",
+ "model-artifact",
+ "model-ref",
  "nostr-sdk",
  "prost",
  "prost-build",

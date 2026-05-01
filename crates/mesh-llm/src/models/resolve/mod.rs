@@ -8,6 +8,7 @@ use crate::cli::terminal_progress::start_spinner;
 use crate::models::usage::ModelUsageRecord;
 use anyhow::{anyhow, bail, Context, Result};
 use hf_hub::{ListModelsParams, RepoInfo, RepoInfoParams};
+use model_artifact::{select_primary_artifact_file, ModelArtifactFile};
 use serde::Deserialize;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -528,49 +529,15 @@ where
 }
 
 pub(super) fn quant_selector_from_gguf_file(file: &str) -> Option<String> {
-    if !file.ends_with(".gguf") {
-        return None;
-    }
-
-    if let Some((prefix, _)) = file.split_once('/') {
-        if is_quant_like_selector(prefix) {
-            return Some(prefix.to_string());
-        }
-    }
-
-    let basename = Path::new(file).file_name()?.to_str()?;
-    let mut stem = basename.strip_suffix(".gguf")?;
-    if let Some((base, shard)) = stem.rsplit_once("-00001-of-") {
-        if shard.len() == 5 && shard.chars().all(|ch| ch.is_ascii_digit()) {
-            stem = base;
-        }
-    }
-
-    for marker in [
-        "-UD-", ".UD-", "-IQ", ".IQ", "-Q", ".Q", "-BF16", ".BF16", "-F16", ".F16", "-F32", ".F32",
-    ] {
-        if let Some(pos) = stem.rfind(marker) {
-            return Some(stem[pos + 1..].to_string());
-        }
-    }
-    None
+    model_ref::quant_selector_from_gguf_file(file)
 }
 
 fn is_quant_like_selector(value: &str) -> bool {
-    let upper = value.to_ascii_uppercase();
-    upper.starts_with("UD-")
-        || upper.starts_with("Q")
-        || upper.starts_with("IQ")
-        || upper == "BF16"
-        || upper == "F16"
-        || upper == "F32"
+    model_ref::is_quant_like_selector(value)
 }
 
 fn format_repo_selector_ref(repo: &str, revision: Option<&str>, selector: &str) -> String {
-    match revision {
-        Some(revision) => format!("{repo}@{revision}:{selector}"),
-        None => format!("{repo}:{selector}"),
-    }
+    model_ref::format_model_ref(repo, revision, Some(selector))
 }
 
 fn format_huggingface_display_ref(repo: &str, revision: Option<&str>, file: &str) -> String {
@@ -839,97 +806,27 @@ pub(super) fn parse_huggingface_ref(input: &str) -> Option<(String, Option<Strin
     ))
 }
 
-fn parse_repo_tail_selector_and_revision(
-    tail: &str,
-) -> Option<(String, Option<String>, Option<String>)> {
-    let at_pos = tail.find('@');
-    let colon_pos = tail.find(':');
-
-    match (at_pos, colon_pos) {
-        (Some(at), Some(colon)) if at < colon => {
-            let repo_tail = &tail[..at];
-            let revision = &tail[at + 1..colon];
-            let selector = &tail[colon + 1..];
-            if repo_tail.is_empty() || revision.is_empty() || selector.is_empty() {
-                return None;
-            }
-            Some((
-                repo_tail.to_string(),
-                Some(revision.to_string()),
-                Some(selector.to_string()),
-            ))
-        }
-        (Some(at), Some(colon)) if colon < at => {
-            let repo_tail = &tail[..colon];
-            let selector = &tail[colon + 1..at];
-            let revision = &tail[at + 1..];
-            if repo_tail.is_empty() || revision.is_empty() || selector.is_empty() {
-                return None;
-            }
-            Some((
-                repo_tail.to_string(),
-                Some(revision.to_string()),
-                Some(selector.to_string()),
-            ))
-        }
-        (Some(at), None) => {
-            let repo_tail = &tail[..at];
-            let revision = &tail[at + 1..];
-            if repo_tail.is_empty() || revision.is_empty() {
-                return None;
-            }
-            Some((repo_tail.to_string(), Some(revision.to_string()), None))
-        }
-        (None, Some(colon)) => {
-            let repo_tail = &tail[..colon];
-            let selector = &tail[colon + 1..];
-            if repo_tail.is_empty() || selector.is_empty() {
-                return None;
-            }
-            Some((repo_tail.to_string(), None, Some(selector.to_string())))
-        }
-        (None, None) => Some((tail.to_string(), None, None)),
-        _ => None,
-    }
-}
-
 fn parse_huggingface_repo_ref(input: &str) -> Option<(String, Option<String>, Option<String>)> {
-    let parts: Vec<&str> = input.splitn(2, '/').collect();
-    if parts.len() != 2 {
+    if input.starts_with("http://") || input.starts_with("https://") {
         return None;
     }
-    if parts[0].is_empty() || parts[1].is_empty() || parts[0].contains(':') {
-        return None;
-    }
-    let (repo_tail, revision, selector) = parse_repo_tail_selector_and_revision(parts[1])?;
-    Some((format!("{}/{}", parts[0], repo_tail), revision, selector))
+    parse_model_ref_tuple(input)
 }
 
 fn parse_huggingface_repo_url(input: &str) -> Option<(String, Option<String>, Option<String>)> {
-    let tail = input
-        .strip_prefix("https://huggingface.co/")
-        .or_else(|| input.strip_prefix("http://huggingface.co/"))?;
-    let clean = tail
-        .split_once('?')
-        .map(|(left, _)| left)
-        .unwrap_or(tail)
-        .split_once('#')
-        .map(|(left, _)| left)
-        .unwrap_or(tail)
-        .trim_matches('/');
-    let parts: Vec<&str> = clean.split('/').collect();
-    if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+    if !input.starts_with("https://huggingface.co/") && !input.starts_with("http://huggingface.co/")
+    {
         return None;
     }
-    let (repo_tail, selector_revision, selector) = parse_repo_tail_selector_and_revision(parts[1])?;
-    let repo = format!("{}/{}", parts[0], repo_tail);
-    if parts.len() >= 4 && parts[2] == "tree" && !parts[3].is_empty() {
-        return Some((repo, Some(parts[3].to_string()), selector));
+    parse_model_ref_tuple(input)
+}
+
+fn parse_model_ref_tuple(input: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let parsed = model_ref::ModelRef::parse(input).ok()?;
+    if parsed.repo.split('/').count() != 2 {
+        return None;
     }
-    if parts.len() == 2 {
-        return Some((repo, selector_revision, selector));
-    }
-    None
+    Some((parsed.repo, parsed.revision, parsed.selector))
 }
 
 fn parse_exact_model_ref(input: &str) -> Result<ExactModelRef> {
@@ -1064,40 +961,10 @@ fn is_primary_mlx_weight_file(file: &str) -> bool {
 }
 
 fn select_default_hf_file_from_siblings(siblings: &[String]) -> Option<String> {
-    siblings
-        .iter()
-        .filter_map(|file| {
-            let lower = file.to_lowercase();
-            let rank = if lower == "model.safetensors" {
-                0
-            } else if is_split_mlx_first_shard(&lower) {
-                1
-            } else if lower.ends_with(".gguf") {
-                if is_known_gguf_sidecar(file) {
-                    return None;
-                }
-                if lower.contains("-000") && !lower.contains("-00001-of-") {
-                    return None;
-                }
-                if lower.contains("-00001-of-") {
-                    2
-                } else {
-                    3
-                }
-            } else {
-                return None;
-            };
-            Some((rank, file_preference_score(file), file.clone()))
-        })
-        .min_by(|left, right| left.cmp(right))
-        .map(|(_, _, file)| file)
+    resolve_hf_file_from_siblings("", siblings)
 }
 
 fn resolve_hf_file_from_siblings(requested: &str, siblings: &[String]) -> Option<String> {
-    if requested.is_empty() {
-        return select_default_hf_file_from_siblings(siblings);
-    }
-
     if requested.ends_with(".gguf")
         || requested.ends_with(".safetensors")
         || requested.ends_with(".safetensors.index.json")
@@ -1105,49 +972,15 @@ fn resolve_hf_file_from_siblings(requested: &str, siblings: &[String]) -> Option
         return Some(requested.to_string());
     }
 
-    let requested_lower = requested.to_lowercase();
-    let gguf_exact = format!("{requested}.gguf").to_lowercase();
-    let gguf_split_prefix = format!("{requested}-00001-of-").to_lowercase();
-    let safetensors_exact = format!("{requested}.safetensors").to_lowercase();
-    let safetensors_split_prefix = format!("{requested}-00001-of-").to_lowercase();
-
-    siblings
+    let files = siblings
         .iter()
-        .filter_map(|file| {
-            let lower = file.to_lowercase();
-            let rank = if lower == requested_lower {
-                0
-            } else if gguf_matches_quant_selector(&lower, &requested_lower) {
-                1
-            } else if lower == safetensors_exact {
-                2
-            } else if lower.starts_with(&safetensors_split_prefix)
-                && lower.ends_with(".safetensors")
-            {
-                3
-            } else if lower == gguf_exact {
-                4
-            } else if lower.starts_with(&gguf_split_prefix) && lower.ends_with(".gguf") {
-                5
-            } else {
-                return None;
-            };
-            Some((rank, file_preference_score(file), file.clone()))
-        })
-        .min_by(|left, right| left.cmp(right))
-        .map(|(_, _, file)| file)
-}
-
-fn gguf_matches_quant_selector(file_lower: &str, selector_lower: &str) -> bool {
-    if !file_lower.ends_with(".gguf") || selector_lower.is_empty() {
-        return false;
-    }
-    file_lower.contains(&format!("/{selector_lower}/"))
-        || file_lower.contains(&format!("-{selector_lower}-"))
-        || file_lower.contains(&format!(".{selector_lower}-"))
-        || file_lower.ends_with(&format!("-{selector_lower}.gguf"))
-        || file_lower.ends_with(&format!(".{selector_lower}.gguf"))
-        || file_lower.ends_with(&format!("/{selector_lower}.gguf"))
+        .cloned()
+        .map(ModelArtifactFile::new)
+        .collect::<Vec<_>>();
+    let selector = (!requested.is_empty()).then_some(requested);
+    select_primary_artifact_file(selector, &files)
+        .ok()
+        .map(|file| file.path)
 }
 
 pub(super) fn is_known_gguf_sidecar(file: &str) -> bool {
@@ -1156,16 +989,7 @@ pub(super) fn is_known_gguf_sidecar(file: &str) -> bool {
 }
 
 fn split_gguf_shard_info(file: &str) -> Option<(&str, &str, &str)> {
-    let stem = file.strip_suffix(".gguf")?;
-    let (prefix_and_part, total) = stem.rsplit_once("-of-")?;
-    if total.len() != 5 || !total.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let (prefix, part) = prefix_and_part.rsplit_once('-')?;
-    if part.len() != 5 || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    Some((prefix, part, total))
+    model_ref::split_gguf_shard_info(file).map(|shard| (shard.prefix, shard.part, shard.total))
 }
 
 fn is_split_gguf_first_shard(file: &str) -> bool {
