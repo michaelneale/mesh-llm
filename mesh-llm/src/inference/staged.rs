@@ -756,8 +756,21 @@ pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferen
         if let Some(peer_id) = stage.peer_id {
             // Remote stage: send command to peer via STREAM_STAGE_COMMAND
             let stage_port = stage_port;
+            // Use hf:// ref so peers can resolve from their own cache.
+            // If model_path is already hf://, use as-is. Otherwise construct from path.
+            let package_ref = {
+                let path_str = params.model_path.to_string_lossy();
+                if path_str.starts_with("hf://") {
+                    path_str.to_string()
+                } else {
+                    // Local path — peers need the same path or an hf:// ref.
+                    // For now, pass the local path and assume peers have it cached
+                    // at the same location (e.g. both downloaded via `hf download`).
+                    path_str.to_string()
+                }
+            };
             let command = StartStageCommand {
-                package_ref: params.model_path.to_string_lossy().to_string(),
+                package_ref,
                 layer_start: stage.layer_start,
                 layer_end: stage.layer_end,
                 stage_index: stage.stage_index,
