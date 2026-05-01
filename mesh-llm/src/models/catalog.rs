@@ -638,13 +638,9 @@ fn emit_or_print_model_progress(
     downloaded_bytes: Option<u64>,
     total_bytes: Option<u64>,
     status: ModelProgressStatus,
-    fallback: impl FnOnce(),
+    _fallback: impl FnOnce(),
 ) {
-    if interactive_tui_active() {
-        emit_model_progress(label, file, downloaded_bytes, total_bytes, status);
-    } else {
-        fallback();
-    }
+    emit_model_progress(label, file, downloaded_bytes, total_bytes, status);
 }
 
 fn download_hf_assets_blocking(

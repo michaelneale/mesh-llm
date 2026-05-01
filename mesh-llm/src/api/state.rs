@@ -65,6 +65,8 @@ pub struct RuntimeProcessPayload {
     pub port: u16,
     pub pid: u32,
     pub slots: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

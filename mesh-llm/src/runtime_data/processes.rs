@@ -7,6 +7,7 @@ pub(crate) struct RuntimeProcessSnapshot {
     pub pid: u32,
     pub port: u16,
     pub slots: usize,
+    pub context_length: Option<u32>,
     pub command: Option<String>,
     pub state: String,
     pub start: Option<i64>,
@@ -21,6 +22,7 @@ impl RuntimeProcessSnapshot {
             pid: payload.pid,
             port: payload.port,
             slots: payload.slots,
+            context_length: payload.context_length,
             command: None,
             state: payload.status.clone(),
             start: None,
@@ -36,6 +38,7 @@ impl RuntimeProcessSnapshot {
             port: self.port,
             pid: self.pid,
             slots: self.slots,
+            context_length: self.context_length,
         }
     }
 }

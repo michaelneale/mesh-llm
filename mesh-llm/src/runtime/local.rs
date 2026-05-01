@@ -245,8 +245,9 @@ pub(super) fn local_process_payload(
     port: u16,
     pid: u32,
     slots: usize,
+    context_length: u32,
 ) -> api::RuntimeProcessPayload {
-    local_process_snapshot(model_name, backend, port, pid, slots).to_payload()
+    local_process_snapshot(model_name, backend, port, pid, slots, context_length).to_payload()
 }
 
 pub(super) fn local_process_snapshot(
@@ -255,6 +256,7 @@ pub(super) fn local_process_snapshot(
     port: u16,
     pid: u32,
     slots: usize,
+    context_length: u32,
 ) -> crate::runtime_data::RuntimeProcessSnapshot {
     crate::runtime_data::RuntimeProcessSnapshot {
         model: model_name.to_string(),
@@ -262,6 +264,7 @@ pub(super) fn local_process_snapshot(
         pid,
         slots,
         port,
+        context_length: Some(context_length),
         command: None,
         state: "ready".into(),
         start: None,

@@ -500,6 +500,7 @@ fn runtime_process_payload_with_status(
         port: handle.port,
         pid: handle.process.pid(),
         slots: handle.slots,
+        context_length: Some(handle.context_length),
     }
 }
 
@@ -1573,7 +1574,7 @@ fn initial_console_session_mode_for_surface(
 ) -> ConsoleSessionMode {
     match explicit_surface {
         Some(RuntimeSurface::Serve) => current_mode,
-        _ => ConsoleSessionMode::Fallback,
+        _ => ConsoleSessionMode::None,
     }
 }
 
@@ -2916,6 +2917,7 @@ async fn run_auto(
                                 process.port,
                                 process.pid,
                                 slots,
+                                process.context_length,
                             );
                             upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
                             if let Some(cs) = console_state {
@@ -3073,6 +3075,7 @@ async fn run_auto(
                                         process.port,
                                         process.pid,
                                         slots,
+                                        process.context_length,
                                     );
                                     upsert_dashboard_process(
                                         &dashboard_processes,
@@ -3238,6 +3241,7 @@ async fn run_auto(
                                 handle.port,
                                 handle.process.pid(),
                                 slots,
+                                handle.context_length,
                             );
                             upsert_dashboard_process(&dashboard_processes, payload.clone())
                                 .await;
@@ -3991,6 +3995,7 @@ mod tests {
             port: 4001,
             pid: 1234,
             slots: 4,
+            context_length: Some(8192),
         }]));
         let inventory_model_name = model_name.clone();
         let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
@@ -4753,7 +4758,7 @@ mod tests {
                 Some(RuntimeSurface::Client),
                 ConsoleSessionMode::InteractiveDashboard
             ),
-            ConsoleSessionMode::Fallback
+            ConsoleSessionMode::None
         );
 
         assert_eq!(
@@ -4761,7 +4766,7 @@ mod tests {
                 None,
                 ConsoleSessionMode::InteractiveDashboard
             ),
-            ConsoleSessionMode::Fallback
+            ConsoleSessionMode::None
         );
     }
 
@@ -5273,5 +5278,39 @@ mod tests {
             async move { state.publication_state().await.as_str() == "publish_failed" }
         })
         .await;
+    }
+
+    #[test]
+    fn test_console_session_mode_serve_uses_interactive_mode() {
+        use crate::cli::RuntimeSurface;
+
+        // When explicit_surface is Some(RuntimeSurface::Serve), should preserve current mode
+        let result = initial_console_session_mode_for_surface(
+            Some(RuntimeSurface::Serve),
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::InteractiveDashboard);
+    }
+
+    #[test]
+    fn test_console_session_mode_non_serve_uses_none() {
+        use crate::cli::RuntimeSurface;
+
+        // When explicit_surface is Some(RuntimeSurface::Client), should use None mode
+        let result = initial_console_session_mode_for_surface(
+            Some(RuntimeSurface::Client),
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::None);
+    }
+
+    #[test]
+    fn test_console_session_mode_no_explicit_surface_uses_none() {
+        // When explicit_surface is None, should use None mode
+        let result = initial_console_session_mode_for_surface(
+            None,
+            ConsoleSessionMode::InteractiveDashboard,
+        );
+        assert_eq!(result, ConsoleSessionMode::None);
     }
 }

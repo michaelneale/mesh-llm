@@ -168,6 +168,7 @@ mod tests {
                 pid: 4242,
                 port: 9337,
                 slots: 4,
+                context_length: Some(8192),
                 command: None,
                 state: "ready".into(),
                 start: None,
@@ -267,6 +268,7 @@ mod tests {
                 port: 9444,
                 pid: 11,
                 slots: 4,
+                context_length: None,
             },
             RuntimeProcessPayload {
                 name: "Alpha".into(),
@@ -275,6 +277,7 @@ mod tests {
                 port: 9337,
                 pid: 10,
                 slots: 4,
+                context_length: None,
             },
         ];
         let collector_rows = legacy_processes
@@ -595,6 +598,7 @@ mod tests {
                 pid: 42,
                 port: 9337,
                 slots: 4,
+                context_length: Some(8192),
                 command: Some("llama-server".into()),
                 state: "ready".into(),
                 start: None,

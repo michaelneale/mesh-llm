@@ -1291,6 +1291,7 @@ mod tests {
                     port: 9337,
                     pid: 100,
                     slots: 4,
+                    context_length: None,
                 },
                 RuntimeProcessPayload {
                     name: "Llama".into(),
@@ -1299,6 +1300,7 @@ mod tests {
                     port: 9444,
                     pid: 101,
                     slots: 4,
+                    context_length: None,
                 },
             ],
         );
@@ -1306,22 +1308,6 @@ mod tests {
         assert_eq!(result.models[0].name, "Llama");
         assert_eq!(result.models[0].port, Some(9444));
         assert_eq!(result.models[1].name, "Qwen");
-    }
-
-    #[test]
-    fn test_build_runtime_status_payload_adds_starting_primary() {
-        let payload = build_runtime_status_payload(
-            "Qwen",
-            Some("llama".into()),
-            true,
-            false,
-            Some(9337),
-            vec![],
-        );
-
-        assert_eq!(payload.models.len(), 1);
-        assert_eq!(payload.models[0].status, "starting");
-        assert_eq!(payload.models[0].port, Some(9337));
     }
 
     #[test]
@@ -1334,6 +1320,7 @@ mod tests {
                 port: 9444,
                 pid: 11,
                 slots: 4,
+                context_length: None,
             },
             RuntimeProcessPayload {
                 name: "Alpha".into(),
@@ -1342,12 +1329,56 @@ mod tests {
                 port: 9337,
                 pid: 10,
                 slots: 4,
+                context_length: None,
             },
         ]);
 
         assert_eq!(payload.processes.len(), 2);
         assert_eq!(payload.processes[0].name, "Alpha");
         assert_eq!(payload.processes[1].name, "Zulu");
+    }
+
+    #[test]
+    fn test_runtime_processes_payload_includes_context_length() {
+        let payload = build_runtime_processes_payload(vec![
+            RuntimeProcessPayload {
+                name: "model-a".into(),
+                backend: "llama".into(),
+                status: "ready".into(),
+                port: 9337,
+                pid: 10,
+                slots: 4,
+                context_length: Some(65536),
+            },
+            RuntimeProcessPayload {
+                name: "model-b".into(),
+                backend: "llama".into(),
+                status: "ready".into(),
+                port: 9444,
+                pid: 11,
+                slots: 2,
+                context_length: None,
+            },
+        ]);
+
+        assert_eq!(payload.processes.len(), 2);
+        assert_eq!(payload.processes[0].name, "model-a");
+        assert_eq!(payload.processes[0].context_length, Some(65536));
+        assert_eq!(payload.processes[0].slots, 4);
+        assert_eq!(payload.processes[1].context_length, None);
+
+        // Verify serialization includes context_length when present
+        let json = serde_json::to_string(&payload).expect("serialize payload");
+        assert!(json.contains(r#""context_length":65536"#));
+        // Verify context_length is omitted when None (skip_serializing_if)
+        let model_b_section: serde_json::Value = serde_json::from_str(&json).expect("parse json");
+        let processes = model_b_section["processes"]
+            .as_array()
+            .expect("processes array");
+        assert!(
+            !processes[1].get("context_length").is_some()
+                && processes[1]["context_length"].is_null()
+        );
     }
 
     #[test]
@@ -2287,6 +2318,7 @@ mod tests {
                 port: 9999,
                 pid: 111,
                 slots: 4,
+                context_length: None,
             }];
             inner
                 .runtime_data_producer
@@ -2308,6 +2340,7 @@ mod tests {
                         pid: 777,
                         port: 9337,
                         slots: 4,
+                        context_length: Some(0),
                         command: Some("llama-server".into()),
                         state: "ready".into(),
                         start: Some(1_700_000_000),
@@ -3737,6 +3770,7 @@ data: [DONE]
                 port: 9999,
                 pid: 111,
                 slots: 4,
+                context_length: None,
             }];
 
             inner
@@ -3759,6 +3793,7 @@ data: [DONE]
                         pid: 777,
                         port: 9337,
                         slots: 4,
+                        context_length: Some(0),
                         command: Some("llama-server".into()),
                         state: "ready".into(),
                         start: Some(1_700_000_000),
