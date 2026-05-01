@@ -1,0 +1,11 @@
+node_modules
+dist
+playwright-report
+test-results
+coverage
+src/routeTree.gen.ts
+.env
+.env.*
+!.env.example
+.DS_Store
+.playwright-mcp
