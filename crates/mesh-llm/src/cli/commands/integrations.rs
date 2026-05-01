@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::runtime;
+use crate::{cli::shell, runtime};
 use url::Url;
 
 const OPENCODE_PROVIDER_ID: &str = "mesh";
@@ -69,7 +69,10 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
         .ok_or_else(|| anyhow::anyhow!("mesh host '{trimmed}' is missing a hostname"))?
         .to_string();
 
-    if !has_scheme && parsed.port().is_none() {
+    let is_local_host = is_loopback_or_localhost(&host_name);
+    let should_default_api_port =
+        parsed.port().is_none() && (!has_scheme || (is_local_host && parsed.scheme() == "http"));
+    if should_default_api_port {
         parsed
             .set_port(Some(DEFAULT_API_PORT))
             .map_err(|_| anyhow::anyhow!("Invalid mesh host '{trimmed}'"))?;
@@ -85,14 +88,14 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
     api_models.set_path("/v1/models");
 
     let mut management = parsed.clone();
-    if !has_scheme {
+    if !has_scheme || should_default_api_port {
         management
             .set_port(Some(DEFAULT_MANAGEMENT_PORT))
             .map_err(|_| anyhow::anyhow!("Invalid mesh host '{trimmed}'"))?;
     }
     management.set_path("/api/models");
 
-    let auto_start_local_mesh = is_loopback_or_localhost(&host_name);
+    let auto_start_local_mesh = is_local_host && parsed.scheme() == "http";
 
     Ok(OpenCodeTarget {
         input: trimmed.to_string(),
@@ -175,10 +178,6 @@ fn build_opencode_launch_spec_with_limits(
     }
 }
 
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 fn opencode_missing_binary_guidance(
     chosen: &str,
     host: &str,
@@ -199,7 +198,7 @@ fn pi_missing_binary_guidance(model_arg: &str) -> Vec<String> {
         "pi not found in PATH.".to_string(),
         "Install: npm install -g @mariozechner/pi-coding-agent".to_string(),
         "Or run manually:".to_string(),
-        format!("  pi --model {}", shell_single_quote(model_arg)),
+        format!("  pi --model {}", shell::single_quote(model_arg)),
     ]
 }
 
@@ -1534,6 +1533,42 @@ mod tests {
         );
         assert!(target.auto_start_local_mesh);
         assert_eq!(target.local_port, Some(9443));
+    }
+
+    #[test]
+    fn opencode_host_normalization_defaults_scheme_loopback_to_mesh_ports() {
+        let localhost = normalize_opencode_host("http://localhost").expect("valid localhost URL");
+        let loopback = normalize_opencode_host("http://127.0.0.1").expect("valid loopback URL");
+
+        assert_eq!(localhost.api_base_url, "http://localhost:9337/v1");
+        assert_eq!(localhost.api_models_url, "http://localhost:9337/v1/models");
+        assert_eq!(
+            localhost.management_models_url,
+            "http://localhost:3131/api/models"
+        );
+        assert!(localhost.auto_start_local_mesh);
+        assert_eq!(localhost.local_port, Some(9337));
+
+        assert_eq!(loopback.api_base_url, "http://127.0.0.1:9337/v1");
+        assert_eq!(
+            loopback.management_models_url,
+            "http://127.0.0.1:3131/api/models"
+        );
+        assert!(loopback.auto_start_local_mesh);
+        assert_eq!(loopback.local_port, Some(9337));
+    }
+
+    #[test]
+    fn opencode_host_normalization_does_not_auto_start_https_loopback() {
+        let target = normalize_opencode_host("https://localhost:9337").expect("valid HTTPS URL");
+
+        assert_eq!(target.api_base_url, "https://localhost:9337/v1");
+        assert_eq!(
+            target.management_models_url,
+            "https://localhost:9337/api/models"
+        );
+        assert!(!target.auto_start_local_mesh);
+        assert_eq!(target.local_port, Some(9337));
     }
 
     #[test]

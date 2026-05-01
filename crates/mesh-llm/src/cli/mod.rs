@@ -220,6 +220,7 @@ pub(crate) mod moe;
 pub mod output;
 pub(crate) mod pager;
 pub(crate) mod runtime;
+pub(crate) mod shell;
 pub(crate) mod terminal_progress;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
