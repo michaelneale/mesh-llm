@@ -551,7 +551,7 @@ describe("App routing and status", () => {
         true,
       ),
     );
-    await screen.findByText("Mesh LLM v1.0.0");
+    await screen.findByText("Mesh LLM v1.0.0-marinabuild");
   });
 
   it("renders dashboard live-state labels from node_state and peer state", async () => {

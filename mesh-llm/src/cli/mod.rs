@@ -260,6 +260,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) auto: bool,
 
+    /// Strict offline mode: disable internet relay/STUN/Nostr paths.
+    #[arg(long)]
+    pub(crate) offline: bool,
+
     /// Model to serve (path, catalog name, HF exact ref, or HuggingFace URL).
     #[arg(long)]
     pub(crate) model: Vec<PathBuf>,
@@ -482,6 +486,9 @@ pub(crate) enum Command {
     },
     /// Discover meshes on Nostr and optionally auto-join one.
     Discover {
+        /// Discover on local network via LAN multicast (offline-friendly).
+        #[arg(long)]
+        lan: bool,
         /// Filter by model name (substring match)
         #[arg(long)]
         model: Option<String>,
@@ -497,6 +504,9 @@ pub(crate) enum Command {
         /// Nostr relay URLs (default: see DEFAULT_RELAYS)
         #[arg(long)]
         relay: Vec<String>,
+        /// LAN discovery wait window in seconds (only used with --lan).
+        #[arg(long, default_value_t = crate::network::lan::DEFAULT_DISCOVERY_WAIT_SECS)]
+        wait_secs: u64,
     },
     /// Rotate all identity keys (node + Nostr).
     #[command(hide = true)]
@@ -630,7 +640,7 @@ where
     // Skip leading global flags to find the pseudo-subcommand position.
     // Recognized value-taking flags: --log-format, --max-vram, --llama-flavor, --device,
     // --tensor-split, --bind-port, --max-clients, --port, --console, --draft-max, --ctx-size.
-    // Boolean flags: --help-advanced, --auto, --client, --headless, --publish, --blackboard,
+    // Boolean flags: --help-advanced, --auto, --offline, --client, --headless, --publish, --blackboard,
     // --plugin, --auto-update, --no-draft, --split, --no-enumerate-host, --listen-all,
     // --no-console, --owner-required.
     let value_taking_flags = [

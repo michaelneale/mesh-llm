@@ -203,8 +203,28 @@ Everyone runs the same command. First person creates it, everyone else discovers
 mesh-llm serve --auto                      # discover, join, and serve a model
 mesh-llm client --auto                     # join as API-only client (no GPU)
 mesh-llm discover                          # browse available meshes
+mesh-llm discover --lan                    # browse LAN meshes (offline-friendly)
 mesh-llm gpus                              # inspect local GPUs and stable IDs
 ```
+
+### Offline LAN workflow
+Use this when you want private local-network operation without relay/STUN/Nostr.
+
+```bash
+# Node A (start a private offline mesh)
+mesh-llm serve --offline --model Qwen2.5-3B
+
+# Node B (discover on LAN and print best token)
+mesh-llm discover --lan --auto
+
+# Node B (join using printed token)
+mesh-llm serve --offline --join <token>
+```
+
+Notes:
+- `--offline` disables internet relay/STUN/Nostr paths.
+- `mesh-llm discover --lan` listens for LAN multicast announcements from running nodes.
+- LAN discovery is subnet-scoped; peers must be on the same local network.
 
 ### Inspect and clean the shared model cache
 ```bash

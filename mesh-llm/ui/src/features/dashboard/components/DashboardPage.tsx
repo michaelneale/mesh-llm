@@ -124,6 +124,19 @@ type NodeSidebarRecord = {
   privacyLimited: boolean;
 };
 
+function dashboardVersionLabel(version?: string) {
+  if (!version) return null;
+  return version;
+}
+
+function peerFriendlyName(peer: { hostname?: string; id: string; role: string }) {
+  if (peer.hostname && peer.hostname.trim().length > 0) {
+    return peer.hostname;
+  }
+  const shortId = peer.id.slice(0, 10);
+  return /^Host/.test(peer.role) ? `host-${shortId}` : `peer-${shortId}`;
+}
+
 export function DashboardPage({
   status,
   meshModels,
@@ -180,6 +193,23 @@ export function DashboardPage({
       .filter((model) => (modelFilter === "all" ? true : model.status === modelFilter))
       .sort((a, b) => b.node_count - a.node_count || a.name.localeCompare(b.name));
   }, [meshModels, modelFilter]);
+  const modelSizeGbForCard = useCallback(
+    (model: MeshModel): number | null => {
+      if (Number.isFinite(model.size_gb) && model.size_gb > 0) {
+        return model.size_gb;
+      }
+      if (
+        status &&
+        status.model_name === model.name &&
+        Number.isFinite(status.model_size_gb) &&
+        status.model_size_gb > 0
+      ) {
+        return status.model_size_gb;
+      }
+      return null;
+    },
+    [status],
+  );
   const totalMeshVramGb = useMemo(() => meshGpuVram(status), [status]);
   const distinctMeshVersions = useMemo(() => {
     const versions = new Set<string>();
@@ -209,6 +239,8 @@ export function DashboardPage({
           : null;
       return {
         ...peer,
+        friendlyName: peerFriendlyName(peer),
+        versionLabel: dashboardVersionLabel(peer.version),
         displayVramGb: peerDisplayVramGb,
         modelLabel,
         latencyLabel,
@@ -538,7 +570,7 @@ export function DashboardPage({
                       key={model.name}
                       name={model.name}
                       displayName={modelDisplayName(model)}
-                      sizeGb={model.size_gb}
+                      sizeGb={modelSizeGbForCard(model)}
                       nodeCount={model.node_count}
                       status={model.status}
                       vision={model.vision}
@@ -576,9 +608,10 @@ export function DashboardPage({
           {peerRows.length > 0 ? (
             <ScrollArea horizontal className="max-h-[18rem] md:max-h-[20rem]">
               <div className="pr-3">
-                <Table className="min-w-[920px]">
+                <Table className="min-w-[1040px]">
                   <TableHeader>
                     <TableRow>
+                      <TableHead>Name</TableHead>
                       <TableHead>ID</TableHead>
                       <TableHead>Role</TableHead>
                       <TableHead>Version</TableHead>
@@ -608,6 +641,9 @@ export function DashboardPage({
                           }
                         }}
                       >
+                        <TableCell className="max-w-[180px] truncate" title={peer.friendlyName}>
+                          {peer.friendlyName}
+                        </TableCell>
                         <TableCell className="font-mono text-xs">
                           <button
                             type="button"
@@ -623,7 +659,7 @@ export function DashboardPage({
                         </TableCell>
                         <TableCell>{peer.role}</TableCell>
                         <TableCell className="font-mono text-xs">
-                          {peer.version ?? (
+                          {peer.versionLabel ?? (
                             <span className="text-muted-foreground">unknown</span>
                           )}
                         </TableCell>

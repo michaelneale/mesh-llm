@@ -66,6 +66,7 @@ Runtime switches:
 - `--join <TOKEN>`: join a specific mesh using an invite token (repeatable).
 - `--discover [QUERY]`: discover a mesh via Nostr and join.
 - `--auto`: auto-join the best discovered mesh.
+- `--offline`: strict offline mode (disables relay/STUN/Nostr paths).
 - `--model <MODEL>`: model to serve (catalog id from `models recommended`, HF ref/URL, or path).
 - `--gguf <GGUF>`: serve a specific local GGUF file directly (repeatable).
 - `--port <PORT>`: API port (default `9337`).
@@ -247,15 +248,25 @@ Switches:
 
 ### `discover`
 
-Use this to discover meshes via Nostr and optionally select one automatically.
+Use this to discover meshes via Nostr or local LAN announcements and optionally select one automatically.
 
 Switches:
 
+- `--lan`: discover via LAN multicast announcements (offline-friendly; same subnet).
 - `--model <MODEL>`: filter discovered meshes by model name substring.
 - `--min-vram <MIN_VRAM>`: filter by minimum VRAM (GB).
 - `--region <REGION>`: filter by region.
 - `--auto`: print best invite token (useful for piping).
 - `--relay <RELAY>`: custom relay URL(s).
+- `--wait-secs <WAIT_SECS>`: LAN listen window in seconds (used with `--lan`, default `6`).
+
+Offline LAN example:
+
+```bash
+mesh-llm serve --offline --model Qwen2.5-3B
+mesh-llm discover --lan --auto
+mesh-llm serve --offline --join <token>
+```
 
 ### `goose`
 

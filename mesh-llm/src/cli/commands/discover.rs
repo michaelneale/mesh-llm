@@ -2,16 +2,84 @@ use anyhow::Result;
 
 use crate::inference::launch;
 use crate::mesh;
+use crate::network::lan;
 use crate::network::nostr;
 use crate::runtime;
 
 pub(crate) async fn run_discover(
+    lan_mode: bool,
     model: Option<String>,
     min_vram: Option<f64>,
     region: Option<String>,
     auto_join: bool,
     relays: Vec<String>,
+    wait_secs: u64,
 ) -> Result<()> {
+    if lan_mode {
+        let filter = lan::MeshFilter {
+            model,
+            min_vram_gb: min_vram,
+            region,
+        };
+
+        eprintln!(
+            "🔍 Listening for LAN mesh announcements for {}s...",
+            wait_secs.max(1)
+        );
+        let meshes = lan::discover(&filter, wait_secs).await?;
+
+        if meshes.is_empty() {
+            eprintln!("No LAN meshes found.");
+            eprintln!(
+                "Tip: start a peer with `mesh-llm serve --offline` (or `mesh-llm serve`) on the same subnet."
+            );
+            return Ok(());
+        }
+
+        eprintln!("Found {} LAN mesh(es):\n", meshes.len());
+        for (i, mesh) in meshes.iter().enumerate() {
+            let capacity = if mesh.listing.max_clients > 0 {
+                format!(
+                    "{}/{} clients",
+                    mesh.listing.client_count, mesh.listing.max_clients
+                )
+            } else {
+                format!("{} clients", mesh.listing.client_count)
+            };
+            eprintln!(
+                "  [{}] {} (announcer: {}, {})",
+                i + 1,
+                mesh,
+                mesh.announcer,
+                capacity
+            );
+            let token = &mesh.listing.invite_token;
+            let display_token = if token.len() > 40 {
+                format!("{}...{}", &token[..20], &token[token.len() - 12..])
+            } else {
+                token.clone()
+            };
+            if !mesh.listing.on_disk.is_empty() {
+                eprintln!("      on disk: {}", mesh.listing.on_disk.join(", "));
+            }
+            eprintln!("      token: {}", display_token);
+            eprintln!();
+        }
+
+        if auto_join {
+            let best = &meshes[0];
+            eprintln!("Selected LAN match: {}", best);
+            eprintln!("\nRun:");
+            eprintln!("  mesh-llm --join {}", best.listing.invite_token);
+            println!("{}", best.listing.invite_token);
+        } else {
+            eprintln!("To join a LAN mesh:");
+            eprintln!("  mesh-llm --join <token>");
+            eprintln!("\nOr use `mesh-llm discover --lan --auto` to print a token.");
+        }
+        return Ok(());
+    }
+
     let relays = runtime::nostr_relays(&relays);
 
     let filter = nostr::MeshFilter {
