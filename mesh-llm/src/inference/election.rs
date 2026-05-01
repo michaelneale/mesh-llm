@@ -1787,6 +1787,7 @@ pub async fn election_loop(
             .cloned()
             .collect();
         let is_layer_package = model.join("model-package.json").is_file();
+        tracing::info!(is_layer_package, needs_split=force_split || !model_fits_locally, model_path=%model.display(), "election: model classification");
         let desired_launch = build_dense_launch_plan(
             local_launch_vram,
             model_bytes,
