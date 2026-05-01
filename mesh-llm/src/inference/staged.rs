@@ -795,8 +795,21 @@ pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferen
             tracing::info!("sending stage command to peer {} for stage-{} layers {}..{}",
                 peer_id.fmt_short(), stage.stage_index, stage.layer_start, stage.layer_end);
 
-            let response = send_stage_command(&conn, &command).await
-                .with_context(|| format!("stage command to peer for stage-{}", stage.stage_index))?;
+            // Retry stage command with backoff — the peer may still be completing admission
+            let mut response = None;
+            for attempt in 0..3 {
+                match send_stage_command(&conn, &command).await {
+                    Ok(r) => { response = Some(r); break; }
+                    Err(e) => {
+                        tracing::warn!("stage command attempt {} failed: {e}", attempt + 1);
+                        if attempt < 2 {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
+                }
+            }
+            let response = response
+                .ok_or_else(|| anyhow::anyhow!("stage command to peer failed after 3 attempts for stage-{}", stage.stage_index))?;
 
             if response.status != "ready" {
                 anyhow::bail!("peer failed to start stage-{}: {}",
@@ -969,11 +982,12 @@ pub async fn handle_stage_command(
         .arg(&command.activation_wire_dtype)
         .stdout(Stdio::from(log_file.try_clone().unwrap()))
         .stderr(Stdio::from(log_file))
-        .kill_on_drop(true)
         .spawn();
 
     match child {
-        Ok(_child) => {
+        Ok(child) => {
+            // Keep the child process alive by leaking it (it runs for the lifetime of the mesh)
+            std::mem::forget(child);
             // Wait for the stage to start listening
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
             loop {
