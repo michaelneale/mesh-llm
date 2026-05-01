@@ -9,7 +9,7 @@ use crate::cli::output::{
     emit_event, MoeAnalysisProgressSummary, MoeDistributionSummary, MoeStatusSummary, MoeSummary,
     OutputEvent,
 };
-use crate::inference::{launch, moe};
+use crate::inference::{launch, moe, staged};
 use crate::mesh;
 use crate::models;
 use crate::network::tunnel;
@@ -1958,33 +1958,53 @@ pub async fn election_loop(
             }
             on_change(true, false);
 
-            // In solo mode, pass empty model_peers so start_llama won't use any workers
-            let peers_for_launch = if matches!(desired_launch, DenseLaunchPlan::Split { .. }) {
-                &model_peers[..]
-            } else {
-                &[]
-            };
-            let (llama_port, process) = match start_llama(StartLlamaParams {
-                runtime: &runtime,
-                node: &node,
-                tunnel_mgr: &tunnel_mgr,
+            // Launch skippy — handles both plain GGUFs and layer packages
+            let tunnel_ports = tunnel_mgr.peer_ports_map().await;
+            let mut node_caps = vec![staged::NodeCapability {
+                peer_id: None,
+                available_bytes: my_vram,
+                is_local: true,
+            }];
+            for peer in &model_peers {
+                node_caps.push(staged::NodeCapability {
+                    peer_id: Some(peer.id),
+                    available_bytes: peer.vram_bytes,
+                    is_local: false,
+                });
+            }
+            let (llama_port, process) = match staged::start_skippy(staged::StartSkippyParams {
                 bin_dir: &bin_dir,
-                model: &model,
+                model_path: &model,
                 model_name: &model_name,
-                model_peers: peers_for_launch,
-                explicit_mmproj: explicit_mmproj.as_deref(),
-                draft: draft.as_deref(),
-                draft_max,
-                force_split,
-                binary_flavor,
-                ctx_size_override,
-                pinned_gpu: pinned_gpu.as_ref(),
-                slots,
-            })
-            .await
-            {
-                Some((port, death_rx)) => (port, death_rx),
-                None => {
+                node_capacities: node_caps,
+                tunnel_ports: &tunnel_ports,
+                ctx_size: ctx_size_override.unwrap_or(4096),
+            }).await {
+                Ok(result) => {
+                    let http_port = result.http_port;
+                    let context_length = result.context_length;
+                    let driver_pid = result.driver.child.id().unwrap_or(0);
+                    let (death_tx, death_rx) = tokio::sync::oneshot::channel::<()>();
+                    tokio::spawn(async move {
+                        let _keep = result;
+                        tokio::signal::ctrl_c().await.ok();
+                        let _ = death_tx.send(());
+                    });
+                    let handle = launch::InferenceServerHandle::new_external(
+                        driver_pid,
+                        "skippy-server",
+                    );
+                    (http_port, launch::InferenceServerProcess {
+                        handle,
+                        death_rx,
+                        context_length,
+                    })
+                }
+                Err(err) => {
+                    emit_error(
+                        format!("Failed to start skippy inference: {err}"),
+                        Some(format!("model={model_name}")),
+                    );
                     on_change(true, false);
                     let _ = peer_rx.changed().await;
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;

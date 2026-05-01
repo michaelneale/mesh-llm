@@ -318,6 +318,17 @@ pub struct InferenceServerHandle {
 }
 
 impl InferenceServerHandle {
+    /// Create a handle for an externally-managed process (e.g. skippy-server).
+    pub fn new_external(pid: u32, comm: &str) -> Self {
+        Self {
+            pid,
+            expected_exit: Arc::new(AtomicBool::new(false)),
+            expected_comm: comm.to_string(),
+            expected_start_time: None,
+            _pidfile_guard: None,
+        }
+    }
+
     pub fn pid(&self) -> u32 {
         self.pid
     }

@@ -589,7 +589,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Parameters for starting staged inference (replaces StartLlamaParams).
-pub struct StartStagedParams<'a> {
+pub struct StartSkippyParams<'a> {
     pub bin_dir: &'a Path,
     pub model_path: &'a Path,
     pub model_name: &'a str,
@@ -603,7 +603,7 @@ pub struct StartStagedParams<'a> {
 }
 
 /// Result of starting staged inference — compatible with election loop expectations.
-pub struct StagedInferenceResult {
+pub struct SkippyInferenceResult {
     /// Port where OpenAI HTTP is available (same as llama-server would provide)
     pub http_port: u16,
     /// All spawned processes (stages + driver)
@@ -615,7 +615,7 @@ pub struct StagedInferenceResult {
 
 /// Start staged inference: plan topology, launch stages, launch driver.
 /// Returns the HTTP port for the OpenAI endpoint.
-pub async fn start_staged(params: StartStagedParams<'_>) -> Result<StagedInferenceResult> {
+pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferenceResult> {
     let binary_path = params.bin_dir.join("skippy-server");
     anyhow::ensure!(
         binary_path.exists(),
@@ -669,7 +669,7 @@ pub async fn start_staged(params: StartStagedParams<'_>) -> Result<StagedInferen
         // Wait for it to be ready
         wait_for_http_ready(http_port, 120).await?;
 
-        return Ok(StagedInferenceResult {
+        return Ok(SkippyInferenceResult {
             http_port,
             processes: vec![],
             driver: DriverProcess { port: http_port, child },
@@ -749,7 +749,7 @@ pub async fn start_staged(params: StartStagedParams<'_>) -> Result<StagedInferen
     // Wait for driver to be ready
     wait_for_http_ready(http_port, 120).await?;
 
-    Ok(StagedInferenceResult {
+    Ok(SkippyInferenceResult {
         http_port,
         processes: stage_processes,
         driver,
