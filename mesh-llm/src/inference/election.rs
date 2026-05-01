@@ -1970,58 +1970,98 @@ pub async fn election_loop(
             }
             on_change(true, false);
 
-            // Launch skippy — handles both plain GGUFs and layer packages
-            let tunnel_ports = tunnel_mgr.peer_ports_map().await;
-            let mut node_caps = vec![staged::NodeCapability {
-                peer_id: None,
-                available_bytes: my_vram,
-                is_local: true,
-            }];
-            for peer in &model_peers {
-                node_caps.push(staged::NodeCapability {
-                    peer_id: Some(peer.id),
-                    available_bytes: peer.vram_bytes,
-                    is_local: false,
-                });
-            }
-            tracing::info!("starting skippy inference for model={} path={}", model_name, model.display());
-            let (llama_port, process) = match staged::start_skippy(staged::StartSkippyParams {
-                bin_dir: &bin_dir,
-                model_path: &model,
-                model_name: &model_name,
-                node_capacities: node_caps,
-                tunnel_ports: &tunnel_ports,
-                ctx_size: ctx_size_override.unwrap_or(4096),
-            }).await {
-                Ok(result) => {
-                    let http_port = result.http_port;
-                    let context_length = result.context_length;
-                    let driver_pid = result.driver.child.id().unwrap_or(0);
-                    let (death_tx, death_rx) = tokio::sync::oneshot::channel::<()>();
-                    tokio::spawn(async move {
-                        let _keep = result;
-                        tokio::signal::ctrl_c().await.ok();
-                        let _ = death_tx.send(());
+            // Decision: layer package + needs split → skippy. Everything else → llama-server.
+            let is_layer_package = model.join("model-package.json").is_file();
+            let needs_split = matches!(desired_launch, DenseLaunchPlan::Split { .. });
+
+            let (llama_port, process) = if is_layer_package && needs_split {
+                // Layer package that doesn't fit on one node: skippy stage pipeline
+                let tunnel_ports = tunnel_mgr.peer_ports_map().await;
+                let mut node_caps = vec![staged::NodeCapability {
+                    peer_id: None,
+                    available_bytes: my_vram,
+                    is_local: true,
+                }];
+                for peer in &model_peers {
+                    node_caps.push(staged::NodeCapability {
+                        peer_id: Some(peer.id),
+                        available_bytes: peer.vram_bytes,
+                        is_local: false,
                     });
-                    let handle = launch::InferenceServerHandle::new_external(
-                        driver_pid,
-                        "skippy-server",
-                    );
-                    (http_port, launch::InferenceServerProcess {
-                        handle,
-                        death_rx,
-                        context_length,
-                    })
                 }
-                Err(err) => {
-                    emit_error(
-                        format!("Failed to start skippy inference: {err}"),
-                        Some(format!("model={model_name}")),
-                    );
-                    on_change(true, false);
-                    let _ = peer_rx.changed().await;
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    continue;
+                tracing::info!("starting skippy stage pipeline for layer package: {}", model.display());
+                match staged::start_skippy(staged::StartSkippyParams {
+                    bin_dir: &bin_dir,
+                    model_path: &model,
+                    model_name: &model_name,
+                    node_capacities: node_caps,
+                    tunnel_ports: &tunnel_ports,
+                    ctx_size: ctx_size_override.unwrap_or(4096),
+                }).await {
+                    Ok(result) => {
+                        let http_port = result.http_port;
+                        let context_length = result.context_length;
+                        let driver_pid = result.driver.child.id().unwrap_or(0);
+                        let (death_tx, death_rx) = tokio::sync::oneshot::channel::<()>();
+                        tokio::spawn(async move {
+                            let _keep = result;
+                            tokio::signal::ctrl_c().await.ok();
+                            let _ = death_tx.send(());
+                        });
+                        let handle = launch::InferenceServerHandle::new_external(
+                            driver_pid,
+                            "skippy-server",
+                        );
+                        (http_port, launch::InferenceServerProcess {
+                            handle,
+                            death_rx,
+                            context_length,
+                        })
+                    }
+                    Err(err) => {
+                        emit_error(
+                            format!("Failed to start skippy inference: {err}"),
+                            Some(format!("model={model_name}")),
+                        );
+                        on_change(true, false);
+                        let _ = peer_rx.changed().await;
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
+                }
+            } else {
+                // Solo (any model) or plain GGUF split: llama-server
+                let peers_for_launch = if needs_split && !is_layer_package {
+                    &model_peers[..]
+                } else {
+                    &[]
+                };
+                match start_llama(StartLlamaParams {
+                    runtime: &runtime,
+                    node: &node,
+                    tunnel_mgr: &tunnel_mgr,
+                    bin_dir: &bin_dir,
+                    model: &model,
+                    model_name: &model_name,
+                    model_peers: peers_for_launch,
+                    explicit_mmproj: explicit_mmproj.as_deref(),
+                    draft: draft.as_deref(),
+                    draft_max,
+                    force_split,
+                    binary_flavor,
+                    ctx_size_override,
+                    pinned_gpu: pinned_gpu.as_ref(),
+                    slots,
+                })
+                .await
+                {
+                    Some((port, death_rx)) => (port, death_rx),
+                    None => {
+                        on_change(true, false);
+                        let _ = peer_rx.changed().await;
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        continue;
+                    }
                 }
             };
 

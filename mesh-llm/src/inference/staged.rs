@@ -680,6 +680,55 @@ pub async fn start_skippy(params: StartSkippyParams<'_>) -> Result<SkippyInferen
     let manifest = PackageManifest::from_dir(params.model_path)?;
     tracing::info!("manifest parsed: {} layers, model_id={}", manifest.layer_count, manifest.model_id);
     let plan = plan_topology(&manifest, &params.node_capacities)?;
+    tracing::info!("topology planned: {} stages", plan.stages.len());
+
+    // Single local stage: run serve-openai directly (no separate stage server needed)
+    if plan.stages.len() == 1 && plan.stages[0].peer_id.is_none() {
+        let http_port = find_free_port().await?;
+        let stage = &plan.stages[0];
+        let config_json = serde_json::json!({
+            "run_id": &run_id,
+            "model_id": &manifest.model_id,
+            "model_path": params.model_path.to_str().unwrap_or(""),
+            "load_mode": "layer-package",
+            "stage_id": "stage-0",
+            "stage_index": 0,
+            "topology_id": &run_id,
+            "layer_start": stage.layer_start,
+            "layer_end": stage.layer_end,
+            "n_gpu_layers": -1,
+            "ctx_size": params.ctx_size,
+            "filter_tensors_on_load": true,
+            "bind_addr": format!("127.0.0.1:{}", http_port + 100),
+        });
+        let config_path = run_dir.join("stage-0.json");
+        std::fs::write(&config_path, serde_json::to_string_pretty(&config_json)?)?;
+
+        let log_path = run_dir.join("driver.log");
+        let log_file = std::fs::File::create(&log_path)?;
+
+        tracing::info!("launching serve-openai (single local stage, layer-package) on port {http_port}");
+        let child = Command::new(&binary_path)
+            .arg("serve-openai")
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--bind-addr")
+            .arg(format!("127.0.0.1:{http_port}"))
+            .stdout(Stdio::from(log_file.try_clone()?))
+            .stderr(Stdio::from(log_file))
+            .kill_on_drop(true)
+            .spawn()
+            .context("spawn skippy-server serve-openai (single stage layer-package)")?;
+
+        wait_for_http_ready(http_port, 120).await?;
+
+        return Ok(SkippyInferenceResult {
+            http_port,
+            processes: vec![],
+            driver: DriverProcess { port: http_port, child },
+            context_length: params.ctx_size,
+        });
+    }
 
     let base_port: u16 = find_free_port().await?;
     let mut stage_processes = Vec::new();
