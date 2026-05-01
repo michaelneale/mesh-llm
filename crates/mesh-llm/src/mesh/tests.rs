@@ -42,6 +42,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
             connections: HashMap::new(),
             remote_tunnel_maps: HashMap::new(),
             dead_peers: HashMap::new(),
+            peer_down_rejections: HashMap::new(),
             seen_plugin_messages: HashMap::new(),
             seen_plugin_message_order: VecDeque::new(),
             policy_rejected_peers: HashMap::new(),
@@ -795,7 +796,8 @@ fn shared_exact_moe_identity_uses_stricter_heartbeat_without_inbound_grace() {
     )];
     let local_runtime = vec![];
 
-    let policy = heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer);
+    let policy =
+        heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer, false);
 
     assert_eq!(
         policy,
@@ -819,7 +821,8 @@ fn non_matching_or_non_moe_peers_keep_default_heartbeat_grace() {
     )];
     let local_runtime = vec![];
 
-    let policy = heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer);
+    let policy =
+        heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer, false);
 
     assert_eq!(
         policy,
@@ -848,7 +851,8 @@ fn shared_exact_moe_startup_relaxes_heartbeat_during_convergence() {
         ready: false,
     }];
 
-    let policy = heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer);
+    let policy =
+        heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer, false);
 
     assert_eq!(
         policy,
@@ -3286,6 +3290,7 @@ async fn make_test_node_with_owner(
             connections: HashMap::new(),
             remote_tunnel_maps: HashMap::new(),
             dead_peers: HashMap::new(),
+            peer_down_rejections: HashMap::new(),
             seen_plugin_messages: HashMap::new(),
             seen_plugin_message_order: VecDeque::new(),
             policy_rejected_peers: HashMap::new(),

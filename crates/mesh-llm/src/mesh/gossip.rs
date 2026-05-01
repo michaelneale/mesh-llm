@@ -163,8 +163,8 @@ impl Node {
         write_gossip_payload(&mut send, protocol, &our_announcements, self.endpoint.id()).await?;
         send.finish()?;
 
-        let rtt_ms = t0.elapsed().as_millis() as u32;
         let buf = read_len_prefixed(&mut recv).await?;
+        let rtt_ms = t0.elapsed().as_millis() as u32;
         let their_announcements = decode_gossip_payload(protocol, remote, &buf)?;
 
         let _ = recv.read_to_end(0).await;

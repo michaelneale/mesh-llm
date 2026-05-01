@@ -40,6 +40,7 @@ pub(super) fn heartbeat_failure_policy_for_peer(
     local_descriptors: &[ServedModelDescriptor],
     local_runtime: &[ModelRuntimeDescriptor],
     peer: &PeerInfo,
+    is_relay_only: bool,
 ) -> HeartbeatFailurePolicy {
     if descriptors_share_exact_moe_identity(local_descriptors, &peer.served_model_descriptors) {
         if exact_moe_starting_during_convergence(local_descriptors, local_runtime, peer) {
@@ -64,7 +65,11 @@ pub(super) fn heartbeat_failure_policy_for_peer(
     } else {
         HeartbeatFailurePolicy {
             allow_recent_inbound_grace: true,
-            failure_threshold: 2,
+            // Relay-only peers are more prone to transient timeouts (relay
+            // hiccups, higher base RTT). Give them an extra cycle before
+            // declaring death — the data-path still catches genuinely dead
+            // peers immediately during active inference.
+            failure_threshold: if is_relay_only { 3 } else { 2 },
         }
     }
 }
@@ -539,6 +544,11 @@ impl Node {
                         let (recently_seen, failure_policy) = {
                             let state = node.state.lock().await;
                             let peer = state.peers.get(&peer_id).cloned();
+                            let is_relay_only = state
+                                .connections
+                                .get(&peer_id)
+                                .map(|c| selected_path_snapshot(c).kind == SelectedPathKind::Relay)
+                                .unwrap_or(false);
                             drop(state);
                             let local_descriptors =
                                 node.served_model_descriptors.lock().await.clone();
@@ -550,6 +560,7 @@ impl Node {
                                         &local_descriptors,
                                         &local_runtime,
                                         peer,
+                                        is_relay_only,
                                     )
                                 })
                                 .unwrap_or(HeartbeatFailurePolicy {
@@ -640,6 +651,9 @@ impl Node {
                     state
                         .dead_peers
                         .retain(|_, ts| ts.elapsed() < DEAD_PEER_TTL);
+                    state
+                        .peer_down_rejections
+                        .retain(|_, ts| ts.elapsed().as_secs() < PEER_DOWN_REPORTER_COOLDOWN_SECS);
                 }
 
                 // GC expired demand entries to prevent unbounded map growth
