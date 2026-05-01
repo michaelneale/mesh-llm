@@ -98,6 +98,10 @@ type ActivePeerRow = {
   shareLabel: string;
 };
 
+function servingVramGb(vramGb?: number | null) {
+  return Math.max(0, vramGb ?? 0);
+}
+
 type NodeSidebarRecord = {
   id: string;
   title: string;
@@ -228,19 +232,15 @@ export function DashboardPage({
     const totalModelVram = selectedCatalogModel.mesh_vram_gb ?? 0;
     const rows: ActivePeerRow[] = [];
     const localServing = localRoutableModels(status).includes(targetModel);
-    const localDisplayVramGb = displayVramGb(
-      status.node_state === "client",
-      status.my_vram_gb,
-      status.gpus,
-    );
+    const localServingVramGb = servingVramGb(status.my_vram_gb);
     if (localServing && status.node_state !== "client") {
       rows.push({
         id: status.node_id,
         latencyLabel: "local",
-        vramLabel: `${localDisplayVramGb.toFixed(1)} GB`,
+        vramLabel: `${localServingVramGb.toFixed(1)} GB`,
         shareLabel:
           totalModelVram > 0
-            ? `${Math.round((localDisplayVramGb / totalModelVram) * 100)}%`
+            ? `${Math.round((localServingVramGb / totalModelVram) * 100)}%`
             : "n/a",
       });
     }
@@ -249,13 +249,14 @@ export function DashboardPage({
         peerRoutableModels(peer).includes(targetModel) ||
         peerAssignedModels(peer).includes(targetModel);
       if (!servesTarget || peer.state === "client") continue;
+      const peerServingVramGb = servingVramGb(peer.vram_gb);
       rows.push({
         id: peer.id,
         latencyLabel: peer.latencyLabel,
-        vramLabel: `${peer.displayVramGb.toFixed(1)} GB`,
+        vramLabel: `${peerServingVramGb.toFixed(1)} GB`,
         shareLabel:
           totalModelVram > 0
-            ? `${Math.round((peer.displayVramGb / totalModelVram) * 100)}%`
+            ? `${Math.round((peerServingVramGb / totalModelVram) * 100)}%`
             : "n/a",
       });
     }

@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("./components/ui/select", async () => {
   const React = await import("react");
@@ -589,6 +589,66 @@ describe("App routing and status", () => {
     expect((await screen.findAllByText("Standby")).length).toBeGreaterThan(0);
     expect(screen.getByText("Host")).toBeInTheDocument();
     expect(screen.queryAllByText("Serving")).toHaveLength(0);
+  });
+
+  it("shows model peer shares from model-serving VRAM instead of physical inventory", async () => {
+    statusPayload = {
+      ...createStatusPayload(),
+      node_id: "6566c0f64b",
+      model_name: "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+      models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+      available_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+      serving_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+      hosted_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+      my_vram_gb: 15,
+      gpus: [{ name: "RTX 6000 Ada", vram_bytes: 64 * 1024 ** 3 }],
+      peers: [
+        {
+          id: "d0aa73bd0e",
+          role: "Worker",
+          state: "serving",
+          models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+          available_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+          requested_models: [],
+          serving_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+          hosted_models: ["Hermes-2-Pro-Mistral-7B-Q4_K_M"],
+          hosted_models_known: true,
+          vram_gb: 8,
+          rtt_ms: null,
+          gpus: [],
+        },
+      ],
+    };
+    modelsPayload = {
+      mesh_models: [
+        {
+          name: "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+          status: "warm",
+          node_count: 2,
+          mesh_vram_gb: 23,
+          size_gb: 4.1,
+          source_file:
+            "bartowski/Hermes-2-Pro-Mistral-7B-GGUF/Hermes-2-Pro-Mistral-7B-Q4_K_M.gguf",
+        },
+      ],
+    };
+
+    setPath("/dashboard");
+    render(<App />);
+
+    const modelButton = await screen.findByRole("button", {
+      name: /Hermes-2-Pro-Mistral-7B/i,
+    });
+    fireEvent.click(modelButton);
+
+    await screen.findByText("Active Peers");
+    expect(screen.getAllByText("6566c0f64b").length).toBeGreaterThan(0);
+    expect(screen.getByText("15.0 GB")).toBeInTheDocument();
+    expect(screen.getByText("65%")).toBeInTheDocument();
+    expect(screen.getAllByText("d0aa73bd0e").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("8.0 GB").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("35%").length).toBeGreaterThan(0);
+    expect(screen.queryByText("278%")).not.toBeInTheDocument();
   });
 
   it("keeps client chat disabled until /api/models reports a warm model", async () => {
