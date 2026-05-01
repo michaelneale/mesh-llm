@@ -712,6 +712,10 @@ struct RuntimeStatusDerivationInput<'a> {
     api_port: u16,
 }
 
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn derive_runtime_status(input: RuntimeStatusDerivationInput<'_>) -> RuntimeStatusDerivation {
     let has_local_processes = !input.local_processes.is_empty();
     let effective_llama_ready = input.llama_ready || has_local_processes;
@@ -732,7 +736,11 @@ fn derive_runtime_status(input: RuntimeStatusDerivationInput<'_>) -> RuntimeStat
         &display_model_name,
     );
     let launch_pi = if effective_llama_ready {
-        Some(format!("pi --provider mesh --model {display_model_name}"))
+        Some(format!(
+            "mesh-llm pi --host 127.0.0.1:{} --model {}",
+            input.api_port,
+            shell_single_quote(&display_model_name)
+        ))
     } else {
         None
     };

@@ -608,7 +608,11 @@ impl StartupReadyReporter {
         let console_url = self
             .console_port
             .map(|port| format!("http://localhost:{port}"));
-        let pi_command = Some(format!("pi --provider mesh --model {}", self.primary_model));
+        let pi_command = Some(format!(
+            "mesh-llm pi --host 127.0.0.1:{} --model {}",
+            self.api_port,
+            shell_single_quote(&self.primary_model)
+        ));
         let goose_command = Some(format!(
             "GOOSE_PROVIDER=openai OPENAI_HOST={api_url} OPENAI_API_KEY=mesh GOOSE_MODEL={} goose session",
             self.primary_model
@@ -2916,8 +2920,9 @@ async fn run_auto(
                     });
                 }
                 if is_host && llama_ready {
-                    update_pi_models_json(&model_name_for_cb, api_port);
                     startup_ready_reporter.mark_ready_and_maybe_emit(&model_name_for_cb);
+                } else if is_host {
+                    eprintln!("⏳ Starting llama-server...");
                 } else {
                     let _ = emit_event(OutputEvent::Info {
                         message: format!("API: http://localhost:{api_port} (proxied to host)"),
@@ -3839,58 +3844,6 @@ fn detect_bin_dir() -> Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// Update ~/.pi/agent/models.json to include a "mesh" provider.
-fn update_pi_models_json(model_id: &str, port: u16) {
-    let Some(home) = dirs::home_dir() else { return };
-    let models_path = home.join(".pi/agent/models.json");
-
-    let mut root: serde_json::Value = if models_path.exists() {
-        match std::fs::read_to_string(&models_path) {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
-            Err(_) => serde_json::json!({}),
-        }
-    } else {
-        serde_json::json!({})
-    };
-
-    let providers = root.as_object_mut().and_then(|r| {
-        r.entry("providers")
-            .or_insert_with(|| serde_json::json!({}));
-        r.get_mut("providers")?.as_object_mut()
-    });
-    let Some(providers) = providers else { return };
-
-    let mesh = serde_json::json!({
-        "baseUrl": format!("http://localhost:{port}/v1"),
-        "api": "openai-completions",
-        "apiKey": "mesh",
-        "models": [{
-            "id": model_id,
-            "name": model_id,
-            "reasoning": false,
-            "input": ["text"],
-            "contextWindow": 32768,
-            "maxTokens": 8192,
-            "compat": {
-                "supportsUsageInStreaming": false,
-                "maxTokensField": "max_tokens",
-                "supportsDeveloperRole": false
-            }
-        }]
-    });
-
-    providers.insert("mesh".to_string(), mesh);
-
-    if let Some(parent) = models_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(&root) {
-        if let Err(e) = std::fs::write(&models_path, json) {
-            tracing::warn!("Failed to update {}: {e}", models_path.display());
-        }
-    }
-}
-
 /// Resolve Nostr relay URLs from CLI or defaults.
 /// Build the list of models this node is serving for gossip announcement.
 /// `resolved_models` comes from explicit `--model` args (may be empty for `--auto`).
@@ -3923,6 +3876,10 @@ fn format_console_ready_line(headless: bool, console_port: u16) -> String {
     } else {
         format!("  Console: http://localhost:{console_port}")
     }
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 #[cfg(test)]
@@ -4220,6 +4177,12 @@ mod tests {
         let resolved: Vec<PathBuf> = vec![];
         let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(result, vec!["Qwen3-30B-A3B-Q4_K_M"]);
+    }
+
+    #[test]
+    fn shell_single_quote_handles_spaces_and_embedded_quotes() {
+        assert_eq!(shell_single_quote("Qwen 3.6 27B"), "'Qwen 3.6 27B'");
+        assert_eq!(shell_single_quote("Qwen's model"), "'Qwen'\"'\"'s model'");
     }
 
     #[test]

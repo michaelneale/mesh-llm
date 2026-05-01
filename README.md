@@ -387,8 +387,8 @@ mesh-llm exposes an OpenAI-compatible API on `localhost:9337`. Any tool that sup
 
 For built-in launcher integrations (`goose`, `claude`, `opencode`, `pi`):
 
-- Goose, Claude, and pi reuse a local mesh on `--port` and auto-start a local client if needed.
-- OpenCode targets `--host` (default `127.0.0.1:9337`) and only auto-starts a local client for loopback/localhost targets.
+- Goose and Claude reuse a local mesh on `--port` and auto-start a local client if needed.
+- OpenCode and pi target `--host` (default `127.0.0.1:9337`) and only auto-start a local client for loopback/localhost targets.
 - If `--model` is omitted, the launcher picks the strongest tool-capable model available on the mesh.
 - When the harness exits (e.g. `claude` quits), the auto-started node is cleaned up automatically.
 
@@ -446,7 +446,19 @@ Use a specific model:
 mesh-llm pi --model MiniMax-M2.5-Q4_K_M
 ```
 
-This writes a mesh provider into `~/.pi/agent/models.json` and launches pi.
+This writes every model from the mesh into `~/.pi/agent/models.json` with model context sizes when available, then launches pi.
+
+Write or update the Pi provider config without launching pi:
+
+```bash
+mesh-llm pi --write
+```
+
+Target a remote mesh host or URL, including a custom port:
+
+```bash
+mesh-llm pi --write --host carrack.patio51.com:9337
+```
 
 ### External OpenAI-compatible backends (vLLM, TGI, Ollama, Lemonade, etc.)
 

@@ -7270,7 +7270,7 @@ mod tests {
                 api_port: 9337,
                 console_port: Some(3131),
                 models_count: Some(2),
-                pi_command: Some("pi --provider mesh --model Qwen3-32B".to_string()),
+                pi_command: Some("mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'".to_string()),
                 goose_command: Some("GOOSE_PROVIDER=openai OPENAI_HOST=http://localhost:9337 OPENAI_API_KEY=mesh GOOSE_MODEL=Qwen3-32B goose session".to_string()),
             },
             OutputEvent::ModelDownloadProgress {
@@ -11284,7 +11284,7 @@ mod tests {
                 api_port: 9337,
                 console_port: Some(3131),
                 models_count: Some(1),
-                pi_command: Some("pi --provider mesh --model Qwen3.6-35B".to_string()),
+                pi_command: Some("mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3.6-35B'".to_string()),
                 goose_command: Some(
                     "GOOSE_PROVIDER=openai OPENAI_HOST=http://localhost:9337 OPENAI_API_KEY=mesh GOOSE_MODEL=Qwen3.6-35B goose session"
                         .to_string(),
@@ -11315,7 +11315,9 @@ mod tests {
         assert!(dashboard.contains("logs=/tmp/llama.log"));
         assert!(dashboard.contains("OpenAI-compatible API   ready   http://localhost:9337"));
         assert!(dashboard.contains("Console   ready   http://localhost:3131"));
-        assert!(dashboard.contains("pi:    pi --provider mesh --model Qwen3.6-35B"));
+        assert!(
+            dashboard.contains("pi:    mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3.6-35B'")
+        );
         assert!(dashboard.contains("goose: GOOSE_PROVIDER=openai OPENAI_HOST=http://localhost:9337 OPENAI_API_KEY=mesh GOOSE_MODEL=Qwen3.6-35B goose session"));
         assert!(dashboard.contains("peer-1"));
         assert!(dashboard.contains("peer-2"));
@@ -11438,7 +11440,9 @@ mod tests {
                     api_port: 9337,
                     console_port: Some(3131),
                     models_count: Some(2),
-                    pi_command: Some("pi --provider mesh --model Qwen3-32B".to_string()),
+                    pi_command: Some(
+                        "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'".to_string(),
+                    ),
                     goose_command: Some("goose session".to_string()),
                 })
                 .expect("runtime ready render should succeed"),
@@ -11449,7 +11453,7 @@ mod tests {
         assert_eq!(runtime_ready["models_count"], 2);
         assert_eq!(
             runtime_ready["pi_command"],
-            "pi --provider mesh --model Qwen3-32B"
+            "mesh-llm pi --host 127.0.0.1:9337 --model 'Qwen3-32B'"
         );
         assert_eq!(runtime_ready["goose_command"], "goose session");
     }

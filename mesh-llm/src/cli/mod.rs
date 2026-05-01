@@ -527,30 +527,19 @@ pub(crate) enum Command {
     },
     /// Launch pi with mesh-llm as the inference provider.
     ///
-    /// If no mesh is running on --port, this auto-joins the mesh as a client.
-    /// Writes a mesh provider into ~/.pi/agent/models.json and launches pi.
+    /// If no mesh is running on a loopback/localhost target, this auto-joins the mesh as a client.
+    /// Writes a mesh provider into ~/.pi/agent/models.json and launches pi unless --write is set.
     #[command(name = "pi")]
     Pi {
         /// Model id to use from /v1/models (default: auto = mesh picks best)
         #[arg(long)]
         model: Option<String>,
-        /// API port for mesh-llm (default: 9337)
-        #[arg(long, default_value = "9337")]
-        port: u16,
-    },
-    /// Launch Hermes Agent with mesh-llm as the inference provider.
-    ///
-    /// If no mesh is running on --port, this auto-joins the mesh as a client.
-    /// Hermes is OpenAI-compatible so this just passes --provider custom
-    /// with the mesh base URL and model.
-    #[command(name = "hermes")]
-    Hermes {
-        /// Model id to use from /v1/models (default: auto = mesh picks best)
+        /// mesh-llm host or URL for Pi (default: 127.0.0.1:9337)
+        #[arg(long, default_value = "127.0.0.1:9337")]
+        host: String,
+        /// Write the mesh provider config to Pi's models.json instead of launching.
         #[arg(long)]
-        model: Option<String>,
-        /// API port for mesh-llm (default: 9337)
-        #[arg(long, default_value = "9337")]
-        port: u16,
+        write: bool,
     },
     /// Launch OpenCode with mesh-llm as the inference provider.
     ///
