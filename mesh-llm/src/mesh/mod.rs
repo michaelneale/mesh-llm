@@ -16,6 +16,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::{watch, Mutex};
@@ -1142,6 +1143,8 @@ impl LocalRequestMetricsWindow {
 struct MeshState {
     peers: HashMap<EndpointId, PeerInfo>,
     connections: HashMap<EndpointId, Connection>,
+    /// Path to directory containing skippy-server and other binaries.
+    bin_dir: PathBuf,
     /// Remote peers' tunnel maps: peer_endpoint_id → { target_endpoint_id → tunnel_port_on_that_peer }
     remote_tunnel_maps: HashMap<EndpointId, HashMap<EndpointId, u16>>,
     /// Peers confirmed dead — don't reconnect from gossip discovery.
@@ -1597,6 +1600,7 @@ impl Node {
             public_addr,
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
+                bin_dir: PathBuf::new(),
                 connections: HashMap::new(),
                 remote_tunnel_maps: HashMap::new(),
                 dead_peers: HashMap::new(),
@@ -1706,6 +1710,7 @@ impl Node {
             public_addr: None,
             state: Arc::new(Mutex::new(MeshState {
                 peers: HashMap::new(),
+                bin_dir: PathBuf::new(),
                 connections: HashMap::new(),
                 remote_tunnel_maps: HashMap::new(),
                 dead_peers: HashMap::new(),
@@ -1880,6 +1885,10 @@ impl Node {
 
     pub async fn role(&self) -> NodeRole {
         self.role.lock().await.clone()
+    }
+
+    pub async fn set_bin_dir(&self, dir: PathBuf) {
+        self.state.lock().await.bin_dir = dir;
     }
 
     pub async fn set_role(&self, role: NodeRole) {
@@ -3542,6 +3551,14 @@ impl Node {
                         }
                     });
                 }
+                crate::protocol::STREAM_STAGE_COMMAND => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_stage_command_stream(send, recv).await {
+                            tracing::warn!("stage command error from {}: {e}", remote.fmt_short());
+                        }
+                    });
+                }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
                 }
@@ -4038,6 +4055,46 @@ impl Node {
         });
 
         Ok((snapshot, notif_rx))
+    }
+
+    // --- Stage command handling ---
+
+    async fn handle_stage_command_stream(
+        &self,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        // Read length-prefixed JSON command
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await?;
+        let cmd_len = u32::from_le_bytes(len_buf) as usize;
+        anyhow::ensure!(cmd_len < 64 * 1024, "stage command too large");
+        let mut cmd_buf = vec![0u8; cmd_len];
+        recv.read_exact(&mut cmd_buf).await?;
+
+        let command: crate::inference::staged::StartStageCommand =
+            serde_json::from_slice(&cmd_buf)?;
+        tracing::info!(
+            "received stage command: stage-{} layers {}..{} package={}",
+            command.stage_index, command.layer_start, command.layer_end, command.package_ref
+        );
+
+        // Resolve bin_dir from our runtime state
+        let bin_dir = {
+            let state = self.state.lock().await;
+            state.bin_dir.clone()
+        };
+
+        let response = crate::inference::staged::handle_stage_command(command, &bin_dir).await;
+
+        // Send response
+        let resp_bytes = serde_json::to_vec(&response)?;
+        let resp_len = (resp_bytes.len() as u32).to_le_bytes();
+        send.write_all(&resp_len).await?;
+        send.write_all(&resp_bytes).await?;
+        send.finish()?;
+
+        Ok(())
     }
 
     // --- Gossip ---

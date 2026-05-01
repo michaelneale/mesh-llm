@@ -823,3 +823,157 @@ async fn wait_for_http_ready(port: u16, timeout_secs: u64) -> Result<()> {
         }
     }
 }
+
+// --- Stage command protocol (host ↔ peer coordination) ---
+
+/// Command sent from host to peer to start a stage server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartStageCommand {
+    pub package_ref: String,        // e.g. "hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers"
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub stage_index: u32,
+    pub bind_port: u16,
+    pub activation_width: u32,
+    pub activation_wire_dtype: String,
+    pub model_id: String,
+    pub run_id: String,
+}
+
+/// Response from peer when stage is ready.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageReadyResponse {
+    pub status: String,             // "ready" or "error"
+    pub port: u16,
+    pub error: Option<String>,
+}
+
+/// Handle an incoming stage command on the peer side.
+/// Downloads layers, materializes, starts skippy-server, responds when ready.
+pub async fn handle_stage_command(
+    command: StartStageCommand,
+    bin_dir: &Path,
+) -> StageReadyResponse {
+    let binary_path = bin_dir.join("skippy-server");
+    if !binary_path.exists() {
+        return StageReadyResponse {
+            status: "error".to_string(),
+            port: 0,
+            error: Some(format!("skippy-server not found at {}", binary_path.display())),
+        };
+    }
+
+    let run_dir = std::env::temp_dir()
+        .join("mesh-llm-staged")
+        .join(&command.run_id);
+    if let Err(e) = std::fs::create_dir_all(&run_dir) {
+        return StageReadyResponse {
+            status: "error".to_string(),
+            port: 0,
+            error: Some(format!("create run dir: {e}")),
+        };
+    }
+
+    let stage_id = format!("stage-{}", command.stage_index);
+    let config_json = serde_json::json!({
+        "run_id": &command.run_id,
+        "model_id": &command.model_id,
+        "model_path": &command.package_ref,
+        "load_mode": "layer-package",
+        "stage_id": &stage_id,
+        "stage_index": command.stage_index,
+        "topology_id": &command.run_id,
+        "layer_start": command.layer_start,
+        "layer_end": command.layer_end,
+        "n_gpu_layers": -1,
+        "ctx_size": 4096,
+        "filter_tensors_on_load": true,
+        "bind_addr": format!("0.0.0.0:{}", command.bind_port),
+    });
+
+    let config_path = run_dir.join(format!("{stage_id}.json"));
+    if let Err(e) = std::fs::write(&config_path, serde_json::to_string_pretty(&config_json).unwrap_or_default()) {
+        return StageReadyResponse {
+            status: "error".to_string(),
+            port: 0,
+            error: Some(format!("write config: {e}")),
+        };
+    }
+
+    let log_path = run_dir.join(format!("{stage_id}.log"));
+    let log_file = match std::fs::File::create(&log_path) {
+        Ok(f) => f,
+        Err(e) => return StageReadyResponse {
+            status: "error".to_string(),
+            port: 0,
+            error: Some(format!("create log: {e}")),
+        },
+    };
+
+    let child = Command::new(&binary_path)
+        .arg("serve-binary")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--activation-width")
+        .arg(command.activation_width.to_string())
+        .arg("--activation-wire-dtype")
+        .arg(&command.activation_wire_dtype)
+        .stdout(Stdio::from(log_file.try_clone().unwrap()))
+        .stderr(Stdio::from(log_file))
+        .kill_on_drop(true)
+        .spawn();
+
+    match child {
+        Ok(_child) => {
+            // Wait for the stage to start listening
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(180);
+            loop {
+                if tokio::time::Instant::now() > deadline {
+                    return StageReadyResponse {
+                        status: "error".to_string(),
+                        port: command.bind_port,
+                        error: Some("stage server did not become ready in 180s".to_string()),
+                    };
+                }
+                match tokio::net::TcpStream::connect(format!("127.0.0.1:{}", command.bind_port)).await {
+                    Ok(_) => break,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+                }
+            }
+            StageReadyResponse {
+                status: "ready".to_string(),
+                port: command.bind_port,
+                error: None,
+            }
+        }
+        Err(e) => StageReadyResponse {
+            status: "error".to_string(),
+            port: 0,
+            error: Some(format!("spawn skippy-server: {e}")),
+        },
+    }
+}
+
+/// Send a start-stage command to a peer and wait for ready response.
+pub async fn send_stage_command(
+    conn: &iroh::endpoint::Connection,
+    command: &StartStageCommand,
+) -> Result<StageReadyResponse> {
+    let (mut send, mut recv) = conn.open_bi().await?;
+    send.write_all(&[crate::protocol::STREAM_STAGE_COMMAND]).await?;
+    let payload = serde_json::to_vec(command)?;
+    let len = (payload.len() as u32).to_le_bytes();
+    send.write_all(&len).await?;
+    send.write_all(&payload).await?;
+    send.finish()?;
+
+    // Read response
+    let mut len_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf).await?;
+    let resp_len = u32::from_le_bytes(len_buf) as usize;
+    let mut resp_buf = vec![0u8; resp_len];
+    recv.read_exact(&mut resp_buf).await?;
+
+    let response: StageReadyResponse = serde_json::from_slice(&resp_buf)?;
+    Ok(response)
+}
