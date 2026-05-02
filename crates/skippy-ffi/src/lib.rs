@@ -108,6 +108,45 @@ pub struct SlicePlan {
 }
 
 #[repr(C)]
+pub struct MtmdContext {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct MtmdBitmap {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct MtmdInputChunks {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MtmdInputText {
+    pub text: *const c_char,
+    pub add_special: bool,
+    pub parse_special: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MtmdContextParams {
+    pub use_gpu: bool,
+    pub print_timings: bool,
+    pub n_threads: c_int,
+    pub image_marker: *const c_char,
+    pub media_marker: *const c_char,
+    pub flash_attn_type: c_int,
+    pub warmup: bool,
+    pub image_min_tokens: c_int,
+    pub image_max_tokens: c_int,
+    pub cb_eval: *mut c_void,
+    pub cb_eval_user_data: *mut c_void,
+}
+
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct TensorInfo {
     pub name: *const c_char,
@@ -222,9 +261,30 @@ extern "C" {
 
     pub fn skippy_model_free(model: *mut Model, out_error: *mut *mut Error) -> Status;
 
+    pub fn skippy_model_llama_model(model: *const Model) -> *const Opaque;
+
     pub fn skippy_session_create(
         model: *mut Model,
         out_session: *mut *mut Session,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_llama_context(session: *mut Session) -> *mut Opaque;
+
+    pub fn skippy_session_position(session: *const Session) -> i32;
+
+    pub fn skippy_session_batch_size(session: *const Session) -> i32;
+
+    pub fn skippy_session_set_position(
+        session: *mut Session,
+        n_past: i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_sample_current(
+        session: *mut Session,
+        sampling: *const SamplingConfig,
+        out_predicted_token: *mut i32,
         out_error: *mut *mut Error,
     ) -> Status;
 
@@ -344,6 +404,16 @@ extern "C" {
         output_payload_capacity: usize,
         out_output_payload_bytes: *mut usize,
         out_predicted_token: *mut i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_copy_output_activation_frame(
+        session: *mut Session,
+        token_count: usize,
+        output_desc: *mut ActivationDesc,
+        output_payload: *mut c_void,
+        output_payload_capacity: usize,
+        out_output_payload_bytes: *mut usize,
         out_error: *mut *mut Error,
     ) -> Status;
 
@@ -533,6 +603,53 @@ extern "C" {
         output_path: *const c_char,
         out_error: *mut *mut Error,
     ) -> Status;
+
+    pub fn mtmd_default_marker() -> *const c_char;
+
+    pub fn mtmd_context_params_default() -> MtmdContextParams;
+
+    pub fn mtmd_init_from_file(
+        mmproj_fname: *const c_char,
+        text_model: *const Opaque,
+        ctx_params: MtmdContextParams,
+    ) -> *mut MtmdContext;
+
+    pub fn mtmd_free(ctx: *mut MtmdContext);
+
+    pub fn mtmd_helper_bitmap_init_from_buf(
+        ctx: *mut MtmdContext,
+        buf: *const u8,
+        len: usize,
+    ) -> *mut MtmdBitmap;
+
+    pub fn mtmd_bitmap_free(bitmap: *mut MtmdBitmap);
+
+    pub fn mtmd_input_chunks_init() -> *mut MtmdInputChunks;
+
+    pub fn mtmd_input_chunks_free(chunks: *mut MtmdInputChunks);
+
+    pub fn mtmd_tokenize(
+        ctx: *mut MtmdContext,
+        output: *mut MtmdInputChunks,
+        text: *const MtmdInputText,
+        bitmaps: *const *const MtmdBitmap,
+        n_bitmaps: usize,
+    ) -> c_int;
+
+    pub fn mtmd_helper_get_n_tokens(chunks: *const MtmdInputChunks) -> usize;
+
+    pub fn mtmd_helper_get_n_pos(chunks: *const MtmdInputChunks) -> i32;
+
+    pub fn mtmd_helper_eval_chunks(
+        ctx: *mut MtmdContext,
+        lctx: *mut Opaque,
+        chunks: *const MtmdInputChunks,
+        n_past: i32,
+        seq_id: i32,
+        n_batch: i32,
+        logits_last: bool,
+        new_n_past: *mut i32,
+    ) -> c_int;
 }
 
 pub type Opaque = c_void;

@@ -78,7 +78,7 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-cmake --build "$LLAMA_BUILD_DIR" --config "${CMAKE_BUILD_TYPE:-Release}" --target llama llama-common
+cmake --build "$LLAMA_BUILD_DIR" --config "${CMAKE_BUILD_TYPE:-Release}" --target llama llama-common mtmd
 
 echo "built patched llama.cpp"
 echo "  backend:   $LLAMA_BACKEND"

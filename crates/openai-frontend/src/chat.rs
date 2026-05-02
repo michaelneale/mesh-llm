@@ -92,9 +92,8 @@ impl ChatCompletionRequest {
             ));
         }
         let prompt_is_empty = messages_to_plain_prompt(&self.messages).trim().is_empty();
-        let hook_can_supply_prompt = crate::hooks::chat_mesh_hooks_enabled(self)
-            && crate::hooks::first_chat_media(&self.messages).is_some();
-        if prompt_is_empty && !hook_can_supply_prompt {
+        let media_can_supply_prompt = crate::hooks::first_chat_media(&self.messages).is_some();
+        if prompt_is_empty && !media_can_supply_prompt {
             return Err(OpenAiError::invalid_request(
                 "messages produced an empty prompt",
             ));

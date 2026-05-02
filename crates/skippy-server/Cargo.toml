@@ -12,6 +12,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 async-trait = "0.1"
 axum = "0.8"
+base64 = "0.22"
 clap.workspace = true
 futures-util = "0.3"
 skippy-runtime = { path = "../skippy-runtime" }

@@ -7,6 +7,7 @@ fn main() {
         if let Ok(lib_dir) = std::env::var("SKIPPY_LLAMA_LIB_DIR") {
             println!("cargo:rustc-link-search=native={lib_dir}");
         }
+        println!("cargo:rustc-link-lib=dylib=mtmd");
         println!("cargo:rustc-link-lib=dylib=llama-common");
         println!("cargo:rustc-link-lib=dylib=llama");
         return;
@@ -28,6 +29,7 @@ fn main() {
         .unwrap_or_else(|_| workspace_root.join(".deps/skippy-llama.cpp/build-stage-abi-static"));
 
     let search_dirs = [
+        build_dir.join("tools/mtmd"),
         build_dir.join("common"),
         build_dir.join("src"),
         build_dir.join("ggml/src"),
@@ -49,6 +51,7 @@ fn main() {
 
     for archive in [
         build_dir.join("src/libllama.a"),
+        build_dir.join("tools/mtmd/libmtmd.a"),
         build_dir.join("common/libllama-common.a"),
         build_dir.join("common/libllama-common-base.a"),
         build_dir.join("ggml/src/libggml.a"),
@@ -66,6 +69,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", archive.display());
     }
 
+    if build_dir.join("tools/mtmd/libmtmd.a").exists() {
+        println!("cargo:rustc-link-lib=static=mtmd");
+    }
     println!("cargo:rustc-link-lib=static=llama-common");
     println!("cargo:rustc-link-lib=static=llama-common-base");
     println!("cargo:rustc-link-lib=static=llama");

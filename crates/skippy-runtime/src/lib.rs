@@ -59,6 +59,7 @@ pub struct RuntimeConfig {
     pub cache_type_k: u32,
     pub cache_type_v: u32,
     pub load_mode: LoadMode,
+    pub projector_path: Option<String>,
     pub include_embeddings: bool,
     pub include_output: bool,
     pub filter_tensors_on_load: bool,
@@ -75,6 +76,9 @@ impl RuntimeConfig {
             .is_some_and(str::is_empty)
         {
             return Err("selected_backend_device must not be empty");
+        }
+        if self.projector_path.as_deref().is_some_and(str::is_empty) {
+            return Err("projector_path must not be empty");
         }
         Ok(())
     }
@@ -133,6 +137,7 @@ impl Default for RuntimeConfig {
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: LoadMode::RuntimeSlice,
+            projector_path: None,
             include_embeddings: true,
             include_output: true,
             filter_tensors_on_load: false,
@@ -337,13 +342,30 @@ pub struct SlicePlan {
     raw: *mut RawSlicePlan,
 }
 
+struct MediaProjector {
+    raw: *mut skippy_ffi::MtmdContext,
+}
+
 pub struct StageModel {
     raw: *mut RawModel,
+    media: Option<MediaProjector>,
 }
 
 pub struct StageSession {
     raw: *mut RawSession,
     token_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaInput {
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaPrefill {
+    pub token_count: usize,
+    pub position: u64,
+    pub first_token: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +478,46 @@ impl Default for ChatTemplateOptions {
 // Rust stage-server access is additionally serialized behind a Mutex.
 unsafe impl Send for StageModel {}
 unsafe impl Send for StageSession {}
+unsafe impl Send for MediaProjector {}
+
+impl MediaProjector {
+    fn open(path: &str, model: *mut RawModel) -> Result<Self> {
+        let path = CString::new(path.as_bytes())
+            .context("projector path contains an interior NUL byte")?;
+        let raw_model = unsafe { skippy_ffi::skippy_model_llama_model(model) };
+        if raw_model.is_null() {
+            return Err(anyhow!("skippy model did not expose a llama_model handle"));
+        }
+        let mut params = unsafe { skippy_ffi::mtmd_context_params_default() };
+        params.use_gpu = true;
+        let raw = unsafe { skippy_ffi::mtmd_init_from_file(path.as_ptr(), raw_model, params) };
+        if raw.is_null() {
+            return Err(anyhow!("failed to load multimodal projector {path:?}"));
+        }
+        Ok(Self { raw })
+    }
+
+    fn marker() -> String {
+        let marker = unsafe { skippy_ffi::mtmd_default_marker() };
+        if marker.is_null() {
+            "<__media__>".to_string()
+        } else {
+            unsafe { CStr::from_ptr(marker) }
+                .to_string_lossy()
+                .into_owned()
+        }
+    }
+}
+
+impl Drop for MediaProjector {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                skippy_ffi::mtmd_free(self.raw);
+            }
+        }
+    }
+}
 
 impl StageModel {
     pub fn open(path: impl AsRef<Path>, config: &RuntimeConfig) -> Result<Self> {
@@ -472,7 +534,12 @@ impl StageModel {
         if raw.is_null() {
             return Err(anyhow!("skippy_model_open returned a null handle"));
         }
-        Ok(Self { raw })
+        let media = config
+            .projector_path
+            .as_deref()
+            .map(|projector_path| MediaProjector::open(projector_path, raw))
+            .transpose()?;
+        Ok(Self { raw, media })
     }
 
     pub fn open_from_parts(paths: &[impl AsRef<Path>], config: &RuntimeConfig) -> Result<Self> {
@@ -505,7 +572,12 @@ impl StageModel {
                 "skippy_model_open_from_parts returned a null handle"
             ));
         }
-        Ok(Self { raw })
+        let media = config
+            .projector_path
+            .as_deref()
+            .map(|projector_path| MediaProjector::open(projector_path, raw))
+            .transpose()?;
+        Ok(Self { raw, media })
     }
 
     pub fn create_session(&self) -> Result<StageSession> {
@@ -519,6 +591,174 @@ impl StageModel {
         Ok(StageSession {
             raw,
             token_count: 0,
+        })
+    }
+
+    pub fn media_marker(&self) -> String {
+        MediaProjector::marker()
+    }
+
+    pub fn has_media_projector(&self) -> bool {
+        self.media.is_some()
+    }
+
+    pub fn prefill_media(
+        &self,
+        session: &mut StageSession,
+        prompt: &str,
+        media: &[MediaInput],
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<MediaPrefill> {
+        let projector = self
+            .media
+            .as_ref()
+            .ok_or_else(|| anyhow!("model was not loaded with a multimodal projector"))?;
+        if media.is_empty() {
+            return Err(anyhow!("media prefill requires at least one media item"));
+        }
+        if prompt.is_empty() {
+            return Err(anyhow!("media prompt must not be empty"));
+        }
+
+        struct Bitmap {
+            raw: *mut skippy_ffi::MtmdBitmap,
+        }
+        impl Drop for Bitmap {
+            fn drop(&mut self) {
+                if !self.raw.is_null() {
+                    unsafe {
+                        skippy_ffi::mtmd_bitmap_free(self.raw);
+                    }
+                }
+            }
+        }
+        struct Chunks {
+            raw: *mut skippy_ffi::MtmdInputChunks,
+        }
+        impl Drop for Chunks {
+            fn drop(&mut self) {
+                if !self.raw.is_null() {
+                    unsafe {
+                        skippy_ffi::mtmd_input_chunks_free(self.raw);
+                    }
+                }
+            }
+        }
+
+        let mut bitmaps = Vec::with_capacity(media.len());
+        for item in media {
+            if item.bytes.is_empty() {
+                return Err(anyhow!("media item must not be empty"));
+            }
+            let raw = unsafe {
+                skippy_ffi::mtmd_helper_bitmap_init_from_buf(
+                    projector.raw,
+                    item.bytes.as_ptr(),
+                    item.bytes.len(),
+                )
+            };
+            if raw.is_null() {
+                return Err(anyhow!("failed to decode media item for projector"));
+            }
+            bitmaps.push(Bitmap { raw });
+        }
+
+        let chunks = Chunks {
+            raw: unsafe { skippy_ffi::mtmd_input_chunks_init() },
+        };
+        if chunks.raw.is_null() {
+            return Err(anyhow!("failed to allocate multimodal input chunks"));
+        }
+        let prompt = CString::new(prompt.as_bytes())
+            .context("multimodal prompt contains an interior NUL byte")?;
+        let input_text = skippy_ffi::MtmdInputText {
+            text: prompt.as_ptr(),
+            add_special: true,
+            parse_special: true,
+        };
+        let bitmap_ptrs = bitmaps
+            .iter()
+            .map(|bitmap| bitmap.raw.cast_const())
+            .collect::<Vec<_>>();
+        let tokenize_status = unsafe {
+            skippy_ffi::mtmd_tokenize(
+                projector.raw,
+                chunks.raw,
+                &input_text,
+                bitmap_ptrs.as_ptr(),
+                bitmap_ptrs.len(),
+            )
+        };
+        if tokenize_status != 0 {
+            return Err(anyhow!(
+                "multimodal tokenization failed with status {tokenize_status}"
+            ));
+        }
+
+        let token_count = unsafe { skippy_ffi::mtmd_helper_get_n_tokens(chunks.raw) };
+        if token_count == 0 {
+            return Err(anyhow!("multimodal prompt produced no tokens"));
+        }
+        let n_past = unsafe { skippy_ffi::skippy_session_position(session.raw) };
+        if n_past < 0 {
+            return Err(anyhow!("skippy session is not initialized"));
+        }
+        let n_batch = unsafe { skippy_ffi::skippy_session_batch_size(session.raw) };
+        if n_batch <= 0 {
+            return Err(anyhow!("skippy session has no valid batch size"));
+        }
+        let lctx = unsafe { skippy_ffi::skippy_session_llama_context(session.raw) };
+        if lctx.is_null() {
+            return Err(anyhow!(
+                "skippy session did not expose a llama_context handle"
+            ));
+        }
+        let mut new_n_past = 0_i32;
+        let eval_status = unsafe {
+            skippy_ffi::mtmd_helper_eval_chunks(
+                projector.raw,
+                lctx,
+                chunks.raw,
+                n_past,
+                0,
+                n_batch,
+                true,
+                &mut new_n_past,
+            )
+        };
+        if eval_status != 0 {
+            return Err(anyhow!(
+                "multimodal prompt evaluation failed with status {eval_status}"
+            ));
+        }
+
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_session_set_position(session.raw, new_n_past, &mut error) };
+        ensure_ok(status, error)?;
+        session.token_count =
+            u64::try_from(new_n_past).context("multimodal position is negative")?;
+
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let mut first_token = 0_i32;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_sample_current(
+                session.raw,
+                sampling_ptr,
+                &mut first_token,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+
+        Ok(MediaPrefill {
+            token_count,
+            position: session.token_count,
+            first_token,
         })
     }
 
@@ -700,6 +940,7 @@ impl StageModel {
 
 impl Drop for StageModel {
     fn drop(&mut self) {
+        self.media.take();
         if !self.raw.is_null() {
             unsafe {
                 let _ = skippy_ffi::skippy_model_free(self.raw, ptr::null_mut());
@@ -1735,6 +1976,7 @@ mod tests {
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: RuntimeLoadMode::RuntimeSlice,
+            projector_path: None,
             include_embeddings: true,
             include_output: true,
             filter_tensors_on_load: false,
@@ -1848,6 +2090,7 @@ mod tests {
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: RuntimeLoadMode::RuntimeSlice,
+            projector_path: None,
             include_embeddings: true,
             include_output: true,
             filter_tensors_on_load: false,

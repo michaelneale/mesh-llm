@@ -21,13 +21,14 @@ use axum::{
     response::Response,
     Router,
 };
+use base64::Engine;
 use futures_util::{stream, StreamExt};
 use openai_frontend::{
-    chat_mesh_hooks_enabled, inject_text_into_chat_messages, message_content_to_text,
-    normalize_reasoning_template_options, ChatCompletionChunk, ChatCompletionRequest,
-    ChatCompletionResponse, ChatCompletionStream, ChatHookAction, ChatHookOutcome, ChatMessage,
-    CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, FinishReason,
-    GenerationHookSignals, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiHookPolicy,
+    chat_mesh_hooks_enabled, inject_text_into_chat_messages, normalize_reasoning_template_options,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream,
+    ChatHookAction, ChatHookOutcome, ChatMessage, CompletionChunk, CompletionRequest,
+    CompletionResponse, CompletionStream, FinishReason, GenerationHookSignals, MessageContent,
+    MessageContentPart, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiHookPolicy,
     OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
 };
 use serde_json::{json, Value};
@@ -41,8 +42,8 @@ use skippy_protocol::binary::{
 use skippy_protocol::{StageConfig, StageTopology};
 use skippy_runtime::{
     ChatTemplateMessage, ChatTemplateOptions, GenerationSignalWindow,
-    LogitBias as RuntimeLogitBias, ModelInfo, RuntimeConfig, RuntimeLoadMode, SamplingConfig,
-    StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
+    LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig, RuntimeLoadMode,
+    SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
 use tokio::{
     net::TcpListener,
@@ -872,6 +873,7 @@ impl DraftRunner {
                 cache_type_k: skippy_runtime::GGML_TYPE_F16,
                 cache_type_v: skippy_runtime::GGML_TYPE_F16,
                 load_mode: RuntimeLoadMode::RuntimeSlice,
+                projector_path: None,
                 include_embeddings: true,
                 include_output: true,
                 filter_tensors_on_load: false,
@@ -967,7 +969,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let sampling = chat_sampling_config(&request)?;
         let template_options = chat_template_options(&request)?;
         let template_timer = PhaseTimer::start();
-        let prompt = self.apply_chat_template(&request.messages, template_options)?;
+        let prompt = self.prepare_chat_prompt(&request.messages, template_options)?;
         let mut template_attrs = self.openai_attrs(&ids);
         template_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -977,7 +979,14 @@ impl OpenAiBackend for StageOpenAiBackend {
             "llama_stage.chat_message_count".to_string(),
             json!(request.messages.len()),
         );
-        template_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        template_attrs.insert(
+            "llama_stage.prompt_chars".to_string(),
+            json!(prompt.text.len()),
+        );
+        template_attrs.insert(
+            "llama_stage.media_item_count".to_string(),
+            json!(prompt.media.len()),
+        );
         self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
         let max_tokens = request
             .effective_max_tokens()
@@ -1047,7 +1056,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let include_usage = request.include_usage();
         let template_options = chat_template_options(&request)?;
         let template_timer = PhaseTimer::start();
-        let prompt = self.apply_chat_template(&request.messages, template_options)?;
+        let prompt = self.prepare_chat_prompt(&request.messages, template_options)?;
         let mut template_attrs = self.openai_attrs(&ids);
         template_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -1057,7 +1066,14 @@ impl OpenAiBackend for StageOpenAiBackend {
             "llama_stage.chat_message_count".to_string(),
             json!(request.messages.len()),
         );
-        template_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        template_attrs.insert(
+            "llama_stage.prompt_chars".to_string(),
+            json!(prompt.text.len()),
+        );
+        template_attrs.insert(
+            "llama_stage.media_item_count".to_string(),
+            json!(prompt.media.len()),
+        );
         self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
         let max_tokens = request
             .effective_max_tokens()
@@ -1087,13 +1103,16 @@ impl OpenAiBackend for StageOpenAiBackend {
         let sampling = completion_sampling_config(&request)?;
         let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
         let prompt_timer = PhaseTimer::start();
-        let prompt = request.prompt.text_lossy();
+        let prompt = PreparedGenerationPrompt::text(request.prompt.text_lossy());
         let mut prompt_attrs = self.openai_attrs(&ids);
         prompt_attrs.insert(
             "llama_stage.openai_operation".to_string(),
             json!("completion"),
         );
-        prompt_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        prompt_attrs.insert(
+            "llama_stage.prompt_chars".to_string(),
+            json!(prompt.text.len()),
+        );
         self.emit_openai_phase("stage.openai_prompt_prepare", prompt_timer, prompt_attrs);
         let output = self
             .run_generation(
@@ -1160,13 +1179,16 @@ impl OpenAiBackend for StageOpenAiBackend {
         let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
         let model = request.model.clone();
         let prompt_timer = PhaseTimer::start();
-        let prompt = request.prompt.text_lossy();
+        let prompt = PreparedGenerationPrompt::text(request.prompt.text_lossy());
         let mut prompt_attrs = self.openai_attrs(&ids);
         prompt_attrs.insert(
             "llama_stage.openai_operation".to_string(),
             json!("completion_stream"),
         );
-        prompt_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        prompt_attrs.insert(
+            "llama_stage.prompt_chars".to_string(),
+            json!(prompt.text.len()),
+        );
         self.emit_openai_phase("stage.openai_prompt_prepare", prompt_timer, prompt_attrs);
         let stream = self
             .run_generation_stream(
@@ -1277,7 +1299,7 @@ impl StageOpenAiBackend {
 
     async fn run_generation(
         &self,
-        prompt: String,
+        prompt: PreparedGenerationPrompt,
         max_tokens: u32,
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
@@ -1319,7 +1341,7 @@ impl StageOpenAiBackend {
 
     async fn run_generation_stream(
         &self,
-        prompt: String,
+        prompt: PreparedGenerationPrompt,
         max_tokens: u32,
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
@@ -1391,37 +1413,45 @@ impl StageOpenAiBackend {
         })))
     }
 
-    fn apply_chat_template(
+    fn prepare_chat_prompt(
         &self,
         messages: &[ChatMessage],
         options: ChatTemplateOptions,
-    ) -> OpenAiResult<String> {
+    ) -> OpenAiResult<PreparedGenerationPrompt> {
+        let marker = {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            runtime.media_marker()
+        };
+        let mut media = Vec::new();
         let template_messages = messages
             .iter()
             .map(|message| {
-                ChatTemplateMessage::new(
-                    message.role.as_str(),
-                    message
-                        .content
-                        .as_ref()
-                        .and_then(message_content_to_text)
-                        .unwrap_or_default(),
-                )
+                let content = message
+                    .content
+                    .as_ref()
+                    .map(|content| message_content_to_generation_text(content, &marker, &mut media))
+                    .transpose()?
+                    .unwrap_or_default();
+                Ok(ChatTemplateMessage::new(message.role.as_str(), content))
             })
-            .collect::<Vec<_>>();
+            .collect::<OpenAiResult<Vec<_>>>()?;
         let runtime = self
             .runtime
             .lock()
             .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-        runtime
+        let text = runtime
             .model
             .apply_chat_template_with_options(&template_messages, options)
-            .map_err(openai_backend_error)
+            .map_err(openai_backend_error)?;
+        Ok(PreparedGenerationPrompt { text, media })
     }
 
     fn generate_text(
         &self,
-        prompt: String,
+        prompt: PreparedGenerationPrompt,
         max_tokens: u32,
         stop: Option<&openai_frontend::StopSequence>,
         sampling: SamplingConfig,
@@ -1432,16 +1462,32 @@ impl StageOpenAiBackend {
         on_text_chunk: impl FnMut(&str) -> OpenAiResult<()>,
     ) -> OpenAiResult<GeneratedText> {
         let generation_timer = PhaseTimer::start();
-        if prompt.is_empty() {
+        if prompt.text.is_empty() {
             return Err(OpenAiError::invalid_request(
                 "request prompt/messages produced no text",
             ));
         }
+        if prompt.has_media() {
+            return self.generate_multimodal_text(
+                prompt,
+                max_tokens,
+                stop,
+                sampling,
+                hook_request,
+                hook_runtime,
+                cancellation,
+                ids,
+                on_text_chunk,
+            );
+        }
         let stop_values = stop.map(|stop| stop.values()).unwrap_or_default();
         let tokenize_timer = PhaseTimer::start();
-        let prompt_token_ids = self.tokenize(&prompt)?;
+        let prompt_token_ids = self.tokenize(&prompt.text)?;
         let mut tokenize_attrs = self.openai_attrs(&ids);
-        tokenize_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        tokenize_attrs.insert(
+            "llama_stage.prompt_chars".to_string(),
+            json!(prompt.text.len()),
+        );
         tokenize_attrs.insert(
             "llama_stage.prompt_token_count".to_string(),
             json!(prompt_token_ids.len()),
@@ -1544,6 +1590,262 @@ impl StageOpenAiBackend {
             summary_attrs,
         );
         Ok(output)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn generate_multimodal_text(
+        &self,
+        prompt: PreparedGenerationPrompt,
+        max_tokens: u32,
+        stop: Option<&openai_frontend::StopSequence>,
+        sampling: SamplingConfig,
+        hook_request: Option<ChatCompletionRequest>,
+        hook_runtime: Option<tokio::runtime::Handle>,
+        cancellation: Option<&openai_frontend::CancellationToken>,
+        ids: OpenAiGenerationIds,
+        on_text_chunk: impl FnMut(&str) -> OpenAiResult<()>,
+    ) -> OpenAiResult<GeneratedText> {
+        match &self.mode {
+            OpenAiBackendMode::LocalRuntime => {}
+            OpenAiBackendMode::EmbeddedStageZero { config, .. } if config.downstream.is_none() => {}
+            OpenAiBackendMode::EmbeddedStageZero { .. } | OpenAiBackendMode::BinaryChain { .. } => {
+                return Err(OpenAiError::unsupported(
+                    "multimodal requests are not yet supported for staged split serving",
+                ));
+            }
+        }
+
+        let stop_values = stop.map(|stop| stop.values()).unwrap_or_default();
+        let session_id = ids.session_label.clone();
+        let prefill_timer = PhaseTimer::start();
+        let (prefill, mut token_signal, mut signal_window) = {
+            let lock_timer = PhaseTimer::start();
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            let lock_wait_ms = lock_timer.elapsed_ms();
+            if !runtime.has_media_projector() {
+                return Err(OpenAiError::invalid_request(
+                    "multimodal request requires a configured projector",
+                ));
+            }
+            let runtime_sessions_before = runtime.session_stats();
+            let lock_hold_timer = PhaseTimer::start();
+            let prefill = runtime
+                .prefill_media(
+                    &session_id,
+                    &prompt.text,
+                    &prompt.media,
+                    sampling.enabled.then_some(&sampling),
+                )
+                .map_err(openai_backend_error)?;
+            let token_signal = runtime.last_token_signal(&session_id).ok();
+            let signal_window = runtime.signal_window(&session_id, 16).ok();
+            let runtime_sessions_after = runtime.session_stats();
+            let runtime_lock_hold_ms = lock_hold_timer.elapsed_ms();
+            let mut attrs = self.openai_attrs(&ids);
+            attrs.insert(
+                "llama_stage.prefill_token_count".to_string(),
+                json!(prefill.token_count),
+            );
+            attrs.insert(
+                "llama_stage.prefill_position".to_string(),
+                json!(prefill.position),
+            );
+            attrs.insert(
+                "llama_stage.media_item_count".to_string(),
+                json!(prompt.media.len()),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(lock_wait_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(runtime_lock_hold_ms),
+            );
+            attrs.insert("llama_stage.runtime_lock_acquires".to_string(), json!(1));
+            Self::insert_runtime_session_stats(
+                &mut attrs,
+                "llama_stage.runtime_sessions_before",
+                runtime_sessions_before,
+            );
+            Self::insert_runtime_session_stats(
+                &mut attrs,
+                "llama_stage.runtime_sessions_after",
+                runtime_sessions_after,
+            );
+            self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
+            (prefill, token_signal, signal_window)
+        };
+        ensure_context_capacity(prefill.position as usize, max_tokens, self.ctx_size)?;
+
+        let mut collector =
+            TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
+        let result = (|| {
+            let decode_timer = PhaseTimer::start();
+            let mut decoded_tokens = 0usize;
+            let mut current = prefill.first_token;
+            let mut runtime_lock_wait_ms = 0.0;
+            let mut runtime_lock_wait_max_ms = 0.0_f64;
+            let mut runtime_lock_hold_ms = 0.0;
+            let mut runtime_lock_hold_max_ms = 0.0_f64;
+            let mut runtime_lock_acquires = 0usize;
+            let mut runtime_sessions_before = None;
+            let mut runtime_sessions_after = None;
+            let mut hook_request = hook_request;
+            let hook_runtime = hook_runtime;
+            let mut post_prefill_hook_checked = false;
+            let mut last_mid_generation_hook_at = None;
+
+            while decoded_tokens < max_tokens as usize {
+                if cancellation.is_some_and(openai_frontend::CancellationToken::is_cancelled) {
+                    break;
+                }
+                if let Some(injected_current) = self.maybe_run_generation_hooks(
+                    &session_id,
+                    &mut hook_request,
+                    hook_runtime.as_ref(),
+                    decoded_tokens,
+                    &mut post_prefill_hook_checked,
+                    &mut last_mid_generation_hook_at,
+                    token_signal.take(),
+                    signal_window.take(),
+                )? {
+                    current = injected_current;
+                    continue;
+                }
+                if collector.push_token(current)? == TokenControl::Stop {
+                    decoded_tokens += 1;
+                    break;
+                }
+                decoded_tokens += 1;
+                if decoded_tokens >= max_tokens as usize {
+                    break;
+                }
+
+                let token_timer = PhaseTimer::start();
+                let token_runtime_lock_wait_ms;
+                let token_runtime_lock_hold_ms;
+                let token_signal_next;
+                let signal_window_next;
+                let decode_step = decoded_tokens;
+                current = {
+                    let lock_timer = PhaseTimer::start();
+                    let mut runtime = self
+                        .runtime
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                    let lock_wait_ms = lock_timer.elapsed_ms();
+                    token_runtime_lock_wait_ms = lock_wait_ms;
+                    runtime_lock_wait_ms += lock_wait_ms;
+                    runtime_lock_wait_max_ms = runtime_lock_wait_max_ms.max(lock_wait_ms);
+                    runtime_lock_acquires += 1;
+                    let hold_timer = PhaseTimer::start();
+                    runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                    let predicted = runtime
+                        .decode_sampled(&session_id, current, sampling.enabled.then_some(&sampling))
+                        .map_err(openai_backend_error)?;
+                    token_signal_next = runtime.last_token_signal(&session_id).ok();
+                    signal_window_next = runtime.signal_window(&session_id, 16).ok();
+                    runtime_sessions_after = Some(runtime.session_stats());
+                    token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
+                    runtime_lock_hold_ms += token_runtime_lock_hold_ms;
+                    runtime_lock_hold_max_ms =
+                        runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
+                    predicted
+                };
+                token_signal = token_signal_next;
+                signal_window = signal_window_next;
+                let mut token_attrs = self.openai_attrs(&ids);
+                token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                token_attrs.insert(
+                    "llama_stage.stage0_compute_ms".to_string(),
+                    json!(token_timer.elapsed_ms()),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(token_runtime_lock_wait_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(token_runtime_lock_hold_ms),
+                );
+                token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
+                token_attrs.insert("llama_stage.message_kind".to_string(), json!("DecodeToken"));
+                self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+            }
+            let mut attrs = self.openai_attrs(&ids);
+            attrs.insert(
+                "llama_stage.decode_token_count".to_string(),
+                json!(decoded_tokens),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(runtime_lock_wait_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_max_ms".to_string(),
+                json!(runtime_lock_wait_max_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(runtime_lock_hold_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_max_ms".to_string(),
+                json!(runtime_lock_hold_max_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_acquires".to_string(),
+                json!(runtime_lock_acquires),
+            );
+            if let Some(stats) = runtime_sessions_before {
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_before",
+                    stats,
+                );
+            }
+            if let Some(stats) = runtime_sessions_after {
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    stats,
+                );
+            }
+            self.emit_openai_phase("stage.openai_decode", decode_timer, attrs);
+            Ok(())
+        })();
+        let lock_timer = PhaseTimer::start();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let runtime_lock_wait_ms = lock_timer.elapsed_ms();
+            if let Ok(drop_stats) = runtime.drop_session_timed(&session_id) {
+                let mut attrs = self.openai_attrs(&ids);
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(runtime_lock_wait_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset_ms".to_string(),
+                    json!(drop_stats.reset_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset".to_string(),
+                    json!(drop_stats.reset_session),
+                );
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    drop_stats.stats_after,
+                );
+                self.telemetry
+                    .emit_debug("stage.openai_session_stop", attrs);
+            }
+        }
+        result?;
+        collector.finish(prefill.token_count)
     }
 
     fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
@@ -3155,6 +3457,25 @@ fn attrs_insert_prefill_chunk_policy(
     }
 }
 
+#[derive(Debug, Clone)]
+struct PreparedGenerationPrompt {
+    text: String,
+    media: Vec<MediaInput>,
+}
+
+impl PreparedGenerationPrompt {
+    fn text(text: String) -> Self {
+        Self {
+            text,
+            media: Vec::new(),
+        }
+    }
+
+    fn has_media(&self) -> bool {
+        !self.media.is_empty()
+    }
+}
+
 struct LocalGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
@@ -3747,6 +4068,107 @@ fn token_is_eog_with_runtime(
         .model
         .token_is_eog(token_id)
         .map_err(openai_backend_error)
+}
+
+fn message_content_to_generation_text(
+    content: &MessageContent,
+    marker: &str,
+    media: &mut Vec<MediaInput>,
+) -> OpenAiResult<String> {
+    match content {
+        MessageContent::Text(text) => Ok(text.clone()),
+        MessageContent::Parts(parts) => {
+            let mut chunks = Vec::new();
+            for part in parts {
+                if part.content_type == "text" {
+                    if let Some(text) = part.text.as_deref() {
+                        chunks.push(text.to_string());
+                    }
+                    continue;
+                }
+                if let Some(bytes) = media_bytes_from_part(part)? {
+                    media.push(MediaInput { bytes });
+                    chunks.push(marker.to_string());
+                }
+            }
+            Ok(chunks.join("\n"))
+        }
+        MessageContent::Other(_) => Ok(String::new()),
+    }
+}
+
+fn media_bytes_from_part(part: &MessageContentPart) -> OpenAiResult<Option<Vec<u8>>> {
+    let is_media = matches!(
+        part.content_type.as_str(),
+        "image_url" | "input_image" | "image" | "input_audio" | "audio" | "audio_url"
+    );
+    if !is_media {
+        return Ok(None);
+    }
+    if let Some(url) = media_url(part) {
+        return decode_media_url(&url).map(Some);
+    }
+    if let Some(data) = media_data(part) {
+        return decode_base64_payload(&data).map(Some);
+    }
+    Err(OpenAiError::invalid_request(format!(
+        "media content block '{}' is missing url or data",
+        part.content_type
+    )))
+}
+
+fn media_url(part: &MessageContentPart) -> Option<String> {
+    for key in [
+        "image_url",
+        "input_image",
+        "image",
+        "input_audio",
+        "audio",
+        "audio_url",
+        "url",
+    ] {
+        if let Some(value) = part.extra.get(key) {
+            if let Some(url) = value.as_str() {
+                return Some(url.to_string());
+            }
+            if let Some(url) = value.get("url").and_then(Value::as_str) {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn media_data(part: &MessageContentPart) -> Option<String> {
+    for key in ["input_audio", "audio", "image", "input_image", "image_url"] {
+        if let Some(value) = part.extra.get(key) {
+            if let Some(data) = value.get("data").and_then(Value::as_str) {
+                return Some(data.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn decode_media_url(url: &str) -> OpenAiResult<Vec<u8>> {
+    if let Some((prefix, payload)) = url.split_once(',') {
+        if prefix.starts_with("data:") && prefix.contains(";base64") {
+            return decode_base64_payload(payload);
+        }
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Err(OpenAiError::unsupported(
+            "remote multimodal URLs must be fetched by mesh before reaching skippy",
+        ));
+    }
+    decode_base64_payload(url)
+}
+
+fn decode_base64_payload(payload: &str) -> OpenAiResult<Vec<u8>> {
+    base64::engine::general_purpose::STANDARD
+        .decode(payload.as_bytes())
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.as_bytes()))
+        .map_err(|error| OpenAiError::invalid_request(format!("invalid media base64: {error}")))
 }
 
 fn chat_sampling_config(request: &ChatCompletionRequest) -> OpenAiResult<SamplingConfig> {
@@ -4378,6 +4800,40 @@ mod tests {
         assert_eq!(valid_utf8_prefix_len("hello".as_bytes()), 5);
         assert_eq!(valid_utf8_prefix_len(&[b'h', b'i', 0xE2, 0x82]), 2);
         assert_eq!(valid_utf8_prefix_len(&[0xF0, 0x9F, 0x98]), 0);
+    }
+
+    #[test]
+    fn message_content_to_generation_text_inserts_media_markers() {
+        let content: MessageContent = serde_json::from_value(json!([
+            {"type": "text", "text": "what is this?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}}
+        ]))
+        .unwrap();
+        let mut media = Vec::new();
+
+        let text = message_content_to_generation_text(&content, "<__media__>", &mut media)
+            .expect("media text");
+
+        assert_eq!(text, "what is this?\n<__media__>");
+        assert_eq!(media.len(), 1);
+        assert_eq!(media[0].bytes, b"hello");
+    }
+
+    #[test]
+    fn message_content_to_generation_text_rejects_remote_media_urls() {
+        let content: MessageContent = serde_json::from_value(json!([
+            {"type": "input_image", "image_url": "https://example.com/image.png"}
+        ]))
+        .unwrap();
+        let mut media = Vec::new();
+
+        let error =
+            message_content_to_generation_text(&content, "<__media__>", &mut media).unwrap_err();
+
+        assert_eq!(
+            error.body().error.code.as_deref(),
+            Some("unsupported_model_feature")
+        );
     }
 
     #[test]

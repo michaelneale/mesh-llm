@@ -1,0 +1,201 @@
+From f7ff1460fe0da075f90438b78102301d14cd64b2 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sat, 2 May 2026 16:10:53 +1000
+Subject: [PATCH 35/35] Expose external media prefill ABI
+
+---
+ include/skippy.h | 35 +++++++++++++++++++-
+ src/skippy.cpp   | 84 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 117 insertions(+), 2 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 2f8f8466..1db835d5 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 13
++#define SKIPPY_ABI_VERSION_PATCH 14
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -51,6 +51,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
+     SKIPPY_FEATURE_PACKAGE_PART_LOAD      = 1 << 18,
+     SKIPPY_FEATURE_GENERATION_SIGNALS     = 1 << 19,
++    SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL = 1 << 20,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -213,11 +214,34 @@ LLAMA_API enum skippy_status skippy_model_free(
+         struct skippy_model * model,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API const struct llama_model * skippy_model_llama_model(
++        const struct skippy_model * model);
++
+ LLAMA_API enum skippy_status skippy_session_create(
+         struct skippy_model * model,
+         struct skippy_session ** out_session,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API struct llama_context * skippy_session_llama_context(
++        struct skippy_session * session);
++
++LLAMA_API int32_t skippy_session_position(
++        const struct skippy_session * session);
++
++LLAMA_API int32_t skippy_session_batch_size(
++        const struct skippy_session * session);
++
++LLAMA_API enum skippy_status skippy_session_set_position(
++        struct skippy_session * session,
++        int32_t n_past,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_session_sample_current(
++        struct skippy_session * session,
++        const struct skippy_sampling_config * sampling,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_session_reset(
+         struct skippy_session * session,
+         struct skippy_error ** out_error);
+@@ -331,6 +355,15 @@ LLAMA_API enum skippy_status skippy_verify_tokens_frame(
+         size_t * out_token_count,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_session_copy_output_activation_frame(
++        struct skippy_session * session,
++        size_t token_count,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 26209b45..a9ea0446 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1126,7 +1126,8 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_SESSION_TRIM |
+            SKIPPY_FEATURE_SESSION_CHECKPOINT |
+            SKIPPY_FEATURE_PACKAGE_PART_LOAD |
+-           SKIPPY_FEATURE_GENERATION_SIGNALS;
++           SKIPPY_FEATURE_GENERATION_SIGNALS |
++           SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -1327,6 +1328,11 @@ enum skippy_status skippy_model_free(
+     return skippy_success(out_error);
+ }
+ 
++const struct llama_model * skippy_model_llama_model(
++        const struct skippy_model * model) {
++    return model != nullptr ? model->model : nullptr;
++}
++
+ enum skippy_status skippy_session_create(
+         struct skippy_model * model,
+         struct skippy_session ** out_session,
+@@ -1365,6 +1371,56 @@ enum skippy_status skippy_session_create(
+     return skippy_success(out_error);
+ }
+ 
++struct llama_context * skippy_session_llama_context(
++        struct skippy_session * session) {
++    return session != nullptr ? session->ctx : nullptr;
++}
++
++int32_t skippy_session_position(
++        const struct skippy_session * session) {
++    return session != nullptr ? session->n_past : -1;
++}
++
++int32_t skippy_session_batch_size(
++        const struct skippy_session * session) {
++    return session != nullptr && session->ctx != nullptr ? llama_n_batch(session->ctx) : 0;
++}
++
++enum skippy_status skippy_session_set_position(
++        struct skippy_session * session,
++        int32_t n_past,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (n_past < 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "n_past must be non-negative");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    session->n_past = n_past;
++    if (session->token_history.size() > static_cast<size_t>(n_past)) {
++        session->token_history.resize(static_cast<size_t>(n_past));
++    }
++    if (session->signal_history.size() > static_cast<size_t>(n_past)) {
++        session->signal_history.resize(static_cast<size_t>(n_past));
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_sample_current(
++        struct skippy_session * session,
++        const struct skippy_sampling_config * sampling,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || out_predicted_token == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and out_predicted_token are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    *out_predicted_token = skippy_sample_token(session, sampling);
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_session_reset(
+         struct skippy_session * session,
+         struct skippy_error ** out_error) {
+@@ -1811,6 +1867,32 @@ enum skippy_status skippy_verify_tokens_frame(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_session_copy_output_activation_frame(
++        struct skippy_session * session,
++        size_t token_count,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error) {
++    if (token_count == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count must be greater than zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    enum skippy_status status = skippy_prepare_output_activation_frame(
++            session,
++            token_count,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            output_desc,
++            out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
++}
++
+ enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+-- 
+2.50.1 (Apple Git-155)
+

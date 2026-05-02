@@ -379,6 +379,22 @@ mod tests {
     }
 
     #[test]
+    fn image_only_message_without_mesh_hooks_is_valid_for_native_multimodal_backend() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+                ]
+            }]
+        }))
+        .unwrap();
+
+        request.validate().unwrap();
+    }
+
+    #[test]
     fn inject_text_into_chat_messages_prepends_last_user_text() {
         let mut request: ChatCompletionRequest = serde_json::from_value(json!({
             "model": "auto",

@@ -7,9 +7,9 @@ use std::{
 use anyhow::{bail, Context, Result};
 use skippy_protocol::{LoadMode, StageConfig};
 use skippy_runtime::{
-    parse_cache_type, ActivationFrame, GenerationSignalWindow, RuntimeConfig, RuntimeKvPage,
-    RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
-    StageSessionCheckpoint, TokenSignal,
+    parse_cache_type, ActivationFrame, GenerationSignalWindow, MediaInput, MediaPrefill,
+    RuntimeConfig, RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel,
+    StageSession, StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::materialize_layer_package;
@@ -54,6 +54,32 @@ impl RuntimeState {
             .map(|_| ())?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(())
+    }
+
+    pub fn media_marker(&self) -> String {
+        self.model.media_marker()
+    }
+
+    pub fn has_media_projector(&self) -> bool {
+        self.model.has_media_projector()
+    }
+
+    pub fn prefill_media(
+        &mut self,
+        session_id: &str,
+        prompt: &str,
+        media: &[MediaInput],
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<MediaPrefill> {
+        let model = &self.model as *const StageModel;
+        let session = self.session(session_id)?;
+        // `session()` mutably borrows the session map, while the projector lives
+        // on the same RuntimeState. RuntimeState serializes access behind one
+        // outer mutex, so this split borrow only aliases immutable model state.
+        let prefill = unsafe { (&*model).prefill_media(session, prompt, media, sampling) }?;
+        self.session_token_counts
+            .insert(session_id.to_string(), prefill.position);
+        Ok(prefill)
     }
 
     pub fn decode(&mut self, session_id: &str, token_id: i32) -> Result<i32> {
@@ -520,6 +546,7 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
             LoadMode::LayerPackage => RuntimeLoadMode::LayerPackage,
             LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
         },
+        projector_path: config.projector_path.clone(),
         include_embeddings: config.stage_index == 0,
         include_output: config.downstream.is_none(),
         filter_tensors_on_load: config.filter_tensors_on_load,
