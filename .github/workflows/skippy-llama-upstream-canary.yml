@@ -1,0 +1,106 @@
+name: Skippy llama.cpp Upstream Canary
+
+on:
+  schedule:
+    - cron: "47 3 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_sha:
+        description: "Optional llama.cpp upstream SHA to validate instead of origin/master"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  latest-upstream:
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build build-essential libcurl4-openssl-dev
+
+      - name: Prepare requested skippy llama upstream
+        env:
+          UPSTREAM_SHA: ${{ github.event.inputs.upstream_sha || 'latest' }}
+        run: scripts/prepare-skippy-llama.sh "$UPSTREAM_SHA"
+
+      - name: Capture upstream SHAs
+        id: sha
+        run: |
+          old_sha="$(tr -d '[:space:]' < third_party/skippy-llama.cpp/upstream.txt)"
+          new_sha="$(tr -d '[:space:]' < .deps/skippy-llama.cpp/.skippy-upstream-sha)"
+          echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
+          echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
+          if [[ "$old_sha" == "$new_sha" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build patched skippy llama
+        if: steps.sha.outputs.changed == 'true'
+        run: scripts/build-skippy-llama.sh
+
+      - name: Build imported skippy crates
+        if: steps.sha.outputs.changed == 'true'
+        run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p llama-model-slice -p skippy-correctness -p llama-spec-bench
+
+      - name: Update skippy llama upstream pin
+        if: steps.sha.outputs.changed == 'true'
+        run: scripts/update-skippy-llama-pin.sh
+
+      - name: Generate summary
+        if: steps.sha.outputs.changed == 'true'
+        run: |
+          scripts/summarize-skippy-llama-upstream.sh \
+            "${{ steps.sha.outputs.old_sha }}" \
+            "${{ steps.sha.outputs.new_sha }}" \
+            .deps/skippy-llama.cpp \
+            > /tmp/skippy-llama-upstream-pr.md
+
+      - name: Push upstream pin branch
+        if: steps.sha.outputs.changed == 'true'
+        env:
+          BRANCH: automation/update-skippy-llama-upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add third_party/skippy-llama.cpp/upstream.txt
+          if git diff --cached --quiet; then
+            echo "No upstream pin changes to commit."
+            exit 0
+          fi
+          git commit -m "Update skippy llama.cpp upstream pin"
+          remote_sha="$(git ls-remote --heads origin "$BRANCH" | awk '{print $1}')"
+          if [[ -n "$remote_sha" ]]; then
+            git push --force-with-lease="refs/heads/$BRANCH:$remote_sha" origin "$BRANCH:$BRANCH"
+          else
+            git push origin "$BRANCH:$BRANCH"
+          fi
+
+      - name: Report upstream pin branch
+        if: steps.sha.outputs.changed == 'true'
+        run: |
+          {
+            echo "## Skippy llama.cpp upstream pin update"
+            echo
+            echo "Pushed \`automation/update-skippy-llama-upstream\`."
+            echo
+            cat /tmp/skippy-llama-upstream-pr.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true

@@ -19,8 +19,6 @@ flowchart TB
     CLI["skippy-prompt prompt"] --> Plan["skippy-topology<br/>validate splits"]
     CLI --> Slice["llama-model-slice<br/>materialize stage artifacts"]
     CLI --> Metrics["metrics-server"]
-    CLI --> KV["kv-server per stage"]
-    CLI --> NGram["optional ngram-pool-server"]
     CLI --> S0["stage-0<br/>skippy-server"]
     S0 --> S1["stage-1"]
     S1 --> SF["final stage"]
@@ -66,7 +64,7 @@ Useful REPL commands include `:history`, `:logs [name] [lines]`, and `:quit`.
   validation for the requested family/split.
 - `--draft-model-path` enables draft-model speculative proposals.
 - Standalone `kv-server`, `ngram-pool`, and `ngram-pool-server` are not
-  imported into mesh-llm.
+  imported into mesh-llm; topology launch exits before starting sidecars.
 - Thinking controls are forwarded through the shared `openai-frontend`
   reasoning/template normalization helpers.
 

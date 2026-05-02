@@ -95,6 +95,23 @@ release-build-vulkan-windows:
 metrics-server-build:
     cargo build -p metrics-server
 
+# Generate a reproducible benchmark corpus for skippy bench tooling.
+bench-corpus tier="smoke" *ARGS:
+    scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
+
+# Run skippy family certification checks.
+family-certify *ARGS:
+    scripts/family-certify.sh {{ ARGS }}
+
+# Run target/draft speculative compatibility checks.
+spec-bench target draft *ARGS:
+    SKIPPY_LLAMA_BUILD_DIR=".deps/skippy-llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
+    SKIPPY_LLAMA_BUILD_DIR=".deps/skippy-llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
+
+# Smoke a standalone skippy OpenAI frontend stage.
+skippy-openai-smoke *ARGS:
+    scripts/skippy-openai-smoke.sh {{ ARGS }}
+
 # Run the skippy benchmark/debug telemetry collector.
 metrics-server db="/tmp/mesh-metrics.duckdb" http_addr="127.0.0.1:18080" otlp_addr="127.0.0.1:14317" *ARGS: metrics-server-build
     target/debug/metrics-server serve --db "{{ db }}" --http-addr "{{ http_addr }}" --otlp-grpc-addr "{{ otlp_addr }}" {{ ARGS }}

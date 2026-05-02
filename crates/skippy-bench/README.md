@@ -157,22 +157,14 @@ For the 32k stress lane, run the same audit against
 `--ctx-size 32768`. The summary must show zero `exceeds_context` rows before
 the corpus is promoted for that lane.
 
-Speculative prompt corpus runs can use the generated corpus directly:
+Speculative target/draft checks can use the generated corpus directly:
 
 ```bash
 just bench-corpus smoke
-PROMPT_SPEC_CORPUS=target/bench-corpora/smoke/corpus.jsonl \
-  just prompt-spec-corpus /path/to/target.gguf /path/to/draft.gguf
-```
-
-Warm n-gram coding-session run:
-
-```bash
-just bench-corpus coding-loop
-PROMPT_SPEC_CORPUS=target/bench-corpora/coding-loop/corpus.jsonl \
-PROMPT_SPEC_CORPUS_MODES=baseline,ngram,ngram-adaptive \
-  just prompt-spec-corpus /path/to/target.gguf /path/to/draft.gguf -- \
-  --spec-ngram-size-n 4
+target/debug/llama-spec-bench \
+  --target-model-path /path/to/target.gguf \
+  --draft-model-path /path/to/draft.gguf \
+  --prompt-corpus target/bench-corpora/smoke/corpus.jsonl
 ```
 
 `chat-corpus` drives `/v1/chat/completions` through an existing
