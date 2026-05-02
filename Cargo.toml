@@ -19,6 +19,8 @@ members = [
     "crates/skippy-server",
     "crates/metrics-server",
     "crates/llama-model-slice",
+    "crates/skippy-correctness",
+    "crates/llama-spec-bench",
     "tools/xtask",
 ]
 default-members = [

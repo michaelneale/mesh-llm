@@ -1,0 +1,12 @@
+[package]
+name = "llama-spec-bench"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+skippy-runtime = { path = "../skippy-runtime" }
+serde.workspace = true
+serde_json.workspace = true

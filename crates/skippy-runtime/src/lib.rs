@@ -1761,6 +1761,16 @@ impl StageSession {
         };
         ensure_ok(status, error)
     }
+
+    pub fn import_recurrent_state_for_token_count(
+        &mut self,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_recurrent_state(input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
+    }
 }
 
 impl Drop for StageSession {
