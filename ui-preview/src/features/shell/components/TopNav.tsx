@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import * as NavigationMenu from '@radix-ui/react-navigation-menu'
 import * as Select from '@radix-ui/react-select'
-import { BotMessageSquare, ChevronDown, Code2, ExternalLink, Menu, Monitor, Moon, Network, Settings, Share2, Sun, type LucideIcon } from 'lucide-react'
+import { BotMessageSquare, Check, ChevronDown, Code2, ExternalLink, Menu, Monitor, Moon, Network, Settings, Share2, Sun, type LucideIcon } from 'lucide-react'
 import { HeaderHoverCard } from '@/features/shell/components/HeaderHoverCard'
 import { CopyInstructionRow } from '@/components/ui/CopyInstructionRow'
 import type { LinkItem, TopNavJoinCommand, Theme, AppTab } from '@/features/app-tabs/types'
@@ -303,7 +303,7 @@ function ThemeSelect({ theme, onThemeChange }: { theme: Theme; onThemeChange: (t
     >
       <Select.Trigger
         aria-label={`Theme: ${selectedTheme.label}`}
-        className="ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border p-0 outline-none focus-visible:border-border focus-visible:outline-none focus-visible:ring-0 focus-visible:shadow-none data-[state=open]:border-border"
+        className="ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border p-0 outline-none focus-visible:!outline-none focus-visible:!outline-offset-0 focus-visible:!ring-0 focus-visible:!shadow-none data-[state=open]:border-border data-[state=open]:!shadow-none"
       >
         <SelectedIcon className="size-[var(--nav-icon-size)]" aria-hidden="true" />
         <Select.Icon asChild>
@@ -313,34 +313,39 @@ function ThemeSelect({ theme, onThemeChange }: { theme: Theme; onThemeChange: (t
       <Select.Portal>
         <Select.Content
           align="end"
-          className="shadow-surface-popover z-50 overflow-hidden rounded-[var(--radius)] border border-border bg-panel"
+          className="shadow-surface-popover z-50 w-[7.25rem] overflow-hidden rounded-[var(--radius)] border border-border bg-panel"
           position="popper"
           side="bottom"
           sideOffset={4}
-          style={{ minWidth: 44 }}
+          style={{ minWidth: 116 }}
         >
-          <Select.Viewport className="w-full">
+          <Select.Viewport className="w-full p-0">
             <Select.Group>
               <Select.Label className="sr-only">
                 Theme
               </Select.Label>
-              {themeOptions.map(({ value, label, Icon }) => (
-                <Select.Item
-                  key={value}
-                  value={value}
-                  data-active={value === theme ? 'true' : undefined}
-                  className={cn(
-                    'ui-row-action flex h-10 w-full items-center justify-end border-t border-border-soft pr-3 text-fg-dim outline-none first:border-t-0',
-                    value === theme ? 'text-foreground' : '',
-                    'data-[highlighted]:bg-transparent data-[highlighted]:text-foreground data-[highlighted]:outline-none',
-                  )}
-                >
-                  <Icon className="size-[14px] shrink-0" aria-hidden="true" />
-                  <Select.ItemText>
-                    <span className="sr-only">{label}</span>
-                  </Select.ItemText>
-                </Select.Item>
-              ))}
+              {themeOptions.map(({ value, label, Icon }) => {
+                const isSelected = value === theme
+
+                return (
+                  <Select.Item
+                    key={value}
+                    value={value}
+                    data-active={isSelected ? 'true' : undefined}
+                    className={cn(
+                      'ui-row-action grid h-10 w-full min-w-full box-border grid-cols-[0.875rem_1fr_0.875rem] items-center gap-1.5 border-t border-border-soft px-2.5 text-left text-[length:var(--density-type-caption)] text-fg-dim outline-none first:border-t-0',
+                      isSelected ? 'text-foreground' : '',
+                      'data-[highlighted]:bg-transparent data-[highlighted]:text-foreground data-[highlighted]:outline-none',
+                    )}
+                  >
+                    <Icon className="size-[13px] justify-self-center" aria-hidden="true" />
+                    <Select.ItemText>
+                      {label}
+                    </Select.ItemText>
+                    {isSelected ? <Check className="size-[13px] justify-self-center" aria-hidden="true" /> : <span aria-hidden="true" />}
+                  </Select.Item>
+                )
+              })}
             </Select.Group>
           </Select.Viewport>
         </Select.Content>

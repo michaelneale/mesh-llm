@@ -176,7 +176,7 @@ describe('TopNav', () => {
     renderTopNav({ onThemeChange, theme: 'auto' })
 
     await user.click(screen.getByRole('combobox', { name: 'Theme: Auto' }))
-    await user.click(await screen.findByRole('option', { name: /Dark/ }))
+    await user.click(await screen.findByRole('option', { name: 'Dark' }))
 
     expect(onThemeChange).toHaveBeenCalledWith('dark')
   })
