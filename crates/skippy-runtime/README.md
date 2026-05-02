@@ -34,7 +34,8 @@ native cache page movement.
 - tokenize and detokenize through llama
 - run prefill/decode calls
 - set llama.cpp context options needed by staged serving, including K/V cache
-  type selection for TCQ/TurboQuant experiments
+  type selection for TCQ/TurboQuant experiments and selected backend device
+  placement
 - expose activation frames with descriptors and payloads
 - select layer-package parts from local or Hugging Face package refs
 - validate package ABI/manifest compatibility before loading or composing parts

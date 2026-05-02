@@ -330,10 +330,11 @@ Current branch status:
 - mesh passes a normalized selected-device descriptor into skippy stage config
   for pinned startup/runtime loads;
 - skippy runtime status preserves that selected-device descriptor;
-- CUDA and HIP/ROCm selected devices are scoped through the standard backend
-  visibility environment variables while opening the runtime;
-- Vulkan/Metal/general backend-device selection still needs a real skippy ABI
-  field before it can be guaranteed beyond status/planning.
+- skippy's llama.cpp ABI accepts an explicit selected backend device string
+  and applies it before model load, including Metal, Vulkan, CUDA/HIP/ROCm, and
+  explicit CPU placement;
+- invalid selected backend device names fail during model open before the model
+  is marked routable.
 
 Device ownership should use a two-layer model:
 

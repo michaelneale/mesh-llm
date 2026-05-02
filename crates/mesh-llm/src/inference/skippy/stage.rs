@@ -337,6 +337,12 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         "invalid stage layer range"
     );
     anyhow::ensure!(load.ctx_size > 0, "ctx_size must be greater than zero");
+    if let Some(device) = load.selected_device.as_ref() {
+        anyhow::ensure!(
+            !device.backend_device.is_empty(),
+            "selected backend device must not be empty"
+        );
+    }
     Ok(StageConfig {
         run_id: load.run_id.clone(),
         topology_id: load.topology_id.clone(),
@@ -503,6 +509,21 @@ mod tests {
             Some("stage-1")
         );
         assert!(config.filter_tensors_on_load);
+    }
+
+    #[test]
+    fn stage_config_rejects_empty_selected_backend_device() {
+        let mut request = load_request();
+        request.selected_device = Some(StageDevice {
+            backend_device: String::new(),
+            stable_id: Some("uuid:GPU-123".into()),
+            index: Some(0),
+            vram_bytes: Some(24_000_000_000),
+        });
+
+        let err = stage_config(&request).unwrap_err().to_string();
+
+        assert!(err.contains("selected backend device"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 13;
+pub const ABI_VERSION_PATCH: u32 = 14;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -77,6 +77,7 @@ pub struct RuntimeConfig {
     pub filter_tensors_on_load: bool,
     pub include_embeddings: bool,
     pub include_output: bool,
+    pub selected_backend_device: *const c_char,
 }
 
 #[repr(C)]

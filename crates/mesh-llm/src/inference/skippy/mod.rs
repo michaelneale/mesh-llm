@@ -365,6 +365,12 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         options.generation_concurrency > 0,
         "skippy generation_concurrency must be greater than zero"
     );
+    if let Some(device) = options.selected_device.as_ref() {
+        anyhow::ensure!(
+            !device.backend_device.is_empty(),
+            "skippy selected backend device must not be empty"
+        );
+    }
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
     Ok(StageConfig {
         run_id: run_id.clone(),
@@ -526,6 +532,22 @@ mod tests {
         assert_eq!(device.stable_id.as_deref(), Some("uuid:GPU-123"));
         assert_eq!(device.index, Some(3));
         assert_eq!(device.vram_bytes, Some(24_000_000_000));
+    }
+
+    #[test]
+    fn single_stage_config_rejects_empty_selected_backend_device() {
+        let options = SkippyModelLoadOptions::for_direct_gguf("bad", "/models/bad.gguf")
+            .with_layer_end(1)
+            .with_selected_device(SkippyDeviceDescriptor {
+                backend_device: String::new(),
+                stable_id: Some("uuid:GPU-123".into()),
+                index: Some(0),
+                vram_bytes: Some(24_000_000_000),
+            });
+
+        let err = single_stage_config(&options).unwrap_err().to_string();
+
+        assert!(err.contains("selected backend device"));
     }
 
     #[test]

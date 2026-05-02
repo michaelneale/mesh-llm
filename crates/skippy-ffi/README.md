@@ -145,7 +145,7 @@ hook currently bound by this crate.
 
 | Function | Purpose |
 | --- | --- |
-| `skippy_model_open` | Opens a GGUF model, runtime slice, layer package, or artifact slice using `RuntimeConfig`. |
+| `skippy_model_open` | Opens a GGUF model, runtime slice, layer package, or artifact slice using `RuntimeConfig`, including optional selected backend device placement. |
 | `skippy_model_free` | Releases a model handle. |
 | `skippy_session_create` | Creates a decode session/context from an opened model. |
 | `skippy_session_reset` | Clears session state so the session can be reused. |

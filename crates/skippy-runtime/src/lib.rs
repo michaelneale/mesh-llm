@@ -55,6 +55,7 @@ pub struct RuntimeConfig {
     pub layer_end: u32,
     pub ctx_size: u32,
     pub n_gpu_layers: i32,
+    pub selected_backend_device: Option<String>,
     pub cache_type_k: u32,
     pub cache_type_v: u32,
     pub load_mode: LoadMode,
@@ -68,26 +69,56 @@ impl RuntimeConfig {
         if self.layer_start >= self.layer_end {
             return Err("layer_start must be less than layer_end");
         }
+        if self
+            .selected_backend_device
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return Err("selected_backend_device must not be empty");
+        }
         Ok(())
     }
 
-    fn as_raw(&self) -> Result<RawRuntimeConfig> {
+    fn as_raw(&self) -> Result<RawRuntimeConfigParts> {
         self.validate().map_err(anyhow::Error::msg)?;
-        Ok(RawRuntimeConfig {
-            stage_index: i32::try_from(self.stage_index).context("stage_index exceeds i32")?,
-            layer_start: i32::try_from(self.layer_start).context("layer_start exceeds i32")?,
-            layer_end: i32::try_from(self.layer_end).context("layer_end exceeds i32")?,
-            ctx_size: i32::try_from(self.ctx_size).context("ctx_size exceeds i32")?,
-            n_gpu_layers: self.n_gpu_layers,
-            cache_type_k: i32::try_from(self.cache_type_k).context("cache_type_k exceeds i32")?,
-            cache_type_v: i32::try_from(self.cache_type_v).context("cache_type_v exceeds i32")?,
-            load_mode: self.load_mode,
-            disable_repack: false,
-            filter_tensors_on_load: self.filter_tensors_on_load,
-            include_embeddings: self.include_embeddings,
-            include_output: self.include_output,
+        let selected_backend_device = self
+            .selected_backend_device
+            .as_ref()
+            .map(|device| {
+                CString::new(device.as_bytes())
+                    .context("selected_backend_device contains an interior NUL byte")
+            })
+            .transpose()?;
+        let selected_backend_device_ptr = selected_backend_device
+            .as_ref()
+            .map(|device| device.as_ptr())
+            .unwrap_or(ptr::null());
+        Ok(RawRuntimeConfigParts {
+            raw: RawRuntimeConfig {
+                stage_index: i32::try_from(self.stage_index).context("stage_index exceeds i32")?,
+                layer_start: i32::try_from(self.layer_start).context("layer_start exceeds i32")?,
+                layer_end: i32::try_from(self.layer_end).context("layer_end exceeds i32")?,
+                ctx_size: i32::try_from(self.ctx_size).context("ctx_size exceeds i32")?,
+                n_gpu_layers: self.n_gpu_layers,
+                cache_type_k: i32::try_from(self.cache_type_k)
+                    .context("cache_type_k exceeds i32")?,
+                cache_type_v: i32::try_from(self.cache_type_v)
+                    .context("cache_type_v exceeds i32")?,
+                load_mode: self.load_mode,
+                disable_repack: false,
+                filter_tensors_on_load: self.filter_tensors_on_load,
+                include_embeddings: self.include_embeddings,
+                include_output: self.include_output,
+                selected_backend_device: selected_backend_device_ptr,
+            },
+            _selected_backend_device: selected_backend_device,
         })
     }
+}
+
+struct RawRuntimeConfigParts {
+    raw: RawRuntimeConfig,
+    _selected_backend_device: Option<CString>,
 }
 
 impl Default for RuntimeConfig {
@@ -98,6 +129,7 @@ impl Default for RuntimeConfig {
             layer_end: 1,
             ctx_size: 512,
             n_gpu_layers: 0,
+            selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: LoadMode::RuntimeSlice,
@@ -434,7 +466,7 @@ impl StageModel {
         let mut raw = ptr::null_mut();
         let mut error = ptr::null_mut();
         let status = unsafe {
-            skippy_ffi::skippy_model_open(path.as_ptr(), &raw_config, &mut raw, &mut error)
+            skippy_ffi::skippy_model_open(path.as_ptr(), &raw_config.raw, &mut raw, &mut error)
         };
         ensure_ok(status, error)?;
         if raw.is_null() {
@@ -462,7 +494,7 @@ impl StageModel {
             skippy_ffi::skippy_model_open_from_parts(
                 path_ptrs.as_ptr(),
                 path_ptrs.len(),
-                &raw_config,
+                &raw_config.raw,
                 &mut raw,
                 &mut error,
             )
@@ -1645,6 +1677,52 @@ mod tests {
         Ok(layer_end)
     }
 
+    #[test]
+    fn runtime_config_rejects_empty_selected_backend_device() {
+        let config = RuntimeConfig {
+            selected_backend_device: Some(String::new()),
+            ..RuntimeConfig::default()
+        };
+
+        assert_eq!(
+            config.validate(),
+            Err("selected_backend_device must not be empty")
+        );
+    }
+
+    #[test]
+    fn runtime_config_raw_preserves_selected_backend_device() -> anyhow::Result<()> {
+        let config = RuntimeConfig {
+            selected_backend_device: Some("MTL0".to_string()),
+            ..RuntimeConfig::default()
+        };
+
+        let raw = config.as_raw()?;
+        let device =
+            unsafe { std::ffi::CStr::from_ptr(raw.raw.selected_backend_device).to_string_lossy() };
+
+        assert_eq!(device, "MTL0");
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_selected_backend_device_fails_before_model_open() {
+        let config = RuntimeConfig {
+            selected_backend_device: Some("definitely-not-a-device".to_string()),
+            ..RuntimeConfig::default()
+        };
+
+        let error = match StageModel::open("/definitely/missing/model.gguf", &config) {
+            Ok(_) => panic!("invalid device should fail before model load"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(
+            error.contains("unknown selected backend device: definitely-not-a-device"),
+            "unexpected error: {error}"
+        );
+    }
+
     fn open_correctness_model(model_path: &PathBuf) -> anyhow::Result<StageModel> {
         let layer_end = infer_layer_end(model_path)?;
         let config = RuntimeConfig {
@@ -1653,6 +1731,7 @@ mod tests {
             layer_end,
             ctx_size: 256,
             n_gpu_layers: 0,
+            selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: RuntimeLoadMode::RuntimeSlice,
@@ -1765,6 +1844,7 @@ mod tests {
             layer_end,
             ctx_size: 256,
             n_gpu_layers: 0,
+            selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
             load_mode: RuntimeLoadMode::RuntimeSlice,

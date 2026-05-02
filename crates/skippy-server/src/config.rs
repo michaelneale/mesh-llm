@@ -10,6 +10,13 @@ pub fn validate_config(config: &StageConfig, topology: Option<&StageTopology>) -
     if config.layer_start >= config.layer_end {
         bail!("layer_start must be less than layer_end");
     }
+    if config
+        .selected_device
+        .as_ref()
+        .is_some_and(|device| device.backend_device.is_empty())
+    {
+        bail!("selected_device.backend_device must not be empty");
+    }
     match config.load_mode {
         LoadMode::RuntimeSlice => {}
         LoadMode::ArtifactSlice => {

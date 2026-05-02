@@ -1,12 +1,11 @@
 use std::{
     collections::BTreeMap,
-    env,
     sync::{Arc, Mutex},
     time::Instant,
 };
 
 use anyhow::{bail, Context, Result};
-use skippy_protocol::{LoadMode, StageConfig, StageDevice};
+use skippy_protocol::{LoadMode, StageConfig};
 use skippy_runtime::{
     parse_cache_type, ActivationFrame, GenerationSignalWindow, RuntimeConfig, RuntimeKvPage,
     RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
@@ -471,43 +470,19 @@ fn kv_desc_from_manifest(manifest: &crate::kv_proto::KvPageManifest) -> Result<R
 }
 
 pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeState>>>> {
-    let cache_type_k = parse_cache_type(&config.cache_type_k)
-        .with_context(|| format!("parse cache_type_k for {}", config.stage_id))?;
-    let cache_type_v = parse_cache_type(&config.cache_type_v)
-        .with_context(|| format!("parse cache_type_v for {}", config.stage_id))?;
-    let runtime_config = RuntimeConfig {
-        stage_index: config.stage_index,
-        layer_start: config.layer_start,
-        layer_end: config.layer_end,
-        ctx_size: config.ctx_size,
-        n_gpu_layers: config.n_gpu_layers,
-        cache_type_k,
-        cache_type_v,
-        load_mode: match config.load_mode {
-            LoadMode::RuntimeSlice => RuntimeLoadMode::RuntimeSlice,
-            LoadMode::LayerPackage => RuntimeLoadMode::LayerPackage,
-            LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
-        },
-        include_embeddings: config.stage_index == 0,
-        include_output: config.downstream.is_none(),
-        filter_tensors_on_load: config.filter_tensors_on_load,
-    };
+    let runtime_config = runtime_config_from_stage_config(config)?;
 
     let model = match config.load_mode {
         LoadMode::LayerPackage => {
             let materialized_path =
                 materialize_layer_package(config).context("materialize layer package for stage")?;
-            open_stage_model(
-                &materialized_path,
-                &runtime_config,
-                config.selected_device.as_ref(),
-            )?
+            open_stage_model(&materialized_path, &runtime_config)?
         }
         _ => {
             let Some(model_path) = config.model_path.as_ref().map(std::path::Path::new) else {
                 return Ok(None);
             };
-            open_stage_model(model_path, &runtime_config, config.selected_device.as_ref())?
+            open_stage_model(model_path, &runtime_config)?
         }
     };
 
@@ -523,87 +498,45 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
     }))))
 }
 
-fn open_stage_model(
-    path: &std::path::Path,
-    runtime_config: &RuntimeConfig,
-    selected_device: Option<&StageDevice>,
-) -> Result<StageModel> {
-    let Some(scope) = DeviceEnvScope::new(selected_device) else {
-        return StageModel::open(path, runtime_config);
-    };
-
-    let _guard = DEVICE_ENV_LOCK.lock().expect("device env lock poisoned");
-    let saved = scope.apply();
-    let result = StageModel::open(path, runtime_config);
-    saved.restore();
-    result
+fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfig> {
+    let cache_type_k = parse_cache_type(&config.cache_type_k)
+        .with_context(|| format!("parse cache_type_k for {}", config.stage_id))?;
+    let cache_type_v = parse_cache_type(&config.cache_type_v)
+        .with_context(|| format!("parse cache_type_v for {}", config.stage_id))?;
+    Ok(RuntimeConfig {
+        stage_index: config.stage_index,
+        layer_start: config.layer_start,
+        layer_end: config.layer_end,
+        ctx_size: config.ctx_size,
+        n_gpu_layers: config.n_gpu_layers,
+        selected_backend_device: config
+            .selected_device
+            .as_ref()
+            .map(|device| device.backend_device.clone()),
+        cache_type_k,
+        cache_type_v,
+        load_mode: match config.load_mode {
+            LoadMode::RuntimeSlice => RuntimeLoadMode::RuntimeSlice,
+            LoadMode::LayerPackage => RuntimeLoadMode::LayerPackage,
+            LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
+        },
+        include_embeddings: config.stage_index == 0,
+        include_output: config.downstream.is_none(),
+        filter_tensors_on_load: config.filter_tensors_on_load,
+    })
 }
 
-static DEVICE_ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct DeviceEnvScope {
-    vars: &'static [&'static str],
-    visible_index: String,
-}
-
-impl DeviceEnvScope {
-    fn new(selected_device: Option<&StageDevice>) -> Option<Self> {
-        let backend_device = selected_device?.backend_device.as_str();
-        let (prefix, vars): (&str, &'static [&'static str]) = if backend_device.starts_with("CUDA")
-        {
-            ("CUDA", &["CUDA_VISIBLE_DEVICES"])
-        } else if backend_device.starts_with("HIP") {
-            ("HIP", &["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
-        } else if backend_device.starts_with("ROCm") {
-            ("ROCm", &["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"])
-        } else {
-            return None;
-        };
-        let visible_index = backend_device.trim_start_matches(prefix);
-        if visible_index.is_empty() || !visible_index.chars().all(|ch| ch.is_ascii_digit()) {
-            return None;
-        }
-        Some(Self {
-            vars,
-            visible_index: visible_index.to_string(),
-        })
-    }
-
-    fn apply(&self) -> SavedDeviceEnv {
-        let values = self
-            .vars
-            .iter()
-            .map(|var| (*var, env::var_os(var)))
-            .collect::<Vec<_>>();
-        for var in self.vars {
-            env::set_var(var, &self.visible_index);
-        }
-        SavedDeviceEnv { values }
-    }
-}
-
-struct SavedDeviceEnv {
-    values: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl SavedDeviceEnv {
-    fn restore(self) {
-        for (var, value) in self.values {
-            match value {
-                Some(value) => env::set_var(var, value),
-                None => env::remove_var(var),
-            }
-        }
-    }
+fn open_stage_model(path: &std::path::Path, runtime_config: &RuntimeConfig) -> Result<StageModel> {
+    StageModel::open(path, runtime_config)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::kv_proto::KvPageManifest;
-    use skippy_protocol::StageDevice;
+    use skippy_protocol::{LoadMode, StageConfig, StageDevice};
     use skippy_runtime::RuntimeKvPageDesc;
 
-    use super::{kv_desc_annotations, kv_desc_from_manifest, DeviceEnvScope};
+    use super::{kv_desc_annotations, kv_desc_from_manifest, runtime_config_from_stage_config};
 
     #[test]
     fn kv_desc_annotations_round_trip() {
@@ -640,46 +573,38 @@ mod tests {
     }
 
     #[test]
-    fn device_env_scope_maps_cuda_backend_device_to_visible_index() {
-        let device = StageDevice {
-            backend_device: "CUDA3".into(),
-            stable_id: Some("uuid:GPU-123".into()),
-            index: Some(3),
-            vram_bytes: Some(24_000_000_000),
-        };
-
-        let scope = DeviceEnvScope::new(Some(&device)).expect("CUDA scope");
-
-        assert_eq!(scope.visible_index, "3");
-        assert_eq!(scope.vars, ["CUDA_VISIBLE_DEVICES"]);
-    }
-
-    #[test]
-    fn device_env_scope_maps_amd_aliases_to_hip_visible_index() {
-        for backend_device in ["HIP1", "ROCm1"] {
-            let device = StageDevice {
-                backend_device: backend_device.into(),
-                stable_id: None,
+    fn runtime_config_preserves_selected_backend_device() {
+        let config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            model_path: Some("/tmp/model.gguf".to_string()),
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 24,
+            ctx_size: 512,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            filter_tensors_on_load: true,
+            selected_device: Some(StageDevice {
+                backend_device: "Vulkan1".into(),
+                stable_id: Some("pci:0000:65:00.0".into()),
                 index: Some(1),
-                vram_bytes: None,
-            };
-
-            let scope = DeviceEnvScope::new(Some(&device)).expect("AMD scope");
-
-            assert_eq!(scope.visible_index, "1");
-            assert_eq!(scope.vars, ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"]);
-        }
-    }
-
-    #[test]
-    fn device_env_scope_ignores_backend_without_visibility_env() {
-        let device = StageDevice {
-            backend_device: "Vulkan0".into(),
-            stable_id: None,
-            index: Some(0),
-            vram_bytes: None,
+                vram_bytes: Some(16_000_000_000),
+            }),
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
         };
 
-        assert!(DeviceEnvScope::new(Some(&device)).is_none());
+        let runtime_config = runtime_config_from_stage_config(&config).unwrap();
+
+        assert_eq!(
+            runtime_config.selected_backend_device.as_deref(),
+            Some("Vulkan1")
+        );
     }
 }

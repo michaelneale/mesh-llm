@@ -865,6 +865,10 @@ impl DraftRunner {
                 layer_end: layer_count,
                 ctx_size: config.ctx_size,
                 n_gpu_layers: n_gpu_layers.unwrap_or(config.n_gpu_layers),
+                selected_backend_device: config
+                    .selected_device
+                    .as_ref()
+                    .map(|device| device.backend_device.clone()),
                 cache_type_k: skippy_runtime::GGML_TYPE_F16,
                 cache_type_v: skippy_runtime::GGML_TYPE_F16,
                 load_mode: RuntimeLoadMode::RuntimeSlice,
