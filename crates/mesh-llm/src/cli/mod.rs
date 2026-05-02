@@ -220,6 +220,7 @@ pub(crate) mod moe;
 pub mod output;
 pub(crate) mod pager;
 pub(crate) mod runtime;
+pub(crate) mod shell;
 pub(crate) mod terminal_progress;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -535,6 +536,22 @@ pub(crate) enum Command {
         /// API port for mesh-llm (default: 9337)
         #[arg(long, default_value = "9337")]
         port: u16,
+    },
+    /// Launch pi with mesh-llm as the inference provider.
+    ///
+    /// If no mesh is running on a loopback/localhost target, this auto-joins the mesh as a client.
+    /// Writes a mesh provider into ~/.pi/agent/models.json and launches pi unless --write is set.
+    #[command(name = "pi")]
+    Pi {
+        /// Model id to use from /v1/models (default: auto = mesh picks best)
+        #[arg(long)]
+        model: Option<String>,
+        /// mesh-llm host or URL for Pi (default: 127.0.0.1:9337)
+        #[arg(long, default_value = "127.0.0.1:9337")]
+        host: String,
+        /// Write the mesh provider config to Pi's models.json instead of launching.
+        #[arg(long)]
+        write: bool,
     },
     /// Launch OpenCode with mesh-llm as the inference provider.
     ///

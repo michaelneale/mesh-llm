@@ -140,6 +140,9 @@ Current branch status:
 - `openai-frontend` has been imported and mesh's local OpenAI request/response
   adapters delegate to it.
 - `skippy-server` exposes embeddable runtime and OpenAI backend handles.
+- `skippy-server` is split by concern so request parsing/sampling helpers,
+  utility helpers, socket connection fallback, and tests are no longer all
+  carried in the serving monoliths.
 - Runtime-control loads can select `--serving-backend skippy` and route a
   direct GGUF through an embedded skippy OpenAI backend instead of
   `llama-server`.
@@ -151,6 +154,9 @@ Current branch status:
   behind the backend selector. The next replacement step is multi-peer stage
   topology planning and activation transport, after which the legacy
   `llama-server`/`rpc-server` startup path can be retired.
+- `metrics-server` is in the workspace with OTLP ingest, DuckDB-backed run
+  lifecycle/report export, `just metrics-server` recipes, and agent workflow
+  documentation.
 
 ### Multi Node
 
@@ -528,6 +534,52 @@ Current branch status:
 - `.agents/skills/metrics-server` documents the run/debug workflow for agents;
 - raw OTLP retention remains an explicit debug mode via
   `--debug-retain-raw-otlp`.
+- `docs/SKIPPY_RUNTIME_README.md` preserves the standalone skippy README as
+  background context, with a mesh-specific note that standalone `kv-server` and
+  `ngram-pool` remain outside this replacement scope.
+
+## PR Readiness Notes
+
+This branch has moved from planning into an integration branch for merging
+parts of skippy into mesh-llm. It imports the skippy runtime/protocol/topology
+crates, introduces `openai-frontend`, adds the metrics workflow, wires skippy as
+a selectable serving backend, and keeps the legacy llama backend reachable only
+as a transition path while parity is burned in.
+
+Mergeability notes:
+
+- `origin/main` has been merged into this branch during PR preparation.
+- Conflict resolution preserved the skippy-owned workspace crates and the
+  `openai-frontend` request/response adapter shims over the older mesh-local
+  OpenAI compatibility code.
+- Main's shell/runtime updates were retained where they do not conflict with
+  the skippy backend selector and runtime lifecycle.
+
+Local burn-in checklist for this branch:
+
+- `cargo test -p skippy-server --lib`
+- `cargo test -p skippy-protocol --lib`
+- `cargo test -p openai-frontend --lib`
+- `cargo test -p metrics-server`
+- `cargo check -p mesh-llm`
+- `cargo test -p mesh-llm inference::skippy --lib`
+- `cargo test -p mesh-llm --lib`
+- metrics-server fixture ingest/finalize/report export
+
+Legacy reachability audit:
+
+- `--serving-backend skippy` skips legacy `rpc-server` startup and routes direct
+  GGUFs through the embedded skippy backend.
+- `--serving-backend llama` still reaches `inference::launch` and the legacy
+  election loop; this remains the known transitional backend until staged
+  topology, multimodal, tool/logprob/structured-output, lifecycle, and Auto LLM
+  hook parity are fully burned in.
+- `mesh_hook` routes and `inference::virtual_llm` remain for legacy
+  `llama-server` callbacks, while the skippy path carries Rust-owned hook
+  policy integration.
+- No standalone `kv-server`, `ngram-pool`, or `ngram-pool-server` crates are
+  present in mesh. Mentions in `SKIPPY_RUNTIME_README.md` are imported
+  standalone-skippy background, not planned mesh runtime components.
 
 ## Stage Failure Recovery
 

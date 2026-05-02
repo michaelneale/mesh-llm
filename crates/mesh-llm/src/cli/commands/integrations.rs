@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::runtime;
+use crate::{cli::shell, runtime};
 use url::Url;
 
 const OPENCODE_PROVIDER_ID: &str = "mesh";
@@ -39,32 +39,46 @@ fn is_loopback_or_localhost(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn normalize_opencode_host(host: &str) -> Result<OpenCodeTarget> {
+fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
+    normalize_mesh_host_with_label(host, "mesh host")
+}
+
+fn normalize_mesh_host_with_label(host: &str, label: &str) -> Result<OpenCodeTarget> {
     const DEFAULT_API_PORT: u16 = 9337;
     const DEFAULT_MANAGEMENT_PORT: u16 = 3131;
 
     let trimmed = host.trim();
     if trimmed.is_empty() {
-        anyhow::bail!("OpenCode host cannot be empty");
+        anyhow::bail!("{label} cannot be empty");
     }
 
     let has_scheme = trimmed.contains("://");
-    let mut parsed = if has_scheme {
-        Url::parse(trimmed).with_context(|| format!("Invalid OpenCode host URL '{trimmed}'"))?
+    let normalized_host = if has_scheme {
+        trimmed.to_string()
+    } else if trimmed.parse::<u16>().is_ok() {
+        format!("127.0.0.1:{trimmed}")
     } else {
-        Url::parse(&format!("http://{trimmed}"))
-            .with_context(|| format!("Invalid OpenCode host '{trimmed}'"))?
+        trimmed.to_string()
+    };
+    let mut parsed = if has_scheme {
+        Url::parse(&normalized_host).with_context(|| format!("Invalid {label} URL '{trimmed}'"))?
+    } else {
+        Url::parse(&format!("http://{normalized_host}"))
+            .with_context(|| format!("Invalid {label} '{trimmed}'"))?
     };
 
     let host_name = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("OpenCode host '{trimmed}' is missing a hostname"))?
+        .ok_or_else(|| anyhow::anyhow!("{label} '{trimmed}' is missing a hostname"))?
         .to_string();
 
-    if !has_scheme && parsed.port().is_none() {
+    let is_local_host = is_loopback_or_localhost(&host_name);
+    let should_default_api_port =
+        parsed.port().is_none() && (!has_scheme || (is_local_host && parsed.scheme() == "http"));
+    if should_default_api_port {
         parsed
             .set_port(Some(DEFAULT_API_PORT))
-            .map_err(|_| anyhow::anyhow!("Invalid OpenCode host '{trimmed}'"))?;
+            .map_err(|_| anyhow::anyhow!("Invalid {label} '{trimmed}'"))?;
     }
 
     parsed.set_query(None);
@@ -77,14 +91,14 @@ fn normalize_opencode_host(host: &str) -> Result<OpenCodeTarget> {
     api_models.set_path("/v1/models");
 
     let mut management = parsed.clone();
-    if !has_scheme {
+    if !has_scheme || should_default_api_port || (is_local_host && parsed.scheme() == "http") {
         management
             .set_port(Some(DEFAULT_MANAGEMENT_PORT))
-            .map_err(|_| anyhow::anyhow!("Invalid OpenCode host '{trimmed}'"))?;
+            .map_err(|_| anyhow::anyhow!("Invalid {label} '{trimmed}'"))?;
     }
     management.set_path("/api/models");
 
-    let auto_start_local_mesh = is_loopback_or_localhost(&host_name);
+    let auto_start_local_mesh = is_local_host && parsed.scheme() == "http";
 
     Ok(OpenCodeTarget {
         input: trimmed.to_string(),
@@ -94,6 +108,10 @@ fn normalize_opencode_host(host: &str) -> Result<OpenCodeTarget> {
         auto_start_local_mesh,
         local_port: api_base.port_or_known_default(),
     })
+}
+
+fn normalize_opencode_host(host: &str) -> Result<OpenCodeTarget> {
+    normalize_mesh_host_with_label(host, "OpenCode host")
 }
 
 fn build_opencode_launch_spec(
@@ -178,6 +196,15 @@ fn opencode_missing_binary_guidance(
     ]
 }
 
+fn pi_missing_binary_guidance(model_arg: &str) -> Vec<String> {
+    vec![
+        "pi not found in PATH.".to_string(),
+        "Install: npm install -g @mariozechner/pi-coding-agent".to_string(),
+        "Or run manually:".to_string(),
+        format!("  pi --model {}", shell::single_quote(model_arg)),
+    ]
+}
+
 fn cleanup_mesh_child(mesh_child: &mut Option<std::process::Child>) {
     if let Some(ref mut child) = mesh_child {
         eprintln!("🧹 Stopping mesh-llm node we started...");
@@ -186,7 +213,7 @@ fn cleanup_mesh_child(mesh_child: &mut Option<std::process::Child>) {
     }
 }
 
-async fn fetch_opencode_models(
+async fn fetch_mesh_models(
     client: &reqwest::Client,
     models_url: &str,
     requested_model: &Option<String>,
@@ -195,11 +222,11 @@ async fn fetch_opencode_models(
         .get(models_url)
         .send()
         .await
-        .with_context(|| format!("Failed to reach OpenCode target at {models_url}"))?;
+        .with_context(|| format!("Failed to reach mesh target at {models_url}"))?;
 
     let body = resp
         .error_for_status()
-        .with_context(|| format!("OpenCode target returned an error for {models_url}"))?
+        .with_context(|| format!("mesh target returned an error for {models_url}"))?
         .json::<serde_json::Value>()
         .await
         .with_context(|| format!("Failed to parse model list from {models_url}"))?;
@@ -213,7 +240,7 @@ async fn fetch_opencode_models(
 
     if models.is_empty() {
         anyhow::bail!(
-            "OpenCode target at {models_url} has no models yet (or could not be reached).\n\
+            "mesh target at {models_url} has no models yet (or could not be reached).\n\
              Ensure at least one serving peer is available on the mesh."
         );
     }
@@ -382,6 +409,219 @@ pub(crate) async fn run_claude(model: Option<String>, port: u16) -> Result<()> {
     Ok(())
 }
 
+fn resolve_pi_models_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".pi")
+        .join("agent")
+        .join("models.json")
+}
+
+#[cfg(test)]
+fn build_pi_provider_config(model_names: &[String], api_base_url: &str) -> serde_json::Value {
+    build_pi_provider_config_with_limits(
+        model_names,
+        api_base_url,
+        &std::collections::HashMap::new(),
+    )
+}
+
+fn build_pi_provider_config_with_limits(
+    model_names: &[String],
+    api_base_url: &str,
+    context_lengths: &std::collections::HashMap<String, Option<u32>>,
+) -> serde_json::Value {
+    let models: Vec<serde_json::Value> = model_names
+        .iter()
+        .map(|name| {
+            let mut model = serde_json::Map::new();
+            model.insert("id".to_string(), serde_json::json!(name));
+            model.insert("name".to_string(), serde_json::json!(name));
+
+            if let Some(&Some(ctx_len)) = context_lengths.get(name) {
+                model.insert("contextWindow".to_string(), serde_json::json!(ctx_len));
+                model.insert("maxTokens".to_string(), serde_json::json!(ctx_len));
+            }
+
+            serde_json::Value::Object(model)
+        })
+        .collect();
+
+    let mut provider = serde_json::Map::new();
+    provider.insert("api".to_string(), serde_json::json!("openai-completions"));
+    provider.insert("apiKey".to_string(), serde_json::json!("mesh"));
+    provider.insert("baseUrl".to_string(), serde_json::json!(api_base_url));
+    provider.insert("models".to_string(), serde_json::Value::Array(models));
+
+    serde_json::Value::Object(provider)
+}
+
+fn load_existing_config(path: &std::path::Path) -> Result<serde_json::Value> {
+    if !path.exists() {
+        return Ok(serde_json::json!({}));
+    }
+
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let config: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {} as JSON", path.display()))?;
+
+    if !config.is_object() {
+        anyhow::bail!("Expected {} to contain a JSON object", path.display());
+    }
+
+    Ok(config)
+}
+
+fn provider_map_mut<'a>(
+    config: &'a mut serde_json::Value,
+    field_name: &str,
+    path: &std::path::Path,
+) -> Result<&'a mut serde_json::Map<String, serde_json::Value>> {
+    let config_object = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Expected {} to contain a JSON object", path.display()))?;
+    let providers = config_object
+        .entry(field_name.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    providers.as_object_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Expected '{}' in {} to be a JSON object",
+            field_name,
+            path.display()
+        )
+    })
+}
+
+fn merge_provider(
+    config: &mut serde_json::Value,
+    field_name: &str,
+    provider_id: &str,
+    provider: serde_json::Value,
+    path: &std::path::Path,
+) -> Result<()> {
+    provider_map_mut(config, field_name, path)?.insert(provider_id.to_string(), provider);
+    Ok(())
+}
+
+fn write_pi_config_with_limits(
+    model_names: &[String],
+    api_base_url: &str,
+    context_lengths: &std::collections::HashMap<String, Option<u32>>,
+) -> Result<()> {
+    let models_path = resolve_pi_models_path();
+    write_pi_config_to_path_with_limits(&models_path, model_names, api_base_url, context_lengths)
+}
+
+#[cfg(test)]
+fn write_pi_config_to_path(
+    models_path: &std::path::Path,
+    model_names: &[String],
+    api_base_url: &str,
+) -> Result<()> {
+    write_pi_config_to_path_with_limits(
+        models_path,
+        model_names,
+        api_base_url,
+        &std::collections::HashMap::new(),
+    )
+}
+
+fn write_pi_config_to_path_with_limits(
+    models_path: &std::path::Path,
+    model_names: &[String],
+    api_base_url: &str,
+    context_lengths: &std::collections::HashMap<String, Option<u32>>,
+) -> Result<()> {
+    std::fs::create_dir_all(models_path.parent().expect("models path must have parent"))?;
+
+    let mut config = load_existing_config(models_path)?;
+    let provider = build_pi_provider_config_with_limits(model_names, api_base_url, context_lengths);
+    merge_provider(&mut config, "providers", "mesh", provider, models_path)?;
+
+    std::fs::write(models_path, serde_json::to_string_pretty(&config)?)?;
+    eprintln!(
+        "✅ Wrote mesh provider to {} ({} models)",
+        models_path.display(),
+        model_names.len()
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn write_pi_config_for_test(
+    models_path: &std::path::Path,
+    model_names: &[String],
+    host: &str,
+) -> Result<()> {
+    let target = normalize_mesh_host(host)?;
+    write_pi_config_to_path(models_path, model_names, &target.api_base_url)
+}
+
+pub(crate) async fn run_pi(model: Option<String>, host: &str, write: bool) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let target = normalize_mesh_host(host)?;
+
+    let (models, chosen, mut mesh_child) = if target.auto_start_local_mesh {
+        let port = target
+            .local_port
+            .ok_or_else(|| anyhow::anyhow!("Pi host '{}' is missing a usable port", host))?;
+        let (models, chosen, child) = runtime::check_mesh(&client, port, &model).await?;
+        (models, chosen, child)
+    } else {
+        let (models, chosen) = fetch_mesh_models(&client, &target.api_models_url, &model).await?;
+        (models, chosen, None)
+    };
+
+    let context_lengths = fetch_model_context_lengths(&client, &target.management_models_url).await;
+    let result = run_pi_with_mesh(
+        &models,
+        &chosen,
+        &target.api_base_url,
+        &context_lengths,
+        write,
+    );
+
+    cleanup_mesh_child(&mut mesh_child);
+
+    result
+}
+
+fn run_pi_with_mesh(
+    model_names: &[String],
+    chosen: &str,
+    base_url: &str,
+    context_lengths: &std::collections::HashMap<String, Option<u32>>,
+    write: bool,
+) -> Result<()> {
+    write_pi_config_with_limits(model_names, base_url, context_lengths)?;
+
+    if write {
+        return Ok(());
+    }
+
+    let model_arg = format!("mesh/{chosen}");
+    eprintln!("🚀 Launching pi with {chosen} → {base_url}\n");
+    let status = std::process::Command::new("pi")
+        .args(["--model", &model_arg])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("pi exited with {s}"),
+        Err(_) => {
+            for line in pi_missing_binary_guidance(&model_arg) {
+                eprintln!("{line}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn run_opencode(model: Option<String>, host: &str, write: bool) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -395,8 +635,7 @@ pub(crate) async fn run_opencode(model: Option<String>, host: &str, write: bool)
         let (models, chosen, child) = runtime::check_mesh(&client, port, &model).await?;
         (models, chosen, child)
     } else {
-        let (models, chosen) =
-            fetch_opencode_models(&client, &target.api_models_url, &model).await?;
+        let (models, chosen) = fetch_mesh_models(&client, &target.api_models_url, &model).await?;
         (models, chosen, None)
     };
 
@@ -462,33 +701,18 @@ fn resolve_opencode_config_path_from_home(
     Ok(json_path)
 }
 
-fn load_existing_config(path: &std::path::Path) -> Result<serde_json::Value> {
-    if !path.exists() {
-        return Ok(serde_json::json!({}));
-    }
-
-    let content = std::fs::read_to_string(path)?;
-
-    serde_json::from_str(&content)
-        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))
-}
-
-fn merge_mesh_provider(config: &mut serde_json::Value, mesh_provider: serde_json::Value) {
-    let provider = config
-        .as_object_mut()
-        .expect("config must be an object")
-        .entry("provider".to_string())
-        .or_insert_with(|| serde_json::Map::new().into())
-        .as_object_mut()
-        .expect("provider must be an object");
-
-    provider.insert("mesh".to_string(), mesh_provider);
+fn merge_mesh_provider(
+    config: &mut serde_json::Value,
+    mesh_provider: serde_json::Value,
+    config_path: &std::path::Path,
+) -> Result<()> {
+    merge_provider(config, "provider", "mesh", mesh_provider, config_path)
 }
 
 async fn fetch_model_context_lengths(
     client: &reqwest::Client,
     management_models_url: &str,
-) -> Result<std::collections::HashMap<String, Option<u32>>> {
+) -> std::collections::HashMap<String, Option<u32>> {
     let mut context_map = std::collections::HashMap::new();
 
     if let Ok(resp) = client.get(management_models_url).send().await {
@@ -503,7 +727,7 @@ async fn fetch_model_context_lengths(
         }
     }
 
-    Ok(context_map)
+    context_map
 }
 
 async fn write_opencode_config(
@@ -527,8 +751,7 @@ async fn write_opencode_config_to_path(
 
     let existing_config = load_existing_config(config_path)?;
 
-    let context_lengths =
-        fetch_model_context_lengths(client, &target.management_models_url).await?;
+    let context_lengths = fetch_model_context_lengths(client, &target.management_models_url).await;
 
     let spec = build_opencode_launch_spec_with_limits(
         model_names,
@@ -545,12 +768,17 @@ async fn write_opencode_config_to_path(
         if let Some(schema) = config_value.get("$schema") {
             merged_config
                 .as_object_mut()
-                .expect("config is object")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Expected {} to contain a JSON object",
+                        config_path.display()
+                    )
+                })?
                 .insert("$schema".to_string(), schema.clone());
         }
     }
 
-    merge_mesh_provider(&mut merged_config, mesh_provider.clone());
+    merge_mesh_provider(&mut merged_config, mesh_provider.clone(), config_path)?;
 
     let formatted_json = serde_json::to_string_pretty(&merged_config)?;
     std::fs::write(config_path, &formatted_json)?;
@@ -604,9 +832,11 @@ pub(crate) fn build_mesh_provider_spec_for_test(
 mod tests {
     use super::{
         build_mesh_provider_spec_for_test, build_opencode_launch_spec,
-        build_opencode_launch_spec_with_limits, cleanup_mesh_child, normalize_opencode_host,
-        opencode_missing_binary_guidance, resolve_opencode_config_path_from_home,
-        write_opencode_config_for_test, OPENCODE_INSTALL_HINT,
+        build_opencode_launch_spec_with_limits, build_pi_provider_config,
+        build_pi_provider_config_with_limits, cleanup_mesh_child, normalize_opencode_host,
+        opencode_missing_binary_guidance, pi_missing_binary_guidance,
+        resolve_opencode_config_path_from_home, write_opencode_config_for_test,
+        write_pi_config_for_test, write_pi_config_to_path, OPENCODE_INSTALL_HINT,
     };
 
     const LOCAL_OPENCODE_HOST: &str = "127.0.0.1:9337";
@@ -718,6 +948,19 @@ mod tests {
             lines[4],
             "mesh-llm injects OPENCODE_CONFIG_CONTENT automatically when launching OpenCode."
         );
+    }
+
+    #[test]
+    fn pi_missing_binary_guidance_quotes_model_argument() {
+        let lines = pi_missing_binary_guidance("mesh/Qwen's 3.6 27B");
+
+        assert_eq!(lines[0], "pi not found in PATH.");
+        assert_eq!(
+            lines[1],
+            "Install: npm install -g @mariozechner/pi-coding-agent"
+        );
+        assert_eq!(lines[2], "Or run manually:");
+        assert_eq!(lines[3], "  pi --model 'mesh/Qwen'\"'\"'s 3.6 27B'");
     }
 
     #[test]
@@ -1007,6 +1250,204 @@ mod tests {
     }
 
     #[test]
+    fn pi_provider_config_lists_all_mesh_models_with_models_key_last() {
+        let models = vec!["Qwen 3.6 27B".to_string(), "Qwen 3.5 4B".to_string()];
+        let provider = build_pi_provider_config(&models, "http://localhost:9337/v1");
+
+        assert_eq!(provider["api"], "openai-completions");
+        assert_eq!(provider["apiKey"], "mesh");
+        assert_eq!(provider["baseUrl"], "http://localhost:9337/v1");
+        assert_eq!(provider["models"].as_array().map(Vec::len), Some(2));
+        assert_eq!(provider["models"][0]["id"], "Qwen 3.6 27B");
+        assert_eq!(provider["models"][0]["name"], "Qwen 3.6 27B");
+        assert_eq!(provider["models"][1]["id"], "Qwen 3.5 4B");
+        assert_eq!(provider["models"][1]["name"], "Qwen 3.5 4B");
+
+        let key_order: Vec<&str> = provider
+            .as_object()
+            .expect("provider is object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(key_order.last(), Some(&"models"));
+    }
+
+    #[test]
+    fn pi_provider_config_includes_context_window_and_max_tokens_when_known() {
+        let models = vec![
+            "Qwen3.6-27B-UD-Q4_K_XL".to_string(),
+            "Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+            "Unknown-Model".to_string(),
+        ];
+        let mut context_lengths = std::collections::HashMap::new();
+        context_lengths.insert("Qwen3.6-27B-UD-Q4_K_XL".to_string(), Some(262144));
+        context_lengths.insert("Qwen3.5-4B-UD-Q4_K_XL".to_string(), Some(65536));
+        context_lengths.insert("Unknown-Model".to_string(), None);
+
+        let provider = build_pi_provider_config_with_limits(
+            &models,
+            "http://carrack.patio51.com:9337/v1",
+            &context_lengths,
+        );
+
+        assert_eq!(provider["models"][0]["contextWindow"], 262144);
+        assert_eq!(provider["models"][0]["maxTokens"], 262144);
+        assert_eq!(provider["models"][1]["contextWindow"], 65536);
+        assert_eq!(provider["models"][1]["maxTokens"], 65536);
+        assert!(
+            provider["models"][2]["contextWindow"].is_null(),
+            "model with unknown context_length should omit contextWindow"
+        );
+        assert!(
+            provider["models"][2]["maxTokens"].is_null(),
+            "model with unknown context_length should omit maxTokens"
+        );
+
+        let key_order: Vec<&str> = provider
+            .as_object()
+            .expect("provider is object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(key_order.last(), Some(&"models"));
+    }
+
+    #[test]
+    fn pi_write_creates_provider_and_preserves_other_providers() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("models.json");
+        let existing_config = serde_json::json!({
+            "providers": {
+                "anthropic": {
+                    "api": "anthropic",
+                    "apiKey": "preserve-me",
+                    "models": [{ "id": "claude" }]
+                }
+            }
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&existing_config).unwrap(),
+        )
+        .expect("failed to write initial config");
+
+        let models = vec!["Qwen 3.6 27B".to_string(), "Qwen 3.5 4B".to_string()];
+        write_pi_config_to_path(&config_path, &models, "http://localhost:9337/v1")
+            .expect("pi write should succeed");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(parsed["providers"]["anthropic"]["apiKey"], "preserve-me");
+        assert_eq!(parsed["providers"]["mesh"]["api"], "openai-completions");
+        assert_eq!(
+            parsed["providers"]["mesh"]["baseUrl"],
+            "http://localhost:9337/v1"
+        );
+        assert_eq!(
+            parsed["providers"]["mesh"]["models"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert!(
+            !parsed["providers"]["mesh"]["models"]
+                .as_array()
+                .expect("models is array")
+                .iter()
+                .any(|model| model["id"] == "auto"),
+            "pi --write should list mesh models, not add a synthetic auto model"
+        );
+    }
+
+    #[test]
+    fn pi_write_uses_normalized_remote_host_as_base_url() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("models.json");
+        let models = vec![
+            "Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+            "Qwen3.6-27B-UD-Q4_K_XL".to_string(),
+        ];
+
+        write_pi_config_for_test(
+            &config_path,
+            &models,
+            "https://carrack.patio51.com:9443/custom/path",
+        )
+        .expect("pi write should succeed with a full remote URL");
+
+        let content = std::fs::read_to_string(&config_path).expect("failed to read config");
+        let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid JSON");
+
+        assert_eq!(
+            parsed["providers"]["mesh"]["baseUrl"],
+            "https://carrack.patio51.com:9443/v1"
+        );
+        assert_eq!(parsed["providers"]["mesh"]["models"][0]["id"], models[0]);
+        assert_eq!(parsed["providers"]["mesh"]["models"][1]["id"], models[1]);
+
+        let key_order: Vec<&str> = parsed["providers"]["mesh"]
+            .as_object()
+            .expect("provider is object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(key_order.last(), Some(&"models"));
+    }
+
+    #[test]
+    fn pi_write_rejects_invalid_json_without_clobbering_config() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("models.json");
+        std::fs::write(&config_path, "not-json").expect("failed to write invalid config");
+
+        let err = write_pi_config_to_path(
+            &config_path,
+            &["Qwen 3.6 27B".to_string()],
+            "http://localhost:9337/v1",
+        )
+        .expect_err("invalid JSON should fail");
+
+        assert!(err.to_string().contains("Failed to parse"));
+        assert_eq!(
+            std::fs::read_to_string(&config_path).expect("failed to reread config"),
+            "not-json"
+        );
+    }
+
+    #[test]
+    fn pi_write_rejects_non_object_providers() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("models.json");
+        std::fs::write(&config_path, r#"{"providers": []}"#)
+            .expect("failed to write invalid providers config");
+
+        let err = write_pi_config_to_path(
+            &config_path,
+            &["Qwen 3.6 27B".to_string()],
+            "http://localhost:9337/v1",
+        )
+        .expect_err("array providers should fail");
+
+        assert!(err.to_string().contains("providers"));
+        assert!(err.to_string().contains("object"));
+    }
+
+    #[test]
+    fn opencode_write_rejects_non_object_provider() {
+        let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp_dir.path().join("config.json");
+        std::fs::write(&config_path, r#"{"provider": []}"#)
+            .expect("failed to write invalid provider config");
+
+        let result = write_config(&config_path, &["qwen".to_string()], LOCAL_OPENCODE_HOST);
+
+        let err = result.expect_err("array provider should fail");
+        assert!(err.to_string().contains("provider"));
+        assert!(err.to_string().contains("object"));
+    }
+
+    #[test]
     fn test_build_opencode_launch_spec_with_limits_includes_context_length() {
         let mut context_lengths = std::collections::HashMap::new();
         context_lengths.insert("Qwen3.5-27B".to_string(), Some(262144));
@@ -1078,6 +1519,105 @@ mod tests {
             "http://mesh.example.com:3131/api/models"
         );
         assert!(!target.auto_start_local_mesh);
+    }
+
+    #[test]
+    fn opencode_host_normalization_treats_bare_port_as_loopback_api_port() {
+        let target = normalize_opencode_host("9443").expect("valid port-only host");
+
+        assert_eq!(target.api_base_url, "http://127.0.0.1:9443/v1");
+        assert_eq!(target.api_models_url, "http://127.0.0.1:9443/v1/models");
+        assert_eq!(
+            target.management_models_url,
+            "http://127.0.0.1:3131/api/models"
+        );
+        assert!(target.auto_start_local_mesh);
+        assert_eq!(target.local_port, Some(9443));
+    }
+
+    #[test]
+    fn opencode_host_normalization_defaults_scheme_loopback_to_mesh_ports() {
+        let localhost = normalize_opencode_host("http://localhost").expect("valid localhost URL");
+        let loopback = normalize_opencode_host("http://127.0.0.1").expect("valid loopback URL");
+
+        assert_eq!(localhost.api_base_url, "http://localhost:9337/v1");
+        assert_eq!(localhost.api_models_url, "http://localhost:9337/v1/models");
+        assert_eq!(
+            localhost.management_models_url,
+            "http://localhost:3131/api/models"
+        );
+        assert!(localhost.auto_start_local_mesh);
+        assert_eq!(localhost.local_port, Some(9337));
+
+        assert_eq!(loopback.api_base_url, "http://127.0.0.1:9337/v1");
+        assert_eq!(
+            loopback.management_models_url,
+            "http://127.0.0.1:3131/api/models"
+        );
+        assert!(loopback.auto_start_local_mesh);
+        assert_eq!(loopback.local_port, Some(9337));
+    }
+
+    #[test]
+    fn opencode_host_normalization_uses_management_port_for_explicit_loopback_api_urls() {
+        let localhost =
+            normalize_opencode_host("http://localhost:9337").expect("valid localhost URL");
+        let loopback =
+            normalize_opencode_host("http://127.0.0.1:9443").expect("valid loopback URL");
+
+        assert_eq!(localhost.api_base_url, "http://localhost:9337/v1");
+        assert_eq!(
+            localhost.management_models_url,
+            "http://localhost:3131/api/models"
+        );
+        assert!(localhost.auto_start_local_mesh);
+        assert_eq!(localhost.local_port, Some(9337));
+
+        assert_eq!(loopback.api_base_url, "http://127.0.0.1:9443/v1");
+        assert_eq!(
+            loopback.management_models_url,
+            "http://127.0.0.1:3131/api/models"
+        );
+        assert!(loopback.auto_start_local_mesh);
+        assert_eq!(loopback.local_port, Some(9443));
+    }
+
+    #[test]
+    fn opencode_host_validation_mentions_opencode_host() {
+        let err = normalize_opencode_host("   ").expect_err("empty host should fail");
+
+        assert!(err.to_string().contains("OpenCode host"));
+        assert!(!err.to_string().contains("mesh host"));
+    }
+
+    #[test]
+    fn opencode_host_normalization_does_not_auto_start_https_loopback() {
+        let target = normalize_opencode_host("https://localhost:9337").expect("valid HTTPS URL");
+
+        assert_eq!(target.api_base_url, "https://localhost:9337/v1");
+        assert_eq!(
+            target.management_models_url,
+            "https://localhost:9337/api/models"
+        );
+        assert!(!target.auto_start_local_mesh);
+        assert_eq!(target.local_port, Some(9337));
+    }
+
+    #[test]
+    fn context_length_lookup_is_best_effort_and_returns_empty_map_on_failure() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .expect("client should build");
+
+        let context_lengths = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(super::fetch_model_context_lengths(
+                &client,
+                "http://127.0.0.1:9/api/models",
+            ));
+
+        assert!(context_lengths.is_empty());
     }
 
     #[test]

@@ -735,7 +735,11 @@ fn derive_runtime_status(input: RuntimeStatusDerivationInput<'_>) -> RuntimeStat
         &display_model_name,
     );
     let launch_pi = if effective_llama_ready {
-        Some(format!("pi --provider mesh --model {display_model_name}"))
+        Some(format!(
+            "mesh-llm pi --host 127.0.0.1:{} --model {}",
+            input.api_port,
+            crate::cli::shell::single_quote(&display_model_name)
+        ))
     } else {
         None
     };

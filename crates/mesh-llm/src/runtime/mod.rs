@@ -793,7 +793,11 @@ impl StartupReadyReporter {
         let console_url = self
             .console_port
             .map(|port| format!("http://localhost:{port}"));
-        let pi_command = Some(format!("pi --provider mesh --model {}", self.primary_model));
+        let pi_command = Some(format!(
+            "mesh-llm pi --host 127.0.0.1:{} --model {}",
+            self.api_port,
+            crate::cli::shell::single_quote(&self.primary_model)
+        ));
         let goose_command = Some(format!(
             "GOOSE_PROVIDER=openai OPENAI_HOST={api_url} OPENAI_API_KEY=mesh GOOSE_MODEL={} goose session",
             self.primary_model
@@ -3071,6 +3075,7 @@ async fn run_auto(
         cb_console_port,
     );
     let primary_startup_ready_reporter = startup_ready_reporter.clone();
+    let primary_starting_llama_logged = Arc::new(AtomicBool::new(false));
     let moe_runtime_options = moe::MoeRuntimeOptions::default();
     let primary_mmproj = primary_startup_model
         .as_ref()
@@ -3144,6 +3149,7 @@ async fn run_auto(
                     let interactive_console_state = interactive_console_state.clone();
                     let interactive_control_tx = interactive_control_tx.clone();
                     let startup_ready_reporter = primary_startup_ready_reporter.clone();
+                    let starting_llama_logged = primary_starting_llama_logged.clone();
                     tokio::spawn(async move {
                         if is_host && llama_ready {
                             advertise_model_ready(
@@ -3162,9 +3168,18 @@ async fn run_auto(
                             n.set_llama_ready(true).await;
                         });
                     }
+                    let should_log_starting_llama = should_emit_starting_llama_message(
+                        &starting_llama_logged,
+                        is_host,
+                        llama_ready,
+                    );
                     if is_host && llama_ready {
                         update_pi_models_json(&model_name_for_cb, api_port);
                         startup_ready_reporter.mark_ready_and_maybe_emit(&model_name_for_cb);
+                    } else if is_host {
+                        if should_log_starting_llama {
+                            eprintln!("⏳ Starting llama-server...");
+                        }
                     } else {
                         let _ = emit_event(OutputEvent::Info {
                             message: format!("API: http://localhost:{api_port} (proxied to host)"),
@@ -4211,6 +4226,19 @@ fn format_console_ready_line(headless: bool, console_port: u16) -> String {
     }
 }
 
+fn should_emit_starting_llama_message(
+    logged: &AtomicBool,
+    is_host: bool,
+    llama_ready: bool,
+) -> bool {
+    if is_host && !llama_ready {
+        return !logged.swap(true, Ordering::SeqCst);
+    }
+
+    logged.store(false, Ordering::SeqCst);
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4506,6 +4534,34 @@ mod tests {
         let resolved: Vec<PathBuf> = vec![];
         let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
         assert_eq!(result, vec!["Qwen3-30B-A3B-Q4_K_M"]);
+    }
+
+    #[test]
+    fn starting_llama_message_emits_once_per_host_not_ready_transition() {
+        let logged = AtomicBool::new(false);
+
+        assert!(should_emit_starting_llama_message(&logged, true, false));
+        assert!(!should_emit_starting_llama_message(&logged, true, false));
+        assert!(!should_emit_starting_llama_message(&logged, true, true));
+        assert!(should_emit_starting_llama_message(&logged, true, false));
+        assert!(!should_emit_starting_llama_message(&logged, false, false));
+        assert!(should_emit_starting_llama_message(&logged, true, false));
+    }
+
+    #[test]
+    fn starting_llama_message_gate_resets_when_callback_reports_ready_or_non_host() {
+        let logged = AtomicBool::new(false);
+
+        let callback_gate = |is_host, llama_ready| {
+            should_emit_starting_llama_message(&logged, is_host, llama_ready)
+        };
+
+        assert!(callback_gate(true, false));
+        assert!(!callback_gate(true, false));
+        assert!(!callback_gate(true, true));
+        assert!(callback_gate(true, false));
+        assert!(!callback_gate(false, false));
+        assert!(callback_gate(true, false));
     }
 
     #[test]

@@ -6,10 +6,10 @@ Mesh LLM exposes an OpenAI-compatible API on `http://localhost:9337/v1`, so most
 
 ## Built-in launcher integrations
 
-For built-in launcher commands such as `goose`, `claude`, and `opencode`:
+For built-in launcher commands such as `goose`, `claude`, `opencode`, and `pi`:
 
 - goose and claude reuse a local mesh on the chosen `--port`
-- opencode targets `--host` (default `127.0.0.1:9337`) and only auto-starts a local client for loopback/localhost targets
+- opencode and pi target `--host` (default `127.0.0.1:9337`) and only auto-start a local client for loopback/localhost targets
 - if `--model` is omitted, the launcher picks the strongest tool-capable model available
 - when the harness exits, the auto-started node is cleaned up
 
@@ -97,19 +97,34 @@ OPENCODE_CONFIG_CONTENT='{
 
 ## pi
 
-Start a mesh client:
+Launch pi directly through Mesh LLM:
 
 ```bash
-mesh-llm client --auto --port 9337
+mesh-llm pi
 ```
 
-Check available models:
+Use a specific model:
 
 ```bash
-curl -s http://localhost:9337/v1/models | jq '.data[].id'
+mesh-llm pi --model MiniMax-M2.5-Q4_K_M
 ```
 
-Add a `mesh` provider to `~/.pi/agent/models.json`:
+This writes every model from the mesh into `~/.pi/agent/models.json` and launches pi.
+To update the Pi config without launching pi, run:
+
+```bash
+mesh-llm pi --write
+```
+
+Use `--host` to target a remote mesh host or URL, including a custom port:
+
+```bash
+mesh-llm pi --write --host carrack.patio51.com:9337
+```
+
+### Manual setup
+
+Alternatively, add a `mesh` provider to `~/.pi/agent/models.json` by hand:
 
 ```json
 {
@@ -120,17 +135,16 @@ Add a `mesh` provider to `~/.pi/agent/models.json`:
       "baseUrl": "http://localhost:9337/v1",
       "models": [
         {
-          "id": "MiniMax-M2.5-Q4_K_M",
-          "name": "MiniMax M2.5 (Mesh)",
+          "id": "Qwen 3.6 27B",
+          "name": "Qwen 3.6 27B",
+          "contextWindow": 262144,
+          "maxTokens": 262144
+        },
+        {
+          "id": "Qwen 3.5 4B",
+          "name": "Qwen 3.5 4B",
           "contextWindow": 65536,
-          "maxTokens": 8192,
-          "reasoning": true,
-          "input": ["text"],
-          "compat": {
-            "maxTokensField": "max_tokens",
-            "supportsDeveloperRole": false,
-            "supportsUsageInStreaming": false
-          }
+          "maxTokens": 65536
         }
       ]
     }
@@ -138,10 +152,16 @@ Add a `mesh` provider to `~/.pi/agent/models.json`:
 }
 ```
 
+The `models` key belongs inside the provider block and is intentionally last. When mesh metadata includes a context length, `mesh-llm pi --write` also writes Pi's `contextWindow` and `maxTokens` model fields. To choose a model, use an ID from the mesh:
+
+```bash
+curl -s http://localhost:9337/v1/models | jq '.data[].id'
+```
+
 Run pi:
 
 ```bash
-pi --model mesh/MiniMax-M2.5-Q4_K_M
+pi --model "mesh/Qwen 3.6 27B"
 ```
 
 You can switch models interactively with `Ctrl+M` inside pi.

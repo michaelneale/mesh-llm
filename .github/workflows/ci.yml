@@ -123,7 +123,26 @@ jobs:
 
       # ── System dependencies ──
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          apt_retry() {
+            local attempt=1
+            local max_attempts=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              local delay=$((attempt * 15))
+              echo "::warning::apt command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          apt_retry sudo apt-get -o Acquire::Retries=5 update
+          apt_retry sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y libdbus-1-dev
 
       # ── Rust ──
       - uses: dtolnay/rust-toolchain@stable
@@ -626,8 +645,24 @@ jobs:
       - name: Install base packages
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          set -euo pipefail
+
+          apt_retry() {
+            local attempt=1
+            local max_attempts=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              local delay=$((attempt * 15))
+              echo "::warning::apt command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          apt_retry apt-get -o Acquire::Retries=5 update
+          apt_retry env DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ca-certificates \
             curl \
             git \
@@ -826,8 +861,24 @@ jobs:
       - name: Install base packages
         shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          set -euo pipefail
+
+          apt_retry() {
+            local attempt=1
+            local max_attempts=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              local delay=$((attempt * 15))
+              echo "::warning::apt command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          apt_retry apt-get -o Acquire::Retries=5 update
+          apt_retry env DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ca-certificates \
             curl \
             git \
@@ -997,8 +1048,24 @@ jobs:
       - name: Install Vulkan build packages
         shell: bash
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          set -euo pipefail
+
+          apt_retry() {
+            local attempt=1
+            local max_attempts=5
+            until "$@"; do
+              if (( attempt >= max_attempts )); then
+                return 1
+              fi
+              local delay=$((attempt * 15))
+              echo "::warning::apt command failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s: $*"
+              sleep "${delay}"
+              attempt=$((attempt + 1))
+            done
+          }
+
+          apt_retry sudo apt-get -o Acquire::Retries=5 update
+          apt_retry sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
             ca-certificates \
             curl \
             git \

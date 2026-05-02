@@ -236,30 +236,17 @@
         </details>
 
         <details style="margin-bottom:1rem;">
-            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ pi</summary>
-            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Add to <code>~/.pi/agent/models.json</code>:</p>
-            <div class="code-block" style="margin-top:0.5rem; font-size:0.75rem;">
-<span class="val">{</span><br>
-&nbsp;&nbsp;<span class="flag">"providers"</span>: {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"mesh"</span>: {<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"api"</span>: <span class="val">"openai-completions"</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"apiKey"</span>: <span class="val">"dummy"</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"baseUrl"</span>: <span class="val">"http://localhost:9337/v1"</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"models"</span>: [{<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"id"</span>: <span class="val">"GLM-4.7-Flash-Q4_K_M"</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"name"</span>: <span class="val">"GLM 4.7 Flash (mesh)"</span>,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"contextWindow"</span>: 32768, <span class="flag">"maxTokens"</span>: 8192,<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"reasoning"</span>: false, <span class="flag">"input"</span>: [<span class="val">"text"</span>],<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"cost"</span>: { <span class="flag">"input"</span>: 0, <span class="flag">"output"</span>: 0, <span class="flag">"cacheRead"</span>: 0, <span class="flag">"cacheWrite"</span>: 0 },<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="flag">"compat"</span>: { <span class="flag">"maxTokensField"</span>: <span class="val">"max_tokens"</span>, <span class="flag">"supportsDeveloperRole"</span>: false, <span class="flag">"supportsUsageInStreaming"</span>: false }<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}]<br>
-&nbsp;&nbsp;&nbsp;&nbsp;}<br>
-&nbsp;&nbsp;}<br>
-<span class="val">}</span>
-            </div>
+            <summary style="cursor:pointer; font-size:0.9rem; font-weight:600; color:#fff; padding:0.8rem 0;">▸ pi (built-in launcher)</summary>
             <div class="code-block" style="margin-top:0.5rem;">
-                <span class="cmd">pi</span> <span class="flag">--provider</span> <span class="val">mesh</span> <span class="flag">--model</span> <span class="val">GLM-4.7-Flash-Q4_K_M</span>
+                <span class="cmd">mesh-llm</span> pi<br><br>
+                <span class="comment"># Or pick a specific model</span><br>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--model</span> <span class="val">MiniMax-M2.5-Q4_K_M</span><br><br>
+                <span class="comment"># Only write ~/.pi/agent/models.json</span><br>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span><br><br>
+                <span class="comment"># Target a remote mesh host or URL</span><br>
+                <span class="cmd">mesh-llm</span> pi <span class="flag">--write</span> <span class="flag">--host</span> <span class="val">carrack.patio51.com:9337</span>
             </div>
+            <p style="font-size:0.8rem; color:var(--text2); margin:0.5rem 0;">Writes every mesh model into <code>~/.pi/agent/models.json</code>, including Pi <code>contextWindow</code>/<code>maxTokens</code> when mesh metadata is available, and launches pi unless <code>--write</code> is set. Use <code>--host</code> for a remote mesh host or full URL.</p>
         </details>
 
         <details style="margin-bottom:1rem;">
