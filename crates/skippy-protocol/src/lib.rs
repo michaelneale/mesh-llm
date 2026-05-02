@@ -42,6 +42,20 @@ pub struct StageConfig {
     pub topology_id: String,
     pub model_id: String,
     #[serde(default)]
+    pub package_ref: Option<String>,
+    #[serde(default)]
+    pub manifest_sha256: Option<String>,
+    #[serde(default)]
+    pub source_model_path: Option<String>,
+    #[serde(default)]
+    pub source_model_sha256: Option<String>,
+    #[serde(default)]
+    pub source_model_bytes: Option<u64>,
+    #[serde(default)]
+    pub materialized_path: Option<String>,
+    #[serde(default)]
+    pub materialized_pinned: bool,
+    #[serde(default)]
     pub model_path: Option<String>,
     pub stage_id: String,
     pub stage_index: u32,

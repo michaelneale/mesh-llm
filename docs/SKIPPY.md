@@ -378,7 +378,8 @@ Required behavior:
 - derive a package identity, manifest hash, tensor metadata, layer count,
   activation width, and capability metadata from direct GGUF inputs;
 - use the same package abstraction for local single-stage serving and
-  multi-stage layer planning;
+  multi-stage layer planning, but do not treat an arbitrary `--gguf` path as a
+  distributable stage package;
 - cache synthetic package metadata under mesh's model storage, without copying
   the full model unless slicing/materialization requires it;
 - surface synthetic package provenance in status so users can still understand
@@ -615,9 +616,10 @@ Make the skippy package abstraction cover existing mesh model inputs:
 - Hugging Face GGUF references;
 - future layer-package references.
 
-Direct GGUF should materialize into a synthetic package manifest that can be
-used by the same local and staged runtime paths. This avoids carrying a special
-GGUF-only serving backend.
+Direct GGUF should materialize into a synthetic package manifest for local
+runtime loading and status provenance. Multi-stage serving should require a
+package-backed source or an explicit materialization step; it should not assume a
+local `--gguf` path exists on remote workers.
 
 ### 7. Add Stage Coordination
 

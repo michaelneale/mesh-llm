@@ -107,6 +107,13 @@ pub(crate) struct StageStatusSnapshot {
     pub(crate) run_id: String,
     pub(crate) model_id: String,
     pub(crate) backend: String,
+    pub(crate) package_ref: Option<String>,
+    pub(crate) manifest_sha256: Option<String>,
+    pub(crate) source_model_path: Option<String>,
+    pub(crate) source_model_sha256: Option<String>,
+    pub(crate) source_model_bytes: Option<u64>,
+    pub(crate) materialized_path: Option<String>,
+    pub(crate) materialized_pinned: bool,
     pub(crate) stage_id: String,
     pub(crate) stage_index: u32,
     pub(crate) layer_start: u32,
@@ -347,6 +354,13 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         run_id: load.run_id.clone(),
         topology_id: load.topology_id.clone(),
         model_id: load.model_id.clone(),
+        package_ref: Some(load.package_ref.clone()),
+        manifest_sha256: Some(load.manifest_sha256.clone()),
+        source_model_path: load.model_path.clone(),
+        source_model_sha256: None,
+        source_model_bytes: None,
+        materialized_path: None,
+        materialized_pinned: false,
         model_path: load.model_path.clone(),
         stage_id: load.stage_id.clone(),
         stage_index: load.stage_index,
@@ -395,6 +409,13 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         run_id: stage.load.run_id.clone(),
         model_id: stage.load.model_id.clone(),
         backend: stage.load.backend.clone(),
+        package_ref: Some(stage.load.package_ref.clone()),
+        manifest_sha256: Some(stage.load.manifest_sha256.clone()),
+        source_model_path: stage.load.model_path.clone(),
+        source_model_sha256: None,
+        source_model_bytes: None,
+        materialized_path: None,
+        materialized_pinned: false,
         stage_id: stage.load.stage_id.clone(),
         stage_index: stage.load.stage_index,
         layer_start: stage.load.layer_start,
@@ -416,6 +437,13 @@ fn stopped_status(stop: &StageStopRequest) -> StageStatusSnapshot {
         run_id: stop.run_id.clone(),
         model_id: String::new(),
         backend: "skippy".to_string(),
+        package_ref: None,
+        manifest_sha256: None,
+        source_model_path: None,
+        source_model_sha256: None,
+        source_model_bytes: None,
+        materialized_path: None,
+        materialized_pinned: false,
         stage_id: stop.stage_id.clone(),
         stage_index: 0,
         layer_start: 0,
@@ -492,6 +520,14 @@ mod tests {
         assert_eq!(config.topology_id, "topology-a");
         assert_eq!(config.run_id, "run-a");
         assert_eq!(config.model_id, "model-a");
+        assert_eq!(config.package_ref.as_deref(), Some("pkg-a"));
+        assert_eq!(config.manifest_sha256.as_deref(), Some("sha256"));
+        assert_eq!(
+            config.source_model_path.as_deref(),
+            Some("/models/model.gguf")
+        );
+        assert!(config.materialized_path.is_none());
+        assert!(!config.materialized_pinned);
         assert_eq!(config.stage_id, "stage-0");
         assert_eq!(config.stage_index, 0);
         assert_eq!(config.layer_start, 0);

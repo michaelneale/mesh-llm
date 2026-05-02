@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod hooks;
+mod package;
 mod stage;
 
 use std::{
@@ -25,6 +26,7 @@ use skippy_server::{
 };
 
 pub(crate) use hooks::MeshAutoHookPolicy;
+pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
     spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
     StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
@@ -46,6 +48,13 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) model_id: String,
     pub(crate) backend: &'static str,
     pub(crate) runtime_loaded: bool,
+    pub(crate) package_ref: Option<String>,
+    pub(crate) manifest_sha256: Option<String>,
+    pub(crate) source_model_path: Option<String>,
+    pub(crate) source_model_sha256: Option<String>,
+    pub(crate) source_model_bytes: Option<u64>,
+    pub(crate) materialized_path: Option<String>,
+    pub(crate) materialized_pinned: bool,
     pub(crate) ctx_size: u32,
     pub(crate) n_gpu_layers: i32,
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
@@ -79,6 +88,7 @@ pub(crate) struct SkippyModelLoadOptions {
     pub(crate) default_max_tokens: u32,
     pub(crate) layer_end: Option<u32>,
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
+    pub(crate) package_identity: Option<SkippyPackageIdentity>,
 }
 
 impl SkippyModelLoadOptions {
@@ -97,6 +107,7 @@ impl SkippyModelLoadOptions {
             default_max_tokens: 256,
             layer_end: None,
             selected_device: None,
+            package_identity: None,
         }
     }
 
@@ -117,6 +128,12 @@ impl SkippyModelLoadOptions {
 
     pub(crate) fn with_selected_device(mut self, selected_device: SkippyDeviceDescriptor) -> Self {
         self.selected_device = Some(selected_device);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_package_identity(mut self, package_identity: SkippyPackageIdentity) -> Self {
+        self.package_identity = Some(package_identity);
         self
     }
 }
@@ -349,14 +366,6 @@ impl OpenAiBackend for SkippyModelHandle {
 }
 
 pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<StageConfig> {
-    let layer_end = match options.layer_end {
-        Some(layer_end) => layer_end,
-        None => infer_layer_count(&options.model_path)?,
-    };
-    anyhow::ensure!(
-        layer_end > 0,
-        "skippy stage layer_end must be greater than zero"
-    );
     anyhow::ensure!(
         options.ctx_size > 0,
         "skippy ctx_size must be greater than zero"
@@ -371,11 +380,32 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
             "skippy selected backend device must not be empty"
         );
     }
+    let package_identity = match options.package_identity.as_ref() {
+        Some(identity) => identity.clone(),
+        None => synthetic_direct_gguf_package(&options.model_id, &options.model_path)?,
+    };
+    let layer_end = options.layer_end.unwrap_or(package_identity.layer_count);
+    anyhow::ensure!(
+        layer_end > 0,
+        "skippy stage layer_end must be greater than zero"
+    );
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
     Ok(StageConfig {
         run_id: run_id.clone(),
         topology_id: format!("topology-{run_id}"),
         model_id: options.model_id.clone(),
+        package_ref: Some(package_identity.package_ref),
+        manifest_sha256: Some(package_identity.manifest_sha256),
+        source_model_path: Some(
+            package_identity
+                .source_model_path
+                .to_string_lossy()
+                .to_string(),
+        ),
+        source_model_sha256: Some(package_identity.source_model_sha256),
+        source_model_bytes: Some(package_identity.source_model_bytes),
+        materialized_path: None,
+        materialized_pinned: false,
         model_path: Some(options.model_path.to_string_lossy().to_string()),
         stage_id: "stage-0".to_string(),
         stage_index: 0,
@@ -447,6 +477,13 @@ fn status_from_parts(
         model_id: config.model_id.clone(),
         backend: "skippy",
         runtime_loaded: embedded.runtime_loaded,
+        package_ref: config.package_ref.clone(),
+        manifest_sha256: config.manifest_sha256.clone(),
+        source_model_path: config.source_model_path.clone(),
+        source_model_sha256: config.source_model_sha256.clone(),
+        source_model_bytes: config.source_model_bytes,
+        materialized_path: config.materialized_path.clone(),
+        materialized_pinned: config.materialized_pinned,
         ctx_size: config.ctx_size,
         n_gpu_layers: config.n_gpu_layers,
         selected_device: config.selected_device.clone().map(Into::into),
@@ -487,18 +524,50 @@ fn now_unix_nanos() -> i64 {
 mod tests {
     use super::*;
 
+    fn fake_package_identity(layer_count: u32) -> SkippyPackageIdentity {
+        SkippyPackageIdentity {
+            package_ref: "gguf:///models/qwen.gguf".to_string(),
+            manifest_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_string(),
+            source_model_path: PathBuf::from("/models/qwen.gguf"),
+            source_model_sha256: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+                .to_string(),
+            source_model_bytes: 1234,
+            source_files: Vec::new(),
+            layer_count,
+            activation_width: 4096,
+            tensor_count: 100,
+        }
+    }
+
     #[test]
     fn single_stage_config_materializes_direct_gguf_runtime_slice() {
         let options =
             SkippyModelLoadOptions::for_direct_gguf("Qwen3-8B-Q4_K_M", "/models/qwen.gguf")
                 .with_ctx_size(8192)
                 .with_generation_concurrency(3)
-                .with_layer_end(36);
+                .with_layer_end(36)
+                .with_package_identity(fake_package_identity(36));
 
         let config = single_stage_config(&options).unwrap();
 
         assert_eq!(config.model_id, "Qwen3-8B-Q4_K_M");
         assert_eq!(config.model_path.as_deref(), Some("/models/qwen.gguf"));
+        assert_eq!(
+            config.package_ref.as_deref(),
+            Some("gguf:///models/qwen.gguf")
+        );
+        assert_eq!(
+            config.manifest_sha256.as_deref(),
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(
+            config.source_model_path.as_deref(),
+            Some("/models/qwen.gguf")
+        );
+        assert_eq!(config.source_model_bytes, Some(1234));
+        assert!(config.materialized_path.is_none());
+        assert!(!config.materialized_pinned);
         assert_eq!(config.stage_id, "stage-0");
         assert_eq!(config.stage_index, 0);
         assert_eq!(config.layer_start, 0);
@@ -518,6 +587,7 @@ mod tests {
                 .with_ctx_size(8192)
                 .with_generation_concurrency(3)
                 .with_layer_end(36)
+                .with_package_identity(fake_package_identity(36))
                 .with_selected_device(SkippyDeviceDescriptor {
                     backend_device: "CUDA3".into(),
                     stable_id: Some("uuid:GPU-123".into()),
@@ -552,8 +622,9 @@ mod tests {
 
     #[test]
     fn single_stage_config_rejects_empty_layer_range() {
-        let options =
-            SkippyModelLoadOptions::for_direct_gguf("bad", "/models/bad.gguf").with_layer_end(0);
+        let options = SkippyModelLoadOptions::for_direct_gguf("bad", "/models/bad.gguf")
+            .with_layer_end(0)
+            .with_package_identity(fake_package_identity(1));
 
         let err = single_stage_config(&options).unwrap_err().to_string();
 

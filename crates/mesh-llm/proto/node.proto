@@ -401,6 +401,13 @@ message StageStatus {
   uint64 shutdown_generation = 14;
   optional StageDevice selected_device = 15;
   uint32 ctx_size = 16;
+  optional string package_ref = 17;
+  optional string manifest_sha256 = 18;
+  optional string source_model_path = 19;
+  optional string source_model_sha256 = 20;
+  optional uint64 source_model_bytes = 21;
+  optional string materialized_path = 22;
+  optional bool materialized_pinned = 23;
 }
 
 message StagePeer {
