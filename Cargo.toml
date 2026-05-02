@@ -21,6 +21,8 @@ members = [
     "crates/llama-model-slice",
     "crates/skippy-correctness",
     "crates/llama-spec-bench",
+    "crates/skippy-bench",
+    "crates/skippy-prompt",
     "tools/xtask",
 ]
 default-members = [
@@ -36,6 +38,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,0 +1,18 @@
+[package]
+name = "skippy-bench"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+skippy-protocol = { path = "../skippy-protocol" }
+skippy-runtime = { path = "../skippy-runtime" }
+skippy-topology = { path = "../skippy-topology" }
+model-artifact = { path = "../model-artifact" }
+model-hf = { path = "../model-hf" }
+model-ref = { path = "../model-ref" }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
