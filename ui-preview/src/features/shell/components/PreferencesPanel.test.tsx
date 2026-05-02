@@ -4,6 +4,33 @@ import { describe, expect, it, vi } from 'vitest'
 import { PreferencesPanel } from '@/features/shell/components/PreferencesPanel'
 
 describe('PreferencesPanel', () => {
+  it('offers auto, dark, and light theme choices', async () => {
+    const user = userEvent.setup()
+    const onThemeChange = vi.fn()
+
+    render(
+      <PreferencesPanel
+        open
+        theme="auto"
+        accent="blue"
+        density="normal"
+        panelStyle="solid"
+        onThemeChange={onThemeChange}
+        onAccentChange={vi.fn()}
+        onDensityChange={vi.fn()}
+        onPanelStyleChange={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('radio', { name: 'Light' })).toHaveAttribute('aria-checked', 'false')
+
+    await user.click(screen.getByRole('radio', { name: 'Light' }))
+    expect(onThemeChange).toHaveBeenCalledWith('light')
+  })
+
   it('shows normal as the selected default density and exposes larger sparse sizing', async () => {
     const user = userEvent.setup()
     const onDensityChange = vi.fn()

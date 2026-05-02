@@ -18,6 +18,7 @@ type NetworkHeroBannerProps = { title: string; description: string; actions: Her
 export function NetworkHeroBanner({ title, description, actions, leadingIcon }: NetworkHeroBannerProps) {
   return (
     <InfoBanner
+      actionClassName="basis-full justify-start pl-[50px] pt-1 sm:basis-auto sm:justify-end sm:pl-0 sm:pt-0"
       action={(
         <div className="flex items-center gap-3">
         {actions.map((action) => {
@@ -42,6 +43,7 @@ export function NetworkHeroBanner({ title, description, actions, leadingIcon }: 
       leadingIcon={leadingIcon ?? <MeshIcon />}
       title={title}
       titleLevel="h1"
+      className="flex-wrap items-start sm:flex-nowrap sm:items-center"
     />
   )
 }

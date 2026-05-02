@@ -12,15 +12,15 @@ type DashboardLayoutProps = {
 
 export function DashboardLayout({ hero, status, topology, catalog, peers, connect, drawers }: DashboardLayoutProps) {
   return (
-    <div className="flex flex-col gap-[14px]">
+    <div className="flex min-w-0 flex-col gap-[14px]">
       {hero}
       {status}
-      <div className="grid gap-[14px]" style={{ gridTemplateColumns: '1fr 360px' }}>
-        {topology}
-        {catalog}
+      <div className="grid min-w-0 gap-[14px] xl:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
+        <div className="min-w-0">{topology}</div>
+        <div className="min-w-0">{catalog}</div>
       </div>
-      {peers}
-      {connect}
+      <div className="min-w-0">{peers}</div>
+      <div className="min-w-0">{connect}</div>
       {drawers}
     </div>
   )

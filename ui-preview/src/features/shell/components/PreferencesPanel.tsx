@@ -1,5 +1,5 @@
 import * as RadioGroup from '@radix-ui/react-radio-group'
-import { Moon, Sun, X } from 'lucide-react'
+import { Monitor, Moon, Sun, X, type LucideIcon } from 'lucide-react'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { cn } from '@/lib/cn'
 import { useDataMode, type DataMode } from '@/lib/data-mode'
@@ -18,7 +18,8 @@ type PreferencesPanelProps = {
   onClose: () => void
 }
 
-const themes: { value: Theme; label: string; Icon: typeof Moon }[] = [
+const themes: { value: Theme; label: string; Icon: LucideIcon }[] = [
+  { value: 'auto', label: 'Auto', Icon: Monitor },
   { value: 'dark', label: 'Dark', Icon: Moon },
   { value: 'light', label: 'Light', Icon: Sun },
 ]
@@ -124,7 +125,7 @@ export function PreferencesPanel({
           </h3>
           <SegmentedControl
             ariaLabelledBy="theme-heading"
-            className="grid grid-cols-2 gap-[var(--preferences-option-gap)]"
+            className="grid grid-cols-3 gap-[var(--preferences-option-gap)]"
             itemClassName="flex h-[var(--preferences-control-height)] items-center justify-center gap-[var(--preferences-option-gap)] rounded-[var(--radius)] text-[length:var(--preferences-control-text-size)]"
             name="preferences-theme"
             onValueChange={(nextTheme) => {

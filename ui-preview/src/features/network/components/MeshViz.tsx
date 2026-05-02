@@ -1,7 +1,6 @@
 import {
   forwardRef,
   type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -47,7 +46,7 @@ import {
   viewportLayerTransform,
   viewportsMatch,
 } from '@/features/network/lib/mesh-viewport'
-import type { MeshNode, Peer, Theme } from '@/features/app-tabs/types'
+import type { MeshNode, Peer, ResolvedTheme } from '@/features/app-tabs/types'
 import { MeshVizDebugControls, type MeshVizGridMode } from './MeshVizDebugControls'
 import {
   createDebugNode,
@@ -251,7 +250,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
   const [showPanBounds, setShowPanBounds] = useState(false)
   const [gridMode, setGridMode] = useState<MeshVizGridMode>('line')
   const [dotColorSchemeIndex, setDotColorSchemeIndex] = useState(0)
-  const [dotColorSchemeTheme, setDotColorSchemeTheme] = useState<Theme>(() => (
+  const [dotColorSchemeTheme, setDotColorSchemeTheme] = useState<ResolvedTheme>(() => (
     typeof document === 'undefined' ? 'dark' : themeFromDocument()
   ))
   const [debugNodes, setDebugNodes] = useState<DebugMeshNode[]>([])
@@ -1634,7 +1633,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     setIsPanning(false)
   }
 
-  const handleCanvasWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+  const handleCanvasWheel = useCallback((event: WheelEvent) => {
     if (event.deltaY === 0) {
       return
     }
@@ -1642,14 +1641,31 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     if (event.cancelable) {
       event.preventDefault()
     }
+    event.stopPropagation()
 
-    const rect = event.currentTarget.getBoundingClientRect()
+    const canvasElement = canvasRef.current
+    if (!canvasElement) {
+      return
+    }
+
+    const rect = canvasElement.getBoundingClientRect()
     const anchorX = event.clientX - rect.left
     const anchorY = event.clientY - rect.top
     const factor = event.deltaY > 0 ? WHEEL_ZOOM_OUT : WHEEL_ZOOM_IN
 
     zoomAroundPoint(viewportRef.current.zoom * factor, anchorX, anchorY, { live: true })
-  }
+  }, [zoomAroundPoint])
+
+  useEffect(() => {
+    const canvasElement = canvasRef.current
+    if (!canvasElement) {
+      return undefined
+    }
+
+    canvasElement.addEventListener('wheel', handleCanvasWheel, { passive: false })
+
+    return () => canvasElement.removeEventListener('wheel', handleCanvasWheel)
+  }, [handleCanvasWheel])
 
   const handleFullscreen = useCallback(() => {
     if (onFullscreen) {
@@ -1714,7 +1730,6 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={stopPanning}
           onPointerCancel={stopPanning}
-          onWheel={handleCanvasWheel}
         >
           <div className="absolute left-3.5 top-3 z-10 flex flex-wrap items-center gap-2.5 font-mono text-[length:var(--density-type-label)] uppercase tracking-[0.14em] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-panel/90 px-2 py-px text-accent">
@@ -1738,7 +1753,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
           <svg
             viewBox={`0 0 ${safeCanvasWidth} ${safeCanvasHeight}`}
             preserveAspectRatio="none"
-            className="pointer-events-none absolute inset-0 h-full w-full"
+            className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden"
             role="img"
             aria-label="Nearest mesh topology"
           >

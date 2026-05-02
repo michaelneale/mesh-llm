@@ -13,8 +13,10 @@ type HeaderHoverCardProps = {
   eyebrow: string
   title: string
   description: string
-  children: ReactNode
+  children: ReactNode | ((props: { close: () => void }) => ReactNode)
   align?: 'start' | 'center' | 'end'
+  contentClassName?: string
+  showHeader?: boolean
   triggerMode?: 'hover' | 'click'
 }
 
@@ -25,6 +27,8 @@ export function HeaderHoverCard({
   description,
   children,
   align = 'end',
+  contentClassName = 'space-y-3 p-4',
+  showHeader = true,
   triggerMode = 'hover',
 }: HeaderHoverCardProps) {
   const [open, setOpen] = useState(false)
@@ -39,6 +43,7 @@ export function HeaderHoverCard({
       if (event.key === 'Escape') setOpen(false)
     },
   }
+  const renderedChildren = typeof children === 'function' ? children({ close: () => setOpen(false) }) : children
 
   return (
     <HoverCard.Root open={open} onOpenChange={handleOpenChange} openDelay={140} closeDelay={180}>
@@ -54,12 +59,14 @@ export function HeaderHoverCard({
           side="bottom"
           sideOffset={10}
         >
-          <div className="border-b border-border-soft px-4 py-3">
-            <div className="type-label text-fg-faint">{eyebrow}</div>
-            <h2 className="mt-1 type-panel-title text-foreground">{title}</h2>
-            <p className="mt-1 max-w-none text-pretty text-[length:var(--density-type-caption-lg)] text-fg-dim">{description}</p>
-          </div>
-          <div className="space-y-3 p-4">{children}</div>
+          {showHeader ? (
+            <div className="border-b border-border-soft px-4 py-3">
+              <div className="type-label text-fg-faint">{eyebrow}</div>
+              <h2 className="mt-1 type-panel-title text-foreground">{title}</h2>
+              <p className="mt-1 max-w-none text-pretty text-[length:var(--density-type-caption-lg)] text-fg-dim">{description}</p>
+            </div>
+          ) : null}
+          <div className={contentClassName}>{renderedChildren}</div>
           <HoverCard.Arrow className="fill-[var(--color-panel)]" />
         </HoverCard.Content>
       </HoverCard.Portal>

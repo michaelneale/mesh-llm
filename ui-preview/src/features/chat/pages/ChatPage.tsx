@@ -72,7 +72,7 @@ function ChatMetricBadge({ metric }: { metric: ChatActionMetric }) {
   const Icon = metric.icon === 'cpu' ? Cpu : HardDrive
 
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-px text-[length:var(--density-type-label)] font-medium text-fg-faint">
+    <span className="hidden shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-border px-2 py-px text-[length:var(--density-type-label)] font-medium text-fg-faint md:inline-flex">
       <Icon className="size-[10px]" /> {metric.label}
     </span>
   )
@@ -158,8 +158,10 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const actions = (
     <>
       {data.actionMetrics.map((metric) => <ChatMetricBadge key={metric.id} metric={metric} />)}
-      <span className="text-[length:var(--density-type-caption)] text-fg-faint">{data.modelLabel}</span>
-      <ModelSelect options={options} value={activeModelName} onChange={setModel} />
+      <div className="flex min-w-0 flex-1 basis-full items-center gap-2 sm:basis-auto md:flex-none">
+        <span className="hidden shrink-0 whitespace-nowrap text-[length:var(--density-type-caption)] text-fg-faint md:inline">{data.modelLabel}</span>
+        <ModelSelect options={options} value={activeModelName} onChange={setModel} />
+      </div>
     </>
   )
 

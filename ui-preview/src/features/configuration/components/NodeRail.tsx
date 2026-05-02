@@ -8,7 +8,7 @@ type NodeRailProps = { nodes: ConfigNode[]; assigns: ConfigAssign[]; models?: Co
 export function NodeRail({ nodes, assigns, models, collapsedMap: _collapsedMap, setCollapsedMap, onJump, keyboardHint }: NodeRailProps) {
   void _collapsedMap
   return (
-    <nav className="panel-shell sticky top-[70px] self-start rounded-[var(--radius-lg)] border border-border bg-panel p-2.5" aria-label="Configuration nodes">
+    <nav className="panel-shell static self-start rounded-[var(--radius-lg)] border border-border bg-panel p-2.5 lg:sticky lg:top-[70px]" aria-label="Configuration nodes">
       <div className="mb-2 px-0.5 text-[length:var(--density-type-annotation)] font-semibold uppercase tracking-[0.06em] text-fg-faint">Nodes · {nodes.length}</div>
       {nodes.map((node) => {
         const usable = nodeUsableGB(node)

@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import * as NavigationMenu from '@radix-ui/react-navigation-menu'
-import { Code2, ExternalLink, Link2, Moon, Settings, Sun } from 'lucide-react'
+import * as Select from '@radix-ui/react-select'
+import { BotMessageSquare, ChevronDown, Code2, ExternalLink, Menu, Monitor, Moon, Network, Settings, Share2, Sun, type LucideIcon } from 'lucide-react'
 import { HeaderHoverCard } from '@/features/shell/components/HeaderHoverCard'
 import { CopyInstructionRow } from '@/components/ui/CopyInstructionRow'
 import type { LinkItem, TopNavJoinCommand, Theme, AppTab } from '@/features/app-tabs/types'
@@ -16,7 +17,7 @@ type TopNavProps = {
   apiUrl: string
   version: string
   theme: Theme
-  onToggleTheme: () => void
+  onThemeChange: (theme: Theme) => void
   showDeveloperPlayground?: boolean
   onOpenDeveloperPlayground?: () => void
   onOpenIdentity?: () => void
@@ -34,6 +35,18 @@ const tabs: { value: AppTab; href: string; labelKey: 'tabs.network' | 'tabs.chat
   { value: 'configuration', href: '/configuration', labelKey: 'tabs.configuration' },
 ]
 
+const themeOptions: { value: Theme; label: string; description: string; Icon: LucideIcon }[] = [
+  { value: 'auto', label: 'Auto', description: 'Follow system', Icon: Monitor },
+  { value: 'dark', label: 'Dark', description: 'Dim control room', Icon: Moon },
+  { value: 'light', label: 'Light', description: 'Bright workspace', Icon: Sun },
+]
+
+const tabIcons: Record<AppTab, LucideIcon> = {
+  network: Network,
+  chat: BotMessageSquare,
+  configuration: Settings,
+}
+
 const supportsNavigationMenu = typeof globalThis.ResizeObserver === 'function'
 
 function MeshLogo() {
@@ -42,87 +55,122 @@ function MeshLogo() {
   )
 }
 
+function isTheme(value: string): value is Theme {
+  return themeOptions.some((option) => option.value === value)
+}
+
 function BrandCluster({ version, renderLogo, brand }: { version: string; renderLogo?: () => ReactNode; brand?: { primary: string; accent: string } }) {
   const primary = brand?.primary ?? 'mesh'
   const accent = brand?.accent ?? 'llm'
   return (
-    <div className="mr-[var(--brand-margin-end)] flex items-center gap-[var(--brand-gap)]">
+    <div className="mr-[var(--brand-margin-end)] flex min-w-0 shrink-0 items-center gap-[var(--brand-gap)]">
       {renderLogo ? renderLogo() : <MeshLogo />}
       <span style={{ fontSize: 'var(--brand-font-size)', fontWeight: 700, letterSpacing: -0.3 }}>
         {primary}<span className="text-accent">{accent}</span>
       </span>
-      <span className="inline-flex items-center rounded-full border border-border px-[var(--version-pad-x)] py-px font-sans text-[length:var(--version-font-size)] font-medium text-fg-faint" style={{ letterSpacing: 0.02, lineHeight: 1.4 }}>
+      <span className="hidden items-center rounded-full border border-border px-[var(--version-pad-x)] py-px font-sans text-[length:var(--version-font-size)] font-medium text-fg-faint min-[420px]:inline-flex" style={{ letterSpacing: 0.02, lineHeight: 1.4 }}>
         {version}
       </span>
     </div>
   )
 }
 
-function PrimaryTabs({ enabledTabs, tab, tabHrefs, onTabChange }: { enabledTabs?: Partial<Record<AppTab, boolean>>; tab: AppTab | null; tabHrefs?: Partial<Record<AppTab, string>>; onTabChange: (tab: AppTab) => void }) {
+function PrimaryTabs({ enabledTabs, tab, tabHrefs, onTabChange, className }: { enabledTabs?: Partial<Record<AppTab, boolean>>; tab: AppTab | null; tabHrefs?: Partial<Record<AppTab, string>>; onTabChange: (tab: AppTab) => void; className?: string }) {
   const { t } = useI18n()
   const visibleTabs = tabs.filter((item) => enabledTabs?.[item.value] !== false)
+  const compactTabs = (
+    <nav className="ml-2 flex items-center gap-1.5" aria-label="Primary compact navigation">
+      {visibleTabs.map((item) => {
+        const active = tab === item.value
+        const Icon = tabIcons[item.value]
+        const label = t(item.labelKey)
+
+        return (
+          <button
+            key={item.value}
+            aria-current={active ? 'page' : undefined}
+            aria-label={label}
+            className={cn(
+              'ui-control-primary inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border',
+              !active ? 'opacity-80' : '',
+            )}
+            onClick={() => onTabChange(item.value)}
+            type="button"
+          >
+            <Icon className="size-[var(--nav-icon-size)]" aria-hidden="true" />
+          </button>
+        )
+      })}
+    </nav>
+  )
 
   if (!supportsNavigationMenu) {
     return (
-      <nav aria-label="Primary" className="flex items-center gap-[var(--nav-tab-gap)]">
-        {visibleTabs.map((item) => {
-          const active = tab === item.value
-          const href = tabHrefs?.[item.value] ?? item.href
+      <div className={cn('min-w-0', className)}>
+        <div className="md:hidden">{compactTabs}</div>
+        <nav aria-label="Primary" className="hidden min-w-0 flex-wrap items-center gap-[var(--nav-tab-gap)] md:flex">
+          {visibleTabs.map((item) => {
+            const active = tab === item.value
+            const href = tabHrefs?.[item.value] ?? item.href
 
-          return (
-            <a
-              key={item.value}
-              href={href}
-              className={cn(
-                'rounded-[var(--radius)] border border-transparent px-[var(--nav-tab-pad-x)] py-[var(--nav-tab-pad-y)] text-[length:var(--nav-tab-font-size)] leading-[var(--nav-tab-line-height)] font-medium tracking-normal',
-                active ? 'ui-control-primary' : 'ui-control-ghost',
-              )}
-              aria-current={active ? 'page' : undefined}
-              onClick={(event) => {
-                if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
-                event.preventDefault()
-                onTabChange(item.value)
-              }}
-            >
-              {t(item.labelKey)}
-            </a>
-          )
-        })}
-      </nav>
+            return (
+              <a
+                key={item.value}
+                href={href}
+                className={cn(
+                  'rounded-[var(--radius)] border border-transparent px-[var(--nav-tab-pad-x)] py-[var(--nav-tab-pad-y)] text-[length:var(--nav-tab-font-size)] leading-[var(--nav-tab-line-height)] font-medium tracking-normal',
+                  active ? 'ui-control-primary' : 'ui-control-ghost',
+                )}
+                aria-current={active ? 'page' : undefined}
+                onClick={(event) => {
+                  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+                  event.preventDefault()
+                  onTabChange(item.value)
+                }}
+              >
+                {t(item.labelKey)}
+              </a>
+            )
+          })}
+        </nav>
+      </div>
     )
   }
 
   return (
-    <NavigationMenu.Root aria-label="Primary" className="flex items-center">
-      <NavigationMenu.List className="m-0 flex list-none items-center gap-[var(--nav-tab-gap)] p-0">
-        {visibleTabs.map((item) => {
-          const active = tab === item.value
-          const href = tabHrefs?.[item.value] ?? item.href
+    <div className={cn('min-w-0', className)}>
+      <div className="md:hidden">{compactTabs}</div>
+      <NavigationMenu.Root aria-label="Primary" className="hidden items-center md:flex">
+        <NavigationMenu.List className="m-0 flex min-w-0 flex-wrap items-center gap-[var(--nav-tab-gap)] p-0">
+          {visibleTabs.map((item) => {
+            const active = tab === item.value
+            const href = tabHrefs?.[item.value] ?? item.href
 
-          return (
-            <NavigationMenu.Item key={item.value}>
-              <NavigationMenu.Link asChild active={active}>
-                <a
-                  href={href}
-                  className={cn(
-                    'rounded-[var(--radius)] border border-transparent px-[var(--nav-tab-pad-x)] py-[var(--nav-tab-pad-y)] text-[length:var(--nav-tab-font-size)] leading-[var(--nav-tab-line-height)] font-medium tracking-normal',
-                    active ? 'ui-control-primary' : 'ui-control-ghost',
-                  )}
-                  aria-current={active ? 'page' : undefined}
-                  onClick={(event) => {
-                    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
-                    event.preventDefault()
-                    onTabChange(item.value)
-                  }}
-                >
-                  {t(item.labelKey)}
-                </a>
-              </NavigationMenu.Link>
-            </NavigationMenu.Item>
-          )
-        })}
-      </NavigationMenu.List>
-    </NavigationMenu.Root>
+            return (
+              <NavigationMenu.Item key={item.value}>
+                <NavigationMenu.Link asChild active={active}>
+                  <a
+                    href={href}
+                    className={cn(
+                      'rounded-[var(--radius)] border border-transparent px-[var(--nav-tab-pad-x)] py-[var(--nav-tab-pad-y)] text-[length:var(--nav-tab-font-size)] leading-[var(--nav-tab-line-height)] font-medium tracking-normal',
+                      active ? 'ui-control-primary' : 'ui-control-ghost',
+                    )}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={(event) => {
+                      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+                      event.preventDefault()
+                      onTabChange(item.value)
+                    }}
+                  >
+                    {t(item.labelKey)}
+                  </a>
+                </NavigationMenu.Link>
+              </NavigationMenu.Item>
+            )
+          })}
+        </NavigationMenu.List>
+      </NavigationMenu.Root>
+    </div>
   )
 }
 
@@ -242,31 +290,191 @@ function ApiStatusChip({ apiUrl, apiAccessLinks }: { apiUrl: string; apiAccessLi
   )
 }
 
-function UtilityActions({
+function ThemeSelect({ theme, onThemeChange }: { theme: Theme; onThemeChange: (theme: Theme) => void }) {
+  const selectedTheme = themeOptions.find((option) => option.value === theme) ?? themeOptions[0]
+  const SelectedIcon = selectedTheme.Icon
+
+  return (
+    <Select.Root
+      value={theme}
+      onValueChange={(value) => {
+        if (isTheme(value)) onThemeChange(value)
+      }}
+    >
+      <Select.Trigger
+        aria-label={`Theme: ${selectedTheme.label}`}
+        className="ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border p-0 outline-none focus-visible:border-border focus-visible:outline-none focus-visible:ring-0 focus-visible:shadow-none data-[state=open]:border-border"
+      >
+        <SelectedIcon className="size-[var(--nav-icon-size)]" aria-hidden="true" />
+        <Select.Icon asChild>
+          <ChevronDown className="sr-only" aria-hidden="true" />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content
+          align="end"
+          className="shadow-surface-popover z-50 overflow-hidden rounded-[var(--radius)] border border-border bg-panel"
+          position="popper"
+          side="bottom"
+          sideOffset={4}
+          style={{ minWidth: 44 }}
+        >
+          <Select.Viewport className="w-full">
+            <Select.Group>
+              <Select.Label className="sr-only">
+                Theme
+              </Select.Label>
+              {themeOptions.map(({ value, label, Icon }) => (
+                <Select.Item
+                  key={value}
+                  value={value}
+                  data-active={value === theme ? 'true' : undefined}
+                  className={cn(
+                    'ui-row-action flex h-10 w-full items-center justify-end border-t border-border-soft pr-3 text-fg-dim outline-none first:border-t-0',
+                    value === theme ? 'text-foreground' : '',
+                    'data-[highlighted]:bg-transparent data-[highlighted]:text-foreground data-[highlighted]:outline-none',
+                  )}
+                >
+                  <Icon className="size-[14px] shrink-0" aria-hidden="true" />
+                  <Select.ItemText>
+                    <span className="sr-only">{label}</span>
+                  </Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.Group>
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  )
+}
+
+type CompactActionPanel = 'api' | 'join' | null
+
+function CompactActionsMenu({
   apiUrl,
   theme,
-  onToggleTheme,
+  onThemeChange,
   onOpenDeveloperPlayground,
   showDeveloperPlayground,
   onTogglePreferences,
   apiAccessLinks,
   joinCommands,
   joinLinks,
-}: Pick<TopNavProps, 'apiUrl' | 'theme' | 'onToggleTheme' | 'showDeveloperPlayground' | 'onOpenDeveloperPlayground' | 'onTogglePreferences' | 'apiAccessLinks' | 'joinCommands' | 'joinLinks'>) {
+}: Pick<TopNavProps, 'apiUrl' | 'theme' | 'onThemeChange' | 'showDeveloperPlayground' | 'onOpenDeveloperPlayground' | 'onTogglePreferences' | 'apiAccessLinks' | 'joinCommands' | 'joinLinks'>) {
   const { mode } = useDataMode()
-  const iconBtn = 'ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border'
-  const utilityBtn = 'ui-control inline-flex h-[var(--nav-action-size)] items-center gap-1.5 rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-caption)] font-medium'
+  const [activePanel, setActivePanel] = useState<CompactActionPanel>(null)
+  const actionRow = 'ui-row-action flex w-full items-center justify-between gap-3 rounded-[var(--radius)] border border-border-soft px-3 py-2 text-left text-[length:var(--density-type-caption-lg)] font-medium text-foreground'
 
   return (
-    <div className="flex items-center gap-[var(--nav-action-gap)]">
-      <div className="md:hidden">
-        <HeaderHoverCard
-          trigger={(triggerProps) => (
-            <button {...triggerProps} aria-label="Open API instructions" className={utilityBtn} type="button">
-              API
+    <div className="md:hidden">
+      <HeaderHoverCard
+        trigger={(triggerProps) => (
+          <button {...triggerProps} aria-label="Open navigation actions" className="ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border" type="button">
+            <Menu className="size-[var(--nav-icon-size)]" aria-hidden="true" />
+          </button>
+        )}
+        align="end"
+        contentClassName="p-3"
+        eyebrow=""
+        title="Navigation actions"
+        description=""
+        showHeader={false}
+        triggerMode="click"
+      >
+        {({ close }) => <div className="space-y-2">
+          <button className={actionRow} onClick={() => setActivePanel((panel) => panel === 'api' ? null : 'api')} type="button">
+            <span>API access</span>
+            <span className="type-label text-fg-faint">{mode === 'harness' ? 'Harness' : 'Endpoint'}</span>
+          </button>
+          {activePanel === 'api' ? (
+            <div className="rounded-[var(--radius)] border border-border-soft p-3">
+              <ApiAccessContent apiUrl={apiUrl} dataMode={mode} links={apiAccessLinks} />
+            </div>
+          ) : null}
+          <button className={actionRow} onClick={() => setActivePanel((panel) => panel === 'join' ? null : 'join')} type="button">
+            <span className="inline-flex items-center gap-2"><Share2 className="size-[12px]" aria-hidden="true" /> Join mesh</span>
+            <span className="type-label text-fg-faint">Invite</span>
+          </button>
+          {activePanel === 'join' ? (
+            <div className="rounded-[var(--radius)] border border-border-soft p-3">
+              <JoinInviteContent commands={joinCommands} links={joinLinks} />
+            </div>
+          ) : null}
+          {showDeveloperPlayground && onOpenDeveloperPlayground ? (
+            <button className={actionRow} onClick={() => { onOpenDeveloperPlayground(); close() }} type="button">
+              <span className="inline-flex items-center gap-2"><Code2 className="size-[12px]" aria-hidden="true" /> Playground</span>
+              <span className="type-label text-fg-faint">Dev</span>
             </button>
-          )}
-          align="end"
+          ) : null}
+          <div className="flex items-center justify-between rounded-[var(--radius)] border border-border-soft px-3 py-2">
+            <span className="text-[length:var(--density-type-caption-lg)] font-medium text-foreground">Theme</span>
+            <div className="flex items-center gap-1.5">
+              {themeOptions.map(({ value, label, Icon }) => (
+                <button
+                  key={value}
+                  aria-label={`Theme: ${label}`}
+                  aria-pressed={theme === value}
+                  className={cn(
+                    'ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border',
+                    theme === value ? 'text-foreground' : 'text-fg-dim',
+                  )}
+                  onClick={() => onThemeChange(value)}
+                  type="button"
+                >
+                  <Icon className="size-[var(--nav-icon-size)]" aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          </div>
+          <button className={actionRow} onClick={() => { onTogglePreferences(); close() }} type="button">
+            <span className="inline-flex items-center gap-2"><Settings className="size-[12px]" aria-hidden="true" /> Preferences</span>
+            <span className="type-label text-fg-faint">Interface</span>
+          </button>
+        </div>}
+      </HeaderHoverCard>
+    </div>
+  )
+}
+
+function UtilityActions({
+  apiUrl,
+  theme,
+  onThemeChange,
+  onOpenDeveloperPlayground,
+  showDeveloperPlayground,
+  onTogglePreferences,
+  apiAccessLinks,
+  joinCommands,
+  joinLinks,
+}: Pick<TopNavProps, 'apiUrl' | 'theme' | 'onThemeChange' | 'showDeveloperPlayground' | 'onOpenDeveloperPlayground' | 'onTogglePreferences' | 'apiAccessLinks' | 'joinCommands' | 'joinLinks'>) {
+  const { mode } = useDataMode()
+  const iconBtn = 'ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border'
+  const utilityBtn = 'ui-control inline-flex size-[var(--nav-action-size)] items-center justify-center rounded-[var(--radius)] border p-0 text-[length:var(--density-type-caption)] font-medium sm:w-auto sm:gap-1.5 sm:px-2.5'
+
+  return (
+    <div className="ml-auto flex shrink-0 items-center gap-[var(--nav-action-gap)]">
+      <CompactActionsMenu
+        apiUrl={apiUrl}
+        theme={theme}
+        onThemeChange={onThemeChange}
+        onOpenDeveloperPlayground={onOpenDeveloperPlayground}
+        showDeveloperPlayground={showDeveloperPlayground}
+        onTogglePreferences={onTogglePreferences}
+        apiAccessLinks={apiAccessLinks}
+        joinCommands={joinCommands}
+        joinLinks={joinLinks}
+      />
+      <div className="hidden items-center gap-[var(--nav-action-gap)] md:flex">
+        <div className="md:hidden">
+          <HeaderHoverCard
+            trigger={(triggerProps) => (
+              <button {...triggerProps} aria-label="Open API instructions" className={utilityBtn} type="button">
+                <span aria-hidden="true" className="sm:hidden">A</span>
+                <span className="hidden sm:inline">API</span>
+              </button>
+            )}
+            align="end"
             eyebrow={mode === 'harness' ? 'Fixture data' : 'Local endpoint'}
             title={mode === 'harness' ? 'Test harness active' : 'API access'}
             description={mode === 'harness' ? 'The compact menu shows the configured endpoint, but the UI is currently using harness data.' : 'The compact menu exposes the same endpoint details on smaller screens.'}
@@ -275,42 +483,41 @@ function UtilityActions({
             <ApiAccessContent apiUrl={apiUrl} dataMode={mode} links={apiAccessLinks} />
           </HeaderHoverCard>
         </div>
-      <HeaderHoverCard
-        trigger={(triggerProps) => (
-          <button {...triggerProps} aria-label="Mesh join and invite instructions" className={utilityBtn} type="button">
-            <Link2 className="size-[11px]" aria-hidden="true" />
-            Join
+        <HeaderHoverCard
+          trigger={(triggerProps) => (
+            <button {...triggerProps} aria-label="Mesh join and invite instructions" className={utilityBtn} type="button">
+              <Share2 className="size-[12px]" aria-hidden="true" />
+              <span className="hidden sm:inline">Join</span>
+            </button>
+          )}
+          align="end"
+          eyebrow="Mesh access"
+          title="Join or invite"
+          description="Keep the common join flows close when you need to add a node, client, or agent quickly."
+          triggerMode="click"
+        >
+          <JoinInviteContent commands={joinCommands} links={joinLinks} />
+        </HeaderHoverCard>
+        {showDeveloperPlayground && onOpenDeveloperPlayground ? (
+          <button className={iconBtn} onClick={onOpenDeveloperPlayground} type="button" aria-label="Open developer playground">
+            <Code2 className="size-[var(--nav-icon-size)]" />
           </button>
-        )}
-        align="end"
-        eyebrow="Mesh access"
-        title="Join or invite"
-        description="Keep the common join flows close when you need to add a node, client, or agent quickly."
-        triggerMode="click"
-      >
-        <JoinInviteContent commands={joinCommands} links={joinLinks} />
-      </HeaderHoverCard>
-      {showDeveloperPlayground && onOpenDeveloperPlayground ? (
-        <button className={iconBtn} onClick={onOpenDeveloperPlayground} type="button" aria-label="Open developer playground">
-          <Code2 className="size-[var(--nav-icon-size)]" />
+        ) : null}
+        <ThemeSelect theme={theme} onThemeChange={onThemeChange} />
+        <button className={iconBtn} onClick={onTogglePreferences} type="button" aria-label="Open interface preferences">
+          <Settings className="size-[var(--nav-icon-size)]" />
         </button>
-      ) : null}
-      <button className={iconBtn} onClick={onToggleTheme} type="button" aria-label="Toggle theme">
-        {theme === 'dark' ? <Sun className="size-[var(--nav-icon-size)]" /> : <Moon className="size-[var(--nav-icon-size)]" />}
-      </button>
-      <button className={iconBtn} onClick={onTogglePreferences} type="button" aria-label="Open interface preferences">
-        <Settings className="size-[var(--nav-icon-size)]" />
-      </button>
+      </div>
     </div>
   )
 }
 
 export function TopNav(props: TopNavProps) {
   return (
-    <header className="surface-chrome sticky top-0 z-30 flex items-center gap-[var(--topnav-gap)] border-b border-border-soft px-[var(--topnav-pad-x)] py-[var(--topnav-pad-y)]">
+    <header className="surface-chrome sticky top-0 z-30 flex flex-wrap items-center gap-[var(--topnav-gap)] border-b border-border-soft px-[var(--topnav-pad-x)] py-[var(--topnav-pad-y)]">
       <BrandCluster version={props.version} renderLogo={props.renderLogo} brand={props.brand} />
-      <PrimaryTabs enabledTabs={props.enabledTabs} tab={props.tab} tabHrefs={props.tabHrefs} onTabChange={props.onTabChange} />
-      <div className="flex-1" />
+      <PrimaryTabs enabledTabs={props.enabledTabs} tab={props.tab} tabHrefs={props.tabHrefs} onTabChange={props.onTabChange} className="order-none w-auto min-w-0 pb-0 md:order-none md:w-auto md:pb-0" />
+      <div className="hidden flex-1 md:block" />
       <ApiStatusChip apiUrl={props.apiUrl} apiAccessLinks={props.apiAccessLinks} />
       <UtilityActions {...props} />
     </header>

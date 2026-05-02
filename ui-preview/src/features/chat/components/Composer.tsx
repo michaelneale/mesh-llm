@@ -25,7 +25,7 @@ export function Composer({ value, onChange, onSend, placeholder = 'Ask me anythi
         onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend() } }}
       />
       <div className="flex items-center justify-between border-t border-border-soft bg-panel px-3.5 py-2">
-        <div className="text-[length:var(--density-type-caption)] text-fg-faint">
+        <div className="hidden text-[length:var(--density-type-caption)] text-fg-faint md:block">
           <kbd className="rounded border border-border bg-panel-strong px-[5px] py-px font-mono text-[length:var(--density-type-label)] text-fg-dim" style={{ borderBottomWidth: 2 }}>↵</kbd>
           {' '}to send ·{' '}
           <kbd className="rounded border border-border bg-panel-strong px-[5px] py-px font-mono text-[length:var(--density-type-label)] text-fg-dim" style={{ borderBottomWidth: 2 }}>⇧ ↵</kbd>

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
-export type Theme = 'light' | 'dark'
+export type ResolvedTheme = 'light' | 'dark'
+export type Theme = 'auto' | ResolvedTheme
 export type Accent = 'blue' | 'cyan' | 'violet' | 'green' | 'amber' | 'pink'
 export type Density = 'compact' | 'normal' | 'sparse'
 export type PanelStyle = 'solid' | 'soft'

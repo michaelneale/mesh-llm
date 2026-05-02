@@ -19,7 +19,7 @@ export function Footer({ version, productName = 'mesh-llm', links, trailingLink 
   const versionLabel = version.startsWith('v') ? version : `v${version}`
 
   return (
-    <footer className="flex items-center justify-center gap-[18px] px-[18px] pb-7 pt-5 text-[length:var(--density-type-caption-lg)] text-fg-faint">
+    <footer className="flex flex-wrap items-center justify-center gap-x-[18px] gap-y-2 px-[18px] pb-7 pt-5 text-[length:var(--density-type-caption-lg)] text-fg-faint">
       <span className="font-mono">{productName} {versionLabel}</span>
       {links.map((link) => (
         <FooterLink key={link.label} href={link.href} label={link.label} />

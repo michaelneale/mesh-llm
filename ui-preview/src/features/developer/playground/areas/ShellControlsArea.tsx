@@ -67,7 +67,7 @@ function CommandBarPreview() {
 
 export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }) {
   const [tab, setTab] = useState<AppTab>('network')
-  const [theme, setTheme] = useState<Theme>('dark')
+  const [theme, setTheme] = useState<Theme>('auto')
   const [accent, setAccent] = useState<Accent>('cyan')
   const [density, setDensity] = useState<Density>('compact')
   const [panelStyle, setPanelStyle] = useState<PanelStyle>('solid')
@@ -113,7 +113,7 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
             <div className="space-y-4">
               <PlaygroundPanel
                 title="Top navigation"
-                description="Exercise primary tabs, API copy affordances, developer playground entry, theme toggle, and preferences trigger in one shell strip."
+                description="Exercise primary tabs, API copy affordances, developer playground entry, theme selection, and preferences trigger in one shell strip."
               >
                 <div className="relative overflow-hidden rounded-[var(--radius-lg)] border border-border bg-background">
                   <TopNav
@@ -121,7 +121,7 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                     onOpenDeveloperPlayground={() => undefined}
                     onTabChange={setTab}
                     onTogglePreferences={() => setPreferencesOpen((open) => !open)}
-                    onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+                    onThemeChange={setTheme}
                     showDeveloperPlayground={true}
                     tab={tab}
                     tabHrefs={{

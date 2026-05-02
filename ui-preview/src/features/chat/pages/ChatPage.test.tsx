@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadChatState } from '@/features/chat/api/chat-storage'
+import { ChatLayout } from '@/features/chat/layouts/ChatLayout'
 import { ChatPage } from '@/features/chat/pages/ChatPage'
 import { APP_STORAGE_KEYS } from '@/features/app-tabs/data'
 import { FeatureFlagProvider } from '@/lib/feature-flags'
@@ -61,6 +62,32 @@ describe('ChatPage', () => {
 
     expect(screen.queryByRole('tab', { name: /transparency/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Inspect transparency' })).not.toBeInTheDocument()
+  })
+
+  it('opens the responsive chat sidebar popover from the floating control', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ChatLayout
+        actions={null}
+        composer={<textarea aria-label="Prompt" />}
+        sidebar={<div role="tablist" aria-label="Chat sidebar views" />}
+        sidebarMode="compact"
+        title="Chat"
+      >
+        <div data-testid="message-content">Messages</div>
+      </ChatLayout>,
+    )
+
+    expect(screen.queryByRole('tablist', { name: 'Chat sidebar views' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open chat sidebar' }))
+
+    expect(screen.getAllByRole('tablist', { name: 'Chat sidebar views' })).toHaveLength(1)
+
+    await user.keyboard('{Escape}')
+
+    expect(screen.queryByRole('tablist', { name: 'Chat sidebar views' })).not.toBeInTheDocument()
   })
 
   it('hides route disclosure text by default', () => {

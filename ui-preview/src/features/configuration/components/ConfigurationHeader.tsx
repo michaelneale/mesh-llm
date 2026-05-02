@@ -23,9 +23,9 @@ function formatLocalHostname(node: ConfigNode | undefined) {
   return node.hostname.includes('.') ? node.hostname : `${node.hostname}.local`
 }
 
-function InlineMeta({ children, icon }: { children: ReactNode; icon: ReactNode }) {
+function InlineMeta({ children, className, icon }: { children: ReactNode; className?: string; icon: ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] leading-none text-fg-dim">
+    <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] leading-none text-fg-dim', className)}>
       <span className="inline-flex size-3 items-center justify-center text-fg-faint">{icon}</span>
       {children}
     </span>
@@ -83,16 +83,16 @@ export function ConfigurationHeader(props: ConfigurationHeaderProps) {
   const localHostname = formatLocalHostname(localNode)
 
   return (
-    <header className="sticky top-0 z-20 bg-transparent">
+    <header className="relative z-20 bg-transparent">
       <div className="flex min-h-[76px] flex-wrap items-center justify-between gap-3 px-5 py-3">
         <div className="min-w-0">
           <h1 className="text-[20px] font-bold leading-none tracking-[-0.4px] text-foreground">{props.title}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12px] text-fg-dim">
             <InlineMeta icon={<UserRound aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}>
               Editing <strong className="font-mono text-[11.5px] font-semibold text-foreground">{localHostname}</strong>
-              <span className="text-fg-faint">· local node only</span>
+              <span className="hidden text-fg-faint md:inline">· local node only</span>
             </InlineMeta>
-            <InlineMeta icon={<Network aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}>
+            <InlineMeta className="hidden md:inline-flex" icon={<Network aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}>
               {onlineNodes} nodes connected · remote read-only
             </InlineMeta>
           </div>

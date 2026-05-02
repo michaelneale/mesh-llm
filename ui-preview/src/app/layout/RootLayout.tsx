@@ -47,7 +47,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
   const router = useRouter()
   const routerPathname = useRouterState({ select: (state) => state.location.pathname })
   const pathname = stripBasePath(routerPathname)
-  const { theme, accent, density, panelStyle, setTheme, toggleTheme, setAccent, setDensity, setPanelStyle } = useUIPreferences()
+  const { theme, accent, density, panelStyle, setTheme, setAccent, setDensity, setPanelStyle } = useUIPreferences()
   const newConfigurationPageEnabled = useBooleanFeatureFlag('global/newConfigurationPage')
   const activeTab = pathToTab(pathname)
   const [preferencesOpen, setPreferencesOpen] = useState(false)
@@ -72,7 +72,7 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           apiUrl={env.apiUrl}
           version={env.appVersion}
           theme={theme}
-          onToggleTheme={toggleTheme}
+          onThemeChange={setTheme}
           onTogglePreferences={() => setPreferencesOpen((value) => !value)}
           brand={data.brand}
           apiAccessLinks={data.topNavApiAccessLinks}

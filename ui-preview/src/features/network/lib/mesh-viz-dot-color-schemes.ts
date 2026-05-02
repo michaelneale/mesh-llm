@@ -1,4 +1,4 @@
-import type { Theme } from '@/features/app-tabs/types'
+import type { ResolvedTheme } from '@/features/app-tabs/types'
 
 export type MeshVizGridColors = readonly [string, string, string]
 export type MeshVizNodeColors = readonly [string, string, string, string]
@@ -11,7 +11,7 @@ export type MeshVizDotColorScheme = {
 
 export const MESH_VIZ_DOT_COLOR_SCHEME_COUNT = 3
 
-export const MESH_VIZ_DOT_COLOR_SCHEMES: Record<Theme, readonly [MeshVizDotColorScheme, MeshVizDotColorScheme, MeshVizDotColorScheme]> = {
+export const MESH_VIZ_DOT_COLOR_SCHEMES: Record<ResolvedTheme, readonly [MeshVizDotColorScheme, MeshVizDotColorScheme, MeshVizDotColorScheme]> = {
   dark: [
     {
       label: 'Ash signal',
@@ -102,7 +102,7 @@ export const MESH_VIZ_DOT_COLOR_SCHEMES: Record<Theme, readonly [MeshVizDotColor
   ],
 }
 
-export function meshVizDotColorSchemeAtIndex(theme: Theme, index: number): MeshVizDotColorScheme {
+export function meshVizDotColorSchemeAtIndex(theme: ResolvedTheme, index: number): MeshVizDotColorScheme {
   const schemes = MESH_VIZ_DOT_COLOR_SCHEMES[theme]
   const normalizedIndex = ((index % schemes.length) + schemes.length) % schemes.length
 
@@ -113,6 +113,6 @@ export function nextMeshVizDotColorSchemeIndex(index: number): number {
   return (index + 1) % MESH_VIZ_DOT_COLOR_SCHEME_COUNT
 }
 
-export function themeFromDocument(): Theme {
+export function themeFromDocument(): ResolvedTheme {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
 }

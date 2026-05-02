@@ -6,6 +6,7 @@ type InfoBannerProps = {
   title: ReactNode
   description: ReactNode
   action?: ReactNode
+  actionClassName?: string
   className?: string
   contentClassName?: string
   descriptionClassName?: string
@@ -19,6 +20,7 @@ export function InfoBanner({
   title,
   description,
   action,
+  actionClassName,
   className,
   contentClassName,
   descriptionClassName,
@@ -48,7 +50,7 @@ export function InfoBanner({
         </div>
         <div className={cn('type-caption mt-1 text-fg-dim', descriptionClassName)}>{description}</div>
       </div>
-      {action ? <div className="flex shrink-0 items-center justify-end self-center">{action}</div> : null}
+      {action ? <div className={cn('flex shrink-0 items-center justify-end self-center', actionClassName)}>{action}</div> : null}
     </section>
   )
 }

@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_UI_PREFERENCES,
   UI_PREFERENCES_STORAGE_KEY,
@@ -8,8 +8,73 @@ import {
 } from '@/features/shell/hooks/useUiPreferences'
 import { env } from '@/lib/env'
 
+const SYSTEM_THEME_QUERY = '(prefers-color-scheme: dark)'
+
+type MatchMediaController = {
+  setMatches: (matches: boolean) => void
+}
+
+function installMatchMediaMock(initialMatches: boolean): MatchMediaController {
+  let matches = initialMatches
+  const listeners = new Set<EventListenerOrEventListenerObject>()
+  const legacyListeners = new Set<(this: MediaQueryList, event: MediaQueryListEvent) => void>()
+
+  const mediaQueryList = {
+    get matches() {
+      return matches
+    },
+    media: SYSTEM_THEME_QUERY,
+    onchange: null,
+    addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (type === 'change' && listener) listeners.add(listener)
+    },
+    removeEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (type === 'change' && listener) listeners.delete(listener)
+    },
+    addListener: (listener: (this: MediaQueryList, event: MediaQueryListEvent) => void) => {
+      legacyListeners.add(listener)
+    },
+    removeListener: (listener: (this: MediaQueryList, event: MediaQueryListEvent) => void) => {
+      legacyListeners.delete(listener)
+    },
+    dispatchEvent: (event: Event) => {
+      Object.defineProperties(event, {
+        matches: { value: matches },
+        media: { value: SYSTEM_THEME_QUERY },
+      })
+      listeners.forEach((listener) => {
+        if (typeof listener === 'function') {
+          listener.call(mediaQueryList, event)
+          return
+        }
+        listener.handleEvent(event)
+      })
+      legacyListeners.forEach((listener) => {
+        listener.call(mediaQueryList, event as MediaQueryListEvent)
+      })
+      return true
+    },
+  } satisfies MediaQueryList
+
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn((query: string) => {
+      if (query !== SYSTEM_THEME_QUERY) throw new Error(`Unexpected media query: ${query}`)
+      return mediaQueryList
+    }),
+  })
+
+  return {
+    setMatches(nextMatches: boolean) {
+      matches = nextMatches
+      mediaQueryList.dispatchEvent(new Event('change'))
+    },
+  }
+}
+
 function clearUiPreferenceAttributes() {
   document.documentElement.removeAttribute('data-theme')
+  document.documentElement.removeAttribute('data-theme-preference')
   document.documentElement.removeAttribute('data-accent')
   document.documentElement.removeAttribute('data-density')
   document.documentElement.removeAttribute('data-panel-style')
@@ -22,7 +87,10 @@ function runtimeThemeColorMeta() {
 }
 
 describe('useUIPreferences', () => {
+  let systemTheme: MatchMediaController
+
   beforeEach(() => {
+    systemTheme = installMatchMediaMock(true)
     window.localStorage.clear()
     clearUiPreferenceAttributes()
   })
@@ -36,10 +104,60 @@ describe('useUIPreferences', () => {
     expect(result.current.panelStyle).toBe(DEFAULT_UI_PREFERENCES.panelStyle)
 
     await waitFor(() => {
-      expect(document.documentElement.dataset.theme).toBe(DEFAULT_UI_PREFERENCES.theme)
+      expect(document.documentElement.dataset.theme).toBe('dark')
+      expect(document.documentElement.dataset.themePreference).toBe(DEFAULT_UI_PREFERENCES.theme)
       expect(document.documentElement.dataset.panelStyle).toBe(DEFAULT_UI_PREFERENCES.panelStyle)
-      expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS[DEFAULT_UI_PREFERENCES.theme])
+      expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.dark)
       expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(JSON.stringify(DEFAULT_UI_PREFERENCES))
+    })
+  })
+
+  it('resolves auto from the system preference and tracks system changes', async () => {
+    const { result } = renderHook(() => useUIPreferences())
+
+    await waitFor(() => {
+      expect(result.current.theme).toBe('auto')
+      expect(result.current.resolvedTheme).toBe('dark')
+      expect(document.documentElement.dataset.theme).toBe('dark')
+      expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.dark)
+    })
+
+    act(() => {
+      systemTheme.setMatches(false)
+    })
+
+    await waitFor(() => {
+      expect(result.current.theme).toBe('auto')
+      expect(result.current.resolvedTheme).toBe('light')
+      expect(document.documentElement.dataset.theme).toBe('light')
+      expect(document.documentElement.dataset.themePreference).toBe('auto')
+      expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
+    })
+  })
+
+  it('keeps explicit theme choices when the system preference changes', async () => {
+    const { result } = renderHook(() => useUIPreferences())
+
+    act(() => {
+      result.current.setTheme('light')
+    })
+
+    await waitFor(() => {
+      expect(result.current.theme).toBe('light')
+      expect(result.current.resolvedTheme).toBe('light')
+      expect(document.documentElement.dataset.theme).toBe('light')
+    })
+
+    act(() => {
+      systemTheme.setMatches(true)
+    })
+
+    await waitFor(() => {
+      expect(result.current.theme).toBe('light')
+      expect(result.current.resolvedTheme).toBe('light')
+      expect(document.documentElement.dataset.theme).toBe('light')
+      expect(document.documentElement.dataset.themePreference).toBe('light')
+      expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
     })
   })
 
@@ -60,6 +178,7 @@ describe('useUIPreferences', () => {
 
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe(savedPreferences.theme)
+      expect(document.documentElement.dataset.themePreference).toBe(savedPreferences.theme)
       expect(document.documentElement.dataset.accent).toBe(savedPreferences.accent)
       expect(document.documentElement.dataset.density).toBe(savedPreferences.density)
       expect(document.documentElement.dataset.panelStyle).toBe(savedPreferences.panelStyle)
@@ -112,6 +231,7 @@ describe('useUIPreferences', () => {
 
     await waitFor(() => {
       expect(document.documentElement.dataset.theme).toBe('light')
+      expect(document.documentElement.dataset.themePreference).toBe('light')
       expect(document.documentElement.dataset.accent).toBe('violet')
       expect(document.documentElement.dataset.density).toBe('compact')
       expect(document.documentElement.dataset.panelStyle).toBe('soft')
@@ -137,6 +257,7 @@ describe('useUIPreferences', () => {
       expect(result.current.density).toBe('compact')
       expect(result.current.panelStyle).toBe('soft')
       expect(document.documentElement.dataset.theme).toBe('light')
+      expect(document.documentElement.dataset.themePreference).toBe('light')
       expect(document.documentElement.dataset.accent).toBe(DEFAULT_UI_PREFERENCES.accent)
       expect(document.documentElement.dataset.density).toBe('compact')
       expect(document.documentElement.dataset.panelStyle).toBe('soft')

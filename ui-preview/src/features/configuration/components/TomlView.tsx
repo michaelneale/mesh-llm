@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { cn } from '@/lib/cn'
 import { Copy } from 'lucide-react'
 import { buildTOML } from '@/features/configuration/lib/build-toml'
+import { HighlightedTomlLines } from '@/features/configuration/components/toml-highlight'
 import type { ConfigAssign, ConfigModel, ConfigNode, ConfigurationDefaultsHarnessData, ConfigurationDefaultsValues, TomlValidationWarning } from '@/features/app-tabs/types'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
@@ -153,21 +154,6 @@ function LaunchSummaryPanel({ nodes, assigns, defaultsValues, launchSummaryConfi
   )
 }
 
-function highlightLine(line: string): ReactNode {
-  if (/^\[\[.+\]\]$/.test(line.trim())) return <span className="text-accent">{line}</span>
-  const keyValue = line.match(/^(\w+)\s*=\s*(.+)$/)
-  if (keyValue) {
-    return (
-      <>
-        <span className="text-foreground">{keyValue[1]}</span>
-        <span className="text-fg-dim">{' = '}</span>
-        <span className="text-warn">{keyValue[2]}</span>
-      </>
-    )
-  }
-  return <span className="text-fg-dim">{line || ' '}</span>
-}
-
 export function TomlView({ nodes, assigns, models, defaults, defaultsValues, reviewMode = false, configPath, validationWarnings, launchSummaryConfig }: TomlViewProps) {
   const toml = buildTOML(nodes, assigns, models, { defaults, defaultsValues })
   const { copyState, copyText } = useClipboardCopy()
@@ -176,19 +162,7 @@ export function TomlView({ nodes, assigns, models, defaults, defaultsValues, rev
   const lines = toml.split('\n')
   const lineCount = lines.length
   const sourceHeight = reviewMode ? undefined : `min(1040px, max(440px, calc(${lineCount} * 1.6em + 1.5rem)))`
-  const lineOccurrences = new Map<string, number>()
-  const highlighted = lines.map((line) => {
-    const occurrence = lineOccurrences.get(line) ?? 0
-    lineOccurrences.set(line, occurrence + 1)
-    return (
-      <div className="relative text-transparent" key={`${line}-${occurrence}`}>
-        {line || ' '}
-        <span aria-hidden="true" className="pointer-events-none absolute left-0 top-0 whitespace-pre">
-          {highlightLine(line)}
-        </span>
-      </div>
-    )
-  })
+  const highlighted = <HighlightedTomlLines toml={toml} />
 
   const editor = (
     <TomlEditorPanel

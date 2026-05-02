@@ -22,26 +22,26 @@ export function ConnectBlock({ installHref, apiUrl, apiStatus, runCommand, descr
 
   return (
     <section className="panel-shell overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
-      <header className="flex items-center justify-between border-b border-border-soft px-3.5 py-2.5">
-        <div className="flex items-baseline gap-2">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft px-3.5 py-2.5">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-2">
           <h2 className="type-panel-title">Connect</h2>
           <span className="type-caption text-fg-faint">· {description}</span>
         </div>
         <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">Full docs →</a>
       </header>
       <div className="p-3.5">
-        <div className="grid grid-cols-2 gap-3.5">
+        <div className="grid gap-3.5 md:grid-cols-2">
           <div>
             <div className="type-label mb-1.5 text-fg-faint">1 · Install</div>
-            <div className="flex items-center justify-between rounded-[var(--radius)] border border-border bg-panel-strong px-3 py-[9px]">
-              <span className="font-mono text-[length:var(--density-type-control)]">{installDisplay}</span>
+            <div className="flex min-w-0 items-center justify-between gap-2 rounded-[var(--radius)] border border-border bg-panel-strong px-3 py-[9px]">
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">{installDisplay}</span>
               <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">open</a>
             </div>
           </div>
           <div>
             <div className="type-label mb-1.5 text-fg-faint">API endpoint</div>
-            <div className="flex items-center justify-between rounded-[var(--radius)] border border-border bg-panel-strong px-3 py-[9px]">
-              <span className="font-mono text-[length:var(--density-type-control)]">{apiUrl}</span>
+            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-[var(--radius)] border border-border bg-panel-strong px-3 py-[9px]">
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">{apiUrl}</span>
               <span
                 className="inline-flex items-center gap-[5px] rounded-full px-2 py-px text-[length:var(--density-type-label)] font-medium"
                 style={{

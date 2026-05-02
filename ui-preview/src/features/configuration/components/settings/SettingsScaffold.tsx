@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { AccentIconFrame } from '@/components/ui/AccentIconFrame'
 import { InfoBanner } from '@/components/ui/InfoBanner'
 import { SidebarNavigation } from '@/components/ui/SidebarNavigation'
+import { HighlightedTomlLines } from '@/features/configuration/components/toml-highlight'
 import { cn } from '@/lib/cn'
 
 export type SettingsCategoryItem = {
@@ -52,7 +53,7 @@ export function SettingsSummaryBanner({ eyebrow, title, description, status, act
   return (
     <InfoBanner
       action={action}
-      descriptionClassName="max-w-none whitespace-nowrap"
+      descriptionClassName="max-w-none whitespace-normal"
       description={(
         <>
           {eyebrow ? <span className="type-label mb-1 block text-fg-faint">{eyebrow}</span> : null}
@@ -71,7 +72,7 @@ export function SettingsCategoryRail({ categories, activeId, footer, onSelect }:
     <SidebarNavigation
       activeId={activeId}
       ariaLabel="Defaults sections"
-      className="sticky top-[76px]"
+      className="static self-start lg:sticky lg:top-[76px]"
       eyebrow="Categories"
       footer={footer}
       items={categories.map((category) => ({
@@ -115,6 +116,8 @@ export function SettingsRow({ className, label, hint, children }: SettingsRowPro
 }
 
 export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailProps) {
+  const [scrollOffset, setScrollOffset] = useState({ left: 0, top: 0 })
+
   return (
     <aside aria-label={title} className="sticky top-[76px] space-y-2.5">
       <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3 shadow-surface-panel" data-panel-soft-elevation="none">
@@ -122,7 +125,23 @@ export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailPro
           <span>Preview</span>
           <span className="font-mono text-fg-dim">{title}</span>
         </h3>
-        <textarea aria-label={`${title} preview code`} className="mt-2.5 block max-h-[360px] min-h-[220px] w-full resize-none overflow-auto rounded-[var(--radius)] border border-border-soft bg-background p-3 font-mono text-[length:var(--density-type-caption-lg)] leading-relaxed text-fg-dim focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-background" readOnly value={code} />
+        <div className="relative mt-2.5 max-h-[360px] min-h-[220px] overflow-hidden rounded-[var(--radius)] border border-border-soft bg-background font-mono text-[length:var(--density-type-caption-lg)] leading-relaxed">
+          <pre
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 m-0 whitespace-pre p-3 text-fg-dim"
+            style={{ transform: `translate(${-scrollOffset.left}px, ${-scrollOffset.top}px)` }}
+          >
+            <HighlightedTomlLines toml={code} />
+          </pre>
+          <textarea
+            aria-label={`${title} preview code`}
+            className="absolute inset-0 block h-full w-full resize-none overflow-auto bg-transparent p-3 font-mono leading-relaxed text-transparent caret-transparent outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            onScroll={(event) => setScrollOffset({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })}
+            readOnly
+            value={code}
+            wrap="off"
+          />
+        </div>
       </section>
       <section className="panel-shell rounded-[var(--radius-lg)] border border-dashed border-border bg-panel p-3 text-[length:var(--density-type-caption)] leading-relaxed text-fg-dim">
         <div className="mb-1.5 text-[9.5px] font-semibold uppercase tracking-[0.06em] text-fg-faint">TIP</div>

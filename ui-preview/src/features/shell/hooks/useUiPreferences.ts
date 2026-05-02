@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Accent, Density, PanelStyle, Theme } from '@/features/app-tabs/types'
+import type { Accent, Density, PanelStyle, ResolvedTheme, Theme } from '@/features/app-tabs/types'
 import { APP_STORAGE_KEYS } from '@/features/app-tabs/data'
 
 export type UiPreferences = {
@@ -12,20 +12,25 @@ export type UiPreferences = {
 export const UI_PREFERENCES_STORAGE_KEY = APP_STORAGE_KEYS.preferences
 const UI_THEME_COLOR_META_SELECTOR = 'meta[name="theme-color"][data-mesh-theme-color="runtime"]'
 
-export const UI_THEME_COLORS: Record<Theme, string> = {
+export const UI_THEME_COLORS: Record<ResolvedTheme, string> = {
   dark: '#171b24',
   light: '#fbfaf7',
 }
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
-  theme: 'dark',
+  theme: 'auto',
   accent: 'blue',
   density: 'normal',
   panelStyle: 'solid',
 }
 
+type LegacyMediaQueryList = {
+  addListener: (listener: () => void) => void
+  removeListener: (listener: () => void) => void
+}
+
 function isTheme(value: unknown): value is Theme {
-  return value === 'light' || value === 'dark'
+  return value === 'auto' || value === 'light' || value === 'dark'
 }
 
 function isAccent(value: unknown): value is Accent {
@@ -79,7 +84,27 @@ function writeStoredUiPreferences(preferences: UiPreferences): void {
   }
 }
 
-function applyThemeColor(theme: Theme): void {
+function readSystemTheme(): ResolvedTheme {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+}
+
+export function resolveThemePreference(theme: Theme, systemTheme: ResolvedTheme = readSystemTheme()): ResolvedTheme {
+  return theme === 'auto' ? systemTheme : theme
+}
+
+function addSystemThemeListener(mediaQuery: MediaQueryList, listener: () => void): () => void {
+  if (typeof mediaQuery.addEventListener === 'function') {
+    mediaQuery.addEventListener('change', listener)
+    return () => mediaQuery.removeEventListener('change', listener)
+  }
+
+  const legacyMediaQuery: LegacyMediaQueryList = mediaQuery
+  legacyMediaQuery.addListener(listener)
+  return () => legacyMediaQuery.removeListener(listener)
+}
+
+function applyThemeColor(theme: ResolvedTheme): void {
   if (typeof document === 'undefined') return
 
   const existingMeta = document.querySelector<HTMLMetaElement>(UI_THEME_COLOR_META_SELECTOR)
@@ -94,25 +119,38 @@ function applyThemeColor(theme: Theme): void {
   themeColorMeta.content = UI_THEME_COLORS[theme]
 }
 
-function applyUiPreferencesToDocument(preferences: UiPreferences): void {
+function applyUiPreferencesToDocument(preferences: UiPreferences, resolvedTheme: ResolvedTheme): void {
   if (typeof document === 'undefined') return
 
   const root = document.documentElement
-  root.dataset.theme = preferences.theme
+  root.dataset.theme = resolvedTheme
+  root.dataset.themePreference = preferences.theme
   root.dataset.accent = preferences.accent
   root.dataset.density = preferences.density
   root.dataset.panelStyle = preferences.panelStyle
   delete root.dataset.configPanelStyle
-  applyThemeColor(preferences.theme)
+  applyThemeColor(resolvedTheme)
 }
 
 export function useUIPreferences() {
   const [preferences, setPreferences] = useState<UiPreferences>(() => readStoredUiPreferences())
+  const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() => readSystemTheme())
+  const resolvedTheme = resolveThemePreference(preferences.theme, systemTheme)
 
   useEffect(() => {
-    applyUiPreferencesToDocument(preferences)
+    applyUiPreferencesToDocument(preferences, resolvedTheme)
     writeStoredUiPreferences(preferences)
-  }, [preferences])
+  }, [preferences, resolvedTheme])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const syncSystemTheme = () => setSystemTheme(mediaQuery.matches ? 'dark' : 'light')
+
+    syncSystemTheme()
+    return addSystemThemeListener(mediaQuery, syncSystemTheme)
+  }, [])
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -137,10 +175,6 @@ export function useUIPreferences() {
     setPreferences((current) => ({ ...current, theme }))
   }, [])
 
-  const toggleTheme = useCallback(() => {
-    setPreferences((current) => ({ ...current, theme: current.theme === 'dark' ? 'light' : 'dark' }))
-  }, [])
-
   const setAccent = useCallback((accent: Accent) => {
     setPreferences((current) => ({ ...current, accent }))
   }, [])
@@ -155,8 +189,8 @@ export function useUIPreferences() {
 
   return {
     ...preferences,
+    resolvedTheme,
     setTheme,
-    toggleTheme,
     setAccent,
     setDensity,
     setPanelStyle,

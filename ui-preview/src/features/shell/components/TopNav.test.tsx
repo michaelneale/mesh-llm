@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TopNav } from '@/features/shell/components/TopNav'
 
 function installClipboard(writeText: (text: string) => Promise<void>) {
@@ -10,15 +10,34 @@ function installClipboard(writeText: (text: string) => Promise<void>) {
   })
 }
 
+function installPointerCaptureShim() {
+  Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
+    configurable: true,
+    value: () => false,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
+    configurable: true,
+    value: () => undefined,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
+    configurable: true,
+    value: () => undefined,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: () => undefined,
+  })
+}
+
 function renderTopNav(overrides: Partial<React.ComponentProps<typeof TopNav>> = {}) {
   return render(
     <TopNav
       apiUrl="http://127.0.0.1:9337/v1"
       onTabChange={vi.fn()}
+      onThemeChange={vi.fn()}
       onTogglePreferences={vi.fn()}
-      onToggleTheme={vi.fn()}
       tab="network"
-      theme="dark"
+      theme="auto"
       version="0.64.0"
       {...overrides}
     />,
@@ -30,6 +49,10 @@ async function waitForHoverDelay() {
 }
 
 describe('TopNav', () => {
+  beforeEach(() => {
+    installPointerCaptureShim()
+  })
+
   afterEach(() => {
     vi.useRealTimers()
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
@@ -119,11 +142,11 @@ describe('TopNav', () => {
         apiUrl="http://127.0.0.1:9337/v1"
         onOpenDeveloperPlayground={onOpenDeveloperPlayground}
         onTabChange={vi.fn()}
+        onThemeChange={vi.fn()}
         onTogglePreferences={vi.fn()}
-        onToggleTheme={vi.fn()}
         showDeveloperPlayground
         tab={null}
-        theme="dark"
+        theme="auto"
         version="0.64.0"
       />,
     )
@@ -144,6 +167,64 @@ describe('TopNav', () => {
     await user.click(configurationTab)
 
     expect(onTabChange).toHaveBeenCalledWith('configuration')
+  })
+
+  it('selects auto, dark, and light from the nav theme menu', async () => {
+    const user = userEvent.setup()
+    const onThemeChange = vi.fn()
+
+    renderTopNav({ onThemeChange, theme: 'auto' })
+
+    await user.click(screen.getByRole('combobox', { name: 'Theme: Auto' }))
+    await user.click(await screen.findByRole('option', { name: /Dark/ }))
+
+    expect(onThemeChange).toHaveBeenCalledWith('dark')
+  })
+
+  it('selects primary routes from compact icon buttons', async () => {
+    const user = userEvent.setup()
+    const onTabChange = vi.fn()
+
+    renderTopNav({ onTabChange })
+
+    const networkButton = screen.getByRole('button', { name: 'Network' })
+    const chatButton = screen.getByRole('button', { name: 'Chat' })
+
+    expect(networkButton).toHaveClass('ui-control-primary')
+    expect(chatButton).toHaveClass('ui-control-primary')
+
+    await user.click(chatButton)
+
+    expect(onTabChange).toHaveBeenCalledWith('chat')
+  })
+
+  it('opens compact navigation actions without a heading and dismisses terminal actions', async () => {
+    const user = userEvent.setup()
+    const onOpenDeveloperPlayground = vi.fn()
+    const onThemeChange = vi.fn()
+    const onTogglePreferences = vi.fn()
+
+    renderTopNav({ onOpenDeveloperPlayground, onThemeChange, onTogglePreferences, showDeveloperPlayground: true })
+
+    await user.click(screen.getByRole('button', { name: 'Open navigation actions' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Navigation actions' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Quick actions' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /API access/ }))
+    expect(screen.getByLabelText('Copy API endpoint')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Theme: Dark' }))
+    expect(onThemeChange).toHaveBeenCalledWith('dark')
+
+    await user.click(screen.getByRole('button', { name: /Playground/ }))
+    expect(onOpenDeveloperPlayground).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: 'Navigation actions' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open navigation actions' }))
+    await user.click(screen.getByRole('button', { name: /Preferences/ }))
+    expect(onTogglePreferences).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: 'Navigation actions' })).not.toBeInTheDocument()
   })
 
   it('hides disabled primary tabs while keeping enabled tabs available', () => {

@@ -113,7 +113,13 @@ function choiceItemClassName(setting: ConfigurationDefaultsSetting) {
     setting.id === 'draft-selection-policy' && 'min-w-[86px]',
     setting.id === 'incompatible-pairing-behavior' && 'min-w-[104px]',
     setting.id === 'reasoning-format' && 'min-w-[58px]',
-    setting.id === 'llamacpp-flavor' && 'min-w-[52px] gap-1.5 font-mono normal-case',
+    setting.id === 'llamacpp-flavor' && 'min-w-[52px] gap-1.5 font-mono normal-case max-[420px]:min-w-[72px] max-[420px]:flex-1',
+  )
+}
+
+function choiceControlClassName(setting: ConfigurationDefaultsSetting) {
+  return cn(
+    setting.id === 'llamacpp-flavor' && 'max-[420px]:flex max-[420px]:h-auto max-[420px]:max-w-full max-[420px]:flex-wrap max-[420px]:gap-1 max-[420px]:rounded-[var(--radius)] max-[420px]:p-1',
   )
 }
 
@@ -239,17 +245,17 @@ function SlotCountControl({ setting, value, onChange }: { setting: Configuration
   return (
     <RadioGroup.Root
       aria-label={setting.label}
-      className="rounded-[6px] border border-border-soft bg-panel-strong px-2.5 py-2 text-[length:var(--density-type-caption)] text-fg-dim"
+      className="min-w-0 max-w-full rounded-[6px] border border-border-soft bg-panel-strong px-2.5 py-2 text-[length:var(--density-type-caption)] text-fg-dim"
       name={control.name}
       onValueChange={onChange}
       value={String(selectedSlots)}
     >
-      <div className="mb-1.5 flex items-center justify-between gap-3">
+      <div className="mb-1.5 flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <span className="text-fg-faint">est. KV @ 16K ctx</span>
         <span className="font-mono text-fg-dim">{estimatedGb} GB · {selectedSlots} × 0.30 GB</span>
       </div>
       <div
-        className="inline-grid touch-none select-none grid-cols-[repeat(16,18px)] gap-px"
+        className="grid w-full min-w-0 touch-none select-none grid-cols-[repeat(16,minmax(0,1fr))] gap-px"
         data-testid="defaults-slot-meter"
         onPointerDown={(event) => {
           event.preventDefault()
@@ -267,7 +273,7 @@ function SlotCountControl({ setting, value, onChange }: { setting: Configuration
         {slotOptions.map((slotCount) => (
           <RadioGroup.Item
             aria-label={`${slotCount} slot${slotCount === 1 ? '' : 's'}`}
-            className="group flex w-[18px] cursor-pointer appearance-none items-center rounded-[2px] border-0 bg-transparent py-1 outline-none transition-[opacity] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="group flex w-full min-w-0 cursor-pointer appearance-none items-center rounded-[2px] border-0 bg-transparent py-1 outline-none transition-[opacity] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             key={slotCount}
             value={String(slotCount)}
           >
@@ -322,6 +328,7 @@ function SettingControl({ disabled = false, setting, value, onChange }: { disabl
       {setting.control.kind === 'choice' && setting.control.presentation !== 'select' ? (
         <SegmentedControl
           ariaLabel={setting.label}
+          className={choiceControlClassName(setting)}
           disabled={disabled}
           itemClassName={choiceItemClassName(setting)}
           name={setting.control.name}
@@ -404,7 +411,7 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
         title="Inherited defaults"
       />
 
-      <div className="grid gap-4 xl:grid-cols-[200px_minmax(0,1fr)_280px]">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[200px_minmax(0,1fr)_280px]">
         <SettingsCategoryRail
           activeId={activeCategoryId}
           categories={categories}
@@ -417,7 +424,7 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
           onSelect={selectCategory}
         />
 
-        <div className="space-y-3.5">
+        <div className="min-w-0 space-y-3.5">
           {data.categories.map((category) => (
             <DefaultsSection
               category={category}
@@ -429,7 +436,9 @@ export function DefaultsTab({ data, values, onSettingValueChange, onResetAll, co
           ))}
         </div>
 
-        <SettingsPreviewRail title="[defaults]" code={renderDefaultsPreview(previewLines)} tip={<>Adjust placements in <span className="text-foreground">Model Deployment</span> to override these for a single model.</>} />
+        <div className="hidden min-w-0 xl:block">
+          <SettingsPreviewRail title="[defaults]" code={renderDefaultsPreview(previewLines)} tip={<>Adjust placements in <span className="text-foreground">Model Deployment</span> to override these for a single model.</>} />
+        </div>
       </div>
     </section>
   )

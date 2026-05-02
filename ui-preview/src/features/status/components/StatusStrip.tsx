@@ -19,7 +19,7 @@ function Sparkline({ values, color = 'var(--color-accent)' }: { values: number[]
   const denominator = Math.max(1, values.length - 1)
   const pts = values.map((v, i) => `${(i / denominator) * w},${h - ((v - min) / range) * (h - 2) - 1}`).join(' ')
   return (
-    <svg width={w} height={h} style={{ display: 'block' }} aria-hidden="true">
+    <svg className="shrink-0" width={w} height={h} style={{ display: 'block' }} aria-hidden="true">
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
       <polyline points={`0,${h} ${pts} ${w},${h}`} fill={color} opacity="0.08" stroke="none" />
     </svg>
@@ -61,7 +61,7 @@ export function StatusTile({ metric }: { metric: StatusMetric }) {
 
 export function StatusStrip({ metrics }: { metrics: StatusMetric[] }) {
   return (
-    <section aria-label="Network status" className="panel-shell flex overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
+    <section aria-label="Network status" className="panel-shell grid grid-cols-2 overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel sm:grid-cols-3 lg:flex">
       {metrics.map((metric) => <StatusTile key={metric.id} metric={metric} />)}
     </section>
   )
