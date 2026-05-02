@@ -438,6 +438,7 @@ impl From<StageWireDType> for skippy_protocol::binary::WireActivationDType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     fn load_request() -> StageLoadRequest {
         StageLoadRequest {
@@ -519,5 +520,30 @@ mod tests {
             stage_id: None,
         }
         .matches(&load));
+    }
+
+    #[test]
+    fn materialize_stage_bind_addr_replaces_ephemeral_port() {
+        let bind_addr = materialize_stage_bind_addr("127.0.0.1:0".parse().unwrap()).unwrap();
+        assert_eq!(bind_addr.ip().to_string(), "127.0.0.1");
+        assert_ne!(bind_addr.port(), 0);
+    }
+
+    #[tokio::test]
+    async fn binary_stage_ready_probe_waits_for_wire_handshake() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let bind_addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(75));
+            let (mut stream, _) = listener.accept().unwrap();
+            skippy_protocol::binary::send_ready(&mut stream).unwrap();
+        });
+
+        let started = Instant::now();
+        wait_for_binary_stage_ready(bind_addr, Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        server.join().unwrap();
     }
 }

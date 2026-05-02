@@ -1327,6 +1327,71 @@ struct StageTopologyState {
     statuses: HashMap<String, StageRuntimeStatus>,
 }
 
+impl StageTopologyState {
+    fn record_topology(&mut self, topology: StageTopologyInstance) {
+        self.topologies.insert(
+            stage_topology_key(&topology.topology_id, &topology.run_id),
+            topology,
+        );
+    }
+
+    fn visible_topologies(&self) -> Vec<StageTopologyInstance> {
+        self.topologies
+            .values()
+            .filter(|topology| {
+                topology.stages.len() > 1
+                    || !self.statuses.values().any(|status| {
+                        status.topology_id == topology.topology_id
+                            && status.run_id == topology.run_id
+                    })
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn runtime_statuses(&self) -> Vec<StageRuntimeStatus> {
+        self.statuses.values().cloned().collect()
+    }
+
+    fn record_status(&mut self, runtime_status: StageRuntimeStatus) {
+        if !runtime_status.bind_addr.is_empty() && !runtime_status.bind_addr.ends_with(":0") {
+            let topology_key =
+                stage_topology_key(&runtime_status.topology_id, &runtime_status.run_id);
+            if let Some(topology) = self.topologies.get_mut(&topology_key) {
+                if let Some(stage) = topology
+                    .stages
+                    .iter_mut()
+                    .find(|stage| stage.stage_id == runtime_status.stage_id)
+                {
+                    stage.endpoint.bind_addr = runtime_status.bind_addr.clone();
+                }
+            }
+        }
+        self.statuses.insert(
+            stage_runtime_status_key(
+                &runtime_status.topology_id,
+                &runtime_status.run_id,
+                &runtime_status.stage_id,
+            ),
+            runtime_status,
+        );
+    }
+
+    fn active_statuses(&self) -> Vec<StageRuntimeStatus> {
+        self.statuses
+            .values()
+            .filter(|status| {
+                matches!(
+                    status.state,
+                    crate::inference::skippy::StageRuntimeState::Starting
+                        | crate::inference::skippy::StageRuntimeState::Ready
+                )
+            })
+            .cloned()
+            .collect()
+    }
+}
+
 pub struct InflightRequestGuard {
     inflight_requests: Arc<std::sync::atomic::AtomicUsize>,
     inflight_change_tx: watch::Sender<u64>,
@@ -1404,30 +1469,89 @@ impl Node {
     }
 
     pub async fn record_stage_topology(&self, topology: StageTopologyInstance) {
-        self.stage_topologies.lock().await.topologies.insert(
-            stage_topology_key(&topology.topology_id, &topology.run_id),
-            topology,
-        );
+        self.stage_topologies.lock().await.record_topology(topology);
     }
 
     pub async fn stage_topologies(&self) -> Vec<StageTopologyInstance> {
-        self.stage_topologies
-            .lock()
-            .await
-            .topologies
-            .values()
-            .cloned()
-            .collect()
+        self.stage_topologies.lock().await.visible_topologies()
     }
 
     pub async fn stage_runtime_statuses(&self) -> Vec<StageRuntimeStatus> {
-        self.stage_topologies
-            .lock()
-            .await
-            .statuses
-            .values()
-            .cloned()
-            .collect()
+        self.stage_topologies.lock().await.runtime_statuses()
+    }
+
+    pub async fn refresh_stage_runtime_statuses(&self, timeout: std::time::Duration) {
+        let active_statuses = self.stage_topologies.lock().await.active_statuses();
+        for status in active_statuses {
+            if status.stage_index == 0 {
+                continue;
+            }
+            let Some(peer_id) = status.node_id else {
+                continue;
+            };
+            let filter = crate::inference::skippy::StageStatusFilter {
+                topology_id: Some(status.topology_id.clone()),
+                run_id: Some(status.run_id.clone()),
+                stage_id: Some(status.stage_id.clone()),
+            };
+            let refresh = async {
+                if peer_id == self.endpoint.id() {
+                    self.query_local_stage_status(filter)
+                        .await
+                        .map(crate::inference::skippy::StageControlResponse::Status)
+                } else {
+                    self.send_stage_control(
+                        peer_id,
+                        crate::inference::skippy::StageControlRequest::Status(filter),
+                    )
+                    .await
+                }
+            };
+            match tokio::time::timeout(timeout, refresh).await {
+                Ok(Ok(crate::inference::skippy::StageControlResponse::Status(statuses))) => {
+                    if statuses.is_empty() {
+                        self.record_stage_status(
+                            Some(peer_id),
+                            stage_snapshot_from_runtime_status(
+                                &status,
+                                crate::inference::skippy::StageRuntimeState::Failed,
+                                Some("stage status missing from runtime".to_string()),
+                            ),
+                        )
+                        .await;
+                    } else {
+                        for status in statuses {
+                            self.record_stage_status(Some(peer_id), status).await;
+                        }
+                    }
+                }
+                Ok(Ok(crate::inference::skippy::StageControlResponse::Ready(ready))) => {
+                    self.record_stage_status(Some(peer_id), ready.status).await;
+                }
+                Ok(Err(error)) => {
+                    self.record_stage_status(
+                        Some(peer_id),
+                        stage_snapshot_from_runtime_status(
+                            &status,
+                            crate::inference::skippy::StageRuntimeState::Failed,
+                            Some(error.to_string()),
+                        ),
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    self.record_stage_status(
+                        Some(peer_id),
+                        stage_snapshot_from_runtime_status(
+                            &status,
+                            crate::inference::skippy::StageRuntimeState::Failed,
+                            Some("stage status refresh timed out".to_string()),
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
     }
 
     pub(crate) async fn record_stage_status(
@@ -1436,28 +1560,10 @@ impl Node {
         status: crate::inference::skippy::StageStatusSnapshot,
     ) {
         let runtime_status = stage_runtime_status_from_snapshot(node_id, status);
-        let mut stage_topologies = self.stage_topologies.lock().await;
-        if !runtime_status.bind_addr.is_empty() && !runtime_status.bind_addr.ends_with(":0") {
-            let topology_key =
-                stage_topology_key(&runtime_status.topology_id, &runtime_status.run_id);
-            if let Some(topology) = stage_topologies.topologies.get_mut(&topology_key) {
-                if let Some(stage) = topology
-                    .stages
-                    .iter_mut()
-                    .find(|stage| stage.stage_id == runtime_status.stage_id)
-                {
-                    stage.endpoint.bind_addr = runtime_status.bind_addr.clone();
-                }
-            }
-        }
-        stage_topologies.statuses.insert(
-            stage_runtime_status_key(
-                &runtime_status.topology_id,
-                &runtime_status.run_id,
-                &runtime_status.stage_id,
-            ),
-            runtime_status,
-        );
+        self.stage_topologies
+            .lock()
+            .await
+            .record_status(runtime_status);
     }
 
     pub(crate) async fn query_local_stage_status(
@@ -4660,6 +4766,31 @@ fn stage_runtime_status_from_snapshot(
         selected_device: status.selected_device,
         ctx_size: status.ctx_size,
         error: status.error,
+        shutdown_generation: status.shutdown_generation,
+    }
+}
+
+fn stage_snapshot_from_runtime_status(
+    status: &StageRuntimeStatus,
+    state: crate::inference::skippy::StageRuntimeState,
+    error: Option<String>,
+) -> crate::inference::skippy::StageStatusSnapshot {
+    crate::inference::skippy::StageStatusSnapshot {
+        topology_id: status.topology_id.clone(),
+        run_id: status.run_id.clone(),
+        model_id: status.model_id.clone(),
+        backend: status.backend.clone(),
+        stage_id: status.stage_id.clone(),
+        stage_index: status.stage_index,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state,
+        bind_addr: status.bind_addr.clone(),
+        activation_width: status.activation_width,
+        wire_dtype: status.wire_dtype,
+        selected_device: status.selected_device.clone(),
+        ctx_size: status.ctx_size,
+        error,
         shutdown_generation: status.shutdown_generation,
     }
 }

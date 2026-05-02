@@ -4729,3 +4729,177 @@ fn pinned_gpu_runtime_push_rejects_resolved_gpu_without_backend_device() {
     assert!(message.contains("failed pinned GPU preflight"));
     assert!(message.contains("without a backend_device"));
 }
+
+fn test_stage_status(
+    node_id: EndpointId,
+    stage_id: &str,
+    stage_index: u32,
+    bind_addr: &str,
+    state: crate::inference::skippy::StageRuntimeState,
+) -> StageRuntimeStatus {
+    StageRuntimeStatus {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        backend: "skippy".to_string(),
+        stage_id: stage_id.to_string(),
+        stage_index,
+        node_id: Some(node_id),
+        layer_start: stage_index * 12,
+        layer_end: (stage_index + 1) * 12,
+        state,
+        bind_addr: bind_addr.to_string(),
+        activation_width: 896,
+        wire_dtype: crate::inference::skippy::StageWireDType::F16,
+        selected_device: None,
+        ctx_size: 512,
+        error: None,
+        shutdown_generation: 1,
+    }
+}
+
+#[test]
+fn stage_status_updates_materialized_topology_endpoint() {
+    let node_id = EndpointId::from(SecretKey::from_bytes(&[0x31; 32]).public());
+    let mut state = StageTopologyState::default();
+    state.record_topology(StageTopologyInstance {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stages: vec![StageAssignment {
+            stage_id: "stage-1".to_string(),
+            stage_index: 1,
+            node_id,
+            layer_start: 12,
+            layer_end: 24,
+            endpoint: StageEndpoint {
+                bind_addr: "127.0.0.1:0".to_string(),
+            },
+        }],
+    });
+
+    state.record_status(test_stage_status(
+        node_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    ));
+
+    let topology = state.topologies.values().next().unwrap();
+    assert_eq!(topology.stages[0].endpoint.bind_addr, "127.0.0.1:51234");
+}
+
+#[test]
+fn public_stage_topologies_hide_worker_only_load_fragments() {
+    let node_id = EndpointId::from(SecretKey::from_bytes(&[0x32; 32]).public());
+    let mut state = StageTopologyState::default();
+    state.record_topology(StageTopologyInstance {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stages: vec![StageAssignment {
+            stage_id: "stage-1".to_string(),
+            stage_index: 1,
+            node_id,
+            layer_start: 12,
+            layer_end: 24,
+            endpoint: StageEndpoint {
+                bind_addr: "127.0.0.1:0".to_string(),
+            },
+        }],
+    });
+    state.record_status(test_stage_status(
+        node_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    ));
+
+    assert!(state.visible_topologies().is_empty());
+    assert_eq!(state.runtime_statuses().len(), 1);
+}
+
+#[test]
+fn full_stage_topology_remains_visible_after_status_updates() {
+    let host_id = EndpointId::from(SecretKey::from_bytes(&[0x33; 32]).public());
+    let worker_id = EndpointId::from(SecretKey::from_bytes(&[0x34; 32]).public());
+    let mut state = StageTopologyState::default();
+    state.record_topology(StageTopologyInstance {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stages: vec![
+            StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: host_id,
+                layer_start: 0,
+                layer_end: 12,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:50000".to_string(),
+                },
+            },
+            StageAssignment {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                node_id: worker_id,
+                layer_start: 12,
+                layer_end: 24,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:0".to_string(),
+                },
+            },
+        ],
+    });
+    state.record_status(test_stage_status(
+        worker_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    ));
+
+    let visible = state.visible_topologies();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].stages[1].endpoint.bind_addr, "127.0.0.1:51234");
+}
+
+#[test]
+fn active_stage_refresh_marks_missing_stage_failed() {
+    let node_id = EndpointId::from(SecretKey::from_bytes(&[0x35; 32]).public());
+    let mut state = StageTopologyState::default();
+    state.record_status(test_stage_status(
+        node_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    ));
+    let cached = state.active_statuses().into_iter().next().unwrap();
+    state.record_status(stage_runtime_status_from_snapshot(
+        cached.node_id,
+        stage_snapshot_from_runtime_status(
+            &cached,
+            crate::inference::skippy::StageRuntimeState::Failed,
+            Some("stage status missing from runtime".to_string()),
+        ),
+    ));
+
+    let status = state.runtime_statuses().into_iter().next().unwrap();
+    assert_eq!(
+        status.state,
+        crate::inference::skippy::StageRuntimeState::Failed
+    );
+    assert_eq!(
+        status.error.as_deref(),
+        Some("stage status missing from runtime")
+    );
+}

@@ -1133,9 +1133,11 @@ struct SkippySplitDeployment {
     topology_id: String,
     run_id: String,
     context_length: u32,
+    stage0_status: skippy::StageStatusSnapshot,
     stage0: skippy::SkippyModelHandle,
     http: skippy::SkippyHttpHandle,
     remote_stops: Vec<(iroh::EndpointId, skippy::StageStopRequest)>,
+    remote_statuses: Vec<(iroh::EndpointId, skippy::StageStatusSnapshot)>,
 }
 
 impl SkippySplitDeployment {
@@ -1147,20 +1149,39 @@ impl SkippySplitDeployment {
         let Self {
             topology_id,
             run_id,
+            stage0_status,
             stage0,
             http,
             remote_stops,
+            remote_statuses,
             ..
         } = self;
         let _ = http.shutdown().await;
         stage0.shutdown();
+        let mut stopped_stage0 = stage0_status;
+        stopped_stage0.state = skippy::StageRuntimeState::Stopped;
+        stopped_stage0.shutdown_generation = stopped_stage0.shutdown_generation.saturating_add(1);
+        node.record_stage_status(Some(node.id()), stopped_stage0)
+            .await;
         node.stop_stage_transport_bridge(&topology_id, &run_id, "stage-1")
             .await;
+        let remote_status_by_stage: HashMap<_, _> = remote_statuses
+            .into_iter()
+            .map(|(peer_id, status)| (status.stage_id.clone(), (peer_id, status)))
+            .collect();
         for (peer_id, stop) in remote_stops.into_iter().rev() {
             let stage_id = stop.stage_id.clone();
-            let _ = node
+            if let Err(error) = node
                 .send_stage_control(peer_id, skippy::StageControlRequest::Stop(stop))
-                .await;
+                .await
+            {
+                if let Some((_, status)) = remote_status_by_stage.get(&stage_id) {
+                    let mut failed = status.clone();
+                    failed.state = skippy::StageRuntimeState::Failed;
+                    failed.error = Some(format!("stage stop failed: {error}"));
+                    node.record_stage_status(Some(peer_id), failed).await;
+                }
+            }
             node.stop_stage_transport_bridge(&topology_id, &run_id, &stage_id)
                 .await;
         }
@@ -3440,36 +3461,46 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
             .collect(),
     })
     .await;
-    node.record_stage_status(
-        Some(node.id()),
-        skippy::StageStatusSnapshot {
-            topology_id: topology_id.clone(),
-            run_id: run_id.clone(),
-            model_id: model_name.to_string(),
-            backend: "skippy".to_string(),
-            stage_id: stage0.stage_id.clone(),
-            stage_index: stage0.stage_index,
-            layer_start: stage0.layer_start,
-            layer_end: stage0.layer_end,
-            state: skippy::StageRuntimeState::Ready,
-            bind_addr: format!("127.0.0.1:{http_port}"),
-            activation_width: activation_width as u32,
-            wire_dtype: skippy::StageWireDType::F16,
-            selected_device,
-            ctx_size,
-            error: None,
-            shutdown_generation: 1,
-        },
-    )
-    .await;
+    let stage0_status = skippy::StageStatusSnapshot {
+        topology_id: topology_id.clone(),
+        run_id: run_id.clone(),
+        model_id: model_name.to_string(),
+        backend: "skippy".to_string(),
+        stage_id: stage0.stage_id.clone(),
+        stage_index: stage0.stage_index,
+        layer_start: stage0.layer_start,
+        layer_end: stage0.layer_end,
+        state: skippy::StageRuntimeState::Ready,
+        bind_addr: format!("127.0.0.1:{http_port}"),
+        activation_width: activation_width as u32,
+        wire_dtype: skippy::StageWireDType::F16,
+        selected_device,
+        ctx_size,
+        error: None,
+        shutdown_generation: 1,
+    };
+    node.record_stage_status(Some(node.id()), stage0_status.clone())
+        .await;
 
     Some(SkippySplitDeployment {
         topology_id,
         run_id,
         context_length: ctx_size,
+        stage0_status,
         stage0: stage0_handle,
         http,
         remote_stops,
+        remote_statuses: ready_statuses
+            .into_values()
+            .map(|status| {
+                let peer_id = plans
+                    .iter()
+                    .find(|plan| plan.stage_id == status.stage_id)
+                    .map(|plan| plan.node_id)
+                    .unwrap_or_else(|| node.id());
+                (peer_id, status)
+            })
+            .collect(),
     })
 }
 

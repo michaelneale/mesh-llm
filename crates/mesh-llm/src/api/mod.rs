@@ -498,9 +498,43 @@ impl MeshApi {
 
     async fn runtime_stages(&self) -> serde_json::Value {
         let node = self.inner.lock().await.node.clone();
+        node.refresh_stage_runtime_statuses(std::time::Duration::from_millis(750))
+            .await;
         let topologies = node.stage_topologies().await;
         let statuses = node.stage_runtime_statuses().await;
+        let stage_statuses = statuses
+            .iter()
+            .map(|status| {
+                serde_json::json!({
+                    "topology_id": status.topology_id.clone(),
+                    "run_id": status.run_id.clone(),
+                    "model_id": status.model_id.clone(),
+                    "backend": status.backend.clone(),
+                    "stage_id": status.stage_id.clone(),
+                    "stage_index": status.stage_index,
+                    "node_id": status.node_id.map(|id| id.to_string()),
+                    "layer_start": status.layer_start,
+                    "layer_end": status.layer_end,
+                    "state": stage_runtime_state_label(status.state),
+                    "bind_addr": status.bind_addr.clone(),
+                    "activation_width": status.activation_width,
+                    "wire_dtype": stage_wire_dtype_label(status.wire_dtype),
+                    "selected_device": status.selected_device.as_ref().map(|device| {
+                        serde_json::json!({
+                            "backend_device": device.backend_device,
+                            "stable_id": device.stable_id,
+                            "index": device.index,
+                            "vram_bytes": device.vram_bytes,
+                        })
+                    }),
+                    "ctx_size": status.ctx_size,
+                    "error": status.error.clone(),
+                    "shutdown_generation": status.shutdown_generation,
+                })
+            })
+            .collect::<Vec<_>>();
         serde_json::json!({
+            "stages": stage_statuses.clone(),
             "topologies": topologies.into_iter().map(|topology| {
                 serde_json::json!({
                     "topology_id": topology.topology_id,
@@ -522,34 +556,7 @@ impl MeshApi {
                     }).collect::<Vec<_>>(),
                 })
             }).collect::<Vec<_>>(),
-            "statuses": statuses.into_iter().map(|status| {
-                serde_json::json!({
-                    "topology_id": status.topology_id,
-                    "run_id": status.run_id,
-                    "model_id": status.model_id,
-                    "backend": status.backend,
-                    "stage_id": status.stage_id,
-                    "stage_index": status.stage_index,
-                    "node_id": status.node_id.map(|id| id.to_string()),
-                    "layer_start": status.layer_start,
-                    "layer_end": status.layer_end,
-                    "state": stage_runtime_state_label(status.state),
-                    "bind_addr": status.bind_addr,
-                    "activation_width": status.activation_width,
-                    "wire_dtype": stage_wire_dtype_label(status.wire_dtype),
-                    "selected_device": status.selected_device.map(|device| {
-                        serde_json::json!({
-                            "backend_device": device.backend_device,
-                            "stable_id": device.stable_id,
-                            "index": device.index,
-                            "vram_bytes": device.vram_bytes,
-                        })
-                    }),
-                    "ctx_size": status.ctx_size,
-                    "error": status.error,
-                    "shutdown_generation": status.shutdown_generation,
-                })
-            }).collect::<Vec<_>>(),
+            "statuses": stage_statuses,
         })
     }
 
