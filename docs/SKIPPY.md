@@ -60,13 +60,9 @@ Bring over these skippy crates:
 | `openai-frontend` | Shared OpenAI-compatible request/response, streaming, responses API compatibility, structured-output, tool-call, logprob, and backend contract |
 | `llama-model-slice` | Later package tooling for producing layer packages |
 
-Do not bring over these crates for the first mesh integration:
-
-| Crate | Decision |
-|---|---|
-| `kv-server` | Excluded for now. Prefix/KV cache sidecars can be revisited after staged serving is stable. |
-| `ngram-pool` | Excluded. Model-free n-gram speculation is not part of the first mesh serving replacement. |
-| `ngram-pool-server` | Excluded with `ngram-pool`. |
+Keep the first mesh integration focused on staged serving, OpenAI compatibility,
+model lifecycle, topology planning, and package materialization. Prefix-cache
+sidecars and model-free speculative history services are outside this branch.
 
 ## Important Boundary
 
@@ -138,6 +134,23 @@ This path should replace local `llama-server` serving once the required
 lifecycle, device, OpenAI compatibility, direct-GGUF package, status, and
 multimodal parity gates are met.
 
+Current branch status:
+
+- `openai-frontend` has been imported and mesh's local OpenAI request/response
+  adapters delegate to it.
+- `skippy-server` exposes embeddable runtime and OpenAI backend handles.
+- Runtime-control loads can select `--serving-backend skippy` and route a
+  direct GGUF through an embedded skippy OpenAI backend instead of
+  `llama-server`.
+- Normal startup can select `--serving-backend skippy`; this skips
+  `rpc-server`, loads the configured direct GGUF as a single skippy
+  `RuntimeSlice` stage, publishes a normal local mesh target, and preserves
+  startup load/unload lifecycle through the managed model controller.
+- The legacy llama election loop remains the default while skippy is hidden
+  behind the backend selector. The next replacement step is multi-peer stage
+  topology planning and activation transport, after which the legacy
+  `llama-server`/`rpc-server` startup path can be retired.
+
 ### Multi Node
 
 For a model that needs multiple machines, mesh should plan a contiguous stage
@@ -190,6 +203,61 @@ model selection, demand tracking, multimodal object handling, and management
 APIs. Skippy should implement the backend trait for local/staged execution.
 Endpoint compatibility that is not mesh-specific should move into
 `openai-frontend` so mesh does not carry a second OpenAI compatibility layer.
+
+## Auto LLM / Virtual LLM Hooks
+
+The migration must preserve mesh's Auto LLM / Virtual LLM behavior. Today that
+feature is powered by patched `llama-server` callbacks into mesh's
+`/mesh/hook` route, with handlers in `inference::virtual_llm` and peer
+consultation in `inference::consult`.
+
+This behavior is not automatically preserved by the skippy startup path because
+skippy does not run patched `llama-server`. The replacement must move the hook
+points into Rust-owned request orchestration before the legacy backend is
+removed.
+
+Required hook parity:
+
+- preserve the auto-routed `model=auto` behavior that injects
+  `mesh_hooks: true`;
+- preserve the recursion guard where peer consultations set
+  `mesh_hooks: false`;
+- preserve media fallback hooks for images/audio/video that the selected model
+  cannot handle;
+- preserve uncertainty and drift hooks that consult different peer models and
+  inject context or hints;
+- preserve hook debug/testing controls such as `MESH_HOOK_DEBUG` and
+  `--mesh-hook-debug`, or replace them with equivalent mesh-owned controls;
+- expose hook decisions, peer consultation failures, and injected context in
+  trace/log output without leaking private request content into public status;
+- add compatibility fixtures proving the same request bodies produce equivalent
+  hook actions under skippy and the legacy llama backend.
+
+Target ownership:
+
+- mesh owns hook policy, peer selection, recursion guards, and request-level
+  routing decisions;
+- `openai-frontend` should expose typed preflight/prefill/generation hook
+  extension points so hooks do not require raw JSON reparsing;
+- skippy should provide runtime signals needed by the hooks, such as media
+  rejection before tokenization, post-prefill uncertainty, and mid-generation
+  drift/entropy windows.
+
+Until this parity exists, skippy can be used as a hidden backend selector, but
+the legacy llama backend cannot be deleted for Auto LLM users.
+
+Current branch status:
+
+- `openai-frontend` defines typed hook policy extension points for
+  pre-chat/media fallback, post-prefill uncertainty, and mid-generation drift;
+- mesh wraps skippy's OpenAI backend with an in-process hook policy;
+- skippy chat requests with `mesh_hooks: true` now call the existing
+  `inference::virtual_llm` media fallback before skippy applies the chat
+  template;
+- peer consultations still force `mesh_hooks: false` to preserve the recursion
+  guard;
+- post-prefill uncertainty and mid-generation drift still need skippy runtime
+  signal plumbing before they can be called in-process.
 
 ## Lifecycle and Device Parity
 
@@ -245,6 +313,16 @@ must be added if the current C ABI cannot express it. The replacement plan
 therefore includes a skippy ABI/config extension for selected device, plus tests
 that prove pinned models load on the requested backend device and reject invalid
 device names before becoming routable.
+
+Current branch status:
+
+- mesh passes a normalized selected-device descriptor into skippy stage config
+  for pinned startup/runtime loads;
+- skippy runtime status preserves that selected-device descriptor;
+- CUDA and HIP/ROCm selected devices are scoped through the standard backend
+  visibility environment variables while opening the runtime;
+- Vulkan/Metal/general backend-device selection still needs a real skippy ABI
+  field before it can be guaranteed beyond status/planning.
 
 Device ownership should use a two-layer model:
 
@@ -574,14 +652,34 @@ Important policy changes:
   validation;
 - stage assignments and readiness should be visible in status/gossip.
 
-### 10. Remove Old Serving Paths
+### 10. Preserve Auto LLM Hooks
+
+Move the patched `llama-server` hook behavior into the mesh/skippy path.
+
+Implementation checkpoints:
+
+- route `model=auto` skippy requests through the same hook policy as legacy
+  requests;
+- call the media fallback hook before tokenization when the selected model
+  cannot consume attached media;
+- call post-prefill uncertainty and mid-generation drift hooks using runtime
+  signals supplied by skippy;
+- preserve `inference::virtual_llm` behavior and peer consultation semantics;
+- keep `/mesh/hook` available only as a legacy compatibility route while the
+  llama backend exists;
+- add fixture tests for `mesh_hooks` injection, recursion guard, media
+  fallback, uncertainty hint, and drift hint behavior.
+
+### 11. Remove Old Serving Paths
 
 After lifecycle, device pinning, OpenAI compatibility, direct GGUF packages,
-staged serving, runtime status, and multimodal parity are proven:
+staged serving, runtime status, multimodal parity, and Auto LLM hook parity are
+proven:
 
 - delete `rpc-server` launch and pidfile paths;
 - delete RPC port rewrite;
-- delete patched `llama-server` mesh hooks;
+- delete patched `llama-server` mesh hooks only after equivalent Rust-owned
+  skippy hook points are live;
 - delete MoE expert split serving;
 - delete the old mesh llama.cpp patch queue;
 - simplify election around topology planning and backend target readiness.

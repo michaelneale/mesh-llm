@@ -17,6 +17,8 @@ pub(crate) struct ChatCompletionStreamChunk {
 pub(crate) struct ChatCompletionStreamChoice {
     #[serde(default)]
     pub delta: Option<ChatCompletionDelta>,
+    #[serde(default)]
+    pub logprobs: Option<Value>,
     #[serde(rename = "finish_reason", default)]
     _finish_reason: Option<String>,
     #[serde(flatten)]

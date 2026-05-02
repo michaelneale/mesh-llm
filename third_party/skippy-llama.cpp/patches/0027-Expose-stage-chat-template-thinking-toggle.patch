@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 28 Apr 2026 00:00:00 +1000
+Subject: [PATCH] Expose stage chat template thinking toggle
+
+---
+ common/stage-chat.cpp     | 15 +++++++++++++++
+ include/skippy.h |  4 +++-
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
+index 84b1d725..6a481ace 100644
+--- a/common/stage-chat.cpp
++++ b/common/stage-chat.cpp
+@@ -50,6 +50,8 @@ enum skippy_status skippy_apply_chat_template(
+         const struct llama_chat_message * messages,
+         size_t message_count,
+         bool add_assistant,
++        bool override_enable_thinking,
++        bool enable_thinking,
+         char * output_text,
+         size_t output_text_capacity,
+         size_t * out_text_bytes,
+@@ -79,6 +81,19 @@ enum skippy_status skippy_apply_chat_template(
+     common_chat_templates_inputs inputs;
+     inputs.add_generation_prompt = add_assistant;
+     inputs.use_jinja             = true;
++    if (override_enable_thinking) {
++        const char * value = enable_thinking ? "true" : "false";
++        inputs.enable_thinking = enable_thinking;
++        inputs.chat_template_kwargs["enable_thinking"] = value;
++        inputs.chat_template_kwargs["enableThinking"] = value;
++        inputs.chat_template_kwargs["enable_reasoning"] = value;
++        inputs.chat_template_kwargs["use_reasoning"] = value;
++        inputs.chat_template_kwargs["reasoning_enabled"] = value;
++        inputs.chat_template_kwargs["use_thinking"] = value;
++        inputs.chat_template_kwargs["thinking_enabled"] = value;
++        inputs.chat_template_kwargs["enable_think"] = value;
++        inputs.chat_template_kwargs["think_enabled"] = value;
++    }
+     inputs.messages.reserve(message_count);
+ 
+     for (size_t i = 0; i < message_count; ++i) {
+diff --git a/include/skippy.h b/include/skippy.h
+index 2f15bfb5..ade3203f 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 9
++#define SKIPPY_ABI_VERSION_PATCH 10
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -418,6 +418,8 @@ LLAMA_API enum skippy_status skippy_apply_chat_template(
+         const struct llama_chat_message * messages,
+         size_t message_count,
+         bool add_assistant,
++        bool override_enable_thinking,
++        bool enable_thinking,
+         char * output_text,
+         size_t output_text_capacity,
+         size_t * out_text_bytes,
+-- 
+2.50.1 (Apple Git-155)
+

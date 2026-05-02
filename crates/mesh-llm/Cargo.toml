@@ -9,6 +9,10 @@ mesh-llm-plugin = { path = "../mesh-llm-plugin" }
 mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features = ["host-io"] }
 model-artifact = { path = "../model-artifact" }
 model-ref = { path = "../model-ref" }
+openai-frontend = { path = "../openai-frontend" }
+skippy-protocol = { path = "../skippy-protocol" }
+skippy-runtime = { path = "../skippy-runtime" }
+skippy-server = { path = "../skippy-server" }
 iroh = "0.98"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
@@ -17,6 +21,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+async-trait = "0.1"
 arboard = "3"
 rand = "0.10"
 base64 = "0.22"

@@ -229,6 +229,13 @@ pub enum LogFormat {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ServingBackend {
+    #[default]
+    Llama,
+    Skippy,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "mesh-llm",
@@ -354,6 +361,10 @@ pub(crate) struct Cli {
     /// Override which bundled llama.cpp flavor to use.
     #[arg(long, value_enum)]
     pub(crate) llama_flavor: Option<crate::inference::launch::BinaryFlavor>,
+
+    /// Select the local model-serving backend.
+    #[arg(long, value_enum, default_value_t = ServingBackend::Llama, hide = true)]
+    pub(crate) serving_backend: ServingBackend,
 
     /// Device for rpc-server (e.g. MTL0, CUDA0, ROCm0, Vulkan0, CPU).
     #[arg(long, hide = true)]

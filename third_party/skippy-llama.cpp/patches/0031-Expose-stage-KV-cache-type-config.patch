@@ -1,0 +1,48 @@
+From 4f645d6674d72534799625b6b94e8d0f739f916d Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sat, 2 May 2026 08:41:07 +1000
+Subject: [PATCH] Expose stage KV cache type config
+
+---
+ include/skippy.h | 4 +++-
+ src/skippy.cpp   | 2 ++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 4dd985da..ce27c5ea 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 11
++#define SKIPPY_ABI_VERSION_PATCH 12
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -111,6 +111,8 @@ struct skippy_runtime_config {
+     int32_t layer_end;
+     int32_t ctx_size;
+     int32_t n_gpu_layers;
++    int32_t cache_type_k;
++    int32_t cache_type_v;
+ 
+     enum skippy_load_mode load_mode;
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 1139464a..5a1d7cfa 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1210,6 +1210,8 @@ enum skippy_status skippy_session_create(
+     llama_context_params params = llama_context_default_params();
+     params.n_ctx = model->config.ctx_size > 0 ? static_cast<uint32_t>(model->config.ctx_size) : 512;
+     params.n_batch = params.n_ctx;
++    params.type_k = model->config.cache_type_k > 0 ? static_cast<ggml_type>(model->config.cache_type_k) : GGML_TYPE_F16;
++    params.type_v = model->config.cache_type_v > 0 ? static_cast<ggml_type>(model->config.cache_type_v) : GGML_TYPE_F16;
+     params.embeddings = model->config.filter_tensors_on_load && !model->config.include_output;
+     if (llm_arch_is_recurrent(model->model->arch) || llm_arch_is_hybrid(model->model->arch)) {
+         params.n_seq_max = 2;
+-- 
+2.50.1 (Apple Git-155)
+

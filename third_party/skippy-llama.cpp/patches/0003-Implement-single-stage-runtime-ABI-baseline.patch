@@ -1,0 +1,374 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 11:04:49 +1000
+Subject: [PATCH] Implement single-stage runtime ABI baseline
+
+---
+ src/skippy.cpp | 323 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 322 insertions(+), 1 deletion(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 7b1aa845..d0520d5a 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2,14 +2,27 @@
+
+ #include "gguf.h"
+
++#include <algorithm>
+ #include <cerrno>
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
+ #include <exception>
++#include <limits>
+ #include <regex>
+ #include <string>
+
++struct skippy_model {
++    llama_model * model = nullptr;
++    skippy_runtime_config config = {};
++};
++
++struct skippy_session {
++    skippy_model * stage_model = nullptr;
++    llama_context * ctx = nullptr;
++    int32_t n_past = 0;
++};
++
+ struct skippy_model_info {
+     gguf_context * ctx = nullptr;
+ };
+@@ -93,6 +106,62 @@ static enum skippy_tensor_role skippy_role_from_name(const char * name
+     return SKIPPY_TENSOR_ROLE_METADATA;
+ }
+
++static bool skippy_is_full_model_config(const struct skippy_runtime_config * config) {
++    if (config == nullptr) {
++        return true;
++    }
++
++    return !config->filter_tensors_on_load && config->layer_start == 0;
++}
++
++static enum skippy_status skippy_decode_tokens(
++        skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        bool request_logits,
++        struct skippy_error ** out_error) {
++    (void) request_logits;
++
++    if (session == nullptr || session->ctx == nullptr || token_ids == nullptr || token_count == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and at least one token are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_batch batch = llama_batch_get_one(
++            const_cast<llama_token *>(token_ids),
++            static_cast<int32_t>(token_count));
++
++    const int32_t rc = llama_decode(session->ctx, batch);
++    if (rc != 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "llama_decode failed");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    session->n_past += static_cast<int32_t>(token_count);
++    return skippy_success(out_error);
++}
++
++static llama_token skippy_greedy_sample(skippy_session * session) {
++    const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
++    const float * logits = llama_get_logits_ith(session->ctx, -1);
++
++    llama_token best = 0;
++    float best_logit = -std::numeric_limits<float>::infinity();
++    for (int32_t token = 0; token < n_vocab; ++token) {
++        if (logits[token] > best_logit) {
++            best_logit = logits[token];
++            best = token;
++        }
++    }
++
++    return best;
++}
++
+ extern "C" {
+
+ struct skippy_abi_version skippy_abi_version(void) {
+@@ -104,7 +173,8 @@ struct skippy_abi_version skippy_abi_version(void) {
+ }
+
+ uint64_t skippy_abi_features(void) {
+-    return SKIPPY_FEATURE_MODEL_INTROSPECTION;
++    return SKIPPY_FEATURE_MODEL_INTROSPECTION |
++           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE;
+ }
+
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -131,6 +201,257 @@ void skippy_error_free(struct skippy_error * error) {
+     delete error;
+ }
+
++enum skippy_status skippy_model_open(
++        const char * path,
++        const struct skippy_runtime_config * config,
++        struct skippy_model ** out_model,
++        struct skippy_error ** out_error) {
++    if (path == nullptr || out_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "path and out_model are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    *out_model = nullptr;
++
++    if (!skippy_is_full_model_config(config)) {
++        skippy_set_error(
++                out_error,
++                SKIPPY_STATUS_UNSUPPORTED,
++                "runtime tensor filtering is not implemented yet; use a full-model single-stage config");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    llama_model_params params = llama_model_default_params();
++    if (config != nullptr) {
++        params.n_gpu_layers = config->n_gpu_layers;
++    }
++
++    llama_backend_init();
++    llama_model * model = llama_model_load_from_file(path, params);
++    if (model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load llama model");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    skippy_model * stage_model = new skippy_model{};
++    stage_model->model = model;
++    if (config != nullptr) {
++        stage_model->config = *config;
++    }
++
++    *out_model = stage_model;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_model_free(
++        struct skippy_model * model,
++        struct skippy_error ** out_error) {
++    if (model != nullptr) {
++        llama_model_free(model->model);
++        delete model;
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_create(
++        struct skippy_model * model,
++        struct skippy_session ** out_session,
++        struct skippy_error ** out_error) {
++    if (model == nullptr || model->model == nullptr || out_session == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model and out_session are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    *out_session = nullptr;
++
++    llama_context_params params = llama_context_default_params();
++    params.n_ctx = model->config.ctx_size > 0 ? static_cast<uint32_t>(model->config.ctx_size) : 512;
++    params.n_batch = params.n_ctx;
++
++    llama_context * ctx = llama_init_from_model(model->model, params);
++    if (ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to create llama context");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    skippy_session * session = new skippy_session{};
++    session->stage_model = model;
++    session->ctx = ctx;
++    session->n_past = 0;
++    *out_session = session;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_free(
++        struct skippy_session * session,
++        struct skippy_error ** out_error) {
++    if (session != nullptr) {
++        llama_free(session->ctx);
++        delete session;
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_prefill_chunk(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const void * input_activations,
++        size_t input_activation_bytes,
++        void * output_activations,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        struct skippy_error ** out_error) {
++    (void) input_activations;
++    (void) input_activation_bytes;
++    (void) output_activations;
++    (void) output_activation_capacity;
++
++    if (out_output_activation_bytes != nullptr) {
++        *out_output_activation_bytes = 0;
++    }
++
++    return skippy_decode_tokens(session, token_ids, token_count, false, out_error);
++}
++
++enum skippy_status skippy_decode_step(
++        struct skippy_session * session,
++        llama_token token_id,
++        const void * input_activation,
++        size_t input_activation_bytes,
++        void * output_activation,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
++    (void) input_activation;
++    (void) input_activation_bytes;
++    (void) output_activation;
++    (void) output_activation_capacity;
++
++    if (out_output_activation_bytes != nullptr) {
++        *out_output_activation_bytes = 0;
++    }
++
++    enum skippy_status status = skippy_decode_tokens(session, &token_id, 1, true, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    if (out_predicted_token != nullptr) {
++        *out_predicted_token = skippy_greedy_sample(session);
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_export_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    (void) session;
++    (void) layer_start;
++    (void) layer_end;
++    (void) output;
++    (void) output_capacity;
++    (void) out_bytes;
++    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "state export is not implemented yet");
++    return SKIPPY_STATUS_UNSUPPORTED;
++}
++
++enum skippy_status skippy_import_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    (void) session;
++    (void) layer_start;
++    (void) layer_end;
++    (void) input;
++    (void) input_bytes;
++    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "state import is not implemented yet");
++    return SKIPPY_STATUS_UNSUPPORTED;
++}
++
++enum skippy_status skippy_tokenize(
++        struct skippy_model * model,
++        const char * text,
++        bool add_special,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        size_t * out_token_count,
++        struct skippy_error ** out_error) {
++    if (model == nullptr || model->model == nullptr || text == nullptr || out_token_count == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model, text, and out_token_count are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (output_token_capacity > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token output capacity exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(model->model);
++    const int32_t result = llama_tokenize(
++            vocab,
++            text,
++            static_cast<int32_t>(std::strlen(text)),
++            output_tokens,
++            static_cast<int32_t>(output_token_capacity),
++            add_special,
++            true);
++    if (result < 0) {
++        *out_token_count = static_cast<size_t>(-result);
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "token output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    *out_token_count = static_cast<size_t>(result);
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_detokenize(
++        struct skippy_model * model,
++        const llama_token * tokens,
++        size_t token_count,
++        char * output_text,
++        size_t output_text_capacity,
++        size_t * out_text_bytes,
++        struct skippy_error ** out_error) {
++    if (model == nullptr || model->model == nullptr || tokens == nullptr || out_text_bytes == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model, tokens, and out_text_bytes are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
++            output_text_capacity > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "detokenize inputs exceed int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(model->model);
++    const int32_t result = llama_detokenize(
++            vocab,
++            tokens,
++            static_cast<int32_t>(token_count),
++            output_text,
++            static_cast<int32_t>(output_text_capacity),
++            true,
++            false);
++    if (result < 0) {
++        *out_text_bytes = static_cast<size_t>(-result);
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "text output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    *out_text_bytes = static_cast<size_t>(result);
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_model_info_open(
+         const char * path,
+         struct skippy_model_info ** out_info,
+--
+2.50.1 (Apple Git-155)

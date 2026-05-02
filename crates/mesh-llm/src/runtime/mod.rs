@@ -22,7 +22,7 @@ use crate::cli::output::{
     DashboardSnapshotProvider, OutputEvent, RuntimeStatus,
 };
 use crate::cli::terminal_progress::start_spinner;
-use crate::cli::{Cli, Command, RuntimeSurface};
+use crate::cli::{Cli, Command, RuntimeSurface, ServingBackend};
 use crate::crypto::{
     default_keystore_path, default_trust_store_path, keystore_exists, keystore_metadata,
     load_keystore, load_owner_keypair_from_keychain, load_trust_store, OwnerKeychainLoadError,
@@ -498,7 +498,7 @@ fn runtime_process_payload_with_status(
         backend: handle.backend.clone(),
         status: status.to_string(),
         port: handle.port,
-        pid: handle.process.pid(),
+        pid: handle.pid(),
         slots: handle.slots,
         context_length: Some(handle.context_length),
     }
@@ -522,6 +522,191 @@ async fn remove_dashboard_process(
         .lock()
         .await
         .retain(|process| process.name != model_name);
+}
+
+struct StartupLocalModelTask {
+    runtime: Arc<instance::InstanceRuntime>,
+    bin_dir: PathBuf,
+    node: mesh::Node,
+    tunnel_mgr: tunnel::Manager,
+    target_tx: Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
+    model_path: PathBuf,
+    model_name: String,
+    primary_model_name: String,
+    mmproj_path: Option<PathBuf>,
+    ctx_size: Option<u32>,
+    pinned_gpu: Option<StartupPinnedGpuTarget>,
+    slots: usize,
+    serving_backend: ServingBackend,
+    stop_rx: tokio::sync::watch::Receiver<bool>,
+    dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    console_state: Option<api::MeshApi>,
+    api_port: u16,
+    startup_ready_reporter: StartupReadyReporter,
+    input_handler_enabled: bool,
+    interactive_started: Arc<AtomicBool>,
+    interactive_control_tx: tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
+    interactive_console_state: Option<api::MeshApi>,
+}
+
+async fn startup_local_model_loop(params: StartupLocalModelTask) {
+    let StartupLocalModelTask {
+        runtime,
+        bin_dir,
+        node,
+        tunnel_mgr,
+        target_tx,
+        model_path,
+        model_name,
+        primary_model_name,
+        mmproj_path,
+        ctx_size,
+        pinned_gpu,
+        slots,
+        serving_backend,
+        mut stop_rx,
+        dashboard_processes,
+        console_state,
+        api_port,
+        startup_ready_reporter,
+        input_handler_enabled,
+        interactive_started,
+        interactive_control_tx,
+        interactive_console_state,
+    } = params;
+
+    let (loaded_name, handle, mut death_rx) =
+        match start_runtime_local_model(LocalRuntimeModelStartSpec {
+            runtime: &runtime,
+            bin_dir: &bin_dir,
+            binary_flavor: None,
+            node: &node,
+            model_path: &model_path,
+            mmproj_override: mmproj_path.as_deref(),
+            ctx_size_override: ctx_size,
+            pinned_gpu: pinned_gpu.as_ref(),
+            slots,
+            serving_backend,
+        })
+        .await
+        {
+            Ok(loaded) => loaded,
+            Err(err) => {
+                let _ = emit_event(OutputEvent::Error {
+                    message: format!(
+                        "Failed to start {serving_backend:?} model {model_name}: {err}"
+                    ),
+                    context: Some(format!("model={model_name}")),
+                });
+                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                if let Some(cs) = console_state {
+                    cs.update(false, false).await;
+                }
+                return;
+            }
+        };
+
+    add_runtime_local_target(&target_tx, &loaded_name, handle.port);
+    tunnel_mgr.set_http_port(handle.port);
+    node.set_role(NodeRole::Host {
+        http_port: api_port,
+    })
+    .await;
+    set_advertised_model_context(&node, &loaded_name, Some(handle.context_length)).await;
+    advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
+    let payload = local_process_payload(
+        &loaded_name,
+        &handle.backend,
+        handle.port,
+        handle.pid(),
+        slots,
+        handle.context_length,
+    );
+    upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
+    if let Some(ref cs) = console_state {
+        cs.upsert_local_process(payload).await;
+        cs.update(true, true).await;
+    }
+    update_pi_models_json(&loaded_name, api_port);
+    startup_ready_reporter.mark_ready_and_maybe_emit(&loaded_name);
+    let _ = emit_event(OutputEvent::ModelReady {
+        model: loaded_name.clone(),
+        internal_port: Some(handle.port),
+        role: Some(handle.backend.clone()),
+    });
+    let _ = emit_event(OutputEvent::Info {
+        message: format!(
+            "Startup-loaded {} model '{}' on :{}",
+            handle.backend, loaded_name, handle.port
+        ),
+        context: None,
+    });
+
+    if input_handler_enabled
+        && loaded_name == primary_model_name
+        && !interactive_started.swap(true, Ordering::AcqRel)
+        && std::io::stdin().is_terminal()
+    {
+        if let Some(cs) = interactive_console_state {
+            interactive::spawn_handler(
+                interactive_control_tx,
+                cs,
+                crate::cli::output::OutputManager::global(),
+                InitialPromptMode::Deferred,
+            );
+        }
+    }
+
+    tokio::select! {
+        _ = &mut death_rx => {
+            let _ = emit_event(OutputEvent::Warning {
+                message: format!("Startup model '{loaded_name}' exited unexpectedly"),
+                context: Some(format!("model={loaded_name} port={}", handle.port)),
+            });
+        }
+        res = stop_rx.changed() => {
+            let _ = res;
+        }
+    }
+
+    let port = handle.port;
+    remove_runtime_local_target(&target_tx, &loaded_name, port);
+    tunnel_mgr.set_http_port(0);
+    withdraw_advertised_model(&node, &loaded_name).await;
+    set_advertised_model_context(&node, &loaded_name, None).await;
+    upsert_dashboard_process(
+        &dashboard_processes,
+        runtime_process_payload_with_status(&loaded_name, &handle, "shutting down"),
+    )
+    .await;
+    if let Some(ref cs) = console_state {
+        cs.upsert_local_process(runtime_process_payload_with_status(
+            &loaded_name,
+            &handle,
+            "shutting down",
+        ))
+        .await;
+    }
+    handle.shutdown().await;
+    remove_dashboard_process(&dashboard_processes, &loaded_name).await;
+    if let Some(cs) = console_state {
+        cs.remove_local_process(&loaded_name).await;
+        cs.update(false, false).await;
+    }
+    let _ = emit_event(OutputEvent::Info {
+        message: format!("Stopped startup model '{}' from :{}", loaded_name, port),
+        context: None,
+    });
+}
+
+fn update_startup_target(
+    target_tx: &Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
+    model_name: &str,
+    target: election::InferenceTarget,
+) {
+    let mut targets = target_tx.borrow().clone();
+    targets.targets.insert(model_name.to_string(), vec![target]);
+    target_tx.send_replace(targets);
 }
 
 fn bridge_publication_state(
@@ -1651,6 +1836,10 @@ fn startup_rpc_backend_device<'a>(
     Ok(cli_device.or(pinned_device))
 }
 
+fn startup_uses_legacy_rpc(serving_backend: ServingBackend) -> bool {
+    matches!(serving_backend, ServingBackend::Llama)
+}
+
 /// Look up the model filename in the catalog and check if its draft model exists on disk.
 /// If not on disk, downloads it (drafts are <1GB).
 pub async fn ensure_draft(model: &std::path::Path) -> Option<PathBuf> {
@@ -2632,7 +2821,8 @@ async fn run_auto(
     // Ensure draft model is available (downloads if needed, <1GB)
     // `--no-draft` disables automatic draft detection, but should not
     // override an explicitly supplied `--draft` value.
-    if !cli.no_draft && cli.draft.is_none() {
+    if matches!(cli.serving_backend, ServingBackend::Llama) && !cli.no_draft && cli.draft.is_none()
+    {
         if let Some(draft_path) = ensure_draft(&model).await {
             let _ = emit_event(OutputEvent::Info {
                 message: format!("Auto-detected draft model: {}", draft_path.display()),
@@ -2656,22 +2846,29 @@ async fn run_auto(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("serve mode requires an instance runtime"))?
         .clone();
-    let rpc_handle = launch::start_rpc_server(
-        &runtime_arc,
-        &bin_dir,
-        cli.llama_flavor,
-        startup_rpc_backend_device(cli.device.as_deref(), primary_startup_model.as_ref())?,
-        Some(&model),
-    )
-    .await?;
-    tracing::info!(
-        "rpc-server on 127.0.0.1:{} (pid {}) serving {model_name}",
-        rpc_handle.port,
-        rpc_handle.pid
-    );
+    let rpc_handle = if startup_uses_legacy_rpc(cli.serving_backend) {
+        let rpc_handle = launch::start_rpc_server(
+            &runtime_arc,
+            &bin_dir,
+            cli.llama_flavor,
+            startup_rpc_backend_device(cli.device.as_deref(), primary_startup_model.as_ref())?,
+            Some(&model),
+        )
+        .await?;
+        tracing::info!(
+            "rpc-server on 127.0.0.1:{} (pid {}) serving {model_name}",
+            rpc_handle.port,
+            rpc_handle.pid
+        );
+        Some(rpc_handle)
+    } else {
+        tracing::info!("skipping rpc-server for skippy startup backend");
+        None
+    };
+    let rpc_port = rpc_handle.as_ref().map(|handle| handle.port).unwrap_or(0);
 
     let tunnel_mgr =
-        tunnel::Manager::start(node.clone(), rpc_handle.port, channels.rpc, channels.http).await?;
+        tunnel::Manager::start(node.clone(), rpc_port, channels.rpc, channels.http).await?;
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -2739,7 +2936,14 @@ async fn run_auto(
             runtime_data_collector,
             runtime_data_producer,
         });
-        cs.set_primary_backend("llama".into()).await;
+        cs.set_primary_backend(
+            match cli.serving_backend {
+                ServingBackend::Llama => "llama",
+                ServingBackend::Skippy => "skippy",
+            }
+            .into(),
+        )
+        .await;
         cs.set_runtime_control(control_tx.clone()).await;
         cs.set_nostr_relays(nostr_relays(&cli.nostr_relay)).await;
         cs.set_nostr_discovery(cli.nostr_discovery).await;
@@ -2871,122 +3075,159 @@ async fn run_auto(
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_runtime = runtime_arc.clone();
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
-    let primary_task = tokio::spawn(async move {
-        election::election_loop(
-            election::ElectionLoopParams {
+    let startup_serving_backend = cli.serving_backend;
+    let primary_task = if matches!(startup_serving_backend, ServingBackend::Skippy) {
+        tokio::spawn(async move {
+            startup_local_model_loop(StartupLocalModelTask {
                 runtime: primary_runtime,
+                bin_dir: bin_dir2,
                 node: node2,
                 tunnel_mgr: tunnel_mgr2,
-                ingress_http_port: api_port,
-                rpc_port: rpc_handle.port,
-                bin_dir: bin_dir2,
-                model: model2,
-                model_name: model_name_for_election,
-                explicit_mmproj: primary_mmproj,
-                draft: draft2,
-                draft_max,
-                force_split,
-                binary_flavor: llama_flavor,
-                ctx_size_override: primary_ctx_size,
-                pinned_gpu: primary_pinned_gpu,
-                moe_runtime_options,
                 target_tx: primary_target_tx,
-                stop_rx: primary_stop_rx,
+                model_path: model2,
+                model_name: model_name_for_election,
+                primary_model_name: primary_model_name_for_advertise,
+                mmproj_path: primary_mmproj,
+                ctx_size: primary_ctx_size,
+                pinned_gpu: primary_pinned_gpu,
                 slots,
-            },
-            move |is_host, llama_ready| {
-                let advertise_node = node_for_cb.clone();
-                let advertise_model = primary_model_name_for_advertise.clone();
-                let interactive_started = interactive_started.clone();
-                let interactive_console_state = interactive_console_state.clone();
-                let interactive_control_tx = interactive_control_tx.clone();
-                let startup_ready_reporter = primary_startup_ready_reporter.clone();
-                tokio::spawn(async move {
-                    if is_host && llama_ready {
-                        advertise_model_ready(&advertise_node, &advertise_model, &advertise_model)
-                            .await;
-                    } else {
-                        withdraw_advertised_model(&advertise_node, &advertise_model).await;
-                    }
-                });
-                if llama_ready {
-                    let n = node_for_cb.clone();
+                serving_backend: startup_serving_backend,
+                stop_rx: primary_stop_rx,
+                dashboard_processes: dashboard_processes_for_primary_task,
+                console_state: console_state_for_election,
+                api_port,
+                startup_ready_reporter: primary_startup_ready_reporter,
+                input_handler_enabled,
+                interactive_started,
+                interactive_control_tx,
+                interactive_console_state,
+            })
+            .await;
+        })
+    } else {
+        tokio::spawn(async move {
+            election::election_loop(
+                election::ElectionLoopParams {
+                    runtime: primary_runtime,
+                    node: node2,
+                    tunnel_mgr: tunnel_mgr2,
+                    ingress_http_port: api_port,
+                    rpc_port,
+                    bin_dir: bin_dir2,
+                    model: model2,
+                    model_name: model_name_for_election,
+                    explicit_mmproj: primary_mmproj,
+                    draft: draft2,
+                    draft_max,
+                    force_split,
+                    binary_flavor: llama_flavor,
+                    ctx_size_override: primary_ctx_size,
+                    pinned_gpu: primary_pinned_gpu,
+                    moe_runtime_options,
+                    target_tx: primary_target_tx,
+                    stop_rx: primary_stop_rx,
+                    slots,
+                },
+                move |is_host, llama_ready| {
+                    let advertise_node = node_for_cb.clone();
+                    let advertise_model = primary_model_name_for_advertise.clone();
+                    let interactive_started = interactive_started.clone();
+                    let interactive_console_state = interactive_console_state.clone();
+                    let interactive_control_tx = interactive_control_tx.clone();
+                    let startup_ready_reporter = primary_startup_ready_reporter.clone();
                     tokio::spawn(async move {
-                        n.set_llama_ready(true).await;
-                    });
-                }
-                if is_host && llama_ready {
-                    update_pi_models_json(&model_name_for_cb, api_port);
-                    startup_ready_reporter.mark_ready_and_maybe_emit(&model_name_for_cb);
-                } else {
-                    let _ = emit_event(OutputEvent::Info {
-                        message: format!("API: http://localhost:{api_port} (proxied to host)"),
-                        context: None,
-                    });
-                }
-                if input_handler_enabled
-                    && llama_ready
-                    && !interactive_started.swap(true, Ordering::AcqRel)
-                    && std::io::stdin().is_terminal()
-                {
-                    if let Some(cs) = interactive_console_state {
-                        // Spawn input handler for both Dashboard and line-oriented Fallback modes;
-                        // spawn_handler internally selects the variant.
-                        interactive::spawn_handler(
-                            interactive_control_tx,
-                            cs,
-                            crate::cli::output::OutputManager::global(),
-                            InitialPromptMode::Deferred,
-                        );
-                    }
-                }
-                if let Some(ref cs) = console_state_for_election {
-                    let cs = cs.clone();
-                    tokio::spawn(async move {
-                        cs.update(is_host, llama_ready).await;
-                    });
-                }
-            },
-            move |process| {
-                let context_node = node_for_primary_process.clone();
-                let model_name = primary_process_model_name.clone();
-                let console_state = console_state_for_primary_process.clone();
-                let dashboard_processes = dashboard_processes_for_primary_task.clone();
-                tokio::spawn(async move {
-                    match process {
-                        Some(process) => {
-                            set_advertised_model_context(
-                                &context_node,
-                                &model_name,
-                                Some(process.context_length),
+                        if is_host && llama_ready {
+                            advertise_model_ready(
+                                &advertise_node,
+                                &advertise_model,
+                                &advertise_model,
                             )
                             .await;
-                            let payload = local_process_payload(
-                                &model_name,
-                                &process.backend,
-                                process.port,
-                                process.pid,
-                                slots,
-                                process.context_length,
-                            );
-                            upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
-                            if let Some(cs) = console_state {
-                                cs.upsert_local_process(payload).await;
-                            }
+                        } else {
+                            withdraw_advertised_model(&advertise_node, &advertise_model).await;
                         }
-                        None => {
-                            set_advertised_model_context(&context_node, &model_name, None).await;
-                            remove_dashboard_process(&dashboard_processes, &model_name).await;
-                            if let Some(cs) = console_state {
-                                cs.remove_local_process(&model_name).await;
-                            }
+                    });
+                    if llama_ready {
+                        let n = node_for_cb.clone();
+                        tokio::spawn(async move {
+                            n.set_llama_ready(true).await;
+                        });
+                    }
+                    if is_host && llama_ready {
+                        update_pi_models_json(&model_name_for_cb, api_port);
+                        startup_ready_reporter.mark_ready_and_maybe_emit(&model_name_for_cb);
+                    } else {
+                        let _ = emit_event(OutputEvent::Info {
+                            message: format!("API: http://localhost:{api_port} (proxied to host)"),
+                            context: None,
+                        });
+                    }
+                    if input_handler_enabled
+                        && llama_ready
+                        && !interactive_started.swap(true, Ordering::AcqRel)
+                        && std::io::stdin().is_terminal()
+                    {
+                        if let Some(cs) = interactive_console_state {
+                            // Spawn input handler for both Dashboard and line-oriented Fallback modes;
+                            // spawn_handler internally selects the variant.
+                            interactive::spawn_handler(
+                                interactive_control_tx,
+                                cs,
+                                crate::cli::output::OutputManager::global(),
+                                InitialPromptMode::Deferred,
+                            );
                         }
                     }
-                });
-            },
-        )
-        .await;
-    });
+                    if let Some(ref cs) = console_state_for_election {
+                        let cs = cs.clone();
+                        tokio::spawn(async move {
+                            cs.update(is_host, llama_ready).await;
+                        });
+                    }
+                },
+                move |process| {
+                    let context_node = node_for_primary_process.clone();
+                    let model_name = primary_process_model_name.clone();
+                    let console_state = console_state_for_primary_process.clone();
+                    let dashboard_processes = dashboard_processes_for_primary_task.clone();
+                    tokio::spawn(async move {
+                        match process {
+                            Some(process) => {
+                                set_advertised_model_context(
+                                    &context_node,
+                                    &model_name,
+                                    Some(process.context_length),
+                                )
+                                .await;
+                                let payload = local_process_payload(
+                                    &model_name,
+                                    &process.backend,
+                                    process.port,
+                                    process.pid,
+                                    slots,
+                                    process.context_length,
+                                );
+                                upsert_dashboard_process(&dashboard_processes, payload.clone())
+                                    .await;
+                                if let Some(cs) = console_state {
+                                    cs.upsert_local_process(payload).await;
+                                }
+                            }
+                            None => {
+                                set_advertised_model_context(&context_node, &model_name, None)
+                                    .await;
+                                remove_dashboard_process(&dashboard_processes, &model_name).await;
+                                if let Some(cs) = console_state {
+                                    cs.remove_local_process(&model_name).await;
+                                }
+                            }
+                        }
+                    });
+                },
+            )
+            .await;
+        })
+    };
     managed_models.insert(
         model_name.clone(),
         ManagedModelController {
@@ -3052,8 +3293,39 @@ async fn run_auto(
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
             let extra_runtime = runtime_arc.clone();
             let dashboard_processes_for_extra_task = dashboard_processes.clone();
-            let extra_task = tokio::spawn(async move {
-                election::election_loop(
+            let extra_serving_backend = cli.serving_backend;
+            let extra_control_tx = control_tx.clone();
+            let extra_task = if matches!(extra_serving_backend, ServingBackend::Skippy) {
+                tokio::spawn(async move {
+                    startup_local_model_loop(StartupLocalModelTask {
+                        runtime: extra_runtime,
+                        bin_dir: extra_bin,
+                        node: extra_node,
+                        tunnel_mgr: extra_tunnel,
+                        target_tx: extra_target_tx,
+                        model_path: extra_path,
+                        model_name: extra_model_name,
+                        primary_model_name: primary_model_name_for_extra,
+                        mmproj_path: extra_mmproj,
+                        ctx_size: extra_ctx_size,
+                        pinned_gpu: extra_pinned_gpu,
+                        slots,
+                        serving_backend: extra_serving_backend,
+                        stop_rx: extra_stop_rx,
+                        dashboard_processes: dashboard_processes_for_extra_task,
+                        console_state: extra_console_state,
+                        api_port: api_port_extra,
+                        startup_ready_reporter: extra_startup_ready_reporter,
+                        input_handler_enabled: false,
+                        interactive_started: Arc::new(AtomicBool::new(true)),
+                        interactive_control_tx: extra_control_tx,
+                        interactive_console_state: None,
+                    })
+                    .await;
+                })
+            } else {
+                tokio::spawn(async move {
+                    election::election_loop(
                     election::ElectionLoopParams {
                         runtime: extra_runtime,
                         node: extra_node,
@@ -3153,7 +3425,8 @@ async fn run_auto(
                         });
                     },
                 ).await;
-            });
+                })
+            };
             managed_models.insert(
                 managed_model_name,
                 ManagedModelController {
@@ -3272,7 +3545,9 @@ async fn run_auto(
                                     model_path: &model_path,
                                     mmproj_override: None,
                                     ctx_size_override: cli.ctx_size,
+                                    pinned_gpu: None,
                                     slots,
+                                    serving_backend: cli.serving_backend,
                                 },
                             )
                             .await?;
@@ -3290,7 +3565,7 @@ async fn run_auto(
                                 &loaded_name,
                                 &handle.backend,
                                 handle.port,
-                                handle.process.pid(),
+                                handle.pid(),
                                 slots,
                                 handle.context_length,
                             );
@@ -3489,7 +3764,9 @@ async fn run_auto(
 
     node.set_serving_models(Vec::new()).await;
     node.set_hosted_models(Vec::new()).await;
-    rpc_handle.shutdown().await;
+    if let Some(rpc_handle) = rpc_handle {
+        rpc_handle.shutdown().await;
+    }
     if let Some(rt) = runtime {
         let outstanding_refs = std::sync::Arc::strong_count(&rt);
         if outstanding_refs == 1 {
@@ -4769,6 +5046,12 @@ mod tests {
         let device = startup_rpc_backend_device(None, Some(&primary_startup_model)).unwrap();
 
         assert_eq!(device, Some("CUDA0"));
+    }
+
+    #[test]
+    fn skippy_startup_backend_does_not_use_legacy_rpc_server() {
+        assert!(!startup_uses_legacy_rpc(ServingBackend::Skippy));
+        assert!(startup_uses_legacy_rpc(ServingBackend::Llama));
     }
 
     #[test]

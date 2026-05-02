@@ -1,0 +1,1730 @@
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::path::Path;
+use std::ptr;
+
+use anyhow::{anyhow, Context, Result};
+use skippy_ffi::{
+    ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
+    ChatMessage as RawChatMessage, Error as RawError, KvPageDesc as RawKvPageDesc, LoadMode,
+    LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
+    RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
+    SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
+};
+
+pub mod package;
+
+pub const MAX_LOGIT_BIAS: usize = 256;
+pub const GGML_TYPE_F16: u32 = 1;
+pub const GGML_TYPE_Q8_0: u32 = 8;
+pub const GGML_TYPE_TURBO3_0: u32 = 42;
+pub const GGML_TYPE_TURBO4_0: u32 = 43;
+pub const GGML_TYPE_TURBO2_0: u32 = 44;
+pub const GGML_TYPE_TURBO3_TCQ: u32 = 45;
+pub const GGML_TYPE_TURBO2_TCQ: u32 = 46;
+
+pub use skippy_ffi::LoadMode as RuntimeLoadMode;
+pub use skippy_ffi::{
+    ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,
+};
+
+pub fn suppress_native_logs() {
+    unsafe {
+        skippy_ffi::llama_log_set(Some(discard_native_log), ptr::null_mut());
+    }
+}
+
+pub fn restore_native_logs() {
+    unsafe {
+        skippy_ffi::llama_log_set(None, ptr::null_mut());
+    }
+}
+
+unsafe extern "C" fn discard_native_log(
+    _level: c_int,
+    _text: *const c_char,
+    _user_data: *mut c_void,
+) {
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    pub stage_index: u32,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub ctx_size: u32,
+    pub n_gpu_layers: i32,
+    pub cache_type_k: u32,
+    pub cache_type_v: u32,
+    pub load_mode: LoadMode,
+    pub include_embeddings: bool,
+    pub include_output: bool,
+    pub filter_tensors_on_load: bool,
+}
+
+impl RuntimeConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.layer_start >= self.layer_end {
+            return Err("layer_start must be less than layer_end");
+        }
+        Ok(())
+    }
+
+    fn as_raw(&self) -> Result<RawRuntimeConfig> {
+        self.validate().map_err(anyhow::Error::msg)?;
+        Ok(RawRuntimeConfig {
+            stage_index: i32::try_from(self.stage_index).context("stage_index exceeds i32")?,
+            layer_start: i32::try_from(self.layer_start).context("layer_start exceeds i32")?,
+            layer_end: i32::try_from(self.layer_end).context("layer_end exceeds i32")?,
+            ctx_size: i32::try_from(self.ctx_size).context("ctx_size exceeds i32")?,
+            n_gpu_layers: self.n_gpu_layers,
+            cache_type_k: i32::try_from(self.cache_type_k).context("cache_type_k exceeds i32")?,
+            cache_type_v: i32::try_from(self.cache_type_v).context("cache_type_v exceeds i32")?,
+            load_mode: self.load_mode,
+            disable_repack: false,
+            filter_tensors_on_load: self.filter_tensors_on_load,
+            include_embeddings: self.include_embeddings,
+            include_output: self.include_output,
+        })
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 1,
+            ctx_size: 512,
+            n_gpu_layers: 0,
+            cache_type_k: GGML_TYPE_F16,
+            cache_type_v: GGML_TYPE_F16,
+            load_mode: LoadMode::RuntimeSlice,
+            include_embeddings: true,
+            include_output: true,
+            filter_tensors_on_load: false,
+        }
+    }
+}
+
+pub fn parse_cache_type(value: &str) -> Result<u32> {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+    match normalized.as_str() {
+        "" | "f16" => Ok(GGML_TYPE_F16),
+        "q8" | "q8_0" => Ok(GGML_TYPE_Q8_0),
+        "turbo2" | "turbo2_0" => Ok(GGML_TYPE_TURBO2_0),
+        "turbo3" | "turbo3_0" => Ok(GGML_TYPE_TURBO3_0),
+        "turbo4" | "turbo4_0" => Ok(GGML_TYPE_TURBO4_0),
+        "turbo2_tcq" => Ok(GGML_TYPE_TURBO2_TCQ),
+        "turbo3_tcq" => Ok(GGML_TYPE_TURBO3_TCQ),
+        _ => Err(anyhow!("unsupported KV cache type {value:?}")),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TensorInfo {
+    pub name: String,
+    pub layer_index: Option<u32>,
+    pub role: TensorRole,
+    pub ggml_type: u32,
+    pub byte_size: u64,
+    pub element_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActivationDesc {
+    pub version: u32,
+    pub dtype: ActivationDType,
+    pub layout: ActivationLayout,
+    pub producer_stage_index: i32,
+    pub layer_start: i32,
+    pub layer_end: i32,
+    pub token_count: u32,
+    pub sequence_count: u32,
+    pub payload_bytes: u64,
+    pub flags: u64,
+}
+
+impl ActivationDesc {
+    fn as_raw(&self) -> RawActivationDesc {
+        RawActivationDesc {
+            version: self.version,
+            dtype: self.dtype,
+            layout: self.layout,
+            producer_stage_index: self.producer_stage_index,
+            layer_start: self.layer_start,
+            layer_end: self.layer_end,
+            token_count: self.token_count,
+            sequence_count: self.sequence_count,
+            payload_bytes: self.payload_bytes,
+            flags: self.flags,
+        }
+    }
+}
+
+impl From<RawActivationDesc> for ActivationDesc {
+    fn from(raw: RawActivationDesc) -> Self {
+        Self {
+            version: raw.version,
+            dtype: raw.dtype,
+            layout: raw.layout,
+            producer_stage_index: raw.producer_stage_index,
+            layer_start: raw.layer_start,
+            layer_end: raw.layer_end,
+            token_count: raw.token_count,
+            sequence_count: raw.sequence_count,
+            payload_bytes: raw.payload_bytes,
+            flags: raw.flags,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivationFrame {
+    pub desc: ActivationDesc,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeKvPageDesc {
+    pub version: u32,
+    pub layer_start: i32,
+    pub layer_end: i32,
+    pub token_start: u64,
+    pub token_count: u64,
+    pub layer_count: u32,
+    pub k_type: u32,
+    pub v_type: u32,
+    pub k_row_bytes: u32,
+    pub v_row_bytes: u32,
+    pub v_element_bytes: u32,
+    pub payload_bytes: u64,
+    pub flags: u64,
+}
+
+impl RuntimeKvPageDesc {
+    fn as_raw(&self) -> RawKvPageDesc {
+        RawKvPageDesc {
+            version: self.version,
+            layer_start: self.layer_start,
+            layer_end: self.layer_end,
+            token_start: self.token_start,
+            token_count: self.token_count,
+            layer_count: self.layer_count,
+            k_type: self.k_type,
+            v_type: self.v_type,
+            k_row_bytes: self.k_row_bytes,
+            v_row_bytes: self.v_row_bytes,
+            v_element_bytes: self.v_element_bytes,
+            payload_bytes: self.payload_bytes,
+            flags: self.flags,
+        }
+    }
+}
+
+impl From<RawKvPageDesc> for RuntimeKvPageDesc {
+    fn from(raw: RawKvPageDesc) -> Self {
+        Self {
+            version: raw.version,
+            layer_start: raw.layer_start,
+            layer_end: raw.layer_end,
+            token_start: raw.token_start,
+            token_count: raw.token_count,
+            layer_count: raw.layer_count,
+            k_type: raw.k_type,
+            v_type: raw.v_type,
+            k_row_bytes: raw.k_row_bytes,
+            v_row_bytes: raw.v_row_bytes,
+            v_element_bytes: raw.v_element_bytes,
+            payload_bytes: raw.payload_bytes,
+            flags: raw.flags,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeKvPage {
+    pub desc: RuntimeKvPageDesc,
+    pub payload: Vec<u8>,
+}
+
+pub struct ModelInfo {
+    raw: *mut RawModelInfo,
+}
+
+pub struct SlicePlan {
+    raw: *mut RawSlicePlan,
+}
+
+pub struct StageModel {
+    raw: *mut RawModel,
+}
+
+pub struct StageSession {
+    raw: *mut RawSession,
+    token_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageSessionCheckpoint {
+    token_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct LogitBias {
+    pub token_id: i32,
+    pub bias: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamplingConfig {
+    pub enabled: bool,
+    pub seed: u32,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub presence_penalty: f32,
+    pub frequency_penalty: f32,
+    pub repeat_penalty: f32,
+    pub penalty_last_n: i32,
+    pub logit_bias: Vec<LogitBias>,
+}
+
+impl Default for SamplingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seed: 0,
+            temperature: 1.0,
+            top_p: 1.0,
+            top_k: 0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repeat_penalty: 1.0,
+            penalty_last_n: -1,
+            logit_bias: Vec::new(),
+        }
+    }
+}
+
+impl SamplingConfig {
+    fn as_raw(&self) -> RawSamplingConfig {
+        let mut logit_bias = [RawLogitBias {
+            token_id: 0,
+            bias: 0.0,
+        }; MAX_LOGIT_BIAS];
+        for (target, source) in logit_bias.iter_mut().zip(
+            self.logit_bias
+                .iter()
+                .take(self.logit_bias.len().min(MAX_LOGIT_BIAS)),
+        ) {
+            *target = RawLogitBias {
+                token_id: source.token_id,
+                bias: source.bias,
+            };
+        }
+        RawSamplingConfig {
+            version: 1,
+            flags: u32::from(self.enabled),
+            seed: self.seed,
+            top_k: self.top_k,
+            penalty_last_n: self.penalty_last_n,
+            temperature: self.temperature,
+            top_p: self.top_p,
+            presence_penalty: self.presence_penalty,
+            frequency_penalty: self.frequency_penalty,
+            repeat_penalty: self.repeat_penalty,
+            logit_bias_count: self.logit_bias.len().min(MAX_LOGIT_BIAS) as u32,
+            reserved: 0,
+            logit_bias,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTemplateMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl ChatTemplateMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatTemplateOptions {
+    pub add_assistant: bool,
+    pub enable_thinking: Option<bool>,
+}
+
+impl Default for ChatTemplateOptions {
+    fn default() -> Self {
+        Self {
+            add_assistant: true,
+            enable_thinking: None,
+        }
+    }
+}
+
+// The experimental C ABI owns synchronization internally for model/session use.
+// Rust stage-server access is additionally serialized behind a Mutex.
+unsafe impl Send for StageModel {}
+unsafe impl Send for StageSession {}
+
+impl StageModel {
+    pub fn open(path: impl AsRef<Path>, config: &RuntimeConfig) -> Result<Self> {
+        let path = path.as_ref();
+        let path = CString::new(path.to_string_lossy().as_bytes())
+            .context("model path contains an interior NUL byte")?;
+        let raw_config = config.as_raw()?;
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_model_open(path.as_ptr(), &raw_config, &mut raw, &mut error)
+        };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_model_open returned a null handle"));
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn open_from_parts(paths: &[impl AsRef<Path>], config: &RuntimeConfig) -> Result<Self> {
+        if paths.is_empty() {
+            return Err(anyhow!("at least one GGUF part path is required"));
+        }
+        let paths = paths
+            .iter()
+            .map(|path| {
+                CString::new(path.as_ref().to_string_lossy().as_bytes())
+                    .context("part path contains an interior NUL byte")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let path_ptrs = paths.iter().map(|path| path.as_ptr()).collect::<Vec<_>>();
+        let raw_config = config.as_raw()?;
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_model_open_from_parts(
+                path_ptrs.as_ptr(),
+                path_ptrs.len(),
+                &raw_config,
+                &mut raw,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!(
+                "skippy_model_open_from_parts returned a null handle"
+            ));
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn create_session(&self) -> Result<StageSession> {
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe { skippy_ffi::skippy_session_create(self.raw, &mut raw, &mut error) };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_session_create returned a null handle"));
+        }
+        Ok(StageSession {
+            raw,
+            token_count: 0,
+        })
+    }
+
+    pub fn tokenize(&self, text: &str, add_special: bool) -> Result<Vec<i32>> {
+        let text = CString::new(text).context("text contains an interior NUL byte")?;
+        let mut count = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_tokenize(
+                self.raw,
+                text.as_ptr(),
+                add_special,
+                ptr::null_mut(),
+                0,
+                &mut count,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut tokens = vec![0_i32; count];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_tokenize(
+                self.raw,
+                text.as_ptr(),
+                add_special,
+                tokens.as_mut_ptr(),
+                tokens.len(),
+                &mut count,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        tokens.truncate(count);
+        Ok(tokens)
+    }
+
+    pub fn detokenize(&self, tokens: &[i32]) -> Result<String> {
+        Ok(String::from_utf8_lossy(&self.detokenize_bytes(tokens)?).into_owned())
+    }
+
+    pub fn detokenize_bytes(&self, tokens: &[i32]) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_detokenize(
+                self.raw,
+                tokens.as_ptr(),
+                tokens.len(),
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut output = vec![0_u8; bytes.max(1)];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_detokenize(
+                self.raw,
+                tokens.as_ptr(),
+                tokens.len(),
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        output.truncate(bytes);
+        Ok(output)
+    }
+
+    pub fn token_is_eog(&self, token: i32) -> Result<bool> {
+        let mut is_eog = false;
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_token_is_eog(self.raw, token, &mut is_eog, &mut error) };
+        ensure_ok(status, error)?;
+        Ok(is_eog)
+    }
+
+    pub fn apply_chat_template(
+        &self,
+        messages: &[ChatTemplateMessage],
+        add_assistant: bool,
+    ) -> Result<String> {
+        self.apply_chat_template_with_options(
+            messages,
+            ChatTemplateOptions {
+                add_assistant,
+                enable_thinking: None,
+            },
+        )
+    }
+
+    pub fn apply_chat_template_with_options(
+        &self,
+        messages: &[ChatTemplateMessage],
+        options: ChatTemplateOptions,
+    ) -> Result<String> {
+        let roles = messages
+            .iter()
+            .map(|message| {
+                CString::new(message.role.as_str())
+                    .context("message role contains an interior NUL byte")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let contents = messages
+            .iter()
+            .map(|message| {
+                CString::new(message.content.as_str())
+                    .context("message content contains an interior NUL byte")
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let raw_messages = roles
+            .iter()
+            .zip(contents.iter())
+            .map(|(role, content)| RawChatMessage {
+                role: role.as_ptr(),
+                content: content.as_ptr(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_apply_chat_template(
+                self.raw,
+                raw_messages.as_ptr(),
+                raw_messages.len(),
+                options.add_assistant,
+                options.enable_thinking.is_some(),
+                options.enable_thinking.unwrap_or(true),
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut output = vec![0_u8; bytes.max(1)];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_apply_chat_template(
+                self.raw,
+                raw_messages.as_ptr(),
+                raw_messages.len(),
+                options.add_assistant,
+                options.enable_thinking.is_some(),
+                options.enable_thinking.unwrap_or(true),
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        output.truncate(bytes);
+        String::from_utf8(output).context("chat template output is not valid UTF-8")
+    }
+}
+
+impl Drop for StageModel {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_model_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
+impl StageSession {
+    pub fn token_count(&self) -> u64 {
+        self.token_count
+    }
+
+    /// Captures the current position and asks the native runtime to keep an
+    /// in-session recurrent checkpoint. Attention KV is restored by trimming
+    /// the speculative suffix back to this position.
+    pub fn checkpoint(&mut self) -> Result<StageSessionCheckpoint> {
+        let mut token_count = 0u64;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_checkpoint_session(self.raw, &mut token_count, &mut error)
+        };
+        ensure_ok(status, error)?;
+        self.token_count = token_count;
+        Ok(StageSessionCheckpoint { token_count })
+    }
+
+    pub fn restore_checkpoint(&mut self, checkpoint: &StageSessionCheckpoint) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_restore_session_checkpoint(
+                self.raw,
+                checkpoint.token_count,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = checkpoint.token_count;
+        Ok(())
+    }
+
+    pub fn reset(&mut self) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe { skippy_ffi::skippy_session_reset(self.raw, &mut error) };
+        ensure_ok(status, error)?;
+        self.token_count = 0;
+        Ok(())
+    }
+
+    pub fn trim_session(&mut self, token_count: u64) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe { skippy_ffi::skippy_trim_session(self.raw, token_count, &mut error) };
+        ensure_ok(status, error)?;
+        self.token_count = token_count;
+        Ok(())
+    }
+
+    pub fn prefill_chunk(&mut self, token_ids: &[i32]) -> Result<()> {
+        let mut output_bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_prefill_chunk(
+                self.raw,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                0,
+                &mut output_bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        Ok(())
+    }
+
+    pub fn decode_step(&mut self, token_id: i32) -> Result<i32> {
+        self.decode_step_sampled(token_id, None)
+    }
+
+    pub fn decode_step_sampled(
+        &mut self,
+        token_id: i32,
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<i32> {
+        let mut output_bytes = 0usize;
+        let mut predicted_token = 0_i32;
+        let mut error = ptr::null_mut();
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let status = unsafe {
+            skippy_ffi::skippy_decode_step_sampled(
+                self.raw,
+                token_id,
+                sampling_ptr,
+                ptr::null(),
+                0,
+                ptr::null_mut(),
+                0,
+                &mut output_bytes,
+                &mut predicted_token,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = self
+            .token_count
+            .checked_add(1)
+            .context("session token count overflow")?;
+        Ok(predicted_token)
+    }
+
+    pub fn verify_tokens(&mut self, token_ids: &[i32]) -> Result<Vec<i32>> {
+        if token_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut predicted = vec![0_i32; token_ids.len()];
+        let mut output_count = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_verify_tokens(
+                self.raw,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                predicted.as_mut_ptr(),
+                predicted.len(),
+                &mut output_count,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        predicted.truncate(output_count);
+        Ok(predicted)
+    }
+
+    /// Runs batched verification and restores the prior checkpoint.
+    pub fn verify_tokens_rewound(&mut self, token_ids: &[i32]) -> Result<Vec<i32>> {
+        if token_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let checkpoint = self.checkpoint()?;
+        match self.verify_tokens(token_ids) {
+            Ok(predicted) => {
+                self.restore_checkpoint(&checkpoint)?;
+                Ok(predicted)
+            }
+            Err(error) => {
+                let _ = self.restore_checkpoint(&checkpoint);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn prefill_chunk_frame(
+        &mut self,
+        token_ids: &[i32],
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<ActivationFrame> {
+        let (output_desc, output_payload) =
+            self.prefill_chunk_frame_raw(token_ids, input, output_capacity)?;
+        Ok(ActivationFrame {
+            desc: output_desc.into(),
+            payload: output_payload,
+        })
+    }
+
+    fn prefill_chunk_frame_raw(
+        &mut self,
+        token_ids: &[i32],
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(RawActivationDesc, Vec<u8>)> {
+        let input_desc = input.map(|frame| frame.desc.as_raw());
+        let input_desc_ptr = input_desc
+            .as_ref()
+            .map_or(ptr::null(), |desc| desc as *const RawActivationDesc);
+        let input_payload_ptr = input.map_or(ptr::null(), |frame| frame.payload.as_ptr().cast());
+        let mut output_desc = RawActivationDesc {
+            version: 0,
+            dtype: ActivationDType::Unknown,
+            layout: ActivationLayout::Opaque,
+            producer_stage_index: -1,
+            layer_start: 0,
+            layer_end: 0,
+            token_count: 0,
+            sequence_count: 0,
+            payload_bytes: 0,
+            flags: 0,
+        };
+        let mut output_payload = vec![0_u8; output_capacity];
+        let mut output_bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_prefill_chunk_frame(
+                self.raw,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                input_desc_ptr,
+                input_payload_ptr,
+                &mut output_desc,
+                output_payload.as_mut_ptr().cast(),
+                output_payload.len(),
+                &mut output_bytes,
+                &mut error,
+            )
+        };
+        if status == Status::BufferTooSmall && output_bytes > output_payload.len() {
+            free_error(error);
+            return self.prefill_chunk_frame_raw(token_ids, input, output_bytes);
+        }
+        ensure_ok(status, error)?;
+        output_payload.truncate(output_bytes);
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        Ok((output_desc, output_payload))
+    }
+
+    pub fn decode_step_frame(
+        &mut self,
+        token_id: i32,
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(i32, ActivationFrame)> {
+        self.decode_step_frame_sampled(token_id, None, input, output_capacity)
+    }
+
+    pub fn decode_step_frame_sampled(
+        &mut self,
+        token_id: i32,
+        sampling: Option<&SamplingConfig>,
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(i32, ActivationFrame)> {
+        let (predicted_token, output_desc, output_payload) =
+            self.decode_step_frame_raw(token_id, sampling, input, output_capacity)?;
+        Ok((
+            predicted_token,
+            ActivationFrame {
+                desc: output_desc.into(),
+                payload: output_payload,
+            },
+        ))
+    }
+
+    fn decode_step_frame_raw(
+        &mut self,
+        token_id: i32,
+        sampling: Option<&SamplingConfig>,
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(i32, RawActivationDesc, Vec<u8>)> {
+        let input_desc = input.map(|frame| frame.desc.as_raw());
+        let input_desc_ptr = input_desc
+            .as_ref()
+            .map_or(ptr::null(), |desc| desc as *const RawActivationDesc);
+        let input_payload_ptr = input.map_or(ptr::null(), |frame| frame.payload.as_ptr().cast());
+        let mut output_desc = RawActivationDesc {
+            version: 0,
+            dtype: ActivationDType::Unknown,
+            layout: ActivationLayout::Opaque,
+            producer_stage_index: -1,
+            layer_start: 0,
+            layer_end: 0,
+            token_count: 0,
+            sequence_count: 0,
+            payload_bytes: 0,
+            flags: 0,
+        };
+        let mut output_payload = vec![0_u8; output_capacity];
+        let mut output_bytes = 0usize;
+        let mut predicted_token = 0_i32;
+        let mut error = ptr::null_mut();
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let status = unsafe {
+            skippy_ffi::skippy_decode_step_frame_sampled(
+                self.raw,
+                token_id,
+                sampling_ptr,
+                input_desc_ptr,
+                input_payload_ptr,
+                &mut output_desc,
+                output_payload.as_mut_ptr().cast(),
+                output_payload.len(),
+                &mut output_bytes,
+                &mut predicted_token,
+                &mut error,
+            )
+        };
+        if status == Status::BufferTooSmall && output_bytes > output_payload.len() {
+            free_error(error);
+            return self.decode_step_frame_raw(token_id, sampling, input, output_bytes);
+        }
+        ensure_ok(status, error)?;
+        output_payload.truncate(output_bytes);
+        self.token_count = self
+            .token_count
+            .checked_add(1)
+            .context("session token count overflow")?;
+        Ok((predicted_token, output_desc, output_payload))
+    }
+
+    pub fn verify_tokens_frame(
+        &mut self,
+        token_ids: &[i32],
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(Vec<i32>, ActivationFrame)> {
+        if token_ids.is_empty() {
+            return Err(anyhow!("verify_tokens_frame requires at least one token"));
+        }
+        let (predicted_tokens, output_desc, output_payload) =
+            self.verify_tokens_frame_raw(token_ids, input, output_capacity)?;
+        Ok((
+            predicted_tokens,
+            ActivationFrame {
+                desc: output_desc.into(),
+                payload: output_payload,
+            },
+        ))
+    }
+
+    fn verify_tokens_frame_raw(
+        &mut self,
+        token_ids: &[i32],
+        input: Option<&ActivationFrame>,
+        output_capacity: usize,
+    ) -> Result<(Vec<i32>, RawActivationDesc, Vec<u8>)> {
+        let input_desc = input.map(|frame| frame.desc.as_raw());
+        let input_desc_ptr = input_desc
+            .as_ref()
+            .map_or(ptr::null(), |desc| desc as *const RawActivationDesc);
+        let input_payload_ptr = input.map_or(ptr::null(), |frame| frame.payload.as_ptr().cast());
+        let mut output_desc = RawActivationDesc {
+            version: 0,
+            dtype: ActivationDType::Unknown,
+            layout: ActivationLayout::Opaque,
+            producer_stage_index: -1,
+            layer_start: 0,
+            layer_end: 0,
+            token_count: 0,
+            sequence_count: 0,
+            payload_bytes: 0,
+            flags: 0,
+        };
+        let mut output_payload = vec![0_u8; output_capacity];
+        let mut output_bytes = 0usize;
+        let mut predicted = vec![0_i32; token_ids.len()];
+        let mut output_token_count = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_verify_tokens_frame(
+                self.raw,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                input_desc_ptr,
+                input_payload_ptr,
+                &mut output_desc,
+                output_payload.as_mut_ptr().cast(),
+                output_payload.len(),
+                &mut output_bytes,
+                predicted.as_mut_ptr(),
+                predicted.len(),
+                &mut output_token_count,
+                &mut error,
+            )
+        };
+        if status == Status::BufferTooSmall && output_bytes > output_payload.len() {
+            free_error(error);
+            return self.verify_tokens_frame_raw(token_ids, input, output_bytes);
+        }
+        ensure_ok(status, error)?;
+        predicted.truncate(output_token_count);
+        output_payload.truncate(output_bytes);
+        self.token_count = self
+            .token_count
+            .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
+            .context("session token count overflow")?;
+        Ok((predicted, output_desc, output_payload))
+    }
+
+    pub fn export_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if written > payload.len() {
+            return Err(anyhow!(
+                "state export wrote {written} bytes but output capacity is {}",
+                payload.len()
+            ));
+        }
+        payload.truncate(written);
+        Ok(payload)
+    }
+
+    pub fn import_state(&mut self, layer_start: i32, layer_end: i32, payload: &[u8]) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_ptr().cast(),
+                payload.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn export_full_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut payload = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_mut_ptr().cast(),
+                payload.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if written > payload.len() {
+            return Err(anyhow!(
+                "full state export wrote {written} bytes but output capacity is {}",
+                payload.len()
+            ));
+        }
+        payload.truncate(written);
+        Ok(payload)
+    }
+
+    pub fn import_full_state(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        payload: &[u8],
+    ) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_full_state(
+                self.raw,
+                layer_start,
+                layer_end,
+                payload.as_ptr().cast(),
+                payload.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
+    pub fn export_kv_page(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPage> {
+        let desc = self.probe_kv_page(layer_start, layer_end, token_start, token_count)?;
+        let mut payload = vec![0_u8; usize::try_from(desc.payload_bytes)?];
+        let desc = self.export_kv_page_into(
+            layer_start,
+            layer_end,
+            token_start,
+            token_count,
+            &mut payload,
+        )?;
+        payload.truncate(usize::try_from(desc.payload_bytes)?);
+        Ok(RuntimeKvPage { desc, payload })
+    }
+
+    pub fn probe_kv_page(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPageDesc> {
+        let mut desc = RawKvPageDesc::default();
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_kv_page(
+                self.raw,
+                layer_start,
+                layer_end,
+                token_start,
+                token_count,
+                &mut desc,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+        if desc.payload_bytes != bytes as u64 {
+            return Err(anyhow!(
+                "native KV page probe returned descriptor bytes {} but ABI reported {bytes}",
+                desc.payload_bytes
+            ));
+        }
+        Ok(desc.into())
+    }
+
+    pub fn export_kv_page_into(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        token_start: u64,
+        token_count: u64,
+        output: &mut [u8],
+    ) -> Result<RuntimeKvPageDesc> {
+        let mut desc = RawKvPageDesc::default();
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_kv_page(
+                self.raw,
+                layer_start,
+                layer_end,
+                token_start,
+                token_count,
+                &mut desc,
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if bytes > output.len() {
+            return Err(anyhow!(
+                "native KV page export wrote {bytes} bytes but output capacity is {}",
+                output.len()
+            ));
+        }
+        if desc.payload_bytes != bytes as u64 {
+            return Err(anyhow!(
+                "native KV page export returned descriptor bytes {} but ABI wrote {bytes}",
+                desc.payload_bytes
+            ));
+        }
+        Ok(desc.into())
+    }
+
+    pub fn import_kv_page(&mut self, desc: &RuntimeKvPageDesc, payload: &[u8]) -> Result<()> {
+        let raw_desc = desc.as_raw();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_kv_page(
+                self.raw,
+                &raw_desc,
+                payload.as_ptr().cast(),
+                payload.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        self.token_count = self
+            .token_count
+            .max(desc.token_start.saturating_add(desc.token_count));
+        Ok(())
+    }
+
+    pub fn export_recurrent_state(&mut self) -> Result<Vec<u8>> {
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_recurrent_state(
+                self.raw,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+        if bytes == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut output = vec![0_u8; bytes];
+        let mut written = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_export_recurrent_state(
+                self.raw,
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut written,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if written > output.len() {
+            return Err(anyhow!(
+                "recurrent state export wrote {written} bytes but output capacity is {}",
+                output.len()
+            ));
+        }
+        output.truncate(written);
+        Ok(output)
+    }
+
+    pub fn import_recurrent_state(&mut self, input: &[u8]) -> Result<()> {
+        if input.is_empty() {
+            return Ok(());
+        }
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_import_recurrent_state(
+                self.raw,
+                input.as_ptr().cast(),
+                input.len(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+}
+
+impl Drop for StageSession {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_session_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
+impl ModelInfo {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let path = CString::new(path.to_string_lossy().as_bytes())
+            .context("model path contains an interior NUL byte")?;
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_model_info_open(path.as_ptr(), &mut raw, &mut error) };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_model_info_open returned a null handle"));
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn tensor_count(&self) -> Result<usize> {
+        let mut count = 0usize;
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_model_info_tensor_count(self.raw, &mut count, &mut error) };
+        ensure_ok(status, error)?;
+        Ok(count)
+    }
+
+    pub fn tensor_at(&self, index: usize) -> Result<TensorInfo> {
+        let mut raw = RawTensorInfo {
+            name: ptr::null(),
+            layer_index: -1,
+            role: TensorRole::Unknown,
+            ggml_type: 0,
+            byte_size: 0,
+            element_count: 0,
+        };
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_model_info_tensor_at(self.raw, index, &mut raw, &mut error)
+        };
+        ensure_ok(status, error)?;
+
+        let name = if raw.name.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(raw.name) }
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        Ok(TensorInfo {
+            name,
+            layer_index: u32::try_from(raw.layer_index).ok(),
+            role: raw.role,
+            ggml_type: raw.ggml_type,
+            byte_size: raw.byte_size,
+            element_count: raw.element_count,
+        })
+    }
+
+    pub fn tensors(&self) -> Result<Vec<TensorInfo>> {
+        let count = self.tensor_count()?;
+        (0..count).map(|index| self.tensor_at(index)).collect()
+    }
+
+    pub fn create_slice_plan(&self) -> Result<SlicePlan> {
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_slice_plan_create(self.raw, &mut raw, &mut error) };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!("skippy_slice_plan_create returned a null handle"));
+        }
+        Ok(SlicePlan { raw })
+    }
+
+    pub fn write_slice_gguf(
+        &self,
+        plan: &SlicePlan,
+        stage_index: u32,
+        output_path: impl AsRef<Path>,
+    ) -> Result<()> {
+        let stage_index = i32::try_from(stage_index).context("stage_index exceeds i32")?;
+        let output_path = output_path.as_ref();
+        let output_path = CString::new(output_path.to_string_lossy().as_bytes())
+            .context("output path contains an interior NUL byte")?;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_write_slice_gguf(
+                self.raw,
+                plan.raw,
+                stage_index,
+                output_path.as_ptr(),
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+}
+
+impl Drop for ModelInfo {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_model_info_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
+impl SlicePlan {
+    pub fn add_layer_range(
+        &mut self,
+        stage_index: u32,
+        layer_start: u32,
+        layer_end: u32,
+        include_embeddings: bool,
+        include_output: bool,
+    ) -> Result<()> {
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_slice_plan_add_layer_range(
+                self.raw,
+                i32::try_from(stage_index).context("stage_index exceeds i32")?,
+                i32::try_from(layer_start).context("layer_start exceeds i32")?,
+                i32::try_from(layer_end).context("layer_end exceeds i32")?,
+                include_embeddings,
+                include_output,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+}
+
+impl Drop for SlicePlan {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe {
+                let _ = skippy_ffi::skippy_slice_plan_free(self.raw, ptr::null_mut());
+            }
+        }
+    }
+}
+
+pub fn write_gguf_from_parts(
+    input_paths: &[impl AsRef<Path>],
+    output_path: impl AsRef<Path>,
+) -> Result<()> {
+    if input_paths.is_empty() {
+        return Err(anyhow!("at least one GGUF part path is required"));
+    }
+
+    let input_paths = input_paths
+        .iter()
+        .map(|path| {
+            CString::new(path.as_ref().to_string_lossy().as_bytes())
+                .context("input path contains an interior NUL byte")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let input_ptrs = input_paths
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
+    let output_path = CString::new(output_path.as_ref().to_string_lossy().as_bytes())
+        .context("output path contains an interior NUL byte")?;
+    let mut error = ptr::null_mut();
+    let status = unsafe {
+        skippy_ffi::skippy_write_gguf_from_parts(
+            input_ptrs.as_ptr(),
+            input_ptrs.len(),
+            output_path.as_ptr(),
+            &mut error,
+        )
+    };
+    ensure_ok(status, error)
+}
+
+fn ensure_ok(status: Status, error: *mut RawError) -> Result<()> {
+    if status == Status::Ok {
+        free_error(error);
+        Ok(())
+    } else {
+        let message = error_message(error);
+        free_error(error);
+        if message.is_empty() {
+            Err(anyhow!("skippy ABI call failed: {:?}", status))
+        } else {
+            Err(anyhow!("skippy ABI call failed: {:?}: {}", status, message))
+        }
+    }
+}
+
+fn error_message(error: *mut RawError) -> String {
+    if error.is_null() {
+        return String::new();
+    }
+
+    let message = unsafe { (*error).message };
+    if message.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+fn free_error(error: *mut RawError) {
+    if !error.is_null() {
+        unsafe {
+            skippy_ffi::skippy_error_free(error);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, path::PathBuf};
+
+    use super::{
+        ChatTemplateMessage, ModelInfo, RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole,
+        GGML_TYPE_F16,
+    };
+
+    fn correctness_model() -> Option<PathBuf> {
+        env::var_os("SKIPPY_CORRECTNESS_MODEL").map(PathBuf::from)
+    }
+
+    fn infer_layer_end(path: &PathBuf) -> anyhow::Result<u32> {
+        let info = ModelInfo::open(path)?;
+        let layer_end = info
+            .tensors()?
+            .into_iter()
+            .filter(|tensor| tensor.role == TensorRole::Layer)
+            .filter_map(|tensor| tensor.layer_index)
+            .max()
+            .map(|layer| layer + 1)
+            .unwrap_or(1);
+        Ok(layer_end)
+    }
+
+    fn open_correctness_model(model_path: &PathBuf) -> anyhow::Result<StageModel> {
+        let layer_end = infer_layer_end(model_path)?;
+        let config = RuntimeConfig {
+            stage_index: 0,
+            layer_start: 0,
+            layer_end,
+            ctx_size: 256,
+            n_gpu_layers: 0,
+            cache_type_k: GGML_TYPE_F16,
+            cache_type_v: GGML_TYPE_F16,
+            load_mode: RuntimeLoadMode::RuntimeSlice,
+            include_embeddings: true,
+            include_output: true,
+            filter_tensors_on_load: false,
+        };
+        StageModel::open(model_path, &config)
+    }
+
+    #[test]
+    fn chat_template_applies_when_model_is_configured() -> anyhow::Result<()> {
+        let Some(model_path) = correctness_model() else {
+            eprintln!("skipping chat template smoke: SKIPPY_CORRECTNESS_MODEL is not set");
+            return Ok(());
+        };
+        let model = open_correctness_model(&model_path)?;
+        let prompt = model.apply_chat_template(
+            &[
+                ChatTemplateMessage::new("system", "You are concise."),
+                ChatTemplateMessage::new("user", "Template smoke prompt."),
+            ],
+            true,
+        )?;
+        assert!(prompt.contains("Template smoke prompt."));
+        assert!(prompt.len() >= "Template smoke prompt.".len());
+        Ok(())
+    }
+
+    #[test]
+    fn native_kv_page_round_trips_between_sessions_when_model_is_configured() -> anyhow::Result<()>
+    {
+        let Some(model_path) = correctness_model() else {
+            eprintln!("skipping native KV smoke: SKIPPY_CORRECTNESS_MODEL is not set");
+            return Ok(());
+        };
+        let layer_end = infer_layer_end(&model_path)?;
+        let model = open_correctness_model(&model_path)?;
+        let mut tokens = model.tokenize("Native KV cache smoke test prompt.", true)?;
+        if tokens.len() < 2 {
+            tokens.extend(model.tokenize("More tokens for KV.", false)?);
+        }
+        assert!(
+            tokens.len() >= 2,
+            "smoke prompt must produce at least two tokens"
+        );
+
+        let split = tokens.len() - 1;
+        let prefix = &tokens[..split];
+        let continuation = tokens[split];
+
+        let mut baseline = model.create_session()?;
+        baseline.prefill_chunk_frame(prefix, None, 0)?;
+        let desc = baseline.probe_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
+        let mut payload = vec![0_u8; usize::try_from(desc.payload_bytes)?];
+        let exported = baseline.export_kv_page_into(
+            0,
+            i32::try_from(layer_end)?,
+            0,
+            prefix.len() as u64,
+            &mut payload,
+        )?;
+        assert_eq!(exported, desc);
+        let page = baseline.export_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
+        assert_eq!(page.desc, desc);
+        assert_eq!(page.payload, payload);
+        assert_eq!(page.desc.version, 1);
+        assert_eq!(page.desc.layer_start, 0);
+        assert_eq!(page.desc.layer_end, i32::try_from(layer_end)?);
+        assert_eq!(page.desc.token_start, 0);
+        assert_eq!(page.desc.token_count, prefix.len() as u64);
+        assert_eq!(page.desc.payload_bytes, page.payload.len() as u64);
+        assert_eq!(baseline.token_count(), prefix.len() as u64);
+        let page_checkpoint = baseline.checkpoint()?;
+
+        let rewound_prediction = baseline.verify_tokens_rewound(&[continuation])?;
+        assert_eq!(rewound_prediction.len(), 1);
+        assert_eq!(baseline.token_count(), prefix.len() as u64);
+        let (framed_prediction, framed_output) =
+            baseline.verify_tokens_frame(&[continuation], None, 0)?;
+        assert_eq!(framed_prediction.len(), 1);
+        assert!(framed_output.payload.is_empty());
+        assert_eq!(baseline.token_count(), tokens.len() as u64);
+        baseline.restore_checkpoint(&page_checkpoint)?;
+        let baseline_prediction = baseline.decode_step_frame(continuation, None, 0)?.0;
+        assert_eq!(rewound_prediction[0], baseline_prediction);
+        assert_eq!(framed_prediction[0], baseline_prediction);
+        assert_eq!(baseline.token_count(), tokens.len() as u64);
+
+        let mut restored = model.create_session()?;
+        restored.import_kv_page(&page.desc, &page.payload)?;
+        assert_eq!(restored.token_count(), prefix.len() as u64);
+        let restored_prediction = restored.decode_step_frame(continuation, None, 0)?.0;
+
+        assert_eq!(restored_prediction, baseline_prediction);
+        Ok(())
+    }
+
+    #[test]
+    fn native_state_and_kv_round_trip_between_sessions_when_model_is_configured(
+    ) -> anyhow::Result<()> {
+        let Some(model_path) = correctness_model() else {
+            eprintln!("skipping native state smoke: SKIPPY_CORRECTNESS_MODEL is not set");
+            return Ok(());
+        };
+        let layer_end = infer_layer_end(&model_path)?;
+        let config = RuntimeConfig {
+            stage_index: 0,
+            layer_start: 0,
+            layer_end,
+            ctx_size: 256,
+            n_gpu_layers: 0,
+            cache_type_k: GGML_TYPE_F16,
+            cache_type_v: GGML_TYPE_F16,
+            load_mode: RuntimeLoadMode::RuntimeSlice,
+            include_embeddings: true,
+            include_output: true,
+            filter_tensors_on_load: false,
+        };
+        let model = StageModel::open(&model_path, &config)?;
+        let mut tokens = model.tokenize("Native recurrent state smoke test prompt.", true)?;
+        if tokens.len() < 2 {
+            tokens.extend(model.tokenize("More tokens for state.", false)?);
+        }
+        assert!(
+            tokens.len() >= 2,
+            "smoke prompt must produce at least two tokens"
+        );
+
+        let split = tokens.len() - 1;
+        let prefix = &tokens[..split];
+        let continuation = tokens[split];
+
+        let mut baseline = model.create_session()?;
+        baseline.prefill_chunk_frame(prefix, None, 0)?;
+        let kv_page =
+            baseline.export_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
+        let state = baseline.export_state(0, i32::try_from(layer_end)?)?;
+        assert!(!state.is_empty(), "state export should produce a payload");
+        let baseline_prediction = baseline.decode_step_frame(continuation, None, 0)?.0;
+
+        let mut restored = model.create_session()?;
+        restored.import_kv_page(&kv_page.desc, &kv_page.payload)?;
+        restored.import_state(0, i32::try_from(layer_end)?, &state)?;
+        let restored_prediction = restored.decode_step_frame(continuation, None, 0)?.0;
+
+        assert_eq!(restored_prediction, baseline_prediction);
+        Ok(())
+    }
+}

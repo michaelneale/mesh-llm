@@ -1,0 +1,4545 @@
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::{anyhow, bail, Context, Result};
+use async_trait::async_trait;
+use axum::{
+    body::Body,
+    extract::State,
+    http::Request,
+    middleware::{self, Next},
+    response::Response,
+    Router,
+};
+use futures_util::{stream, StreamExt};
+use openai_frontend::{
+    message_content_to_text, normalize_reasoning_template_options, ChatCompletionChunk,
+    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream, ChatMessage,
+    CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, FinishReason,
+    ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiRequestContext, OpenAiResult, Usage,
+};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use skippy_metrics::attr as attr_key;
+use skippy_protocol::binary::{
+    recv_ready, recv_reply, state_flags, write_stage_message, StageLogitBias as WireLogitBias,
+    StageReply, StageReplyStats, StageSamplingConfig as WireSamplingConfig, StageStateHeader,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS,
+};
+use skippy_protocol::{StageConfig, StageTopology};
+use skippy_runtime::{
+    ChatTemplateMessage, ChatTemplateOptions, LogitBias as RuntimeLogitBias, ModelInfo,
+    RuntimeConfig, RuntimeLoadMode, SamplingConfig, StageModel, StageSession, MAX_LOGIT_BIAS,
+};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, Semaphore},
+    task,
+};
+
+use crate::{
+    binary_transport::{
+        connect_binary_downstream, forwarded_stage_message, forwarded_stage_message_timed,
+        run_binary_stage_message, write_stage_message_conditioned, WireCondition,
+    },
+    cli::ServeOpenAiArgs,
+    config::{load_json, validate_config},
+    runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
+    telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry},
+};
+
+static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
+    let config = load_json::<StageConfig>(&args.config)
+        .with_context(|| format!("load stage config {}", args.config.display()))?;
+    let topology = match args.topology.as_ref() {
+        Some(path) => Some(
+            load_json::<StageTopology>(path)
+                .with_context(|| format!("load topology {}", path.display()))?,
+        ),
+        None => None,
+    };
+    validate_config(&config, topology.as_ref())?;
+    if args.first_stage_addr.is_none() && config.downstream.is_some() {
+        bail!("serve-openai local backend requires a final/single-stage config with no downstream");
+    }
+    if args.prefill_chunk_size == 0 {
+        bail!("--prefill-chunk-size must be greater than zero");
+    }
+    if args.generation_concurrency == 0 {
+        bail!("--generation-concurrency must be greater than zero");
+    }
+
+    let runtime = load_runtime(&config)?.ok_or_else(|| {
+        anyhow!("serve-openai requires a stage config with model_path for tokenization and decode")
+    })?;
+    let model_id = ModelId::new(args.model_id.unwrap_or_else(|| config.model_id.clone()))
+        .map_err(|error| anyhow!("invalid OpenAI model id: {error}"))?
+        .into_string();
+    let mode = match args.first_stage_addr {
+        Some(first_stage_addr) => OpenAiBackendMode::BinaryChain {
+            first_stage_addr,
+            wire_dtype: parse_wire_dtype(&args.activation_wire_dtype)?,
+            prefill_chunk_policy: PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+                policy: &args.prefill_chunk_policy,
+                schedule: args.prefill_chunk_schedule.as_deref(),
+                fixed_chunk_size: args.prefill_chunk_size,
+                adaptive_start: args.prefill_adaptive_start,
+                adaptive_step: args.prefill_adaptive_step,
+                adaptive_max: args.prefill_adaptive_max,
+                schedule_arg: "--prefill-chunk-schedule",
+                policy_arg: "--prefill-chunk-policy",
+            })?,
+            startup_timeout_secs: args.startup_timeout_secs,
+        },
+        None => OpenAiBackendMode::LocalRuntime,
+    };
+    let mode_label = mode.label();
+    let telemetry = Telemetry::new(
+        args.metrics_otlp_grpc,
+        args.telemetry_queue_capacity,
+        config.clone(),
+        args.telemetry_level,
+    );
+    telemetry.emit("stage.openai_server_start", lifecycle_attrs(&config));
+    let ctx_size = usize::try_from(config.ctx_size).unwrap_or(usize::MAX);
+    let backend = Arc::new(StageOpenAiBackend {
+        runtime,
+        config,
+        telemetry: telemetry.clone(),
+        model_id: model_id.clone(),
+        default_max_tokens: args.default_max_tokens,
+        ctx_size,
+        mode,
+        draft: None,
+        speculative_window: 0,
+        adaptive_speculative_window: false,
+        generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+    });
+    let app: Router = instrumented_openai_router(backend, telemetry.clone());
+
+    println!(
+        "skippy-server listening: openai={} model_id={} backend={} generation_concurrency={}",
+        args.bind_addr, model_id, mode_label, args.generation_concurrency,
+    );
+
+    let listener = TcpListener::bind(args.bind_addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct EmbeddedOpenAiArgs {
+    pub bind_addr: SocketAddr,
+    pub config: StageConfig,
+    pub runtime: Arc<Mutex<RuntimeState>>,
+    pub model_id: Option<String>,
+    pub default_max_tokens: u32,
+    pub generation_concurrency: usize,
+    pub prefill_chunk_size: usize,
+    pub prefill_chunk_policy: String,
+    pub prefill_chunk_schedule: Option<String>,
+    pub prefill_adaptive_start: usize,
+    pub prefill_adaptive_step: usize,
+    pub prefill_adaptive_max: usize,
+    pub draft_model_path: Option<PathBuf>,
+    pub speculative_window: usize,
+    pub adaptive_speculative_window: bool,
+    pub draft_n_gpu_layers: Option<i32>,
+    pub activation_width: i32,
+    pub wire_dtype: WireActivationDType,
+    pub downstream_connect_timeout_secs: u64,
+    pub downstream_wire_condition: WireCondition,
+    pub telemetry: Telemetry,
+}
+
+pub async fn serve_embedded_openai(args: EmbeddedOpenAiArgs) -> Result<()> {
+    serve_embedded_openai_with_shutdown(args, std::future::pending::<()>()).await
+}
+
+pub async fn serve_embedded_openai_with_shutdown(
+    args: EmbeddedOpenAiArgs,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let bind_addr = args.bind_addr;
+    let binding = embedded_openai_router(args)?;
+
+    println!(
+        "skippy-server listening: openai={} model_id={} backend=embedded-stage0 generation_concurrency={}",
+        bind_addr, binding.model_id, binding.generation_concurrency,
+    );
+
+    let listener = TcpListener::bind(bind_addr).await?;
+    axum::serve(listener, binding.router)
+        .with_graceful_shutdown(shutdown)
+        .await?;
+    Ok(())
+}
+
+pub struct EmbeddedOpenAiRouter {
+    pub router: Router,
+    pub model_id: String,
+    pub generation_concurrency: usize,
+}
+
+#[derive(Clone)]
+pub struct EmbeddedOpenAiBackend {
+    pub backend: Arc<dyn OpenAiBackend>,
+    pub model_id: String,
+    pub generation_concurrency: usize,
+}
+
+pub fn embedded_openai_router(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenAiRouter> {
+    let telemetry = args.telemetry.clone();
+    let binding = embedded_openai_backend(args)?;
+    let router = instrumented_openai_router(binding.backend.clone(), telemetry);
+
+    Ok(EmbeddedOpenAiRouter {
+        router,
+        model_id: binding.model_id,
+        generation_concurrency: binding.generation_concurrency,
+    })
+}
+
+pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenAiBackend> {
+    if args.prefill_chunk_size == 0 {
+        bail!("--openai-prefill-chunk-size must be greater than zero");
+    }
+    if args.generation_concurrency == 0 {
+        bail!("--openai-generation-concurrency must be greater than zero");
+    }
+    if args.draft_model_path.is_some() && args.speculative_window == 0 {
+        bail!("--openai-speculative-window must be greater than zero when a draft model is set");
+    }
+    if args.config.stage_index != 0 || args.config.layer_start != 0 {
+        bail!("embedded OpenAI serving is only supported on stage 0");
+    }
+    let draft = open_draft_runner(
+        args.draft_model_path.as_deref(),
+        &args.config,
+        args.draft_n_gpu_layers,
+        args.speculative_window,
+    )?;
+    let model_id = ModelId::new(
+        args.model_id
+            .unwrap_or_else(|| args.config.model_id.clone()),
+    )
+    .map_err(|error| anyhow!("invalid OpenAI model id: {error}"))?
+    .into_string();
+    let lane_pool = PersistentStageLanePool::new(
+        &args.config,
+        args.generation_concurrency,
+        args.downstream_connect_timeout_secs,
+        args.telemetry.clone(),
+    )
+    .context("create embedded OpenAI persistent downstream lanes")?;
+    let mode = OpenAiBackendMode::EmbeddedStageZero {
+        config: args.config.clone(),
+        wire_dtype: args.wire_dtype,
+        prefill_chunk_policy: PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+            policy: &args.prefill_chunk_policy,
+            schedule: args.prefill_chunk_schedule.as_deref(),
+            fixed_chunk_size: args.prefill_chunk_size,
+            adaptive_start: args.prefill_adaptive_start,
+            adaptive_step: args.prefill_adaptive_step,
+            adaptive_max: args.prefill_adaptive_max,
+            schedule_arg: "--openai-prefill-chunk-schedule",
+            policy_arg: "--openai-prefill-chunk-policy",
+        })?,
+        activation_width: args.activation_width,
+        downstream_wire_condition: args.downstream_wire_condition,
+        lane_pool,
+    };
+    args.telemetry
+        .emit("stage.openai_server_start", lifecycle_attrs(&args.config));
+    let ctx_size = usize::try_from(args.config.ctx_size).unwrap_or(usize::MAX);
+    let backend = Arc::new(StageOpenAiBackend {
+        runtime: args.runtime,
+        config: args.config.clone(),
+        telemetry: args.telemetry.clone(),
+        model_id: model_id.clone(),
+        default_max_tokens: args.default_max_tokens,
+        ctx_size,
+        mode,
+        draft,
+        speculative_window: args.speculative_window,
+        adaptive_speculative_window: args.adaptive_speculative_window,
+        generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+    });
+
+    Ok(EmbeddedOpenAiBackend {
+        backend,
+        model_id,
+        generation_concurrency: args.generation_concurrency,
+    })
+}
+
+#[derive(Clone)]
+struct StageOpenAiBackend {
+    runtime: Arc<Mutex<RuntimeState>>,
+    config: StageConfig,
+    telemetry: Telemetry,
+    model_id: String,
+    default_max_tokens: u32,
+    ctx_size: usize,
+    mode: OpenAiBackendMode,
+    draft: Option<Arc<Mutex<DraftRunner>>>,
+    speculative_window: usize,
+    adaptive_speculative_window: bool,
+    generation_limit: Arc<Semaphore>,
+}
+
+fn instrumented_openai_router(backend: Arc<dyn OpenAiBackend>, telemetry: Telemetry) -> Router {
+    openai_frontend::router_for(backend).layer(middleware::from_fn_with_state(
+        telemetry,
+        openai_http_telemetry,
+    ))
+}
+
+async fn openai_http_telemetry(
+    State(telemetry): State<Telemetry>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let timer = PhaseTimer::start();
+    let method = request.method().to_string();
+    let path = request.uri().path().to_string();
+    let response = next.run(request).await;
+    let status = response.status().as_u16();
+    let mut attrs = BTreeMap::from([
+        ("llama_stage.http_method".to_string(), json!(method)),
+        ("llama_stage.http_path".to_string(), json!(path)),
+        ("llama_stage.http_status".to_string(), json!(status)),
+    ]);
+    attrs.insert(
+        "llama_stage.elapsed_ms".to_string(),
+        json!(timer.elapsed_ms()),
+    );
+    telemetry.emit_span(
+        "stage.openai_http_request",
+        attrs,
+        timer.start_unix_nanos,
+        now_unix_nanos() as u64,
+    );
+    response
+}
+
+#[derive(Clone)]
+enum OpenAiBackendMode {
+    LocalRuntime,
+    BinaryChain {
+        first_stage_addr: String,
+        wire_dtype: WireActivationDType,
+        prefill_chunk_policy: PrefillChunkPolicy,
+        startup_timeout_secs: u64,
+    },
+    EmbeddedStageZero {
+        config: StageConfig,
+        wire_dtype: WireActivationDType,
+        prefill_chunk_policy: PrefillChunkPolicy,
+        activation_width: i32,
+        downstream_wire_condition: WireCondition,
+        lane_pool: Option<Arc<PersistentStageLanePool>>,
+    },
+}
+
+struct PersistentStageLanePool {
+    config: StageConfig,
+    timeout_secs: u64,
+    telemetry: Telemetry,
+    lanes: Mutex<Vec<PersistentStageLane>>,
+    next_lane_id: AtomicU64,
+    capacity: usize,
+}
+
+struct PersistentStageLane {
+    id: u64,
+    stream: TcpStream,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PrefillChunkSchedule {
+    sizes: Vec<usize>,
+}
+
+impl PrefillChunkSchedule {
+    fn parse(spec: Option<&str>) -> Result<Option<Self>> {
+        let Some(spec) = spec else {
+            return Ok(None);
+        };
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return Ok(None);
+        }
+        let mut sizes = Vec::new();
+        for part in spec.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                bail!("empty chunk size in schedule");
+            }
+            let size = part
+                .parse::<usize>()
+                .with_context(|| format!("invalid chunk size '{part}'"))?;
+            if size == 0 {
+                bail!("chunk sizes must be greater than zero");
+            }
+            sizes.push(size);
+        }
+        Ok(Some(Self { sizes }))
+    }
+
+    fn chunk_size_for(&self, chunk_index: usize) -> usize {
+        self.sizes
+            .get(chunk_index)
+            .copied()
+            .or_else(|| self.sizes.last().copied())
+            .expect("schedule has at least one size")
+    }
+
+    fn label(&self) -> String {
+        self.sizes
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PrefillChunkPolicy {
+    Fixed {
+        chunk_size: usize,
+    },
+    Schedule {
+        fixed_chunk_size: usize,
+        schedule: PrefillChunkSchedule,
+    },
+    AdaptiveRamp {
+        fixed_chunk_size: usize,
+        start: usize,
+        step: usize,
+        max: usize,
+    },
+}
+
+struct PrefillChunkPolicyArgs<'a> {
+    policy: &'a str,
+    schedule: Option<&'a str>,
+    fixed_chunk_size: usize,
+    adaptive_start: usize,
+    adaptive_step: usize,
+    adaptive_max: usize,
+    schedule_arg: &'static str,
+    policy_arg: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PrefillChunkObservation {
+    compute_ms: f64,
+    forward_write_ms: f64,
+    downstream_wait_ms: f64,
+}
+
+#[derive(Clone, Debug)]
+struct PrefillChunkPlanner {
+    policy: PrefillChunkPolicy,
+    next_adaptive_size: usize,
+}
+
+impl PrefillChunkPolicy {
+    fn parse(args: PrefillChunkPolicyArgs<'_>) -> Result<Self> {
+        if args.fixed_chunk_size == 0 {
+            bail!("prefill chunk size must be greater than zero");
+        }
+        let normalized = args.policy.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "fixed" => {
+                if let Some(schedule) = PrefillChunkSchedule::parse(args.schedule)
+                    .with_context(|| format!("invalid {} value", args.schedule_arg))?
+                {
+                    return Ok(Self::Schedule {
+                        fixed_chunk_size: args.fixed_chunk_size,
+                        schedule,
+                    });
+                }
+                Ok(Self::Fixed {
+                    chunk_size: args.fixed_chunk_size,
+                })
+            }
+            "schedule" => {
+                let schedule = PrefillChunkSchedule::parse(args.schedule)
+                    .with_context(|| format!("invalid {} value", args.schedule_arg))?
+                    .ok_or_else(|| anyhow!("{} requires {}", args.policy_arg, args.schedule_arg))?;
+                Ok(Self::Schedule {
+                    fixed_chunk_size: args.fixed_chunk_size,
+                    schedule,
+                })
+            }
+            "adaptive" | "adaptive-ramp" => {
+                if args.adaptive_start == 0
+                    || args.adaptive_step == 0
+                    || args.adaptive_max == 0
+                    || args.adaptive_start > args.adaptive_max
+                {
+                    bail!(
+                        "{} adaptive-ramp requires positive start/step/max with start <= max",
+                        args.policy_arg
+                    );
+                }
+                Ok(Self::AdaptiveRamp {
+                    fixed_chunk_size: args.fixed_chunk_size,
+                    start: args.adaptive_start,
+                    step: args.adaptive_step,
+                    max: args.adaptive_max,
+                })
+            }
+            other => bail!(
+                "invalid {} '{}'; expected fixed, schedule, or adaptive-ramp",
+                args.policy_arg,
+                other
+            ),
+        }
+    }
+
+    fn planner(&self) -> PrefillChunkPlanner {
+        let next_adaptive_size = match self {
+            Self::AdaptiveRamp { start, .. } => *start,
+            _ => 0,
+        };
+        PrefillChunkPlanner {
+            policy: self.clone(),
+            next_adaptive_size,
+        }
+    }
+
+    fn policy_label(&self) -> &'static str {
+        match self {
+            Self::Fixed { .. } => "fixed",
+            Self::Schedule { .. } => "schedule",
+            Self::AdaptiveRamp { .. } => "adaptive-ramp",
+        }
+    }
+
+    fn fixed_chunk_size(&self) -> usize {
+        match self {
+            Self::Fixed { chunk_size } => *chunk_size,
+            Self::Schedule {
+                fixed_chunk_size, ..
+            }
+            | Self::AdaptiveRamp {
+                fixed_chunk_size, ..
+            } => *fixed_chunk_size,
+        }
+    }
+
+    fn schedule(&self) -> Option<&PrefillChunkSchedule> {
+        match self {
+            Self::Schedule { schedule, .. } => Some(schedule),
+            _ => None,
+        }
+    }
+
+    fn adaptive_params(&self) -> Option<(usize, usize, usize)> {
+        match self {
+            Self::AdaptiveRamp {
+                start, step, max, ..
+            } => Some((*start, *step, *max)),
+            _ => None,
+        }
+    }
+}
+
+impl PrefillChunkPlanner {
+    fn chunk_size_for(&mut self, chunk_index: usize) -> usize {
+        match &self.policy {
+            PrefillChunkPolicy::Fixed { chunk_size } => *chunk_size,
+            PrefillChunkPolicy::Schedule { schedule, .. } => schedule.chunk_size_for(chunk_index),
+            PrefillChunkPolicy::AdaptiveRamp { .. } => self.next_adaptive_size,
+        }
+    }
+
+    fn observe(&mut self, observation: PrefillChunkObservation) {
+        let PrefillChunkPolicy::AdaptiveRamp {
+            start, step, max, ..
+        } = &self.policy
+        else {
+            return;
+        };
+        let compute_ms = observation.compute_ms.max(0.001);
+        let downstream_hidden = observation.downstream_wait_ms <= compute_ms * 0.75
+            && observation.forward_write_ms <= compute_ms * 0.25;
+        let downstream_exposed = observation.downstream_wait_ms > compute_ms * 1.25;
+        if downstream_hidden {
+            self.next_adaptive_size = self.next_adaptive_size.saturating_add(*step).min(*max);
+        } else if downstream_exposed {
+            self.next_adaptive_size = self.next_adaptive_size.saturating_sub(*step).max(*start);
+        }
+    }
+
+    fn advance_without_observation(&mut self) {
+        let PrefillChunkPolicy::AdaptiveRamp { step, max, .. } = &self.policy else {
+            return;
+        };
+        self.next_adaptive_size = self.next_adaptive_size.saturating_add(*step).min(*max);
+    }
+}
+
+impl PersistentStageLanePool {
+    fn new(
+        config: &StageConfig,
+        capacity: usize,
+        timeout_secs: u64,
+        telemetry: Telemetry,
+    ) -> Result<Option<Arc<Self>>> {
+        if config.downstream.is_none() {
+            return Ok(None);
+        }
+        let pool = Arc::new(Self {
+            config: config.clone(),
+            timeout_secs,
+            telemetry,
+            lanes: Mutex::new(Vec::with_capacity(capacity)),
+            next_lane_id: AtomicU64::new(0),
+            capacity,
+        });
+        let timer = PhaseTimer::start();
+        for _ in 0..capacity {
+            let lane = pool.connect_lane()?;
+            pool.return_lane(lane);
+        }
+        let mut attrs = lifecycle_attrs(config);
+        attrs.insert(
+            "llama_stage.openai_downstream_pool_capacity".to_string(),
+            json!(capacity),
+        );
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(timer.elapsed_ms()),
+        );
+        pool.telemetry.emit_span(
+            "stage.openai_downstream_pool_ready",
+            attrs,
+            timer.start_unix_nanos,
+            now_unix_nanos() as u64,
+        );
+        Ok(Some(pool))
+    }
+
+    fn checkout(&self, ids: &OpenAiGenerationIds) -> OpenAiResult<PersistentStageLane> {
+        let timer = PhaseTimer::start();
+        let lane = {
+            let mut lanes = self
+                .lanes
+                .lock()
+                .map_err(|_| OpenAiError::backend("persistent lane pool lock poisoned"))?;
+            lanes.pop()
+        };
+        let lane = match lane {
+            Some(lane) => lane,
+            None => self.connect_lane().map_err(openai_backend_error)?,
+        };
+        let mut attrs = BTreeMap::from([
+            (
+                "llama_stage.openai_downstream_persistent".to_string(),
+                json!(true),
+            ),
+            (
+                "llama_stage.openai_downstream_lane_id".to_string(),
+                json!(lane.id),
+            ),
+            (
+                "llama_stage.openai_downstream_pool_capacity".to_string(),
+                json!(self.capacity),
+            ),
+            (
+                "llama_stage.request_id".to_string(),
+                json!(ids.request_id_string()),
+            ),
+            (
+                "llama_stage.session_id".to_string(),
+                json!(ids.session_id_string()),
+            ),
+        ]);
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(timer.elapsed_ms()),
+        );
+        self.telemetry.emit_span(
+            "stage.openai_downstream_connect",
+            attrs,
+            timer.start_unix_nanos,
+            now_unix_nanos() as u64,
+        );
+        Ok(lane)
+    }
+
+    fn return_lane(&self, lane: PersistentStageLane) {
+        match self.lanes.lock() {
+            Ok(mut lanes) => lanes.push(lane),
+            Err(_) => {
+                let mut attrs = lifecycle_attrs(&self.config);
+                attrs.insert(
+                    "llama_stage.error".to_string(),
+                    json!("persistent lane pool lock poisoned"),
+                );
+                self.telemetry
+                    .emit("stage.openai_downstream_lane_return_failed", attrs);
+            }
+        }
+    }
+
+    fn replace_lane(&self, retired_lane_id: u64) {
+        let timer = PhaseTimer::start();
+        let mut attrs = lifecycle_attrs(&self.config);
+        attrs.insert(
+            "llama_stage.openai_downstream_retired_lane_id".to_string(),
+            json!(retired_lane_id),
+        );
+        match self.connect_lane() {
+            Ok(lane) => {
+                attrs.insert(
+                    "llama_stage.openai_downstream_lane_id".to_string(),
+                    json!(lane.id),
+                );
+                attrs.insert(
+                    "llama_stage.elapsed_ms".to_string(),
+                    json!(timer.elapsed_ms()),
+                );
+                self.return_lane(lane);
+                self.telemetry.emit_span(
+                    "stage.openai_downstream_lane_replaced",
+                    attrs,
+                    timer.start_unix_nanos,
+                    now_unix_nanos() as u64,
+                );
+            }
+            Err(error) => {
+                attrs.insert("llama_stage.error".to_string(), json!(error.to_string()));
+                attrs.insert(
+                    "llama_stage.elapsed_ms".to_string(),
+                    json!(timer.elapsed_ms()),
+                );
+                self.telemetry.emit_span(
+                    "stage.openai_downstream_lane_replace_failed",
+                    attrs,
+                    timer.start_unix_nanos,
+                    now_unix_nanos() as u64,
+                );
+            }
+        }
+    }
+
+    fn connect_lane(&self) -> Result<PersistentStageLane> {
+        let lane_id = self.next_lane_id.fetch_add(1, Ordering::Relaxed);
+        let timer = PhaseTimer::start();
+        let mut stream = connect_binary_downstream(&self.config, self.timeout_secs)?
+            .ok_or_else(|| anyhow!("embedded stage0 has no downstream"))?;
+        recv_ready(&mut stream).context("persistent downstream lane did not become ready")?;
+        let mut attrs = lifecycle_attrs(&self.config);
+        attrs.insert(
+            "llama_stage.openai_downstream_lane_id".to_string(),
+            json!(lane_id),
+        );
+        attrs.insert(
+            "llama_stage.openai_downstream_pool_capacity".to_string(),
+            json!(self.capacity),
+        );
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(timer.elapsed_ms()),
+        );
+        self.telemetry.emit_span(
+            "stage.openai_downstream_persistent_connect",
+            attrs,
+            timer.start_unix_nanos,
+            now_unix_nanos() as u64,
+        );
+        Ok(PersistentStageLane {
+            id: lane_id,
+            stream,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct OpenAiGenerationIds {
+    session_label: String,
+    session_id: u64,
+    request_id: u64,
+}
+
+impl OpenAiGenerationIds {
+    fn new() -> Self {
+        let sequence = OPENAI_GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let session_label = format!("openai-session-{}-{sequence}", now_unix_millis());
+        Self {
+            session_id: stable_wire_id(&[session_label.as_bytes()]),
+            request_id: stable_wire_id(&[session_label.as_bytes(), b"request"]),
+            session_label,
+        }
+    }
+
+    fn session_id_string(&self) -> String {
+        self.session_id.to_string()
+    }
+
+    fn request_id_string(&self) -> String {
+        self.request_id.to_string()
+    }
+}
+
+struct PhaseTimer {
+    start_unix_nanos: u64,
+    start_instant: Instant,
+}
+
+impl PhaseTimer {
+    fn start() -> Self {
+        Self {
+            start_unix_nanos: now_unix_nanos() as u64,
+            start_instant: Instant::now(),
+        }
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        self.start_instant.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+fn decode_token_phase(decode_step: u32) -> &'static str {
+    match decode_step {
+        0 => "cold",
+        1..=7 => "warmup",
+        _ => "steady",
+    }
+}
+
+#[derive(Default)]
+struct GenerationMetrics {
+    detokenize_ms: f64,
+    text_emit_ms: f64,
+    eog_check_ms: f64,
+}
+
+struct DraftRunner {
+    path: PathBuf,
+    window: usize,
+    _model: StageModel,
+    session: StageSession,
+}
+
+impl DraftRunner {
+    fn open(
+        path: &Path,
+        config: &StageConfig,
+        n_gpu_layers: Option<i32>,
+        window: usize,
+    ) -> Result<Self> {
+        if !path.is_file() {
+            bail!("draft model does not exist: {}", path.display());
+        }
+        let layer_count = model_layer_count(path)?;
+        let model = StageModel::open(
+            path,
+            &RuntimeConfig {
+                stage_index: 0,
+                layer_start: 0,
+                layer_end: layer_count,
+                ctx_size: config.ctx_size,
+                n_gpu_layers: n_gpu_layers.unwrap_or(config.n_gpu_layers),
+                cache_type_k: skippy_runtime::GGML_TYPE_F16,
+                cache_type_v: skippy_runtime::GGML_TYPE_F16,
+                load_mode: RuntimeLoadMode::RuntimeSlice,
+                include_embeddings: true,
+                include_output: true,
+                filter_tensors_on_load: false,
+            },
+        )
+        .with_context(|| format!("open draft model {}", path.display()))?;
+        let session = model.create_session().context("create draft session")?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            window,
+            _model: model,
+            session,
+        })
+    }
+
+    fn reset_to_context(&mut self, context_tokens: &[i32]) -> Result<()> {
+        self.session.reset().context("reset draft session")?;
+        if context_tokens.len() > 1 {
+            self.session
+                .prefill_chunk(&context_tokens[..context_tokens.len() - 1])
+                .context("prefill draft context")?;
+        }
+        Ok(())
+    }
+
+    fn propose(&mut self, mut current: i32, max_tokens: usize) -> Result<Vec<i32>> {
+        let mut tokens = Vec::with_capacity(max_tokens);
+        for _ in 0..max_tokens {
+            current = self
+                .session
+                .decode_step(current)
+                .context("draft decode step")?;
+            tokens.push(current);
+        }
+        Ok(tokens)
+    }
+}
+
+fn open_draft_runner(
+    path: Option<&Path>,
+    config: &StageConfig,
+    n_gpu_layers: Option<i32>,
+    window: usize,
+) -> Result<Option<Arc<Mutex<DraftRunner>>>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    Ok(Some(Arc::new(Mutex::new(DraftRunner::open(
+        path,
+        config,
+        n_gpu_layers,
+        window,
+    )?))))
+}
+
+fn model_layer_count(path: &Path) -> Result<u32> {
+    let info =
+        ModelInfo::open(path).with_context(|| format!("open model info {}", path.display()))?;
+    let layer_count = info
+        .tensors()?
+        .into_iter()
+        .filter_map(|tensor| tensor.layer_index)
+        .max()
+        .map(|index| index + 1)
+        .ok_or_else(|| anyhow!("could not infer layer count for {}", path.display()))?;
+    Ok(layer_count)
+}
+
+impl OpenAiBackendMode {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::LocalRuntime => "local-runtime",
+            Self::BinaryChain { .. } => "binary-chain",
+            Self::EmbeddedStageZero { .. } => "embedded-stage0",
+        }
+    }
+}
+
+#[async_trait]
+impl OpenAiBackend for StageOpenAiBackend {
+    async fn models(&self) -> OpenAiResult<Vec<ModelObject>> {
+        Ok(vec![ModelObject::new(self.model_id.clone())])
+    }
+
+    async fn chat_completion(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> OpenAiResult<ChatCompletionResponse> {
+        let ids = OpenAiGenerationIds::new();
+        let request_timer = PhaseTimer::start();
+        self.ensure_model(&request.model)?;
+        let sampling = chat_sampling_config(&request)?;
+        let template_options = chat_template_options(&request)?;
+        let template_timer = PhaseTimer::start();
+        let prompt = self.apply_chat_template(&request.messages, template_options)?;
+        let mut template_attrs = self.openai_attrs(&ids);
+        template_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("chat_completion"),
+        );
+        template_attrs.insert(
+            "llama_stage.chat_message_count".to_string(),
+            json!(request.messages.len()),
+        );
+        template_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
+        let max_tokens = request
+            .effective_max_tokens()
+            .unwrap_or(self.default_max_tokens);
+        let output = self
+            .run_generation(
+                prompt,
+                max_tokens,
+                request.stop.clone(),
+                sampling,
+                ids.clone(),
+            )
+            .await?;
+        let response_timer = PhaseTimer::start();
+        let response = ChatCompletionResponse::new_with_reason(
+            request.model,
+            output.text,
+            Usage::new(output.prompt_tokens, output.completion_tokens),
+            output.finish_reason,
+        );
+        let mut response_attrs = self.openai_attrs(&ids);
+        response_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("chat_completion"),
+        );
+        response_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(output.prompt_tokens),
+        );
+        response_attrs.insert(
+            "llama_stage.completion_token_count".to_string(),
+            json!(output.completion_tokens),
+        );
+        self.emit_openai_phase(
+            "stage.openai_response_build",
+            response_timer,
+            response_attrs,
+        );
+        let mut summary_attrs = self.openai_attrs(&ids);
+        summary_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("chat_completion"),
+        );
+        summary_attrs.insert("llama_stage.status".to_string(), json!("ok"));
+        summary_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(output.prompt_tokens),
+        );
+        summary_attrs.insert(
+            "llama_stage.completion_token_count".to_string(),
+            json!(output.completion_tokens),
+        );
+        self.emit_openai_summary("stage.openai_request_summary", request_timer, summary_attrs);
+        Ok(response)
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        request: ChatCompletionRequest,
+        context: OpenAiRequestContext,
+    ) -> OpenAiResult<ChatCompletionStream> {
+        let ids = OpenAiGenerationIds::new();
+        self.ensure_model(&request.model)?;
+        let sampling = chat_sampling_config(&request)?;
+        let include_usage = request.include_usage();
+        let template_options = chat_template_options(&request)?;
+        let template_timer = PhaseTimer::start();
+        let prompt = self.apply_chat_template(&request.messages, template_options)?;
+        let mut template_attrs = self.openai_attrs(&ids);
+        template_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("chat_completion_stream"),
+        );
+        template_attrs.insert(
+            "llama_stage.chat_message_count".to_string(),
+            json!(request.messages.len()),
+        );
+        template_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
+        let max_tokens = request
+            .effective_max_tokens()
+            .unwrap_or(self.default_max_tokens);
+        let model = request.model;
+        let stream = self
+            .run_generation_stream(
+                prompt,
+                max_tokens,
+                request.stop.clone(),
+                sampling,
+                include_usage,
+                context,
+                ids,
+            )
+            .await?;
+        Ok(Box::pin(stream.map(move |event| {
+            generation_event_to_chat_chunk(event, &model)
+        })))
+    }
+
+    async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
+        let ids = OpenAiGenerationIds::new();
+        let request_timer = PhaseTimer::start();
+        self.ensure_model(&request.model)?;
+        let sampling = completion_sampling_config(&request)?;
+        let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
+        let prompt_timer = PhaseTimer::start();
+        let prompt = request.prompt.text_lossy();
+        let mut prompt_attrs = self.openai_attrs(&ids);
+        prompt_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("completion"),
+        );
+        prompt_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        self.emit_openai_phase("stage.openai_prompt_prepare", prompt_timer, prompt_attrs);
+        let output = self
+            .run_generation(
+                prompt,
+                max_tokens,
+                request.stop.clone(),
+                sampling,
+                ids.clone(),
+            )
+            .await?;
+        let response_timer = PhaseTimer::start();
+        let response = CompletionResponse::new_with_reason(
+            request.model,
+            output.text,
+            Usage::new(output.prompt_tokens, output.completion_tokens),
+            output.finish_reason,
+        );
+        let mut response_attrs = self.openai_attrs(&ids);
+        response_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("completion"),
+        );
+        response_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(output.prompt_tokens),
+        );
+        response_attrs.insert(
+            "llama_stage.completion_token_count".to_string(),
+            json!(output.completion_tokens),
+        );
+        self.emit_openai_phase(
+            "stage.openai_response_build",
+            response_timer,
+            response_attrs,
+        );
+        let mut summary_attrs = self.openai_attrs(&ids);
+        summary_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("completion"),
+        );
+        summary_attrs.insert("llama_stage.status".to_string(), json!("ok"));
+        summary_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(output.prompt_tokens),
+        );
+        summary_attrs.insert(
+            "llama_stage.completion_token_count".to_string(),
+            json!(output.completion_tokens),
+        );
+        self.emit_openai_summary("stage.openai_request_summary", request_timer, summary_attrs);
+        Ok(response)
+    }
+
+    async fn completion_stream(
+        &self,
+        request: CompletionRequest,
+        context: OpenAiRequestContext,
+    ) -> OpenAiResult<CompletionStream> {
+        let ids = OpenAiGenerationIds::new();
+        self.ensure_model(&request.model)?;
+        let sampling = completion_sampling_config(&request)?;
+        let include_usage = request.include_usage();
+        let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
+        let model = request.model;
+        let prompt_timer = PhaseTimer::start();
+        let prompt = request.prompt.text_lossy();
+        let mut prompt_attrs = self.openai_attrs(&ids);
+        prompt_attrs.insert(
+            "llama_stage.openai_operation".to_string(),
+            json!("completion_stream"),
+        );
+        prompt_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        self.emit_openai_phase("stage.openai_prompt_prepare", prompt_timer, prompt_attrs);
+        let stream = self
+            .run_generation_stream(
+                prompt,
+                max_tokens,
+                request.stop.clone(),
+                sampling,
+                include_usage,
+                context,
+                ids,
+            )
+            .await?;
+        Ok(Box::pin(stream.map(move |event| {
+            generation_event_to_completion_chunk(event, &model)
+        })))
+    }
+}
+
+impl StageOpenAiBackend {
+    fn openai_attrs(&self, ids: &OpenAiGenerationIds) -> BTreeMap<String, Value> {
+        let mut attrs = lifecycle_attrs(&self.config);
+        attrs.insert(
+            attr_key::SESSION_ID.to_string(),
+            json!(ids.session_id_string()),
+        );
+        attrs.insert(
+            attr_key::REQUEST_ID.to_string(),
+            json!(ids.request_id_string()),
+        );
+        attrs.insert(
+            "llama_stage.openai_backend".to_string(),
+            json!(self.mode.label()),
+        );
+        attrs
+    }
+
+    fn insert_runtime_session_stats(
+        attrs: &mut BTreeMap<String, Value>,
+        prefix: &str,
+        stats: RuntimeSessionStats,
+    ) {
+        attrs.insert(
+            format!("{prefix}.active_sessions"),
+            json!(stats.active_sessions),
+        );
+        attrs.insert(
+            format!("{prefix}.idle_sessions"),
+            json!(stats.idle_sessions),
+        );
+        attrs.insert(
+            format!("{prefix}.warm_kv_sessions"),
+            json!(stats.warm_kv_sessions),
+        );
+        attrs.insert(
+            format!("{prefix}.tracked_token_counts"),
+            json!(stats.tracked_token_counts),
+        );
+        attrs.insert(format!("{prefix}.checkpoints"), json!(stats.checkpoints));
+    }
+
+    fn emit_openai_phase(
+        &self,
+        name: &str,
+        timer: PhaseTimer,
+        mut attrs: BTreeMap<String, Value>,
+    ) -> f64 {
+        let elapsed_ms = timer.elapsed_ms();
+        attrs.insert("llama_stage.elapsed_ms".to_string(), json!(elapsed_ms));
+        let end = now_unix_nanos() as u64;
+        self.telemetry
+            .emit_debug_span(name, attrs, timer.start_unix_nanos, end);
+        elapsed_ms
+    }
+
+    fn emit_openai_summary(
+        &self,
+        name: &str,
+        timer: PhaseTimer,
+        mut attrs: BTreeMap<String, Value>,
+    ) -> f64 {
+        let elapsed_ms = timer.elapsed_ms();
+        attrs.insert("llama_stage.elapsed_ms".to_string(), json!(elapsed_ms));
+        let end = now_unix_nanos() as u64;
+        self.telemetry
+            .emit_span(name, attrs, timer.start_unix_nanos, end);
+        elapsed_ms
+    }
+
+    fn ensure_model(&self, requested: &str) -> OpenAiResult<()> {
+        ensure_requested_model(&self.model_id, requested)
+    }
+
+    async fn run_generation(
+        &self,
+        prompt: String,
+        max_tokens: u32,
+        stop: Option<openai_frontend::StopSequence>,
+        sampling: SamplingConfig,
+        ids: OpenAiGenerationIds,
+    ) -> OpenAiResult<GeneratedText> {
+        let admit_timer = PhaseTimer::start();
+        let permit = self
+            .generation_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| OpenAiError::backend("generation limiter closed"))?;
+        let mut admit_attrs = self.openai_attrs(&ids);
+        admit_attrs.insert(
+            "llama_stage.openai_phase".to_string(),
+            json!("generation_admit"),
+        );
+        self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
+        let backend = self.clone();
+        task::spawn_blocking(move || {
+            let _permit = permit;
+            backend.generate_text(
+                prompt,
+                max_tokens,
+                stop.as_ref(),
+                sampling,
+                None,
+                ids,
+                |_| Ok(()),
+            )
+        })
+        .await
+        .map_err(|error| OpenAiError::backend(format!("generation task failed: {error}")))?
+    }
+
+    async fn run_generation_stream(
+        &self,
+        prompt: String,
+        max_tokens: u32,
+        stop: Option<openai_frontend::StopSequence>,
+        sampling: SamplingConfig,
+        include_usage: bool,
+        context: OpenAiRequestContext,
+        ids: OpenAiGenerationIds,
+    ) -> OpenAiResult<GenerationStream> {
+        let admit_timer = PhaseTimer::start();
+        let permit = self
+            .generation_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| OpenAiError::backend("generation limiter closed"))?;
+        let mut admit_attrs = self.openai_attrs(&ids);
+        admit_attrs.insert(
+            "llama_stage.openai_phase".to_string(),
+            json!("generation_admit"),
+        );
+        self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
+        let backend = self.clone();
+        let (tx, rx) = mpsc::channel(16);
+        task::spawn_blocking(move || {
+            let _permit = permit;
+            let result = backend.generate_text(
+                prompt,
+                max_tokens,
+                stop.as_ref(),
+                sampling,
+                Some(&context.cancellation_token()),
+                ids,
+                |chunk| {
+                    if context.is_cancelled() {
+                        return Err(OpenAiError::backend("stream receiver cancelled"));
+                    }
+                    tx.blocking_send(Ok(GenerationStreamEvent::Delta(chunk.to_string())))
+                        .map_err(|_| {
+                            context.cancel();
+                            OpenAiError::backend("stream receiver dropped")
+                        })
+                },
+            );
+            if context.is_cancelled() {
+                return;
+            }
+            match result {
+                Ok(output) => {
+                    if include_usage
+                        && tx
+                            .blocking_send(Ok(GenerationStreamEvent::Usage(output.usage())))
+                            .is_err()
+                    {
+                        context.cancel();
+                        return;
+                    }
+                    let _ = tx.blocking_send(Ok(GenerationStreamEvent::Done(output.finish_reason)));
+                }
+                Err(error) => {
+                    let _ = tx.blocking_send(Err(error));
+                }
+            }
+        });
+        Ok(Box::pin(stream::unfold(rx, |mut rx| async {
+            rx.recv().await.map(|item| (item, rx))
+        })))
+    }
+
+    fn apply_chat_template(
+        &self,
+        messages: &[ChatMessage],
+        options: ChatTemplateOptions,
+    ) -> OpenAiResult<String> {
+        let template_messages = messages
+            .iter()
+            .map(|message| {
+                ChatTemplateMessage::new(
+                    message.role.as_str(),
+                    message
+                        .content
+                        .as_ref()
+                        .and_then(message_content_to_text)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+        runtime
+            .model
+            .apply_chat_template_with_options(&template_messages, options)
+            .map_err(openai_backend_error)
+    }
+
+    fn generate_text(
+        &self,
+        prompt: String,
+        max_tokens: u32,
+        stop: Option<&openai_frontend::StopSequence>,
+        sampling: SamplingConfig,
+        cancellation: Option<&openai_frontend::CancellationToken>,
+        ids: OpenAiGenerationIds,
+        on_text_chunk: impl FnMut(&str) -> OpenAiResult<()>,
+    ) -> OpenAiResult<GeneratedText> {
+        let generation_timer = PhaseTimer::start();
+        if prompt.is_empty() {
+            return Err(OpenAiError::invalid_request(
+                "request prompt/messages produced no text",
+            ));
+        }
+        let stop_values = stop.map(|stop| stop.values()).unwrap_or_default();
+        let tokenize_timer = PhaseTimer::start();
+        let prompt_token_ids = self.tokenize(&prompt)?;
+        let mut tokenize_attrs = self.openai_attrs(&ids);
+        tokenize_attrs.insert("llama_stage.prompt_chars".to_string(), json!(prompt.len()));
+        tokenize_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(prompt_token_ids.len()),
+        );
+        self.emit_openai_phase("stage.openai_tokenize", tokenize_timer, tokenize_attrs);
+        if prompt_token_ids.is_empty() {
+            return Err(OpenAiError::invalid_request("prompt produced no tokens"));
+        }
+        ensure_context_capacity(prompt_token_ids.len(), max_tokens, self.ctx_size)?;
+
+        let mut collector =
+            TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
+        match self.mode.clone() {
+            OpenAiBackendMode::LocalRuntime => self.generate_local_tokens(
+                LocalGeneration {
+                    prompt_token_ids: &prompt_token_ids,
+                    max_tokens,
+                    sampling: &sampling,
+                    cancellation,
+                    ids: &ids,
+                },
+                |token| collector.push_token(token),
+            )?,
+            OpenAiBackendMode::BinaryChain {
+                first_stage_addr,
+                wire_dtype,
+                prefill_chunk_policy,
+                startup_timeout_secs,
+            } => self.generate_binary_chain_tokens(
+                BinaryChainGeneration {
+                    first_stage_addr: &first_stage_addr,
+                    wire_dtype,
+                    prefill_chunk_policy: &prefill_chunk_policy,
+                    startup_timeout_secs,
+                    prompt_token_ids: &prompt_token_ids,
+                    max_tokens,
+                    sampling: &sampling,
+                    cancellation,
+                    ids: &ids,
+                },
+                |token| collector.push_token(token),
+            )?,
+            OpenAiBackendMode::EmbeddedStageZero {
+                config,
+                wire_dtype,
+                prefill_chunk_policy,
+                activation_width,
+                downstream_wire_condition,
+                lane_pool,
+            } => self.generate_embedded_stage_zero_tokens(
+                EmbeddedStageZeroGeneration {
+                    config: &config,
+                    wire_dtype,
+                    prefill_chunk_policy: &prefill_chunk_policy,
+                    activation_width,
+                    downstream_wire_condition,
+                    lane_pool,
+                    draft: self.draft.clone(),
+                    speculative_window: self.speculative_window,
+                    adaptive_speculative_window: self.adaptive_speculative_window,
+                    prompt_token_ids: &prompt_token_ids,
+                    max_tokens,
+                    sampling: &sampling,
+                    cancellation,
+                    ids: &ids,
+                },
+                |token| collector.push_token(token),
+            )?,
+        };
+
+        let output = collector.finish(prompt_token_ids.len())?;
+        let mut summary_attrs = self.openai_attrs(&ids);
+        summary_attrs.insert(
+            "llama_stage.prompt_token_count".to_string(),
+            json!(output.prompt_tokens),
+        );
+        summary_attrs.insert(
+            "llama_stage.completion_token_count".to_string(),
+            json!(output.completion_tokens),
+        );
+        summary_attrs.insert(
+            "llama_stage.detokenize_ms".to_string(),
+            json!(output.detokenize_ms),
+        );
+        summary_attrs.insert(
+            "llama_stage.text_emit_ms".to_string(),
+            json!(output.text_emit_ms),
+        );
+        summary_attrs.insert(
+            "llama_stage.eog_check_ms".to_string(),
+            json!(output.eog_check_ms),
+        );
+        self.emit_openai_summary(
+            "stage.openai_generation_summary",
+            generation_timer,
+            summary_attrs,
+        );
+        Ok(output)
+    }
+
+    fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+        runtime
+            .model
+            .tokenize(prompt, true)
+            .map_err(openai_backend_error)
+    }
+
+    fn generate_local_tokens(
+        &self,
+        request: LocalGeneration<'_>,
+        mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
+    ) -> OpenAiResult<()> {
+        let session_id = request.ids.session_label.clone();
+        let result = (|| {
+            if request.prompt_token_ids.len() > 1 {
+                let prefill_timer = PhaseTimer::start();
+                let lock_timer = PhaseTimer::start();
+                let mut runtime = self
+                    .runtime
+                    .lock()
+                    .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                let runtime_lock_wait_ms = lock_timer.elapsed_ms();
+                let runtime_lock_hold_timer = PhaseTimer::start();
+                let runtime_sessions_before = runtime.session_stats();
+                runtime
+                    .prefill(
+                        &session_id,
+                        &request.prompt_token_ids[..request.prompt_token_ids.len() - 1],
+                    )
+                    .map_err(openai_backend_error)?;
+                let runtime_sessions_after = runtime.session_stats();
+                let runtime_lock_hold_ms = runtime_lock_hold_timer.elapsed_ms();
+                let mut attrs = self.openai_attrs(request.ids);
+                attrs.insert(
+                    "llama_stage.prefill_token_count".to_string(),
+                    json!(request.prompt_token_ids.len() - 1),
+                );
+                attrs.insert("llama_stage.prefill_chunk_count".to_string(), json!(1));
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(runtime_lock_wait_ms),
+                );
+                attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(runtime_lock_hold_ms),
+                );
+                attrs.insert("llama_stage.runtime_lock_acquires".to_string(), json!(1));
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_before",
+                    runtime_sessions_before,
+                );
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    runtime_sessions_after,
+                );
+                self.emit_openai_phase("stage.openai_prefill", prefill_timer, attrs);
+            }
+            let decode_timer = PhaseTimer::start();
+            let mut decoded_tokens = 0usize;
+            let mut runtime_lock_wait_ms = 0.0;
+            let mut runtime_lock_wait_max_ms = 0.0_f64;
+            let mut runtime_lock_hold_ms = 0.0;
+            let mut runtime_lock_hold_max_ms = 0.0_f64;
+            let mut runtime_lock_acquires = 0usize;
+            let mut runtime_sessions_before = None;
+            let mut runtime_sessions_after = None;
+            let mut current = *request
+                .prompt_token_ids
+                .last()
+                .expect("checked non-empty prompt");
+            for decode_step in 0..request.max_tokens {
+                if request
+                    .cancellation
+                    .is_some_and(openai_frontend::CancellationToken::is_cancelled)
+                {
+                    break;
+                }
+                let token_timer = PhaseTimer::start();
+                let token_runtime_lock_wait_ms;
+                let token_runtime_lock_hold_ms;
+                current = {
+                    let lock_timer = PhaseTimer::start();
+                    let mut runtime = self
+                        .runtime
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                    let lock_wait_ms = lock_timer.elapsed_ms();
+                    token_runtime_lock_wait_ms = lock_wait_ms;
+                    runtime_lock_wait_ms += lock_wait_ms;
+                    runtime_lock_wait_max_ms = runtime_lock_wait_max_ms.max(lock_wait_ms);
+                    runtime_lock_acquires += 1;
+                    let hold_timer = PhaseTimer::start();
+                    runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                    let predicted = runtime
+                        .decode_sampled(
+                            &session_id,
+                            current,
+                            request.sampling.enabled.then_some(request.sampling),
+                        )
+                        .map_err(openai_backend_error)?;
+                    runtime_sessions_after = Some(runtime.session_stats());
+                    token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
+                    runtime_lock_hold_ms += token_runtime_lock_hold_ms;
+                    runtime_lock_hold_max_ms =
+                        runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
+                    predicted
+                };
+                decoded_tokens += 1;
+                let mut token_attrs = self.openai_attrs(request.ids);
+                token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                token_attrs.insert(
+                    "llama_stage.decode_token_phase".to_string(),
+                    json!(decode_token_phase(decode_step)),
+                );
+                token_attrs.insert(
+                    "llama_stage.stage0_compute_ms".to_string(),
+                    json!(token_timer.elapsed_ms()),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(token_runtime_lock_wait_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(token_runtime_lock_hold_ms),
+                );
+                token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
+                token_attrs.insert("llama_stage.message_kind".to_string(), json!("DecodeToken"));
+                self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                if on_token(current)? == TokenControl::Stop {
+                    break;
+                }
+            }
+            let mut attrs = self.openai_attrs(request.ids);
+            attrs.insert(
+                "llama_stage.decode_token_count".to_string(),
+                json!(decoded_tokens),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(runtime_lock_wait_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_max_ms".to_string(),
+                json!(runtime_lock_wait_max_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(runtime_lock_hold_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_max_ms".to_string(),
+                json!(runtime_lock_hold_max_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_acquires".to_string(),
+                json!(runtime_lock_acquires),
+            );
+            if let Some(stats) = runtime_sessions_before {
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_before",
+                    stats,
+                );
+            }
+            if let Some(stats) = runtime_sessions_after {
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    stats,
+                );
+            }
+            self.emit_openai_phase("stage.openai_decode", decode_timer, attrs);
+            Ok(())
+        })();
+        let lock_timer = PhaseTimer::start();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let runtime_lock_wait_ms = lock_timer.elapsed_ms();
+            if let Ok(drop_stats) = runtime.drop_session_timed(&session_id) {
+                let mut attrs = self.openai_attrs(request.ids);
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(runtime_lock_wait_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset_ms".to_string(),
+                    json!(drop_stats.reset_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset".to_string(),
+                    json!(drop_stats.reset_session),
+                );
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    drop_stats.stats_after,
+                );
+                self.telemetry
+                    .emit_debug("stage.openai_session_stop", attrs);
+            }
+        }
+        result
+    }
+
+    fn generate_binary_chain_tokens(
+        &self,
+        request: BinaryChainGeneration<'_>,
+        mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
+    ) -> OpenAiResult<()> {
+        let wire_sampling = wire_sampling_config(request.sampling);
+        let session_id = request.ids.session_id;
+        let request_id = request.ids.request_id;
+        let connect_timer = PhaseTimer::start();
+        let mut stream =
+            connect_endpoint_ready(request.first_stage_addr, request.startup_timeout_secs)
+                .map_err(openai_backend_error)?;
+        let mut connect_attrs = self.openai_attrs(request.ids);
+        connect_attrs.insert(
+            "llama_stage.first_stage_addr".to_string(),
+            json!(request.first_stage_addr),
+        );
+        self.emit_openai_phase(
+            "stage.openai_downstream_connect",
+            connect_timer,
+            connect_attrs,
+        );
+        let result = (|| {
+            let prefill_token_count = request.prompt_token_ids.len().saturating_sub(1);
+            let prefill_timer = PhaseTimer::start();
+            let mut prefill_chunks = 0usize;
+            let mut prefill_min_chunk_size = usize::MAX;
+            let mut prefill_max_chunk_size = 0usize;
+            let mut prefill_planner = request.prefill_chunk_policy.planner();
+            if prefill_token_count > 0 {
+                let prefill_tokens = &request.prompt_token_ids[..prefill_token_count];
+                let mut pos_start = 0usize;
+                let mut chunk_index = 0usize;
+                while pos_start < prefill_tokens.len() {
+                    if request
+                        .cancellation
+                        .is_some_and(openai_frontend::CancellationToken::is_cancelled)
+                    {
+                        return Ok(());
+                    }
+                    let chunk_size = prefill_planner.chunk_size_for(chunk_index);
+                    let end = pos_start
+                        .saturating_add(chunk_size)
+                        .min(prefill_tokens.len());
+                    let chunk = &prefill_tokens[pos_start..end];
+                    prefill_min_chunk_size = prefill_min_chunk_size.min(chunk.len());
+                    prefill_max_chunk_size = prefill_max_chunk_size.max(chunk.len());
+                    send_prefill_chunk(
+                        &mut stream,
+                        request.wire_dtype,
+                        OpenAiPrefillChunk {
+                            seq_id: chunk_index,
+                            pos_start,
+                            prefill_token_count,
+                            tokens: chunk,
+                            request_id,
+                            session_id,
+                        },
+                    )
+                    .map_err(openai_backend_error)?;
+                    prefill_planner.advance_without_observation();
+                    prefill_chunks += 1;
+                    pos_start = end;
+                    chunk_index += 1;
+                }
+            }
+            let mut prefill_attrs = self.openai_attrs(request.ids);
+            prefill_attrs.insert(
+                "llama_stage.prefill_token_count".to_string(),
+                json!(prefill_token_count),
+            );
+            prefill_attrs.insert(
+                "llama_stage.prefill_chunk_count".to_string(),
+                json!(prefill_chunks),
+            );
+            attrs_insert_prefill_chunk_policy(
+                &mut prefill_attrs,
+                request.prefill_chunk_policy,
+                prefill_min_chunk_size,
+                prefill_max_chunk_size,
+            );
+            self.emit_openai_phase("stage.openai_prefill", prefill_timer, prefill_attrs);
+
+            let decode_timer = PhaseTimer::start();
+            let mut decoded_tokens = 0usize;
+            let mut current = *request
+                .prompt_token_ids
+                .last()
+                .expect("checked non-empty prompt");
+            for decode_step in 0..request.max_tokens {
+                if request
+                    .cancellation
+                    .is_some_and(openai_frontend::CancellationToken::is_cancelled)
+                {
+                    break;
+                }
+                let mut state =
+                    StageStateHeader::new(WireMessageKind::DecodeEmbd, request.wire_dtype);
+                state.seq_id = 0;
+                state.prompt_token_count = i32::try_from(request.prompt_token_ids.len())
+                    .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+                state.decode_step = i32::try_from(decode_step)
+                    .map_err(|_| OpenAiError::backend("decode step exceeds i32"))?;
+                state.current_token = current;
+                state.source_stage_index = -1;
+                let message = StageWireMessage {
+                    kind: WireMessageKind::DecodeEmbd,
+                    pos_start: i32::try_from(prefill_token_count + decode_step as usize)
+                        .map_err(|_| OpenAiError::backend("decode position exceeds i32"))?,
+                    token_count: 1,
+                    state,
+                    request_id,
+                    session_id,
+                    sampling: wire_sampling.clone(),
+                    tokens: vec![current],
+                    activation: Vec::new(),
+                    raw_bytes: Vec::new(),
+                };
+                write_stage_message(&mut stream, &message, request.wire_dtype)
+                    .map_err(openai_io_error)?;
+                let reply = recv_reply(&mut stream).map_err(openai_io_error)?;
+                if reply.kind != WireReplyKind::PredictedToken {
+                    return Err(OpenAiError::backend(format!(
+                        "expected predicted-token reply, got {:?}",
+                        reply.kind
+                    )));
+                }
+                current = reply.predicted;
+                decoded_tokens += 1;
+                if on_token(current)? == TokenControl::Stop {
+                    break;
+                }
+            }
+            let mut decode_attrs = self.openai_attrs(request.ids);
+            decode_attrs.insert(
+                "llama_stage.decode_token_count".to_string(),
+                json!(decoded_tokens),
+            );
+            self.emit_openai_phase("stage.openai_decode", decode_timer, decode_attrs);
+            Ok(())
+        })();
+        let stop_result = write_stage_message(
+            &mut stream,
+            &StageWireMessage::stop_with_identity(request.wire_dtype, request_id, session_id),
+            request.wire_dtype,
+        )
+        .and_then(|_| recv_reply(&mut stream).map(|reply| reply.kind))
+        .and_then(|kind| {
+            if kind == WireReplyKind::Ack {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("expected stop ACK, got {kind:?}"),
+                ))
+            }
+        });
+        if result.is_ok() {
+            stop_result.map_err(openai_io_error)?;
+        }
+        result
+    }
+
+    fn generate_embedded_stage_zero_tokens(
+        &self,
+        request: EmbeddedStageZeroGeneration<'_>,
+        mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
+    ) -> OpenAiResult<()> {
+        if request.config.downstream.is_none() {
+            return self.generate_local_tokens(
+                LocalGeneration {
+                    prompt_token_ids: request.prompt_token_ids,
+                    max_tokens: request.max_tokens,
+                    sampling: request.sampling,
+                    cancellation: request.cancellation,
+                    ids: request.ids,
+                },
+                on_token,
+            );
+        }
+
+        let wire_sampling = wire_sampling_config(request.sampling);
+        let session_id = request.ids.session_id;
+        let request_id = request.ids.request_id;
+        let session_key = session_id.to_string();
+        let lane_pool = request
+            .lane_pool
+            .as_ref()
+            .ok_or_else(|| OpenAiError::backend("embedded stage 0 has no downstream lane pool"))?;
+        let mut lane = lane_pool.checkout(request.ids)?;
+
+        let result = (|| {
+            let downstream = &mut lane.stream;
+            let prefill_token_count = request.prompt_token_ids.len().saturating_sub(1);
+            let prefill_timer = PhaseTimer::start();
+            let mut prefill_chunks = 0usize;
+            let mut prefill_min_chunk_size = usize::MAX;
+            let mut prefill_max_chunk_size = 0usize;
+            let mut prefill_stage0_compute_ms = 0.0;
+            let mut prefill_runtime_lock_wait_ms = 0.0;
+            let mut prefill_runtime_lock_wait_max_ms = 0.0_f64;
+            let mut prefill_runtime_lock_hold_ms = 0.0;
+            let mut prefill_runtime_lock_hold_max_ms = 0.0_f64;
+            let mut prefill_runtime_lock_acquires = 0usize;
+            let mut prefill_runtime_sessions_before = None;
+            let mut prefill_runtime_sessions_after = None;
+            let mut prefill_forward_write_ms = 0.0;
+            let mut prefill_output_activation_bytes = 0usize;
+            let mut prefill_forward_activation_bytes = 0usize;
+            let mut prefill_downstream_wait_ms = 0.0;
+            let mut prefill_planner = request.prefill_chunk_policy.planner();
+            if prefill_token_count > 0 {
+                let prefill_tokens = &request.prompt_token_ids[..prefill_token_count];
+                let mut pos_start = 0usize;
+                let mut chunk_index = 0usize;
+                while pos_start < prefill_tokens.len() {
+                    if request
+                        .cancellation
+                        .is_some_and(openai_frontend::CancellationToken::is_cancelled)
+                    {
+                        return Ok(());
+                    }
+                    let chunk_size = prefill_planner.chunk_size_for(chunk_index);
+                    let end = pos_start
+                        .saturating_add(chunk_size)
+                        .min(prefill_tokens.len());
+                    let chunk = &prefill_tokens[pos_start..end];
+                    prefill_min_chunk_size = prefill_min_chunk_size.min(chunk.len());
+                    prefill_max_chunk_size = prefill_max_chunk_size.max(chunk.len());
+                    let message = embedded_prefill_message(
+                        request.wire_dtype,
+                        OpenAiPrefillChunk {
+                            seq_id: chunk_index,
+                            pos_start,
+                            prefill_token_count,
+                            tokens: chunk,
+                            request_id,
+                            session_id,
+                        },
+                    )?;
+                    let stage0_timer = PhaseTimer::start();
+                    let output = {
+                        let lock_timer = PhaseTimer::start();
+                        let mut runtime = self
+                            .runtime
+                            .lock()
+                            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                        let lock_wait_ms = lock_timer.elapsed_ms();
+                        prefill_runtime_lock_wait_ms += lock_wait_ms;
+                        prefill_runtime_lock_wait_max_ms =
+                            prefill_runtime_lock_wait_max_ms.max(lock_wait_ms);
+                        prefill_runtime_lock_acquires += 1;
+                        let lock_hold_timer = PhaseTimer::start();
+                        prefill_runtime_sessions_before
+                            .get_or_insert_with(|| runtime.session_stats());
+                        let output = run_binary_stage_message(
+                            &mut runtime,
+                            &session_key,
+                            &message,
+                            chunk,
+                            None,
+                        )
+                        .map_err(openai_backend_error)?
+                        .2;
+                        prefill_runtime_sessions_after = Some(runtime.session_stats());
+                        let lock_hold_ms = lock_hold_timer.elapsed_ms();
+                        prefill_runtime_lock_hold_ms += lock_hold_ms;
+                        prefill_runtime_lock_hold_max_ms =
+                            prefill_runtime_lock_hold_max_ms.max(lock_hold_ms);
+                        output
+                    };
+                    let chunk_stage0_compute_ms = stage0_timer.elapsed_ms();
+                    prefill_stage0_compute_ms += chunk_stage0_compute_ms;
+                    let forwarded = forwarded_stage_message(
+                        request.config,
+                        &message,
+                        &output,
+                        request.wire_dtype,
+                        request.activation_width,
+                    )
+                    .map_err(openai_backend_error)?;
+                    prefill_output_activation_bytes =
+                        prefill_output_activation_bytes.saturating_add(output.payload.len());
+                    prefill_forward_activation_bytes =
+                        prefill_forward_activation_bytes.saturating_add(forwarded.activation.len());
+                    let write_timer = PhaseTimer::start();
+                    write_stage_message_conditioned(
+                        &mut *downstream,
+                        &forwarded,
+                        request.wire_dtype,
+                        request.downstream_wire_condition,
+                    )
+                    .map_err(openai_io_error)?;
+                    let chunk_forward_write_ms = write_timer.elapsed_ms();
+                    prefill_forward_write_ms += chunk_forward_write_ms;
+                    let wait_timer = PhaseTimer::start();
+                    let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+                    let chunk_downstream_wait_ms = wait_timer.elapsed_ms();
+                    prefill_downstream_wait_ms += chunk_downstream_wait_ms;
+                    if reply.kind != WireReplyKind::Ack {
+                        return Err(OpenAiError::backend(format!(
+                            "expected prefill ACK from downstream, got {:?}",
+                            reply.kind
+                        )));
+                    }
+                    prefill_planner.observe(PrefillChunkObservation {
+                        compute_ms: chunk_stage0_compute_ms,
+                        forward_write_ms: chunk_forward_write_ms,
+                        downstream_wait_ms: chunk_downstream_wait_ms,
+                    });
+                    prefill_chunks += 1;
+                    pos_start = end;
+                    chunk_index += 1;
+                }
+            }
+            let mut prefill_attrs = self.openai_attrs(request.ids);
+            prefill_attrs.insert(
+                "llama_stage.prefill_token_count".to_string(),
+                json!(prefill_token_count),
+            );
+            prefill_attrs.insert(
+                "llama_stage.prefill_chunk_count".to_string(),
+                json!(prefill_chunks),
+            );
+            attrs_insert_prefill_chunk_policy(
+                &mut prefill_attrs,
+                request.prefill_chunk_policy,
+                prefill_min_chunk_size,
+                prefill_max_chunk_size,
+            );
+            prefill_attrs.insert(
+                "llama_stage.stage0_compute_ms".to_string(),
+                json!(prefill_stage0_compute_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(prefill_runtime_lock_wait_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.runtime_lock_wait_max_ms".to_string(),
+                json!(prefill_runtime_lock_wait_max_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(prefill_runtime_lock_hold_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.runtime_lock_hold_max_ms".to_string(),
+                json!(prefill_runtime_lock_hold_max_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.runtime_lock_acquires".to_string(),
+                json!(prefill_runtime_lock_acquires),
+            );
+            if let Some(stats) = prefill_runtime_sessions_before {
+                Self::insert_runtime_session_stats(
+                    &mut prefill_attrs,
+                    "llama_stage.runtime_sessions_before",
+                    stats,
+                );
+            }
+            if let Some(stats) = prefill_runtime_sessions_after {
+                Self::insert_runtime_session_stats(
+                    &mut prefill_attrs,
+                    "llama_stage.runtime_sessions_after",
+                    stats,
+                );
+            }
+            prefill_attrs.insert(
+                "llama_stage.forward_write_ms".to_string(),
+                json!(prefill_forward_write_ms),
+            );
+            prefill_attrs.insert(
+                "llama_stage.output_activation_bytes".to_string(),
+                json!(prefill_output_activation_bytes),
+            );
+            prefill_attrs.insert(
+                "llama_stage.forward_activation_bytes".to_string(),
+                json!(prefill_forward_activation_bytes),
+            );
+            prefill_attrs.insert(
+                "llama_stage.downstream_wait_ms".to_string(),
+                json!(prefill_downstream_wait_ms),
+            );
+            self.emit_openai_phase("stage.openai_prefill", prefill_timer, prefill_attrs);
+
+            let decode_timer = PhaseTimer::start();
+            let mut decoded_tokens = 0usize;
+            let mut decode_stage0_compute_ms = 0.0;
+            let mut decode_runtime_lock_wait_ms = 0.0;
+            let mut decode_runtime_lock_wait_max_ms = 0.0_f64;
+            let mut decode_runtime_lock_hold_ms = 0.0;
+            let mut decode_runtime_lock_hold_max_ms = 0.0_f64;
+            let mut decode_runtime_lock_acquires = 0usize;
+            let mut decode_runtime_sessions_before = None;
+            let mut decode_runtime_sessions_after = None;
+            let mut decode_forward_write_ms = 0.0;
+            let mut decode_forward_activation_encode_ms = 0.0;
+            let mut decode_output_activation_bytes = 0usize;
+            let mut decode_forward_activation_bytes = 0usize;
+            let mut decode_downstream_wait_ms = 0.0;
+            let mut current = *request
+                .prompt_token_ids
+                .last()
+                .expect("checked non-empty prompt");
+            let mut context_tokens = request.prompt_token_ids.to_vec();
+            let max_speculative_window = request.speculative_window.max(1);
+            let mut adaptive_window = if request.adaptive_speculative_window {
+                max_speculative_window.min(4)
+            } else {
+                max_speculative_window
+            };
+            let mut speculative_stats = OpenAiSpeculativeStats {
+                adaptive_window_start: adaptive_window,
+                adaptive_window_final: adaptive_window,
+                adaptive_window_max: max_speculative_window,
+                adaptive_window_min: if request.draft.is_some() {
+                    adaptive_window
+                } else {
+                    0
+                },
+                adaptive_window_max_seen: adaptive_window,
+                adaptive_window_enabled: request.adaptive_speculative_window,
+                ..OpenAiSpeculativeStats::default()
+            };
+            let mut draft_guard = match request.draft.as_ref() {
+                Some(draft) if request.speculative_window > 0 => {
+                    let draft_reset_timer = PhaseTimer::start();
+                    let mut draft = draft
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("draft model lock poisoned"))?;
+                    draft
+                        .reset_to_context(&context_tokens)
+                        .map_err(openai_backend_error)?;
+                    speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
+                    let mut attrs = self.openai_attrs(request.ids);
+                    attrs.insert(
+                        "llama_stage.draft_model_path".to_string(),
+                        json!(draft.path.display().to_string()),
+                    );
+                    attrs.insert(
+                        "llama_stage.speculative_window".to_string(),
+                        json!(draft.window),
+                    );
+                    attrs.insert(
+                        "llama_stage.adaptive_speculative_window".to_string(),
+                        json!(request.adaptive_speculative_window),
+                    );
+                    self.emit_openai_phase("stage.openai_draft_reset", draft_reset_timer, attrs);
+                    Some(draft)
+                }
+                _ => None,
+            };
+            for decode_step in 0..request.max_tokens {
+                if request
+                    .cancellation
+                    .is_some_and(openai_frontend::CancellationToken::is_cancelled)
+                {
+                    break;
+                }
+                let token_timer = PhaseTimer::start();
+                if draft_guard.is_some() {
+                    let remaining = request.max_tokens as usize - decoded_tokens;
+                    if remaining == 0 {
+                        break;
+                    }
+                    let mut proposal_source = "none";
+                    let proposal_limit = remaining.min(adaptive_window);
+                    let propose_timer = PhaseTimer::start();
+                    let mut draft_tokens = Vec::new();
+                    if draft_tokens.is_empty() {
+                        if let Some(draft) = draft_guard.as_deref_mut() {
+                            let proposal_limit = proposal_limit.min(draft.window);
+                            draft_tokens = draft
+                                .propose(current, proposal_limit)
+                                .map_err(openai_backend_error)?;
+                            if !draft_tokens.is_empty() {
+                                proposal_source = "draft-model";
+                            }
+                        }
+                    }
+                    let draft_propose_ms = propose_timer.elapsed_ms();
+                    speculative_stats.draft_propose_ms += draft_propose_ms;
+                    if !draft_tokens.is_empty() {
+                        let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
+                        let message = embedded_verify_message(
+                            request.wire_dtype,
+                            VerifySpanMessageArgs {
+                                request_id,
+                                session_id,
+                                prompt_token_count: request.prompt_token_ids.len(),
+                                pos_start: prefill_token_count + decoded_tokens,
+                                decode_step: decoded_tokens,
+                                tokens: &verify_inputs,
+                                checkpoint: true,
+                            },
+                        )?;
+                        let verify = self.execute_embedded_stage_message(
+                            &request,
+                            downstream,
+                            &session_key,
+                            &message,
+                            &verify_inputs,
+                            WireReplyKind::PredictedTokens,
+                        )?;
+                        speculative_stats.windows += 1;
+                        speculative_stats.draft_tokens += draft_tokens.len();
+                        speculative_stats.primary_verify_requests += 1;
+                        speculative_stats.primary_verify_tokens += verify_inputs.len();
+                        speculative_stats.primary_verify_elapsed_ms += verify.elapsed_ms;
+                        speculative_stats.primary_verify_stage0_compute_ms +=
+                            verify.stats.stage0_compute_ms;
+                        speculative_stats.primary_verify_runtime_lock_wait_ms +=
+                            verify.stats.runtime_lock_wait_ms;
+                        speculative_stats.primary_verify_runtime_lock_hold_ms +=
+                            verify.stats.runtime_lock_hold_ms;
+                        speculative_stats.primary_verify_activation_encode_ms +=
+                            verify.stats.activation_encode_ms;
+                        speculative_stats.primary_verify_forward_write_ms +=
+                            verify.stats.forward_write_ms;
+                        speculative_stats.primary_verify_downstream_wait_ms +=
+                            verify.stats.downstream_wait_ms;
+                        speculative_stats.primary_verify_output_activation_bytes =
+                            speculative_stats
+                                .primary_verify_output_activation_bytes
+                                .saturating_add(verify.stats.output_activation_bytes);
+                        speculative_stats.primary_verify_forward_activation_bytes =
+                            speculative_stats
+                                .primary_verify_forward_activation_bytes
+                                .saturating_add(verify.stats.forward_activation_bytes);
+                        decode_stage0_compute_ms += verify.stats.stage0_compute_ms;
+                        decode_runtime_lock_wait_ms += verify.stats.runtime_lock_wait_ms;
+                        decode_runtime_lock_wait_max_ms =
+                            decode_runtime_lock_wait_max_ms.max(verify.stats.runtime_lock_wait_ms);
+                        decode_runtime_lock_hold_ms += verify.stats.runtime_lock_hold_ms;
+                        decode_runtime_lock_hold_max_ms =
+                            decode_runtime_lock_hold_max_ms.max(verify.stats.runtime_lock_hold_ms);
+                        decode_runtime_lock_acquires += 1;
+                        decode_forward_activation_encode_ms += verify.stats.activation_encode_ms;
+                        decode_output_activation_bytes = decode_output_activation_bytes
+                            .saturating_add(verify.stats.output_activation_bytes);
+                        decode_forward_activation_bytes = decode_forward_activation_bytes
+                            .saturating_add(verify.stats.forward_activation_bytes);
+                        decode_forward_write_ms += verify.stats.forward_write_ms;
+                        decode_downstream_wait_ms += verify.stats.downstream_wait_ms;
+                        speculative_stats.checkpoint_ms +=
+                            us_to_ms(verify.reply.stats.checkpoint_total_us);
+                        let decision = classify_verify_span(
+                            &draft_tokens,
+                            &verify.reply.predicted_tokens,
+                            decoded_tokens,
+                            request.max_tokens as usize,
+                            |token| token_is_eog_with_runtime(&self.runtime, token),
+                        )?;
+                        speculative_stats.observe_verify_decision(
+                            decision,
+                            &mut adaptive_window,
+                            request.adaptive_speculative_window,
+                            max_speculative_window,
+                        );
+                        let mut commit_tokens =
+                            verify.reply.predicted_tokens[..decision.commit_count].to_vec();
+                        if decision.requires_repair() {
+                            speculative_stats.recovery_restores += 1;
+                            let restore = self.restore_embedded_stage_session(
+                                &request,
+                                downstream,
+                                &session_key,
+                                request_id,
+                                session_id,
+                            )?;
+                            speculative_stats.recovery_ms += restore.elapsed_ms;
+                            speculative_stats.recovery_restore_ms += restore.elapsed_ms;
+                            speculative_stats.recovery_restore_local_ms += restore.local_ms;
+                            speculative_stats.recovery_restore_downstream_write_ms +=
+                                restore.downstream_write_ms;
+                            speculative_stats.recovery_restore_downstream_wait_ms +=
+                                restore.downstream_wait_ms;
+                            let repair_input_count = decision
+                                .repair_input_count
+                                .ok_or_else(|| OpenAiError::backend("missing repair count"))?;
+                            if repair_input_count == 1 {
+                                let repair_message = embedded_decode_message(
+                                    request.wire_dtype,
+                                    DecodeMessageArgs {
+                                        request_id,
+                                        session_id,
+                                        prompt_token_count: request.prompt_token_ids.len(),
+                                        pos_start: prefill_token_count + decoded_tokens,
+                                        decode_step: decoded_tokens,
+                                        current,
+                                        sampling: wire_sampling.clone(),
+                                    },
+                                )?;
+                                let repair = self.execute_embedded_stage_message(
+                                    &request,
+                                    downstream,
+                                    &session_key,
+                                    &repair_message,
+                                    &[current],
+                                    WireReplyKind::PredictedToken,
+                                )?;
+                                commit_tokens = vec![repair.reply.predicted];
+                                decode_stage0_compute_ms += repair.stats.stage0_compute_ms;
+                                decode_runtime_lock_wait_ms += repair.stats.runtime_lock_wait_ms;
+                                decode_runtime_lock_wait_max_ms = decode_runtime_lock_wait_max_ms
+                                    .max(repair.stats.runtime_lock_wait_ms);
+                                decode_runtime_lock_hold_ms += repair.stats.runtime_lock_hold_ms;
+                                decode_runtime_lock_hold_max_ms = decode_runtime_lock_hold_max_ms
+                                    .max(repair.stats.runtime_lock_hold_ms);
+                                decode_runtime_lock_acquires += 1;
+                                decode_forward_activation_encode_ms +=
+                                    repair.stats.activation_encode_ms;
+                                decode_output_activation_bytes = decode_output_activation_bytes
+                                    .saturating_add(repair.stats.output_activation_bytes);
+                                decode_forward_activation_bytes = decode_forward_activation_bytes
+                                    .saturating_add(repair.stats.forward_activation_bytes);
+                                decode_forward_write_ms += repair.stats.forward_write_ms;
+                                decode_downstream_wait_ms += repair.stats.downstream_wait_ms;
+                                speculative_stats.recovery_decode_repairs += 1;
+                                speculative_stats.recovery_ms += repair.elapsed_ms;
+                                speculative_stats.recovery_decode_elapsed_ms += repair.elapsed_ms;
+                            } else {
+                                let repair_inputs = &verify_inputs[..repair_input_count];
+                                let repair_message = embedded_verify_message(
+                                    request.wire_dtype,
+                                    VerifySpanMessageArgs {
+                                        request_id,
+                                        session_id,
+                                        prompt_token_count: request.prompt_token_ids.len(),
+                                        pos_start: prefill_token_count + decoded_tokens,
+                                        decode_step: decoded_tokens,
+                                        tokens: repair_inputs,
+                                        checkpoint: false,
+                                    },
+                                )?;
+                                let repair = self.execute_embedded_stage_message(
+                                    &request,
+                                    downstream,
+                                    &session_key,
+                                    &repair_message,
+                                    repair_inputs,
+                                    WireReplyKind::PredictedTokens,
+                                )?;
+                                commit_tokens = repaired_commit_tokens(
+                                    &draft_tokens,
+                                    decision.accepted_before_reject,
+                                    repair_input_count,
+                                    &repair.reply.predicted_tokens,
+                                )?;
+                                decode_stage0_compute_ms += repair.stats.stage0_compute_ms;
+                                decode_runtime_lock_wait_ms += repair.stats.runtime_lock_wait_ms;
+                                decode_runtime_lock_wait_max_ms = decode_runtime_lock_wait_max_ms
+                                    .max(repair.stats.runtime_lock_wait_ms);
+                                decode_runtime_lock_hold_ms += repair.stats.runtime_lock_hold_ms;
+                                decode_runtime_lock_hold_max_ms = decode_runtime_lock_hold_max_ms
+                                    .max(repair.stats.runtime_lock_hold_ms);
+                                decode_runtime_lock_acquires += 1;
+                                decode_forward_activation_encode_ms +=
+                                    repair.stats.activation_encode_ms;
+                                decode_output_activation_bytes = decode_output_activation_bytes
+                                    .saturating_add(repair.stats.output_activation_bytes);
+                                decode_forward_activation_bytes = decode_forward_activation_bytes
+                                    .saturating_add(repair.stats.forward_activation_bytes);
+                                decode_forward_write_ms += repair.stats.forward_write_ms;
+                                decode_downstream_wait_ms += repair.stats.downstream_wait_ms;
+                                speculative_stats.recovery_reverify_tokens += repair_inputs.len();
+                                speculative_stats.recovery_ms += repair.elapsed_ms;
+                                speculative_stats.recovery_reverify_elapsed_ms += repair.elapsed_ms;
+                            }
+                        }
+
+                        let mut reached_stop = false;
+                        for token in commit_tokens {
+                            current = token;
+                            decoded_tokens += 1;
+                            context_tokens.push(current);
+                            if on_token(current)? == TokenControl::Stop {
+                                reached_stop = true;
+                            }
+                            if reached_stop || decoded_tokens >= request.max_tokens as usize {
+                                break;
+                            }
+                        }
+                        speculative_stats.adaptive_window_final = adaptive_window;
+                        if proposal_source == "draft-model" && (decision.rejected() || reached_stop)
+                        {
+                            let draft_reset_timer = PhaseTimer::start();
+                            if let Some(draft) = draft_guard.as_deref_mut() {
+                                draft
+                                    .reset_to_context(&context_tokens)
+                                    .map_err(openai_backend_error)?;
+                                speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
+                            }
+                        }
+                        let mut token_attrs = self.openai_attrs(request.ids);
+                        token_attrs
+                            .insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                        token_attrs
+                            .insert("llama_stage.message_kind".to_string(), json!("VerifySpan"));
+                        token_attrs.insert(
+                            "llama_stage.spec.windows".to_string(),
+                            json!(speculative_stats.windows),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.proposed".to_string(),
+                            json!(draft_tokens.len()),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.accepted".to_string(),
+                            json!(decision.accepted_before_reject),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.rejected".to_string(),
+                            json!(decision.rejected()),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.draft_propose_ms".to_string(),
+                            json!(draft_propose_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.proposal_source".to_string(),
+                            json!(proposal_source),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.proposal_limit".to_string(),
+                            json!(proposal_limit),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.stage0_compute_ms".to_string(),
+                            json!(verify.stats.stage0_compute_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.runtime_lock_wait_ms".to_string(),
+                            json!(verify.stats.runtime_lock_wait_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.runtime_lock_hold_ms".to_string(),
+                            json!(verify.stats.runtime_lock_hold_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.activation_encode_ms".to_string(),
+                            json!(verify.stats.activation_encode_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.forward_write_ms".to_string(),
+                            json!(verify.stats.forward_write_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.downstream_wait_ms".to_string(),
+                            json!(verify.stats.downstream_wait_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.output_activation_bytes".to_string(),
+                            json!(verify.stats.output_activation_bytes),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.forward_activation_bytes".to_string(),
+                            json!(verify.stats.forward_activation_bytes),
+                        );
+                        self.emit_openai_phase(
+                            "stage.openai_decode_verify_window",
+                            token_timer,
+                            token_attrs,
+                        );
+                        if reached_stop {
+                            break;
+                        }
+                        continue;
+                    }
+                }
+                let mut state =
+                    StageStateHeader::new(WireMessageKind::DecodeEmbd, request.wire_dtype);
+                state.seq_id = 0;
+                state.prompt_token_count = i32::try_from(request.prompt_token_ids.len())
+                    .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+                state.decode_step = i32::try_from(decode_step)
+                    .map_err(|_| OpenAiError::backend("decode step exceeds i32"))?;
+                state.current_token = current;
+                state.source_stage_index = -1;
+                let message = StageWireMessage {
+                    kind: WireMessageKind::DecodeEmbd,
+                    pos_start: i32::try_from(prefill_token_count + decode_step as usize)
+                        .map_err(|_| OpenAiError::backend("decode position exceeds i32"))?,
+                    token_count: 1,
+                    state,
+                    request_id,
+                    session_id,
+                    sampling: wire_sampling.clone(),
+                    tokens: vec![current],
+                    activation: Vec::new(),
+                    raw_bytes: Vec::new(),
+                };
+                let stage0_timer = PhaseTimer::start();
+                let token_runtime_lock_wait_ms;
+                let token_runtime_lock_hold_ms;
+                let output = {
+                    let lock_timer = PhaseTimer::start();
+                    let mut runtime = self
+                        .runtime
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                    let lock_wait_ms = lock_timer.elapsed_ms();
+                    token_runtime_lock_wait_ms = lock_wait_ms;
+                    decode_runtime_lock_wait_ms += lock_wait_ms;
+                    decode_runtime_lock_wait_max_ms =
+                        decode_runtime_lock_wait_max_ms.max(lock_wait_ms);
+                    decode_runtime_lock_acquires += 1;
+                    let lock_hold_timer = PhaseTimer::start();
+                    decode_runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                    let output = run_binary_stage_message(
+                        &mut runtime,
+                        &session_key,
+                        &message,
+                        &[current],
+                        None,
+                    )
+                    .map_err(openai_backend_error)?
+                    .2;
+                    decode_runtime_sessions_after = Some(runtime.session_stats());
+                    token_runtime_lock_hold_ms = lock_hold_timer.elapsed_ms();
+                    decode_runtime_lock_hold_ms += token_runtime_lock_hold_ms;
+                    decode_runtime_lock_hold_max_ms =
+                        decode_runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
+                    output
+                };
+                let stage0_compute_ms = stage0_timer.elapsed_ms();
+                decode_stage0_compute_ms += stage0_compute_ms;
+                let forwarded = forwarded_stage_message_timed(
+                    request.config,
+                    &message,
+                    &output,
+                    request.wire_dtype,
+                    request.activation_width,
+                )
+                .map_err(openai_backend_error)?;
+                decode_forward_activation_encode_ms += forwarded.activation_encode_ms;
+                decode_output_activation_bytes =
+                    decode_output_activation_bytes.saturating_add(output.payload.len());
+                decode_forward_activation_bytes = decode_forward_activation_bytes
+                    .saturating_add(forwarded.message.activation.len());
+                let write_timer = PhaseTimer::start();
+                write_stage_message_conditioned(
+                    &mut *downstream,
+                    &forwarded.message,
+                    request.wire_dtype,
+                    request.downstream_wire_condition,
+                )
+                .map_err(openai_io_error)?;
+                let forward_write_ms = write_timer.elapsed_ms();
+                decode_forward_write_ms += forward_write_ms;
+                let wait_timer = PhaseTimer::start();
+                let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+                let downstream_wait_ms = wait_timer.elapsed_ms();
+                decode_downstream_wait_ms += downstream_wait_ms;
+                if reply.kind != WireReplyKind::PredictedToken {
+                    return Err(OpenAiError::backend(format!(
+                        "expected predicted-token reply from downstream, got {:?}",
+                        reply.kind
+                    )));
+                }
+                current = reply.predicted;
+                decoded_tokens += 1;
+                context_tokens.push(current);
+                let mut token_attrs = self.openai_attrs(request.ids);
+                token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
+                token_attrs.insert(
+                    "llama_stage.decode_token_phase".to_string(),
+                    json!(decode_token_phase(decode_step)),
+                );
+                token_attrs.insert(
+                    "llama_stage.stage0_compute_ms".to_string(),
+                    json!(stage0_compute_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(token_runtime_lock_wait_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(token_runtime_lock_hold_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.output_activation_bytes".to_string(),
+                    json!(output.payload.len()),
+                );
+                token_attrs.insert(
+                    "llama_stage.forward_activation_bytes".to_string(),
+                    json!(forwarded.message.activation.len()),
+                );
+                token_attrs.insert(
+                    "llama_stage.activation_encode_ms".to_string(),
+                    json!(forwarded.activation_encode_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.forward_write_ms".to_string(),
+                    json!(forward_write_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.downstream_wait_ms".to_string(),
+                    json!(downstream_wait_ms),
+                );
+                token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
+                token_attrs.insert("llama_stage.message_kind".to_string(), json!("DecodeEmbd"));
+                self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
+                if on_token(current)? == TokenControl::Stop {
+                    break;
+                }
+            }
+            let mut decode_attrs = self.openai_attrs(request.ids);
+            decode_attrs.insert(
+                "llama_stage.decode_token_count".to_string(),
+                json!(decoded_tokens),
+            );
+            decode_attrs.insert(
+                "llama_stage.stage0_compute_ms".to_string(),
+                json!(decode_stage0_compute_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(decode_runtime_lock_wait_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.runtime_lock_wait_max_ms".to_string(),
+                json!(decode_runtime_lock_wait_max_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(decode_runtime_lock_hold_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.runtime_lock_hold_max_ms".to_string(),
+                json!(decode_runtime_lock_hold_max_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.runtime_lock_acquires".to_string(),
+                json!(decode_runtime_lock_acquires),
+            );
+            if let Some(stats) = decode_runtime_sessions_before {
+                Self::insert_runtime_session_stats(
+                    &mut decode_attrs,
+                    "llama_stage.runtime_sessions_before",
+                    stats,
+                );
+            }
+            if let Some(stats) = decode_runtime_sessions_after {
+                Self::insert_runtime_session_stats(
+                    &mut decode_attrs,
+                    "llama_stage.runtime_sessions_after",
+                    stats,
+                );
+            }
+            decode_attrs.insert(
+                "llama_stage.forward_write_ms".to_string(),
+                json!(decode_forward_write_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.activation_encode_ms".to_string(),
+                json!(decode_forward_activation_encode_ms),
+            );
+            decode_attrs.insert(
+                "llama_stage.output_activation_bytes".to_string(),
+                json!(decode_output_activation_bytes),
+            );
+            decode_attrs.insert(
+                "llama_stage.forward_activation_bytes".to_string(),
+                json!(decode_forward_activation_bytes),
+            );
+            decode_attrs.insert(
+                "llama_stage.downstream_wait_ms".to_string(),
+                json!(decode_downstream_wait_ms),
+            );
+            speculative_stats.insert_attrs(&mut decode_attrs);
+            self.emit_openai_phase("stage.openai_decode", decode_timer, decode_attrs);
+            Ok(())
+        })();
+
+        let stop_result = write_stage_message(
+            &mut lane.stream,
+            &StageWireMessage::stop_with_identity(request.wire_dtype, request_id, session_id),
+            request.wire_dtype,
+        )
+        .and_then(|_| recv_reply(&mut lane.stream).map(|reply| reply.kind))
+        .and_then(|kind| {
+            if kind == WireReplyKind::Ack {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("expected stop ACK, got {kind:?}"),
+                ))
+            }
+        });
+        let lock_timer = PhaseTimer::start();
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let runtime_lock_wait_ms = lock_timer.elapsed_ms();
+            if let Ok(drop_stats) = runtime.drop_session_timed(&session_key) {
+                let mut attrs = self.openai_attrs(request.ids);
+                attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(runtime_lock_wait_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset_ms".to_string(),
+                    json!(drop_stats.reset_ms),
+                );
+                attrs.insert(
+                    "llama_stage.session_reset".to_string(),
+                    json!(drop_stats.reset_session),
+                );
+                Self::insert_runtime_session_stats(
+                    &mut attrs,
+                    "llama_stage.runtime_sessions_after",
+                    drop_stats.stats_after,
+                );
+                self.telemetry
+                    .emit_debug("stage.openai_session_stop", attrs);
+            }
+        }
+        let lane_id = lane.id;
+        let stop_result = stop_result.map_err(openai_io_error);
+        match (&result, &stop_result) {
+            (Ok(_), Ok(_)) => lane_pool.return_lane(lane),
+            _ => lane_pool.replace_lane(lane_id),
+        }
+        if result.is_ok() {
+            stop_result?;
+        }
+        result
+    }
+
+    fn execute_embedded_stage_message(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        downstream: &mut TcpStream,
+        session_key: &str,
+        message: &StageWireMessage,
+        token_ids: &[i32],
+        expected_reply: WireReplyKind,
+    ) -> OpenAiResult<EmbeddedStageExecution> {
+        let timer = PhaseTimer::start();
+        let mut stats = StageReplyStats::default();
+        let stage0_timer = PhaseTimer::start();
+        let output = {
+            let lock_timer = PhaseTimer::start();
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            let lock_wait_ms = lock_timer.elapsed_ms();
+            let hold_timer = PhaseTimer::start();
+            if message.kind == WireMessageKind::VerifySpan
+                && (message.state.flags & state_flags::SKIP_VERIFY_CHECKPOINT) == 0
+            {
+                let checkpoint_timer = PhaseTimer::start();
+                runtime
+                    .checkpoint_session(session_key)
+                    .map_err(openai_backend_error)?;
+                let checkpoint_us = ms_to_us(checkpoint_timer.elapsed_ms());
+                stats.checkpoint_local_us += checkpoint_us;
+                stats.checkpoint_total_us += checkpoint_us;
+                stats.verify_span_checkpointed_requests += 1;
+            } else if message.kind == WireMessageKind::VerifySpan {
+                stats.verify_span_skip_checkpoint_requests += 1;
+            }
+            let output =
+                run_binary_stage_message(&mut runtime, session_key, message, token_ids, None)
+                    .map_err(openai_backend_error)?
+                    .2;
+            let hold_ms = hold_timer.elapsed_ms();
+            EmbeddedLocalOutput {
+                output,
+                runtime_lock_wait_ms: lock_wait_ms,
+                runtime_lock_hold_ms: hold_ms,
+            }
+        };
+        let stage0_compute_ms = stage0_timer.elapsed_ms();
+        let forwarded = forwarded_stage_message_timed(
+            request.config,
+            message,
+            &output.output,
+            request.wire_dtype,
+            request.activation_width,
+        )
+        .map_err(openai_backend_error)?;
+        let write_timer = PhaseTimer::start();
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &forwarded.message,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .map_err(openai_io_error)?;
+        let forward_write_ms = write_timer.elapsed_ms();
+        let wait_timer = PhaseTimer::start();
+        let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+        let downstream_wait_ms = wait_timer.elapsed_ms();
+        if reply.kind != expected_reply {
+            return Err(OpenAiError::backend(format!(
+                "expected {expected_reply:?} reply from downstream, got {:?}",
+                reply.kind
+            )));
+        }
+        stats.merge(reply.stats);
+        if message.kind == WireMessageKind::VerifySpan {
+            stats.verify_span_compute_us += ms_to_us(stage0_compute_ms);
+            stats.verify_span_forward_write_us += ms_to_us(forward_write_ms);
+            stats.verify_span_downstream_wait_us += ms_to_us(downstream_wait_ms);
+            stats.verify_span_total_us += ms_to_us(timer.elapsed_ms());
+            stats.verify_span_stage_count += 1;
+            stats.verify_span_request_count += 1;
+            stats.verify_span_token_count += i64::from(message.token_count.max(0));
+            stats.verify_span_max_tokens = stats
+                .verify_span_max_tokens
+                .max(i64::from(message.token_count.max(0)));
+        }
+        Ok(EmbeddedStageExecution {
+            reply: StageReply { stats, ..reply },
+            stats: EmbeddedExecutionStats {
+                stage0_compute_ms,
+                runtime_lock_wait_ms: output.runtime_lock_wait_ms,
+                runtime_lock_hold_ms: output.runtime_lock_hold_ms,
+                activation_encode_ms: forwarded.activation_encode_ms,
+                output_activation_bytes: output.output.payload.len(),
+                forward_activation_bytes: forwarded.message.activation.len(),
+                forward_write_ms,
+                downstream_wait_ms,
+            },
+            elapsed_ms: timer.elapsed_ms(),
+        })
+    }
+
+    fn restore_embedded_stage_session(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        downstream: &mut TcpStream,
+        session_key: &str,
+        request_id: u64,
+        session_id: u64,
+    ) -> OpenAiResult<EmbeddedSessionControl> {
+        let timer = PhaseTimer::start();
+        let local_timer = PhaseTimer::start();
+        {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            runtime
+                .restore_session(session_key)
+                .map_err(openai_backend_error)?;
+        }
+        let local_ms = local_timer.elapsed_ms();
+        let message = embedded_session_control_message(
+            request.wire_dtype,
+            WireMessageKind::RestoreSession,
+            request_id,
+            session_id,
+        );
+        let write_timer = PhaseTimer::start();
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &message,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .map_err(openai_io_error)?;
+        let downstream_write_ms = write_timer.elapsed_ms();
+        let wait_timer = PhaseTimer::start();
+        let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+        let downstream_wait_ms = wait_timer.elapsed_ms();
+        if reply.kind != WireReplyKind::Ack {
+            return Err(OpenAiError::backend(format!(
+                "restore expected ACK from downstream, got {:?}",
+                reply.kind
+            )));
+        }
+        Ok(EmbeddedSessionControl {
+            elapsed_ms: timer.elapsed_ms(),
+            local_ms,
+            downstream_write_ms,
+            downstream_wait_ms,
+        })
+    }
+}
+
+fn ensure_requested_model(advertised_model_id: &str, requested: &str) -> OpenAiResult<()> {
+    if requested == advertised_model_id {
+        Ok(())
+    } else {
+        Err(OpenAiError::model_not_found(requested))
+    }
+}
+
+fn attrs_insert_prefill_chunk_policy(
+    attrs: &mut BTreeMap<String, Value>,
+    policy: &PrefillChunkPolicy,
+    min_chunk_size: usize,
+    max_chunk_size: usize,
+) {
+    attrs.insert(
+        "llama_stage.prefill_chunk_size".to_string(),
+        json!(policy.fixed_chunk_size()),
+    );
+    attrs.insert(
+        "llama_stage.prefill_chunk_policy".to_string(),
+        json!(policy.policy_label()),
+    );
+    if let Some(schedule) = policy.schedule() {
+        attrs.insert(
+            "llama_stage.prefill_chunk_schedule".to_string(),
+            json!(schedule.label()),
+        );
+    }
+    if let Some((start, step, max)) = policy.adaptive_params() {
+        attrs.insert(
+            "llama_stage.prefill_adaptive_start".to_string(),
+            json!(start),
+        );
+        attrs.insert("llama_stage.prefill_adaptive_step".to_string(), json!(step));
+        attrs.insert("llama_stage.prefill_adaptive_max".to_string(), json!(max));
+    }
+    if min_chunk_size != usize::MAX {
+        attrs.insert(
+            "llama_stage.prefill_min_chunk_size".to_string(),
+            json!(min_chunk_size),
+        );
+        attrs.insert(
+            "llama_stage.prefill_max_chunk_size".to_string(),
+            json!(max_chunk_size),
+        );
+    }
+}
+
+struct LocalGeneration<'a> {
+    prompt_token_ids: &'a [i32],
+    max_tokens: u32,
+    sampling: &'a SamplingConfig,
+    cancellation: Option<&'a openai_frontend::CancellationToken>,
+    ids: &'a OpenAiGenerationIds,
+}
+
+struct BinaryChainGeneration<'a> {
+    first_stage_addr: &'a str,
+    wire_dtype: WireActivationDType,
+    prefill_chunk_policy: &'a PrefillChunkPolicy,
+    startup_timeout_secs: u64,
+    prompt_token_ids: &'a [i32],
+    max_tokens: u32,
+    sampling: &'a SamplingConfig,
+    cancellation: Option<&'a openai_frontend::CancellationToken>,
+    ids: &'a OpenAiGenerationIds,
+}
+
+struct EmbeddedStageZeroGeneration<'a> {
+    config: &'a StageConfig,
+    wire_dtype: WireActivationDType,
+    prefill_chunk_policy: &'a PrefillChunkPolicy,
+    activation_width: i32,
+    downstream_wire_condition: WireCondition,
+    lane_pool: Option<Arc<PersistentStageLanePool>>,
+    draft: Option<Arc<Mutex<DraftRunner>>>,
+    speculative_window: usize,
+    adaptive_speculative_window: bool,
+    prompt_token_ids: &'a [i32],
+    max_tokens: u32,
+    sampling: &'a SamplingConfig,
+    cancellation: Option<&'a openai_frontend::CancellationToken>,
+    ids: &'a OpenAiGenerationIds,
+}
+
+#[derive(Default)]
+struct OpenAiSpeculativeStats {
+    windows: usize,
+    draft_tokens: usize,
+    accepted_tokens: usize,
+    rejected_tokens: usize,
+    full_accept_windows: usize,
+    accepted_stop_windows: usize,
+    rejected_windows: usize,
+    early_reject_windows: usize,
+    tail_reject_windows: usize,
+    early_reject_stop_windows: usize,
+    repair_required_windows: usize,
+    first_reject_position_sum: usize,
+    primary_verify_requests: usize,
+    primary_verify_tokens: usize,
+    primary_verify_elapsed_ms: f64,
+    primary_verify_stage0_compute_ms: f64,
+    primary_verify_runtime_lock_wait_ms: f64,
+    primary_verify_runtime_lock_hold_ms: f64,
+    primary_verify_activation_encode_ms: f64,
+    primary_verify_forward_write_ms: f64,
+    primary_verify_downstream_wait_ms: f64,
+    primary_verify_output_activation_bytes: usize,
+    primary_verify_forward_activation_bytes: usize,
+    checkpoint_ms: f64,
+    draft_reset_ms: f64,
+    draft_propose_ms: f64,
+    recovery_restores: usize,
+    recovery_decode_repairs: usize,
+    recovery_decode_elapsed_ms: f64,
+    recovery_reverify_tokens: usize,
+    recovery_ms: f64,
+    recovery_restore_ms: f64,
+    recovery_restore_local_ms: f64,
+    recovery_restore_downstream_write_ms: f64,
+    recovery_restore_downstream_wait_ms: f64,
+    recovery_reverify_elapsed_ms: f64,
+    adaptive_window_start: usize,
+    adaptive_window_final: usize,
+    adaptive_window_max: usize,
+    adaptive_window_min: usize,
+    adaptive_window_max_seen: usize,
+    adaptive_window_sum: usize,
+    adaptive_window_grows: usize,
+    adaptive_window_shrinks: usize,
+    adaptive_window_enabled: bool,
+}
+
+impl OpenAiSpeculativeStats {
+    fn observe_verify_decision(
+        &mut self,
+        decision: VerifySpanDecision,
+        adaptive_window: &mut usize,
+        adaptive_enabled: bool,
+        max_speculative_window: usize,
+    ) {
+        self.accepted_tokens += decision.accepted_before_reject;
+        if decision.rejected() {
+            self.rejected_tokens += 1;
+        }
+        self.adaptive_window_sum += *adaptive_window;
+        self.adaptive_window_min = nonzero_min(self.adaptive_window_min, *adaptive_window);
+        self.adaptive_window_max_seen = self.adaptive_window_max_seen.max(*adaptive_window);
+        match decision.kind {
+            VerifySpanDecisionKind::FullAccept => {
+                self.full_accept_windows += 1;
+                self.grow_adaptive_window(
+                    adaptive_window,
+                    adaptive_enabled,
+                    max_speculative_window,
+                );
+            }
+            VerifySpanDecisionKind::AcceptedStop => {
+                self.accepted_stop_windows += 1;
+            }
+            VerifySpanDecisionKind::TailReject => {
+                self.observe_reject(decision);
+                self.tail_reject_windows += 1;
+                self.grow_adaptive_window(
+                    adaptive_window,
+                    adaptive_enabled,
+                    max_speculative_window,
+                );
+            }
+            VerifySpanDecisionKind::EarlyReject => {
+                self.observe_reject(decision);
+                self.early_reject_windows += 1;
+                self.repair_required_windows += 1;
+                self.shrink_adaptive_window(adaptive_window, adaptive_enabled, decision);
+            }
+            VerifySpanDecisionKind::EarlyRejectStop => {
+                self.observe_reject(decision);
+                self.early_reject_windows += 1;
+                self.early_reject_stop_windows += 1;
+            }
+        }
+    }
+
+    fn observe_reject(&mut self, decision: VerifySpanDecision) {
+        if let Some(repair_input_count) = decision.repair_input_count {
+            self.rejected_windows += 1;
+            self.first_reject_position_sum += repair_input_count;
+        }
+    }
+
+    fn grow_adaptive_window(
+        &mut self,
+        adaptive_window: &mut usize,
+        adaptive_enabled: bool,
+        max_speculative_window: usize,
+    ) {
+        if adaptive_enabled && *adaptive_window < max_speculative_window {
+            *adaptive_window += 1;
+            self.adaptive_window_grows += 1;
+        }
+    }
+
+    fn shrink_adaptive_window(
+        &mut self,
+        adaptive_window: &mut usize,
+        adaptive_enabled: bool,
+        decision: VerifySpanDecision,
+    ) {
+        if !adaptive_enabled {
+            return;
+        }
+        let Some(repair_input_count) = decision.repair_input_count else {
+            return;
+        };
+        let next_window = (*adaptive_window)
+            .saturating_sub(1)
+            .max(repair_input_count)
+            .max(1);
+        if next_window < *adaptive_window {
+            *adaptive_window = next_window;
+            self.adaptive_window_shrinks += 1;
+        }
+    }
+
+    fn insert_attrs(&self, attrs: &mut BTreeMap<String, Value>) {
+        if self.windows == 0 {
+            attrs.insert("llama_stage.spec.enabled".to_string(), json!(false));
+            return;
+        }
+        attrs.insert("llama_stage.spec.enabled".to_string(), json!(true));
+        attrs.insert("llama_stage.spec.windows".to_string(), json!(self.windows));
+        attrs.insert(
+            "llama_stage.spec.proposed".to_string(),
+            json!(self.draft_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.accepted".to_string(),
+            json!(self.accepted_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.rejected".to_string(),
+            json!(self.rejected_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.accept_rate".to_string(),
+            json!(if self.draft_tokens == 0 {
+                0.0
+            } else {
+                self.accepted_tokens as f64 / self.draft_tokens as f64
+            }),
+        );
+        attrs.insert(
+            "llama_stage.spec.full_accept_windows".to_string(),
+            json!(self.full_accept_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.accepted_stop_windows".to_string(),
+            json!(self.accepted_stop_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.rejected_windows".to_string(),
+            json!(self.rejected_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.early_reject_windows".to_string(),
+            json!(self.early_reject_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.tail_reject_windows".to_string(),
+            json!(self.tail_reject_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.repair_required_windows".to_string(),
+            json!(self.repair_required_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.draft_reset_ms".to_string(),
+            json!(self.draft_reset_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.draft_propose_ms".to_string(),
+            json!(self.draft_propose_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_elapsed_ms".to_string(),
+            json!(self.primary_verify_elapsed_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_stage0_compute_ms".to_string(),
+            json!(self.primary_verify_stage0_compute_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_runtime_lock_wait_ms".to_string(),
+            json!(self.primary_verify_runtime_lock_wait_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_runtime_lock_hold_ms".to_string(),
+            json!(self.primary_verify_runtime_lock_hold_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_activation_encode_ms".to_string(),
+            json!(self.primary_verify_activation_encode_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_forward_write_ms".to_string(),
+            json!(self.primary_verify_forward_write_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_downstream_wait_ms".to_string(),
+            json!(self.primary_verify_downstream_wait_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_output_activation_bytes".to_string(),
+            json!(self.primary_verify_output_activation_bytes),
+        );
+        attrs.insert(
+            "llama_stage.spec.primary_verify_forward_activation_bytes".to_string(),
+            json!(self.primary_verify_forward_activation_bytes),
+        );
+        attrs.insert(
+            "llama_stage.spec.checkpoint_ms".to_string(),
+            json!(self.checkpoint_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_restores".to_string(),
+            json!(self.recovery_restores),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_ms".to_string(),
+            json!(self.recovery_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_restore_local_ms".to_string(),
+            json!(self.recovery_restore_local_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_restore_downstream_write_ms".to_string(),
+            json!(self.recovery_restore_downstream_write_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_restore_downstream_wait_ms".to_string(),
+            json!(self.recovery_restore_downstream_wait_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.adaptive_enabled".to_string(),
+            json!(self.adaptive_window_enabled),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_start".to_string(),
+            json!(self.adaptive_window_start),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_final".to_string(),
+            json!(self.adaptive_window_final),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_max".to_string(),
+            json!(self.adaptive_window_max),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_min".to_string(),
+            json!(self.adaptive_window_min),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_max_seen".to_string(),
+            json!(self.adaptive_window_max_seen),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_grows".to_string(),
+            json!(self.adaptive_window_grows),
+        );
+        attrs.insert(
+            "llama_stage.spec.window_shrinks".to_string(),
+            json!(self.adaptive_window_shrinks),
+        );
+    }
+}
+
+struct EmbeddedLocalOutput {
+    output: skippy_runtime::ActivationFrame,
+    runtime_lock_wait_ms: f64,
+    runtime_lock_hold_ms: f64,
+}
+
+struct EmbeddedExecutionStats {
+    stage0_compute_ms: f64,
+    runtime_lock_wait_ms: f64,
+    runtime_lock_hold_ms: f64,
+    activation_encode_ms: f64,
+    output_activation_bytes: usize,
+    forward_activation_bytes: usize,
+    forward_write_ms: f64,
+    downstream_wait_ms: f64,
+}
+
+struct EmbeddedStageExecution {
+    reply: StageReply,
+    stats: EmbeddedExecutionStats,
+    elapsed_ms: f64,
+}
+
+struct EmbeddedSessionControl {
+    elapsed_ms: f64,
+    local_ms: f64,
+    downstream_write_ms: f64,
+    downstream_wait_ms: f64,
+}
+
+type GenerationStream =
+    std::pin::Pin<Box<dyn futures_util::Stream<Item = OpenAiResult<GenerationStreamEvent>> + Send>>;
+
+enum GenerationStreamEvent {
+    Delta(String),
+    Usage(Usage),
+    Done(FinishReason),
+}
+
+fn generation_event_to_chat_chunk(
+    event: OpenAiResult<GenerationStreamEvent>,
+    model: &str,
+) -> OpenAiResult<ChatCompletionChunk> {
+    match event? {
+        GenerationStreamEvent::Delta(delta) => {
+            Ok(ChatCompletionChunk::delta(model.to_string(), delta))
+        }
+        GenerationStreamEvent::Usage(usage) => {
+            Ok(ChatCompletionChunk::usage(model.to_string(), usage))
+        }
+        GenerationStreamEvent::Done(reason) => Ok(ChatCompletionChunk::done_with_reason(
+            model.to_string(),
+            reason,
+        )),
+    }
+}
+
+fn generation_event_to_completion_chunk(
+    event: OpenAiResult<GenerationStreamEvent>,
+    model: &str,
+) -> OpenAiResult<CompletionChunk> {
+    match event? {
+        GenerationStreamEvent::Delta(delta) => Ok(CompletionChunk::delta(model.to_string(), delta)),
+        GenerationStreamEvent::Usage(usage) => Ok(CompletionChunk::usage(model.to_string(), usage)),
+        GenerationStreamEvent::Done(reason) => {
+            Ok(CompletionChunk::done_with_reason(model.to_string(), reason))
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenControl {
+    Continue,
+    Stop,
+}
+
+struct TextGenerationCollector<'a, F>
+where
+    F: FnMut(&str) -> OpenAiResult<()>,
+{
+    runtime: Arc<Mutex<RuntimeState>>,
+    stop_values: Vec<&'a str>,
+    on_text_chunk: F,
+    text: String,
+    streamed_text_len: usize,
+    max_stop_bytes: usize,
+    generated_text_tokens: Vec<i32>,
+    completion_tokens: usize,
+    finish_reason: FinishReason,
+    metrics: GenerationMetrics,
+}
+
+impl<'a, F> TextGenerationCollector<'a, F>
+where
+    F: FnMut(&str) -> OpenAiResult<()>,
+{
+    fn new(runtime: Arc<Mutex<RuntimeState>>, stop_values: Vec<&'a str>, on_text_chunk: F) -> Self {
+        let max_stop_bytes = stop_values
+            .iter()
+            .map(|value| value.len())
+            .max()
+            .unwrap_or(0);
+        Self {
+            runtime,
+            stop_values,
+            on_text_chunk,
+            text: String::new(),
+            streamed_text_len: 0,
+            max_stop_bytes,
+            generated_text_tokens: Vec::new(),
+            completion_tokens: 0,
+            finish_reason: finish_reason_for_generation(true),
+            metrics: GenerationMetrics::default(),
+        }
+    }
+
+    fn push_token(&mut self, token: i32) -> OpenAiResult<TokenControl> {
+        let eog_timer = Instant::now();
+        if token_is_eog_with_runtime(&self.runtime, token)? {
+            self.metrics.eog_check_ms += eog_timer.elapsed().as_secs_f64() * 1000.0;
+            self.finish_reason = finish_reason_for_generation(false);
+            return Ok(TokenControl::Stop);
+        }
+        self.metrics.eog_check_ms += eog_timer.elapsed().as_secs_f64() * 1000.0;
+        self.completion_tokens += 1;
+        self.generated_text_tokens.push(token);
+        let detokenize_timer = Instant::now();
+        let candidate_bytes =
+            detokenize_bytes_with_runtime(&self.runtime, &self.generated_text_tokens)?;
+        self.metrics.detokenize_ms += detokenize_timer.elapsed().as_secs_f64() * 1000.0;
+        let valid_len = valid_utf8_prefix_len(&candidate_bytes);
+        if valid_len > 0 {
+            let candidate = std::str::from_utf8(&candidate_bytes[..valid_len])
+                .map_err(|error| OpenAiError::backend(error.to_string()))?;
+            if let Some(delta) = candidate.strip_prefix(&self.text) {
+                if !delta.is_empty() {
+                    self.text = candidate.to_string();
+                }
+            } else if candidate != self.text {
+                self.text = candidate.to_string();
+            }
+        }
+        if self
+            .stop_values
+            .iter()
+            .any(|stop| !stop.is_empty() && self.text.contains(stop))
+        {
+            self.text = trim_at_stop(&self.text, &self.stop_values).to_string();
+            self.emit_safe_delta(true)?;
+            self.finish_reason = finish_reason_for_generation(false);
+            return Ok(TokenControl::Stop);
+        }
+        self.emit_safe_delta(false)?;
+        Ok(TokenControl::Continue)
+    }
+
+    fn emit_safe_delta(&mut self, flush_all: bool) -> OpenAiResult<()> {
+        let mut target_len = if flush_all || self.max_stop_bytes == 0 {
+            self.text.len()
+        } else {
+            self.text
+                .len()
+                .saturating_sub(self.max_stop_bytes.saturating_sub(1))
+        };
+        while target_len > self.streamed_text_len && !self.text.is_char_boundary(target_len) {
+            target_len -= 1;
+        }
+        if target_len < self.streamed_text_len {
+            self.streamed_text_len = target_len;
+            return Ok(());
+        }
+        if target_len > self.streamed_text_len {
+            let delta = &self.text[self.streamed_text_len..target_len];
+            let emit_timer = Instant::now();
+            (self.on_text_chunk)(delta)?;
+            self.metrics.text_emit_ms += emit_timer.elapsed().as_secs_f64() * 1000.0;
+            self.streamed_text_len = target_len;
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, prompt_token_count: usize) -> OpenAiResult<GeneratedText> {
+        self.emit_safe_delta(true)?;
+        Ok(GeneratedText {
+            prompt_tokens: saturating_u32(prompt_token_count),
+            completion_tokens: saturating_u32(self.completion_tokens),
+            text: self.text,
+            finish_reason: self.finish_reason,
+            detokenize_ms: self.metrics.detokenize_ms,
+            text_emit_ms: self.metrics.text_emit_ms,
+            eog_check_ms: self.metrics.eog_check_ms,
+        })
+    }
+}
+
+struct GeneratedText {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    text: String,
+    finish_reason: FinishReason,
+    detokenize_ms: f64,
+    text_emit_ms: f64,
+    eog_check_ms: f64,
+}
+
+impl GeneratedText {
+    fn usage(&self) -> Usage {
+        Usage::new(self.prompt_tokens, self.completion_tokens)
+    }
+}
+
+fn finish_reason_for_generation(exhausted_max_tokens: bool) -> FinishReason {
+    if exhausted_max_tokens {
+        FinishReason::Length
+    } else {
+        FinishReason::Stop
+    }
+}
+
+fn ensure_context_capacity(
+    prompt_token_count: usize,
+    max_tokens: u32,
+    ctx_size: usize,
+) -> OpenAiResult<()> {
+    let requested_tokens = prompt_token_count.saturating_add(max_tokens as usize);
+    if requested_tokens > ctx_size {
+        return Err(OpenAiError::context_length_exceeded(format!(
+            "requested prompt plus completion tokens ({requested_tokens}) exceed context window ({ctx_size})"
+        )));
+    }
+    Ok(())
+}
+
+fn detokenize_bytes_with_runtime(
+    runtime: &Arc<Mutex<RuntimeState>>,
+    token_ids: &[i32],
+) -> OpenAiResult<Vec<u8>> {
+    let runtime = runtime
+        .lock()
+        .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+    runtime
+        .model
+        .detokenize_bytes(token_ids)
+        .map_err(openai_backend_error)
+}
+
+fn token_is_eog_with_runtime(
+    runtime: &Arc<Mutex<RuntimeState>>,
+    token_id: i32,
+) -> OpenAiResult<bool> {
+    let runtime = runtime
+        .lock()
+        .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+    runtime
+        .model
+        .token_is_eog(token_id)
+        .map_err(openai_backend_error)
+}
+
+fn chat_sampling_config(request: &ChatCompletionRequest) -> OpenAiResult<SamplingConfig> {
+    sampling_config(
+        request.temperature,
+        request.top_p,
+        request.presence_penalty,
+        request.frequency_penalty,
+        request.seed,
+        request.logit_bias.as_ref(),
+        &request.extra,
+    )
+}
+
+fn completion_sampling_config(request: &CompletionRequest) -> OpenAiResult<SamplingConfig> {
+    sampling_config(
+        request.temperature,
+        request.top_p,
+        request.presence_penalty,
+        request.frequency_penalty,
+        request.seed,
+        request.logit_bias.as_ref(),
+        &request.extra,
+    )
+}
+
+fn chat_template_options(request: &ChatCompletionRequest) -> OpenAiResult<ChatTemplateOptions> {
+    let reasoning_options = normalize_reasoning_template_options(
+        request.reasoning.as_ref(),
+        request.reasoning_effort,
+        &request.extra,
+    )?;
+    Ok(ChatTemplateOptions {
+        enable_thinking: reasoning_options.enable_thinking,
+        ..ChatTemplateOptions::default()
+    })
+}
+
+fn ensure_extra_generation_fields_absent(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> OpenAiResult<()> {
+    const UNSUPPORTED_FIELDS: &[&str] = &["min_p", "typical_p"];
+
+    for field in UNSUPPORTED_FIELDS {
+        if extra.get(*field).is_some_and(|value| !value.is_null()) {
+            return Err(OpenAiError::unsupported(format!(
+                "{field} is parsed but not yet implemented"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn sampling_config(
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
+    seed: Option<u64>,
+    logit_bias: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> OpenAiResult<SamplingConfig> {
+    ensure_extra_generation_fields_absent(extra)?;
+    let temperature = temperature.unwrap_or(1.0);
+    let top_p = top_p.unwrap_or(1.0);
+    let presence_penalty = presence_penalty.unwrap_or(0.0);
+    let frequency_penalty = frequency_penalty.unwrap_or(0.0);
+    let top_k = optional_i32_extra(extra, "top_k")?.unwrap_or(0);
+    let repeat_penalty = optional_f32_extra(extra, "repeat_penalty")?
+        .or(optional_f32_extra(extra, "repetition_penalty")?)
+        .unwrap_or(1.0);
+    validate_sampling_range("temperature", temperature, 0.0..=100.0)?;
+    validate_sampling_range("top_p", top_p, 0.0..=1.0)?;
+    validate_sampling_range("presence_penalty", presence_penalty, -2.0..=2.0)?;
+    validate_sampling_range("frequency_penalty", frequency_penalty, -2.0..=2.0)?;
+    validate_sampling_range("repeat_penalty", repeat_penalty, 0.0..=100.0)?;
+    if top_k < 0 {
+        return Err(OpenAiError::invalid_request(
+            "top_k must be greater than or equal to zero",
+        ));
+    }
+    let seed = match seed {
+        Some(seed) => u32::try_from(seed)
+            .map_err(|_| OpenAiError::invalid_request("seed exceeds u32 range"))?,
+        None => 0,
+    };
+    let logit_bias = parse_logit_bias(logit_bias)?;
+    let enabled = seed != 0
+        || temperature <= 0.0
+        || (temperature - 1.0).abs() > f32::EPSILON
+        || (top_p - 1.0).abs() > f32::EPSILON
+        || top_k > 0
+        || presence_penalty.abs() > f32::EPSILON
+        || frequency_penalty.abs() > f32::EPSILON
+        || (repeat_penalty - 1.0).abs() > f32::EPSILON
+        || !logit_bias.is_empty();
+    Ok(SamplingConfig {
+        enabled,
+        seed,
+        temperature,
+        top_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        repeat_penalty,
+        penalty_last_n: -1,
+        logit_bias,
+    })
+}
+
+fn parse_logit_bias(
+    logit_bias: Option<&std::collections::BTreeMap<String, serde_json::Value>>,
+) -> OpenAiResult<Vec<RuntimeLogitBias>> {
+    let Some(logit_bias) = logit_bias else {
+        return Ok(Vec::new());
+    };
+    if logit_bias.len() > MAX_LOGIT_BIAS {
+        return Err(OpenAiError::invalid_request(format!(
+            "logit_bias supports at most {MAX_LOGIT_BIAS} entries"
+        )));
+    }
+    let mut parsed = Vec::with_capacity(logit_bias.len());
+    for (token_id, bias) in logit_bias {
+        let token_id = token_id
+            .parse::<i32>()
+            .map_err(|_| OpenAiError::invalid_request("logit_bias token IDs must be integers"))?;
+        if token_id < 0 {
+            return Err(OpenAiError::invalid_request(
+                "logit_bias token IDs must be greater than or equal to zero",
+            ));
+        }
+        let bias = serde_json::from_value::<f32>(bias.clone())
+            .map_err(|_| OpenAiError::invalid_request("logit_bias values must be numbers"))?;
+        validate_sampling_range("logit_bias", bias, -100.0..=100.0)?;
+        parsed.push(RuntimeLogitBias { token_id, bias });
+    }
+    Ok(parsed)
+}
+
+fn validate_sampling_range(
+    name: &str,
+    value: f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> OpenAiResult<()> {
+    if !value.is_finite() || !range.contains(&value) {
+        return Err(OpenAiError::invalid_request(format!(
+            "{name} is outside the supported range"
+        )));
+    }
+    Ok(())
+}
+
+fn optional_f32_extra(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+    field: &str,
+) -> OpenAiResult<Option<f32>> {
+    extra
+        .get(field)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<f32>(value.clone())
+                .map_err(|_| OpenAiError::invalid_request(format!("{field} must be a number")))
+        })
+        .transpose()
+}
+
+fn optional_i32_extra(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+    field: &str,
+) -> OpenAiResult<Option<i32>> {
+    extra
+        .get(field)
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value::<i32>(value.clone())
+                .map_err(|_| OpenAiError::invalid_request(format!("{field} must be an integer")))
+        })
+        .transpose()
+}
+
+fn wire_sampling_config(sampling: &SamplingConfig) -> Option<WireSamplingConfig> {
+    if !sampling.enabled {
+        return None;
+    }
+    let mut wire = WireSamplingConfig {
+        flags: u32::from(sampling.enabled),
+        seed: sampling.seed,
+        temperature: sampling.temperature,
+        top_p: sampling.top_p,
+        top_k: sampling.top_k,
+        presence_penalty: sampling.presence_penalty,
+        frequency_penalty: sampling.frequency_penalty,
+        repeat_penalty: sampling.repeat_penalty,
+        penalty_last_n: sampling.penalty_last_n,
+        ..WireSamplingConfig::default()
+    };
+    wire.logit_bias = sampling
+        .logit_bias
+        .iter()
+        .take(MAX_STAGE_LOGIT_BIAS)
+        .map(|source| WireLogitBias {
+            token_id: source.token_id,
+            bias: source.bias,
+        })
+        .collect();
+    Some(wire)
+}
+
+struct DecodeMessageArgs {
+    request_id: u64,
+    session_id: u64,
+    prompt_token_count: usize,
+    pos_start: usize,
+    decode_step: usize,
+    current: i32,
+    sampling: Option<WireSamplingConfig>,
+}
+
+fn embedded_decode_message(
+    wire_dtype: WireActivationDType,
+    args: DecodeMessageArgs,
+) -> OpenAiResult<StageWireMessage> {
+    let mut state = StageStateHeader::new(WireMessageKind::DecodeEmbd, wire_dtype);
+    state.seq_id = 0;
+    state.prompt_token_count = i32::try_from(args.prompt_token_count)
+        .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+    state.decode_step = i32::try_from(args.decode_step)
+        .map_err(|_| OpenAiError::backend("decode step exceeds i32"))?;
+    state.current_token = args.current;
+    state.source_stage_index = -1;
+    Ok(StageWireMessage {
+        kind: WireMessageKind::DecodeEmbd,
+        pos_start: i32::try_from(args.pos_start)
+            .map_err(|_| OpenAiError::backend("decode position exceeds i32"))?,
+        token_count: 1,
+        state,
+        request_id: args.request_id,
+        session_id: args.session_id,
+        sampling: args.sampling,
+        tokens: vec![args.current],
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
+struct VerifySpanMessageArgs<'a> {
+    request_id: u64,
+    session_id: u64,
+    prompt_token_count: usize,
+    pos_start: usize,
+    decode_step: usize,
+    tokens: &'a [i32],
+    checkpoint: bool,
+}
+
+fn embedded_verify_message(
+    wire_dtype: WireActivationDType,
+    args: VerifySpanMessageArgs<'_>,
+) -> OpenAiResult<StageWireMessage> {
+    if args.tokens.is_empty() {
+        return Err(OpenAiError::backend(
+            "verify span requires at least one token",
+        ));
+    }
+    let mut state = StageStateHeader::new(WireMessageKind::VerifySpan, wire_dtype);
+    state.seq_id = 0;
+    state.prompt_token_count = i32::try_from(args.prompt_token_count)
+        .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+    state.decode_step = i32::try_from(args.decode_step)
+        .map_err(|_| OpenAiError::backend("decode step exceeds i32"))?;
+    state.current_token = args.tokens[0];
+    state.source_stage_index = -1;
+    if !args.checkpoint {
+        state.flags |= state_flags::SKIP_VERIFY_CHECKPOINT;
+    }
+    Ok(StageWireMessage {
+        kind: WireMessageKind::VerifySpan,
+        pos_start: i32::try_from(args.pos_start)
+            .map_err(|_| OpenAiError::backend("verify span position exceeds i32"))?,
+        token_count: i32::try_from(args.tokens.len())
+            .map_err(|_| OpenAiError::backend("verify span exceeds i32"))?,
+        state,
+        request_id: args.request_id,
+        session_id: args.session_id,
+        sampling: None,
+        tokens: args.tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
+fn embedded_session_control_message(
+    wire_dtype: WireActivationDType,
+    kind: WireMessageKind,
+    request_id: u64,
+    session_id: u64,
+) -> StageWireMessage {
+    StageWireMessage {
+        kind,
+        pos_start: 0,
+        token_count: 0,
+        state: StageStateHeader::new(kind, wire_dtype),
+        request_id,
+        session_id,
+        sampling: None,
+        tokens: Vec::new(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    }
+}
+
+fn verify_inputs_for_proposals(current: i32, proposals: &[i32]) -> Vec<i32> {
+    let mut tokens = Vec::with_capacity(proposals.len());
+    if proposals.is_empty() {
+        return tokens;
+    }
+    tokens.push(current);
+    tokens.extend(proposals.iter().take(proposals.len().saturating_sub(1)));
+    tokens
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifySpanDecisionKind {
+    FullAccept,
+    AcceptedStop,
+    TailReject,
+    EarlyReject,
+    EarlyRejectStop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifySpanDecision {
+    kind: VerifySpanDecisionKind,
+    accepted_before_reject: usize,
+    repair_input_count: Option<usize>,
+    commit_count: usize,
+}
+
+impl VerifySpanDecision {
+    fn rejected(self) -> bool {
+        matches!(
+            self.kind,
+            VerifySpanDecisionKind::TailReject
+                | VerifySpanDecisionKind::EarlyReject
+                | VerifySpanDecisionKind::EarlyRejectStop
+        )
+    }
+
+    fn requires_repair(self) -> bool {
+        self.kind == VerifySpanDecisionKind::EarlyReject
+    }
+}
+
+fn classify_verify_span<F>(
+    draft_tokens: &[i32],
+    predicted_tokens: &[i32],
+    generated_len: usize,
+    max_new_tokens: usize,
+    mut token_is_eog: F,
+) -> OpenAiResult<VerifySpanDecision>
+where
+    F: FnMut(i32) -> OpenAiResult<bool>,
+{
+    if predicted_tokens.len() < draft_tokens.len() {
+        return Err(OpenAiError::backend(format!(
+            "verify span returned too few tokens: got {} expected {}",
+            predicted_tokens.len(),
+            draft_tokens.len()
+        )));
+    }
+
+    let mut accepted_before_reject = 0usize;
+    let mut commit_count = 0usize;
+    for (draft_token, predicted) in draft_tokens.iter().zip(predicted_tokens.iter()) {
+        commit_count += 1;
+        let accepted = *predicted == *draft_token;
+        let reached_eog = token_is_eog(*predicted)?;
+        let reached_limit = generated_len + commit_count >= max_new_tokens;
+        if accepted {
+            accepted_before_reject += 1;
+            if (reached_eog || reached_limit) && commit_count < draft_tokens.len() {
+                return Ok(VerifySpanDecision {
+                    kind: VerifySpanDecisionKind::AcceptedStop,
+                    accepted_before_reject,
+                    repair_input_count: None,
+                    commit_count,
+                });
+            }
+            continue;
+        }
+
+        let repair_input_count = accepted_before_reject + 1;
+        let kind = if repair_input_count == draft_tokens.len() {
+            VerifySpanDecisionKind::TailReject
+        } else if reached_eog || reached_limit {
+            VerifySpanDecisionKind::EarlyRejectStop
+        } else {
+            VerifySpanDecisionKind::EarlyReject
+        };
+        return Ok(VerifySpanDecision {
+            kind,
+            accepted_before_reject,
+            repair_input_count: Some(repair_input_count),
+            commit_count,
+        });
+    }
+
+    Ok(VerifySpanDecision {
+        kind: VerifySpanDecisionKind::FullAccept,
+        accepted_before_reject,
+        repair_input_count: None,
+        commit_count,
+    })
+}
+
+fn repaired_commit_tokens(
+    draft_tokens: &[i32],
+    accepted_before_reject: usize,
+    repair_input_count: usize,
+    repaired_predictions: &[i32],
+) -> OpenAiResult<Vec<i32>> {
+    if repaired_predictions.len() < repair_input_count {
+        return Err(OpenAiError::backend(format!(
+            "recovery verify returned too few tokens: expected {} got {:?}",
+            repair_input_count, repaired_predictions
+        )));
+    }
+    if accepted_before_reject > 0
+        && repaired_predictions[..accepted_before_reject] != draft_tokens[..accepted_before_reject]
+    {
+        eprintln!(
+            "recovery verify changed accepted prefix; committing restored target tokens: accepted {:?}, repaired {:?}",
+            &draft_tokens[..accepted_before_reject],
+            &repaired_predictions[..accepted_before_reject]
+        );
+    }
+    Ok(repaired_predictions[..repair_input_count].to_vec())
+}
+
+fn nonzero_min(current: usize, candidate: usize) -> usize {
+    if current == 0 {
+        candidate
+    } else {
+        current.min(candidate)
+    }
+}
+
+fn ms_to_us(ms: f64) -> i64 {
+    (ms * 1000.0).round() as i64
+}
+
+fn us_to_ms(us: i64) -> f64 {
+    us as f64 / 1000.0
+}
+
+fn openai_backend_error(error: anyhow::Error) -> OpenAiError {
+    OpenAiError::backend(error.to_string())
+}
+
+fn openai_io_error(error: std::io::Error) -> OpenAiError {
+    OpenAiError::backend(error.to_string())
+}
+
+fn parse_wire_dtype(value: &str) -> Result<WireActivationDType> {
+    match value {
+        "fp32" | "f32" => Ok(WireActivationDType::F32),
+        "fp16" | "f16" => Ok(WireActivationDType::F16),
+        "q8" | "int8" | "i8" => Ok(WireActivationDType::Q8),
+        _ => bail!("unsupported activation wire dtype {value}"),
+    }
+}
+
+fn connect_endpoint_ready(endpoint: &str, timeout_secs: u64) -> Result<TcpStream> {
+    let endpoint = endpoint.strip_prefix("tcp://").unwrap_or(endpoint);
+    let attempts = timeout_secs.saturating_mul(2).max(1);
+    let mut last_error = None;
+    for _ in 0..attempts {
+        match TcpStream::connect(endpoint) {
+            Ok(mut stream) => {
+                stream.set_nodelay(true).ok();
+                match recv_ready(&mut stream) {
+                    Ok(()) => return Ok(stream),
+                    Err(error) => {
+                        last_error = Some(anyhow!(error).context("ready handshake failed"))
+                    }
+                }
+            }
+            Err(error) => last_error = Some(anyhow!(error).context("connect failed")),
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("timed out")))
+}
+
+struct OpenAiPrefillChunk<'a> {
+    seq_id: usize,
+    pos_start: usize,
+    prefill_token_count: usize,
+    tokens: &'a [i32],
+    request_id: u64,
+    session_id: u64,
+}
+
+fn send_prefill_chunk(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    chunk: OpenAiPrefillChunk<'_>,
+) -> Result<()> {
+    let mut state = StageStateHeader::new(WireMessageKind::PrefillEmbd, wire_dtype);
+    state.seq_id = i32::try_from(chunk.seq_id).context("prefill seq exceeds i32")?;
+    state.prompt_token_count =
+        i32::try_from(chunk.prefill_token_count).context("prefill token count exceeds i32")?;
+    state.current_token = *chunk.tokens.last().context("prefill chunk is empty")?;
+    state.source_stage_index = -1;
+    let message = StageWireMessage {
+        kind: WireMessageKind::PrefillEmbd,
+        pos_start: i32::try_from(chunk.pos_start).context("prefill chunk position exceeds i32")?,
+        token_count: i32::try_from(chunk.tokens.len())
+            .context("prefill token count exceeds i32")?,
+        state,
+        request_id: chunk.request_id,
+        session_id: chunk.session_id,
+        sampling: None,
+        tokens: chunk.tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    write_stage_message(&mut *stream, &message, wire_dtype).context("send prefill chunk")?;
+    let reply = recv_reply(&mut *stream).context("receive prefill chunk ACK")?;
+    if reply.kind != WireReplyKind::Ack {
+        bail!("expected prefill ACK, got {:?}", reply.kind);
+    }
+    Ok(())
+}
+
+fn embedded_prefill_message(
+    wire_dtype: WireActivationDType,
+    chunk: OpenAiPrefillChunk<'_>,
+) -> OpenAiResult<StageWireMessage> {
+    let mut state = StageStateHeader::new(WireMessageKind::PrefillEmbd, wire_dtype);
+    state.seq_id =
+        i32::try_from(chunk.seq_id).map_err(|_| OpenAiError::backend("prefill seq exceeds i32"))?;
+    state.prompt_token_count = i32::try_from(chunk.prefill_token_count)
+        .map_err(|_| OpenAiError::backend("prefill token count exceeds i32"))?;
+    state.current_token = *chunk
+        .tokens
+        .last()
+        .ok_or_else(|| OpenAiError::backend("prefill chunk is empty"))?;
+    state.source_stage_index = -1;
+    Ok(StageWireMessage {
+        kind: WireMessageKind::PrefillEmbd,
+        pos_start: i32::try_from(chunk.pos_start)
+            .map_err(|_| OpenAiError::backend("prefill chunk position exceeds i32"))?,
+        token_count: i32::try_from(chunk.tokens.len())
+            .map_err(|_| OpenAiError::backend("prefill token count exceeds i32"))?,
+        state,
+        request_id: chunk.request_id,
+        session_id: chunk.session_id,
+        sampling: None,
+        tokens: chunk.tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
+fn trim_at_stop<'a>(text: &'a str, stop_values: &[&str]) -> &'a str {
+    let first_stop = stop_values
+        .iter()
+        .filter(|stop| !stop.is_empty())
+        .filter_map(|stop| text.find(stop))
+        .min();
+    match first_stop {
+        Some(index) => &text[..index],
+        None => text,
+    }
+}
+
+fn valid_utf8_prefix_len(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        Err(error) => error.valid_up_to(),
+    }
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn now_unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn stable_wire_id(parts: &[&[u8]]) -> u64 {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let id = u64::from_le_bytes(
+        digest[..8]
+            .try_into()
+            .expect("sha256 digest has an 8-byte prefix"),
+    );
+    if id == 0 {
+        1
+    } else {
+        id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn trims_at_first_stop_sequence() {
+        assert_eq!(trim_at_stop("hello END world", &["END"]), "hello ");
+        assert_eq!(trim_at_stop("abc xyz def", &["def", "xyz"]), "abc ");
+        assert_eq!(trim_at_stop("abc", &[""]), "abc");
+    }
+
+    #[test]
+    fn valid_utf8_prefix_skips_incomplete_suffix() {
+        assert_eq!(valid_utf8_prefix_len("hello".as_bytes()), 5);
+        assert_eq!(valid_utf8_prefix_len(&[b'h', b'i', 0xE2, 0x82]), 2);
+        assert_eq!(valid_utf8_prefix_len(&[0xF0, 0x9F, 0x98]), 0);
+    }
+
+    #[test]
+    fn default_sampling_controls_are_allowed() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 1.0,
+            "top_p": 1.0
+        }))
+        .unwrap();
+
+        let sampling = chat_sampling_config(&request).unwrap();
+        assert!(!sampling.enabled);
+    }
+
+    #[test]
+    fn non_default_sampling_controls_are_enabled() {
+        let request: CompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "prompt": "hello",
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "seed": 42
+        }))
+        .unwrap();
+
+        let sampling = completion_sampling_config(&request).unwrap();
+        assert!(sampling.enabled);
+        assert_eq!(sampling.seed, 42);
+        assert_eq!(sampling.temperature, 0.7);
+    }
+
+    #[test]
+    fn typed_sampling_penalties_are_enabled() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "presence_penalty": 1.0
+        }))
+        .unwrap();
+
+        let sampling = chat_sampling_config(&request).unwrap();
+        assert!(sampling.enabled);
+        assert_eq!(sampling.presence_penalty, 1.0);
+    }
+
+    #[test]
+    fn extra_sampling_fields_are_enabled() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "top_k": 40
+        }))
+        .unwrap();
+
+        let sampling = chat_sampling_config(&request).unwrap();
+        assert!(sampling.enabled);
+        assert_eq!(sampling.top_k, 40);
+    }
+
+    #[test]
+    fn canonical_reasoning_disabled_turns_off_chat_template_thinking() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning": {"enabled": false}
+        }))
+        .unwrap();
+
+        let options = chat_template_options(&request).unwrap();
+        assert_eq!(options.enable_thinking, Some(false));
+    }
+
+    #[test]
+    fn reasoning_effort_none_turns_off_chat_template_thinking() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning": {"effort": "none"}
+        }))
+        .unwrap();
+
+        let options = chat_template_options(&request).unwrap();
+        assert_eq!(options.enable_thinking, Some(false));
+    }
+
+    #[test]
+    fn provider_enable_thinking_overrides_canonical_reasoning() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning": {"enabled": false},
+            "enable_thinking": true
+        }))
+        .unwrap();
+
+        let options = chat_template_options(&request).unwrap();
+        assert_eq!(options.enable_thinking, Some(true));
+    }
+
+    #[test]
+    fn chat_template_kwargs_enable_thinking_is_supported() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "chat_template_kwargs": {"enable_thinking": false}
+        }))
+        .unwrap();
+
+        let options = chat_template_options(&request).unwrap();
+        assert_eq!(options.enable_thinking, Some(false));
+    }
+
+    #[test]
+    fn thinking_boolean_aliases_are_supported() {
+        for field in openai_frontend::THINKING_BOOLEAN_ALIASES {
+            let request: ChatCompletionRequest = serde_json::from_value(json!({
+                "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+                "messages": [{"role": "user", "content": "hello"}],
+                (*field): false
+            }))
+            .unwrap();
+            assert_eq!(
+                chat_template_options(&request).unwrap().enable_thinking,
+                Some(false),
+                "top-level alias {field}"
+            );
+
+            let request: ChatCompletionRequest = serde_json::from_value(json!({
+                "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+                "messages": [{"role": "user", "content": "hello"}],
+                "chat_template_kwargs": {(*field): false}
+            }))
+            .unwrap();
+            assert_eq!(
+                chat_template_options(&request).unwrap().enable_thinking,
+                Some(false),
+                "chat_template_kwargs alias {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_max_tokens_enables_and_zero_budget_disables_thinking() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning": {"max_tokens": 1024}
+        }))
+        .unwrap();
+        assert_eq!(
+            chat_template_options(&request).unwrap().enable_thinking,
+            Some(true)
+        );
+
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning": {"enabled": true},
+            "thinking_budget": 0
+        }))
+        .unwrap();
+        assert_eq!(
+            chat_template_options(&request).unwrap().enable_thinking,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn logit_bias_is_enabled() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "logit_bias": {"123": -50.0, "456": 12.5}
+        }))
+        .unwrap();
+
+        let sampling = chat_sampling_config(&request).unwrap();
+        assert!(sampling.enabled);
+        assert_eq!(sampling.logit_bias.len(), 2);
+        assert_eq!(sampling.logit_bias[0].token_id, 123);
+        assert_eq!(sampling.logit_bias[0].bias, -50.0);
+        assert_eq!(sampling.logit_bias[1].token_id, 456);
+        assert_eq!(sampling.logit_bias[1].bias, 12.5);
+    }
+
+    #[test]
+    fn invalid_logit_bias_returns_openai_error() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "logit_bias": {"not-a-token": 1.0}
+        }))
+        .unwrap();
+
+        let error = chat_sampling_config(&request).unwrap_err();
+        assert_eq!(error.body().error.code.as_deref(), Some("invalid_value"));
+    }
+
+    #[test]
+    fn unsupported_extra_generation_fields_return_openai_error() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}],
+            "min_p": 0.1
+        }))
+        .unwrap();
+
+        let error = chat_sampling_config(&request).unwrap_err();
+        assert_eq!(
+            error.body().error.code.as_deref(),
+            Some("unsupported_model_feature")
+        );
+    }
+
+    #[test]
+    fn maps_generation_exhaustion_to_length_finish_reason() {
+        assert_eq!(finish_reason_for_generation(true), FinishReason::Length);
+        assert_eq!(finish_reason_for_generation(false), FinishReason::Stop);
+    }
+
+    #[test]
+    fn generation_ids_are_unique_under_fast_creation() {
+        let ids = (0..1024)
+            .map(|_| OpenAiGenerationIds::new())
+            .collect::<Vec<_>>();
+        let mut sessions = std::collections::BTreeSet::new();
+        let mut requests = std::collections::BTreeSet::new();
+        for id in ids {
+            assert!(sessions.insert(id.session_id));
+            assert!(requests.insert(id.request_id));
+        }
+    }
+
+    #[test]
+    fn prefill_chunk_schedule_parses_and_repeats_last_size() {
+        let schedule = PrefillChunkSchedule::parse(Some("128, 256,512"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(schedule.label(), "128,256,512");
+        assert_eq!(schedule.chunk_size_for(0), 128);
+        assert_eq!(schedule.chunk_size_for(1), 256);
+        assert_eq!(schedule.chunk_size_for(2), 512);
+        assert_eq!(schedule.chunk_size_for(3), 512);
+    }
+
+    #[test]
+    fn prefill_chunk_schedule_rejects_bad_sizes() {
+        assert!(PrefillChunkSchedule::parse(Some("128,0")).is_err());
+        assert!(PrefillChunkSchedule::parse(Some("128,,256")).is_err());
+        assert!(PrefillChunkSchedule::parse(Some("abc")).is_err());
+    }
+
+    #[test]
+    fn prefill_chunk_policy_keeps_legacy_schedule_behavior() {
+        let policy = PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+            policy: "fixed",
+            schedule: Some("128,256,384"),
+            fixed_chunk_size: 256,
+            adaptive_start: 128,
+            adaptive_step: 128,
+            adaptive_max: 384,
+            schedule_arg: "--prefill-chunk-schedule",
+            policy_arg: "--prefill-chunk-policy",
+        })
+        .unwrap();
+        let mut planner = policy.planner();
+        assert_eq!(planner.chunk_size_for(0), 128);
+        assert_eq!(planner.chunk_size_for(1), 256);
+        assert_eq!(planner.chunk_size_for(2), 384);
+        assert_eq!(planner.chunk_size_for(3), 384);
+    }
+
+    #[test]
+    fn prefill_adaptive_ramp_grows_when_downstream_wait_is_hidden() {
+        let policy = PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+            policy: "adaptive-ramp",
+            schedule: None,
+            fixed_chunk_size: 256,
+            adaptive_start: 128,
+            adaptive_step: 128,
+            adaptive_max: 384,
+            schedule_arg: "--prefill-chunk-schedule",
+            policy_arg: "--prefill-chunk-policy",
+        })
+        .unwrap();
+        let mut planner = policy.planner();
+        assert_eq!(planner.chunk_size_for(0), 128);
+        planner.observe(PrefillChunkObservation {
+            compute_ms: 100.0,
+            forward_write_ms: 5.0,
+            downstream_wait_ms: 20.0,
+        });
+        assert_eq!(planner.chunk_size_for(1), 256);
+        planner.observe(PrefillChunkObservation {
+            compute_ms: 100.0,
+            forward_write_ms: 5.0,
+            downstream_wait_ms: 20.0,
+        });
+        assert_eq!(planner.chunk_size_for(2), 384);
+    }
+
+    #[test]
+    fn prefill_adaptive_ramp_can_advance_without_observations() {
+        let policy = PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+            policy: "adaptive-ramp",
+            schedule: None,
+            fixed_chunk_size: 256,
+            adaptive_start: 128,
+            adaptive_step: 128,
+            adaptive_max: 384,
+            schedule_arg: "--prefill-chunk-schedule",
+            policy_arg: "--prefill-chunk-policy",
+        })
+        .unwrap();
+        let mut planner = policy.planner();
+        assert_eq!(planner.chunk_size_for(0), 128);
+        planner.advance_without_observation();
+        assert_eq!(planner.chunk_size_for(1), 256);
+        planner.advance_without_observation();
+        assert_eq!(planner.chunk_size_for(2), 384);
+        planner.advance_without_observation();
+        assert_eq!(planner.chunk_size_for(3), 384);
+    }
+
+    #[test]
+    fn prefill_adaptive_ramp_backs_off_when_wait_is_exposed() {
+        let policy = PrefillChunkPolicy::parse(PrefillChunkPolicyArgs {
+            policy: "adaptive-ramp",
+            schedule: None,
+            fixed_chunk_size: 256,
+            adaptive_start: 128,
+            adaptive_step: 128,
+            adaptive_max: 384,
+            schedule_arg: "--prefill-chunk-schedule",
+            policy_arg: "--prefill-chunk-policy",
+        })
+        .unwrap();
+        let mut planner = policy.planner();
+        planner.observe(PrefillChunkObservation {
+            compute_ms: 100.0,
+            forward_write_ms: 5.0,
+            downstream_wait_ms: 10.0,
+        });
+        assert_eq!(planner.chunk_size_for(1), 256);
+        planner.observe(PrefillChunkObservation {
+            compute_ms: 100.0,
+            forward_write_ms: 5.0,
+            downstream_wait_ms: 150.0,
+        });
+        assert_eq!(planner.chunk_size_for(2), 128);
+    }
+
+    #[test]
+    fn model_matching_is_exact_for_mesh_style_ids() {
+        ensure_requested_model(
+            "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+        )
+        .unwrap();
+
+        let error = ensure_requested_model(
+            "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
+            "org/repo:Q5_K_M",
+        )
+        .unwrap_err();
+        assert_eq!(error.body().error.code.as_deref(), Some("model_not_found"));
+    }
+
+    #[test]
+    fn rejects_requests_that_exceed_context_window() {
+        ensure_context_capacity(4, 4, 8).unwrap();
+
+        let error = ensure_context_capacity(5, 4, 8).unwrap_err();
+        assert_eq!(
+            error.body().error.code.as_deref(),
+            Some("context_length_exceeded")
+        );
+    }
+}

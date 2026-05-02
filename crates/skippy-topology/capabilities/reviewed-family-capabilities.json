@@ -1,0 +1,268 @@
+[
+  {
+    "model_id": "Qwen/Qwen3-0.6B:Q8_0",
+    "distribution_id": "Qwen3-0.6B-Q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "qwen3_dense",
+      "layer_count": 28,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M",
+    "distribution_id": "Llama-3.2-1B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "llama",
+      "layer_count": 16,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+    "source_revision": "8f248fa2072348f77a8bc37754e470de1f61866e",
+    "source_file": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF@8f248fa2072348f77a8bc37754e470de1f61866e/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+    "distribution_id": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "deepseek2",
+      "layer_count": 27,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/GLM-4.7-Flash-GGUF:Q4_K_M",
+    "source_repo": "unsloth/GLM-4.7-Flash-GGUF",
+    "source_revision": "0d32489ecb9db6d2a4fc93bd27ef01519f95474d",
+    "source_file": "GLM-4.7-Flash-Q4_K_M.gguf",
+    "canonical_ref": "unsloth/GLM-4.7-Flash-GGUF@0d32489ecb9db6d2a4fc93bd27ef01519f95474d/GLM-4.7-Flash-Q4_K_M.gguf",
+    "distribution_id": "GLM-4.7-Flash-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "glm47_flash",
+      "layer_count": 47,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M",
+    "source_repo": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf",
+    "source_revision": "b15dd8df3957ace630d34943149a180282db4680",
+    "source_file": "glm-4-9b-0414-q4_k_m.gguf",
+    "canonical_ref": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf@b15dd8df3957ace630d34943149a180282db4680/glm-4-9b-0414-q4_k_m.gguf",
+    "distribution_id": "glm-4-9b-0414-q4_k_m",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "glm4",
+      "layer_count": 40,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K",
+    "source_repo": "batiai/Gemma-4-26B-A4B-it-GGUF",
+    "source_revision": "45ad6023c1c79fe5813b34270bc4d44e392a0d17",
+    "source_file": "google-gemma-4-26B-A4B-it-Q6_K.gguf",
+    "canonical_ref": "batiai/Gemma-4-26B-A4B-it-GGUF@45ad6023c1c79fe5813b34270bc4d44e392a0d17/google-gemma-4-26B-A4B-it-Q6_K.gguf",
+    "distribution_id": "google-gemma-4-26B-A4B-it-Q6_K",
+    "selector": "Q6_K",
+    "capability": {
+      "family_id": "gemma4_a4b",
+      "layer_count": 30,
+      "activation_width": 2816,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
+    "source_repo": "unsloth/gemma-4-E4B-it-GGUF",
+    "source_revision": "315e03409eb1cdde302488d66e586dea1e82aad1",
+    "source_file": "gemma-4-E4B-it-Q4_K_M.gguf",
+    "canonical_ref": "unsloth/gemma-4-E4B-it-GGUF@315e03409eb1cdde302488d66e586dea1e82aad1/gemma-4-E4B-it-Q4_K_M.gguf",
+    "distribution_id": "gemma-4-E4B-it-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gemma4_e4b",
+      "layer_count": 42,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [
+        {
+          "kind": "shared_kv_producer_consumer",
+          "range": { "start": 0, "end": 0 },
+          "forbidden_boundaries": [12, 14, 24, 28],
+          "reject_boundary_inside": false,
+          "reason": "known-bad Gemma4 E4B shared-KV producer/consumer boundary; keep this cut rejected unless KV replay or KV transfer is added"
+        }
+      ],
+      "sidebands": [
+        {
+          "kind": "token_ids",
+          "first_required_layer": 42,
+          "reason": "Gemma4 E4B downstream slices require token-id sideband to rebuild the auxiliary per-layer input path"
+        }
+      ]
+    }
+  },
+  {
+    "model_id": "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+    "source_repo": "ggml-org/gemma-3-1b-it-GGUF",
+    "source_revision": "f9c28bcd85737ffc5aef028638d3341d49869c27",
+    "source_file": "gemma-3-1b-it-Q4_K_M.gguf",
+    "canonical_ref": "ggml-org/gemma-3-1b-it-GGUF@f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf",
+    "distribution_id": "gemma-3-1b-it-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gemma3",
+      "layer_count": 26,
+      "activation_width": 1152,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/gemma-2-2b-it-GGUF:Q4_K_M",
+    "source_repo": "bartowski/gemma-2-2b-it-GGUF",
+    "source_revision": "855f67caed130e1befc571b52bd181be2e858883",
+    "source_file": "gemma-2-2b-it-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/gemma-2-2b-it-GGUF@855f67caed130e1befc571b52bd181be2e858883/gemma-2-2b-it-Q4_K_M.gguf",
+    "distribution_id": "gemma-2-2b-it-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gemma2",
+      "layer_count": 26,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF",
+    "source_revision": "0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a",
+    "source_file": "Falcon-H1-1.5B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF@0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a/Falcon-H1-1.5B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Falcon-H1-1.5B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "falcon_h1",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [{ "start": 0, "end": 24 }],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16",
+    "source_repo": "meshllm/olmo-7b-instruct-hf-parity-f16-gguf",
+    "source_revision": "846c0ae38aff29ea8fce0959fb406cdcef858bac",
+    "source_file": "olmo-7b-instruct-hf-f16.gguf",
+    "canonical_ref": "meshllm/olmo-7b-instruct-hf-parity-f16-gguf@846c0ae38aff29ea8fce0959fb406cdcef858bac/olmo-7b-instruct-hf-f16.gguf",
+    "distribution_id": "olmo-7b-instruct-hf-f16",
+    "selector": "F16",
+    "capability": {
+      "family_id": "olmo",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL",
+    "source_repo": "unsloth/MiniMax-M2.7-GGUF",
+    "source_revision": "d2a05ccf69491b03db0cc40b335aec14bdaf7198",
+    "source_file": "UD-Q2_K_XL/MiniMax-M2.7-UD-Q2_K_XL-00001-of-00003.gguf",
+    "canonical_ref": "unsloth/MiniMax-M2.7-GGUF@d2a05ccf69491b03db0cc40b335aec14bdaf7198/UD-Q2_K_XL/MiniMax-M2.7-UD-Q2_K_XL-00001-of-00003.gguf",
+    "distribution_id": "MiniMax-M2.7-UD-Q2_K_XL",
+    "selector": "UD-Q2_K_XL",
+    "capability": {
+      "family_id": "minimax_m27",
+      "layer_count": 62,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS",
+    "source_repo": "bartowski/Qwen_Qwen3-Coder-Next-GGUF",
+    "source_revision": "d32741c4b434bf1f927798d0c093564c7f4e92fd",
+    "source_file": "Qwen_Qwen3-Coder-Next-IQ2_XS.gguf",
+    "canonical_ref": "bartowski/Qwen_Qwen3-Coder-Next-GGUF@d32741c4b434bf1f927798d0c093564c7f4e92fd/Qwen_Qwen3-Coder-Next-IQ2_XS.gguf",
+    "distribution_id": "Qwen_Qwen3-Coder-Next-IQ2_XS",
+    "selector": "IQ2_XS",
+    "capability": {
+      "family_id": "qwen3next",
+      "layer_count": 48,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [{ "start": 0, "end": 48 }],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  }
+]

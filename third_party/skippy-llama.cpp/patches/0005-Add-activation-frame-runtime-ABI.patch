@@ -1,0 +1,231 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 12:15:31 +1000
+Subject: [PATCH] Add activation frame runtime ABI
+
+---
+ include/skippy.h |  50 +++++++++++++++++
+ src/skippy.cpp       | 112 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 161 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index ad68d61f..9061920d 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -36,6 +36,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_GGUF_SLICE_WRITE       = 1 << 4,
+     SKIPPY_FEATURE_STATE_IMPORT_EXPORT    = 1 << 5,
+     SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
++    SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
+ };
+
+ enum skippy_status {
+@@ -65,6 +66,18 @@ enum skippy_tensor_role {
+     SKIPPY_TENSOR_ROLE_OUTPUT             = 6,
+ };
+
++enum skippy_activation_dtype {
++    SKIPPY_ACTIVATION_DTYPE_UNKNOWN       = 0,
++    SKIPPY_ACTIVATION_DTYPE_F32           = 1,
++    SKIPPY_ACTIVATION_DTYPE_F16           = 2,
++    SKIPPY_ACTIVATION_DTYPE_BF16          = 3,
++};
++
++enum skippy_activation_layout {
++    SKIPPY_ACTIVATION_LAYOUT_OPAQUE       = 0,
++    SKIPPY_ACTIVATION_LAYOUT_TOKEN_MAJOR  = 1,
++};
++
+ struct skippy_model;
+ struct skippy_session;
+ struct skippy_model_info;
+@@ -99,6 +112,19 @@ struct skippy_tensor_info {
+     uint64_t element_count;
+ };
+
++struct skippy_activation_desc {
++    uint32_t version;
++    enum skippy_activation_dtype dtype;
++    enum skippy_activation_layout layout;
++    int32_t producer_stage_index;
++    int32_t layer_start;
++    int32_t layer_end;
++    uint32_t token_count;
++    uint32_t sequence_count;
++    uint64_t payload_bytes;
++    uint64_t flags;
++};
++
+ struct skippy_abi_version {
+     uint32_t major;
+     uint32_t minor;
+@@ -154,6 +180,30 @@ LLAMA_API enum skippy_status skippy_decode_step(
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error);
+
++LLAMA_API enum skippy_status skippy_prefill_chunk_frame(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_decode_step_frame(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 7df4640b..fed46b6a 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -187,6 +187,44 @@ static llama_token skippy_greedy_sample(skippy_session * session) {
+     return best;
+ }
+
++static bool skippy_has_activation_payload(const skippy_activation_desc * desc, const void * payload) {
++    return desc != nullptr && desc->payload_bytes > 0 && payload != nullptr;
++}
++
++static enum skippy_status skippy_prepare_empty_activation_frame(
++        skippy_session * session,
++        size_t token_count,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        skippy_activation_desc * output_desc,
++        struct skippy_error ** out_error) {
++    if (output_payload_capacity > 0 && output_payload == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "output_payload is required when output capacity is non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    if (out_output_payload_bytes != nullptr) {
++        *out_output_payload_bytes = 0;
++    }
++
++    if (output_desc != nullptr) {
++        *output_desc = {};
++        output_desc->version = 1;
++        output_desc->dtype = SKIPPY_ACTIVATION_DTYPE_UNKNOWN;
++        output_desc->layout = SKIPPY_ACTIVATION_LAYOUT_OPAQUE;
++        output_desc->producer_stage_index = session != nullptr ? session->stage_model->config.stage_index : -1;
++        output_desc->layer_start = session != nullptr ? session->stage_model->config.layer_start : 0;
++        output_desc->layer_end = session != nullptr ? session->stage_model->config.layer_end : 0;
++        output_desc->token_count = static_cast<uint32_t>(std::min<size_t>(token_count, std::numeric_limits<uint32_t>::max()));
++        output_desc->sequence_count = token_count > 0 ? 1 : 0;
++        output_desc->payload_bytes = 0;
++        output_desc->flags = 0;
++    }
++
++    return SKIPPY_STATUS_OK;
++}
++
+ extern "C" {
+
+ struct skippy_abi_version skippy_abi_version(void) {
+@@ -199,7 +237,8 @@ struct skippy_abi_version skippy_abi_version(void) {
+
+ uint64_t skippy_abi_features(void) {
+     return SKIPPY_FEATURE_MODEL_INTROSPECTION |
+-           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE;
++           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE |
++           SKIPPY_FEATURE_ACTIVATION_FRAME;
+ }
+
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -384,6 +423,77 @@ enum skippy_status skippy_decode_step(
+     return skippy_success(out_error);
+ }
+
++enum skippy_status skippy_prefill_chunk_frame(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        struct skippy_error ** out_error) {
++    if (skippy_has_activation_payload(input_desc, input_payload)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "activation frame input is not executable yet");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    enum skippy_status status = skippy_prepare_empty_activation_frame(
++            session,
++            token_count,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            output_desc,
++            out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    return skippy_decode_tokens(session, token_ids, token_count, false, out_error);
++}
++
++enum skippy_status skippy_decode_step_frame(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
++    if (skippy_has_activation_payload(input_desc, input_payload)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "activation frame input is not executable yet");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    enum skippy_status status = skippy_prepare_empty_activation_frame(
++            session,
++            1,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            output_desc,
++            out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    status = skippy_decode_tokens(session, &token_id, 1, true, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    if (out_predicted_token != nullptr) {
++        *out_predicted_token = skippy_greedy_sample(session);
++    }
++
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+--
+2.50.1 (Apple Git-155)

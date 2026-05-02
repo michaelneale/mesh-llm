@@ -1,0 +1,492 @@
+#![allow(dead_code)]
+
+mod hooks;
+
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use openai_frontend::{
+    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream, CompletionRequest,
+    CompletionResponse, CompletionStream, HookedOpenAiBackend, ModelObject, OpenAiBackend,
+    OpenAiHookPolicy, OpenAiRequestContext, OpenAiResult,
+};
+use skippy_protocol::{LoadMode, StageConfig, StageDevice};
+use skippy_runtime::ModelInfo;
+use skippy_server::{
+    binary_transport::WireCondition, embedded_openai_backend, telemetry::Telemetry,
+    telemetry::TelemetryLevel, EmbeddedOpenAiArgs, EmbeddedRuntimeOptions, EmbeddedRuntimeStatus,
+    EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
+};
+
+pub(crate) use hooks::MeshAutoHookPolicy;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SkippyModelState {
+    Starting,
+    Ready,
+    Stopping,
+    Stopped,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SkippyModelStatus {
+    pub(crate) state: SkippyModelState,
+    pub(crate) model_id: String,
+    pub(crate) backend: &'static str,
+    pub(crate) runtime_loaded: bool,
+    pub(crate) ctx_size: u32,
+    pub(crate) n_gpu_layers: i32,
+    pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
+    pub(crate) layer_start: u32,
+    pub(crate) layer_end: u32,
+    pub(crate) stage_id: String,
+    pub(crate) topology_id: String,
+    pub(crate) run_id: String,
+    pub(crate) started_at_unix_nanos: i64,
+    pub(crate) stopped_at_unix_nanos: Option<i64>,
+    pub(crate) last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SkippyDeviceDescriptor {
+    pub(crate) backend_device: String,
+    pub(crate) stable_id: Option<String>,
+    pub(crate) index: Option<usize>,
+    pub(crate) vram_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SkippyModelLoadOptions {
+    pub(crate) model_id: String,
+    pub(crate) model_path: PathBuf,
+    pub(crate) ctx_size: u32,
+    pub(crate) n_gpu_layers: i32,
+    pub(crate) cache_type_k: String,
+    pub(crate) cache_type_v: String,
+    pub(crate) generation_concurrency: usize,
+    pub(crate) default_max_tokens: u32,
+    pub(crate) layer_end: Option<u32>,
+    pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
+}
+
+impl SkippyModelLoadOptions {
+    pub(crate) fn for_direct_gguf(
+        model_id: impl Into<String>,
+        model_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            model_id: model_id.into(),
+            model_path: model_path.into(),
+            ctx_size: 4096,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            generation_concurrency: 1,
+            default_max_tokens: 256,
+            layer_end: None,
+            selected_device: None,
+        }
+    }
+
+    pub(crate) fn with_ctx_size(mut self, ctx_size: u32) -> Self {
+        self.ctx_size = ctx_size;
+        self
+    }
+
+    pub(crate) fn with_generation_concurrency(mut self, generation_concurrency: usize) -> Self {
+        self.generation_concurrency = generation_concurrency;
+        self
+    }
+
+    pub(crate) fn with_layer_end(mut self, layer_end: u32) -> Self {
+        self.layer_end = Some(layer_end);
+        self
+    }
+
+    pub(crate) fn with_selected_device(mut self, selected_device: SkippyDeviceDescriptor) -> Self {
+        self.selected_device = Some(selected_device);
+        self
+    }
+}
+
+#[derive(Debug)]
+struct HandleState {
+    state: SkippyModelState,
+    stopped_at_unix_nanos: Option<i64>,
+    last_error: Option<String>,
+}
+
+pub(crate) struct SkippyModelHandle {
+    runtime: SkippyRuntimeHandle,
+    backend: Arc<dyn OpenAiBackend>,
+    config: StageConfig,
+    started_at_unix_nanos: i64,
+    status: Arc<Mutex<HandleState>>,
+}
+
+pub(crate) struct SkippyHttpHandle {
+    port: u16,
+    server: EmbeddedServerHandle,
+}
+
+impl SkippyHttpHandle {
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub(crate) async fn shutdown(self) -> Result<()> {
+        self.server.shutdown().await
+    }
+}
+
+impl SkippyModelHandle {
+    pub(crate) fn load(options: SkippyModelLoadOptions) -> Result<Self> {
+        Self::load_with_hooks(options, None)
+    }
+
+    pub(crate) fn load_with_hooks(
+        options: SkippyModelLoadOptions,
+        hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+    ) -> Result<Self> {
+        let stage_config = single_stage_config(&options)?;
+        let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
+            config: stage_config.clone(),
+            topology: None,
+            metrics_otlp_grpc: None,
+            telemetry_queue_capacity: 0,
+            telemetry_level: TelemetryLevel::Off,
+        })
+        .with_context(|| {
+            format!(
+                "load skippy runtime for model {} from {}",
+                options.model_id,
+                options.model_path.display()
+            )
+        })?;
+        let telemetry = Telemetry::new(None, 0, stage_config.clone(), TelemetryLevel::Off);
+        let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
+            bind_addr: "127.0.0.1:0"
+                .parse()
+                .expect("static bind address should parse"),
+            config: stage_config.clone(),
+            runtime: runtime.runtime(),
+            model_id: Some(options.model_id.clone()),
+            default_max_tokens: options.default_max_tokens,
+            generation_concurrency: options.generation_concurrency,
+            prefill_chunk_size: 64,
+            prefill_chunk_policy: "fixed".to_string(),
+            prefill_chunk_schedule: None,
+            prefill_adaptive_start: 64,
+            prefill_adaptive_step: 64,
+            prefill_adaptive_max: 512,
+            draft_model_path: None,
+            speculative_window: 0,
+            adaptive_speculative_window: false,
+            draft_n_gpu_layers: None,
+            activation_width: 0,
+            wire_dtype: skippy_protocol::binary::WireActivationDType::F32,
+            downstream_connect_timeout_secs: 30,
+            downstream_wire_condition: WireCondition::new(0.0, None)?,
+            telemetry,
+        })
+        .context("construct skippy OpenAI backend")?;
+        let backend: Arc<dyn OpenAiBackend> = match hook_policy {
+            Some(hooks) => Arc::new(HookedOpenAiBackend::new(binding.backend, hooks)),
+            None => binding.backend,
+        };
+        Ok(Self {
+            runtime,
+            backend,
+            config: stage_config,
+            started_at_unix_nanos: now_unix_nanos(),
+            status: Arc::new(Mutex::new(HandleState {
+                state: SkippyModelState::Ready,
+                stopped_at_unix_nanos: None,
+                last_error: None,
+            })),
+        })
+    }
+
+    pub(crate) fn backend(&self) -> Arc<dyn OpenAiBackend> {
+        self.backend.clone()
+    }
+
+    pub(crate) fn start_http(&self, port: u16) -> SkippyHttpHandle {
+        let bind_addr = ([127, 0, 0, 1], port).into();
+        let server = skippy_server::start_openai_backend(bind_addr, self.backend());
+        SkippyHttpHandle { port, server }
+    }
+
+    pub(crate) fn status(&self) -> SkippyModelStatus {
+        let embedded = self.runtime.status();
+        let local = self.status.lock().expect("skippy status lock poisoned");
+        status_from_parts(&self.config, &embedded, &local, self.started_at_unix_nanos)
+    }
+
+    pub(crate) fn shutdown(&self) {
+        {
+            let mut state = self.status.lock().expect("skippy status lock poisoned");
+            if matches!(state.state, SkippyModelState::Stopped) {
+                return;
+            }
+            state.state = SkippyModelState::Stopping;
+        }
+        self.runtime.shutdown();
+        let mut state = self.status.lock().expect("skippy status lock poisoned");
+        state.state = SkippyModelState::Stopped;
+        state.stopped_at_unix_nanos = Some(now_unix_nanos());
+    }
+}
+
+impl Drop for SkippyModelHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[async_trait]
+impl OpenAiBackend for SkippyModelHandle {
+    async fn models(&self) -> OpenAiResult<Vec<ModelObject>> {
+        self.backend.models().await
+    }
+
+    async fn chat_completion(
+        &self,
+        request: ChatCompletionRequest,
+    ) -> OpenAiResult<ChatCompletionResponse> {
+        self.backend.chat_completion(request).await
+    }
+
+    async fn chat_completion_stream(
+        &self,
+        request: ChatCompletionRequest,
+        context: OpenAiRequestContext,
+    ) -> OpenAiResult<ChatCompletionStream> {
+        self.backend.chat_completion_stream(request, context).await
+    }
+
+    async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
+        self.backend.completion(request).await
+    }
+
+    async fn completion_stream(
+        &self,
+        request: CompletionRequest,
+        context: OpenAiRequestContext,
+    ) -> OpenAiResult<CompletionStream> {
+        self.backend.completion_stream(request, context).await
+    }
+}
+
+pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<StageConfig> {
+    let layer_end = match options.layer_end {
+        Some(layer_end) => layer_end,
+        None => infer_layer_count(&options.model_path)?,
+    };
+    anyhow::ensure!(
+        layer_end > 0,
+        "skippy stage layer_end must be greater than zero"
+    );
+    anyhow::ensure!(
+        options.ctx_size > 0,
+        "skippy ctx_size must be greater than zero"
+    );
+    anyhow::ensure!(
+        options.generation_concurrency > 0,
+        "skippy generation_concurrency must be greater than zero"
+    );
+    let run_id = format!("mesh-skippy-{}", now_unix_nanos());
+    Ok(StageConfig {
+        run_id: run_id.clone(),
+        topology_id: format!("topology-{run_id}"),
+        model_id: options.model_id.clone(),
+        model_path: Some(options.model_path.to_string_lossy().to_string()),
+        stage_id: "stage-0".to_string(),
+        stage_index: 0,
+        layer_start: 0,
+        layer_end,
+        ctx_size: options.ctx_size,
+        n_gpu_layers: options.n_gpu_layers,
+        cache_type_k: options.cache_type_k.clone(),
+        cache_type_v: options.cache_type_v.clone(),
+        filter_tensors_on_load: false,
+        selected_device: options.selected_device.clone().map(Into::into),
+        load_mode: LoadMode::RuntimeSlice,
+        bind_addr: "127.0.0.1:0".to_string(),
+        upstream: None,
+        downstream: None,
+    })
+}
+
+impl From<SkippyDeviceDescriptor> for StageDevice {
+    fn from(device: SkippyDeviceDescriptor) -> Self {
+        Self {
+            backend_device: device.backend_device,
+            stable_id: device.stable_id,
+            index: device.index,
+            vram_bytes: device.vram_bytes,
+        }
+    }
+}
+
+impl From<StageDevice> for SkippyDeviceDescriptor {
+    fn from(device: StageDevice) -> Self {
+        Self {
+            backend_device: device.backend_device,
+            stable_id: device.stable_id,
+            index: device.index,
+            vram_bytes: device.vram_bytes,
+        }
+    }
+}
+
+pub(crate) fn infer_layer_count(path: &Path) -> Result<u32> {
+    let info = ModelInfo::open(path)
+        .with_context(|| format!("open skippy model metadata {}", path.display()))?;
+    let layer_count = info
+        .tensors()
+        .with_context(|| format!("read skippy model tensors {}", path.display()))?
+        .into_iter()
+        .filter_map(|tensor| tensor.layer_index)
+        .max()
+        .map(|index| index + 1)
+        .with_context(|| format!("infer layer count for {}", path.display()))?;
+    Ok(layer_count)
+}
+
+fn status_from_parts(
+    config: &StageConfig,
+    embedded: &EmbeddedRuntimeStatus,
+    local: &HandleState,
+    started_at_unix_nanos: i64,
+) -> SkippyModelStatus {
+    SkippyModelStatus {
+        state: match local.state {
+            SkippyModelState::Starting => SkippyModelState::Starting,
+            SkippyModelState::Ready => map_embedded_state(embedded.state),
+            SkippyModelState::Stopping => SkippyModelState::Stopping,
+            SkippyModelState::Stopped => SkippyModelState::Stopped,
+            SkippyModelState::Failed => SkippyModelState::Failed,
+        },
+        model_id: config.model_id.clone(),
+        backend: "skippy",
+        runtime_loaded: embedded.runtime_loaded,
+        ctx_size: config.ctx_size,
+        n_gpu_layers: config.n_gpu_layers,
+        selected_device: config.selected_device.clone().map(Into::into),
+        layer_start: config.layer_start,
+        layer_end: config.layer_end,
+        stage_id: config.stage_id.clone(),
+        topology_id: config.topology_id.clone(),
+        run_id: config.run_id.clone(),
+        started_at_unix_nanos,
+        stopped_at_unix_nanos: local
+            .stopped_at_unix_nanos
+            .or(embedded.stopped_at_unix_nanos),
+        last_error: local
+            .last_error
+            .clone()
+            .or_else(|| embedded.last_error.clone()),
+    }
+}
+
+fn map_embedded_state(state: EmbeddedState) -> SkippyModelState {
+    match state {
+        EmbeddedState::Starting => SkippyModelState::Starting,
+        EmbeddedState::Ready => SkippyModelState::Ready,
+        EmbeddedState::Stopping => SkippyModelState::Stopping,
+        EmbeddedState::Stopped => SkippyModelState::Stopped,
+        EmbeddedState::Failed => SkippyModelState::Failed,
+    }
+}
+
+fn now_unix_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_stage_config_materializes_direct_gguf_runtime_slice() {
+        let options =
+            SkippyModelLoadOptions::for_direct_gguf("Qwen3-8B-Q4_K_M", "/models/qwen.gguf")
+                .with_ctx_size(8192)
+                .with_generation_concurrency(3)
+                .with_layer_end(36);
+
+        let config = single_stage_config(&options).unwrap();
+
+        assert_eq!(config.model_id, "Qwen3-8B-Q4_K_M");
+        assert_eq!(config.model_path.as_deref(), Some("/models/qwen.gguf"));
+        assert_eq!(config.stage_id, "stage-0");
+        assert_eq!(config.stage_index, 0);
+        assert_eq!(config.layer_start, 0);
+        assert_eq!(config.layer_end, 36);
+        assert_eq!(config.ctx_size, 8192);
+        assert_eq!(config.n_gpu_layers, -1);
+        assert!(config.selected_device.is_none());
+        assert_eq!(config.load_mode, LoadMode::RuntimeSlice);
+        assert!(config.upstream.is_none());
+        assert!(config.downstream.is_none());
+    }
+
+    #[test]
+    fn single_stage_config_preserves_selected_device_descriptor() {
+        let options =
+            SkippyModelLoadOptions::for_direct_gguf("Qwen3-8B-Q4_K_M", "/models/qwen.gguf")
+                .with_ctx_size(8192)
+                .with_generation_concurrency(3)
+                .with_layer_end(36)
+                .with_selected_device(SkippyDeviceDescriptor {
+                    backend_device: "CUDA3".into(),
+                    stable_id: Some("uuid:GPU-123".into()),
+                    index: Some(3),
+                    vram_bytes: Some(24_000_000_000),
+                });
+
+        let config = single_stage_config(&options).unwrap();
+        let device = config.selected_device.expect("device descriptor");
+
+        assert_eq!(device.backend_device, "CUDA3");
+        assert_eq!(device.stable_id.as_deref(), Some("uuid:GPU-123"));
+        assert_eq!(device.index, Some(3));
+        assert_eq!(device.vram_bytes, Some(24_000_000_000));
+    }
+
+    #[test]
+    fn single_stage_config_rejects_empty_layer_range() {
+        let options =
+            SkippyModelLoadOptions::for_direct_gguf("bad", "/models/bad.gguf").with_layer_end(0);
+
+        let err = single_stage_config(&options).unwrap_err().to_string();
+
+        assert!(err.contains("layer_end"));
+    }
+
+    #[test]
+    fn embedded_state_maps_to_mesh_skippy_state() {
+        assert_eq!(
+            map_embedded_state(EmbeddedState::Starting),
+            SkippyModelState::Starting
+        );
+        assert_eq!(
+            map_embedded_state(EmbeddedState::Ready),
+            SkippyModelState::Ready
+        );
+        assert_eq!(
+            map_embedded_state(EmbeddedState::Failed),
+            SkippyModelState::Failed
+        );
+    }
+}

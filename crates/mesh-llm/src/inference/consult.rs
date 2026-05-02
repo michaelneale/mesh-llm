@@ -125,17 +125,7 @@ async fn chat_completion_inner(
     messages: Vec<Value>,
     max_tokens: u32,
 ) -> Result<String> {
-    let request_body = serde_json::json!({
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-        "stream": false,
-        // Disable hooks on the peer — prevent recursive consultation loops.
-        // Without this, the peer could consult another peer about our request,
-        // which could consult another, etc.
-        "mesh_hooks": false,
-    });
+    let request_body = consultation_request_body(model, messages, max_tokens);
     let body_bytes = serde_json::to_vec(&request_body)?;
 
     // Build a minimal HTTP request
@@ -151,14 +141,31 @@ async fn chat_completion_inner(
     let mut raw = http_request.into_bytes();
     raw.extend_from_slice(&body_bytes);
 
-    // Open QUIC tunnel to peer and send request
     let (mut send, mut recv) = node.open_http_tunnel(peer_id).await?;
     send.write_all(&raw).await?;
     send.finish()?;
 
-    // Read the full HTTP response
-    let response_bytes = recv.read_to_end(64 * 1024).await?;
-    let response_str = String::from_utf8_lossy(&response_bytes);
+    let response = recv.read_to_end(64 * 1024).await?;
+
+    parse_chat_completion_response(&response)
+}
+
+fn consultation_request_body(model: &str, messages: Vec<Value>, max_tokens: u32) -> Value {
+    serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": false,
+        // Disable hooks on the peer — prevent recursive consultation loops.
+        // Without this, the peer could consult another peer about our request,
+        // which could consult another, etc.
+        "mesh_hooks": false,
+    })
+}
+
+fn parse_chat_completion_response(response: &[u8]) -> Result<String> {
+    let response_str = String::from_utf8_lossy(response);
 
     // Parse HTTP status line
     let header_end = response_str
@@ -354,4 +361,33 @@ pub async fn race_second_opinion(
 
     tracing::warn!("virtual: all peers failed");
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn consultation_request_body_disables_recursive_mesh_hooks() {
+        let body = consultation_request_body(
+            "vision-model",
+            vec![json!({"role": "user", "content": "describe"})],
+            256,
+        );
+
+        assert_eq!(body["mesh_hooks"], false);
+        assert_eq!(body["model"], "vision-model");
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn parse_chat_completion_response_extracts_assistant_content() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"choices\":[{\"message\":{\"content\":\"hello\"}}]}";
+
+        let content = parse_chat_completion_response(response).unwrap();
+
+        assert_eq!(content, "hello");
+    }
 }

@@ -1,5 +1,6 @@
 use crate::api;
-use crate::inference::{election, launch};
+use crate::cli::ServingBackend;
+use crate::inference::{election, launch, skippy};
 use crate::mesh;
 use crate::models;
 use crate::network::openai::backend;
@@ -7,25 +8,52 @@ use crate::network::router;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
 pub(super) enum RuntimeEvent {
     Exited { model: String, port: u16 },
 }
 
-#[derive(Debug)]
+pub(super) enum LocalRuntimeBackendHandle {
+    Llama {
+        process: launch::InferenceServerHandle,
+        backend_proxy: backend::BackendProxyHandle,
+    },
+    Skippy {
+        model: skippy::SkippyModelHandle,
+        http: skippy::SkippyHttpHandle,
+        _death_tx: tokio::sync::oneshot::Sender<()>,
+    },
+}
+
 pub(super) struct LocalRuntimeModelHandle {
     pub(super) port: u16,
     pub(super) backend: String,
-    pub(super) process: launch::InferenceServerHandle,
-    pub(super) backend_proxy: backend::BackendProxyHandle,
     pub(super) context_length: u32,
     pub(super) slots: usize,
+    inner: LocalRuntimeBackendHandle,
 }
 
 impl LocalRuntimeModelHandle {
+    pub(super) fn pid(&self) -> u32 {
+        match &self.inner {
+            LocalRuntimeBackendHandle::Llama { process, .. } => process.pid(),
+            LocalRuntimeBackendHandle::Skippy { .. } => std::process::id(),
+        }
+    }
+
     pub(super) async fn shutdown(self) {
-        self.backend_proxy.shutdown().await;
-        self.process.shutdown().await;
+        match self.inner {
+            LocalRuntimeBackendHandle::Llama {
+                process,
+                backend_proxy,
+            } => {
+                backend_proxy.shutdown().await;
+                process.shutdown().await;
+            }
+            LocalRuntimeBackendHandle::Skippy { model, http, .. } => {
+                let _ = http.shutdown().await;
+                model.shutdown();
+            }
+        }
     }
 }
 
@@ -42,7 +70,9 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) model_path: &'a Path,
     pub(super) mmproj_override: Option<&'a Path>,
     pub(super) ctx_size_override: Option<u32>,
+    pub(super) pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
     pub(super) slots: usize,
+    pub(super) serving_backend: ServingBackend,
 }
 
 pub(super) fn resolved_model_name(path: &Path) -> String {
@@ -182,12 +212,35 @@ pub(super) async fn start_runtime_local_model(
 )> {
     let model_name = resolved_model_name(spec.model_path);
     let model_bytes = election::total_model_bytes(spec.model_path);
-    let my_vram = spec.node.vram_bytes();
+    let my_vram = spec
+        .pinned_gpu
+        .map(|gpu| gpu.vram_bytes)
+        .unwrap_or_else(|| spec.node.vram_bytes());
     anyhow::ensure!(
         my_vram >= (model_bytes as f64 * 1.1) as u64,
         "runtime load only supports models that fit locally on this node"
     );
 
+    match spec.serving_backend {
+        ServingBackend::Llama => {
+            return start_runtime_llama_model(spec, model_name, model_bytes, my_vram).await;
+        }
+        ServingBackend::Skippy => {
+            return start_runtime_skippy_model(spec, model_name).await;
+        }
+    }
+}
+
+async fn start_runtime_llama_model(
+    spec: LocalRuntimeModelStartSpec<'_>,
+    model_name: String,
+    model_bytes: u64,
+    my_vram: u64,
+) -> Result<(
+    String,
+    LocalRuntimeModelHandle,
+    tokio::sync::oneshot::Receiver<()>,
+)> {
     let llama_port = alloc_local_port().await?;
     let mmproj_path = spec
         .mmproj_override
@@ -210,7 +263,7 @@ pub(super) async fn start_runtime_local_model(
             mmproj: mmproj_path.as_deref(),
             ctx_size_override: spec.ctx_size_override,
             total_group_vram: None,
-            selected_gpu: None,
+            selected_gpu: spec.pinned_gpu,
             slots: spec.slots,
             runtime_data_producer: Some(spec.node.runtime_data_collector().producer(
                 crate::runtime_data::RuntimeDataSource {
@@ -230,12 +283,63 @@ pub(super) async fn start_runtime_local_model(
         LocalRuntimeModelHandle {
             port,
             backend: "llama".into(),
-            process: process.handle,
-            backend_proxy,
             context_length: process.context_length,
             slots: spec.slots,
+            inner: LocalRuntimeBackendHandle::Llama {
+                process: process.handle,
+                backend_proxy,
+            },
         },
         process.death_rx,
+    ))
+}
+
+async fn start_runtime_skippy_model(
+    spec: LocalRuntimeModelStartSpec<'_>,
+    model_name: String,
+) -> Result<(
+    String,
+    LocalRuntimeModelHandle,
+    tokio::sync::oneshot::Receiver<()>,
+)> {
+    anyhow::ensure!(
+        spec.mmproj_override.is_none(),
+        "skippy runtime load does not support multimodal projector overrides yet"
+    );
+    let port = alloc_local_port().await?;
+    let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
+        .with_ctx_size(context_length)
+        .with_generation_concurrency(spec.slots);
+    if let Some(gpu) = spec.pinned_gpu {
+        options = options.with_selected_device(skippy::SkippyDeviceDescriptor {
+            backend_device: gpu.backend_device.clone(),
+            stable_id: Some(gpu.stable_id.clone()),
+            index: Some(gpu.index),
+            vram_bytes: Some(gpu.vram_bytes),
+        });
+    }
+    let skippy_model = skippy::SkippyModelHandle::load_with_hooks(
+        options,
+        Some(skippy::MeshAutoHookPolicy::new(spec.node.clone())),
+    )?;
+    let http = skippy_model.start_http(port);
+    let (death_tx, death_rx) = tokio::sync::oneshot::channel();
+
+    Ok((
+        model_name,
+        LocalRuntimeModelHandle {
+            port: http.port(),
+            backend: "skippy".into(),
+            context_length,
+            slots: spec.slots,
+            inner: LocalRuntimeBackendHandle::Skippy {
+                model: skippy_model,
+                http,
+                _death_tx: death_tx,
+            },
+        },
+        death_rx,
     ))
 }
 

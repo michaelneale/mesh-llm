@@ -10,6 +10,13 @@ members = [
     "crates/model-ref",
     "crates/model-artifact",
     "crates/model-hf",
+    "crates/skippy-protocol",
+    "crates/skippy-topology",
+    "crates/skippy-metrics",
+    "crates/openai-frontend",
+    "crates/skippy-ffi",
+    "crates/skippy-runtime",
+    "crates/skippy-server",
     "tools/xtask",
 ]
 default-members = [
@@ -25,4 +32,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

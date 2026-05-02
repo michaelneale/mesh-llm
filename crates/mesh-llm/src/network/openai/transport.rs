@@ -994,6 +994,7 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
             || usage_missing
             || data.contains("\"delta\"")
             || data.contains("\"content\"")
+            || data.contains("\"logprobs\"")
             || data.contains("\"usage\"")
     }
 
@@ -1073,10 +1074,16 @@ async fn relay_translated_responses_stream<R: AsyncRead + Unpin>(
                 .and_then(|choice| choice.delta.as_ref())
                 .and_then(|delta| delta.content.as_deref())
             {
+                let logprobs = chunk
+                    .choices
+                    .first()
+                    .and_then(|choice| choice.logprobs.clone());
                 output_text.push_str(delta);
-                let event = serde_json::to_string(&response_adapter::responses_stream_delta_event(
-                    &item_id, delta,
-                ))
+                let event = serde_json::to_string(
+                    &response_adapter::responses_stream_delta_event_with_logprobs(
+                        &item_id, delta, logprobs,
+                    ),
+                )
                 .context("serialize response.output_text.delta event")?;
                 response_adapter::write_chunked_sse_event(
                     tcp_stream,

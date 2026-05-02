@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 20:52:31 +1000
+Subject: [PATCH] Add stage logit bias sampling ABI
+
+---
+ include/skippy.h |  8 +++++++-
+ src/skippy.cpp       | 20 +++++++++++++++++---
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 757809c5..0f7fb0db 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,9 @@ extern "C" {
+
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 6
++#define SKIPPY_ABI_VERSION_PATCH 7
++
++#define SKIPPY_MAX_LOGIT_BIAS 256
+
+ enum skippy_feature {
+     SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+@@ -44,6 +46,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
+     SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
+     SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
++    SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
+ };
+
+ enum skippy_kv_page_flag {
+@@ -147,6 +150,9 @@ struct skippy_sampling_config {
+     float presence_penalty;
+     float frequency_penalty;
+     float repeat_penalty;
++    uint32_t logit_bias_count;
++    uint32_t reserved;
++    llama_logit_bias logit_bias[SKIPPY_MAX_LOGIT_BIAS];
+ };
+
+ struct skippy_kv_page_desc {
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index c1ab7219..b624d507 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -786,7 +786,7 @@ static bool skippy_sampling_enabled(const skippy_sampling_config * sam
+     if (sampling == nullptr || sampling->version == 0 || sampling->flags == 0) {
+         return false;
+     }
+-    return sampling->temperature > 0.0f;
++    return true;
+ }
+
+ static llama_token skippy_sample_token(
+@@ -813,6 +813,16 @@ static llama_token skippy_sample_token(
+                         sampling->frequency_penalty,
+                         sampling->presence_penalty));
+     }
++    const uint32_t logit_bias_count = std::min<uint32_t>(sampling->logit_bias_count, SKIPPY_MAX_LOGIT_BIAS);
++    if (logit_bias_count > 0) {
++        const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++        llama_sampler_chain_add(
++                sampler,
++                llama_sampler_init_logit_bias(
++                        llama_vocab_n_tokens(vocab),
++                        static_cast<int32_t>(logit_bias_count),
++                        sampling->logit_bias));
++    }
+     if (sampling->top_k > 0) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_top_k(sampling->top_k));
+     }
+@@ -822,8 +832,12 @@ static llama_token skippy_sample_token(
+     if (sampling->temperature != 1.0f) {
+         llama_sampler_chain_add(sampler, llama_sampler_init_temp(sampling->temperature));
+     }
+-    const uint32_t seed = sampling->seed == 0 ? LLAMA_DEFAULT_SEED : sampling->seed + static_cast<uint32_t>(session->n_past);
+-    llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
++    if (sampling->temperature <= 0.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
++    } else {
++        const uint32_t seed = sampling->seed == 0 ? LLAMA_DEFAULT_SEED : sampling->seed + static_cast<uint32_t>(session->n_past);
++        llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
++    }
+
+     for (const llama_token token : session->token_history) {
+         llama_sampler_accept(sampler, token);
+--
+2.50.1 (Apple Git-155)

@@ -1,0 +1,259 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 10:19:37 +1000
+Subject: [PATCH] Draft skippy ABI header
+
+---
+ include/skippy.h | 241 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 241 insertions(+)
+ create mode 100644 include/skippy.h
+
+diff --git a/include/skippy.h b/include/skippy.h
+new file mode 100644
+index 00000000..ad68d61f
+--- /dev/null
++++ b/include/skippy.h
+@@ -0,0 +1,241 @@
++#ifndef SKIPPY_ABI_H
++#define SKIPPY_ABI_H
++
++#include "llama.h"
++
++#include <stddef.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Experimental ABI for layer-range staged inference.
++//
++// This header is intentionally a capability boundary. It exposes opaque handles
++// and plain C structs so Rust orchestration code can use llama.cpp model
++// execution, tokenization, GGUF metadata, and GGUF writing without depending on
++// private C++ layouts.
++//
++// Stability note:
++// - ABI version 0 is experimental.
++// - Callers must feature-probe before use.
++// - Names, structs, and ownership rules may change until cross-family staged
++//   runtime validation has completed.
++
++#define SKIPPY_ABI_VERSION_MAJOR 0
++#define SKIPPY_ABI_VERSION_MINOR 1
++#define SKIPPY_ABI_VERSION_PATCH 0
++
++enum skippy_feature {
++    SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
++    SKIPPY_FEATURE_LAYER_PACKAGE          = 1 << 1,
++    SKIPPY_FEATURE_ARTIFACT_SLICE         = 1 << 2,
++    SKIPPY_FEATURE_MODEL_INTROSPECTION    = 1 << 3,
++    SKIPPY_FEATURE_GGUF_SLICE_WRITE       = 1 << 4,
++    SKIPPY_FEATURE_STATE_IMPORT_EXPORT    = 1 << 5,
++    SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
++};
++
++enum skippy_status {
++    SKIPPY_STATUS_OK                      = 0,
++    SKIPPY_STATUS_ERROR                   = 1,
++    SKIPPY_STATUS_INVALID_ARGUMENT        = 2,
++    SKIPPY_STATUS_UNSUPPORTED             = 3,
++    SKIPPY_STATUS_BUFFER_TOO_SMALL        = 4,
++    SKIPPY_STATUS_IO_ERROR                = 5,
++    SKIPPY_STATUS_MODEL_ERROR             = 6,
++    SKIPPY_STATUS_RUNTIME_ERROR           = 7,
++};
++
++enum skippy_load_mode {
++    SKIPPY_LOAD_MODE_RUNTIME_SLICE        = 0,
++    SKIPPY_LOAD_MODE_LAYER_PACKAGE        = 1,
++    SKIPPY_LOAD_MODE_ARTIFACT_SLICE       = 2,
++};
++
++enum skippy_tensor_role {
++    SKIPPY_TENSOR_ROLE_UNKNOWN            = 0,
++    SKIPPY_TENSOR_ROLE_METADATA           = 1,
++    SKIPPY_TENSOR_ROLE_TOKENIZER          = 2,
++    SKIPPY_TENSOR_ROLE_EMBEDDING          = 3,
++    SKIPPY_TENSOR_ROLE_LAYER              = 4,
++    SKIPPY_TENSOR_ROLE_FINAL_NORM         = 5,
++    SKIPPY_TENSOR_ROLE_OUTPUT             = 6,
++};
++
++struct skippy_model;
++struct skippy_session;
++struct skippy_model_info;
++struct skippy_slice_plan;
++
++struct skippy_error {
++    enum skippy_status status;
++    const char * message;
++};
++
++struct skippy_runtime_config {
++    int32_t stage_index;
++    int32_t layer_start;
++    int32_t layer_end;
++    int32_t ctx_size;
++    int32_t n_gpu_layers;
++
++    enum skippy_load_mode load_mode;
++
++    bool disable_repack;
++    bool filter_tensors_on_load;
++    bool include_embeddings;
++    bool include_output;
++};
++
++struct skippy_tensor_info {
++    const char * name;
++    int32_t layer_index;
++    enum skippy_tensor_role role;
++    uint32_t ggml_type;
++    uint64_t byte_size;
++    uint64_t element_count;
++};
++
++struct skippy_abi_version {
++    uint32_t major;
++    uint32_t minor;
++    uint32_t patch;
++};
++
++LLAMA_API struct skippy_abi_version skippy_abi_version(void);
++
++LLAMA_API uint64_t skippy_abi_features(void);
++
++LLAMA_API const char * skippy_status_string(enum skippy_status status);
++
++LLAMA_API void skippy_error_free(struct skippy_error * error);
++
++LLAMA_API enum skippy_status skippy_model_open(
++        const char * path,
++        const struct skippy_runtime_config * config,
++        struct skippy_model ** out_model,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_model_free(
++        struct skippy_model * model,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_session_create(
++        struct skippy_model * model,
++        struct skippy_session ** out_session,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_session_free(
++        struct skippy_session * session,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_prefill_chunk(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const void * input_activations,
++        size_t input_activation_bytes,
++        void * output_activations,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_decode_step(
++        struct skippy_session * session,
++        llama_token token_id,
++        const void * input_activation,
++        size_t input_activation_bytes,
++        void * output_activation,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_export_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_tokenize(
++        struct skippy_model * model,
++        const char * text,
++        bool add_special,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        size_t * out_token_count,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_detokenize(
++        struct skippy_model * model,
++        const llama_token * tokens,
++        size_t token_count,
++        char * output_text,
++        size_t output_text_capacity,
++        size_t * out_text_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_model_info_open(
++        const char * path,
++        struct skippy_model_info ** out_info,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_model_info_free(
++        struct skippy_model_info * info,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_model_info_tensor_count(
++        struct skippy_model_info * info,
++        size_t * out_count,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_model_info_tensor_at(
++        struct skippy_model_info * info,
++        size_t index,
++        struct skippy_tensor_info * out_tensor,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_slice_plan_create(
++        struct skippy_model_info * info,
++        struct skippy_slice_plan ** out_plan,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_slice_plan_free(
++        struct skippy_slice_plan * plan,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_slice_plan_add_layer_range(
++        struct skippy_slice_plan * plan,
++        int32_t stage_index,
++        int32_t layer_start,
++        int32_t layer_end,
++        bool include_embeddings,
++        bool include_output,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_write_slice_gguf(
++        struct skippy_model_info * info,
++        const struct skippy_slice_plan * plan,
++        int32_t stage_index,
++        const char * output_path,
++        struct skippy_error ** out_error);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif // SKIPPY_ABI_H
+--
+2.50.1 (Apple Git-155)
