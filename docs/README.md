@@ -9,6 +9,7 @@ This directory holds project documentation that is not owned by a single Rust cr
 | [USAGE.md](USAGE.md) | Service installs, model commands, storage, and runtime control |
 | [AGENTS.md](AGENTS.md) | Goose, Claude Code, pi, OpenCode, curl, and blackboard usage |
 | [BENCHMARKS.md](BENCHMARKS.md) | Current benchmark numbers and performance context |
+| [SKIPPY.md](SKIPPY.md) | Plan for replacing llama-server/rpc-server serving with skippy |
 | [CLI.md](CLI.md) | CLI reference |
 | [CI_GUIDANCE.md](CI_GUIDANCE.md) | CI workflow responsibilities and path filtering guidance |
 
