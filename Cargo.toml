@@ -18,6 +18,7 @@ members = [
     "crates/skippy-runtime",
     "crates/skippy-server",
     "crates/metrics-server",
+    "crates/llama-model-slice",
     "tools/xtask",
 ]
 default-members = [

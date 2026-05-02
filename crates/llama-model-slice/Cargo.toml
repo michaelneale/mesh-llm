@@ -1,0 +1,18 @@
+[package]
+name = "llama-model-slice"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+skippy-ffi = { path = "../skippy-ffi" }
+skippy-runtime = { path = "../skippy-runtime" }
+model-artifact = { path = "../model-artifact" }
+model-hf = { path = "../model-hf" }
+model-ref = { path = "../model-ref" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt"] }
