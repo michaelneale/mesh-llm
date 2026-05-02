@@ -720,6 +720,7 @@ fn handle_binary_connection(
                     &message,
                     executable_token_ids,
                     input.as_ref(),
+                    message.kind == WireMessageKind::PrefillFinalEmbd && downstream.is_none(),
                 )
                 .context("execute binary stage message")?;
                 runtime_sessions_after = Some(runtime.session_stats());
@@ -2618,9 +2619,24 @@ pub(crate) fn run_binary_stage_message(
     message: &StageWireMessage,
     token_ids: &[i32],
     input: Option<&ActivationFrame>,
+    sample_final_prefill: bool,
 ) -> Result<(i32, Vec<i32>, ActivationFrame)> {
     match message.kind {
-        WireMessageKind::PrefillEmbd | WireMessageKind::PrefillFinalEmbd => {
+        WireMessageKind::PrefillEmbd => {
+            let output = runtime.prefill_frame(session_id, token_ids, input)?;
+            Ok((message.state.current_token, Vec::new(), output))
+        }
+        WireMessageKind::PrefillFinalEmbd if sample_final_prefill => {
+            let sampling = runtime_sampling_config(message.sampling.as_ref());
+            let (predicted, output) = runtime.prefill_final_frame_sampled(
+                session_id,
+                token_ids,
+                sampling.as_ref(),
+                input,
+            )?;
+            Ok((predicted, Vec::new(), output))
+        }
+        WireMessageKind::PrefillFinalEmbd => {
             let output = runtime.prefill_frame(session_id, token_ids, input)?;
             Ok((message.state.current_token, Vec::new(), output))
         }

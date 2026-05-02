@@ -369,6 +369,13 @@ pub struct MediaPrefill {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaPrefillFrame {
+    pub token_count: usize,
+    pub position: u64,
+    pub output: ActivationFrame,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageSessionCheckpoint {
     token_count: u64,
 }
@@ -602,13 +609,12 @@ impl StageModel {
         self.media.is_some()
     }
 
-    pub fn prefill_media(
+    fn eval_media(
         &self,
         session: &mut StageSession,
         prompt: &str,
         media: &[MediaInput],
-        sampling: Option<&SamplingConfig>,
-    ) -> Result<MediaPrefill> {
+    ) -> Result<(usize, u64)> {
         let projector = self
             .media
             .as_ref()
@@ -739,26 +745,39 @@ impl StageModel {
         session.token_count =
             u64::try_from(new_n_past).context("multimodal position is negative")?;
 
-        let raw_sampling = sampling.map(SamplingConfig::as_raw);
-        let sampling_ptr = raw_sampling
-            .as_ref()
-            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
-        let mut first_token = 0_i32;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_session_sample_current(
-                session.raw,
-                sampling_ptr,
-                &mut first_token,
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
+        Ok((token_count, session.token_count))
+    }
+
+    pub fn prefill_media(
+        &self,
+        session: &mut StageSession,
+        prompt: &str,
+        media: &[MediaInput],
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<MediaPrefill> {
+        let (token_count, position) = self.eval_media(session, prompt, media)?;
+
+        let first_token = session.sample_current(sampling)?;
 
         Ok(MediaPrefill {
             token_count,
-            position: session.token_count,
+            position,
             first_token,
+        })
+    }
+
+    pub fn prefill_media_frame(
+        &self,
+        session: &mut StageSession,
+        prompt: &str,
+        media: &[MediaInput],
+    ) -> Result<MediaPrefillFrame> {
+        let (token_count, position) = self.eval_media(session, prompt, media)?;
+        let output = session.copy_output_activation_frame(token_count, 0)?;
+        Ok(MediaPrefillFrame {
+            token_count,
+            position,
+            output,
         })
     }
 
@@ -1361,6 +1380,83 @@ impl StageSession {
             .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
             .context("session token count overflow")?;
         Ok((predicted, output_desc, output_payload))
+    }
+
+    pub fn copy_output_activation_frame(
+        &mut self,
+        token_count: usize,
+        output_capacity: usize,
+    ) -> Result<ActivationFrame> {
+        let (output_desc, output_payload) =
+            self.copy_output_activation_frame_raw(token_count, output_capacity)?;
+        Ok(ActivationFrame {
+            desc: output_desc.into(),
+            payload: output_payload,
+        })
+    }
+
+    fn copy_output_activation_frame_raw(
+        &mut self,
+        token_count: usize,
+        output_capacity: usize,
+    ) -> Result<(RawActivationDesc, Vec<u8>)> {
+        if token_count == 0 {
+            return Err(anyhow!(
+                "copy_output_activation_frame requires at least one token"
+            ));
+        }
+        let mut output_desc = RawActivationDesc {
+            version: 0,
+            dtype: ActivationDType::Unknown,
+            layout: ActivationLayout::Opaque,
+            producer_stage_index: -1,
+            layer_start: 0,
+            layer_end: 0,
+            token_count: 0,
+            sequence_count: 0,
+            payload_bytes: 0,
+            flags: 0,
+        };
+        let mut output_payload = vec![0_u8; output_capacity];
+        let mut output_bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_copy_output_activation_frame(
+                self.raw,
+                token_count,
+                &mut output_desc,
+                output_payload.as_mut_ptr().cast(),
+                output_payload.len(),
+                &mut output_bytes,
+                &mut error,
+            )
+        };
+        if status == Status::BufferTooSmall && output_bytes > output_payload.len() {
+            free_error(error);
+            return self.copy_output_activation_frame_raw(token_count, output_bytes);
+        }
+        ensure_ok(status, error)?;
+        output_payload.truncate(output_bytes);
+        Ok((output_desc, output_payload))
+    }
+
+    pub fn sample_current(&mut self, sampling: Option<&SamplingConfig>) -> Result<i32> {
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let mut predicted = 0_i32;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_sample_current(
+                self.raw,
+                sampling_ptr,
+                &mut predicted,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        Ok(predicted)
     }
 
     pub fn export_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {

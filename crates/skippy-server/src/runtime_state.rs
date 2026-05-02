@@ -8,8 +8,8 @@ use anyhow::{bail, Context, Result};
 use skippy_protocol::{LoadMode, StageConfig};
 use skippy_runtime::{
     parse_cache_type, ActivationFrame, GenerationSignalWindow, MediaInput, MediaPrefill,
-    RuntimeConfig, RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel,
-    StageSession, StageSessionCheckpoint, TokenSignal,
+    MediaPrefillFrame, RuntimeConfig, RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode,
+    SamplingConfig, StageModel, StageSession, StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::materialize_layer_package;
@@ -82,6 +82,23 @@ impl RuntimeState {
         Ok(prefill)
     }
 
+    pub fn prefill_media_frame(
+        &mut self,
+        session_id: &str,
+        prompt: &str,
+        media: &[MediaInput],
+    ) -> Result<MediaPrefillFrame> {
+        let model = &self.model as *const StageModel;
+        let session = self.session(session_id)?;
+        // `session()` mutably borrows the session map, while the projector lives
+        // on the same RuntimeState. RuntimeState serializes access behind one
+        // outer mutex, so this split borrow only aliases immutable model state.
+        let prefill = unsafe { (&*model).prefill_media_frame(session, prompt, media) }?;
+        self.session_token_counts
+            .insert(session_id.to_string(), prefill.position);
+        Ok(prefill)
+    }
+
     pub fn decode(&mut self, session_id: &str, token_id: i32) -> Result<i32> {
         self.decode_sampled(session_id, token_id, None)
     }
@@ -122,6 +139,20 @@ impl RuntimeState {
         let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(frame)
+    }
+
+    pub fn prefill_final_frame_sampled(
+        &mut self,
+        session_id: &str,
+        token_ids: &[i32],
+        sampling: Option<&SamplingConfig>,
+        input: Option<&ActivationFrame>,
+    ) -> Result<(i32, ActivationFrame)> {
+        let session = self.session(session_id)?;
+        let frame = session.prefill_chunk_frame(token_ids, input, 0)?;
+        let predicted = session.sample_current(sampling)?;
+        self.add_session_tokens(session_id, token_ids.len() as u64);
+        Ok((predicted, frame))
     }
 
     #[allow(dead_code)]
