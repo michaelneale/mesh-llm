@@ -66,6 +66,8 @@ pub(crate) struct RuntimeStagePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) materialized_path: Option<String>,
     pub(crate) materialized_pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) projector_path: Option<String>,
     pub(crate) stage_id: String,
     pub(crate) stage_index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -587,6 +589,7 @@ pub(crate) fn build_runtime_stage_payloads(
             source_model_bytes: status.source_model_bytes,
             materialized_path: status.materialized_path,
             materialized_pinned: status.materialized_pinned,
+            projector_path: status.projector_path,
             stage_id: status.stage_id,
             stage_index: status.stage_index,
             node_id: status.node_id.map(|id| id.to_string()),

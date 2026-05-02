@@ -1271,6 +1271,7 @@ mod tests {
                 stage_id: "stage-0".to_string(),
                 layer_end: 16,
                 activation_width: 4096,
+                projector_path: Some("/models/mmproj.gguf".to_string()),
                 ..Default::default()
             })),
             ..frame.clone()
@@ -1278,7 +1279,12 @@ mod tests {
         let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &load);
         let decoded =
             decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded).unwrap();
-        assert!(matches!(decoded.command, Some(Command::LoadStage(_))));
+        match decoded.command {
+            Some(Command::LoadStage(load)) => {
+                assert_eq!(load.projector_path.as_deref(), Some("/models/mmproj.gguf"));
+            }
+            other => panic!("expected LoadStage, got {other:?}"),
+        }
 
         let stop = StageControlRequest {
             command: Some(Command::StopStage(StopStage {
@@ -1342,6 +1348,7 @@ mod tests {
                     source_model_bytes: None,
                     materialized_path: None,
                     materialized_pinned: None,
+                    projector_path: Some("/models/mmproj.gguf".to_string()),
                 }),
                 error: None,
             })),
@@ -1349,7 +1356,16 @@ mod tests {
         let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &frame);
         let decoded =
             decode_control_frame::<StageControlResponse>(STREAM_STAGE_CONTROL, &encoded).unwrap();
-        assert!(matches!(decoded.response, Some(Response::StageReady(_))));
+        match decoded.response {
+            Some(Response::StageReady(ready)) => {
+                let status = ready.status.expect("stage-ready status");
+                assert_eq!(
+                    status.projector_path.as_deref(),
+                    Some("/models/mmproj.gguf")
+                );
+            }
+            other => panic!("expected StageReady, got {other:?}"),
+        }
 
         let status = StageControlResponse {
             response: Some(Response::StageStatus(StageStatus {

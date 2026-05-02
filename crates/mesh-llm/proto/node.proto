@@ -363,6 +363,7 @@ message LoadStage {
   StageLoadMode load_mode = 21;
   optional StagePeer upstream = 22;
   optional StagePeer downstream = 23;
+  optional string projector_path = 24;      // multimodal projector/mmproj path when available
 }
 
 message StopStage {
@@ -408,6 +409,7 @@ message StageStatus {
   optional uint64 source_model_bytes = 21;
   optional string materialized_path = 22;
   optional bool materialized_pinned = 23;
+  optional string projector_path = 24;
 }
 
 message StagePeer {

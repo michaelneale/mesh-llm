@@ -4749,6 +4749,7 @@ fn test_stage_status(
         source_model_bytes: Some(1),
         materialized_path: None,
         materialized_pinned: false,
+        projector_path: None,
         stage_id: stage_id.to_string(),
         stage_index,
         node_id: Some(node_id),

@@ -57,6 +57,8 @@ pub struct StageConfig {
     pub materialized_pinned: bool,
     #[serde(default)]
     pub model_path: Option<String>,
+    #[serde(default)]
+    pub projector_path: Option<String>,
     pub stage_id: String,
     pub stage_index: u32,
     pub layer_start: u32,

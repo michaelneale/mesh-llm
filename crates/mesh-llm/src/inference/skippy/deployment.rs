@@ -16,6 +16,7 @@ pub(crate) struct StageDeploymentContext<'a> {
     pub(crate) package: &'a StagePackageInfo,
     pub(crate) activation_width: i32,
     pub(crate) ctx_size: u32,
+    pub(crate) projector_path: Option<String>,
 }
 
 pub(crate) fn remote_stage_load_request(
@@ -35,6 +36,7 @@ pub(crate) fn remote_stage_load_request(
         layer_start: stage.layer_start,
         layer_end: stage.layer_end,
         model_path: Some(context.package.package_ref.clone()),
+        projector_path: None,
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),
         activation_width: context.activation_width,
@@ -69,6 +71,7 @@ pub(crate) fn stage0_config(
         materialized_path: None,
         materialized_pinned: false,
         model_path: Some(context.package.package_ref.clone()),
+        projector_path: context.projector_path.clone(),
         stage_id: stage0.stage_id.clone(),
         stage_index: stage0.stage_index,
         layer_start: stage0.layer_start,
@@ -188,6 +191,7 @@ mod tests {
             package: &package,
             activation_width: 1024,
             ctx_size: 8192,
+            projector_path: Some("/models/mmproj.gguf".to_string()),
         };
         let request = remote_stage_load_request(
             &context,
@@ -209,5 +213,30 @@ mod tests {
             Some("hf://Mesh-LLM/demo-package")
         );
         assert_eq!((request.layer_start, request.layer_end), (4, 8));
+        assert!(request.projector_path.is_none());
+
+        let stage0 = stage0_config(
+            &context,
+            &MeshStagePlan {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: make_id(0),
+                layer_start: 0,
+                layer_end: 4,
+            },
+            &MeshStagePlan {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                node_id: make_id(1),
+                layer_start: 4,
+                layer_end: 8,
+            },
+            "127.0.0.1:9001".to_string(),
+            None,
+        );
+        assert_eq!(
+            stage0.projector_path.as_deref(),
+            Some("/models/mmproj.gguf")
+        );
     }
 }

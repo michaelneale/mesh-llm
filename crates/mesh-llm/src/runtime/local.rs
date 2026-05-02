@@ -302,15 +302,19 @@ async fn start_runtime_skippy_model(
     LocalRuntimeModelHandle,
     tokio::sync::oneshot::Receiver<()>,
 )> {
-    anyhow::ensure!(
-        spec.mmproj_override.is_none(),
-        "skippy runtime load does not support multimodal projector overrides yet"
-    );
     let port = alloc_local_port().await?;
     let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let projector_path = spec
+        .mmproj_override
+        .map(Path::to_path_buf)
+        .or_else(|| mmproj_path_for_model(&model_name))
+        .filter(|path| path.exists());
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
         .with_generation_concurrency(spec.slots);
+    if let Some(projector_path) = projector_path {
+        options = options.with_projector_path(projector_path);
+    }
     if let Some(gpu) = spec.pinned_gpu {
         options = options.with_selected_device(skippy::SkippyDeviceDescriptor {
             backend_device: gpu.backend_device.clone(),

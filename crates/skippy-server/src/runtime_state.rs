@@ -586,6 +586,7 @@ mod tests {
             materialized_path: None,
             materialized_pinned: false,
             model_path: Some("/tmp/model.gguf".to_string()),
+            projector_path: Some("/tmp/mmproj.gguf".to_string()),
             stage_id: "stage-0".to_string(),
             stage_index: 0,
             layer_start: 0,

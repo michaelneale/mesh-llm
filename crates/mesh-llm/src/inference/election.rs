@@ -24,6 +24,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Returns `true` when `flavor` and `gpu_count` together call for row-split
@@ -588,6 +589,7 @@ struct MoePlacementPlan {
 }
 
 const MOE_SCALE_UP_QUIET_SECS: u64 = 45;
+const SKIPPY_STAGE_FAILURE_QUARANTINE: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug)]
 struct MoePlacementCandidate {
@@ -1123,6 +1125,7 @@ struct StartSkippySplitParams<'a> {
     model: &'a Path,
     model_name: &'a str,
     package_info: Option<skippy::StagePackageInfo>,
+    explicit_mmproj: Option<&'a Path>,
     model_peers: &'a [mesh::PeerInfo],
     worker_ids: &'a [iroh::EndpointId],
     ctx_size_override: Option<u32>,
@@ -1221,6 +1224,14 @@ impl SkippySplitDeployment {
     }
 
     async fn shutdown(self, node: &mesh::Node) {
+        self.shutdown_marking_failure(node, None).await;
+    }
+
+    async fn shutdown_marking_failure(
+        self,
+        node: &mesh::Node,
+        failure: Option<&SkippyStageFailure>,
+    ) {
         let Self {
             topology_id,
             run_id,
@@ -1231,12 +1242,20 @@ impl SkippySplitDeployment {
             remote_statuses,
             ..
         } = self;
+        let failed_stage_id = failure.map(|failure| failure.stage_id.as_str());
+        let failed_reason = failure.map(|failure| failure.reason.clone());
         let _ = http.shutdown().await;
         stage0.shutdown();
-        let mut stopped_stage0 = stage0_status;
-        stopped_stage0.state = skippy::StageRuntimeState::Stopped;
-        stopped_stage0.shutdown_generation = stopped_stage0.shutdown_generation.saturating_add(1);
-        node.record_stage_status(Some(node.id()), stopped_stage0)
+        let mut stage0_shutdown_status = stage0_status;
+        if failed_stage_id == Some(stage0_shutdown_status.stage_id.as_str()) {
+            stage0_shutdown_status.state = skippy::StageRuntimeState::Failed;
+            stage0_shutdown_status.error = failed_reason.clone();
+        } else {
+            stage0_shutdown_status.state = skippy::StageRuntimeState::Stopped;
+        }
+        stage0_shutdown_status.shutdown_generation =
+            stage0_shutdown_status.shutdown_generation.saturating_add(1);
+        node.record_stage_status(Some(node.id()), stage0_shutdown_status)
             .await;
         node.stop_stage_transport_bridge(&topology_id, &run_id, "stage-1")
             .await;
@@ -1244,12 +1263,24 @@ impl SkippySplitDeployment {
             .into_iter()
             .map(|(peer_id, status)| (status.stage_id.clone(), (peer_id, status)))
             .collect();
+        if let Some(failure) = failure {
+            if let Some((peer_id, status)) = remote_status_by_stage.get(&failure.stage_id) {
+                let mut failed = status.clone();
+                failed.state = skippy::StageRuntimeState::Failed;
+                failed.error = Some(failure.reason.clone());
+                failed.shutdown_generation = failed.shutdown_generation.saturating_add(1);
+                node.record_stage_status(Some(*peer_id), failed).await;
+            }
+        }
         for (peer_id, stop) in remote_stops.into_iter().rev() {
             let stage_id = stop.stage_id.clone();
             if let Err(error) = node
                 .send_stage_control(peer_id, skippy::StageControlRequest::Stop(stop))
                 .await
             {
+                if failed_stage_id == Some(stage_id.as_str()) {
+                    continue;
+                }
                 if let Some((_, status)) = remote_status_by_stage.get(&stage_id) {
                     let mut failed = status.clone();
                     failed.state = skippy::StageRuntimeState::Failed;
@@ -1261,6 +1292,36 @@ impl SkippySplitDeployment {
                 .await;
         }
     }
+}
+
+fn prune_skippy_stage_quarantine(
+    quarantined_peers: &mut HashMap<iroh::EndpointId, Instant>,
+    now: Instant,
+) {
+    quarantined_peers.retain(|_, until| *until > now);
+}
+
+fn quarantine_skippy_stage_failure(
+    quarantined_peers: &mut HashMap<iroh::EndpointId, Instant>,
+    failure: &SkippyStageFailure,
+    now: Instant,
+) -> Option<iroh::EndpointId> {
+    let peer_id = failure.peer_id?;
+    quarantined_peers.insert(peer_id, now + SKIPPY_STAGE_FAILURE_QUARANTINE);
+    Some(peer_id)
+}
+
+fn model_peers_for_election(
+    peers: &[mesh::PeerInfo],
+    model_name: &str,
+    quarantined_peers: &HashMap<iroh::EndpointId, Instant>,
+) -> Vec<mesh::PeerInfo> {
+    peers
+        .iter()
+        .filter(|peer| peer.is_assigned_model(model_name))
+        .filter(|peer| !quarantined_peers.contains_key(&peer.id))
+        .cloned()
+        .collect()
 }
 
 fn active_stage_failure_from_status(
@@ -1864,6 +1925,7 @@ pub async fn election_loop(
     let mut llama_process: Option<launch::InferenceServerProcess> = None;
     let mut backend_proxy: Option<crate::network::openai::backend::BackendProxyHandle> = None;
     let mut skippy_split: Option<SkippySplitDeployment> = None;
+    let mut skippy_stage_quarantine: HashMap<iroh::EndpointId, Instant> = HashMap::new();
 
     // Initial settle
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1999,13 +2061,10 @@ pub async fn election_loop(
         if stop_requested(&stop_rx) {
             break;
         }
+        prune_skippy_stage_quarantine(&mut skippy_stage_quarantine, Instant::now());
         // Collect our model group (peers also serving this model)
         let peers = node.peers().await;
-        let model_peers: Vec<mesh::PeerInfo> = peers
-            .iter()
-            .filter(|p| p.is_assigned_model(&model_name))
-            .cloned()
-            .collect();
+        let model_peers = model_peers_for_election(&peers, &model_name, &skippy_stage_quarantine);
         let desired_launch = build_dense_launch_plan(
             local_launch_vram,
             model_bytes,
@@ -2019,8 +2078,11 @@ pub async fn election_loop(
         // node serving this model runs its own independent llama-server
         // (no election needed — everyone is a host).
         let requires_split = force_split || !model_fits_locally;
+        let local_stage_quarantined = skippy_stage_quarantine.contains_key(&node.id());
 
-        let i_am_host = if requires_split {
+        let i_am_host = if local_stage_quarantined {
+            false
+        } else if requires_split {
             // Distributed mode: elect one host from the model group using the
             // same advertised node capacity every peer observes through gossip.
             should_be_host_for_model(node.id(), my_vram, &model_peers)
@@ -2130,6 +2192,19 @@ pub async fn election_loop(
                     if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
                         break;
                     }
+                    if let Some(peer_id) = quarantine_skippy_stage_failure(
+                        &mut skippy_stage_quarantine,
+                        &failure,
+                        Instant::now(),
+                    ) {
+                        emit_info(
+                            format!(
+                                "[{model_name}] Temporarily excluding failed stage peer {} from replanning",
+                                peer_id.fmt_short()
+                            ),
+                            Some(format!("stage={}", failure.stage_id)),
+                        );
+                    }
                     if let Some(deployment) = skippy_split.take() {
                         withdraw_failed_skippy_split(
                             &node,
@@ -2204,8 +2279,13 @@ pub async fn election_loop(
                     });
                     update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
                     on_change(false, false);
-                    if peer_rx.changed().await.is_err() {
-                        break;
+                    tokio::select! {
+                        res = peer_rx.changed() => {
+                            if res.is_err() {
+                                break;
+                            }
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {}
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     continue;
@@ -2244,6 +2324,7 @@ pub async fn election_loop(
                     model: &model,
                     model_name: &model_name,
                     package_info: package_source_info.clone(),
+                    explicit_mmproj: explicit_mmproj.as_deref(),
                     model_peers: &model_peers,
                     worker_ids: &worker_ids,
                     ctx_size_override,
@@ -2394,6 +2475,7 @@ pub async fn election_loop(
         }
 
         // Wait for next peer change OR llama-server death
+        let quarantine_recheck = !skippy_stage_quarantine.is_empty();
         tokio::select! {
             res = peer_rx.changed() => {
                 if res.is_err() { break; }
@@ -2440,6 +2522,19 @@ pub async fn election_loop(
                 if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
                     break;
                 }
+                if let Some(peer_id) = quarantine_skippy_stage_failure(
+                    &mut skippy_stage_quarantine,
+                    &failure,
+                    Instant::now(),
+                ) {
+                    emit_info(
+                        format!(
+                            "[{model_name}] Temporarily excluding failed stage peer {} from replanning",
+                            peer_id.fmt_short()
+                        ),
+                        Some(format!("stage={}", failure.stage_id)),
+                    );
+                }
                 if let Some(deployment) = skippy_split.take() {
                     withdraw_failed_skippy_split(
                         &node,
@@ -2467,6 +2562,13 @@ pub async fn election_loop(
                     break;
                 }
             }
+            _ = async {
+                if !quarantine_recheck {
+                    std::future::pending::<()>().await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            } => {}
         }
         if stop_requested(&stop_rx) {
             break;
@@ -3358,6 +3460,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         model,
         model_name,
         package_info,
+        explicit_mmproj,
         model_peers,
         worker_ids,
         ctx_size_override,
@@ -3485,6 +3588,9 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         package: &package_info,
         activation_width,
         ctx_size,
+        projector_path: crate::models::resolve_mmproj_path(model_name, model, explicit_mmproj)
+            .filter(|path| path.exists())
+            .map(|path| path.to_string_lossy().to_string()),
     };
     let package_ref = package_info.package_ref.clone();
     let manifest_sha256 = package_info.manifest_sha256.clone();
@@ -3660,6 +3766,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         source_model_bytes: package_info.source_model_bytes,
         materialized_path: stage0_model_status.materialized_path,
         materialized_pinned: stage0_model_status.materialized_pinned,
+        projector_path: stage0_model_status.projector_path,
         ctx_size,
         error: None,
         shutdown_generation: 1,
@@ -3721,7 +3828,9 @@ async fn withdraw_failed_skippy_split(
     );
     update_targets(node, model_name, InferenceTarget::None, target_tx).await;
     tunnel_mgr.set_http_port(0);
-    deployment.shutdown(node).await;
+    deployment
+        .shutdown_marking_failure(node, Some(&failure))
+        .await;
 }
 
 async fn wait_for_stage_ready(
@@ -4040,6 +4149,7 @@ mod tests {
             source_model_bytes: Some(100),
             materialized_path: None,
             materialized_pinned: false,
+            projector_path: None,
             stage_id: stage_id.to_string(),
             stage_index: 1,
             layer_start: 4,
@@ -4261,6 +4371,55 @@ mod tests {
                 worker_ids: vec![id_c, id_d],
             })
         );
+    }
+
+    #[test]
+    fn stage_failure_quarantine_excludes_failed_worker_from_next_plan() {
+        let model = "dense";
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let id_d = make_id(4);
+        let peers = vec![
+            make_dense_peer(id_b, 30, Some(10), model),
+            make_dense_peer(id_c, 30, Some(20), model),
+            make_dense_peer(id_d, 30, Some(30), model),
+        ];
+        let mut quarantined = HashMap::new();
+        let failure = SkippyStageFailure {
+            stage_id: "stage-1".into(),
+            peer_id: Some(id_b),
+            reason: "stage crashed".into(),
+        };
+        assert_eq!(
+            quarantine_skippy_stage_failure(&mut quarantined, &failure, Instant::now()),
+            Some(id_b)
+        );
+
+        let eligible = model_peers_for_election(&peers, model, &quarantined);
+        let plan = build_dense_launch_plan(50, 100, false, model, &eligible);
+
+        assert_eq!(
+            plan.running_plan(),
+            Some(DenseRunningPlan::Split {
+                worker_ids: vec![id_c, id_d],
+            })
+        );
+    }
+
+    #[test]
+    fn stage_failure_quarantine_expires() {
+        let id_b = make_id(2);
+        let id_c = make_id(3);
+        let now = Instant::now();
+        let mut quarantined = HashMap::from([
+            (id_b, now + Duration::from_secs(1)),
+            (id_c, now - Duration::from_secs(1)),
+        ]);
+
+        prune_skippy_stage_quarantine(&mut quarantined, now);
+
+        assert!(quarantined.contains_key(&id_b));
+        assert!(!quarantined.contains_key(&id_c));
     }
 
     #[test]

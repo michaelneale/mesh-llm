@@ -69,6 +69,7 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) source_model_bytes: Option<u64>,
     pub(crate) materialized_path: Option<String>,
     pub(crate) materialized_pinned: bool,
+    pub(crate) projector_path: Option<String>,
     pub(crate) ctx_size: u32,
     pub(crate) n_gpu_layers: i32,
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
@@ -103,6 +104,7 @@ pub(crate) struct SkippyModelLoadOptions {
     pub(crate) layer_end: Option<u32>,
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
     pub(crate) package_identity: Option<SkippyPackageIdentity>,
+    pub(crate) projector_path: Option<PathBuf>,
 }
 
 impl SkippyModelLoadOptions {
@@ -122,6 +124,7 @@ impl SkippyModelLoadOptions {
             layer_end: None,
             selected_device: None,
             package_identity: None,
+            projector_path: None,
         }
     }
 
@@ -142,6 +145,11 @@ impl SkippyModelLoadOptions {
 
     pub(crate) fn with_selected_device(mut self, selected_device: SkippyDeviceDescriptor) -> Self {
         self.selected_device = Some(selected_device);
+        self
+    }
+
+    pub(crate) fn with_projector_path(mut self, projector_path: impl Into<PathBuf>) -> Self {
+        self.projector_path = Some(projector_path.into());
         self
     }
 
@@ -435,6 +443,10 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         materialized_path: None,
         materialized_pinned: false,
         model_path: Some(options.model_path.to_string_lossy().to_string()),
+        projector_path: options
+            .projector_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
         stage_id: "stage-0".to_string(),
         stage_index: 0,
         layer_start: 0,
@@ -512,6 +524,7 @@ fn status_from_parts(
         source_model_bytes: config.source_model_bytes,
         materialized_path: config.materialized_path.clone(),
         materialized_pinned: config.materialized_pinned,
+        projector_path: config.projector_path.clone(),
         ctx_size: config.ctx_size,
         n_gpu_layers: config.n_gpu_layers,
         selected_device: config.selected_device.clone().map(Into::into),
@@ -606,6 +619,21 @@ mod tests {
         assert_eq!(config.load_mode, LoadMode::RuntimeSlice);
         assert!(config.upstream.is_none());
         assert!(config.downstream.is_none());
+    }
+
+    #[test]
+    fn single_stage_config_preserves_projector_path() {
+        let options = SkippyModelLoadOptions::for_direct_gguf("Qwen2.5-VL", "/models/qwen-vl.gguf")
+            .with_layer_end(36)
+            .with_package_identity(fake_package_identity(36))
+            .with_projector_path("/models/mmproj-qwen-vl.gguf");
+
+        let config = single_stage_config(&options).unwrap();
+
+        assert_eq!(
+            config.projector_path.as_deref(),
+            Some("/models/mmproj-qwen-vl.gguf")
+        );
     }
 
     #[test]

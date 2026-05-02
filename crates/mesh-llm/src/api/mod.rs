@@ -500,6 +500,7 @@ impl MeshApi {
                     "source_model_bytes": status.source_model_bytes,
                     "materialized_path": status.materialized_path.clone(),
                     "materialized_pinned": status.materialized_pinned,
+                    "projector_path": status.projector_path.clone(),
                     "stage_id": status.stage_id.clone(),
                     "stage_index": status.stage_index,
                     "node_id": status.node_id.map(|id| id.to_string()),
@@ -2518,6 +2519,7 @@ mod tests {
                 source_model_bytes: Some(1_234),
                 materialized_path: Some("/tmp/mesh/stage-0.gguf".into()),
                 materialized_pinned: true,
+                projector_path: Some("/models/mmproj.gguf".into()),
                 stage_id: "stage-0".into(),
                 stage_index: 0,
                 layer_start: 0,
@@ -2572,6 +2574,10 @@ mod tests {
         assert_eq!(
             status_body["runtime"]["stages"][0]["materialized_pinned"],
             json!(true)
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["projector_path"],
+            json!("/models/mmproj.gguf")
         );
         assert_eq!(
             status_body["runtime"]["stages"][0]["selected_device"]["backend_device"],

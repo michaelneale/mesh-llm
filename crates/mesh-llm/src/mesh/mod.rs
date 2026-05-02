@@ -1313,6 +1313,7 @@ pub struct StageRuntimeStatus {
     pub source_model_bytes: Option<u64>,
     pub materialized_path: Option<String>,
     pub materialized_pinned: bool,
+    pub projector_path: Option<String>,
     pub stage_id: String,
     pub stage_index: u32,
     pub node_id: Option<EndpointId>,
@@ -4768,6 +4769,7 @@ fn stage_runtime_status_from_snapshot(
         source_model_bytes: status.source_model_bytes,
         materialized_path: status.materialized_path,
         materialized_pinned: status.materialized_pinned,
+        projector_path: status.projector_path,
         stage_id: status.stage_id,
         stage_index: status.stage_index,
         node_id,
@@ -4801,6 +4803,7 @@ fn stage_snapshot_from_runtime_status(
         source_model_bytes: status.source_model_bytes,
         materialized_path: status.materialized_path.clone(),
         materialized_pinned: status.materialized_pinned,
+        projector_path: status.projector_path.clone(),
         stage_id: status.stage_id.clone(),
         stage_index: status.stage_index,
         layer_start: status.layer_start,
@@ -4888,6 +4891,7 @@ fn stage_load_to_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        projector_path: load.projector_path,
         selected_device: load.selected_device.map(stage_device_to_proto),
         bind_addr: load.bind_addr,
         activation_width: load.activation_width.max(0) as u32,
@@ -4980,6 +4984,7 @@ fn stage_load_from_proto(
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         model_path: load.model_path,
+        projector_path: load.projector_path,
         selected_device: load
             .selected_device
             .map(stage_device_from_proto)
@@ -5081,6 +5086,7 @@ fn stage_control_unavailable_response(
                 source_model_bytes: None,
                 materialized_path: None,
                 materialized_pinned: false,
+                projector_path: None,
                 stage_id: stop.stage_id,
                 stage_index: 0,
                 layer_start: 0,
@@ -5124,6 +5130,7 @@ fn stage_status_from_load(
         source_model_bytes: None,
         materialized_path: None,
         materialized_pinned: false,
+        projector_path: load.projector_path.clone(),
         stage_id: load.stage_id.clone(),
         stage_index: load.stage_index,
         layer_start: load.layer_start,
@@ -5225,6 +5232,7 @@ fn stage_status_to_proto(
         source_model_bytes: status.source_model_bytes,
         materialized_path: status.materialized_path,
         materialized_pinned: Some(status.materialized_pinned),
+        projector_path: status.projector_path,
     }
 }
 
@@ -5256,6 +5264,7 @@ fn stage_status_from_proto(
         source_model_bytes: status.source_model_bytes,
         materialized_path: status.materialized_path,
         materialized_pinned: status.materialized_pinned.unwrap_or(false),
+        projector_path: status.projector_path,
         error: status.error,
         shutdown_generation: status.shutdown_generation,
     })

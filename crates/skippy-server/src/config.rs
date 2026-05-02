@@ -17,6 +17,9 @@ pub fn validate_config(config: &StageConfig, topology: Option<&StageTopology>) -
     {
         bail!("selected_device.backend_device must not be empty");
     }
+    if config.projector_path.as_deref().is_some_and(str::is_empty) {
+        bail!("projector_path must not be empty");
+    }
     match config.load_mode {
         LoadMode::RuntimeSlice => {}
         LoadMode::ArtifactSlice => {
@@ -75,6 +78,7 @@ pub fn example_config() -> Value {
         "topology_id": "single-stage-fixture",
         "model_id": "jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF:Q4_K_M",
         "model_path": null,
+        "projector_path": null,
         "stage_id": "stage-0",
         "stage_index": 0,
         "layer_start": 0,

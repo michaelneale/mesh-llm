@@ -41,6 +41,7 @@ pub(crate) struct StageLoadRequest {
     pub(crate) layer_start: u32,
     pub(crate) layer_end: u32,
     pub(crate) model_path: Option<String>,
+    pub(crate) projector_path: Option<String>,
     pub(crate) selected_device: Option<StageDevice>,
     pub(crate) bind_addr: String,
     pub(crate) activation_width: i32,
@@ -114,6 +115,7 @@ pub(crate) struct StageStatusSnapshot {
     pub(crate) source_model_bytes: Option<u64>,
     pub(crate) materialized_path: Option<String>,
     pub(crate) materialized_pinned: bool,
+    pub(crate) projector_path: Option<String>,
     pub(crate) stage_id: String,
     pub(crate) stage_index: u32,
     pub(crate) layer_start: u32,
@@ -368,6 +370,7 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         materialized_path: None,
         materialized_pinned: false,
         model_path: load.model_path.clone(),
+        projector_path: load.projector_path.clone(),
         stage_id: load.stage_id.clone(),
         stage_index: load.stage_index,
         layer_start: load.layer_start,
@@ -438,6 +441,7 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
             .as_ref()
             .map(|artifact| artifact.path.to_string_lossy().to_string()),
         materialized_pinned: stage.materialized.is_some(),
+        projector_path: stage.load.projector_path.clone(),
         stage_id: stage.load.stage_id.clone(),
         stage_index: stage.load.stage_index,
         layer_start: stage.load.layer_start,
@@ -466,6 +470,7 @@ fn stopped_status(stop: &StageStopRequest) -> StageStatusSnapshot {
         source_model_bytes: None,
         materialized_path: None,
         materialized_pinned: false,
+        projector_path: None,
         stage_id: stop.stage_id.clone(),
         stage_index: 0,
         layer_start: 0,
@@ -509,6 +514,7 @@ mod tests {
             layer_start: 0,
             layer_end: 12,
             model_path: Some("/models/model.gguf".to_string()),
+            projector_path: Some("/models/mmproj.gguf".to_string()),
             selected_device: Some(StageDevice {
                 backend_device: "CUDA0".to_string(),
                 stable_id: Some("GPU-123".to_string()),
@@ -555,6 +561,10 @@ mod tests {
         assert_eq!(config.layer_start, 0);
         assert_eq!(config.layer_end, 12);
         assert_eq!(config.model_path.as_deref(), Some("/models/model.gguf"));
+        assert_eq!(
+            config.projector_path.as_deref(),
+            Some("/models/mmproj.gguf")
+        );
         assert_eq!(
             config
                 .selected_device
