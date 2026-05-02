@@ -68,6 +68,7 @@ pub(crate) struct RuntimeStagePayload {
     pub(crate) materialized_pinned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) projector_path: Option<String>,
+    pub(crate) multimodal: bool,
     pub(crate) stage_id: String,
     pub(crate) stage_index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -577,39 +578,43 @@ pub(crate) fn build_runtime_stage_payloads(
 
     statuses
         .into_iter()
-        .map(|status| RuntimeStagePayload {
-            topology_id: status.topology_id,
-            run_id: status.run_id,
-            model_id: status.model_id,
-            backend: status.backend,
-            package_ref: status.package_ref,
-            manifest_sha256: status.manifest_sha256,
-            source_model_path: status.source_model_path,
-            source_model_sha256: status.source_model_sha256,
-            source_model_bytes: status.source_model_bytes,
-            materialized_path: status.materialized_path,
-            materialized_pinned: status.materialized_pinned,
-            projector_path: status.projector_path,
-            stage_id: status.stage_id,
-            stage_index: status.stage_index,
-            node_id: status.node_id.map(|id| id.to_string()),
-            layer_start: status.layer_start,
-            layer_end: status.layer_end,
-            state: runtime_stage_state_label(status.state),
-            bind_addr: status.bind_addr,
-            activation_width: status.activation_width,
-            wire_dtype: runtime_stage_wire_dtype_label(status.wire_dtype),
-            selected_device: status
-                .selected_device
-                .map(|device| RuntimeStageDevicePayload {
-                    backend_device: device.backend_device,
-                    stable_id: device.stable_id,
-                    index: device.index,
-                    vram_bytes: device.vram_bytes,
-                }),
-            ctx_size: status.ctx_size,
-            error: status.error,
-            shutdown_generation: status.shutdown_generation,
+        .map(|status| {
+            let multimodal = status.projector_path.is_some();
+            RuntimeStagePayload {
+                topology_id: status.topology_id,
+                run_id: status.run_id,
+                model_id: status.model_id,
+                backend: status.backend,
+                package_ref: status.package_ref,
+                manifest_sha256: status.manifest_sha256,
+                source_model_path: status.source_model_path,
+                source_model_sha256: status.source_model_sha256,
+                source_model_bytes: status.source_model_bytes,
+                materialized_path: status.materialized_path,
+                materialized_pinned: status.materialized_pinned,
+                projector_path: status.projector_path,
+                multimodal,
+                stage_id: status.stage_id,
+                stage_index: status.stage_index,
+                node_id: status.node_id.map(|id| id.to_string()),
+                layer_start: status.layer_start,
+                layer_end: status.layer_end,
+                state: runtime_stage_state_label(status.state),
+                bind_addr: status.bind_addr,
+                activation_width: status.activation_width,
+                wire_dtype: runtime_stage_wire_dtype_label(status.wire_dtype),
+                selected_device: status
+                    .selected_device
+                    .map(|device| RuntimeStageDevicePayload {
+                        backend_device: device.backend_device,
+                        stable_id: device.stable_id,
+                        index: device.index,
+                        vram_bytes: device.vram_bytes,
+                    }),
+                ctx_size: status.ctx_size,
+                error: status.error,
+                shutdown_generation: status.shutdown_generation,
+            }
         })
         .collect()
 }

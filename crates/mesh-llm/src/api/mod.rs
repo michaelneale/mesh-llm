@@ -501,6 +501,7 @@ impl MeshApi {
                     "materialized_path": status.materialized_path.clone(),
                     "materialized_pinned": status.materialized_pinned,
                     "projector_path": status.projector_path.clone(),
+                    "multimodal": status.projector_path.is_some(),
                     "stage_id": status.stage_id.clone(),
                     "stage_index": status.stage_index,
                     "node_id": status.node_id.map(|id| id.to_string()),
@@ -2578,6 +2579,10 @@ mod tests {
         assert_eq!(
             status_body["runtime"]["stages"][0]["projector_path"],
             json!("/models/mmproj.gguf")
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["multimodal"],
+            json!(true)
         );
         assert_eq!(
             status_body["runtime"]["stages"][0]["selected_device"]["backend_device"],
