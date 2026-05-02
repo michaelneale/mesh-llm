@@ -451,6 +451,10 @@ impl ModelsFormatter for ConsoleFormatter {
         );
         println!("Metadata files removed: {}", result.removed_metadata_files);
         println!("Usage records purged: {}", result.removed_usage_records);
+        println!(
+            "Derived stage cache files removed: {}",
+            result.removed_derived_cache_files
+        );
         Ok(())
     }
 }

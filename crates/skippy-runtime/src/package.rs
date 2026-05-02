@@ -41,6 +41,18 @@ pub struct SelectedPackageParts {
 }
 
 #[derive(Debug, Clone)]
+pub struct LayerPackageInfo {
+    pub package_dir: PathBuf,
+    pub manifest_sha256: String,
+    pub model_id: String,
+    pub source_model_path: String,
+    pub source_model_sha256: String,
+    pub source_model_bytes: Option<u64>,
+    pub layer_count: u32,
+    pub activation_width: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PackagePart {
     pub role: String,
     pub layer_index: Option<u32>,
@@ -56,6 +68,8 @@ struct PackageManifest {
     source_model: PackageSourceModel,
     format: String,
     layer_count: u32,
+    #[serde(default)]
+    activation_width: Option<u32>,
     shared: PackageShared,
     layers: Vec<PackageLayer>,
     skippy_abi_version: String,
@@ -246,6 +260,39 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
     })
 }
 
+pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
+    let package_dir = resolve_package_dir(package_ref)?;
+    let manifest_path = package_dir.join("model-package.json");
+    let manifest_contents = fs::read(&manifest_path)
+        .with_context(|| format!("read package manifest {}", manifest_path.display()))?;
+    let manifest_sha256 = sha256_bytes(&manifest_contents);
+    let manifest = load_manifest(&manifest_path, &manifest_contents)?;
+    validate_manifest_identity(&manifest)?;
+    Ok(LayerPackageInfo {
+        package_dir,
+        manifest_sha256,
+        model_id: manifest.model_id,
+        source_model_path: manifest.source_model.path,
+        source_model_sha256: manifest.source_model.sha256,
+        source_model_bytes: (!manifest.source_model.files.is_empty())
+            .then(|| {
+                manifest
+                    .source_model
+                    .files
+                    .iter()
+                    .try_fold(0u64, |total, file| {
+                        file.size_bytes
+                            .map(|bytes| total.saturating_add(bytes))
+                            .ok_or(())
+                    })
+                    .ok()
+            })
+            .flatten(),
+        layer_count: manifest.layer_count,
+        activation_width: manifest.activation_width,
+    })
+}
+
 pub fn is_hf_package_ref(value: &str) -> bool {
     value.starts_with("hf://")
 }
@@ -358,6 +405,55 @@ fn load_manifest(path: &Path, contents: &[u8]) -> Result<PackageManifest> {
 }
 
 fn validate_manifest(manifest: &PackageManifest, request: &PackageStageRequest) -> Result<()> {
+    validate_manifest_identity(manifest)?;
+    if request.layer_start >= request.layer_end {
+        bail!("stage layer_start must be less than layer_end");
+    }
+    if request.layer_end > manifest.layer_count {
+        bail!(
+            "stage layer_end {} exceeds package layer_count {}",
+            request.layer_end,
+            manifest.layer_count
+        );
+    }
+
+    let mut layer_counts = BTreeMap::<u32, usize>::new();
+    for layer in &manifest.layers {
+        *layer_counts.entry(layer.layer_index).or_default() += 1;
+        if layer.layer_index >= manifest.layer_count {
+            bail!(
+                "package layer index {} exceeds layer_count {}",
+                layer.layer_index,
+                manifest.layer_count
+            );
+        }
+        validate_artifact_manifest(
+            &format!("layer {}", layer.layer_index),
+            &PackageArtifact {
+                path: layer.path.clone(),
+                tensor_count: layer.tensor_count,
+                tensor_bytes: layer.tensor_bytes,
+                artifact_bytes: layer.artifact_bytes,
+                sha256: layer.sha256.clone(),
+            },
+        )?;
+    }
+    let duplicates = layer_counts
+        .iter()
+        .filter_map(|(layer, count)| (*count > 1).then_some(*layer))
+        .collect::<Vec<_>>();
+    if !duplicates.is_empty() {
+        bail!("package manifest contains duplicate layers: {duplicates:?}");
+    }
+    for layer_index in request.layer_start..request.layer_end {
+        if !layer_counts.contains_key(&layer_index) {
+            bail!("package is missing layer {layer_index}");
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
     if manifest.schema_version != 1 {
         bail!(
             "unsupported package manifest schema_version {}",
@@ -420,54 +516,9 @@ fn validate_manifest(manifest: &PackageManifest, request: &PackageStageRequest) 
         }
         let _ = file.size_bytes;
     }
-    if request.layer_start >= request.layer_end {
-        bail!("stage layer_start must be less than layer_end");
-    }
-    if request.layer_end > manifest.layer_count {
-        bail!(
-            "stage layer_end {} exceeds package layer_count {}",
-            request.layer_end,
-            manifest.layer_count
-        );
-    }
-
     validate_artifact_manifest("metadata", &manifest.shared.metadata)?;
     validate_artifact_manifest("embeddings", &manifest.shared.embeddings)?;
     validate_artifact_manifest("output", &manifest.shared.output)?;
-
-    let mut layer_counts = BTreeMap::<u32, usize>::new();
-    for layer in &manifest.layers {
-        *layer_counts.entry(layer.layer_index).or_default() += 1;
-        if layer.layer_index >= manifest.layer_count {
-            bail!(
-                "package layer index {} exceeds layer_count {}",
-                layer.layer_index,
-                manifest.layer_count
-            );
-        }
-        validate_artifact_manifest(
-            &format!("layer {}", layer.layer_index),
-            &PackageArtifact {
-                path: layer.path.clone(),
-                tensor_count: layer.tensor_count,
-                tensor_bytes: layer.tensor_bytes,
-                artifact_bytes: layer.artifact_bytes,
-                sha256: layer.sha256.clone(),
-            },
-        )?;
-    }
-    let duplicates = layer_counts
-        .iter()
-        .filter_map(|(layer, count)| (*count > 1).then_some(*layer))
-        .collect::<Vec<_>>();
-    if !duplicates.is_empty() {
-        bail!("package manifest contains duplicate layers: {duplicates:?}");
-    }
-    for layer_index in request.layer_start..request.layer_end {
-        if !layer_counts.contains_key(&layer_index) {
-            bail!("package is missing layer {layer_index}");
-        }
-    }
     Ok(())
 }
 
@@ -699,5 +750,85 @@ mod tests {
             skippy_ffi::ABI_VERSION_MINOR + 1
         ))
         .unwrap());
+    }
+
+    #[test]
+    fn inspect_layer_package_returns_manifest_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("layers")).unwrap();
+        fs::write(dir.path().join("metadata.gguf"), b"metadata").unwrap();
+        fs::write(dir.path().join("embeddings.gguf"), b"embeddings").unwrap();
+        fs::write(dir.path().join("output.gguf"), b"output").unwrap();
+        fs::write(dir.path().join("layers/00000.gguf"), b"layer0").unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "model_id": "model-a",
+            "source_model": {
+                "path": "/models/model-a.gguf",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "files": [
+                    {
+                        "path": "/models/model-a.gguf",
+                        "size_bytes": 123,
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                ]
+            },
+            "format": "layer-package",
+            "layer_count": 1,
+            "activation_width": 4096,
+            "shared": {
+                "metadata": {
+                    "path": "metadata.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 8,
+                    "sha256": sha256_bytes(b"metadata")
+                },
+                "embeddings": {
+                    "path": "embeddings.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 10,
+                    "sha256": sha256_bytes(b"embeddings")
+                },
+                "output": {
+                    "path": "output.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 6,
+                    "sha256": sha256_bytes(b"output")
+                }
+            },
+            "layers": [
+                {
+                    "layer_index": 0,
+                    "path": "layers/00000.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 6,
+                    "sha256": sha256_bytes(b"layer0")
+                }
+            ],
+            "skippy_abi_version": format!(
+                "{}.{}.{}",
+                skippy_ffi::ABI_VERSION_MAJOR,
+                skippy_ffi::ABI_VERSION_MINOR,
+                skippy_ffi::ABI_VERSION_PATCH
+            ),
+        });
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let info = inspect_layer_package(&dir.path().to_string_lossy()).unwrap();
+
+        assert_eq!(info.model_id, "model-a");
+        assert_eq!(info.layer_count, 1);
+        assert_eq!(info.activation_width, Some(4096));
+        assert_eq!(info.source_model_bytes, Some(123));
+        assert_eq!(info.manifest_sha256.len(), 64);
     }
 }

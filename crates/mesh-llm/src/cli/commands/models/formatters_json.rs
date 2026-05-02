@@ -225,6 +225,7 @@ impl ModelsFormatter for JsonFormatter {
             "reclaimed_bytes_human": format_installed_size(result.reclaimed_bytes),
             "removed_metadata_files": result.removed_metadata_files,
             "removed_usage_records": result.removed_usage_records,
+            "removed_derived_cache_files": result.removed_derived_cache_files,
         }))
     }
 }

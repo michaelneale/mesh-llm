@@ -131,6 +131,8 @@ pub(crate) struct StageStatusSnapshot {
 struct RunningStage {
     load: StageLoadRequest,
     server: EmbeddedServerHandle,
+    materialized: Option<super::materialization::MaterializedStageArtifact>,
+    _materialized_pin: Option<super::materialization::MaterializedStagePin>,
 }
 
 #[derive(Default)]
@@ -179,6 +181,8 @@ impl StageControlState {
         let bind_addr = materialize_stage_bind_addr(parse_bind_addr(&load.bind_addr)?)?;
         let mut effective_load = load;
         effective_load.bind_addr = bind_addr.to_string();
+        super::configure_materialized_stage_cache();
+        let materialized = super::materialize_stage_load(&effective_load)?;
         let config = stage_config(&effective_load)?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
@@ -206,6 +210,8 @@ impl StageControlState {
             RunningStage {
                 load: effective_load.clone(),
                 server,
+                materialized: materialized.as_ref().map(|(artifact, _)| artifact.clone()),
+                _materialized_pin: materialized.map(|(_, pin)| pin),
             },
         );
         let status = self
@@ -370,7 +376,10 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: empty_to_default(&load.cache_type_k, "f16"),
         cache_type_v: empty_to_default(&load.cache_type_v, "f16"),
-        filter_tensors_on_load: matches!(load.load_mode, LoadMode::RuntimeSlice),
+        filter_tensors_on_load: matches!(
+            load.load_mode,
+            LoadMode::RuntimeSlice | LoadMode::LayerPackage
+        ),
         selected_device: load.selected_device.clone(),
         load_mode: load.load_mode.clone(),
         bind_addr: load.bind_addr.clone(),
@@ -411,11 +420,24 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         backend: stage.load.backend.clone(),
         package_ref: Some(stage.load.package_ref.clone()),
         manifest_sha256: Some(stage.load.manifest_sha256.clone()),
-        source_model_path: stage.load.model_path.clone(),
-        source_model_sha256: None,
-        source_model_bytes: None,
-        materialized_path: None,
-        materialized_pinned: false,
+        source_model_path: stage
+            .materialized
+            .as_ref()
+            .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| stage.load.model_path.clone()),
+        source_model_sha256: stage
+            .materialized
+            .as_ref()
+            .map(|artifact| artifact.source_model_sha256.clone()),
+        source_model_bytes: stage
+            .materialized
+            .as_ref()
+            .and_then(|artifact| artifact.source_model_bytes),
+        materialized_path: stage
+            .materialized
+            .as_ref()
+            .map(|artifact| artifact.path.to_string_lossy().to_string()),
+        materialized_pinned: stage.materialized.is_some(),
         stage_id: stage.load.stage_id.clone(),
         stage_index: stage.load.stage_index,
         layer_start: stage.load.layer_start,

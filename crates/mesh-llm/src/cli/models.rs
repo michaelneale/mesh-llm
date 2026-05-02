@@ -39,6 +39,15 @@ pub enum ModelsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Remove stale derived skippy stage artifacts from the mesh cache.
+    Prune {
+        /// Remove files instead of printing a dry run note.
+        #[arg(long)]
+        yes: bool,
+        /// Emit JSON output.
+        #[arg(long)]
+        json: bool,
+    },
     // Delete variant defined with explicit clap args later in file (existing block).
     /// List built-in catalog models.
     #[command(hide = true)]

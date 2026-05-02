@@ -19,6 +19,7 @@ pub struct DeleteResult {
     pub reclaimed_bytes: u64,
     pub removed_metadata_files: usize,
     pub removed_usage_records: usize,
+    pub removed_derived_cache_files: usize,
 }
 
 pub async fn resolve_model_identifier(identifier: &str) -> Result<Vec<PathBuf>> {
@@ -230,6 +231,7 @@ pub async fn delete_model_by_identifier(identifier: &str) -> Result<DeleteResult
         reclaimed_bytes,
         removed_metadata_files,
         removed_usage_records,
+        removed_derived_cache_files: 0,
     })
 }
 

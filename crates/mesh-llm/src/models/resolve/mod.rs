@@ -197,6 +197,10 @@ pub async fn resolve_model_spec(input: &Path) -> Result<PathBuf> {
 pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> Result<PathBuf> {
     let raw = input.to_string_lossy();
 
+    if raw.starts_with("hf://") {
+        return Ok(input.to_path_buf());
+    }
+
     if input.exists() {
         record_resolved_model_usage(input, Some(raw.as_ref()));
         return Ok(input.to_path_buf());

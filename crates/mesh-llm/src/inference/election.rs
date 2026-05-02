@@ -1122,6 +1122,7 @@ struct StartSkippySplitParams<'a> {
     node: &'a mesh::Node,
     model: &'a Path,
     model_name: &'a str,
+    package_info: Option<skippy::StagePackageInfo>,
     model_peers: &'a [mesh::PeerInfo],
     worker_ids: &'a [iroh::EndpointId],
     ctx_size_override: Option<u32>,
@@ -1755,7 +1756,22 @@ pub async fn election_loop(
     // Initial settle
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-    let model_bytes = total_model_bytes(&model);
+    let package_source_info = skippy::is_layer_package_ref(&model.to_string_lossy())
+        .then(|| skippy::inspect_stage_package(&model.to_string_lossy()))
+        .transpose()
+        .map_err(|error| {
+            emit_warning(
+                format!("Failed to inspect skippy package: {error}"),
+                Some(format!("model={model_name} path={}", model.display())),
+            );
+            error
+        })
+        .ok()
+        .flatten();
+    let model_bytes = package_source_info
+        .as_ref()
+        .and_then(|info| info.source_model_bytes)
+        .unwrap_or_else(|| total_model_bytes(&model));
     let my_vram = node.vram_bytes();
     let local_launch_vram = effective_local_launch_vram(
         my_vram,
@@ -2081,6 +2097,7 @@ pub async fn election_loop(
                     node: &node,
                     model: &model,
                     model_name: &model_name,
+                    package_info: package_source_info.clone(),
                     model_peers: &model_peers,
                     worker_ids: &worker_ids,
                     ctx_size_override,
@@ -3171,6 +3188,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         node,
         model,
         model_name,
+        package_info,
         model_peers,
         worker_ids,
         ctx_size_override,
@@ -3178,33 +3196,44 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         slots,
     } = params;
 
-    let compact = match crate::models::gguf::scan_gguf_compact_meta(model) {
-        Some(meta) if meta.layer_count > 1 && meta.embedding_size > 0 => meta,
-        _ => {
+    let package_ref = model.to_string_lossy().to_string();
+    let package_info = match package_info {
+        Some(info) => info,
+        None if skippy::is_layer_package_ref(&package_ref) => {
+            match skippy::inspect_stage_package(&package_ref) {
+                Ok(info) => info,
+                Err(error) => {
+                    emit_error(
+                        format!("Failed to inspect skippy layer package: {error}"),
+                        Some(format!("model={model_name} package={package_ref}")),
+                    );
+                    return None;
+                }
+            }
+        }
+        None => {
             emit_error(
-                "Failed to read GGUF topology metadata for staged serving",
+                "Skippy staged serving requires a package-backed model source; direct --gguf paths only support local skippy serving for now",
                 Some(format!("model={model_name} path={}", model.display())),
             );
             return None;
         }
     };
-    let layer_count = compact.layer_count;
-    let activation_width = match i32::try_from(compact.embedding_size) {
+    let layer_count = package_info.layer_count;
+    let activation_width = match i32::try_from(package_info.activation_width) {
         Ok(width) if width > 0 => width,
         _ => {
             emit_error(
-                "Invalid GGUF embedding size for staged serving",
+                "Invalid package activation width for staged serving",
                 Some(format!(
-                    "model={model_name} embedding_size={}",
-                    compact.embedding_size
+                    "model={model_name} activation_width={}",
+                    package_info.activation_width
                 )),
             );
             return None;
         }
     };
-    let ctx_size = ctx_size_override
-        .or((compact.context_length > 0).then_some(compact.context_length))
-        .unwrap_or(4096);
+    let ctx_size = ctx_size_override.unwrap_or(4096);
     let mut participants = vec![(
         node.id(),
         effective_local_launch_vram(
@@ -3231,16 +3260,9 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
 
     let run_id = format!("mesh-stage-{}", now_unix_nanos());
     let topology_id = format!("topology-{run_id}");
-    let package_ref = format!("gguf://{}", model.display());
-    let manifest_sha256 = format!(
-        "direct-gguf:{}:{}",
-        total_model_bytes(model),
-        model
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(model_name)
-    );
-    let model_path = model.to_string_lossy().to_string();
+    let package_ref = package_info.package_ref.clone();
+    let manifest_sha256 = package_info.manifest_sha256.clone();
+    let model_path = package_ref.clone();
     let mut remote_stops = Vec::new();
     let mut ready_statuses: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
 
@@ -3279,7 +3301,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
             shutdown_generation: 1,
-            load_mode: skippy_protocol::LoadMode::RuntimeSlice,
+            load_mode: skippy_protocol::LoadMode::LayerPackage,
             upstream: None,
             downstream,
         };
@@ -3390,9 +3412,9 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         model_id: model_name.to_string(),
         package_ref: Some(package_ref.clone()),
         manifest_sha256: Some(manifest_sha256.clone()),
-        source_model_path: None,
-        source_model_sha256: None,
-        source_model_bytes: None,
+        source_model_path: Some(package_info.source_model_path.clone()),
+        source_model_sha256: Some(package_info.source_model_sha256.clone()),
+        source_model_bytes: package_info.source_model_bytes,
         materialized_path: None,
         materialized_pinned: false,
         model_path: Some(model_path),
@@ -3406,7 +3428,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         cache_type_v: "f16".to_string(),
         filter_tensors_on_load: true,
         selected_device: selected_device.clone(),
-        load_mode: skippy_protocol::LoadMode::RuntimeSlice,
+        load_mode: skippy_protocol::LoadMode::LayerPackage,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: Some(skippy_protocol::PeerConfig {
@@ -3468,6 +3490,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
             .collect(),
     })
     .await;
+    let stage0_model_status = stage0_handle.status();
     let stage0_status = skippy::StageStatusSnapshot {
         topology_id: topology_id.clone(),
         run_id: run_id.clone(),
@@ -3484,11 +3507,11 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         selected_device,
         package_ref: Some(package_ref.clone()),
         manifest_sha256: Some(manifest_sha256.clone()),
-        source_model_path: Some(model.display().to_string()),
-        source_model_sha256: None,
-        source_model_bytes: Some(total_model_bytes(model)),
-        materialized_path: None,
-        materialized_pinned: false,
+        source_model_path: Some(package_info.source_model_path.clone()),
+        source_model_sha256: Some(package_info.source_model_sha256.clone()),
+        source_model_bytes: package_info.source_model_bytes,
+        materialized_path: stage0_model_status.materialized_path,
+        materialized_pinned: stage0_model_status.materialized_pinned,
         ctx_size,
         error: None,
         shutdown_generation: 1,
