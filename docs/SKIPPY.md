@@ -250,14 +250,21 @@ Current branch status:
 
 - `openai-frontend` defines typed hook policy extension points for
   pre-chat/media fallback, post-prefill uncertainty, and mid-generation drift;
-- mesh wraps skippy's OpenAI backend with an in-process hook policy;
+- mesh passes an in-process hook policy into skippy's embedded OpenAI backend;
 - skippy chat requests with `mesh_hooks: true` now call the existing
   `inference::virtual_llm` media fallback before skippy applies the chat
   template;
 - peer consultations still force `mesh_hooks: false` to preserve the recursion
   guard;
-- post-prefill uncertainty and mid-generation drift still need skippy runtime
-  signal plumbing before they can be called in-process.
+- skippy's llama.cpp ABI patch queue now exposes `skippy-signals.h` for
+  first-token and generation-window telemetry;
+- skippy chat generation now calls post-prefill uncertainty and mid-generation
+  drift hooks in-process using runtime token/window signals;
+- injected hook text is materialized into the active skippy session as hidden
+  continuation context, while the typed request is updated so future hook
+  consultations see the same context;
+- remaining cleanup is fixture coverage and operator-facing debug controls for
+  forcing hook paths during testing.
 
 ## Lifecycle and Device Parity
 
@@ -658,17 +665,18 @@ Move the patched `llama-server` hook behavior into the mesh/skippy path.
 
 Implementation checkpoints:
 
-- route `model=auto` skippy requests through the same hook policy as legacy
+- [x] route `model=auto` skippy requests through the same hook policy as legacy
   requests;
-- call the media fallback hook before tokenization when the selected model
+- [x] call the media fallback hook before tokenization when the selected model
   cannot consume attached media;
-- call post-prefill uncertainty and mid-generation drift hooks using runtime
+- [x] call post-prefill uncertainty and mid-generation drift hooks using runtime
   signals supplied by skippy;
-- preserve `inference::virtual_llm` behavior and peer consultation semantics;
-- keep `/mesh/hook` available only as a legacy compatibility route while the
+- [x] preserve `inference::virtual_llm` behavior and peer consultation
+  semantics;
+- [x] keep `/mesh/hook` available only as a legacy compatibility route while the
   llama backend exists;
-- add fixture tests for `mesh_hooks` injection, recursion guard, media
-  fallback, uncertainty hint, and drift hint behavior.
+- [ ] add fixture tests for `mesh_hooks` injection, recursion guard, media
+  fallback, uncertainty hint, drift hint behavior, and debug forcing controls.
 
 ### 11. Remove Old Serving Paths
 

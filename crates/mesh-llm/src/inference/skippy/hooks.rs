@@ -3,12 +3,17 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openai_frontend::{
     chat_mesh_hooks_enabled, first_chat_media, inject_text_into_chat_messages,
-    ChatCompletionRequest, ChatHookAction, ChatHookOutcome, ChatMediaKind, OpenAiHookPolicy,
-    OpenAiResult,
+    ChatCompletionRequest, ChatHookAction, ChatHookOutcome, ChatMediaKind, GenerationHookSignals,
+    OpenAiHookPolicy, OpenAiResult, PrefillHookSignals,
 };
 use serde_json::Value;
 
 use crate::{inference::virtual_llm, mesh};
+
+const PREFILL_ENTROPY_THRESHOLD: f64 = 3.0;
+const PREFILL_MARGIN_THRESHOLD: f64 = 0.05;
+const MID_GENERATION_MIN_DECODED: i64 = 12;
+const MID_GENERATION_REPETITION_THRESHOLD: u32 = 3;
 
 #[derive(Clone)]
 pub(crate) struct MeshAutoHookPolicy {
@@ -44,9 +49,50 @@ impl OpenAiHookPolicy for MeshAutoHookPolicy {
             &media.user_text,
         )
         .await;
-        let outcome = virtual_hook_response_to_outcome(&response);
-        apply_chat_hook_outcome(request, &outcome);
-        Ok(outcome)
+        Ok(virtual_hook_response_to_outcome(&response))
+    }
+
+    async fn after_prefill(
+        &self,
+        request: &mut ChatCompletionRequest,
+        signals: PrefillHookSignals,
+    ) -> OpenAiResult<ChatHookOutcome> {
+        if !chat_mesh_hooks_enabled(request)
+            || signals.first_token_entropy <= PREFILL_ENTROPY_THRESHOLD
+            || signals.first_token_margin >= PREFILL_MARGIN_THRESHOLD
+        {
+            return Ok(ChatHookOutcome::none());
+        }
+
+        let messages = chat_messages_as_values(&request.messages);
+        let response = virtual_llm::handle_uncertain(
+            &self.node,
+            &request.model,
+            &messages,
+            signals.first_token_entropy,
+            signals.first_token_margin,
+        )
+        .await;
+        Ok(virtual_hook_response_to_outcome(&response))
+    }
+
+    async fn mid_generation(
+        &self,
+        request: &mut ChatCompletionRequest,
+        signals: GenerationHookSignals,
+    ) -> OpenAiResult<ChatHookOutcome> {
+        if !chat_mesh_hooks_enabled(request)
+            || signals.n_decoded < MID_GENERATION_MIN_DECODED
+            || !mid_generation_signals_should_fire(&signals)
+        {
+            return Ok(ChatHookOutcome::none());
+        }
+
+        let messages = chat_messages_as_values(&request.messages);
+        let response =
+            virtual_llm::handle_drift(&self.node, &request.model, &messages, signals.n_decoded)
+                .await;
+        Ok(virtual_hook_response_to_outcome(&response))
     }
 }
 
@@ -67,6 +113,19 @@ fn virtual_hook_response_to_outcome(response: &Value) -> ChatHookOutcome {
             .unwrap_or_else(ChatHookOutcome::none),
         _ => ChatHookOutcome::none(),
     }
+}
+
+fn chat_messages_as_values(messages: &[openai_frontend::ChatMessage]) -> Vec<Value> {
+    serde_json::to_value(messages)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+}
+
+fn mid_generation_signals_should_fire(signals: &GenerationHookSignals) -> bool {
+    let sustained_entropy = signals.window_tokens > 0
+        && signals.high_entropy_count.saturating_mul(4) >= signals.window_tokens.saturating_mul(3);
+    sustained_entropy || signals.repetition_count >= MID_GENERATION_REPETITION_THRESHOLD
 }
 
 fn apply_chat_hook_outcome(request: &mut ChatCompletionRequest, outcome: &ChatHookOutcome) {
@@ -138,5 +197,49 @@ mod tests {
         assert_eq!(media_trigger(ChatMediaKind::Image), "images_no_multimodal");
         assert_eq!(media_trigger(ChatMediaKind::Audio), "audio_no_support");
         assert_eq!(media_trigger(ChatMediaKind::Video), "video_no_support");
+    }
+
+    #[test]
+    fn mid_generation_signals_fire_on_sustained_entropy() {
+        assert!(mid_generation_signals_should_fire(&GenerationHookSignals {
+            n_decoded: 16,
+            window_tokens: 16,
+            mean_entropy: 4.2,
+            max_entropy: 5.1,
+            mean_margin: 0.02,
+            min_margin: 0.01,
+            high_entropy_count: 12,
+            repetition_count: 0,
+        }));
+    }
+
+    #[test]
+    fn mid_generation_signals_fire_on_repetition() {
+        assert!(mid_generation_signals_should_fire(&GenerationHookSignals {
+            n_decoded: 16,
+            window_tokens: 16,
+            mean_entropy: 0.4,
+            max_entropy: 0.8,
+            mean_margin: 0.6,
+            min_margin: 0.3,
+            high_entropy_count: 0,
+            repetition_count: 3,
+        }));
+    }
+
+    #[test]
+    fn mid_generation_signals_ignore_calm_window() {
+        assert!(!mid_generation_signals_should_fire(
+            &GenerationHookSignals {
+                n_decoded: 16,
+                window_tokens: 16,
+                mean_entropy: 0.4,
+                max_entropy: 0.8,
+                mean_margin: 0.6,
+                min_margin: 0.3,
+                high_entropy_count: 1,
+                repetition_count: 0,
+            }
+        ));
     }
 }

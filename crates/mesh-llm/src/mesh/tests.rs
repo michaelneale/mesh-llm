@@ -26,6 +26,7 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     let (inflight_change_tx, _) = watch::channel(0u64);
     let (tunnel_tx, _tunnel_rx) = tokio::sync::mpsc::channel(8);
     let (tunnel_http_tx, _tunnel_http_rx) = tokio::sync::mpsc::channel(8);
+    let (stage_transport_tx, _stage_transport_rx) = tokio::sync::mpsc::channel(8);
     let runtime_data_producer = crate::runtime_data::RuntimeDataCollector::new().producer(
         crate::runtime_data::RuntimeDataSource {
             scope: "routing",
@@ -74,6 +75,10 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         runtime_data_producer,
         tunnel_tx,
         tunnel_http_tx,
+        stage_transport_tx,
+        stage_control_tx: Arc::new(Mutex::new(None)),
+        stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
+        stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
         plugin_manager: Arc::new(Mutex::new(None)),
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(None)),
@@ -3254,6 +3259,7 @@ async fn make_test_node_with_owner(
     let (inflight_change_tx, _) = watch::channel(0u64);
     let (tunnel_tx, _tunnel_rx) = tokio::sync::mpsc::channel(8);
     let (tunnel_http_tx, _tunnel_http_rx) = tokio::sync::mpsc::channel(8);
+    let (stage_transport_tx, _stage_transport_rx) = tokio::sync::mpsc::channel(8);
     let revision = config_state.revision();
     let owner_attestation = sign_node_ownership(
         owner_keypair,
@@ -3318,6 +3324,10 @@ async fn make_test_node_with_owner(
         runtime_data_producer,
         tunnel_tx,
         tunnel_http_tx,
+        stage_transport_tx,
+        stage_control_tx: Arc::new(Mutex::new(None)),
+        stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
+        stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
         plugin_manager: Arc::new(Mutex::new(None)),
         display_name: Arc::new(Mutex::new(None)),
         owner_attestation: Arc::new(Mutex::new(Some(owner_attestation))),

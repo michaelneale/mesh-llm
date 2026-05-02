@@ -8,8 +8,9 @@ use std::{
 use anyhow::{bail, Context, Result};
 use skippy_protocol::{LoadMode, StageConfig, StageDevice};
 use skippy_runtime::{
-    parse_cache_type, ActivationFrame, RuntimeConfig, RuntimeKvPage, RuntimeKvPageDesc,
-    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, StageSessionCheckpoint,
+    parse_cache_type, ActivationFrame, GenerationSignalWindow, RuntimeConfig, RuntimeKvPage,
+    RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
+    StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::materialize_layer_package;
@@ -72,6 +73,18 @@ impl RuntimeState {
             .map(|(predicted_token, _)| predicted_token)?;
         self.add_session_tokens(session_id, 1);
         Ok(token)
+    }
+
+    pub fn last_token_signal(&mut self, session_id: &str) -> Result<TokenSignal> {
+        self.session(session_id)?.last_token_signal()
+    }
+
+    pub fn signal_window(
+        &mut self,
+        session_id: &str,
+        window_tokens: u32,
+    ) -> Result<GenerationSignalWindow> {
+        self.session(session_id)?.signal_window(window_tokens)
     }
 
     pub fn prefill_frame(

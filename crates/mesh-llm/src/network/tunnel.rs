@@ -12,8 +12,12 @@
 
 use crate::mesh::Node;
 use crate::network::rewrite::{self, PortRewriteMap};
+use crate::protocol::{
+    read_len_prefixed, ValidateControlFrame, NODE_PROTOCOL_GENERATION, STREAM_STAGE_TRANSPORT,
+};
 use anyhow::Result;
 use iroh::EndpointId;
+use prost::Message;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -70,6 +74,11 @@ impl Manager {
             iroh::endpoint::SendStream,
             iroh::endpoint::RecvStream,
         )>,
+        mut stage_transport_rx: tokio::sync::mpsc::Receiver<(
+            EndpointId,
+            iroh::endpoint::SendStream,
+            iroh::endpoint::RecvStream,
+        )>,
     ) -> Result<Self> {
         let port_rewrite_map = rewrite::new_rewrite_map();
         let mgr = Manager {
@@ -120,6 +129,21 @@ impl Manager {
                 tokio::spawn(async move {
                     if let Err(e) = handle_inbound_http_stream(node, send, recv, port).await {
                         tracing::warn!("Inbound HTTP tunnel stream error: {e}");
+                    }
+                });
+            }
+        });
+
+        let stage_node = mgr.node.clone();
+        tokio::spawn(async move {
+            while let Some((remote, send, recv)) = stage_transport_rx.recv().await {
+                let node = stage_node.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_inbound_stage_transport(node, remote, send, recv).await {
+                        tracing::warn!(
+                            "Inbound stage transport stream error from {}: {e}",
+                            remote.fmt_short()
+                        );
                     }
                 });
             }
@@ -332,6 +356,68 @@ async fn handle_inbound_http_stream(
     tcp_stream.set_nodelay(true)?;
     let _inflight = node.begin_inflight_request();
 
+    let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
+    relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
+}
+
+async fn handle_inbound_stage_transport(
+    node: Node,
+    remote: EndpointId,
+    quic_send: iroh::endpoint::SendStream,
+    mut quic_recv: iroh::endpoint::RecvStream,
+) -> Result<()> {
+    let buf = read_len_prefixed(&mut quic_recv).await?;
+    let open = crate::proto::node::StageTransportOpen::decode(buf.as_slice())
+        .map_err(|e| anyhow::anyhow!("StageTransportOpen decode error: {e}"))?;
+    open.validate_frame()
+        .map_err(|e| anyhow::anyhow!("StageTransportOpen validation error: {e}"))?;
+    if open.gen != NODE_PROTOCOL_GENERATION {
+        anyhow::bail!(
+            "stage transport generation mismatch on stream {STREAM_STAGE_TRANSPORT:#04x}"
+        );
+    }
+    if open.requester_id.as_slice() != remote.as_bytes() {
+        anyhow::bail!("stage transport requester_id does not match QUIC peer identity");
+    }
+
+    let statuses = node
+        .query_local_stage_status(crate::inference::skippy::StageStatusFilter {
+            topology_id: Some(open.topology_id.clone()),
+            run_id: Some(open.run_id.clone()),
+            stage_id: Some(open.stage_id.clone()),
+        })
+        .await?;
+    let status = statuses
+        .into_iter()
+        .find(|status| {
+            status.topology_id == open.topology_id
+                && status.run_id == open.run_id
+                && status.stage_id == open.stage_id
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "stage {} / {} / {} is not loaded locally",
+                open.topology_id,
+                open.run_id,
+                open.stage_id
+            )
+        })?;
+    if status.state != crate::inference::skippy::StageRuntimeState::Ready {
+        anyhow::bail!(
+            "stage {} / {} / {} is not ready: {:?}",
+            status.topology_id,
+            status.run_id,
+            status.stage_id,
+            status.state
+        );
+    }
+    let tcp_stream = TcpStream::connect(&status.bind_addr).await?;
+    tcp_stream.set_nodelay(true)?;
+    tracing::info!(
+        "Inbound stage transport stream {} → {}",
+        remote.fmt_short(),
+        status.bind_addr
+    );
     let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
     relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
 }

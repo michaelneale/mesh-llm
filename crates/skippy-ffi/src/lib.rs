@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 12;
+pub const ABI_VERSION_PATCH: u32 = 13;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -175,6 +175,29 @@ pub struct SamplingConfig {
     pub logit_bias: [LogitBias; 256],
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TokenSignal {
+    pub entropy: f32,
+    pub top_logprob: f32,
+    pub second_logprob: f32,
+    pub margin: f32,
+    pub top_token: i32,
+    pub second_token: i32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GenerationSignalWindow {
+    pub token_count: u32,
+    pub mean_entropy: f32,
+    pub max_entropy: f32,
+    pub mean_margin: f32,
+    pub min_margin: f32,
+    pub high_entropy_count: u32,
+    pub repetition_count: u32,
+}
+
 extern "C" {
     pub fn llama_log_set(log_callback: LlamaLogCallback, user_data: *mut c_void);
 
@@ -320,6 +343,19 @@ extern "C" {
         output_payload_capacity: usize,
         out_output_payload_bytes: *mut usize,
         out_predicted_token: *mut i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_last_token_signal(
+        session: *mut Session,
+        out_signal: *mut TokenSignal,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_signal_window(
+        session: *mut Session,
+        window_tokens: u32,
+        out_window: *mut GenerationSignalWindow,
         out_error: *mut *mut Error,
     ) -> Status;
 

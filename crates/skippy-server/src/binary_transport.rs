@@ -250,6 +250,7 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
                 downstream_connect_timeout_secs,
                 downstream_wire_condition,
                 telemetry: openai_telemetry,
+                hook_policy: None,
             })
             .await
             {
@@ -276,6 +277,9 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
             }
             Err(error) => return Err(error).context("accept binary stage connection"),
         };
+        upstream
+            .set_nonblocking(false)
+            .context("set binary stage connection blocking")?;
         upstream.set_nodelay(true).ok();
         let peer_addr = upstream.peer_addr().ok();
         let config = config.clone();

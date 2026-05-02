@@ -23,10 +23,12 @@ use axum::{
 };
 use futures_util::{stream, StreamExt};
 use openai_frontend::{
-    message_content_to_text, normalize_reasoning_template_options, ChatCompletionChunk,
-    ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream, ChatMessage,
+    chat_mesh_hooks_enabled, inject_text_into_chat_messages, message_content_to_text,
+    normalize_reasoning_template_options, ChatCompletionChunk, ChatCompletionRequest,
+    ChatCompletionResponse, ChatCompletionStream, ChatHookAction, ChatHookOutcome, ChatMessage,
     CompletionChunk, CompletionRequest, CompletionResponse, CompletionStream, FinishReason,
-    ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiRequestContext, OpenAiResult, Usage,
+    GenerationHookSignals, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiHookPolicy,
+    OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -38,8 +40,9 @@ use skippy_protocol::binary::{
 };
 use skippy_protocol::{StageConfig, StageTopology};
 use skippy_runtime::{
-    ChatTemplateMessage, ChatTemplateOptions, LogitBias as RuntimeLogitBias, ModelInfo,
-    RuntimeConfig, RuntimeLoadMode, SamplingConfig, StageModel, StageSession, MAX_LOGIT_BIAS,
+    ChatTemplateMessage, ChatTemplateOptions, GenerationSignalWindow,
+    LogitBias as RuntimeLogitBias, ModelInfo, RuntimeConfig, RuntimeLoadMode, SamplingConfig,
+    StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
 use tokio::{
     net::TcpListener,
@@ -126,6 +129,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         speculative_window: 0,
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+        hook_policy: None,
     });
     let app: Router = instrumented_openai_router(backend, telemetry.clone());
 
@@ -162,6 +166,7 @@ pub struct EmbeddedOpenAiArgs {
     pub downstream_connect_timeout_secs: u64,
     pub downstream_wire_condition: WireCondition,
     pub telemetry: Telemetry,
+    pub hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
 }
 
 pub async fn serve_embedded_openai(args: EmbeddedOpenAiArgs) -> Result<()> {
@@ -276,6 +281,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         speculative_window: args.speculative_window,
         adaptive_speculative_window: args.adaptive_speculative_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
+        hook_policy: args.hook_policy,
     });
 
     Ok(EmbeddedOpenAiBackend {
@@ -298,6 +304,7 @@ struct StageOpenAiBackend {
     speculative_window: usize,
     adaptive_speculative_window: bool,
     generation_limit: Arc<Semaphore>,
+    hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
 }
 
 fn instrumented_openai_router(backend: Arc<dyn OpenAiBackend>, telemetry: Telemetry) -> Router {
@@ -947,10 +954,11 @@ impl OpenAiBackend for StageOpenAiBackend {
 
     async fn chat_completion(
         &self,
-        request: ChatCompletionRequest,
+        mut request: ChatCompletionRequest,
     ) -> OpenAiResult<ChatCompletionResponse> {
         let ids = OpenAiGenerationIds::new();
         let request_timer = PhaseTimer::start();
+        self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
         let sampling = chat_sampling_config(&request)?;
         let template_options = chat_template_options(&request)?;
@@ -976,6 +984,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 max_tokens,
                 request.stop.clone(),
                 sampling,
+                Some(request.clone()),
                 ids.clone(),
             )
             .await?;
@@ -1024,10 +1033,11 @@ impl OpenAiBackend for StageOpenAiBackend {
 
     async fn chat_completion_stream(
         &self,
-        request: ChatCompletionRequest,
+        mut request: ChatCompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<ChatCompletionStream> {
         let ids = OpenAiGenerationIds::new();
+        self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
         let sampling = chat_sampling_config(&request)?;
         let include_usage = request.include_usage();
@@ -1048,7 +1058,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let max_tokens = request
             .effective_max_tokens()
             .unwrap_or(self.default_max_tokens);
-        let model = request.model;
+        let model = request.model.clone();
         let stream = self
             .run_generation_stream(
                 prompt,
@@ -1056,6 +1066,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 request.stop.clone(),
                 sampling,
                 include_usage,
+                Some(request.clone()),
                 context,
                 ids,
             )
@@ -1086,6 +1097,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 max_tokens,
                 request.stop.clone(),
                 sampling,
+                None,
                 ids.clone(),
             )
             .await?;
@@ -1142,7 +1154,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let sampling = completion_sampling_config(&request)?;
         let include_usage = request.include_usage();
         let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
-        let model = request.model;
+        let model = request.model.clone();
         let prompt_timer = PhaseTimer::start();
         let prompt = request.prompt.text_lossy();
         let mut prompt_attrs = self.openai_attrs(&ids);
@@ -1159,6 +1171,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 request.stop.clone(),
                 sampling,
                 include_usage,
+                None,
                 context,
                 ids,
             )
@@ -1243,12 +1256,28 @@ impl StageOpenAiBackend {
         ensure_requested_model(&self.model_id, requested)
     }
 
+    async fn apply_before_chat_hooks(
+        &self,
+        request: &mut ChatCompletionRequest,
+    ) -> OpenAiResult<()> {
+        let Some(hooks) = self.hook_policy.as_ref() else {
+            return Ok(());
+        };
+        if !chat_mesh_hooks_enabled(request) {
+            return Ok(());
+        }
+        let outcome = hooks.before_chat_completion(request).await?;
+        apply_chat_hook_outcome(request, &outcome);
+        Ok(())
+    }
+
     async fn run_generation(
         &self,
         prompt: String,
         max_tokens: u32,
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
+        hook_request: Option<ChatCompletionRequest>,
         ids: OpenAiGenerationIds,
     ) -> OpenAiResult<GeneratedText> {
         let admit_timer = PhaseTimer::start();
@@ -1265,6 +1294,7 @@ impl StageOpenAiBackend {
         );
         self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
         let backend = self.clone();
+        let hook_runtime = Some(tokio::runtime::Handle::current());
         task::spawn_blocking(move || {
             let _permit = permit;
             backend.generate_text(
@@ -1272,6 +1302,8 @@ impl StageOpenAiBackend {
                 max_tokens,
                 stop.as_ref(),
                 sampling,
+                hook_request,
+                hook_runtime,
                 None,
                 ids,
                 |_| Ok(()),
@@ -1288,6 +1320,7 @@ impl StageOpenAiBackend {
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
         include_usage: bool,
+        hook_request: Option<ChatCompletionRequest>,
         context: OpenAiRequestContext,
         ids: OpenAiGenerationIds,
     ) -> OpenAiResult<GenerationStream> {
@@ -1306,6 +1339,7 @@ impl StageOpenAiBackend {
         self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
         let backend = self.clone();
         let (tx, rx) = mpsc::channel(16);
+        let hook_runtime = Some(tokio::runtime::Handle::current());
         task::spawn_blocking(move || {
             let _permit = permit;
             let result = backend.generate_text(
@@ -1313,6 +1347,8 @@ impl StageOpenAiBackend {
                 max_tokens,
                 stop.as_ref(),
                 sampling,
+                hook_request,
+                hook_runtime,
                 Some(&context.cancellation_token()),
                 ids,
                 |chunk| {
@@ -1385,6 +1421,8 @@ impl StageOpenAiBackend {
         max_tokens: u32,
         stop: Option<&openai_frontend::StopSequence>,
         sampling: SamplingConfig,
+        hook_request: Option<ChatCompletionRequest>,
+        hook_runtime: Option<tokio::runtime::Handle>,
         cancellation: Option<&openai_frontend::CancellationToken>,
         ids: OpenAiGenerationIds,
         on_text_chunk: impl FnMut(&str) -> OpenAiResult<()>,
@@ -1418,6 +1456,8 @@ impl StageOpenAiBackend {
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
+                    hook_request: hook_request.clone(),
+                    hook_runtime: hook_runtime.clone(),
                     cancellation,
                     ids: &ids,
                 },
@@ -1463,6 +1503,8 @@ impl StageOpenAiBackend {
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
+                    hook_request,
+                    hook_runtime,
                     cancellation,
                     ids: &ids,
                 },
@@ -1501,14 +1543,110 @@ impl StageOpenAiBackend {
     }
 
     fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
+        self.tokenize_with_options(prompt, true)
+    }
+
+    fn tokenize_continuation(&self, text: &str) -> OpenAiResult<Vec<i32>> {
+        self.tokenize_with_options(text, false)
+    }
+
+    fn tokenize_with_options(&self, text: &str, add_special: bool) -> OpenAiResult<Vec<i32>> {
         let runtime = self
             .runtime
             .lock()
             .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
         runtime
             .model
-            .tokenize(prompt, true)
+            .tokenize(text, add_special)
             .map_err(openai_backend_error)
+    }
+
+    fn inject_hook_text_into_session(
+        &self,
+        session_id: &str,
+        text: &str,
+    ) -> OpenAiResult<Option<i32>> {
+        let token_ids = self.tokenize_continuation(text)?;
+        if token_ids.is_empty() {
+            return Ok(None);
+        }
+        if token_ids.len() > 1 {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            runtime
+                .prefill(session_id, &token_ids[..token_ids.len() - 1])
+                .map_err(openai_backend_error)?;
+        }
+        Ok(token_ids.last().copied())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn maybe_run_generation_hooks(
+        &self,
+        session_id: &str,
+        hook_request: &mut Option<ChatCompletionRequest>,
+        hook_runtime: Option<&tokio::runtime::Handle>,
+        decoded_tokens: usize,
+        post_prefill_hook_checked: &mut bool,
+        last_mid_generation_hook_at: &mut Option<usize>,
+        token_signal: Option<TokenSignal>,
+        signal_window: Option<GenerationSignalWindow>,
+    ) -> OpenAiResult<Option<i32>> {
+        let Some(hooks) = self.hook_policy.as_ref() else {
+            return Ok(None);
+        };
+        let Some(handle) = hook_runtime else {
+            return Ok(None);
+        };
+        let Some(request) = hook_request.as_mut() else {
+            return Ok(None);
+        };
+        if !chat_mesh_hooks_enabled(request) {
+            return Ok(None);
+        }
+
+        if !*post_prefill_hook_checked {
+            *post_prefill_hook_checked = true;
+            if let Some(signal) = token_signal {
+                let signals = PrefillHookSignals {
+                    first_token_entropy: f64::from(signal.entropy),
+                    first_token_margin: f64::from(signal.margin),
+                };
+                let outcome = handle.block_on(hooks.after_prefill(request, signals))?;
+                apply_chat_hook_outcome(request, &outcome);
+                if let Some(text) = hook_injected_text(&outcome) {
+                    return self.inject_hook_text_into_session(session_id, &text);
+                }
+            }
+        }
+
+        let Some(window) = signal_window else {
+            return Ok(None);
+        };
+        if !mid_generation_window_should_fire(decoded_tokens, last_mid_generation_hook_at, &window)
+        {
+            return Ok(None);
+        }
+
+        let signals = GenerationHookSignals {
+            n_decoded: i64::try_from(decoded_tokens).unwrap_or(i64::MAX),
+            window_tokens: window.token_count,
+            mean_entropy: f64::from(window.mean_entropy),
+            max_entropy: f64::from(window.max_entropy),
+            mean_margin: f64::from(window.mean_margin),
+            min_margin: f64::from(window.min_margin),
+            high_entropy_count: window.high_entropy_count,
+            repetition_count: window.repetition_count,
+        };
+        let outcome = handle.block_on(hooks.mid_generation(request, signals))?;
+        *last_mid_generation_hook_at = Some(decoded_tokens);
+        apply_chat_hook_outcome(request, &outcome);
+        if let Some(text) = hook_injected_text(&outcome) {
+            return self.inject_hook_text_into_session(session_id, &text);
+        }
+        Ok(None)
     }
 
     fn generate_local_tokens(
@@ -1576,16 +1714,23 @@ impl StageOpenAiBackend {
                 .prompt_token_ids
                 .last()
                 .expect("checked non-empty prompt");
-            for decode_step in 0..request.max_tokens {
+            let mut hook_request = request.hook_request;
+            let hook_runtime = request.hook_runtime;
+            let mut post_prefill_hook_checked = false;
+            let mut last_mid_generation_hook_at = None;
+            while decoded_tokens < request.max_tokens as usize {
                 if request
                     .cancellation
                     .is_some_and(openai_frontend::CancellationToken::is_cancelled)
                 {
                     break;
                 }
+                let decode_step = decoded_tokens;
                 let token_timer = PhaseTimer::start();
                 let token_runtime_lock_wait_ms;
                 let token_runtime_lock_hold_ms;
+                let token_signal;
+                let signal_window;
                 current = {
                     let lock_timer = PhaseTimer::start();
                     let mut runtime = self
@@ -1606,6 +1751,8 @@ impl StageOpenAiBackend {
                             request.sampling.enabled.then_some(request.sampling),
                         )
                         .map_err(openai_backend_error)?;
+                    token_signal = runtime.last_token_signal(&session_id).ok();
+                    signal_window = runtime.signal_window(&session_id, 16).ok();
                     runtime_sessions_after = Some(runtime.session_stats());
                     token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
                     runtime_lock_hold_ms += token_runtime_lock_hold_ms;
@@ -1613,12 +1760,27 @@ impl StageOpenAiBackend {
                         runtime_lock_hold_max_ms.max(token_runtime_lock_hold_ms);
                     predicted
                 };
+                if let Some(injected_current) = self.maybe_run_generation_hooks(
+                    &session_id,
+                    &mut hook_request,
+                    hook_runtime.as_ref(),
+                    decoded_tokens,
+                    &mut post_prefill_hook_checked,
+                    &mut last_mid_generation_hook_at,
+                    token_signal,
+                    signal_window,
+                )? {
+                    current = injected_current;
+                    continue;
+                }
                 decoded_tokens += 1;
                 let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
-                    json!(decode_token_phase(decode_step)),
+                    json!(decode_token_phase(
+                        u32::try_from(decode_step).unwrap_or(u32::MAX)
+                    )),
                 );
                 token_attrs.insert(
                     "llama_stage.stage0_compute_ms".to_string(),
@@ -1884,6 +2046,8 @@ impl StageOpenAiBackend {
                     prompt_token_ids: request.prompt_token_ids,
                     max_tokens: request.max_tokens,
                     sampling: request.sampling,
+                    hook_request: request.hook_request,
+                    hook_runtime: request.hook_runtime,
                     cancellation: request.cancellation,
                     ids: request.ids,
                 },
@@ -2903,6 +3067,50 @@ fn ensure_requested_model(advertised_model_id: &str, requested: &str) -> OpenAiR
     }
 }
 
+fn apply_chat_hook_outcome(request: &mut ChatCompletionRequest, outcome: &ChatHookOutcome) {
+    for action in &outcome.actions {
+        match action {
+            ChatHookAction::InjectText { text } => {
+                inject_text_into_chat_messages(&mut request.messages, text.clone());
+            }
+            ChatHookAction::None => {}
+        }
+    }
+}
+
+fn hook_injected_text(outcome: &ChatHookOutcome) -> Option<String> {
+    let text = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ChatHookAction::InjectText { text } if !text.is_empty() => Some(text.as_str()),
+            ChatHookAction::InjectText { .. } | ChatHookAction::None => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
+}
+
+fn mid_generation_window_should_fire(
+    decoded_tokens: usize,
+    last_hook_at: &Option<usize>,
+    window: &GenerationSignalWindow,
+) -> bool {
+    const MIN_DECODED_TOKENS: usize = 12;
+    const COOLDOWN_TOKENS: usize = 32;
+    const REPETITION_TRIGGER_COUNT: u32 = 3;
+
+    if decoded_tokens < MIN_DECODED_TOKENS || window.token_count == 0 {
+        return false;
+    }
+    if last_hook_at.is_some_and(|last| decoded_tokens.saturating_sub(last) < COOLDOWN_TOKENS) {
+        return false;
+    }
+    let sustained_entropy =
+        window.high_entropy_count.saturating_mul(4) >= window.token_count.saturating_mul(3);
+    sustained_entropy || window.repetition_count >= REPETITION_TRIGGER_COUNT
+}
+
 fn attrs_insert_prefill_chunk_policy(
     attrs: &mut BTreeMap<String, Value>,
     policy: &PrefillChunkPolicy,
@@ -2947,6 +3155,8 @@ struct LocalGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
+    hook_request: Option<ChatCompletionRequest>,
+    hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
     ids: &'a OpenAiGenerationIds,
 }
@@ -2976,6 +3186,8 @@ struct EmbeddedStageZeroGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
+    hook_request: Option<ChatCompletionRequest>,
+    hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
     ids: &'a OpenAiGenerationIds,
 }
@@ -4162,6 +4374,58 @@ mod tests {
         assert_eq!(valid_utf8_prefix_len("hello".as_bytes()), 5);
         assert_eq!(valid_utf8_prefix_len(&[b'h', b'i', 0xE2, 0x82]), 2);
         assert_eq!(valid_utf8_prefix_len(&[0xF0, 0x9F, 0x98]), 0);
+    }
+
+    #[test]
+    fn hook_injected_text_concatenates_injection_actions() {
+        let outcome = ChatHookOutcome {
+            actions: vec![
+                ChatHookAction::InjectText {
+                    text: "[first]\n".to_string(),
+                },
+                ChatHookAction::None,
+                ChatHookAction::InjectText {
+                    text: "[second]\n".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            hook_injected_text(&outcome),
+            Some("[first]\n[second]\n".to_string())
+        );
+    }
+
+    #[test]
+    fn mid_generation_window_requires_minimum_tokens_and_cooldown() {
+        let window = GenerationSignalWindow {
+            token_count: 16,
+            mean_entropy: 4.5,
+            max_entropy: 5.0,
+            mean_margin: 0.02,
+            min_margin: 0.01,
+            high_entropy_count: 12,
+            repetition_count: 0,
+        };
+
+        assert!(!mid_generation_window_should_fire(11, &None, &window));
+        assert!(!mid_generation_window_should_fire(20, &Some(0), &window));
+        assert!(mid_generation_window_should_fire(33, &Some(0), &window));
+    }
+
+    #[test]
+    fn mid_generation_window_fires_on_repetition_even_with_low_entropy() {
+        let window = GenerationSignalWindow {
+            token_count: 16,
+            mean_entropy: 0.3,
+            max_entropy: 0.7,
+            mean_margin: 0.7,
+            min_margin: 0.4,
+            high_entropy_count: 0,
+            repetition_count: 3,
+        };
+
+        assert!(mid_generation_window_should_fire(16, &None, &window));
     }
 
     #[test]

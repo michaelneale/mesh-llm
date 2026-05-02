@@ -1,7 +1,8 @@
 //! Mesh membership via iroh QUIC connections.
 //!
 //! Control traffic uses one QUIC connection per peer. Bi-streams are multiplexed by first byte:
-//! 0x01 = gossip, 0x02 = tunnel (RPC), 0x03 = tunnel map, 0x04 = tunnel (HTTP).
+//! 0x01 = gossip, 0x02 = tunnel (RPC), 0x03 = tunnel map, 0x04 = tunnel (HTTP),
+//! 0x0d = stage control, 0x0e = stage activation transport.
 
 pub use mesh_client::mesh::{
     infer_available_model_descriptors, infer_local_served_model_descriptor,
@@ -1029,6 +1030,20 @@ pub struct Node {
     tunnel_tx: tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
     tunnel_http_tx:
         tokio::sync::mpsc::Sender<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    stage_transport_tx: tokio::sync::mpsc::Sender<(
+        EndpointId,
+        iroh::endpoint::SendStream,
+        iroh::endpoint::RecvStream,
+    )>,
+    stage_control_tx: Arc<
+        Mutex<
+            Option<
+                tokio::sync::mpsc::UnboundedSender<crate::inference::skippy::StageControlCommand>,
+            >,
+        >,
+    >,
+    stage_transport_bridges: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    stage_topologies: Arc<Mutex<StageTopologyState>>,
     plugin_manager: Arc<Mutex<Option<crate::plugin::PluginManager>>>,
     display_name: Arc<Mutex<Option<String>>>,
     owner_attestation: Arc<Mutex<Option<SignedNodeOwnership>>>,
@@ -1253,6 +1268,63 @@ pub(crate) fn resolve_peer_leaving(
 pub struct TunnelChannels {
     pub rpc: tokio::sync::mpsc::Receiver<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
     pub http: tokio::sync::mpsc::Receiver<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)>,
+    pub stage: tokio::sync::mpsc::Receiver<(
+        EndpointId,
+        iroh::endpoint::SendStream,
+        iroh::endpoint::RecvStream,
+    )>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StageTopologyInstance {
+    pub topology_id: String,
+    pub run_id: String,
+    pub model_id: String,
+    pub package_ref: String,
+    pub manifest_sha256: String,
+    pub stages: Vec<StageAssignment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StageAssignment {
+    pub stage_id: String,
+    pub stage_index: u32,
+    pub node_id: EndpointId,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub endpoint: StageEndpoint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StageEndpoint {
+    pub bind_addr: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StageRuntimeStatus {
+    pub topology_id: String,
+    pub run_id: String,
+    pub model_id: String,
+    pub backend: String,
+    pub stage_id: String,
+    pub stage_index: u32,
+    pub node_id: Option<EndpointId>,
+    pub layer_start: u32,
+    pub layer_end: u32,
+    pub state: crate::inference::skippy::StageRuntimeState,
+    pub bind_addr: String,
+    pub activation_width: u32,
+    pub wire_dtype: crate::inference::skippy::StageWireDType,
+    pub selected_device: Option<skippy_protocol::StageDevice>,
+    pub ctx_size: u32,
+    pub error: Option<String>,
+    pub shutdown_generation: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct StageTopologyState {
+    topologies: HashMap<String, StageTopologyInstance>,
+    statuses: HashMap<String, StageRuntimeStatus>,
 }
 
 pub struct InflightRequestGuard {
@@ -1322,6 +1394,235 @@ impl Node {
 
     pub fn inflight_change_rx(&self) -> watch::Receiver<u64> {
         self.inflight_change_tx.subscribe()
+    }
+
+    pub(crate) async fn set_stage_control_sender(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<crate::inference::skippy::StageControlCommand>,
+    ) {
+        *self.stage_control_tx.lock().await = Some(tx);
+    }
+
+    pub async fn record_stage_topology(&self, topology: StageTopologyInstance) {
+        self.stage_topologies.lock().await.topologies.insert(
+            stage_topology_key(&topology.topology_id, &topology.run_id),
+            topology,
+        );
+    }
+
+    pub async fn stage_topologies(&self) -> Vec<StageTopologyInstance> {
+        self.stage_topologies
+            .lock()
+            .await
+            .topologies
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub async fn stage_runtime_statuses(&self) -> Vec<StageRuntimeStatus> {
+        self.stage_topologies
+            .lock()
+            .await
+            .statuses
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn record_stage_status(
+        &self,
+        node_id: Option<EndpointId>,
+        status: crate::inference::skippy::StageStatusSnapshot,
+    ) {
+        let runtime_status = stage_runtime_status_from_snapshot(node_id, status);
+        let mut stage_topologies = self.stage_topologies.lock().await;
+        if !runtime_status.bind_addr.is_empty() && !runtime_status.bind_addr.ends_with(":0") {
+            let topology_key =
+                stage_topology_key(&runtime_status.topology_id, &runtime_status.run_id);
+            if let Some(topology) = stage_topologies.topologies.get_mut(&topology_key) {
+                if let Some(stage) = topology
+                    .stages
+                    .iter_mut()
+                    .find(|stage| stage.stage_id == runtime_status.stage_id)
+                {
+                    stage.endpoint.bind_addr = runtime_status.bind_addr.clone();
+                }
+            }
+        }
+        stage_topologies.statuses.insert(
+            stage_runtime_status_key(
+                &runtime_status.topology_id,
+                &runtime_status.run_id,
+                &runtime_status.stage_id,
+            ),
+            runtime_status,
+        );
+    }
+
+    pub(crate) async fn query_local_stage_status(
+        &self,
+        filter: crate::inference::skippy::StageStatusFilter,
+    ) -> Result<Vec<crate::inference::skippy::StageStatusSnapshot>> {
+        let control_tx = self.stage_control_tx.lock().await.clone();
+        let Some(tx) = control_tx else {
+            anyhow::bail!("stage control is not available");
+        };
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send(crate::inference::skippy::StageControlCommand {
+            request: crate::inference::skippy::StageControlRequest::Status(filter),
+            resp: resp_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("stage control loop is unavailable"))?;
+        match resp_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("stage control response dropped"))??
+        {
+            crate::inference::skippy::StageControlResponse::Status(statuses) => Ok(statuses),
+            crate::inference::skippy::StageControlResponse::Ready(_) => {
+                anyhow::bail!("unexpected ready response for stage status request")
+            }
+        }
+    }
+
+    pub async fn send_stage_control(
+        &self,
+        peer_id: EndpointId,
+        request: crate::inference::skippy::StageControlRequest,
+    ) -> Result<crate::inference::skippy::StageControlResponse> {
+        use prost::Message as _;
+
+        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
+            self.record_stage_topology(stage_topology_from_load(peer_id, load))
+                .await;
+        }
+        let frame = stage_control_request_to_proto(self.endpoint.id(), request);
+        let conn = self.connection_to_peer(peer_id).await?;
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let (mut send, mut recv) = conn.open_bi().await?;
+            send.write_all(&[STREAM_STAGE_CONTROL]).await?;
+            write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
+            let buf = read_len_prefixed(&mut recv).await?;
+            let response = crate::proto::node::StageControlResponse::decode(buf.as_slice())
+                .map_err(|e| anyhow::anyhow!("StageControlResponse decode error: {e}"))?;
+            response
+                .validate_frame()
+                .map_err(|e| anyhow::anyhow!("StageControlResponse validation error: {e}"))?;
+            let _ = send.finish();
+            stage_control_response_from_proto(response)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for stage control response"))??;
+
+        match &response {
+            crate::inference::skippy::StageControlResponse::Ready(ready) => {
+                self.record_stage_status(Some(peer_id), ready.status.clone())
+                    .await;
+            }
+            crate::inference::skippy::StageControlResponse::Status(statuses) => {
+                for status in statuses {
+                    self.record_stage_status(Some(peer_id), status.clone())
+                        .await;
+                }
+            }
+        }
+        Ok(response)
+    }
+
+    pub async fn open_stage_transport_stream(
+        &self,
+        peer_id: EndpointId,
+        topology_id: impl Into<String>,
+        run_id: impl Into<String>,
+        stage_id: impl Into<String>,
+    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
+        use prost::Message as _;
+
+        let open = crate::proto::node::StageTransportOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: self.endpoint.id().as_bytes().to_vec(),
+            topology_id: topology_id.into(),
+            run_id: run_id.into(),
+            stage_id: stage_id.into(),
+        };
+        open.validate_frame()
+            .map_err(|e| anyhow::anyhow!("StageTransportOpen validation error: {e}"))?;
+        let conn = self.connection_to_peer(peer_id).await?;
+        let (mut send, recv) = conn.open_bi().await?;
+        send.write_all(&[STREAM_STAGE_TRANSPORT]).await?;
+        write_len_prefixed(&mut send, &open.encode_to_vec()).await?;
+        Ok((send, recv))
+    }
+
+    pub async fn ensure_stage_transport_bridge(
+        &self,
+        peer_id: EndpointId,
+        topology_id: impl Into<String>,
+        run_id: impl Into<String>,
+        stage_id: impl Into<String>,
+    ) -> Result<String> {
+        let topology_id = topology_id.into();
+        let run_id = run_id.into();
+        let stage_id = stage_id.into();
+        let key = stage_runtime_status_key(&topology_id, &run_id, &stage_id);
+        if self.stage_transport_bridges.lock().await.contains_key(&key) {
+            anyhow::bail!(
+                "stage transport bridge already exists for {topology_id}/{run_id}/{stage_id}"
+            );
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let bind_addr = listener.local_addr()?.to_string();
+        let node = self.clone();
+        let topology_for_task = topology_id.clone();
+        let run_for_task = run_id.clone();
+        let stage_for_task = stage_id.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((tcp_stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let node = node.clone();
+                let topology_id = topology_for_task.clone();
+                let run_id = run_for_task.clone();
+                let stage_id = stage_for_task.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = async {
+                        tcp_stream.set_nodelay(true)?;
+                        let (send, recv) = node
+                            .open_stage_transport_stream(peer_id, topology_id, run_id, stage_id)
+                            .await?;
+                        let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
+                        crate::network::tunnel::relay_bidirectional(tcp_read, tcp_write, send, recv)
+                            .await
+                    }
+                    .await
+                    {
+                        tracing::warn!(
+                            "stage transport bridge to {} ended: {err}",
+                            peer_id.fmt_short()
+                        );
+                    }
+                });
+            }
+        });
+        self.stage_transport_bridges
+            .lock()
+            .await
+            .insert(key, handle);
+        Ok(bind_addr)
+    }
+
+    pub(crate) async fn stop_stage_transport_bridge(
+        &self,
+        topology_id: &str,
+        run_id: &str,
+        stage_id: &str,
+    ) {
+        let key = stage_runtime_status_key(topology_id, run_id, stage_id);
+        if let Some(handle) = self.stage_transport_bridges.lock().await.remove(&key) {
+            handle.abort();
+        }
     }
 
     pub fn record_inference_attempt(
@@ -1503,6 +1804,7 @@ impl Node {
         let (inflight_change_tx, _inflight_change_rx) = watch::channel(0u64);
         let (tunnel_tx, tunnel_rx) = tokio::sync::mpsc::channel(256);
         let (tunnel_http_tx, tunnel_http_rx) = tokio::sync::mpsc::channel(256);
+        let (stage_transport_tx, stage_transport_rx) = tokio::sync::mpsc::channel(256);
 
         let hw = crate::system::hardware::survey();
         let mut vram = hw.vram_bytes;
@@ -1638,6 +1940,10 @@ impl Node {
             runtime_data_producer,
             tunnel_tx,
             tunnel_http_tx,
+            stage_transport_tx,
+            stage_control_tx: Arc::new(Mutex::new(None)),
+            stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
+            stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
             plugin_manager: Arc::new(Mutex::new(None)),
             display_name: Arc::new(Mutex::new(None)),
             owner_attestation: Arc::new(Mutex::new(owner_attestation)),
@@ -1672,6 +1978,7 @@ impl Node {
             TunnelChannels {
                 rpc: tunnel_rx,
                 http: tunnel_http_rx,
+                stage: stage_transport_rx,
             },
         ))
     }
@@ -1695,6 +2002,7 @@ impl Node {
         let (inflight_change_tx, _inflight_change_rx) = watch::channel(0u64);
         let (tunnel_tx, tunnel_rx) = tokio::sync::mpsc::channel(256);
         let (tunnel_http_tx, tunnel_http_rx) = tokio::sync::mpsc::channel(256);
+        let (stage_transport_tx, stage_transport_rx) = tokio::sync::mpsc::channel(256);
         let runtime_data_collector = crate::runtime_data::RuntimeDataCollector::new();
         let runtime_data_producer =
             runtime_data_collector.producer(crate::runtime_data::RuntimeDataSource {
@@ -1706,6 +2014,7 @@ impl Node {
         let _channels = TunnelChannels {
             rpc: tunnel_rx,
             http: tunnel_http_rx,
+            stage: stage_transport_rx,
         };
 
         Ok(Node {
@@ -1748,6 +2057,10 @@ impl Node {
             runtime_data_producer,
             tunnel_tx,
             tunnel_http_tx,
+            stage_transport_tx,
+            stage_control_tx: Arc::new(Mutex::new(None)),
+            stage_transport_bridges: Arc::new(Mutex::new(HashMap::new())),
+            stage_topologies: Arc::new(Mutex::new(StageTopologyState::default())),
             plugin_manager: Arc::new(Mutex::new(None)),
             display_name: Arc::new(Mutex::new(None)),
             owner_attestation: Arc::new(Mutex::new(None)),
@@ -2925,6 +3238,35 @@ impl Node {
         self.state.lock().await.peers.values().cloned().collect()
     }
 
+    async fn connection_to_peer(&self, peer_id: EndpointId) -> Result<Connection> {
+        let state = self.state.lock().await;
+        match state.connections.get(&peer_id).cloned() {
+            Some(conn) => Ok(conn),
+            None => {
+                let addr = state.peers.get(&peer_id).map(|p| p.addr.clone());
+                drop(state);
+                let Some(addr) = addr else {
+                    anyhow::bail!("No connection or address for {}", peer_id.fmt_short());
+                };
+                let conn = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    connect_mesh(&self.endpoint, addr),
+                )
+                .await
+                .map_err(|_| anyhow::anyhow!("Timeout connecting to {}", peer_id.fmt_short()))?
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to connect to {}: {e}", peer_id.fmt_short())
+                })?;
+                self.state
+                    .lock()
+                    .await
+                    .connections
+                    .insert(peer_id, conn.clone());
+                Ok(conn)
+            }
+        }
+    }
+
     /// Open an HTTP tunnel bi-stream to a peer (tagged STREAM_TUNNEL_HTTP).
     /// If no connection exists, tries to connect on-demand (for passive nodes
     /// that learned about hosts from routing table but aren't directly connected).
@@ -2932,38 +3274,7 @@ impl Node {
         &self,
         peer_id: EndpointId,
     ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
-        let conn = {
-            let state = self.state.lock().await;
-            match state.connections.get(&peer_id).cloned() {
-                Some(c) => c,
-                None => {
-                    // Try on-demand connect using peer's addr from peer info
-                    let addr = state.peers.get(&peer_id).map(|p| p.addr.clone());
-                    drop(state);
-                    if let Some(addr) = addr {
-                        let c = tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            connect_mesh(&self.endpoint, addr),
-                        )
-                        .await
-                        .map_err(|_| {
-                            anyhow::anyhow!("Timeout connecting to {}", peer_id.fmt_short())
-                        })?
-                        .map_err(|e| {
-                            anyhow::anyhow!("Failed to connect to {}: {e}", peer_id.fmt_short())
-                        })?;
-                        self.state
-                            .lock()
-                            .await
-                            .connections
-                            .insert(peer_id, c.clone());
-                        c
-                    } else {
-                        anyhow::bail!("No connection or address for {}", peer_id.fmt_short());
-                    }
-                }
-            }
-        };
+        let conn = self.connection_to_peer(peer_id).await?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let (mut send, recv) = conn.open_bi().await?;
             send.write_all(&[STREAM_TUNNEL_HTTP]).await?;
@@ -3561,11 +3872,120 @@ impl Node {
                         }
                     });
                 }
+                STREAM_STAGE_CONTROL => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_stage_control(remote, send, recv).await {
+                            tracing::warn!("stage control error from {}: {e}", remote.fmt_short());
+                        }
+                    });
+                }
+                STREAM_STAGE_TRANSPORT => {
+                    if self
+                        .stage_transport_tx
+                        .send((remote, send, recv))
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("Stage transport channel closed, dropping stream");
+                    }
+                }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
                 }
             }
         }
+    }
+
+    async fn handle_stage_control(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        use prost::Message as _;
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let frame = crate::proto::node::StageControlRequest::decode(buf.as_slice())
+            .map_err(|e| anyhow::anyhow!("StageControlRequest decode error: {e}"))?;
+        frame
+            .validate_frame()
+            .map_err(|e| anyhow::anyhow!("StageControlRequest validation error: {e}"))?;
+        if frame.requester_id.as_slice() != remote.as_bytes() {
+            anyhow::bail!("stage control requester_id does not match QUIC peer identity");
+        }
+
+        let mut request = stage_control_request_from_proto(frame)?;
+        self.prepare_stage_control_request(&mut request).await?;
+        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
+            self.record_stage_topology(stage_topology_from_load(self.endpoint.id(), load))
+                .await;
+        }
+        let control_tx = self.stage_control_tx.lock().await.clone();
+        let response = match control_tx {
+            Some(tx) => {
+                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                tx.send(crate::inference::skippy::StageControlCommand {
+                    request,
+                    resp: resp_tx,
+                })
+                .map_err(|_| anyhow::anyhow!("stage control loop is unavailable"))?;
+                resp_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("stage control response dropped"))??
+            }
+            None => stage_control_unavailable_response(request),
+        };
+        match &response {
+            crate::inference::skippy::StageControlResponse::Ready(ready) => {
+                self.record_stage_status(Some(self.endpoint.id()), ready.status.clone())
+                    .await;
+            }
+            crate::inference::skippy::StageControlResponse::Status(statuses) => {
+                for status in statuses {
+                    self.record_stage_status(Some(self.endpoint.id()), status.clone())
+                        .await;
+                }
+            }
+        }
+        let proto_response = stage_control_response_to_proto(response);
+        write_len_prefixed(&mut send, &proto_response.encode_to_vec()).await?;
+        let _ = send.finish();
+        Ok(())
+    }
+
+    async fn prepare_stage_control_request(
+        &self,
+        request: &mut crate::inference::skippy::StageControlRequest,
+    ) -> anyhow::Result<()> {
+        match request {
+            crate::inference::skippy::StageControlRequest::Load(load) => {
+                let Some(downstream) = load.downstream.as_mut() else {
+                    return Ok(());
+                };
+                let Some(downstream_node) = downstream.node_id else {
+                    return Ok(());
+                };
+                if downstream_node == self.endpoint.id() {
+                    return Ok(());
+                }
+                let bridge_addr = self
+                    .ensure_stage_transport_bridge(
+                        downstream_node,
+                        load.topology_id.clone(),
+                        load.run_id.clone(),
+                        downstream.stage_id.clone(),
+                    )
+                    .await?;
+                downstream.endpoint = bridge_addr;
+            }
+            crate::inference::skippy::StageControlRequest::Stop(stop) => {
+                self.stop_stage_transport_bridge(&stop.topology_id, &stop.run_id, &stop.stage_id)
+                    .await;
+            }
+            crate::inference::skippy::StageControlRequest::Status(_) => {}
+        }
+        Ok(())
     }
 
     // --- Config Subscribe ---
@@ -4197,6 +4617,529 @@ pub(crate) fn config_push_signature_payload(push: &crate::proto::node::ConfigPus
     let mut unsigned = push.clone();
     unsigned.signature.clear();
     unsigned.encode_to_vec()
+}
+
+fn stage_topology_key(topology_id: &str, run_id: &str) -> String {
+    format!("{topology_id}\n{run_id}")
+}
+
+fn stage_runtime_status_key(topology_id: &str, run_id: &str, stage_id: &str) -> String {
+    format!("{topology_id}\n{run_id}\n{stage_id}")
+}
+
+fn endpoint_id_from_bytes(bytes: Vec<u8>) -> anyhow::Result<EndpointId> {
+    let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid endpoint id length: expected 32, got {}",
+            bytes.len()
+        )
+    })?;
+    let public_key = iroh::PublicKey::from_bytes(&arr)
+        .map_err(|error| anyhow::anyhow!("invalid endpoint id bytes: {error}"))?;
+    Ok(EndpointId::from(public_key))
+}
+
+fn stage_runtime_status_from_snapshot(
+    node_id: Option<EndpointId>,
+    status: crate::inference::skippy::StageStatusSnapshot,
+) -> StageRuntimeStatus {
+    StageRuntimeStatus {
+        topology_id: status.topology_id,
+        run_id: status.run_id,
+        model_id: status.model_id,
+        backend: status.backend,
+        stage_id: status.stage_id,
+        stage_index: status.stage_index,
+        node_id,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state: status.state,
+        bind_addr: status.bind_addr,
+        activation_width: status.activation_width,
+        wire_dtype: status.wire_dtype,
+        selected_device: status.selected_device,
+        ctx_size: status.ctx_size,
+        error: status.error,
+        shutdown_generation: status.shutdown_generation,
+    }
+}
+
+fn stage_topology_from_load(
+    node_id: EndpointId,
+    load: &crate::inference::skippy::StageLoadRequest,
+) -> StageTopologyInstance {
+    StageTopologyInstance {
+        topology_id: load.topology_id.clone(),
+        run_id: load.run_id.clone(),
+        model_id: load.model_id.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+        stages: vec![StageAssignment {
+            stage_id: load.stage_id.clone(),
+            stage_index: load.stage_index,
+            node_id,
+            layer_start: load.layer_start,
+            layer_end: load.layer_end,
+            endpoint: StageEndpoint {
+                bind_addr: load.bind_addr.clone(),
+            },
+        }],
+    }
+}
+
+fn stage_control_request_to_proto(
+    requester_id: EndpointId,
+    request: crate::inference::skippy::StageControlRequest,
+) -> crate::proto::node::StageControlRequest {
+    use crate::proto::node::stage_control_request::Command;
+
+    let command = match request {
+        crate::inference::skippy::StageControlRequest::Load(load) => {
+            Command::LoadStage(stage_load_to_proto(load))
+        }
+        crate::inference::skippy::StageControlRequest::Stop(stop) => {
+            Command::StopStage(crate::proto::node::StopStage {
+                topology_id: stop.topology_id,
+                run_id: stop.run_id,
+                stage_id: stop.stage_id,
+                shutdown_generation: stop.shutdown_generation,
+            })
+        }
+        crate::inference::skippy::StageControlRequest::Status(status) => {
+            Command::GetStageStatus(crate::proto::node::GetStageStatus {
+                topology_id: status.topology_id,
+                run_id: status.run_id,
+                stage_id: status.stage_id,
+            })
+        }
+    };
+
+    crate::proto::node::StageControlRequest {
+        gen: NODE_PROTOCOL_GENERATION,
+        requester_id: requester_id.as_bytes().to_vec(),
+        command: Some(command),
+    }
+}
+
+fn stage_load_to_proto(
+    load: crate::inference::skippy::StageLoadRequest,
+) -> crate::proto::node::LoadStage {
+    crate::proto::node::LoadStage {
+        topology_id: load.topology_id,
+        run_id: load.run_id,
+        model_id: load.model_id,
+        backend: load.backend,
+        package_ref: load.package_ref,
+        manifest_sha256: load.manifest_sha256,
+        stage_id: load.stage_id,
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        model_path: load.model_path,
+        selected_device: load.selected_device.map(stage_device_to_proto),
+        bind_addr: load.bind_addr,
+        activation_width: load.activation_width.max(0) as u32,
+        wire_dtype: stage_wire_dtype_to_proto(load.wire_dtype) as i32,
+        ctx_size: load.ctx_size,
+        n_gpu_layers: load.n_gpu_layers,
+        cache_type_k: load.cache_type_k,
+        cache_type_v: load.cache_type_v,
+        shutdown_generation: load.shutdown_generation,
+        load_mode: match load.load_mode {
+            skippy_protocol::LoadMode::RuntimeSlice => {
+                crate::proto::node::StageLoadMode::RuntimeSlice as i32
+            }
+            skippy_protocol::LoadMode::LayerPackage => {
+                crate::proto::node::StageLoadMode::LayerPackage as i32
+            }
+            skippy_protocol::LoadMode::ArtifactSlice => {
+                crate::proto::node::StageLoadMode::ArtifactSlice as i32
+            }
+        },
+        upstream: load.upstream.map(stage_peer_to_proto),
+        downstream: load.downstream.map(stage_peer_to_proto),
+    }
+}
+
+fn stage_peer_to_proto(
+    peer: crate::inference::skippy::StagePeerDescriptor,
+) -> crate::proto::node::StagePeer {
+    crate::proto::node::StagePeer {
+        stage_id: peer.stage_id,
+        stage_index: peer.stage_index,
+        endpoint: peer.endpoint,
+        node_id: peer.node_id.map(|id| id.as_bytes().to_vec()),
+    }
+}
+
+fn stage_device_to_proto(device: skippy_protocol::StageDevice) -> crate::proto::node::StageDevice {
+    crate::proto::node::StageDevice {
+        backend_device: device.backend_device,
+        stable_id: device.stable_id,
+        index: device.index.map(|value| value as u64),
+        vram_bytes: device.vram_bytes,
+    }
+}
+
+fn stage_control_request_from_proto(
+    frame: crate::proto::node::StageControlRequest,
+) -> anyhow::Result<crate::inference::skippy::StageControlRequest> {
+    use crate::proto::node::stage_control_request::Command;
+
+    match frame
+        .command
+        .ok_or_else(|| anyhow::anyhow!("missing stage control command"))?
+    {
+        Command::LoadStage(load) => Ok(crate::inference::skippy::StageControlRequest::Load(
+            stage_load_from_proto(load)?,
+        )),
+        Command::StopStage(stop) => Ok(crate::inference::skippy::StageControlRequest::Stop(
+            crate::inference::skippy::StageStopRequest {
+                topology_id: stop.topology_id,
+                run_id: stop.run_id,
+                stage_id: stop.stage_id,
+                shutdown_generation: stop.shutdown_generation,
+            },
+        )),
+        Command::GetStageStatus(status) => {
+            Ok(crate::inference::skippy::StageControlRequest::Status(
+                crate::inference::skippy::StageStatusFilter {
+                    topology_id: status.topology_id,
+                    run_id: status.run_id,
+                    stage_id: status.stage_id,
+                },
+            ))
+        }
+    }
+}
+
+fn stage_load_from_proto(
+    load: crate::proto::node::LoadStage,
+) -> anyhow::Result<crate::inference::skippy::StageLoadRequest> {
+    Ok(crate::inference::skippy::StageLoadRequest {
+        topology_id: load.topology_id,
+        run_id: load.run_id,
+        model_id: load.model_id,
+        backend: load.backend,
+        package_ref: load.package_ref,
+        manifest_sha256: load.manifest_sha256,
+        stage_id: load.stage_id,
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        model_path: load.model_path,
+        selected_device: load
+            .selected_device
+            .map(stage_device_from_proto)
+            .transpose()?,
+        bind_addr: load.bind_addr,
+        activation_width: i32::try_from(load.activation_width)
+            .context("stage activation_width exceeds i32")?,
+        wire_dtype: stage_wire_dtype_from_proto(load.wire_dtype),
+        ctx_size: load.ctx_size,
+        n_gpu_layers: load.n_gpu_layers,
+        cache_type_k: load.cache_type_k,
+        cache_type_v: load.cache_type_v,
+        shutdown_generation: load.shutdown_generation,
+        load_mode: stage_load_mode_from_proto(load.load_mode),
+        upstream: load.upstream.map(stage_peer_from_proto).transpose()?,
+        downstream: load.downstream.map(stage_peer_from_proto).transpose()?,
+    })
+}
+
+fn stage_device_from_proto(
+    device: crate::proto::node::StageDevice,
+) -> anyhow::Result<skippy_protocol::StageDevice> {
+    Ok(skippy_protocol::StageDevice {
+        backend_device: device.backend_device,
+        stable_id: device.stable_id,
+        index: device
+            .index
+            .map(usize::try_from)
+            .transpose()
+            .context("stage selected_device.index exceeds usize")?,
+        vram_bytes: device.vram_bytes,
+    })
+}
+
+fn stage_peer_from_proto(
+    peer: crate::proto::node::StagePeer,
+) -> anyhow::Result<crate::inference::skippy::StagePeerDescriptor> {
+    Ok(crate::inference::skippy::StagePeerDescriptor {
+        stage_id: peer.stage_id,
+        stage_index: peer.stage_index,
+        endpoint: peer.endpoint,
+        node_id: peer
+            .node_id
+            .map(endpoint_id_from_bytes)
+            .transpose()
+            .context("invalid stage peer node_id")?,
+    })
+}
+
+fn stage_load_mode_from_proto(value: i32) -> skippy_protocol::LoadMode {
+    match crate::proto::node::StageLoadMode::try_from(value)
+        .unwrap_or(crate::proto::node::StageLoadMode::Unspecified)
+    {
+        crate::proto::node::StageLoadMode::Unspecified
+        | crate::proto::node::StageLoadMode::RuntimeSlice => {
+            skippy_protocol::LoadMode::RuntimeSlice
+        }
+        crate::proto::node::StageLoadMode::LayerPackage => skippy_protocol::LoadMode::LayerPackage,
+        crate::proto::node::StageLoadMode::ArtifactSlice => {
+            skippy_protocol::LoadMode::ArtifactSlice
+        }
+    }
+}
+
+fn stage_wire_dtype_from_proto(value: i32) -> crate::inference::skippy::StageWireDType {
+    match crate::proto::node::StageWireDType::try_from(value)
+        .unwrap_or(crate::proto::node::StageWireDType::StageWireDtypeUnspecified)
+    {
+        crate::proto::node::StageWireDType::StageWireDtypeUnspecified
+        | crate::proto::node::StageWireDType::StageWireDtypeF16 => {
+            crate::inference::skippy::StageWireDType::F16
+        }
+        crate::proto::node::StageWireDType::StageWireDtypeF32 => {
+            crate::inference::skippy::StageWireDType::F32
+        }
+        crate::proto::node::StageWireDType::StageWireDtypeQ8 => {
+            crate::inference::skippy::StageWireDType::Q8
+        }
+    }
+}
+
+fn stage_control_unavailable_response(
+    request: crate::inference::skippy::StageControlRequest,
+) -> crate::inference::skippy::StageControlResponse {
+    let status = match request {
+        crate::inference::skippy::StageControlRequest::Load(load) => {
+            stage_status_from_load(&load, crate::inference::skippy::StageRuntimeState::Failed)
+        }
+        crate::inference::skippy::StageControlRequest::Stop(stop) => {
+            crate::inference::skippy::StageStatusSnapshot {
+                topology_id: stop.topology_id,
+                run_id: stop.run_id,
+                model_id: String::new(),
+                backend: "skippy".to_string(),
+                stage_id: stop.stage_id,
+                stage_index: 0,
+                layer_start: 0,
+                layer_end: 0,
+                state: crate::inference::skippy::StageRuntimeState::Failed,
+                bind_addr: String::new(),
+                activation_width: 0,
+                wire_dtype: crate::inference::skippy::StageWireDType::F16,
+                selected_device: None,
+                ctx_size: 0,
+                error: Some("stage control is not available".to_string()),
+                shutdown_generation: stop.shutdown_generation,
+            }
+        }
+        crate::inference::skippy::StageControlRequest::Status(_) => {
+            return crate::inference::skippy::StageControlResponse::Status(Vec::new());
+        }
+    };
+    crate::inference::skippy::StageControlResponse::Ready(
+        crate::inference::skippy::StageReadyResponse {
+            accepted: false,
+            status,
+            error: Some("stage control is not available".to_string()),
+        },
+    )
+}
+
+fn stage_status_from_load(
+    load: &crate::inference::skippy::StageLoadRequest,
+    state: crate::inference::skippy::StageRuntimeState,
+) -> crate::inference::skippy::StageStatusSnapshot {
+    crate::inference::skippy::StageStatusSnapshot {
+        topology_id: load.topology_id.clone(),
+        run_id: load.run_id.clone(),
+        model_id: load.model_id.clone(),
+        backend: load.backend.clone(),
+        stage_id: load.stage_id.clone(),
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        state,
+        bind_addr: load.bind_addr.clone(),
+        activation_width: load.activation_width.max(0) as u32,
+        wire_dtype: load.wire_dtype,
+        selected_device: load.selected_device.clone(),
+        ctx_size: load.ctx_size,
+        error: Some("stage control is not available".to_string()),
+        shutdown_generation: load.shutdown_generation,
+    }
+}
+
+fn stage_control_response_to_proto(
+    response: crate::inference::skippy::StageControlResponse,
+) -> crate::proto::node::StageControlResponse {
+    use crate::proto::node::stage_control_response::Response;
+
+    let response = match response {
+        crate::inference::skippy::StageControlResponse::Ready(ready) => {
+            Response::StageReady(crate::proto::node::StageReady {
+                accepted: ready.accepted,
+                status: Some(stage_status_to_proto(ready.status)),
+                error: ready.error,
+            })
+        }
+        crate::inference::skippy::StageControlResponse::Status(statuses) => {
+            Response::StageStatus(statuses.into_iter().next().map_or_else(
+                || crate::proto::node::StageStatus {
+                    state: crate::proto::node::StageRuntimeState::Stopped as i32,
+                    ..Default::default()
+                },
+                stage_status_to_proto,
+            ))
+        }
+    };
+
+    crate::proto::node::StageControlResponse {
+        gen: NODE_PROTOCOL_GENERATION,
+        response: Some(response),
+    }
+}
+
+fn stage_control_response_from_proto(
+    frame: crate::proto::node::StageControlResponse,
+) -> anyhow::Result<crate::inference::skippy::StageControlResponse> {
+    use crate::proto::node::stage_control_response::Response;
+
+    match frame
+        .response
+        .ok_or_else(|| anyhow::anyhow!("missing stage control response"))?
+    {
+        Response::StageReady(ready) => {
+            let status = ready
+                .status
+                .ok_or_else(|| anyhow::anyhow!("stage ready missing status"))?;
+            Ok(crate::inference::skippy::StageControlResponse::Ready(
+                crate::inference::skippy::StageReadyResponse {
+                    accepted: ready.accepted,
+                    status: stage_status_from_proto(status)?,
+                    error: ready.error,
+                },
+            ))
+        }
+        Response::StageStatus(status) => {
+            Ok(crate::inference::skippy::StageControlResponse::Status(
+                vec![stage_status_from_proto(status)?],
+            ))
+        }
+    }
+}
+
+fn stage_status_to_proto(
+    status: crate::inference::skippy::StageStatusSnapshot,
+) -> crate::proto::node::StageStatus {
+    crate::proto::node::StageStatus {
+        topology_id: status.topology_id,
+        run_id: status.run_id,
+        model_id: status.model_id,
+        backend: status.backend,
+        stage_id: status.stage_id,
+        stage_index: status.stage_index,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state: stage_runtime_state_to_proto(status.state) as i32,
+        bind_addr: status.bind_addr,
+        activation_width: status.activation_width,
+        wire_dtype: stage_wire_dtype_to_proto(status.wire_dtype) as i32,
+        error: status.error,
+        shutdown_generation: status.shutdown_generation,
+        selected_device: status.selected_device.map(stage_device_to_proto),
+        ctx_size: status.ctx_size,
+    }
+}
+
+fn stage_status_from_proto(
+    status: crate::proto::node::StageStatus,
+) -> anyhow::Result<crate::inference::skippy::StageStatusSnapshot> {
+    Ok(crate::inference::skippy::StageStatusSnapshot {
+        topology_id: status.topology_id,
+        run_id: status.run_id,
+        model_id: status.model_id,
+        backend: status.backend,
+        stage_id: status.stage_id,
+        stage_index: status.stage_index,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state: stage_runtime_state_from_proto(status.state),
+        bind_addr: status.bind_addr,
+        activation_width: status.activation_width,
+        wire_dtype: stage_wire_dtype_from_proto(status.wire_dtype),
+        selected_device: status
+            .selected_device
+            .map(stage_device_from_proto)
+            .transpose()?,
+        ctx_size: status.ctx_size,
+        error: status.error,
+        shutdown_generation: status.shutdown_generation,
+    })
+}
+
+fn stage_runtime_state_from_proto(value: i32) -> crate::inference::skippy::StageRuntimeState {
+    match crate::proto::node::StageRuntimeState::try_from(value)
+        .unwrap_or(crate::proto::node::StageRuntimeState::Failed)
+    {
+        crate::proto::node::StageRuntimeState::Starting => {
+            crate::inference::skippy::StageRuntimeState::Starting
+        }
+        crate::proto::node::StageRuntimeState::Ready => {
+            crate::inference::skippy::StageRuntimeState::Ready
+        }
+        crate::proto::node::StageRuntimeState::Stopping => {
+            crate::inference::skippy::StageRuntimeState::Stopping
+        }
+        crate::proto::node::StageRuntimeState::Stopped
+        | crate::proto::node::StageRuntimeState::Unspecified => {
+            crate::inference::skippy::StageRuntimeState::Stopped
+        }
+        crate::proto::node::StageRuntimeState::Failed => {
+            crate::inference::skippy::StageRuntimeState::Failed
+        }
+    }
+}
+
+fn stage_runtime_state_to_proto(
+    state: crate::inference::skippy::StageRuntimeState,
+) -> crate::proto::node::StageRuntimeState {
+    match state {
+        crate::inference::skippy::StageRuntimeState::Starting => {
+            crate::proto::node::StageRuntimeState::Starting
+        }
+        crate::inference::skippy::StageRuntimeState::Ready => {
+            crate::proto::node::StageRuntimeState::Ready
+        }
+        crate::inference::skippy::StageRuntimeState::Stopping => {
+            crate::proto::node::StageRuntimeState::Stopping
+        }
+        crate::inference::skippy::StageRuntimeState::Stopped => {
+            crate::proto::node::StageRuntimeState::Stopped
+        }
+        crate::inference::skippy::StageRuntimeState::Failed => {
+            crate::proto::node::StageRuntimeState::Failed
+        }
+    }
+}
+
+fn stage_wire_dtype_to_proto(
+    dtype: crate::inference::skippy::StageWireDType,
+) -> crate::proto::node::StageWireDType {
+    match dtype {
+        crate::inference::skippy::StageWireDType::F32 => {
+            crate::proto::node::StageWireDType::StageWireDtypeF32
+        }
+        crate::inference::skippy::StageWireDType::F16 => {
+            crate::proto::node::StageWireDType::StageWireDtypeF16
+        }
+        crate::inference::skippy::StageWireDType::Q8 => {
+            crate::proto::node::StageWireDType::StageWireDtypeQ8
+        }
+    }
 }
 
 async fn send_push_error(send: &mut iroh::endpoint::SendStream, msg: &str) -> anyhow::Result<()> {

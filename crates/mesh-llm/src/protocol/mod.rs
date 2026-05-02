@@ -27,9 +27,13 @@ pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
+pub(crate) const STREAM_STAGE_CONTROL: u8 = 0x0d;
+pub(crate) const STREAM_STAGE_TRANSPORT: u8 = 0x0e;
 const _: () = {
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
+    let _ = STREAM_STAGE_CONTROL;
+    let _ = STREAM_STAGE_TRANSPORT;
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,6 +68,9 @@ pub(crate) enum ControlFrameError {
         got: usize,
     },
     MissingConfig,
+    MissingStageControlCommand,
+    MissingStageControlResponse,
+    MissingStageTransportTarget,
     #[cfg(test)]
     DecodeError(String),
     #[cfg(test)]
@@ -109,6 +116,15 @@ impl std::fmt::Display for ControlFrameError {
             }
             ControlFrameError::MissingConfig => {
                 write!(f, "config field is required but missing")
+            }
+            ControlFrameError::MissingStageControlCommand => {
+                write!(f, "stage control command is required but missing")
+            }
+            ControlFrameError::MissingStageControlResponse => {
+                write!(f, "stage control response is required but missing")
+            }
+            ControlFrameError::MissingStageTransportTarget => {
+                write!(f, "stage transport target is required but missing")
             }
             #[cfg(test)]
             ControlFrameError::DecodeError(msg) => write!(f, "protobuf decode error: {}", msg),
@@ -298,6 +314,44 @@ impl ValidateControlFrame for crate::proto::node::ConfigPushResponse {
     }
 }
 
+impl ValidateControlFrame for crate::proto::node::StageControlRequest {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        validate_endpoint_id_length(self.requester_id.len())?;
+        if self.command.is_none() {
+            return Err(ControlFrameError::MissingStageControlCommand);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::StageControlResponse {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.response.is_none() {
+            return Err(ControlFrameError::MissingStageControlResponse);
+        }
+        Ok(())
+    }
+}
+
+impl ValidateControlFrame for crate::proto::node::StageTransportOpen {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        validate_endpoint_id_length(self.requester_id.len())?;
+        if self.topology_id.is_empty() || self.run_id.is_empty() || self.stage_id.is_empty() {
+            return Err(ControlFrameError::MissingStageTransportTarget);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_peer_announcement(
     pa: &crate::proto::node::PeerAnnouncement,
 ) -> Result<(), ControlFrameError> {
@@ -458,9 +512,10 @@ mod tests {
     use crate::mesh::{resolve_peer_down, resolve_peer_leaving, PeerInfo};
     use crate::proto::node::{
         ConfigPush, ConfigPushResponse, ConfigSnapshotResponse, ConfigSubscribe,
-        ConfigUpdateNotification, ConfiguredModelRef, GossipFrame, NodeConfigSnapshot,
-        NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole, PeerAnnouncement,
-        RouteTableRequest,
+        ConfigUpdateNotification, ConfiguredModelRef, GetStageStatus, GossipFrame, LoadStage,
+        NodeConfigSnapshot, NodeGpuConfig, NodeModelEntry, NodePluginEntry, NodeRole,
+        PeerAnnouncement, RouteTableRequest, StageControlRequest, StageControlResponse, StageReady,
+        StageStatus, StageTransportOpen, StopStage,
     };
     use iroh::{EndpointAddr, EndpointId, SecretKey};
     use std::collections::{HashMap, HashSet};
@@ -1182,6 +1237,177 @@ mod tests {
         let encoded = encode_control_frame(STREAM_GOSSIP, &wrong_gen_gossip);
         let err = decode_control_frame::<GossipFrame>(STREAM_GOSSIP, &encoded)
             .expect_err("GossipFrame gen=2 (future version) must be rejected");
+        assert!(matches!(err, ControlFrameError::BadGeneration { got: 2 }));
+    }
+
+    #[test]
+    fn stage_control_request_validates_generation_sender_and_command() {
+        use crate::proto::node::stage_control_request::Command;
+
+        let frame = StageControlRequest {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: vec![9u8; 32],
+            command: Some(Command::GetStageStatus(GetStageStatus {
+                topology_id: Some("topology-a".to_string()),
+                run_id: Some("run-a".to_string()),
+                stage_id: Some("stage-0".to_string()),
+            })),
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &frame);
+        let decoded =
+            decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded).unwrap();
+
+        assert_eq!(decoded.requester_id, vec![9u8; 32]);
+
+        let load = StageControlRequest {
+            command: Some(Command::LoadStage(LoadStage {
+                topology_id: "topology-a".to_string(),
+                run_id: "run-a".to_string(),
+                model_id: "qwen".to_string(),
+                backend: "skippy".to_string(),
+                package_ref: "hf://repo/model".to_string(),
+                manifest_sha256: "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+                    .to_string(),
+                stage_id: "stage-0".to_string(),
+                layer_end: 16,
+                activation_width: 4096,
+                ..Default::default()
+            })),
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &load);
+        let decoded =
+            decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded).unwrap();
+        assert!(matches!(decoded.command, Some(Command::LoadStage(_))));
+
+        let stop = StageControlRequest {
+            command: Some(Command::StopStage(StopStage {
+                topology_id: "topology-a".to_string(),
+                run_id: "run-a".to_string(),
+                stage_id: "stage-0".to_string(),
+                shutdown_generation: 7,
+            })),
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &stop);
+        let decoded =
+            decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded).unwrap();
+        assert!(matches!(decoded.command, Some(Command::StopStage(_))));
+
+        let missing_command = StageControlRequest {
+            command: None,
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &missing_command);
+        let err = decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded)
+            .unwrap_err();
+        assert!(matches!(err, ControlFrameError::MissingStageControlCommand));
+
+        let wrong_gen = StageControlRequest { gen: 2, ..frame };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &wrong_gen);
+        let err = decode_control_frame::<StageControlRequest>(STREAM_STAGE_CONTROL, &encoded)
+            .unwrap_err();
+        assert!(matches!(err, ControlFrameError::BadGeneration { got: 2 }));
+    }
+
+    #[test]
+    fn stage_control_response_validates_generation_and_response() {
+        use crate::proto::node::stage_control_response::Response;
+
+        let frame = StageControlResponse {
+            gen: NODE_PROTOCOL_GENERATION,
+            response: Some(Response::StageReady(StageReady {
+                accepted: true,
+                status: Some(StageStatus {
+                    topology_id: "topology-a".to_string(),
+                    run_id: "run-a".to_string(),
+                    model_id: "qwen".to_string(),
+                    backend: "skippy".to_string(),
+                    stage_id: "stage-0".to_string(),
+                    stage_index: 0,
+                    layer_start: 0,
+                    layer_end: 16,
+                    state: crate::proto::node::StageRuntimeState::Ready as i32,
+                    bind_addr: "127.0.0.1:0".to_string(),
+                    activation_width: 4096,
+                    wire_dtype: crate::proto::node::StageWireDType::StageWireDtypeF16 as i32,
+                    error: None,
+                    shutdown_generation: 7,
+                    selected_device: None,
+                    ctx_size: 8192,
+                }),
+                error: None,
+            })),
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &frame);
+        let decoded =
+            decode_control_frame::<StageControlResponse>(STREAM_STAGE_CONTROL, &encoded).unwrap();
+        assert!(matches!(decoded.response, Some(Response::StageReady(_))));
+
+        let status = StageControlResponse {
+            response: Some(Response::StageStatus(StageStatus {
+                topology_id: "topology-a".to_string(),
+                run_id: "run-a".to_string(),
+                stage_id: "stage-0".to_string(),
+                state: crate::proto::node::StageRuntimeState::Ready as i32,
+                ..Default::default()
+            })),
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &status);
+        let decoded =
+            decode_control_frame::<StageControlResponse>(STREAM_STAGE_CONTROL, &encoded).unwrap();
+        assert!(matches!(decoded.response, Some(Response::StageStatus(_))));
+
+        let missing_response = StageControlResponse {
+            response: None,
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &missing_response);
+        let err = decode_control_frame::<StageControlResponse>(STREAM_STAGE_CONTROL, &encoded)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ControlFrameError::MissingStageControlResponse
+        ));
+
+        let wrong_gen = StageControlResponse { gen: 2, ..frame };
+        let encoded = encode_control_frame(STREAM_STAGE_CONTROL, &wrong_gen);
+        let err = decode_control_frame::<StageControlResponse>(STREAM_STAGE_CONTROL, &encoded)
+            .unwrap_err();
+        assert!(matches!(err, ControlFrameError::BadGeneration { got: 2 }));
+    }
+
+    #[test]
+    fn stage_transport_open_validates_generation_sender_and_target() {
+        let frame = StageTransportOpen {
+            gen: NODE_PROTOCOL_GENERATION,
+            requester_id: vec![7u8; 32],
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-1".to_string(),
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_TRANSPORT, &frame);
+        let decoded =
+            decode_control_frame::<StageTransportOpen>(STREAM_STAGE_TRANSPORT, &encoded).unwrap();
+        assert_eq!(decoded.stage_id, "stage-1");
+
+        let missing_target = StageTransportOpen {
+            stage_id: String::new(),
+            ..frame.clone()
+        };
+        let encoded = encode_control_frame(STREAM_STAGE_TRANSPORT, &missing_target);
+        let err = decode_control_frame::<StageTransportOpen>(STREAM_STAGE_TRANSPORT, &encoded)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ControlFrameError::MissingStageTransportTarget
+        ));
+
+        let wrong_gen = StageTransportOpen { gen: 2, ..frame };
+        let encoded = encode_control_frame(STREAM_STAGE_TRANSPORT, &wrong_gen);
+        let err = decode_control_frame::<StageTransportOpen>(STREAM_STAGE_TRANSPORT, &encoded)
+            .unwrap_err();
         assert!(matches!(err, ControlFrameError::BadGeneration { got: 2 }));
     }
     #[test]

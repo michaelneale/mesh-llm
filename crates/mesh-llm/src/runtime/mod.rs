@@ -27,7 +27,7 @@ use crate::crypto::{
     default_keystore_path, default_trust_store_path, keystore_exists, keystore_metadata,
     load_keystore, load_owner_keypair_from_keychain, load_trust_store, OwnerKeychainLoadError,
 };
-use crate::inference::{election, launch, moe};
+use crate::inference::{election, launch, moe, skippy};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
@@ -2449,6 +2449,8 @@ async fn run_auto(
         cli.config.as_deref(),
     )
     .await?;
+    node.set_stage_control_sender(skippy::spawn_stage_control_loop())
+        .await;
     node.start_accepting();
     let token = node.invite_token();
     node.set_display_name(node_display_name(&cli, &node)).await;
@@ -2867,8 +2869,14 @@ async fn run_auto(
     };
     let rpc_port = rpc_handle.as_ref().map(|handle| handle.port).unwrap_or(0);
 
-    let tunnel_mgr =
-        tunnel::Manager::start(node.clone(), rpc_port, channels.rpc, channels.http).await?;
+    let tunnel_mgr = tunnel::Manager::start(
+        node.clone(),
+        rpc_port,
+        channels.rpc,
+        channels.http,
+        channels.stage,
+    )
+    .await?;
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());

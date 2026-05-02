@@ -21,12 +21,20 @@ pub(super) async fn handle(
         ("GET", "/api/runtime/events") => handle_runtime_events(stream, state).await,
         ("GET", "/api/runtime/endpoints") => handle_runtime_endpoints(stream, state).await,
         ("GET", "/api/runtime/processes") => handle_runtime_processes(stream, state).await,
+        ("GET", "/api/runtime/stages") => handle_runtime_stages(stream, state).await,
         ("POST", "/api/runtime/models") => handle_load_model(stream, state, body).await,
         ("DELETE", p) if p.starts_with("/api/runtime/models/") => {
             handle_unload_model(stream, state, p).await
         }
         ("GET", "/api/events") => handle_events(stream, state).await,
         _ => Ok(()),
+    }
+}
+
+async fn handle_runtime_stages(stream: &mut TcpStream, state: &MeshApi) -> anyhow::Result<()> {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), state.runtime_stages()).await {
+        Ok(runtime_stages) => respond_json(stream, 200, &runtime_stages).await,
+        Err(_) => respond_error(stream, 503, "Runtime stage status temporarily unavailable").await,
     }
 }
 

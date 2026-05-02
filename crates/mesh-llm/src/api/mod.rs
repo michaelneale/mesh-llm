@@ -13,6 +13,7 @@
 //!   GET  /api/runtime/events — SSE stream of llama.cpp runtime metrics + slots snapshots
 //!   GET  /api/runtime/endpoints — registered plugin endpoint state (JSON)
 //!   GET  /api/runtime/processes — local inference process state (JSON)
+//!   GET  /api/runtime/stages — backend-neutral staged-serving state (JSON)
 //!   POST /api/runtime/models — load a local model
 //!   DELETE /api/runtime/models/{model} — unload a local model
 //!   GET  /api/events    — SSE stream of status updates
@@ -68,6 +69,24 @@ use self::status::{build_gpus, LocalInstance, NodeState, WakeableNode, WakeableN
 use crate::runtime::wakeable::{WakeableInventoryEntry, WakeableState};
 
 const MESH_LLM_VERSION: &str = crate::VERSION;
+
+fn stage_runtime_state_label(state: crate::inference::skippy::StageRuntimeState) -> &'static str {
+    match state {
+        crate::inference::skippy::StageRuntimeState::Starting => "starting",
+        crate::inference::skippy::StageRuntimeState::Ready => "ready",
+        crate::inference::skippy::StageRuntimeState::Stopping => "stopping",
+        crate::inference::skippy::StageRuntimeState::Stopped => "stopped",
+        crate::inference::skippy::StageRuntimeState::Failed => "failed",
+    }
+}
+
+fn stage_wire_dtype_label(dtype: crate::inference::skippy::StageWireDType) -> &'static str {
+    match dtype {
+        crate::inference::skippy::StageWireDType::F32 => "f32",
+        crate::inference::skippy::StageWireDType::F16 => "f16",
+        crate::inference::skippy::StageWireDType::Q8 => "q8",
+    }
+}
 
 #[cfg(test)]
 #[derive(Debug, Default, PartialEq)]
@@ -475,6 +494,63 @@ impl MeshApi {
             .runtime_data_collector
             .runtime_processes_snapshot();
         build_runtime_processes_payload(runtime_data::runtime_process_payloads(&runtime_processes))
+    }
+
+    async fn runtime_stages(&self) -> serde_json::Value {
+        let node = self.inner.lock().await.node.clone();
+        let topologies = node.stage_topologies().await;
+        let statuses = node.stage_runtime_statuses().await;
+        serde_json::json!({
+            "topologies": topologies.into_iter().map(|topology| {
+                serde_json::json!({
+                    "topology_id": topology.topology_id,
+                    "run_id": topology.run_id,
+                    "model_id": topology.model_id,
+                    "package_ref": topology.package_ref,
+                    "manifest_sha256": topology.manifest_sha256,
+                    "stages": topology.stages.into_iter().map(|stage| {
+                        serde_json::json!({
+                            "stage_id": stage.stage_id,
+                            "stage_index": stage.stage_index,
+                            "node_id": stage.node_id.to_string(),
+                            "layer_start": stage.layer_start,
+                            "layer_end": stage.layer_end,
+                            "endpoint": {
+                                "bind_addr": stage.endpoint.bind_addr,
+                            },
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            }).collect::<Vec<_>>(),
+            "statuses": statuses.into_iter().map(|status| {
+                serde_json::json!({
+                    "topology_id": status.topology_id,
+                    "run_id": status.run_id,
+                    "model_id": status.model_id,
+                    "backend": status.backend,
+                    "stage_id": status.stage_id,
+                    "stage_index": status.stage_index,
+                    "node_id": status.node_id.map(|id| id.to_string()),
+                    "layer_start": status.layer_start,
+                    "layer_end": status.layer_end,
+                    "state": stage_runtime_state_label(status.state),
+                    "bind_addr": status.bind_addr,
+                    "activation_width": status.activation_width,
+                    "wire_dtype": stage_wire_dtype_label(status.wire_dtype),
+                    "selected_device": status.selected_device.map(|device| {
+                        serde_json::json!({
+                            "backend_device": device.backend_device,
+                            "stable_id": device.stable_id,
+                            "index": device.index,
+                            "vram_bytes": device.vram_bytes,
+                        })
+                    }),
+                    "ctx_size": status.ctx_size,
+                    "error": status.error,
+                    "shutdown_generation": status.shutdown_generation,
+                })
+            }).collect::<Vec<_>>(),
+        })
     }
 
     async fn runtime_llama(&self) -> RuntimeLlamaPayload {

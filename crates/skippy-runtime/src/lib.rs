@@ -5,10 +5,12 @@ use std::ptr;
 use anyhow::{anyhow, Context, Result};
 use skippy_ffi::{
     ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
-    ChatMessage as RawChatMessage, Error as RawError, KvPageDesc as RawKvPageDesc, LoadMode,
+    ChatMessage as RawChatMessage, Error as RawError,
+    GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc, LoadMode,
     LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
     RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
     SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
+    TokenSignal as RawTokenSignal,
 };
 
 pub mod package;
@@ -245,6 +247,54 @@ impl From<RawKvPageDesc> for RuntimeKvPageDesc {
 pub struct RuntimeKvPage {
     pub desc: RuntimeKvPageDesc,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TokenSignal {
+    pub entropy: f32,
+    pub top_logprob: f32,
+    pub second_logprob: f32,
+    pub margin: f32,
+    pub top_token: i32,
+    pub second_token: i32,
+}
+
+impl From<RawTokenSignal> for TokenSignal {
+    fn from(raw: RawTokenSignal) -> Self {
+        Self {
+            entropy: raw.entropy,
+            top_logprob: raw.top_logprob,
+            second_logprob: raw.second_logprob,
+            margin: raw.margin,
+            top_token: raw.top_token,
+            second_token: raw.second_token,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GenerationSignalWindow {
+    pub token_count: u32,
+    pub mean_entropy: f32,
+    pub max_entropy: f32,
+    pub mean_margin: f32,
+    pub min_margin: f32,
+    pub high_entropy_count: u32,
+    pub repetition_count: u32,
+}
+
+impl From<RawGenerationSignalWindow> for GenerationSignalWindow {
+    fn from(raw: RawGenerationSignalWindow) -> Self {
+        Self {
+            token_count: raw.token_count,
+            mean_entropy: raw.mean_entropy,
+            max_entropy: raw.max_entropy,
+            mean_margin: raw.mean_margin,
+            min_margin: raw.min_margin,
+            high_entropy_count: raw.high_entropy_count,
+            repetition_count: raw.repetition_count,
+        }
+    }
 }
 
 pub struct ModelInfo {
@@ -735,6 +785,31 @@ impl StageSession {
             .checked_add(1)
             .context("session token count overflow")?;
         Ok(predicted_token)
+    }
+
+    pub fn last_token_signal(&mut self) -> Result<TokenSignal> {
+        let mut signal = RawTokenSignal::default();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_last_token_signal(self.raw, &mut signal, &mut error)
+        };
+        ensure_ok(status, error)?;
+        Ok(signal.into())
+    }
+
+    pub fn signal_window(&mut self, window_tokens: u32) -> Result<GenerationSignalWindow> {
+        let mut window = RawGenerationSignalWindow::default();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_signal_window(
+                self.raw,
+                window_tokens,
+                &mut window,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        Ok(window.into())
     }
 
     pub fn verify_tokens(&mut self, token_ids: &[i32]) -> Result<Vec<i32>> {

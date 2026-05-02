@@ -1,21 +1,21 @@
-From 64b2e589e5b7b491f511e0321b390779a9c7dab3 Mon Sep 17 00:00:00 2001
+From ee848a273be2909621eb70fdf5ea68d62887403f Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 11:53:03 +1000
 Subject: [PATCH] Expose stage generation signal ABI
 
 ---
- include/skippy-signals.h |  43 +++++++++++
+ include/skippy-signals.h |  44 ++++++++++
  include/skippy.h         |   3 +-
- src/skippy.cpp           | 156 ++++++++++++++++++++++++++++++++++++++-
- 3 files changed, 200 insertions(+), 2 deletions(-)
+ src/skippy.cpp           | 177 ++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 222 insertions(+), 2 deletions(-)
  create mode 100644 include/skippy-signals.h
 
 diff --git a/include/skippy-signals.h b/include/skippy-signals.h
 new file mode 100644
-index 00000000..e124d107
+index 00000000..a19aab8b
 --- /dev/null
 +++ b/include/skippy-signals.h
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,44 @@
 +#ifndef SKIPPY_SIGNALS_ABI_H
 +#define SKIPPY_SIGNALS_ABI_H
 +
@@ -40,6 +40,7 @@ index 00000000..e124d107
 +    float max_entropy;
 +    float mean_margin;
 +    float min_margin;
++    uint32_t high_entropy_count;
 +    uint32_t repetition_count;
 +};
 +
@@ -81,7 +82,7 @@ index ce27c5ea..4f1c8805 100644
  
  enum skippy_kv_page_flag {
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 5a1d7cfa..b21dae3e 100644
+index 5a1d7cfa..4b4bf8eb 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,4 +1,5 @@
@@ -98,15 +99,18 @@ index 5a1d7cfa..b21dae3e 100644
  #include <cstdint>
  #include <cstdlib>
  #include <cstring>
-@@ -38,6 +40,7 @@ struct skippy_session {
+@@ -37,7 +39,10 @@ struct skippy_session {
+     int32_t n_past = 0;
      bool checkpoint_valid = false;
      int32_t checkpoint_n_past = 0;
++    size_t checkpoint_token_history_size = 0;
++    size_t checkpoint_signal_history_size = 0;
      std::vector<llama_token> token_history;
 +    std::vector<skippy_token_signal> signal_history;
  };
  
  struct skippy_tensor_meta {
-@@ -680,6 +683,8 @@ static void skippy_record_tokens(
+@@ -680,6 +685,8 @@ static void skippy_record_tokens(
      }
  }
  
@@ -115,7 +119,7 @@ index 5a1d7cfa..b21dae3e 100644
  static enum skippy_status skippy_decode_tokens(
          skippy_session * session,
          const llama_token * token_ids,
-@@ -716,6 +721,9 @@ static enum skippy_status skippy_decode_tokens(
+@@ -716,6 +723,9 @@ static enum skippy_status skippy_decode_tokens(
      llama_batch_free(batch);
      if (status == SKIPPY_STATUS_OK) {
          skippy_record_tokens(session, token_ids, token_count);
@@ -125,7 +129,7 @@ index 5a1d7cfa..b21dae3e 100644
      }
      return status;
  }
-@@ -791,6 +799,80 @@ static llama_token skippy_greedy_sample_ith(skippy_session * session, int32_t in
+@@ -791,6 +801,80 @@ static llama_token skippy_greedy_sample_ith(skippy_session * session, int32_t in
      return best;
  }
  
@@ -206,7 +210,7 @@ index 5a1d7cfa..b21dae3e 100644
  static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {
      if (sampling == nullptr || sampling->version == 0 || sampling->flags == 0) {
          return false;
-@@ -1006,7 +1088,8 @@ uint64_t skippy_abi_features(void) {
+@@ -1006,7 +1090,8 @@ uint64_t skippy_abi_features(void) {
             SKIPPY_FEATURE_LOGIT_BIAS |
             SKIPPY_FEATURE_SESSION_TRIM |
             SKIPPY_FEATURE_SESSION_CHECKPOINT |
@@ -216,7 +220,7 @@ index 5a1d7cfa..b21dae3e 100644
  }
  
  const char * skippy_status_string(enum skippy_status status) {
-@@ -1255,6 +1338,7 @@ enum skippy_status skippy_session_reset(
+@@ -1255,6 +1340,7 @@ enum skippy_status skippy_session_reset(
      session->checkpoint_valid = false;
      session->checkpoint_n_past = 0;
      session->token_history.clear();
@@ -224,7 +228,7 @@ index 5a1d7cfa..b21dae3e 100644
      session->ctx->synchronize();
      return skippy_success(out_error);
  }
-@@ -1269,6 +1353,76 @@ enum skippy_status skippy_session_free(
+@@ -1269,6 +1355,81 @@ enum skippy_status skippy_session_free(
      return skippy_success(out_error);
  }
  
@@ -269,12 +273,16 @@ index 5a1d7cfa..b21dae3e 100644
 +    double margin_sum = 0.0;
 +    float max_entropy = 0.0f;
 +    float min_margin = std::numeric_limits<float>::infinity();
++    uint32_t high_entropy_count = 0;
 +    for (size_t i = start; i < session->signal_history.size(); ++i) {
 +        const skippy_token_signal & signal = session->signal_history[i];
 +        entropy_sum += signal.entropy;
 +        margin_sum += signal.margin;
 +        max_entropy = std::max(max_entropy, signal.entropy);
 +        min_margin = std::min(min_margin, signal.margin);
++        if (signal.entropy > 4.0f) {
++            ++high_entropy_count;
++        }
 +    }
 +
 +    uint32_t repetition_count = 0;
@@ -294,6 +302,7 @@ index 5a1d7cfa..b21dae3e 100644
 +    out_window->max_entropy = max_entropy;
 +    out_window->mean_margin = static_cast<float>(margin_sum / static_cast<double>(count));
 +    out_window->min_margin = min_margin;
++    out_window->high_entropy_count = high_entropy_count;
 +    out_window->repetition_count = repetition_count;
 +    return skippy_success(out_error);
 +}
@@ -301,6 +310,41 @@ index 5a1d7cfa..b21dae3e 100644
  enum skippy_status skippy_prefill_chunk(
          struct skippy_session * session,
          const llama_token * token_ids,
+@@ -1987,6 +2148,12 @@ enum skippy_status skippy_trim_session(
+         return SKIPPY_STATUS_UNSUPPORTED;
+     }
+     session->n_past = static_cast<int32_t>(token_count);
++    if (session->token_history.size() > token_count) {
++        session->token_history.resize(static_cast<size_t>(token_count));
++    }
++    if (session->signal_history.size() > token_count) {
++        session->signal_history.resize(static_cast<size_t>(token_count));
++    }
+     session->ctx->synchronize();
+ 
+     return skippy_success(out_error);
+@@ -2025,6 +2192,8 @@ enum skippy_status skippy_checkpoint_session(
+ 
+     session->checkpoint_valid = true;
+     session->checkpoint_n_past = session->n_past;
++    session->checkpoint_token_history_size = session->token_history.size();
++    session->checkpoint_signal_history_size = session->signal_history.size();
+     *out_token_count = static_cast<uint64_t>(session->n_past);
+     return skippy_success(out_error);
+ }
+@@ -2072,6 +2241,12 @@ enum skippy_status skippy_restore_session_checkpoint(
+     }
+ 
+     session->n_past = session->checkpoint_n_past;
++    if (session->token_history.size() > session->checkpoint_token_history_size) {
++        session->token_history.resize(session->checkpoint_token_history_size);
++    }
++    if (session->signal_history.size() > session->checkpoint_signal_history_size) {
++        session->signal_history.resize(session->checkpoint_signal_history_size);
++    }
+     session->checkpoint_valid = false;
+     return skippy_success(out_error);
+ }
 -- 
 2.50.1 (Apple Git-155)
 

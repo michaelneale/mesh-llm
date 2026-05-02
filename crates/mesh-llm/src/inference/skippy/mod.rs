@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod hooks;
+mod stage;
 
 use std::{
     path::{Path, PathBuf},
@@ -12,8 +13,8 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use openai_frontend::{
     ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream, CompletionRequest,
-    CompletionResponse, CompletionStream, HookedOpenAiBackend, ModelObject, OpenAiBackend,
-    OpenAiHookPolicy, OpenAiRequestContext, OpenAiResult,
+    CompletionResponse, CompletionStream, ModelObject, OpenAiBackend, OpenAiHookPolicy,
+    OpenAiRequestContext, OpenAiResult,
 };
 use skippy_protocol::{LoadMode, StageConfig, StageDevice};
 use skippy_runtime::ModelInfo;
@@ -24,6 +25,11 @@ use skippy_server::{
 };
 
 pub(crate) use hooks::MeshAutoHookPolicy;
+pub(crate) use stage::{
+    spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
+    StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
+    StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SkippyModelState {
@@ -194,16 +200,74 @@ impl SkippyModelHandle {
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
+            hook_policy,
         })
         .context("construct skippy OpenAI backend")?;
-        let backend: Arc<dyn OpenAiBackend> = match hook_policy {
-            Some(hooks) => Arc::new(HookedOpenAiBackend::new(binding.backend, hooks)),
-            None => binding.backend,
-        };
         Ok(Self {
             runtime,
-            backend,
+            backend: binding.backend,
             config: stage_config,
+            started_at_unix_nanos: now_unix_nanos(),
+            status: Arc::new(Mutex::new(HandleState {
+                state: SkippyModelState::Ready,
+                stopped_at_unix_nanos: None,
+                last_error: None,
+            })),
+        })
+    }
+
+    pub(crate) fn load_stage0_config(
+        config: StageConfig,
+        activation_width: i32,
+        generation_concurrency: usize,
+        default_max_tokens: u32,
+        hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+    ) -> Result<Self> {
+        let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
+            config: config.clone(),
+            topology: None,
+            metrics_otlp_grpc: None,
+            telemetry_queue_capacity: 0,
+            telemetry_level: TelemetryLevel::Off,
+        })
+        .with_context(|| {
+            format!(
+                "load skippy stage 0 runtime for model {} from {:?}",
+                config.model_id, config.model_path
+            )
+        })?;
+        let telemetry = Telemetry::new(None, 0, config.clone(), TelemetryLevel::Off);
+        let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
+            bind_addr: "127.0.0.1:0"
+                .parse()
+                .expect("static bind address should parse"),
+            config: config.clone(),
+            runtime: runtime.runtime(),
+            model_id: Some(config.model_id.clone()),
+            default_max_tokens,
+            generation_concurrency,
+            prefill_chunk_size: 64,
+            prefill_chunk_policy: "fixed".to_string(),
+            prefill_chunk_schedule: None,
+            prefill_adaptive_start: 64,
+            prefill_adaptive_step: 64,
+            prefill_adaptive_max: 512,
+            draft_model_path: None,
+            speculative_window: 0,
+            adaptive_speculative_window: false,
+            draft_n_gpu_layers: None,
+            activation_width,
+            wire_dtype: skippy_protocol::binary::WireActivationDType::F16,
+            downstream_connect_timeout_secs: 30,
+            downstream_wire_condition: WireCondition::new(0.0, None)?,
+            telemetry,
+            hook_policy,
+        })
+        .context("construct skippy stage 0 OpenAI backend")?;
+        Ok(Self {
+            runtime,
+            backend: binding.backend,
+            config,
             started_at_unix_nanos: now_unix_nanos(),
             status: Arc::new(Mutex::new(HandleState {
                 state: SkippyModelState::Ready,

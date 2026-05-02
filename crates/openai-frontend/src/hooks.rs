@@ -46,9 +46,16 @@ pub struct PrefillHookSignals {
     pub first_token_margin: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenerationHookSignals {
     pub n_decoded: i64,
+    pub window_tokens: u32,
+    pub mean_entropy: f64,
+    pub max_entropy: f64,
+    pub mean_margin: f64,
+    pub min_margin: f64,
+    pub high_entropy_count: u32,
+    pub repetition_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +119,8 @@ impl OpenAiBackend for HookedOpenAiBackend {
         &self,
         mut request: ChatCompletionRequest,
     ) -> OpenAiResult<ChatCompletionResponse> {
-        self.hooks.before_chat_completion(&mut request).await?;
+        let outcome = self.hooks.before_chat_completion(&mut request).await?;
+        apply_chat_hook_outcome(&mut request, &outcome);
         self.backend.chat_completion(request).await
     }
 
@@ -121,7 +129,8 @@ impl OpenAiBackend for HookedOpenAiBackend {
         mut request: ChatCompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<ChatCompletionStream> {
-        self.hooks.before_chat_completion(&mut request).await?;
+        let outcome = self.hooks.before_chat_completion(&mut request).await?;
+        apply_chat_hook_outcome(&mut request, &outcome);
         self.backend.chat_completion_stream(request, context).await
     }
 
@@ -170,6 +179,17 @@ pub fn inject_text_into_chat_messages(messages: &mut Vec<ChatMessage>, text: imp
             content: Some(MessageContent::Text(text)),
             extra: Default::default(),
         });
+    }
+}
+
+fn apply_chat_hook_outcome(request: &mut ChatCompletionRequest, outcome: &ChatHookOutcome) {
+    for action in &outcome.actions {
+        match action {
+            ChatHookAction::InjectText { text } => {
+                inject_text_into_chat_messages(&mut request.messages, text.clone());
+            }
+            ChatHookAction::None => {}
+        }
     }
 }
 
@@ -253,9 +273,56 @@ fn media_url(part: &MessageContentPart) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use serde_json::json;
 
     use super::*;
+    use crate::Usage;
+
+    struct RecordingBackend {
+        seen: Mutex<Option<ChatCompletionRequest>>,
+    }
+
+    #[async_trait]
+    impl OpenAiBackend for RecordingBackend {
+        async fn models(&self) -> OpenAiResult<Vec<ModelObject>> {
+            Ok(vec![ModelObject::new("auto")])
+        }
+
+        async fn chat_completion(
+            &self,
+            request: ChatCompletionRequest,
+        ) -> OpenAiResult<ChatCompletionResponse> {
+            *self.seen.lock().unwrap() = Some(request.clone());
+            Ok(ChatCompletionResponse::new(
+                request.model,
+                "ok",
+                Usage::new(0, 0),
+            ))
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            request: ChatCompletionRequest,
+            _context: OpenAiRequestContext,
+        ) -> OpenAiResult<ChatCompletionStream> {
+            *self.seen.lock().unwrap() = Some(request);
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+    }
+
+    struct InjectingHook;
+
+    #[async_trait]
+    impl OpenAiHookPolicy for InjectingHook {
+        async fn before_chat_completion(
+            &self,
+            _request: &mut ChatCompletionRequest,
+        ) -> OpenAiResult<ChatHookOutcome> {
+            Ok(ChatHookOutcome::injected("[hint]\n"))
+        }
+    }
 
     #[test]
     fn chat_mesh_hooks_enabled_reads_extra_flag() {
@@ -323,6 +390,28 @@ mod tests {
 
         assert_eq!(
             request.messages[0].content,
+            Some(MessageContent::Text("[hint]\noriginal".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn hooked_backend_applies_injection_once_before_forwarding() {
+        let backend = Arc::new(RecordingBackend {
+            seen: Mutex::new(None),
+        });
+        let hooked = HookedOpenAiBackend::new(backend.clone(), Arc::new(InjectingHook));
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "auto",
+            "messages": [{"role": "user", "content": "original"}],
+            "mesh_hooks": true
+        }))
+        .unwrap();
+
+        hooked.chat_completion(request).await.unwrap();
+
+        let seen = backend.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            seen.messages[0].content,
             Some(MessageContent::Text("[hint]\noriginal".to_string()))
         );
     }
