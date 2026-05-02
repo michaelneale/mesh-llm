@@ -40,12 +40,16 @@ fn is_loopback_or_localhost(host: &str) -> bool {
 }
 
 fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
+    normalize_mesh_host_with_label(host, "mesh host")
+}
+
+fn normalize_mesh_host_with_label(host: &str, label: &str) -> Result<OpenCodeTarget> {
     const DEFAULT_API_PORT: u16 = 9337;
     const DEFAULT_MANAGEMENT_PORT: u16 = 3131;
 
     let trimmed = host.trim();
     if trimmed.is_empty() {
-        anyhow::bail!("mesh host cannot be empty");
+        anyhow::bail!("{label} cannot be empty");
     }
 
     let has_scheme = trimmed.contains("://");
@@ -57,16 +61,15 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
         trimmed.to_string()
     };
     let mut parsed = if has_scheme {
-        Url::parse(&normalized_host)
-            .with_context(|| format!("Invalid mesh host URL '{trimmed}'"))?
+        Url::parse(&normalized_host).with_context(|| format!("Invalid {label} URL '{trimmed}'"))?
     } else {
         Url::parse(&format!("http://{normalized_host}"))
-            .with_context(|| format!("Invalid mesh host '{trimmed}'"))?
+            .with_context(|| format!("Invalid {label} '{trimmed}'"))?
     };
 
     let host_name = parsed
         .host_str()
-        .ok_or_else(|| anyhow::anyhow!("mesh host '{trimmed}' is missing a hostname"))?
+        .ok_or_else(|| anyhow::anyhow!("{label} '{trimmed}' is missing a hostname"))?
         .to_string();
 
     let is_local_host = is_loopback_or_localhost(&host_name);
@@ -75,7 +78,7 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
     if should_default_api_port {
         parsed
             .set_port(Some(DEFAULT_API_PORT))
-            .map_err(|_| anyhow::anyhow!("Invalid mesh host '{trimmed}'"))?;
+            .map_err(|_| anyhow::anyhow!("Invalid {label} '{trimmed}'"))?;
     }
 
     parsed.set_query(None);
@@ -88,10 +91,10 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
     api_models.set_path("/v1/models");
 
     let mut management = parsed.clone();
-    if !has_scheme || should_default_api_port {
+    if !has_scheme || should_default_api_port || (is_local_host && parsed.scheme() == "http") {
         management
             .set_port(Some(DEFAULT_MANAGEMENT_PORT))
-            .map_err(|_| anyhow::anyhow!("Invalid mesh host '{trimmed}'"))?;
+            .map_err(|_| anyhow::anyhow!("Invalid {label} '{trimmed}'"))?;
     }
     management.set_path("/api/models");
 
@@ -108,7 +111,7 @@ fn normalize_mesh_host(host: &str) -> Result<OpenCodeTarget> {
 }
 
 fn normalize_opencode_host(host: &str) -> Result<OpenCodeTarget> {
-    normalize_mesh_host(host)
+    normalize_mesh_host_with_label(host, "OpenCode host")
 }
 
 fn build_opencode_launch_spec(
@@ -574,16 +577,14 @@ pub(crate) async fn run_pi(model: Option<String>, host: &str, write: bool) -> Re
         (models, chosen, None)
     };
 
-    let result = match fetch_model_context_lengths(&client, &target.management_models_url).await {
-        Ok(context_lengths) => run_pi_with_mesh(
-            &models,
-            &chosen,
-            &target.api_base_url,
-            &context_lengths,
-            write,
-        ),
-        Err(err) => Err(err),
-    };
+    let context_lengths = fetch_model_context_lengths(&client, &target.management_models_url).await;
+    let result = run_pi_with_mesh(
+        &models,
+        &chosen,
+        &target.api_base_url,
+        &context_lengths,
+        write,
+    );
 
     cleanup_mesh_child(&mut mesh_child);
 
@@ -711,7 +712,7 @@ fn merge_mesh_provider(
 async fn fetch_model_context_lengths(
     client: &reqwest::Client,
     management_models_url: &str,
-) -> Result<std::collections::HashMap<String, Option<u32>>> {
+) -> std::collections::HashMap<String, Option<u32>> {
     let mut context_map = std::collections::HashMap::new();
 
     if let Ok(resp) = client.get(management_models_url).send().await {
@@ -726,7 +727,7 @@ async fn fetch_model_context_lengths(
         }
     }
 
-    Ok(context_map)
+    context_map
 }
 
 async fn write_opencode_config(
@@ -750,8 +751,7 @@ async fn write_opencode_config_to_path(
 
     let existing_config = load_existing_config(config_path)?;
 
-    let context_lengths =
-        fetch_model_context_lengths(client, &target.management_models_url).await?;
+    let context_lengths = fetch_model_context_lengths(client, &target.management_models_url).await;
 
     let spec = build_opencode_launch_spec_with_limits(
         model_names,
@@ -1559,6 +1559,38 @@ mod tests {
     }
 
     #[test]
+    fn opencode_host_normalization_uses_management_port_for_explicit_loopback_api_urls() {
+        let localhost =
+            normalize_opencode_host("http://localhost:9337").expect("valid localhost URL");
+        let loopback =
+            normalize_opencode_host("http://127.0.0.1:9443").expect("valid loopback URL");
+
+        assert_eq!(localhost.api_base_url, "http://localhost:9337/v1");
+        assert_eq!(
+            localhost.management_models_url,
+            "http://localhost:3131/api/models"
+        );
+        assert!(localhost.auto_start_local_mesh);
+        assert_eq!(localhost.local_port, Some(9337));
+
+        assert_eq!(loopback.api_base_url, "http://127.0.0.1:9443/v1");
+        assert_eq!(
+            loopback.management_models_url,
+            "http://127.0.0.1:3131/api/models"
+        );
+        assert!(loopback.auto_start_local_mesh);
+        assert_eq!(loopback.local_port, Some(9443));
+    }
+
+    #[test]
+    fn opencode_host_validation_mentions_opencode_host() {
+        let err = normalize_opencode_host("   ").expect_err("empty host should fail");
+
+        assert!(err.to_string().contains("OpenCode host"));
+        assert!(!err.to_string().contains("mesh host"));
+    }
+
+    #[test]
     fn opencode_host_normalization_does_not_auto_start_https_loopback() {
         let target = normalize_opencode_host("https://localhost:9337").expect("valid HTTPS URL");
 
@@ -1569,6 +1601,23 @@ mod tests {
         );
         assert!(!target.auto_start_local_mesh);
         assert_eq!(target.local_port, Some(9337));
+    }
+
+    #[test]
+    fn context_length_lookup_is_best_effort_and_returns_empty_map_on_failure() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .expect("client should build");
+
+        let context_lengths = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(super::fetch_model_context_lengths(
+                &client,
+                "http://127.0.0.1:9/api/models",
+            ));
+
+        assert!(context_lengths.is_empty());
     }
 
     #[test]
