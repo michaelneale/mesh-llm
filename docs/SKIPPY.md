@@ -263,8 +263,12 @@ Current branch status:
 - injected hook text is materialized into the active skippy session as hidden
   continuation context, while the typed request is updated so future hook
   consultations see the same context;
-- remaining cleanup is fixture coverage and operator-facing debug controls for
-  forcing hook paths during testing.
+- skippy hook policy has fixture coverage for `mesh_hooks` injection,
+  recursion guard, media fallback, uncertainty, drift, and debug forcing
+  controls;
+- operators can force skippy hook paths during testing with
+  `MESH_HOOK_DEBUG_FORCE=pre_inference,post_prefill,mid_generation` and can
+  override the injected debug text with `MESH_HOOK_DEBUG_TEXT`.
 
 ## Lifecycle and Device Parity
 
@@ -675,7 +679,7 @@ Implementation checkpoints:
   semantics;
 - [x] keep `/mesh/hook` available only as a legacy compatibility route while the
   llama backend exists;
-- [ ] add fixture tests for `mesh_hooks` injection, recursion guard, media
+- [x] add fixture tests for `mesh_hooks` injection, recursion guard, media
   fallback, uncertainty hint, drift hint behavior, and debug forcing controls.
 
 ### 11. Remove Old Serving Paths
