@@ -3,7 +3,7 @@ use super::snapshots::{
     LocalInstancesSnapshot, ModelViewSnapshot, PluginDataSnapshot, PluginEndpointsSnapshot,
     RuntimeStatusSnapshot, StatusViewSnapshot,
 };
-use crate::api::status::{MeshModelPayload, StatusPayload};
+use crate::api::status::{MeshModelPayload, RuntimeStatusPayload, StatusPayload};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuntimeDataApiViews {
@@ -34,6 +34,11 @@ pub(crate) fn status_payload(snapshot: StatusViewSnapshot) -> StatusPayload {
         is_host: snapshot.is_host,
         is_client: snapshot.is_client,
         llama_ready: snapshot.llama_ready,
+        runtime: RuntimeStatusPayload {
+            backend: None,
+            models: vec![],
+            stages: vec![],
+        },
         model_name: snapshot.model_name,
         models: snapshot.models,
         available_models: snapshot.available_models,
@@ -149,6 +154,11 @@ mod tests {
             is_host: false,
             is_client: false,
             llama_ready: false,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: "Qwen-Test".into(),
             models: vec!["Qwen-Test".into()],
             available_models: vec!["Qwen-Test".into()],

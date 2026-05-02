@@ -3,13 +3,72 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use skippy_protocol::{LoadMode, StageConfig};
 use skippy_runtime::package::{self, LayerPackageInfo, PackageStageRequest};
 
 use super::StageLoadRequest;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StagePackageRef {
+    LocalPackage(PathBuf),
+    HuggingFacePackage {
+        repo: String,
+        revision: Option<String>,
+    },
+    SyntheticDirectGguf(PathBuf),
+}
+
+impl StagePackageRef {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        if let Some(rest) = value.strip_prefix("hf://") {
+            let (repo, revision) = if let Some((repo, revision)) = rest.split_once('@') {
+                (repo, Some(revision.to_string()))
+            } else if let Some(index) = rest.rfind(':') {
+                (&rest[..index], Some(rest[index + 1..].to_string()))
+            } else {
+                (rest, None)
+            };
+            if repo.split('/').count() != 2 || repo.contains(':') || repo.contains('@') {
+                bail!("HF package repo id must look like namespace/repo");
+            }
+            return Ok(Self::HuggingFacePackage {
+                repo: repo.to_string(),
+                revision,
+            });
+        }
+
+        let path = PathBuf::from(value);
+        if path.join("model-package.json").is_file() {
+            return Ok(Self::LocalPackage(path));
+        }
+        if path.extension().and_then(|ext| ext.to_str()) == Some("gguf") {
+            return Ok(Self::SyntheticDirectGguf(path));
+        }
+
+        bail!("not a skippy package ref: {value}");
+    }
+
+    pub(crate) fn is_distributable_package(&self) -> bool {
+        matches!(
+            self,
+            Self::LocalPackage(_) | Self::HuggingFacePackage { .. }
+        )
+    }
+
+    pub(crate) fn as_package_ref(&self) -> Option<String> {
+        match self {
+            Self::LocalPackage(path) => Some(path.to_string_lossy().to_string()),
+            Self::HuggingFacePackage { repo, revision } => Some(match revision {
+                Some(revision) => format!("hf://{repo}@{revision}"),
+                None => format!("hf://{repo}"),
+            }),
+            Self::SyntheticDirectGguf(_) => None,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StagePackageInfo {
@@ -22,6 +81,15 @@ pub(crate) struct StagePackageInfo {
     pub(crate) source_model_bytes: Option<u64>,
     pub(crate) layer_count: u32,
     pub(crate) activation_width: u32,
+    pub(crate) layers: Vec<StagePackageLayerInfo>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StagePackageLayerInfo {
+    pub(crate) layer_index: u32,
+    pub(crate) tensor_count: usize,
+    pub(crate) tensor_bytes: u64,
+    pub(crate) artifact_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,7 +132,7 @@ pub(crate) fn materialized_stage_cache_dir() -> PathBuf {
 }
 
 pub(crate) fn is_layer_package_ref(value: &str) -> bool {
-    package::is_hf_package_ref(value) || Path::new(value).join("model-package.json").is_file()
+    StagePackageRef::parse(value).is_ok_and(|package_ref| package_ref.is_distributable_package())
 }
 
 pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInfo> {
@@ -262,6 +330,16 @@ fn stage_package_info(package_ref: &str, info: LayerPackageInfo) -> Result<Stage
         source_model_bytes: info.source_model_bytes,
         layer_count: info.layer_count,
         activation_width,
+        layers: info
+            .layers
+            .into_iter()
+            .map(|layer| StagePackageLayerInfo {
+                layer_index: layer.layer_index,
+                tensor_count: layer.tensor_count,
+                tensor_bytes: layer.tensor_bytes,
+                artifact_bytes: layer.artifact_bytes,
+            })
+            .collect(),
     })
 }
 
@@ -382,5 +460,23 @@ mod tests {
         assert!(is_layer_package_ref(&dir.path().to_string_lossy()));
         assert!(!is_layer_package_ref("/tmp/not-a-package"));
         assert!(is_layer_package_ref("hf://Mesh-LLM/demo-package"));
+    }
+
+    #[test]
+    fn package_ref_distinguishes_direct_gguf_from_distributable_packages() {
+        let direct = StagePackageRef::parse("/models/model.gguf").unwrap();
+        assert_eq!(
+            direct,
+            StagePackageRef::SyntheticDirectGguf(PathBuf::from("/models/model.gguf"))
+        );
+        assert!(!direct.is_distributable_package());
+        assert!(direct.as_package_ref().is_none());
+
+        let hf = StagePackageRef::parse("hf://Mesh-LLM/demo-package@abc123").unwrap();
+        assert!(hf.is_distributable_package());
+        assert_eq!(
+            hf.as_package_ref().as_deref(),
+            Some("hf://Mesh-LLM/demo-package@abc123")
+        );
     }
 }

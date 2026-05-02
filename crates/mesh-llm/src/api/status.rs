@@ -40,7 +40,59 @@ pub(crate) enum WakeableNodeState {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RuntimeStatusPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) backend: Option<String>,
     pub(crate) models: Vec<RuntimeModelPayload>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub(crate) stages: Vec<RuntimeStagePayload>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RuntimeStagePayload {
+    pub(crate) topology_id: String,
+    pub(crate) run_id: String,
+    pub(crate) model_id: String,
+    pub(crate) backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) package_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_model_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_model_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_model_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) materialized_path: Option<String>,
+    pub(crate) materialized_pinned: bool,
+    pub(crate) stage_id: String,
+    pub(crate) stage_index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) node_id: Option<String>,
+    pub(crate) layer_start: u32,
+    pub(crate) layer_end: u32,
+    pub(crate) state: &'static str,
+    pub(crate) bind_addr: String,
+    pub(crate) activation_width: u32,
+    pub(crate) wire_dtype: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) selected_device: Option<RuntimeStageDevicePayload>,
+    pub(crate) ctx_size: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+    pub(crate) shutdown_generation: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RuntimeStageDevicePayload {
+    pub(crate) backend_device: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stable_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) vram_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -242,6 +294,7 @@ pub(crate) struct StatusPayload {
     pub(crate) is_host: bool,
     pub(crate) is_client: bool,
     pub(crate) llama_ready: bool,
+    pub(crate) runtime: RuntimeStatusPayload,
     pub(crate) model_name: String,
     pub(crate) models: Vec<String>,
     pub(crate) available_models: Vec<String>,
@@ -468,6 +521,7 @@ pub(crate) fn build_runtime_status_payload(
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeStatusPayload {
     local_processes.sort_by_key(|process| process.name.to_lowercase());
+    let backend = primary_backend.clone();
 
     let mut models: Vec<RuntimeModelPayload> = local_processes
         .into_iter()
@@ -492,7 +546,91 @@ pub(crate) fn build_runtime_status_payload(
         );
     }
 
-    RuntimeStatusPayload { models }
+    RuntimeStatusPayload {
+        backend,
+        models,
+        stages: vec![],
+    }
+}
+
+pub(crate) fn build_runtime_stage_payloads(
+    mut statuses: Vec<crate::mesh::StageRuntimeStatus>,
+) -> Vec<RuntimeStagePayload> {
+    statuses.sort_by(|left, right| {
+        (
+            &left.model_id,
+            &left.topology_id,
+            &left.run_id,
+            left.stage_index,
+            &left.stage_id,
+        )
+            .cmp(&(
+                &right.model_id,
+                &right.topology_id,
+                &right.run_id,
+                right.stage_index,
+                &right.stage_id,
+            ))
+    });
+
+    statuses
+        .into_iter()
+        .map(|status| RuntimeStagePayload {
+            topology_id: status.topology_id,
+            run_id: status.run_id,
+            model_id: status.model_id,
+            backend: status.backend,
+            package_ref: status.package_ref,
+            manifest_sha256: status.manifest_sha256,
+            source_model_path: status.source_model_path,
+            source_model_sha256: status.source_model_sha256,
+            source_model_bytes: status.source_model_bytes,
+            materialized_path: status.materialized_path,
+            materialized_pinned: status.materialized_pinned,
+            stage_id: status.stage_id,
+            stage_index: status.stage_index,
+            node_id: status.node_id.map(|id| id.to_string()),
+            layer_start: status.layer_start,
+            layer_end: status.layer_end,
+            state: runtime_stage_state_label(status.state),
+            bind_addr: status.bind_addr,
+            activation_width: status.activation_width,
+            wire_dtype: runtime_stage_wire_dtype_label(status.wire_dtype),
+            selected_device: status
+                .selected_device
+                .map(|device| RuntimeStageDevicePayload {
+                    backend_device: device.backend_device,
+                    stable_id: device.stable_id,
+                    index: device.index,
+                    vram_bytes: device.vram_bytes,
+                }),
+            ctx_size: status.ctx_size,
+            error: status.error,
+            shutdown_generation: status.shutdown_generation,
+        })
+        .collect()
+}
+
+pub(crate) fn runtime_stage_state_label(
+    state: crate::inference::skippy::StageRuntimeState,
+) -> &'static str {
+    match state {
+        crate::inference::skippy::StageRuntimeState::Starting => "starting",
+        crate::inference::skippy::StageRuntimeState::Ready => "ready",
+        crate::inference::skippy::StageRuntimeState::Stopping => "stopping",
+        crate::inference::skippy::StageRuntimeState::Stopped => "stopped",
+        crate::inference::skippy::StageRuntimeState::Failed => "failed",
+    }
+}
+
+pub(crate) fn runtime_stage_wire_dtype_label(
+    dtype: crate::inference::skippy::StageWireDType,
+) -> &'static str {
+    match dtype {
+        crate::inference::skippy::StageWireDType::F32 => "f32",
+        crate::inference::skippy::StageWireDType::F16 => "f16",
+        crate::inference::skippy::StageWireDType::Q8 => "q8",
+    }
 }
 
 pub(super) fn build_runtime_processes_payload(
@@ -714,6 +852,11 @@ mod tests {
             is_host: true,
             is_client: false,
             llama_ready: false,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: "Qwen".to_string(),
             models: vec![],
             available_models: vec![],
@@ -761,6 +904,11 @@ mod tests {
             is_host: true,
             is_client: false,
             llama_ready: true,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: "Qwen".to_string(),
             models: vec!["Qwen".to_string()],
             available_models: vec!["Qwen".to_string()],
@@ -808,6 +956,11 @@ mod tests {
             is_host: false,
             is_client: false,
             llama_ready: false,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: String::new(),
             models: vec![],
             available_models: vec![],
@@ -864,6 +1017,11 @@ mod tests {
             is_host: false,
             is_client: false,
             llama_ready: false,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: String::new(),
             models: vec![],
             available_models: vec![],

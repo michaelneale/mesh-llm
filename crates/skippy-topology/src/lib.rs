@@ -330,6 +330,37 @@ pub fn plan_even_contiguous(request: &TopologyPlanRequest) -> Result<TopologyPla
     plan_ranges(request, &ranges)
 }
 
+pub fn plan_weighted_contiguous(request: &TopologyPlanRequest) -> Result<TopologyPlan, PlanError> {
+    validate_request(request)?;
+
+    let stage_count = request.nodes.len().min(request.layers.len());
+    let nodes = &request.nodes[..stage_count];
+    let total_weight: u64 = nodes.iter().map(|node| node.vram_bytes).sum();
+    if total_weight == 0 {
+        return plan_even_contiguous(request);
+    }
+
+    let mut ranges = Vec::with_capacity(stage_count);
+    let mut layer_start = 0usize;
+    for (stage_index, node) in nodes.iter().enumerate() {
+        let remaining_stages = stage_count - stage_index;
+        let remaining_layers = request.layers.len() - layer_start;
+        let mut span = if remaining_stages == 1 {
+            remaining_layers
+        } else {
+            (((request.layers.len() as u128) * (node.vram_bytes as u128)) / (total_weight as u128))
+                .try_into()
+                .unwrap_or(usize::MAX)
+        };
+        span = span.max(1).min(remaining_layers - (remaining_stages - 1));
+        let layer_end = layer_start + span;
+        ranges.push((layer_start, layer_end));
+        layer_start = layer_end;
+    }
+
+    plan_ranges(request, &ranges)
+}
+
 pub fn plan_contiguous_with_splits(
     request: &TopologyPlanRequest,
     splits: &[u32],
@@ -1101,6 +1132,14 @@ mod tests {
             .collect()
     }
 
+    fn weighted_node(node_id: &str, vram_bytes: u64) -> NodeSpec {
+        NodeSpec {
+            node_id: node_id.to_string(),
+            cached_slice_bytes: 0,
+            vram_bytes,
+        }
+    }
+
     #[test]
     fn dense_attention_plan_allows_costed_kv_migration() {
         let request = TopologyPlanRequest {
@@ -1124,6 +1163,54 @@ mod tests {
             .iter()
             .all(|stage| stage.migration_policy == MigrationPolicy::CostedKv));
         assert!(plan.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn weighted_contiguous_plan_uses_node_vram_for_layer_spans() {
+        let request = TopologyPlanRequest {
+            topology_id: "topology-a".into(),
+            model_id: "model-a".into(),
+            layers: dense_attention_layers(12, 10),
+            nodes: vec![
+                weighted_node("node-a", 60),
+                weighted_node("node-b", 30),
+                weighted_node("node-c", 30),
+            ],
+            family: None,
+            policy: PlannerPolicy::default(),
+        };
+
+        let plan = plan_weighted_contiguous(&request).expect("plan");
+
+        assert_eq!(
+            plan.stages
+                .iter()
+                .map(|stage| (stage.node_id.as_str(), stage.layer_start, stage.layer_end))
+                .collect::<Vec<_>>(),
+            vec![("node-a", 0, 6), ("node-b", 6, 9), ("node-c", 9, 12)]
+        );
+    }
+
+    #[test]
+    fn weighted_contiguous_plan_falls_back_to_even_without_weights() {
+        let request = TopologyPlanRequest {
+            topology_id: "topology-a".into(),
+            model_id: "model-a".into(),
+            layers: dense_attention_layers(6, 10),
+            nodes: vec![weighted_node("node-a", 0), weighted_node("node-b", 0)],
+            family: None,
+            policy: PlannerPolicy::default(),
+        };
+
+        let plan = plan_weighted_contiguous(&request).expect("plan");
+
+        assert_eq!(
+            plan.stages
+                .iter()
+                .map(|stage| (stage.node_id.as_str(), stage.layer_start, stage.layer_end))
+                .collect::<Vec<_>>(),
+            vec![("node-a", 0, 3), ("node-b", 3, 6)]
+        );
     }
 
     #[test]

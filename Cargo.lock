@@ -3571,6 +3571,7 @@ dependencies = [
  "skippy-protocol",
  "skippy-runtime",
  "skippy-server",
+ "skippy-topology",
  "tabwriter",
  "tempfile",
  "thiserror 2.0.18",

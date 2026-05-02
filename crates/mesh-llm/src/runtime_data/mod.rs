@@ -44,7 +44,8 @@ mod tests {
         RuntimeLlamaSlotSnapshot, RuntimeLlamaSlotsSnapshot,
     };
     use crate::api::status::{
-        build_gpus, build_ownership_payload, LocalInstance, NodeState, StatusPayload,
+        build_gpus, build_ownership_payload, LocalInstance, NodeState, RuntimeStatusPayload,
+        StatusPayload,
     };
     use crate::api::RuntimeProcessPayload;
     use crate::inference::election;
@@ -363,6 +364,11 @@ mod tests {
             is_host: false,
             is_client: false,
             llama_ready: false,
+            runtime: RuntimeStatusPayload {
+                backend: None,
+                models: vec![],
+                stages: vec![],
+            },
             model_name: "Qwen-Test".into(),
             models: vec!["Qwen-Test".into()],
             available_models: vec!["Qwen-Test".into()],

@@ -51,7 +51,8 @@ use self::http::{http_body_text, respond_error};
 use self::routes::dispatch_request;
 use self::state::ApiInner;
 use self::status::{
-    build_runtime_processes_payload, build_runtime_status_payload, MeshModelPayload,
+    build_runtime_processes_payload, build_runtime_stage_payloads, build_runtime_status_payload,
+    runtime_stage_state_label, runtime_stage_wire_dtype_label, MeshModelPayload,
     RuntimeLlamaPayload, RuntimeProcessesPayload, RuntimeStatusPayload, StatusPayload,
 };
 use crate::inference::election;
@@ -69,24 +70,6 @@ use self::status::{build_gpus, LocalInstance, NodeState, WakeableNode, WakeableN
 use crate::runtime::wakeable::{WakeableInventoryEntry, WakeableState};
 
 const MESH_LLM_VERSION: &str = crate::VERSION;
-
-fn stage_runtime_state_label(state: crate::inference::skippy::StageRuntimeState) -> &'static str {
-    match state {
-        crate::inference::skippy::StageRuntimeState::Starting => "starting",
-        crate::inference::skippy::StageRuntimeState::Ready => "ready",
-        crate::inference::skippy::StageRuntimeState::Stopping => "stopping",
-        crate::inference::skippy::StageRuntimeState::Stopped => "stopped",
-        crate::inference::skippy::StageRuntimeState::Failed => "failed",
-    }
-}
-
-fn stage_wire_dtype_label(dtype: crate::inference::skippy::StageWireDType) -> &'static str {
-    match dtype {
-        crate::inference::skippy::StageWireDType::F32 => "f32",
-        crate::inference::skippy::StageWireDType::F16 => "f16",
-        crate::inference::skippy::StageWireDType::Q8 => "q8",
-    }
-}
 
 #[cfg(test)]
 #[derive(Debug, Default, PartialEq)]
@@ -522,10 +505,10 @@ impl MeshApi {
                     "node_id": status.node_id.map(|id| id.to_string()),
                     "layer_start": status.layer_start,
                     "layer_end": status.layer_end,
-                    "state": stage_runtime_state_label(status.state),
+                    "state": runtime_stage_state_label(status.state),
                     "bind_addr": status.bind_addr.clone(),
                     "activation_width": status.activation_width,
-                    "wire_dtype": stage_wire_dtype_label(status.wire_dtype),
+                    "wire_dtype": runtime_stage_wire_dtype_label(status.wire_dtype),
                     "selected_device": status.selected_device.as_ref().map(|device| {
                         serde_json::json!({
                             "backend_device": device.backend_device,
@@ -784,9 +767,20 @@ impl MeshApi {
             )
         };
         let runtime_status = runtime_data_collector.runtime_status_snapshot();
-        let model_name = runtime_status.primary_model.unwrap_or_default();
+        let model_name = runtime_status.primary_model.clone().unwrap_or_default();
         let local_processes =
             runtime_data::runtime_process_payloads(&runtime_status.local_processes);
+        let mut runtime = build_runtime_status_payload(
+            &model_name,
+            runtime_status.primary_backend.clone(),
+            runtime_status.is_host,
+            runtime_status.llama_ready,
+            runtime_status.llama_port,
+            local_processes.clone(),
+        );
+        node.refresh_stage_runtime_statuses(std::time::Duration::from_millis(750))
+            .await;
+        runtime.stages = build_runtime_stage_payloads(node.stage_runtime_statuses().await);
 
         let wakeable_nodes = wakeable_inventory.status_snapshot().await;
         let bw_str = {
@@ -861,6 +855,7 @@ impl MeshApi {
                 ),
             },
         ));
+        payload.runtime = runtime;
         payload.wanted_model_refs = self.wanted_model_refs().await;
         payload
     }
@@ -2508,6 +2503,41 @@ mod tests {
                 },
             );
         }
+        let node = state.node().await;
+        node.record_stage_status(
+            Some(node.id()),
+            crate::inference::skippy::StageStatusSnapshot {
+                topology_id: "topology-1".into(),
+                run_id: "run-1".into(),
+                model_id: "collector-model".into(),
+                backend: "package".into(),
+                package_ref: Some("hf://mesh/test-model".into()),
+                manifest_sha256: Some("manifest-sha".into()),
+                source_model_path: Some("/models/test.gguf".into()),
+                source_model_sha256: Some("source-sha".into()),
+                source_model_bytes: Some(1_234),
+                materialized_path: Some("/tmp/mesh/stage-0.gguf".into()),
+                materialized_pinned: true,
+                stage_id: "stage-0".into(),
+                stage_index: 0,
+                layer_start: 0,
+                layer_end: 12,
+                state: crate::inference::skippy::StageRuntimeState::Ready,
+                bind_addr: "127.0.0.1:39100".into(),
+                activation_width: 4096,
+                wire_dtype: crate::inference::skippy::StageWireDType::F16,
+                selected_device: Some(skippy_protocol::StageDevice {
+                    backend_device: "Metal0".into(),
+                    stable_id: Some("metal:0".into()),
+                    index: Some(0),
+                    vram_bytes: Some(24_000_000_000),
+                }),
+                ctx_size: 8192,
+                error: None,
+                shutdown_generation: 7,
+            },
+        )
+        .await;
 
         let (status_addr, status_handle) = spawn_management_test_server(state.clone()).await;
         let status_response = send_management_request(
@@ -2519,6 +2549,34 @@ mod tests {
         let status_body = json_body(&status_response);
         assert_eq!(status_body["model_name"], json!("collector-model"));
         assert_eq!(status_body["llama_ready"], json!(true));
+        assert_eq!(
+            status_body["runtime"]["backend"],
+            json!("collector-backend")
+        );
+        assert_eq!(
+            status_body["runtime"]["models"][0]["name"],
+            json!("collector-model")
+        );
+        assert_eq!(
+            status_body["runtime"]["models"][0]["backend"],
+            json!("collector-backend")
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["model_id"],
+            json!("collector-model")
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["package_ref"],
+            json!("hf://mesh/test-model")
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["materialized_pinned"],
+            json!(true)
+        );
+        assert_eq!(
+            status_body["runtime"]["stages"][0]["selected_device"]["backend_device"],
+            json!("Metal0")
+        );
         assert!(status_body.get("mesh_models").is_none());
         status_handle.abort();
 

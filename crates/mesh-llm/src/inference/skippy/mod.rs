@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
+mod deployment;
 mod hooks;
 mod materialization;
 mod package;
 mod stage;
+mod topology;
 
 use std::{
     path::{Path, PathBuf},
@@ -26,12 +28,16 @@ use skippy_server::{
     EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
 };
 
+pub(crate) use deployment::{
+    pinned_stage_device, remote_stage_load_request, stage0_config, stage_stop_request,
+    stage_topology_instance, StageDeploymentContext,
+};
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use materialization::{
     configure_materialized_stage_cache, inspect_stage_package, is_layer_package_ref,
     materialize_stage_config, materialize_stage_load, materialized_stage_cache_dir,
     prune_unpinned_materialized_stages, remove_materialized_stages_for_sources,
-    MaterializedStagePin, StagePackageInfo,
+    MaterializedStagePin, StagePackageInfo, StagePackageRef,
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
@@ -39,6 +45,7 @@ pub(crate) use stage::{
     StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
     StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
 };
+pub(crate) use topology::{plan_package_topology, StageTopologyParticipant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SkippyModelState {

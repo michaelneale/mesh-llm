@@ -50,6 +50,15 @@ pub struct LayerPackageInfo {
     pub source_model_bytes: Option<u64>,
     pub layer_count: u32,
     pub activation_width: Option<u32>,
+    pub layers: Vec<LayerPackageLayerInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerPackageLayerInfo {
+    pub layer_index: u32,
+    pub tensor_count: usize,
+    pub tensor_bytes: u64,
+    pub artifact_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +299,16 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
             .flatten(),
         layer_count: manifest.layer_count,
         activation_width: manifest.activation_width,
+        layers: manifest
+            .layers
+            .into_iter()
+            .map(|layer| LayerPackageLayerInfo {
+                layer_index: layer.layer_index,
+                tensor_count: layer.tensor_count,
+                tensor_bytes: layer.tensor_bytes,
+                artifact_bytes: layer.artifact_bytes,
+            })
+            .collect(),
     })
 }
 

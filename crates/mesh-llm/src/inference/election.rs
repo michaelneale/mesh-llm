@@ -1141,9 +1141,83 @@ struct SkippySplitDeployment {
     remote_statuses: Vec<(iroh::EndpointId, skippy::StageStatusSnapshot)>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SkippyStageFailure {
+    stage_id: String,
+    peer_id: Option<iroh::EndpointId>,
+    reason: String,
+}
+
 impl SkippySplitDeployment {
     fn http_port(&self) -> u16 {
         self.http.port()
+    }
+
+    async fn wait_for_failure(&self, node: &mesh::Node) -> SkippyStageFailure {
+        loop {
+            if let Some(failure) = self.check_failure(node).await {
+                return failure;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    async fn check_failure(&self, node: &mesh::Node) -> Option<SkippyStageFailure> {
+        let stage0 = self.stage0.status();
+        if matches!(
+            stage0.state,
+            skippy::SkippyModelState::Failed | skippy::SkippyModelState::Stopped
+        ) {
+            return Some(SkippyStageFailure {
+                stage_id: self.stage0_status.stage_id.clone(),
+                peer_id: Some(node.id()),
+                reason: stage0
+                    .last_error
+                    .unwrap_or_else(|| format!("local stage 0 is {:?}", stage0.state)),
+            });
+        }
+
+        for (peer_id, expected) in &self.remote_statuses {
+            let filter = skippy::StageStatusFilter {
+                topology_id: Some(self.topology_id.clone()),
+                run_id: Some(self.run_id.clone()),
+                stage_id: Some(expected.stage_id.clone()),
+            };
+            let response = node
+                .send_stage_control(*peer_id, skippy::StageControlRequest::Status(filter))
+                .await;
+            match response {
+                Ok(skippy::StageControlResponse::Status(statuses)) => {
+                    let current = statuses.iter().find(|status| {
+                        status.topology_id == self.topology_id
+                            && status.run_id == self.run_id
+                            && status.stage_id == expected.stage_id
+                    });
+                    if let Some(failure) =
+                        active_stage_failure_from_status(Some(*peer_id), expected, current)
+                    {
+                        return Some(failure);
+                    }
+                }
+                Ok(skippy::StageControlResponse::Ready(ready)) => {
+                    if let Some(failure) = active_stage_failure_from_status(
+                        Some(*peer_id),
+                        expected,
+                        Some(&ready.status),
+                    ) {
+                        return Some(failure);
+                    }
+                }
+                Err(error) => {
+                    return Some(SkippyStageFailure {
+                        stage_id: expected.stage_id.clone(),
+                        peer_id: Some(*peer_id),
+                        reason: format!("stage status refresh failed: {error}"),
+                    });
+                }
+            }
+        }
+        None
     }
 
     async fn shutdown(self, node: &mesh::Node) {
@@ -1186,6 +1260,44 @@ impl SkippySplitDeployment {
             node.stop_stage_transport_bridge(&topology_id, &run_id, &stage_id)
                 .await;
         }
+    }
+}
+
+fn active_stage_failure_from_status(
+    peer_id: Option<iroh::EndpointId>,
+    expected: &skippy::StageStatusSnapshot,
+    status: Option<&skippy::StageStatusSnapshot>,
+) -> Option<SkippyStageFailure> {
+    let Some(status) = status else {
+        return Some(SkippyStageFailure {
+            stage_id: expected.stage_id.clone(),
+            peer_id,
+            reason: "stage status missing from runtime".to_string(),
+        });
+    };
+    if status.topology_id != expected.topology_id
+        || status.run_id != expected.run_id
+        || status.stage_id != expected.stage_id
+    {
+        return None;
+    }
+    match status.state {
+        skippy::StageRuntimeState::Failed => Some(SkippyStageFailure {
+            stage_id: status.stage_id.clone(),
+            peer_id,
+            reason: status
+                .error
+                .clone()
+                .unwrap_or_else(|| "stage entered failed state".to_string()),
+        }),
+        skippy::StageRuntimeState::Stopped => Some(SkippyStageFailure {
+            stage_id: status.stage_id.clone(),
+            peer_id,
+            reason: "stage stopped during active topology".to_string(),
+        }),
+        skippy::StageRuntimeState::Starting
+        | skippy::StageRuntimeState::Ready
+        | skippy::StageRuntimeState::Stopping => None,
     }
 }
 
@@ -2008,6 +2120,40 @@ pub async fn election_loop(
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     // Fall through to restart
                 }
+                failure = async {
+                    if let Some(deployment) = skippy_split.as_ref() {
+                        deployment.wait_for_failure(&node).await
+                    } else {
+                        std::future::pending::<SkippyStageFailure>().await
+                    }
+                } => {
+                    if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
+                        break;
+                    }
+                    if let Some(deployment) = skippy_split.take() {
+                        withdraw_failed_skippy_split(
+                            &node,
+                            &tunnel_mgr,
+                            &target_tx,
+                            &model_name,
+                            failure,
+                            deployment,
+                        )
+                        .await;
+                    }
+                    llama_process = None;
+                    if let Some(proxy) = backend_proxy.take() {
+                        proxy.shutdown().await;
+                    }
+                    currently_host = false;
+                    current_local_port = None;
+                    last_running_plan = None;
+                    node.set_role(NodeRole::Worker).await;
+                    on_process(None);
+                    on_change(false, false);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
                 res = stop_rx.changed() => {
                     if res.is_err() || stop_requested(&stop_rx) {
                         break;
@@ -2282,6 +2428,38 @@ pub async fn election_loop(
                 tunnel_mgr.set_http_port(0);
                 last_running_plan = None;
                 update_targets(&node, &model_name, InferenceTarget::None, &target_tx).await;
+                on_change(false, false);
+            }
+            failure = async {
+                if let Some(deployment) = skippy_split.as_ref() {
+                    deployment.wait_for_failure(&node).await
+                } else {
+                    std::future::pending::<SkippyStageFailure>().await
+                }
+            } => {
+                if stop_requested(&stop_rx) || launch::runtime_shutting_down() {
+                    break;
+                }
+                if let Some(deployment) = skippy_split.take() {
+                    withdraw_failed_skippy_split(
+                        &node,
+                        &tunnel_mgr,
+                        &target_tx,
+                        &model_name,
+                        failure,
+                        deployment,
+                    )
+                    .await;
+                }
+                llama_process = None;
+                if let Some(proxy) = backend_proxy.take() {
+                    proxy.shutdown().await;
+                }
+                currently_host = false;
+                current_local_port = None;
+                last_running_plan = None;
+                node.set_role(NodeRole::Worker).await;
+                on_process(None);
                 on_change(false, false);
             }
             res = stop_rx.changed() => {
@@ -3174,15 +3352,6 @@ async fn update_targets(
     });
 }
 
-#[derive(Clone, Debug)]
-struct StagePlan {
-    stage_id: String,
-    stage_index: u32,
-    node_id: iroh::EndpointId,
-    layer_start: u32,
-    layer_end: u32,
-}
-
 async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<SkippySplitDeployment> {
     let StartSkippySplitParams {
         node,
@@ -3196,30 +3365,48 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         slots,
     } = params;
 
-    let package_ref = model.to_string_lossy().to_string();
+    let raw_package_ref = model.to_string_lossy().to_string();
     let package_info = match package_info {
         Some(info) => info,
-        None if skippy::is_layer_package_ref(&package_ref) => {
-            match skippy::inspect_stage_package(&package_ref) {
-                Ok(info) => info,
-                Err(error) => {
-                    emit_error(
-                        format!("Failed to inspect skippy layer package: {error}"),
-                        Some(format!("model={model_name} package={package_ref}")),
-                    );
-                    return None;
+        None => match skippy::StagePackageRef::parse(&raw_package_ref) {
+            Ok(parsed) if parsed.is_distributable_package() => {
+                let package_ref = parsed.as_package_ref().unwrap_or(raw_package_ref);
+                match skippy::inspect_stage_package(&package_ref) {
+                    Ok(info) => info,
+                    Err(error) => {
+                        emit_error(
+                            format!("Failed to inspect skippy layer package: {error}"),
+                            Some(format!("model={model_name} package={package_ref}")),
+                        );
+                        return None;
+                    }
                 }
             }
-        }
-        None => {
-            emit_error(
-                "Skippy staged serving requires a package-backed model source; direct --gguf paths only support local skippy serving for now",
-                Some(format!("model={model_name} path={}", model.display())),
-            );
-            return None;
-        }
+            Ok(skippy::StagePackageRef::SyntheticDirectGguf(path)) => {
+                emit_error(
+                    "Skippy staged serving requires a package-backed model source; direct --gguf paths only support local skippy serving for now",
+                    Some(format!("model={model_name} path={}", path.display())),
+                );
+                return None;
+            }
+            Ok(_) => {
+                emit_error(
+                    "Skippy staged serving requires a distributable layer package",
+                    Some(format!("model={model_name} package={raw_package_ref}")),
+                );
+                return None;
+            }
+            Err(error) => {
+                emit_error(
+                    format!(
+                        "Skippy staged serving requires a package-backed model source: {error}"
+                    ),
+                    Some(format!("model={model_name} path={}", model.display())),
+                );
+                return None;
+            }
+        },
     };
-    let layer_count = package_info.layer_count;
     let activation_width = match i32::try_from(package_info.activation_width) {
         Ok(width) if width > 0 => width,
         _ => {
@@ -3234,35 +3421,73 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         }
     };
     let ctx_size = ctx_size_override.unwrap_or(4096);
-    let mut participants = vec![(
-        node.id(),
-        effective_local_launch_vram(
+    let mut participants = vec![skippy::StageTopologyParticipant {
+        node_id: node.id(),
+        vram_bytes: effective_local_launch_vram(
             node.vram_bytes(),
             pinned_gpu,
             None,
             node.gpu_vram.as_deref(),
         ),
-    )];
+    }];
     for worker_id in worker_ids {
         let Some(peer) = model_peers.iter().find(|peer| peer.id == *worker_id) else {
             continue;
         };
-        participants.push((peer.id, split_peer_vram_bytes(peer, node.vram_bytes())));
+        participants.push(skippy::StageTopologyParticipant {
+            node_id: peer.id,
+            vram_bytes: split_peer_vram_bytes(peer, node.vram_bytes()),
+        });
     }
-    let plans = plan_stage_ranges(layer_count, &participants);
+    let run_id = format!("mesh-stage-{}", now_unix_nanos());
+    let topology_id = format!("topology-{run_id}");
+    let topology_plan =
+        match skippy::plan_package_topology(&topology_id, &package_info, &participants) {
+            Ok(plan) => plan,
+            Err(error) => {
+                emit_error(
+                    format!("Failed to plan skippy stage topology: {error}"),
+                    Some(format!(
+                        "model={model_name} package={}",
+                        package_info.package_ref
+                    )),
+                );
+                return None;
+            }
+        };
+    if let Some(family_id) = topology_plan.family_id.as_deref() {
+        emit_info(
+            format!("[{model_name}] skippy topology uses family capability {family_id}"),
+            None,
+        );
+    }
+    for diagnostic in &topology_plan.diagnostics {
+        emit_info(
+            format!("[{model_name}] skippy topology: {diagnostic}"),
+            None,
+        );
+    }
+    let plans = topology_plan.stages;
     if plans.len() < 2 {
         emit_error(
             "Staged serving needs at least two non-empty stage ranges",
-            Some(format!("model={model_name} layers={layer_count}")),
+            Some(format!(
+                "model={model_name} layers={}",
+                package_info.layer_count
+            )),
         );
         return None;
     }
-
-    let run_id = format!("mesh-stage-{}", now_unix_nanos());
-    let topology_id = format!("topology-{run_id}");
+    let context = skippy::StageDeploymentContext {
+        topology_id: &topology_id,
+        run_id: &run_id,
+        model_id: model_name,
+        package: &package_info,
+        activation_width,
+        ctx_size,
+    };
     let package_ref = package_info.package_ref.clone();
     let manifest_sha256 = package_info.manifest_sha256.clone();
-    let model_path = package_ref.clone();
     let mut remote_stops = Vec::new();
     let mut ready_statuses: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
 
@@ -3280,31 +3505,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
                 node_id: Some(next.node_id),
             }
         });
-        let request = skippy::StageLoadRequest {
-            topology_id: topology_id.clone(),
-            run_id: run_id.clone(),
-            model_id: model_name.to_string(),
-            backend: "skippy".to_string(),
-            package_ref: package_ref.clone(),
-            manifest_sha256: manifest_sha256.clone(),
-            stage_id: plan.stage_id.clone(),
-            stage_index: plan.stage_index,
-            layer_start: plan.layer_start,
-            layer_end: plan.layer_end,
-            model_path: Some(model_path.clone()),
-            selected_device: None,
-            bind_addr: "127.0.0.1:0".to_string(),
-            activation_width,
-            wire_dtype: skippy::StageWireDType::F16,
-            ctx_size,
-            n_gpu_layers: -1,
-            cache_type_k: "f16".to_string(),
-            cache_type_v: "f16".to_string(),
-            shutdown_generation: 1,
-            load_mode: skippy_protocol::LoadMode::LayerPackage,
-            upstream: None,
-            downstream,
-        };
+        let request = skippy::remote_stage_load_request(&context, plan, downstream);
         emit_info(
             format!(
                 "[{model_name}] Loading stage {} on {} layers {}..{}",
@@ -3320,15 +3521,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
             .await
         {
             Ok(skippy::StageControlResponse::Ready(ready)) if ready.accepted => {
-                remote_stops.push((
-                    plan.node_id,
-                    skippy::StageStopRequest {
-                        topology_id: topology_id.clone(),
-                        run_id: run_id.clone(),
-                        stage_id: plan.stage_id.clone(),
-                        shutdown_generation: 2,
-                    },
-                ));
+                remote_stops.push((plan.node_id, skippy::stage_stop_request(&context, plan, 2)));
             }
             Ok(skippy::StageControlResponse::Ready(ready)) => {
                 emit_error(
@@ -3400,43 +3593,14 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         }
     };
 
-    let selected_device = pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
-        backend_device: gpu.backend_device.clone(),
-        stable_id: Some(gpu.stable_id.clone()),
-        index: Some(gpu.index),
-        vram_bytes: Some(gpu.vram_bytes),
-    });
-    let stage0_config = skippy_protocol::StageConfig {
-        run_id: run_id.clone(),
-        topology_id: topology_id.clone(),
-        model_id: model_name.to_string(),
-        package_ref: Some(package_ref.clone()),
-        manifest_sha256: Some(manifest_sha256.clone()),
-        source_model_path: Some(package_info.source_model_path.clone()),
-        source_model_sha256: Some(package_info.source_model_sha256.clone()),
-        source_model_bytes: package_info.source_model_bytes,
-        materialized_path: None,
-        materialized_pinned: false,
-        model_path: Some(model_path),
-        stage_id: stage0.stage_id.clone(),
-        stage_index: stage0.stage_index,
-        layer_start: stage0.layer_start,
-        layer_end: stage0.layer_end,
-        ctx_size,
-        n_gpu_layers: -1,
-        cache_type_k: "f16".to_string(),
-        cache_type_v: "f16".to_string(),
-        filter_tensors_on_load: true,
-        selected_device: selected_device.clone(),
-        load_mode: skippy_protocol::LoadMode::LayerPackage,
-        bind_addr: "127.0.0.1:0".to_string(),
-        upstream: None,
-        downstream: Some(skippy_protocol::PeerConfig {
-            stage_id: stage1.stage_id.clone(),
-            stage_index: stage1.stage_index,
-            endpoint: stage1_endpoint,
-        }),
-    };
+    let selected_device = skippy::pinned_stage_device(pinned_gpu);
+    let stage0_config = skippy::stage0_config(
+        &context,
+        stage0,
+        stage1,
+        stage1_endpoint,
+        selected_device.clone(),
+    );
     let stage0_handle = match skippy::SkippyModelHandle::load_stage0_config(
         stage0_config,
         activation_width,
@@ -3466,29 +3630,13 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         }
     };
     let http = stage0_handle.start_http(http_port);
-    node.record_stage_topology(mesh::StageTopologyInstance {
-        topology_id: topology_id.clone(),
-        run_id: run_id.clone(),
-        model_id: model_name.to_string(),
-        package_ref: package_ref.clone(),
-        manifest_sha256: manifest_sha256.clone(),
-        stages: plans
-            .iter()
-            .map(|plan| mesh::StageAssignment {
-                stage_id: plan.stage_id.clone(),
-                stage_index: plan.stage_index,
-                node_id: plan.node_id,
-                layer_start: plan.layer_start,
-                layer_end: plan.layer_end,
-                endpoint: mesh::StageEndpoint {
-                    bind_addr: ready_statuses
-                        .get(&plan.stage_id)
-                        .map(|status| status.bind_addr.clone())
-                        .unwrap_or_else(|| format!("127.0.0.1:{http_port}")),
-                },
-            })
-            .collect(),
-    })
+    let stage0_bind_addr = format!("127.0.0.1:{http_port}");
+    node.record_stage_topology(skippy::stage_topology_instance(
+        &context,
+        &plans,
+        &ready_statuses,
+        stage0_bind_addr.clone(),
+    ))
     .await;
     let stage0_model_status = stage0_handle.status();
     let stage0_status = skippy::StageStatusSnapshot {
@@ -3501,7 +3649,7 @@ async fn start_skippy_split(params: StartSkippySplitParams<'_>) -> Option<Skippy
         layer_start: stage0.layer_start,
         layer_end: stage0.layer_end,
         state: skippy::StageRuntimeState::Ready,
-        bind_addr: format!("127.0.0.1:{http_port}"),
+        bind_addr: stage0_bind_addr,
         activation_width: activation_width as u32,
         wire_dtype: skippy::StageWireDType::F16,
         selected_device,
@@ -3552,38 +3700,28 @@ async fn cleanup_loaded_remote_stages(
     }
 }
 
-fn plan_stage_ranges(layer_count: u32, participants: &[(iroh::EndpointId, u64)]) -> Vec<StagePlan> {
-    let stage_count = participants.len().min(layer_count as usize).max(1);
-    let participants = &participants[..stage_count];
-    let total_vram: u64 = participants.iter().map(|(_, vram)| *vram).sum();
-    let mut ranges = Vec::with_capacity(stage_count);
-    let mut layer_start = 0u32;
-    for (index, (node_id, vram)) in participants.iter().enumerate() {
-        let remaining_stages = stage_count - index;
-        let remaining_layers = layer_count.saturating_sub(layer_start);
-        let mut span = if remaining_stages == 1 {
-            remaining_layers
-        } else if total_vram > 0 {
-            (((layer_count as u128) * (*vram as u128)) / (total_vram as u128))
-                .try_into()
-                .unwrap_or(u32::MAX)
-        } else {
-            layer_count / stage_count as u32
-        };
-        span = span
-            .max(1)
-            .min(remaining_layers - (remaining_stages as u32 - 1));
-        let layer_end = layer_start + span;
-        ranges.push(StagePlan {
-            stage_id: format!("stage-{index}"),
-            stage_index: index as u32,
-            node_id: *node_id,
-            layer_start,
-            layer_end,
-        });
-        layer_start = layer_end;
-    }
-    ranges
+async fn withdraw_failed_skippy_split(
+    node: &mesh::Node,
+    tunnel_mgr: &tunnel::Manager,
+    target_tx: &Arc<watch::Sender<ModelTargets>>,
+    model_name: &str,
+    failure: SkippyStageFailure,
+    deployment: SkippySplitDeployment,
+) {
+    emit_warning(
+        format!("stage topology failed — replanning: {}", failure.reason),
+        Some(format!(
+            "model={model_name} stage={} peer={}",
+            failure.stage_id,
+            failure
+                .peer_id
+                .map(|peer_id| peer_id.fmt_short().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )),
+    );
+    update_targets(node, model_name, InferenceTarget::None, target_tx).await;
+    tunnel_mgr.set_http_port(0);
+    deployment.shutdown(node).await;
 }
 
 async fn wait_for_stage_ready(
@@ -3884,6 +4022,39 @@ mod tests {
         SecretKey::from_bytes(&bytes).public()
     }
 
+    fn stage_status(
+        run_id: &str,
+        stage_id: &str,
+        state: skippy::StageRuntimeState,
+        error: Option<&str>,
+    ) -> skippy::StageStatusSnapshot {
+        skippy::StageStatusSnapshot {
+            topology_id: "topology-a".to_string(),
+            run_id: run_id.to_string(),
+            model_id: "model-a".to_string(),
+            backend: "skippy".to_string(),
+            package_ref: Some("hf://Mesh-LLM/demo-package".to_string()),
+            manifest_sha256: Some("manifest".to_string()),
+            source_model_path: Some("model.gguf".to_string()),
+            source_model_sha256: Some("source".to_string()),
+            source_model_bytes: Some(100),
+            materialized_path: None,
+            materialized_pinned: false,
+            stage_id: stage_id.to_string(),
+            stage_index: 1,
+            layer_start: 4,
+            layer_end: 8,
+            state,
+            bind_addr: "127.0.0.1:51234".to_string(),
+            activation_width: 1024,
+            wire_dtype: skippy::StageWireDType::F16,
+            selected_device: None,
+            ctx_size: 4096,
+            error: error.map(ToString::to_string),
+            shutdown_generation: 1,
+        }
+    }
+
     fn make_dense_peer(
         id: iroh::EndpointId,
         vram_bytes: u64,
@@ -4114,50 +4285,48 @@ mod tests {
     }
 
     #[test]
-    fn stage_range_plan_covers_layers_in_order() {
-        let id_a = make_id(1);
-        let id_b = make_id(2);
-        let id_c = make_id(3);
+    fn active_stage_failure_marks_missing_status_failed() {
+        let peer_id = make_id(2);
+        let expected = stage_status("run-a", "stage-1", skippy::StageRuntimeState::Ready, None);
 
-        let plan = plan_stage_ranges(12, &[(id_a, 60), (id_b, 30), (id_c, 30)]);
+        let failure = active_stage_failure_from_status(Some(peer_id), &expected, None).unwrap();
 
-        assert_eq!(plan.len(), 3);
-        assert_eq!(
-            (plan[0].stage_id.as_str(), plan[0].stage_index),
-            ("stage-0", 0)
-        );
-        assert_eq!(
-            (plan[0].node_id, plan[0].layer_start, plan[0].layer_end),
-            (id_a, 0, 6)
-        );
-        assert_eq!(
-            (plan[1].node_id, plan[1].layer_start, plan[1].layer_end),
-            (id_b, 6, 9)
-        );
-        assert_eq!(
-            (plan[2].node_id, plan[2].layer_start, plan[2].layer_end),
-            (id_c, 9, 12)
-        );
+        assert_eq!(failure.stage_id, "stage-1");
+        assert_eq!(failure.peer_id, Some(peer_id));
+        assert_eq!(failure.reason, "stage status missing from runtime");
     }
 
     #[test]
-    fn stage_range_plan_drops_extra_participants_without_empty_ranges() {
-        let id_a = make_id(1);
-        let id_b = make_id(2);
-        let id_c = make_id(3);
-
-        let plan = plan_stage_ranges(2, &[(id_a, 10), (id_b, 10), (id_c, 10)]);
-
-        assert_eq!(plan.len(), 2);
-        assert_eq!(
-            (plan[0].node_id, plan[0].layer_start, plan[0].layer_end),
-            (id_a, 0, 1)
+    fn active_stage_failure_ignores_stale_run_status() {
+        let peer_id = make_id(2);
+        let expected = stage_status("run-new", "stage-1", skippy::StageRuntimeState::Ready, None);
+        let stale = stage_status(
+            "run-old",
+            "stage-1",
+            skippy::StageRuntimeState::Failed,
+            Some("old failure"),
         );
-        assert_eq!(
-            (plan[1].node_id, plan[1].layer_start, plan[1].layer_end),
-            (id_b, 1, 2)
+
+        assert!(active_stage_failure_from_status(Some(peer_id), &expected, Some(&stale)).is_none());
+    }
+
+    #[test]
+    fn active_stage_failure_reports_failed_active_stage() {
+        let peer_id = make_id(2);
+        let expected = stage_status("run-a", "stage-1", skippy::StageRuntimeState::Ready, None);
+        let failed = stage_status(
+            "run-a",
+            "stage-1",
+            skippy::StageRuntimeState::Failed,
+            Some("boom"),
         );
-        assert!(plan.iter().all(|stage| stage.layer_start < stage.layer_end));
+
+        let failure =
+            active_stage_failure_from_status(Some(peer_id), &expected, Some(&failed)).unwrap();
+
+        assert_eq!(failure.stage_id, "stage-1");
+        assert_eq!(failure.peer_id, Some(peer_id));
+        assert_eq!(failure.reason, "boom");
     }
 
     #[test]
