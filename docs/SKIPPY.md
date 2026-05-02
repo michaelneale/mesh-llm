@@ -57,6 +57,7 @@ Bring over these skippy crates:
 | `skippy-server` | Stage transport and OpenAI driver code to refactor into embeddable APIs |
 | `skippy-topology` | Layer topology planning and family/split policy |
 | `skippy-metrics` | Runtime telemetry helpers |
+| `metrics-server` | Benchmark/debug OTLP ingest, run lifecycle, DuckDB storage, and report export |
 | `openai-frontend` | Shared OpenAI-compatible request/response, streaming, responses API compatibility, structured-output, tool-call, logprob, and backend contract |
 | `llama-model-slice` | Later package tooling for producing layer packages |
 
@@ -484,6 +485,50 @@ immediately, for example `runtime.backend`, `runtime.models`, and
 temporary compatibility view is needed, it should be clearly deprecated and
 derived from the backend-neutral model.
 
+Current branch status:
+
+- `/api/status` exposes backend-neutral `runtime.backend`, `runtime.models`,
+  and `runtime.stages`;
+- stage status includes topology/run id, backend, package/source identity,
+  materialized artifact path and size when locally visible, pin state,
+  projector path, multimodal flag, stage id/index, node id, layer range,
+  readiness state, bind address, activation width, wire dtype, selected device,
+  context size, last error, and shutdown generation;
+- `/api/runtime/stages` exposes the same staged-serving state plus topology
+  assignments for dashboard/debug views;
+- request counters and token/throughput estimates still come from mesh routing
+  metrics and skippy telemetry; they should be promoted into the same
+  backend-neutral runtime model before the old llama-shaped metrics view is
+  removed.
+
+## Metrics Debug Workflow
+
+Skippy's metrics-server workflow should move into mesh so experimental feature
+work can keep the same measure/debug loop:
+
+```text
+mesh/skippy stage runtime
+    -. best-effort OTLP summaries .->
+metrics-server
+    -> metrics.duckdb
+    -> report.json
+```
+
+`metrics-server` is not on the request path. Mesh and skippy stages must keep
+running if telemetry export is unavailable, slow, or drops events. The server
+owns benchmark/debug ingest, run lifecycle, DuckDB storage, and report export;
+stage runtime code owns only best-effort emission and stable `skippy-metrics`
+names.
+
+Current branch status:
+
+- `metrics-server` is a workspace crate in mesh;
+- `just metrics-server` starts a local collector with HTTP and OTLP/gRPC
+  endpoints;
+- `.agents/skills/metrics-server` documents the run/debug workflow for agents;
+- raw OTLP retention remains an explicit debug mode via
+  `--debug-retain-raw-otlp`.
+
 ## Stage Failure Recovery
 
 If a stage fails during an active topology, mesh should replan the topology.
@@ -504,6 +549,18 @@ state is distributed across per-stage KV, sequence ids, driver state, and
 transport links, so correctness is clearer if active generations fail and the
 next request uses a fresh topology. Checkpoint/resume can be revisited later as
 a separate high-availability feature.
+
+Current branch status:
+
+- active skippy topologies are monitored for stage status loss, refresh
+  failures, failed states, stopping states, and stopped states;
+- on failure, mesh withdraws the routable target, clears the active HTTP port,
+  marks the failed stage/run in backend-neutral status, stops/quarantines the
+  old run, and lets the election loop replan with a fresh run id;
+- failed peers are temporarily quarantined so the immediate replacement plan is
+  built from the remaining eligible peers;
+- active generations are not resumed across a topology failure; the active
+  request fails and the next request uses the replacement topology once ready.
 
 ## Migration Queue
 
@@ -589,6 +646,21 @@ router it provides. Mesh's public ingress should be able to:
 
 Embeddings can be deferred for now. The replacement plan does not need
 `/v1/embeddings` parity before removing `llama-server`.
+
+Current branch status:
+
+- `openai-frontend` owns `/v1/chat/completions`, `/v1/completions`, and
+  `/v1/responses` request/response shapes, streaming SSE adapters, OpenAI error
+  bodies, tool-call fields, structured-output fields, and logprob fields;
+- frontend fixture coverage accepts and translates tool, structured-output,
+  logprob, streaming, and responses requests without mesh carrying a second
+  public OpenAI model;
+- mesh ingress still keeps the raw-byte fast path and only normalizes when
+  compatibility translation or blob rewriting requires it;
+- skippy runtime execution now returns OpenAI-compatible unsupported-feature
+  errors for structured-output constraints, tool-call execution, and logprob
+  scoring until runtime support lands, so requested behavior is not silently
+  ignored.
 
 ### 5. Add `inference/skippy`
 

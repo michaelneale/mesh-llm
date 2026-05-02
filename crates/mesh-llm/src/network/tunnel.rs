@@ -160,61 +160,6 @@ impl Manager {
         tracing::info!("Tunnel manager: http_port updated to {port}");
     }
 
-    /// Wait until we have at least `n` peers with active tunnels
-    pub async fn wait_for_peers(&self, n: usize) -> Result<()> {
-        let mut rx = self.node.peer_change_rx.clone();
-        loop {
-            let count = *rx.borrow();
-            if count >= n {
-                return Ok(());
-            }
-            rx.changed().await?;
-        }
-    }
-
-    /// Get the full mapping of EndpointId → local tunnel port
-    pub async fn peer_ports_map(&self) -> HashMap<EndpointId, u16> {
-        self.tunnels
-            .lock()
-            .await
-            .iter()
-            .map(|(id, handle)| (*id, handle.port))
-            .collect()
-    }
-
-    /// Update the B2B port rewrite map from all received remote tunnel maps.
-    ///
-    /// For each remote peer's tunnel map, maps their tunnel ports to our local
-    /// tunnel ports for the same target EndpointIds. This enables REGISTER_PEER
-    /// rewriting: when the orchestrator tells us "peer X is at 127.0.0.1:PORT",
-    /// we replace PORT (an orchestrator tunnel port) with our own tunnel port
-    /// to the same EndpointId.
-    pub async fn update_rewrite_map(
-        &self,
-        remote_maps: &HashMap<EndpointId, HashMap<EndpointId, u16>>,
-    ) {
-        let my_tunnels = self.tunnels.lock().await;
-        let mut rewrite = self.port_rewrite_map.write().await;
-        rewrite.clear();
-
-        for (remote_peer, their_map) in remote_maps {
-            for (target_id, &their_port) in their_map {
-                if let Some(handle) = my_tunnels.get(target_id) {
-                    rewrite.insert(their_port, handle.port);
-                    tracing::info!(
-                        "B2B rewrite: peer {}'s port {} → my port {} (target {})",
-                        remote_peer.fmt_short(),
-                        their_port,
-                        handle.port,
-                        target_id.fmt_short()
-                    );
-                }
-            }
-        }
-
-        tracing::info!("B2B port rewrite map: {} entries", rewrite.len());
-    }
-
     /// Allocate a free port by binding to :0
     async fn alloc_listener(&self) -> Result<(u16, TcpListener)> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;

@@ -65,6 +65,8 @@ pub(crate) struct RuntimeStagePayload {
     pub(crate) source_model_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) materialized_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) materialized_bytes: Option<u64>,
     pub(crate) materialized_pinned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) projector_path: Option<String>,
@@ -590,6 +592,7 @@ pub(crate) fn build_runtime_stage_payloads(
                 source_model_path: status.source_model_path,
                 source_model_sha256: status.source_model_sha256,
                 source_model_bytes: status.source_model_bytes,
+                materialized_bytes: materialized_stage_bytes(status.materialized_path.as_deref()),
                 materialized_path: status.materialized_path,
                 materialized_pinned: status.materialized_pinned,
                 projector_path: status.projector_path,
@@ -617,6 +620,12 @@ pub(crate) fn build_runtime_stage_payloads(
             }
         })
         .collect()
+}
+
+fn materialized_stage_bytes(path: Option<&str>) -> Option<u64> {
+    let path = path?;
+    let metadata = std::fs::metadata(path).ok()?;
+    metadata.is_file().then_some(metadata.len())
 }
 
 pub(crate) fn runtime_stage_state_label(
@@ -786,6 +795,23 @@ mod tests {
             node_label: None,
             hostname_hint: None,
         }
+    }
+
+    #[test]
+    fn materialized_stage_bytes_reports_existing_file_size() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("stage-0.gguf");
+        std::fs::write(&path, b"stage").expect("write materialized stage");
+
+        assert_eq!(
+            materialized_stage_bytes(path.to_str()),
+            Some(b"stage".len() as u64)
+        );
+        assert_eq!(materialized_stage_bytes(None), None);
+        assert_eq!(
+            materialized_stage_bytes(Some("/definitely/not/a/materialized/stage")),
+            None
+        );
     }
 
     #[test]

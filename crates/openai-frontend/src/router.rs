@@ -518,6 +518,11 @@ mod tests {
             if request.model == "missing" {
                 return Err(OpenAiError::model_not_found(request.model));
             }
+            if request.model == "unsupported-feature" {
+                return Err(OpenAiError::unsupported(
+                    "structured output is parsed but not yet implemented by skippy runtime",
+                ));
+            }
             if request.model == "tool-call" {
                 return Ok(ChatCompletionResponse {
                     id: "chatcmpl_tool".to_string(),
@@ -1171,6 +1176,29 @@ mod tests {
         assert_eq!(body["output"][1]["type"], "function_call");
         assert_eq!(body["output"][1]["call_id"], "call_123");
         assert_eq!(body["finish_reason"], "tool_calls");
+    }
+
+    #[tokio::test]
+    async fn responses_route_preserves_backend_unsupported_errors() {
+        let response = post_json(
+            "/v1/responses",
+            json!({
+                "model": "unsupported-feature",
+                "input": "hi",
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "answer", "schema": {"type": "object"}}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_body_json(response).await;
+        assert_eq!(body["error"]["code"], "unsupported_model_feature");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("structured output"));
     }
 
     #[tokio::test]

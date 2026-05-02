@@ -17,6 +17,7 @@ members = [
     "crates/skippy-ffi",
     "crates/skippy-runtime",
     "crates/skippy-server",
+    "crates/metrics-server",
     "tools/xtask",
 ]
 default-members = [

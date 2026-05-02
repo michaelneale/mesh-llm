@@ -14,6 +14,8 @@ benchmark/report integration.
 
 `crates/skippy-metrics` owns shared attribute names. Stage servers may emit
 OTLP/telemetry, but request-path serving must not block on telemetry export.
+`crates/metrics-server` owns benchmark/debug telemetry ingest, DuckDB storage,
+run lifecycle, and canonical report export.
 
 Mesh API runtime status is not a telemetry dump. Keep public runtime status
 backend-neutral and stable; expose backend details only when intentionally part
@@ -26,5 +28,5 @@ cargo test -p skippy-server --lib
 cargo test -p mesh-llm --lib
 ```
 
-If a separate metrics server is imported later, keep canonical benchmark report
-export in that component rather than inside stage serving.
+Keep canonical benchmark report export in `metrics-server` rather than inside
+stage serving.
