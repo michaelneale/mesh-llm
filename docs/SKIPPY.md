@@ -410,6 +410,61 @@ Required behavior:
 - runtime status should show materialized artifact path, size, source identity,
   and whether it is currently pinned by an active runtime.
 
+### Exact KV/Recurrent Cache Policy
+
+Mesh should bring over the exact BLAKE3-deduplicated KV/recurrent cache path
+that won the Qwen benchmark work, but it should live inside the skippy runtime
+path rather than as the old standalone `kv-server`.
+
+Default policy:
+
+- the global default is `auto`, which behaves as off for unknown or
+  uncertified families;
+- mesh may enable the exact cache by default only for reviewed
+  model-family/runtime configurations with correctness and benchmark evidence;
+- unknown families, new quantization/layout combinations, or unreviewed
+  recurrent models require explicit per-model opt-in;
+- per-model config overrides the global policy, including the byte cap;
+- a loaded model/stage owns its cache budget, and active sessions pin cache
+  entries they are using until release.
+
+Correctness requirements:
+
+- cache restore is exact only, never fuzzy;
+- cache identity includes the model/package hash, layer range, tokenizer and
+  chat-template identity, runtime options that affect state, and the exact token
+  prefix;
+- BLAKE3 content hashes deduplicate identical KV/recurrent pages, but a page is
+  reusable only after the full cache identity matches;
+- recurrent state support must come from reviewed family capability data before
+  it can be enabled by `auto`.
+
+Operational requirements:
+
+- expose `mode`, `max_bytes`, `used_bytes`, `deduped_bytes`, hit/miss counts,
+  restored-prefix tokens, and eviction counts in runtime status and metrics;
+- enforce a byte-based cap per loaded model/stage, with explicit eviction rather
+  than unbounded growth;
+- make cache contents derived runtime state, not durable model data, so model
+  deletion/prune can discard it safely;
+- keep a global emergency off switch for burn-in and incident response.
+
+Example shape:
+
+```toml
+[skippy.cache]
+mode = "auto"
+max_bytes = "4GiB"
+
+[[models]]
+model = "hf://Qwen/..."
+serving_backend = "skippy"
+
+[models.skippy_cache]
+mode = "exact"
+max_bytes = "8GiB"
+```
+
 ## Multimodal Parity
 
 Multimodal support is part of the replacement plan. Mesh should not keep

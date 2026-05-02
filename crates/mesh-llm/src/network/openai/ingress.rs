@@ -189,6 +189,9 @@ pub(crate) async fn api_proxy(
                     if request.model_name.is_none() || request.model_name.as_deref() == Some("auto")
                     {
                         proxy::inject_mesh_hooks_flag(&mut request.raw, true);
+                        if let Some(model) = effective_model.as_deref() {
+                            proxy::rewrite_model_field(&mut request, model);
+                        }
                     }
 
                     let required_tokens = proxy::request_budget_tokens_from_parts(

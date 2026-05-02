@@ -1415,7 +1415,8 @@ async fn test_api_proxy_integration_pipeline_fallback_uses_direct_proxy() {
     let raw = String::from_utf8(strong_rx.await.unwrap()).unwrap();
 
     assert!(response.starts_with("HTTP/1.1 200 OK"));
-    assert!(raw.contains("\"model\":\"auto\""));
+    assert!(raw.contains(&format!("\"model\":\"{strong_model}\"")));
+    assert!(!raw.contains("\"model\":\"auto\""));
     assert!(!raw.contains("[Task Plan from"));
     assert!(raw.contains("\"Review this codebase, design a system-level fix for the HTTP proxy, debug the fragmented request bug, implement the code changes, update the tests, and explain the trade-offs around buffering, chunked transfer encoding, and connection reuse.\""));
     // model=auto must inject mesh_hooks flag so llama-server enables hook callbacks

@@ -31,6 +31,12 @@ MAX_INFERENCE_ATTEMPTS=15
 LOG_A=/tmp/mesh-llm-split-a.log
 LOG_B=/tmp/mesh-llm-split-b.log
 LOG_C=/tmp/mesh-llm-split-c.log
+EXPECT_DIRECT_GGUF_SPLIT_REJECTION=0
+DIRECT_GGUF_SPLIT_ERROR="Skippy staged serving requires a package-backed model source"
+
+if [ -f "$MODEL" ] && [ "${MODEL##*.}" = "gguf" ]; then
+    EXPECT_DIRECT_GGUF_SPLIT_REJECTION=1
+fi
 
 echo "=== CI Split-Mode Routing Test ==="
 echo "  mesh-llm:  $MESH_LLM"
@@ -134,6 +140,14 @@ for i in $(seq 1 "$MAX_WAIT"); do
             exit 1
         fi
     done
+
+    if [ "$EXPECT_DIRECT_GGUF_SPLIT_REJECTION" = "1" ] \
+        && { grep -q "$DIRECT_GGUF_SPLIT_ERROR" "$LOG_A" 2>/dev/null \
+            || grep -q "$DIRECT_GGUF_SPLIT_ERROR" "$LOG_B" 2>/dev/null; }; then
+        echo "  ✅ Direct GGUF split rejected cleanly in ${i}s"
+        echo "     Package-backed staged split coverage must use a distributable model package."
+        exit 0
+    fi
 
     # Check both nodes — election picks the host, we don't know which one
     for CPORT in $A_CONSOLE_PORT $B_CONSOLE_PORT; do

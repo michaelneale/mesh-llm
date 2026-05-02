@@ -97,6 +97,15 @@ echo "Building llama.cpp..."
 cmake --build "$BUILD_DIR" --config Release --parallel "$(detect_jobs)"
 echo "Build complete: $BUILD_DIR/bin/"
 
+SKIPPY_LLAMA_WORKDIR="${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/skippy-llama.cpp}"
+export SKIPPY_LLAMA_BUILD_DIR="${SKIPPY_LLAMA_BUILD_DIR:-$SKIPPY_LLAMA_WORKDIR/build-stage-abi-static}"
+
+echo "Building Skippy stage ABI..."
+LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" "$SCRIPT_DIR/prepare-skippy-llama.sh" "${SKIPPY_LLAMA_PIN_SHA:-pinned}"
+LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" \
+    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR" \
+    "$SCRIPT_DIR/build-skippy-llama.sh"
+
 if [[ -d "$MESH_DIR" ]]; then
     echo "Building mesh-llm..."
     if [[ -d "$UI_DIR" ]]; then

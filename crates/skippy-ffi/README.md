@@ -35,8 +35,9 @@ materialization, telemetry, and benchmark policy belongs in the crates above it.
 ## Build Integration
 
 By default the build script statically links patched llama.cpp from
-`.deps/llama.cpp/build-stage-abi-static`. Set `SKIPPY_LLAMA_BUILD_DIR` to point
-at another prepared build directory, for example a Linux GPU backend build:
+`.deps/skippy-llama.cpp/build-stage-abi-static`. Prepare and build it with
+`just skippy-llama-build`. Set `SKIPPY_LLAMA_BUILD_DIR` to point at another
+prepared build directory, for example a Linux GPU backend build:
 
 | Backend | Expected ggml archive | Runtime libraries linked on Linux |
 | --- | --- | --- |

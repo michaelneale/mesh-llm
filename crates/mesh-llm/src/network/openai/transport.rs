@@ -1243,6 +1243,56 @@ pub fn inject_mesh_hooks_flag(raw: &mut Vec<u8>, enabled: bool) {
     *raw = result;
 }
 
+/// Rewrite the JSON body `model` field and rebuild Content-Length.
+pub fn rewrite_model_field(request: &mut BufferedHttpRequest, model: &str) {
+    let Some(header_end) = request
+        .raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+    else {
+        return;
+    };
+
+    let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(&request.raw[header_end..])
+    else {
+        return;
+    };
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+
+    object.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.to_string()),
+    );
+    let Ok(new_body) = serde_json::to_vec(&body) else {
+        return;
+    };
+
+    let headers = std::str::from_utf8(&request.raw[..header_end - 4]).unwrap_or("");
+    let mut rebuilt = String::new();
+    for line in headers.split("\r\n") {
+        if line.to_ascii_lowercase().starts_with("content-length:") {
+            rebuilt.push_str(&format!("Content-Length: {}", new_body.len()));
+        } else {
+            rebuilt.push_str(line);
+        }
+        rebuilt.push_str("\r\n");
+    }
+    rebuilt.push_str("\r\n");
+
+    let mut raw = rebuilt.into_bytes();
+    raw.extend_from_slice(&new_body);
+
+    request.raw = raw;
+    request.body_len_bytes = new_body.len();
+    request.body_bytes = Some(new_body);
+    request.body_json = Some(body);
+    request.body_json_attempted = true;
+    request.model_name = Some(model.to_string());
+}
+
 pub fn is_models_list_request(method: &str, path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
     method == "GET" && (path == "/v1/models" || path == "/models")
@@ -3873,5 +3923,48 @@ mod tests {
         let before = raw.clone();
         inject_mesh_hooks_flag(&mut raw, true);
         assert_eq!(raw, before, "GET with no body should be unchanged");
+    }
+
+    #[test]
+    fn test_rewrite_model_field_updates_body_and_content_length() {
+        let mut request = BufferedHttpRequest {
+            raw: b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 45\r\n\r\n{\"model\":\"auto\",\"messages\":[],\"mesh_hooks\":true}".to_vec(),
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            body_json: None,
+            body_json_attempted: false,
+            body_bytes: None,
+            body_len_bytes: 45,
+            completion_tokens: None,
+            model_name: Some("auto".to_string()),
+            session_hint: None,
+            request_object_request_ids: Vec::new(),
+            response_adapter: ResponseAdapter::None,
+        };
+
+        rewrite_model_field(&mut request, "SmolLM2-135M-Instruct-Q8_0");
+
+        let body_start = request
+            .raw
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        let body: serde_json::Value = serde_json::from_slice(&request.raw[body_start..]).unwrap();
+        assert_eq!(body["model"], "SmolLM2-135M-Instruct-Q8_0");
+        assert_eq!(body["mesh_hooks"], true);
+        assert_eq!(
+            request.model_name.as_deref(),
+            Some("SmolLM2-135M-Instruct-Q8_0")
+        );
+
+        let cl_line = std::str::from_utf8(&request.raw[..body_start])
+            .unwrap()
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
+            .unwrap();
+        let declared: usize = cl_line.split(':').nth(1).unwrap().trim().parse().unwrap();
+        assert_eq!(declared, request.raw.len() - body_start);
+        assert_eq!(declared, request.body_len_bytes);
     }
 }

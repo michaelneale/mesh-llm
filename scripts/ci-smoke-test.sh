@@ -98,18 +98,41 @@ for i in $(seq 1 "$MAX_WAIT"); do
     sleep 1
 done
 
+echo "Waiting for OpenAI API to become ready..."
+SMOKE_MODEL_ID=""
+for i in $(seq 1 60); do
+    MODELS_READY_JSON=$(curl -sf "http://localhost:${API_PORT}/v1/models" 2>/dev/null || true)
+    SMOKE_MODEL_ID=$(echo "$MODELS_READY_JSON" | python3 -c "import sys,json; data=json.load(sys.stdin).get('data', []); print(data[0].get('id', '') if data else '')" 2>/dev/null || echo "")
+    if [ -n "$SMOKE_MODEL_ID" ]; then
+        echo "✅ OpenAI API ready in ${i}s"
+        echo "  model id: $SMOKE_MODEL_ID"
+        break
+    fi
+
+    if [ "$i" -eq 60 ]; then
+        echo "❌ OpenAI API failed to publish a model"
+        echo "--- Log tail ---"
+        tail -80 "$LOG" || true
+        exit 1
+    fi
+
+    sleep 1
+done
+
 # Test inference
 echo "Testing /v1/chat/completions..."
-RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
+CHAT_PAYLOAD=$(cat <<JSON
+{
+    "model": "$SMOKE_MODEL_ID",
+    "messages": [{"role": "user", "content": "Say hello in exactly 3 words."}],
+    "max_tokens": 32,
+    "temperature": 0
+}
+JSON
+)
+if ! RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -d '{
-        "model": "any",
-        "messages": [{"role": "user", "content": "Say hello in exactly 3 words."}],
-        "max_tokens": 32,
-        "temperature": 0
-    }' 2>&1)
-
-if [ $? -ne 0 ]; then
+    -d "$CHAT_PAYLOAD" 2>&1); then
     echo "❌ Inference request failed"
     echo "$RESPONSE"
     echo "--- Log tail ---"
@@ -131,14 +154,20 @@ echo "✅ Inference response: $CONTENT"
 # collaboration hooks enabled. No peers available so hooks return action:none,
 # model generates normally.
 echo "Testing model=auto (virtual LLM hooks)..."
-AUTO_HOOK_RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
+if ! AUTO_HOOK_RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
     -H "Content-Type: application/json" \
     -d '{
         "model": "auto",
         "messages": [{"role": "user", "content": "Say hi."}],
         "max_tokens": 16,
         "temperature": 0
-    }' 2>&1)
+    }' 2>&1); then
+    echo "❌ model=auto request failed"
+    echo "$AUTO_HOOK_RESPONSE"
+    echo "--- Log tail ---"
+    tail -50 "$LOG" || true
+    exit 1
+fi
 
 AUTO_HOOK_CONTENT=$(echo "$AUTO_HOOK_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null || echo "")
 if [ -z "$AUTO_HOOK_CONTENT" ]; then

@@ -114,18 +114,46 @@ except Exception:
     sleep 1
 done
 
+# Wait for the public OpenAI surface to publish a concrete model id.
+echo "Waiting for OpenAI API to publish a model..."
+MODEL_NAME=""
+for i in $(seq 1 60); do
+    MODELS_JSON="$(curl -sf "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true)"
+    MODEL_NAME="$(echo "$MODELS_JSON" | "$PYTHON_BIN" -c '
+import json, sys
+try:
+    data = json.load(sys.stdin).get("data", [])
+except Exception:
+    data = []
+print(data[0].get("id", "") if data else "")
+' 2>/dev/null || echo "")"
+    if [ -n "$MODEL_NAME" ]; then
+        echo "✅ OpenAI API ready in ${i}s"
+        echo "Using model: $MODEL_NAME"
+        break
+    fi
+    if [ "$i" -eq 60 ]; then
+        fail_with_logs "OpenAI API did not publish a model"
+    fi
+    sleep 1
+done
+
 # Verify inference works before running SDK smokes
 echo "Verifying inference readiness..."
 for i in $(seq 1 30); do
+    READY_PAYLOAD=$(cat <<JSON
+{
+    "model": "$MODEL_NAME",
+    "messages": [{"role": "user", "content": "Reply with the single word ready."}],
+    "max_tokens": 8,
+    "temperature": 0
+}
+JSON
+)
     RESPONSE=$(curl -s --max-time 10 -w '\n%{http_code}' \
         "http://127.0.0.1:${API_PORT}/v1/chat/completions" \
         -H "Content-Type: application/json" \
-        -d '{
-            "model": "any",
-            "messages": [{"role": "user", "content": "Reply with the single word ready."}],
-            "max_tokens": 8,
-            "temperature": 0
-        }' 2>/dev/null || true)
+        -d "$READY_PAYLOAD" 2>/dev/null || true)
     HTTP_CODE=$(printf '%s\n' "$RESPONSE" | tail -n 1)
     if [ "$HTTP_CODE" = "200" ]; then
         echo "✅ Inference ready"
@@ -136,16 +164,6 @@ for i in $(seq 1 30); do
     fi
     sleep 1
 done
-
-# Get the model name
-MODEL_NAME=$(curl -sf "http://127.0.0.1:${API_PORT}/v1/models" | "$PYTHON_BIN" -c '
-import json, sys
-data = json.load(sys.stdin).get("data", [])
-if not data:
-    raise SystemExit("no models returned")
-print(data[0]["id"])
-')
-echo "Using model: $MODEL_NAME"
 
 # ── SDK smoke helper ──
 

@@ -74,6 +74,24 @@ cmake -B "$BUILD_DIR" -S "$LLAMA_DIR" \
 cmake --build "$BUILD_DIR" --config Release -j"$(nproc)"
 echo "llama.cpp ROCm build complete: $BUILD_DIR/bin/"
 
+SKIPPY_LLAMA_WORKDIR="${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/skippy-llama.cpp}"
+SKIPPY_STAGE_ABI_BACKEND="${SKIPPY_LLAMA_BACKEND:-cpu}"
+if [[ -z "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; then
+    if [[ "$SKIPPY_STAGE_ABI_BACKEND" == "cpu" ]]; then
+        export SKIPPY_LLAMA_BUILD_DIR="$SKIPPY_LLAMA_WORKDIR/build-stage-abi-static"
+    else
+        export SKIPPY_LLAMA_BUILD_DIR="$SKIPPY_LLAMA_WORKDIR/build-stage-abi-$SKIPPY_STAGE_ABI_BACKEND"
+    fi
+fi
+
+echo "Building Skippy stage ABI ($SKIPPY_STAGE_ABI_BACKEND)..."
+LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" "$SCRIPT_DIR/prepare-skippy-llama.sh" "${SKIPPY_LLAMA_PIN_SHA:-pinned}"
+LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" \
+    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR" \
+    SKIPPY_LLAMA_BACKEND="$SKIPPY_STAGE_ABI_BACKEND" \
+    SKIPPY_AMDGPU_TARGETS="$AMDGPU_TARGETS" \
+    "$SCRIPT_DIR/build-skippy-llama.sh"
+
 if [[ -d "$MESH_DIR" ]]; then
     if [[ -d "$UI_DIR" ]]; then
         "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"

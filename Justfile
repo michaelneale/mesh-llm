@@ -59,6 +59,14 @@ llama-prepare:
 llama-prepare-latest:
     @scripts/prepare-llama.sh latest
 
+# Prepare the pinned llama.cpp checkout and apply the Skippy stage ABI patch queue.
+skippy-llama-prepare:
+    @scripts/prepare-skippy-llama.sh pinned
+
+# Build the Skippy stage ABI static llama.cpp libraries.
+skippy-llama-build: skippy-llama-prepare
+    @scripts/build-skippy-llama.sh
+
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
