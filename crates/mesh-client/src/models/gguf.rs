@@ -240,6 +240,117 @@ pub struct GgufCompactMeta {
     pub expert_used_count: u32,
 }
 
+impl GgufCompactMeta {
+    pub fn effective_kv_head_count(&self) -> Option<u32> {
+        if self.kv_head_count > 0 {
+            Some(self.kv_head_count)
+        } else if self.head_count > 0 {
+            Some(self.head_count)
+        } else {
+            None
+        }
+    }
+
+    pub fn k_cache_bytes_per_token_f16(&self) -> Option<u64> {
+        GgufKvCacheQuant::f16().k_cache_bytes_per_token(self)
+    }
+
+    pub fn v_cache_bytes_per_token_f16(&self) -> Option<u64> {
+        GgufKvCacheQuant::f16().v_cache_bytes_per_token(self)
+    }
+
+    pub fn kv_cache_bytes_per_token_f16(&self) -> Option<u64> {
+        GgufKvCacheQuant::f16().kv_cache_bytes_per_token(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GgufKvCacheType {
+    F16,
+    Q8_0,
+    Q4_0,
+}
+
+impl GgufKvCacheType {
+    pub fn from_llama_arg(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "f16" => Some(Self::F16),
+            "q8_0" => Some(Self::Q8_0),
+            "q4_0" => Some(Self::Q4_0),
+            _ => None,
+        }
+    }
+
+    fn block_shape(self) -> (u64, u64) {
+        match self {
+            Self::F16 => (1, 2),
+            Self::Q8_0 => (32, 34),
+            Self::Q4_0 => (32, 18),
+        }
+    }
+
+    fn bytes_for_elements(self, elements: u64) -> Option<u64> {
+        let (block_elements, block_bytes) = self.block_shape();
+        let blocks = elements
+            .checked_add(block_elements.checked_sub(1)?)?
+            .checked_div(block_elements)?;
+        blocks.checked_mul(block_bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GgufKvCacheQuant {
+    pub k: GgufKvCacheType,
+    pub v: GgufKvCacheType,
+}
+
+impl GgufKvCacheQuant {
+    pub const fn new(k: GgufKvCacheType, v: GgufKvCacheType) -> Self {
+        Self { k, v }
+    }
+
+    pub const fn f16() -> Self {
+        Self {
+            k: GgufKvCacheType::F16,
+            v: GgufKvCacheType::F16,
+        }
+    }
+
+    pub fn from_llama_args(cache_type_k: &str, cache_type_v: &str) -> Option<Self> {
+        Some(Self {
+            k: GgufKvCacheType::from_llama_arg(cache_type_k)?,
+            v: GgufKvCacheType::from_llama_arg(cache_type_v)?,
+        })
+    }
+
+    pub fn k_cache_bytes_per_token(self, meta: &GgufCompactMeta) -> Option<u64> {
+        cache_bytes_per_token(meta, meta.key_length, self.k)
+    }
+
+    pub fn v_cache_bytes_per_token(self, meta: &GgufCompactMeta) -> Option<u64> {
+        cache_bytes_per_token(meta, meta.value_length, self.v)
+    }
+
+    pub fn kv_cache_bytes_per_token(self, meta: &GgufCompactMeta) -> Option<u64> {
+        self.k_cache_bytes_per_token(meta)?
+            .checked_add(self.v_cache_bytes_per_token(meta)?)
+    }
+}
+
+fn cache_bytes_per_token(
+    meta: &GgufCompactMeta,
+    vector_length: u32,
+    cache_type: GgufKvCacheType,
+) -> Option<u64> {
+    let kv_heads = u64::from(meta.effective_kv_head_count()?);
+    let vector_length = u64::from((vector_length > 0).then_some(vector_length)?);
+    let layers = u64::from((meta.layer_count > 0).then_some(meta.layer_count)?);
+    let elements_per_layer = kv_heads.checked_mul(vector_length)?;
+    cache_type
+        .bytes_for_elements(elements_per_layer)?
+        .checked_mul(layers)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GgufTensorByteProfile {
     pub expert_count: u32,
@@ -274,8 +385,6 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
     let n_kv = read_gguf_header_count(&mut f, MAX_GGUF_HEADER_KV_COUNT, "KV count").ok()?;
 
     let mut meta = GgufCompactMeta::default();
-    let mut kv_head_count: u32 = 0;
-
     for _ in 0..n_kv {
         let key = read_gguf_string(&mut f).ok()?;
         let vtype = GgufType::from_u32(read_u32(&mut f).ok()?)?;
@@ -298,7 +407,6 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
             }
         } else if key.ends_with(".attention.head_count_kv") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
-                kv_head_count = v;
                 meta.kv_head_count = v;
             }
         } else if key.ends_with(".block_count") {
@@ -348,12 +456,7 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
         }
     }
     if meta.value_length == 0 {
-        let effective_kv = if kv_head_count > 0 {
-            kv_head_count
-        } else {
-            meta.head_count
-        };
-        if effective_kv > 0 {
+        if let Some(effective_kv) = meta.effective_kv_head_count() {
             if let Some(value_length) = meta.embedding_size.checked_div(effective_kv) {
                 meta.value_length = value_length;
             }
@@ -629,6 +732,64 @@ mod tests {
         assert_eq!(meta.key_length, 0);
         assert_eq!(meta.value_length, 512);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn scan_gguf_compact_meta_preserves_kv_head_count() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0i64.to_le_bytes());
+        bytes.extend_from_slice(&6i64.to_le_bytes());
+        push_u32_kv(&mut bytes, "llama.embedding_length", 4096);
+        push_u32_kv(&mut bytes, "llama.attention.head_count", 32);
+        push_u32_kv(&mut bytes, "llama.attention.head_count_kv", 8);
+        push_u32_kv(&mut bytes, "llama.block_count", 24);
+        push_u32_kv(&mut bytes, "llama.attention.key_length", 128);
+        push_u32_kv(&mut bytes, "llama.attention.value_length", 128);
+
+        let path = write_bytes("mesh-client-gguf-kv-head-count", &bytes);
+        let meta = scan_gguf_compact_meta(&path).expect("should parse GGUF");
+        assert_eq!(meta.head_count, 32);
+        assert_eq!(meta.kv_head_count, 8);
+        assert_eq!(meta.effective_kv_head_count(), Some(8));
+        assert_eq!(meta.k_cache_bytes_per_token_f16(), Some(49_152));
+        assert_eq!(meta.v_cache_bytes_per_token_f16(), Some(49_152));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn kv_cache_quant_prices_key_and_value_types_independently() {
+        let meta = GgufCompactMeta {
+            head_count: 32,
+            kv_head_count: 8,
+            layer_count: 24,
+            key_length: 128,
+            value_length: 128,
+            ..Default::default()
+        };
+        let quant = GgufKvCacheQuant::new(GgufKvCacheType::Q8_0, GgufKvCacheType::Q4_0);
+
+        assert_eq!(quant.k_cache_bytes_per_token(&meta), Some(26_112));
+        assert_eq!(quant.v_cache_bytes_per_token(&meta), Some(13_824));
+        assert_eq!(quant.kv_cache_bytes_per_token(&meta), Some(39_936));
+    }
+
+    #[test]
+    fn kv_cache_bytes_per_token_returns_none_when_required_fields_are_missing() {
+        let meta = GgufCompactMeta {
+            head_count: 32,
+            layer_count: 24,
+            key_length: 128,
+            ..Default::default()
+        };
+
+        assert_eq!(meta.k_cache_bytes_per_token_f16(), Some(196_608));
+        assert_eq!(meta.v_cache_bytes_per_token_f16(), None);
+        assert_eq!(
+            GgufKvCacheQuant::f16().kv_cache_bytes_per_token(&meta),
+            None
+        );
     }
 
     #[test]
