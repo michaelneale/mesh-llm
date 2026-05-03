@@ -33,7 +33,7 @@ pub(crate) async fn api_proxy(
     };
 
     loop {
-        let (tcp_stream, addr) = match listener.accept().await {
+        let (tcp_stream, _addr) = match listener.accept().await {
             Ok(r) => r,
             Err(_) => break,
         };
@@ -283,30 +283,7 @@ pub(crate) async fn api_proxy(
                         }
                     }
 
-                    let target = if targets.moe.is_some() {
-                        if let Some(ref name) = effective_model {
-                            let session_hint = request
-                                .session_hint
-                                .clone()
-                                .unwrap_or_else(|| format!("{addr}"));
-                            if targets.get_moe_failover_targets(&session_hint).len() > 1 {
-                                request.ensure_body_json();
-                            }
-                            let routed = proxy::route_moe_request(
-                                node.clone(),
-                                tcp_stream,
-                                &targets,
-                                name,
-                                &session_hint,
-                                required_tokens,
-                                &request.raw,
-                            )
-                            .await;
-                            debug_assert!(routed);
-                            return;
-                        }
-                        first_available_target(&targets)
-                    } else if let Some(ref name) = effective_model {
+                    let target = if let Some(ref name) = effective_model {
                         if targets.candidates(name).is_empty() {
                             if let Some(plugin_manager) = plugin_manager.as_ref() {
                                 match plugin_manager.inference_endpoint_for_model(name).await {

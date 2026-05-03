@@ -515,7 +515,7 @@ fn is_single_digit_b_name(name: &str) -> bool {
         }
         // Must be a single digit run at a word boundary: previous char
         // must not be another digit, a '.', or an ASCII letter. That
-        // last part rules out MoE "active-params" tags like "A3B" where
+        // last part rules out active-params tags like "A3B" where
         // the 3B is a subset of a larger total count advertised
         // elsewhere in the name (e.g. "Qwen3.6-35B-A3B").
         if i > 0 {

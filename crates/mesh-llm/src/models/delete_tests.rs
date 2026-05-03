@@ -170,16 +170,16 @@ async fn delete_model_by_identifier_supports_dotted_quant_selector_refs() {
     let temp = unique_temp_dir("delete-dotted-selector");
     let q2 = create_cache_repo_file(
         &temp,
-        "Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF",
+        "Example/tiny-qwen3-variant-GGUF",
         "a9b8adbec2cc87479c772dac1944f313b4036c26",
-        "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf",
+        "Qwen3-Tiny.Q2_K.gguf",
         4,
     );
     let q4 = create_cache_repo_file(
         &temp,
-        "Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF",
+        "Example/tiny-qwen3-variant-GGUF",
         "a9b8adbec2cc87479c772dac1944f313b4036c26",
-        "qwen3.5-moe-0.87B-d0.8B.Q4_K_M.gguf",
+        "Qwen3-Tiny.Q4_K_M.gguf",
         4,
     );
 
@@ -187,17 +187,15 @@ async fn delete_model_by_identifier_supports_dotted_quant_selector_refs() {
     std::env::remove_var("HF_HOME");
     std::env::remove_var("XDG_CACHE_HOME");
 
-    let resolved =
-        resolve_model_identifier("Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF:Q2_K")
-            .await
-            .unwrap();
+    let resolved = resolve_model_identifier("Example/tiny-qwen3-variant-GGUF:Q2_K")
+        .await
+        .unwrap();
     assert_eq!(resolved, vec![q2.clone()]);
 
     let expected_deleted = vec![q2.canonicalize().unwrap()];
-    let result =
-        delete_model_by_identifier("Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF:Q2_K")
-            .await
-            .unwrap();
+    let result = delete_model_by_identifier("Example/tiny-qwen3-variant-GGUF:Q2_K")
+        .await
+        .unwrap();
     assert_eq!(result.deleted_paths, expected_deleted);
     assert!(!q2.exists());
     assert!(q4.exists());

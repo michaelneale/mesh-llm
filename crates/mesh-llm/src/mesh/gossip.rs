@@ -375,7 +375,6 @@ impl Node {
         addr: EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
-        let imported_ranking = import_remote_moe_rankings(&ann.served_model_descriptors);
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -454,9 +453,6 @@ impl Node {
             existing.requested_models = ann.requested_models.clone();
             existing.explicit_model_interests = ann.explicit_model_interests.clone();
             existing.last_seen = now;
-            if recovered {
-                existing.moe_recovered_at = Some(now);
-            }
             existing.owner_attestation = ann.owner_attestation.clone();
             existing.owner_summary = owner_summary.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
@@ -508,9 +504,6 @@ impl Node {
                     .await;
                 }
             }
-            if imported_ranking {
-                self.refresh_served_model_descriptors().await;
-            }
             return;
         }
         tracing::info!(
@@ -522,10 +515,7 @@ impl Node {
             ann.available_models,
             state.peers.len() + 1
         );
-        let mut peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
-        if recovered {
-            peer.moe_recovered_at = Some(now);
-        }
+        let peer = PeerInfo::from_announcement(id, addr, ann, owner_summary);
         state.peers.insert(id, peer.clone());
         let count = state.peers.len();
         drop(state);
@@ -536,9 +526,6 @@ impl Node {
             String::new(),
         )
         .await;
-        if imported_ranking {
-            self.refresh_served_model_descriptors().await;
-        }
     }
 
     /// Update a peer learned transitively through gossip (not directly connected).
@@ -554,7 +541,6 @@ impl Node {
         addr: &EndpointAddr,
         ann: &PeerAnnouncement,
     ) {
-        let imported_ranking = import_remote_moe_rankings(&ann.served_model_descriptors);
         let trust_store = self.trust_store.lock().await.clone();
         let owner_summary = verify_node_ownership(
             ann.owner_attestation.as_ref(),
@@ -616,9 +602,6 @@ impl Node {
                     .await;
                 }
             }
-            if imported_ranking {
-                self.refresh_served_model_descriptors().await;
-            }
         } else {
             // New transitive peer — not directly verified, so set last_seen to
             // epoch (not "now") to avoid incorrectly silencing PeerDown reports.
@@ -635,9 +618,6 @@ impl Node {
                 String::new(),
             )
             .await;
-            if imported_ranking {
-                self.refresh_served_model_descriptors().await;
-            }
         }
     }
 

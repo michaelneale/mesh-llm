@@ -17,7 +17,6 @@ src/
 ├── inference/
 │   ├── election.rs          Per-model host election, tensor split, llama-server lifecycle
 │   ├── launch.rs            rpc-server and llama-server process management
-│   ├── moe.rs               MoE detection, expert rankings, split orchestration
 │   └── pipeline.rs          Inference pipeline coordination
 ├── mesh/mod.rs              Node struct, QUIC endpoint, gossip, peer management, mesh identity
 ├── models/

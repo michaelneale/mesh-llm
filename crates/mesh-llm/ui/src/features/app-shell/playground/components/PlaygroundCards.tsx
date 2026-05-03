@@ -19,7 +19,6 @@ function ModelPreview() {
   const [status, setStatus] = useState<ModelStatus>("warm");
   const [vision, setVision] = useState(false);
   const [reasoning, setReasoning] = useState(false);
-  const [moe, setMoe] = useState(false);
 
   const cardWidth = "w-[380px]";
 
@@ -35,7 +34,6 @@ function ModelPreview() {
           status={status}
           vision={vision}
           reasoning={reasoning}
-          moe={moe}
         />
       </div>
 
@@ -134,15 +132,6 @@ function ModelPreview() {
               className="h-3.5 w-3.5 rounded border-border accent-primary"
             />
             Reasoning 🧠
-          </label>
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={moe}
-              onChange={(e) => setMoe(e.target.checked)}
-              className="h-3.5 w-3.5 rounded border-border accent-primary"
-            />
-            MoE 🧩
           </label>
         </div>
       </div>

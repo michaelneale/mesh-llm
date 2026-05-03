@@ -6,7 +6,7 @@ mesh-llm becomes a smart routing layer: multiple models across the mesh, request
 
 ## Core Idea
 
-Instead of every node serving one model and the proxy blindly forwarding, the proxy **classifies** each incoming request and **routes** it to the most appropriate model available in the mesh. Different nodes can serve different models — a big machine runs a 142GB MoE, a small one runs a 7B. The router picks based on task type, model capabilities, and observed speed.
+Instead of every node serving one model and the proxy blindly forwarding, the proxy **classifies** each incoming request and **routes** it to the most appropriate model available in the mesh. Different nodes can serve different models — a big machine runs a 142GB model, a small one runs a 7B. The router picks based on task type, model capabilities, and observed speed.
 
 ## Request Classification
 
@@ -43,8 +43,6 @@ struct ModelProfile {
     strengths: &'static [Category],
     /// Relative quality tier (1=draft, 2=good, 3=strong, 4=frontier)
     tier: u8,
-    /// Is this an MoE model? (faster tok/s for its total param count)
-    is_moe: bool,
 }
 ```
 
@@ -52,16 +50,16 @@ Examples:
 
 | Model | Tier | Strengths | Notes |
 |-------|------|-----------|-------|
-| Qwen3-235B-A22B | 4 | code, reasoning, chat, creative | Frontier MoE, fast for its size |
+| Qwen3-235B-A22B | 4 | code, reasoning, chat, creative | Frontier, fast for its size |
 | Qwen2.5-72B | 3 | chat, reasoning, code | Strong dense all-rounder |
-| Qwen3-30B-A3B | 3 | chat, reasoning, code | Fast MoE, good quality |
+| Qwen3-30B-A3B | 3 | chat, reasoning, code | Fast, good quality |
 | Qwen3-32B | 3 | reasoning, code, chat | Best dense mid-size |
 | DeepSeek-R1-Distill-70B | 3 | reasoning | Specialist reasoner |
 | Qwen2.5-Coder-32B | 3 | code | Specialist coder |
 | Mistral-Small-3.1-24B | 2 | chat, tool_call | Good tool calling |
 | Hermes-2-Pro-Mistral-7B | 2 | tool_call, chat | Proven agent model |
 | Qwen3-8B | 2 | chat, code | Fast, good enough for simple |
-| GLM-4.7-Flash | 2 | chat, tool_call | Very fast MoE |
+| GLM-4.7-Flash | 2 | chat, tool_call | Very fast |
 
 ## Routing Logic
 

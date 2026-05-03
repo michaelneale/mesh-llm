@@ -8,13 +8,6 @@ const MAX_GGUF_TENSOR_DIMS: u32 = 8;
 const MAX_GGUF_HEADER_KV_COUNT: usize = 1_000_000;
 const MAX_GGUF_TENSOR_COUNT: usize = 1_000_000;
 
-/// MoE info extracted from a GGUF file header.
-#[derive(Clone, Debug)]
-pub struct GgufMoeInfo {
-    pub expert_count: u32,
-    pub expert_used_count: u32,
-}
-
 /// GGUF value types (matching gguf.h enum).
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -225,57 +218,6 @@ fn read_gguf_value_as_string_opt(
             skip_gguf_value(f, typ)?;
             Ok(None)
         }
-    }
-}
-
-/// Detect MoE parameters from a GGUF file by reading its header KV pairs.
-///
-/// Scans for `*.expert_count` and `*.expert_used_count` keys.
-/// Returns None if the file isn't MoE (no expert_count or expert_count <= 1).
-/// Takes ~1ms for typical GGUF files and only reads the header, not tensor data.
-pub fn detect_moe(path: &Path) -> Option<GgufMoeInfo> {
-    let mut f = std::fs::File::open(path).ok()?;
-
-    let mut magic = [0u8; 4];
-    f.read_exact(&mut magic).ok()?;
-    if &magic != b"GGUF" {
-        return None;
-    }
-
-    let version = read_u32(&mut f).ok()?;
-    if version < 2 {
-        return None;
-    }
-
-    let _n_tensors = read_gguf_header_count(&mut f, MAX_GGUF_TENSOR_COUNT, "tensor count").ok()?;
-    let n_kv = read_gguf_header_count(&mut f, MAX_GGUF_HEADER_KV_COUNT, "KV count").ok()?;
-
-    let mut expert_count: Option<u32> = None;
-    let mut expert_used_count: Option<u32> = None;
-
-    for _ in 0..n_kv {
-        let key = read_gguf_string(&mut f).ok()?;
-        let vtype = GgufType::from_u32(read_u32(&mut f).ok()?)?;
-
-        if key.ends_with(".expert_count") {
-            expert_count = read_gguf_value_as_u32(&mut f, vtype).ok()?;
-        } else if key.ends_with(".expert_used_count") {
-            expert_used_count = read_gguf_value_as_u32(&mut f, vtype).ok()?;
-        } else {
-            skip_gguf_value(&mut f, vtype).ok()?;
-        }
-
-        if expert_count.is_some() && expert_used_count.is_some() {
-            break;
-        }
-    }
-
-    match (expert_count, expert_used_count) {
-        (Some(ec), Some(euc)) if ec > 1 => Some(GgufMoeInfo {
-            expert_count: ec,
-            expert_used_count: euc,
-        }),
-        _ => None,
     }
 }
 

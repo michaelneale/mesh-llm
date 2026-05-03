@@ -541,7 +541,6 @@ export function DashboardPage({
                       status={model.status}
                       vision={model.vision}
                       reasoning={model.reasoning}
-                      moe={model.moe}
                       onClick={() => openModelDetail(model.name)}
                     />
                   ))}

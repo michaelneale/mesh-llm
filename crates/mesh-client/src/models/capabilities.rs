@@ -163,7 +163,6 @@ pub fn infer_catalog_capabilities(model: &catalog::CatalogModel) -> ModelCapabil
     if model.mmproj.is_some() {
         caps.upgrade_vision(CapabilityLevel::Supported);
     }
-    caps.moe = model.moe.is_some();
     caps = merge_name_signals(
         caps,
         &[
@@ -427,20 +426,6 @@ pub fn merge_config_signals(mut caps: ModelCapabilities, config: &Value) -> Mode
         } else if likely_tool_use_name_signal(model_type) {
             caps.upgrade_tool_use(CapabilityLevel::Likely);
         }
-    }
-
-    if config
-        .get("num_experts")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0)
-        > 1
-        || config
-            .get("num_experts_per_tok")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0)
-            > 0
-    {
-        caps.moe = true;
     }
 
     caps.normalize()

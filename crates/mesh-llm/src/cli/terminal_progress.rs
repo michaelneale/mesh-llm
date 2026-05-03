@@ -20,17 +20,10 @@ pub(crate) fn clear_stderr_line() -> Result<()> {
 
 pub(crate) struct SpinnerHandle {
     done: Arc<AtomicBool>,
-    message: Arc<Mutex<String>>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl SpinnerHandle {
-    pub(crate) fn set_message(&self, message: impl Into<String>) {
-        if let Ok(mut guard) = self.message.lock() {
-            *guard = message.into();
-        }
-    }
-
     pub(crate) fn finish(&mut self) {
         self.done.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
@@ -50,7 +43,6 @@ pub(crate) fn start_spinner(message: &str) -> SpinnerHandle {
     if crate::cli::output::json_mode_enabled() {
         return SpinnerHandle {
             done: Arc::new(AtomicBool::new(true)),
-            message: Arc::new(Mutex::new(message.to_string())),
             thread: None,
         };
     }
@@ -74,7 +66,6 @@ pub(crate) fn start_spinner(message: &str) -> SpinnerHandle {
     });
     SpinnerHandle {
         done,
-        message,
         thread: Some(thread),
     }
 }

@@ -35,7 +35,6 @@ struct CachedCompactModelMetadata {
     tokenizer_model_name: String,
     rope_scale: f32,
     rope_freq_base: f32,
-    is_moe: bool,
     expert_count: u32,
     used_expert_count: u32,
     quantization_type: String,
@@ -68,9 +67,9 @@ impl CachedCompactModelMetadata {
             special_tokens: vec![],
             rope_scale: self.rope_scale,
             rope_freq_base: self.rope_freq_base,
-            is_moe: self.is_moe,
-            expert_count: self.expert_count,
-            used_expert_count: self.used_expert_count,
+            is_moe: false,
+            expert_count: 0,
+            used_expert_count: 0,
             quantization_type: self.quantization_type,
         }
     }
@@ -90,9 +89,8 @@ impl CachedCompactModelMetadata {
             tokenizer_model_name: meta.tokenizer_model_name.clone(),
             rope_scale: meta.rope_scale,
             rope_freq_base: meta.rope_freq_base,
-            is_moe: meta.is_moe,
-            expert_count: meta.expert_count,
-            used_expert_count: meta.used_expert_count,
+            expert_count: 0,
+            used_expert_count: 0,
             quantization_type: meta.quantization_type.clone(),
         }
     }
@@ -201,9 +199,9 @@ fn compact_metadata_from_gguf(
             special_tokens: vec![],
             rope_scale: m.rope_scale,
             rope_freq_base: m.rope_freq_base,
-            is_moe: m.expert_count > 1,
-            expert_count: m.expert_count,
-            used_expert_count: m.expert_used_count,
+            is_moe: false,
+            expert_count: 0,
+            used_expert_count: 0,
             quantization_type,
         }
     } else {

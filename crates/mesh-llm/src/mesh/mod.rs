@@ -26,7 +26,6 @@ use crate::crypto::{
     OwnershipStatus, OwnershipSummary, SignedNodeOwnership, TrustPolicy, TrustStore,
     DEFAULT_NODE_CERT_LIFETIME_SECS,
 };
-use crate::inference::moe;
 use crate::protocol::*;
 
 const PRETTY_LOCAL_REQUEST_WINDOW_SECS: u64 = 24 * 60 * 60;
@@ -364,154 +363,15 @@ fn descriptor_from_identity(
     identity.model_name = model_name.to_string();
     let path = crate::models::find_model_path(model_name);
     let catalog = crate::models::find_catalog_model_exact(model_name);
-    let mut topology = crate::models::infer_local_model_topology(&path, catalog);
-    if topology.is_none() {
-        if let Some(info) = moe::detect_moe(&path) {
-            topology = Some(crate::models::ModelTopology {
-                moe: Some(crate::models::ModelMoeInfo {
-                    expert_count: info.expert_count,
-                    used_expert_count: info.expert_used_count,
-                    min_experts_per_node: None,
-                    source: Some("gguf_header".to_string()),
-                    ranking_source: None,
-                    ranking_origin: None,
-                    ranking: Vec::new(),
-                    ranking_prompt_count: None,
-                    ranking_tokens: None,
-                    ranking_layer_scope: None,
-                }),
-            });
-        }
-    }
-    enrich_topology_with_local_shared_ranking(path.as_path(), &mut topology);
+    let topology = crate::models::infer_local_model_topology(&path, catalog);
     let mut capabilities =
         crate::models::capabilities::infer_local_model_capabilities(model_name, &path, catalog);
-    capabilities.moe = capabilities.moe
-        || topology
-            .as_ref()
-            .and_then(|value| value.moe.as_ref())
-            .is_some();
+    capabilities.moe = false;
     ServedModelDescriptor {
         identity,
         capabilities,
         topology,
     }
-}
-
-#[allow(dead_code)]
-fn enrich_topology_with_local_shared_ranking(
-    path: &std::path::Path,
-    topology: &mut Option<crate::models::ModelTopology>,
-) {
-    let Some(moe_info) = topology.as_mut().and_then(|value| value.moe.as_mut()) else {
-        return;
-    };
-    let Some(artifact) = moe::best_shared_ranking_artifact(path) else {
-        return;
-    };
-    moe_info.ranking_source = Some(artifact.kind.label().to_string());
-    moe_info.ranking_origin = Some(artifact.origin.label().to_string());
-    moe_info.ranking = artifact.ranking;
-    moe_info.ranking_prompt_count = artifact.micro_prompt_count.map(|value| value as u32);
-    moe_info.ranking_tokens = artifact.micro_tokens;
-    moe_info.ranking_layer_scope = artifact.micro_layer_scope.map(|scope| match scope {
-        moe::MoeMicroLayerScope::All => "all".to_string(),
-        moe::MoeMicroLayerScope::First => "first".to_string(),
-    });
-}
-
-fn identities_match_exact(local: &ServedModelIdentity, remote: &ServedModelIdentity) -> bool {
-    if let (Some(local_hash), Some(remote_hash)) =
-        (local.identity_hash.as_ref(), remote.identity_hash.as_ref())
-    {
-        return local_hash == remote_hash;
-    }
-    if let (Some(local_ref), Some(remote_ref)) =
-        (local.canonical_ref.as_ref(), remote.canonical_ref.as_ref())
-    {
-        return local_ref == remote_ref;
-    }
-    matches!(
-        (
-            local.repository.as_ref(),
-            local.revision.as_ref(),
-            local.artifact.as_ref(),
-            remote.repository.as_ref(),
-            remote.revision.as_ref(),
-            remote.artifact.as_ref(),
-        ),
-        (
-            Some(local_repo),
-            Some(local_revision),
-            Some(local_artifact),
-            Some(remote_repo),
-            Some(remote_revision),
-            Some(remote_artifact),
-        ) if local_repo == remote_repo
-            && local_revision == remote_revision
-            && local_artifact == remote_artifact
-    )
-}
-
-fn shared_ranking_from_descriptor(
-    descriptor: &ServedModelDescriptor,
-) -> Option<moe::SharedRankingArtifact> {
-    let moe_info = descriptor.topology.as_ref()?.moe.as_ref()?;
-    if moe_info.ranking.is_empty() {
-        return None;
-    }
-    let kind = match moe_info.ranking_source.as_deref()? {
-        "analyze" => moe::SharedRankingKind::Analyze,
-        "micro-analyze" => moe::SharedRankingKind::MicroAnalyze,
-        _ => return None,
-    };
-    let micro_layer_scope = match moe_info.ranking_layer_scope.as_deref() {
-        Some("all") => Some(moe::MoeMicroLayerScope::All),
-        Some("first") => Some(moe::MoeMicroLayerScope::First),
-        _ => None,
-    };
-    Some(moe::SharedRankingArtifact {
-        kind,
-        origin: moe_info
-            .ranking_origin
-            .as_deref()
-            .and_then(moe::SharedRankingOrigin::from_label)
-            .unwrap_or(moe::SharedRankingOrigin::LegacyCache),
-        ranking: moe_info.ranking.clone(),
-        micro_prompt_count: moe_info.ranking_prompt_count.map(|value| value as usize),
-        micro_tokens: moe_info.ranking_tokens,
-        micro_layer_scope,
-    })
-}
-
-fn import_remote_moe_rankings(descriptors: &[ServedModelDescriptor]) -> bool {
-    let mut imported = false;
-    for descriptor in descriptors {
-        let Some(remote_artifact) = shared_ranking_from_descriptor(descriptor) else {
-            continue;
-        };
-        let path = crate::models::find_model_path(&descriptor.identity.model_name);
-        if !path.exists() {
-            continue;
-        }
-        let Some(local_identity) = identity_from_model_path(&descriptor.identity.model_name, &path)
-        else {
-            continue;
-        };
-        if !identities_match_exact(&local_identity, &descriptor.identity) {
-            continue;
-        }
-        let imported_artifact = moe::SharedRankingArtifact {
-            origin: moe::SharedRankingOrigin::PeerImport,
-            ..remote_artifact
-        };
-        if moe::cache_shared_ranking_if_stronger(path.as_path(), &imported_artifact)
-            .unwrap_or(false)
-        {
-            imported = true;
-        }
-    }
-    imported
 }
 
 fn parse_hf_ref_parts(input: &str) -> Option<(String, Option<String>, String)> {
@@ -625,15 +485,7 @@ fn model_descriptor_score(descriptor: &ServedModelDescriptor) -> u8 {
         + u8::from(descriptor.capabilities.audio != crate::models::CapabilityLevel::None)
         + u8::from(descriptor.capabilities.vision != crate::models::CapabilityLevel::None)
         + u8::from(descriptor.capabilities.reasoning != crate::models::CapabilityLevel::None)
-        + u8::from(descriptor.capabilities.tool_use != crate::models::CapabilityLevel::None)
-        + u8::from(descriptor.capabilities.moe)
-        + u8::from(
-            descriptor
-                .topology
-                .as_ref()
-                .and_then(|value| value.moe.as_ref())
-                .is_some(),
-        );
+        + u8::from(descriptor.capabilities.tool_use != crate::models::CapabilityLevel::None);
     model_identity_score(identity) + capability_bonus
 }
 
@@ -735,9 +587,6 @@ pub struct PeerInfo {
     /// for pruning and `collect_announcements`: a peer is included/kept as long
     /// as either timestamp is fresh.
     pub last_mentioned: std::time::Instant,
-    /// When this peer returned after being considered dead. MoE scale-up should
-    /// wait briefly before treating the peer as eligible again.
-    pub moe_recovered_at: Option<std::time::Instant>,
     /// mesh-llm version (e.g. "0.23.0")
     pub version: Option<String>,
     /// GPU name/model (e.g. "NVIDIA A100", "Apple M4 Max")
@@ -797,7 +646,6 @@ impl PeerInfo {
             explicit_model_interests: ann.explicit_model_interests.clone(),
             last_seen: std::time::Instant::now(),
             last_mentioned: std::time::Instant::now(),
-            moe_recovered_at: None,
             version: ann.version.clone(),
             gpu_name: ann.gpu_name.clone(),
             hostname: ann.hostname.clone(),
@@ -851,10 +699,6 @@ impl PeerInfo {
 
     pub fn routes_http_model(&self, model: &str) -> bool {
         self.accepts_http_inference() && self.routes_model(model)
-    }
-
-    pub fn moe_recovery_ready(&self) -> bool {
-        moe_recovery_ready_at(self.moe_recovered_at, std::time::Instant::now())
     }
 
     pub fn advertised_context_length(&self, model: &str) -> Option<u32> {
@@ -1757,12 +1601,10 @@ impl Node {
         completion_tokens: Option<u64>,
     ) {
         let attempt_target = match target {
-            crate::inference::election::InferenceTarget::Local(port)
-            | crate::inference::election::InferenceTarget::MoeLocal(port) => {
+            crate::inference::election::InferenceTarget::Local(port) => {
                 crate::network::metrics::AttemptTarget::Local(format!("127.0.0.1:{port}"))
             }
-            crate::inference::election::InferenceTarget::Remote(peer_id)
-            | crate::inference::election::InferenceTarget::MoeRemote(peer_id) => {
+            crate::inference::election::InferenceTarget::Remote(peer_id) => {
                 crate::network::metrics::AttemptTarget::Remote(peer_id.fmt_short().to_string())
             }
             crate::inference::election::InferenceTarget::None => return,
@@ -5551,15 +5393,10 @@ mod heartbeat;
 pub use gossip::backfill_legacy_descriptors;
 #[allow(unused_imports)]
 use gossip::{apply_transitive_ann, peer_meaningfully_changed};
-#[cfg(test)]
-pub(crate) use heartbeat::peer_is_eligible_for_active_moe;
 #[allow(unused_imports)]
-use heartbeat::{
-    heartbeat_failure_policy_for_peer, HeartbeatFailurePolicy, MOE_RECOVERY_PROBATION_SECS,
-};
+use heartbeat::{heartbeat_failure_policy_for_peer, HeartbeatFailurePolicy};
 pub(crate) use heartbeat::{
-    moe_recovery_ready_at, peer_down_report_disposition, resolve_peer_down,
-    PeerDownReportDisposition,
+    peer_down_report_disposition, resolve_peer_down, PeerDownReportDisposition,
 };
 
 #[cfg(test)]

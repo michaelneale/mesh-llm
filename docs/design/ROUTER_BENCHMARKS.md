@@ -13,10 +13,10 @@ For the separate prefix-affinity routing benchmark, see [PREFIX_AFFINITY_BENCHMA
 
 | Model | tok/s | Size | Direct Answers | Tool Call | Notes |
 |-------|------:|------|:-:|:-:|-------|
-| Qwen3-30B-A3B (MoE) | 103.2 | 17GB | ❌ (thinking) | ✅ | Fastest, but wastes tokens on reasoning |
+| Qwen3-30B-A3B | 103.2 | 17GB | ❌ (thinking) | ✅ | Fastest, but wastes tokens on reasoning |
 | Hermes-2-Pro-Mistral-7B | 77.3 | 4GB | ✅ | ✅ | Best agent model, concise |
 | Qwen3-8B | 77.2 | 5GB | ❌ (thinking) | ❌ | Thinks instead of answering |
-| GLM-4.7-Flash (MoE) | 71.2 | 17GB | ❌ (thinking) | ✅ | Fast MoE but thinking-heavy |
+| GLM-4.7-Flash | 71.2 | 17GB | ❌ (thinking) | ✅ | Fast but thinking-heavy |
 | Qwen2.5-Coder-7B | 71.1 | 4GB | ✅ | ✅ | Strong code, fast |
 | Mistral-Small-3.1-24B | 25.9 | 13GB | ✅ | ✅ | Good quality, slower |
 | Qwen2.5-32B-Instruct | 17.8 | 18GB | ✅ | ✅ | Best quality, slowest |
@@ -31,7 +31,7 @@ For the separate prefix-affinity routing benchmark, see [PREFIX_AFFINITY_BENCHMA
 
 4. **All models handle tool calls**: Every model correctly emitted `bash({"command":"ls"})` when given tools.
 
-5. **MoE speed advantage is real**: 103 tok/s for Qwen3-30B-A3B vs 18 tok/s for similarly-sized Qwen2.5-32B. But the thinking overhead negates it for short responses.
+5. **Active-parameter speed advantage is real**: 103 tok/s for Qwen3-30B-A3B vs 18 tok/s for similarly-sized Qwen2.5-32B. But the thinking overhead negates it for short responses.
 
 ## Recommended Router Config
 

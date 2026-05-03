@@ -240,11 +240,11 @@ fn quant_selector_resolves_to_single_file_gguf() {
 #[test]
 fn dotted_quant_selector_resolves_to_single_file_gguf() {
     let siblings = vec![
-        "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf".to_string(),
-        "qwen3.5-moe-0.87B-d0.8B.Q4_K_M.gguf".to_string(),
+        "Qwen3-Tiny.Q2_K.gguf".to_string(),
+        "Qwen3-Tiny.Q4_K_M.gguf".to_string(),
     ];
     let resolved = resolve_hf_file_from_siblings("Q2_K", &siblings).unwrap();
-    assert_eq!(resolved, "qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf");
+    assert_eq!(resolved, "Qwen3-Tiny.Q2_K.gguf");
 }
 
 #[test]
@@ -475,7 +475,7 @@ fn quant_selector_from_gguf_file_extracts_expected_forms() {
         Some("Q4_0".to_string())
     );
     assert_eq!(
-        quant_selector_from_gguf_file("qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf"),
+        quant_selector_from_gguf_file("Qwen3-Tiny.Q2_K.gguf"),
         Some("Q2_K".to_string())
     );
 }

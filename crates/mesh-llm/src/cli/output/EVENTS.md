@@ -21,7 +21,7 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 
 ## Events
 
-`?` means optional. Struct-like field names (`moe`, `distribution`, `progress`, `status`) are summarized below the table.
+`?` means optional. Struct-like field names are summarized below the table.
 
 | Event | Fields | Emit/use notes |
 | --- | --- | --- |
@@ -39,11 +39,7 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 | `peer_left` | `peer_id`, `reason?` | Dashboard-supported peer membership event; no production emitter was found in this pass. |
 | `model_queued` | `model` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
 | `model_loading` | `model`, `source?` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
-| `model_loaded` | `model`, `bytes?`, `moe?` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
-| `moe_detected` | `model`, `moe`, `fits_locally?`, `capacity_gb?`, `model_gb?` | MoE detection during model planning and placement. |
-| `moe_distribution` | `model`, `moe`, `distribution` | MoE split plan after ranking/sharding. |
-| `moe_status` | `model`, `status` | MoE planning, ranking, placement, and standby status. |
-| `moe_analysis_progress` | `model`, `progress` | MoE expert-ranking or artifact-scan progress. |
+| `model_loaded` | `model`, `bytes?` | Dashboard-supported model lifecycle state; no production emitter was found in this pass. |
 | `host_elected` | `model`, `host`, `role?`, `capacity_gb?` | Model host election, including demand-based rebalancing. |
 | `rpc_server_starting` | `port`, `device`, `log_path?` | `rpc-server` launch started in `inference/launch.rs`. |
 | `rpc_ready` | `port`, `device`, `log_path?` | Formatter/dashboard-supported ready transition; no production emitter was found in this pass. |
@@ -64,10 +60,6 @@ Keep these details current when changing `OutputEvent` or dashboard state:
 
 ## Nested field shapes
 
-- `moe`: `{ experts, top_k }`
-- `distribution`: `{ leader, active_nodes, fallback_nodes, shard_index, shard_count, ranking_source?, ranking_origin?, overlap?, shared_experts?, unique_experts? }`
-- `status`: `{ phase, detail? }`
-- `progress`: `{ mode, spinner, current, total?, elapsed_secs }`
 - `RuntimeStatus`: `starting`, `ready`, `shutting down`, `stopped`, `exited`, `warning`, `error`
 
 ## Extension guide

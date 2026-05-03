@@ -66,7 +66,6 @@ pub struct BufferedHttpRequest {
     pub body_len_bytes: usize,
     pub completion_tokens: Option<u32>,
     pub model_name: Option<String>,
-    pub session_hint: Option<String>,
     pub request_object_request_ids: Vec<String>,
     pub response_adapter: ResponseAdapter,
 }
@@ -159,10 +158,6 @@ struct ParsedResponseHeaders {
 struct RequestMetadata {
     #[serde(default)]
     model: Option<String>,
-    #[serde(default)]
-    user: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
     #[serde(default)]
     max_completion_tokens: Option<u32>,
     #[serde(default)]
@@ -301,9 +296,6 @@ async fn read_http_request_with_limits(
         None
     };
     let model_name = metadata.as_ref().and_then(|value| value.model.clone());
-    let session_hint = metadata
-        .as_ref()
-        .and_then(|value| value.user.clone().or_else(|| value.session_id.clone()));
     let completion_tokens = metadata.as_ref().and_then(|value| {
         value
             .max_completion_tokens
@@ -331,7 +323,6 @@ async fn read_http_request_with_limits(
         body_len_bytes,
         completion_tokens,
         model_name,
-        session_hint,
         request_object_request_ids,
         response_adapter,
     })
@@ -889,11 +880,8 @@ async fn order_targets_by_context(
     let mut candidates = Vec::with_capacity(targets.len());
     for target in targets {
         let context_length = match target {
-            election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
-                node.local_model_context_length(model).await
-            }
-            election::InferenceTarget::Remote(peer_id)
-            | election::InferenceTarget::MoeRemote(peer_id) => {
+            election::InferenceTarget::Local(_) => node.local_model_context_length(model).await,
+            election::InferenceTarget::Remote(peer_id) => {
                 node.peer_model_context_length(*peer_id, model).await
             }
             election::InferenceTarget::None => None,
@@ -2371,7 +2359,7 @@ async fn route_attempt_for_target(
     response_adapter: ResponseAdapter,
 ) -> RouteAttemptResult {
     match target {
-        election::InferenceTarget::Local(port) | election::InferenceTarget::MoeLocal(port) => {
+        election::InferenceTarget::Local(port) => {
             route_local_attempt(
                 node,
                 tcp_stream,
@@ -2382,8 +2370,7 @@ async fn route_attempt_for_target(
             )
             .await
         }
-        election::InferenceTarget::Remote(host_id)
-        | election::InferenceTarget::MoeRemote(host_id) => {
+        election::InferenceTarget::Remote(host_id) => {
             route_remote_attempt(
                 node,
                 tcp_stream,
@@ -2449,11 +2436,8 @@ pub async fn route_model_request(
         selection.cached_target.as_ref(),
     ) {
         let cached_context = match cached_target {
-            election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
-                node.local_model_context_length(model).await
-            }
-            election::InferenceTarget::Remote(peer_id)
-            | election::InferenceTarget::MoeRemote(peer_id) => {
+            election::InferenceTarget::Local(_) => node.local_model_context_length(model).await,
+            election::InferenceTarget::Remote(peer_id) => {
                 node.peer_model_context_length(*peer_id, model).await
             }
             election::InferenceTarget::None => None,
@@ -2545,12 +2529,10 @@ pub async fn route_model_request(
                     }
                 }
                 let service = match target {
-                    election::InferenceTarget::Local(_)
-                    | election::InferenceTarget::MoeLocal(_) => {
+                    election::InferenceTarget::Local(_) => {
                         crate::network::metrics::RequestService::Local
                     }
-                    election::InferenceTarget::Remote(_)
-                    | election::InferenceTarget::MoeRemote(_) => {
+                    election::InferenceTarget::Remote(_) => {
                         crate::network::metrics::RequestService::Remote
                     }
                     election::InferenceTarget::None => {
@@ -2649,212 +2631,6 @@ pub async fn route_model_request(
     true
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn route_moe_request(
-    node: mesh::Node,
-    tcp_stream: TcpStream,
-    targets: &election::ModelTargets,
-    model: &str,
-    session_hint: &str,
-    required_tokens: Option<u32>,
-    prefetched: &[u8],
-) -> bool {
-    let route_started = Instant::now();
-    let mut tcp_stream = tcp_stream;
-    let Some(primary_target) = targets.get_moe_target(session_hint) else {
-        node.record_routed_request(
-            Some(model),
-            0,
-            crate::network::metrics::RequestOutcome::Unavailable,
-        );
-        let _ = send_503(
-            tcp_stream,
-            &format!("no MoE target for model '{model}' session '{session_hint}'"),
-        )
-        .await;
-        return false;
-    };
-    let mut ordered = order_targets_by_context(
-        &node,
-        model,
-        required_tokens,
-        &targets.get_moe_failover_targets(session_hint),
-    )
-    .await;
-    if ordered.is_empty() {
-        node.record_routed_request(
-            Some(model),
-            0,
-            crate::network::metrics::RequestOutcome::Unavailable,
-        );
-        let _ = send_503(
-            tcp_stream,
-            &format!("no MoE failover targets for model '{model}'"),
-        )
-        .await;
-        return false;
-    }
-    move_target_first(&mut ordered, &primary_target);
-
-    let total_targets = ordered.len();
-    let mut attempts = 0usize;
-    let mut refreshed = false;
-    for (idx, target) in ordered.into_iter().enumerate() {
-        attempts += 1;
-        let attempt_started = Instant::now();
-        let retry_context_overflow = idx + 1 < total_targets;
-        let attempt_result = route_attempt_for_target(
-            &node,
-            &mut tcp_stream,
-            &target,
-            prefetched,
-            retry_context_overflow,
-            ResponseAdapter::None,
-        )
-        .await;
-        let queue_wait = attempt_started.duration_since(route_started);
-        let attempt_time = attempt_started.elapsed();
-        match &attempt_result {
-            RouteAttemptResult::Delivered {
-                status_code,
-                completion_tokens,
-            } => node.record_inference_attempt(
-                Some(model),
-                &target,
-                queue_wait,
-                attempt_time,
-                delivered_attempt_outcome(*status_code),
-                *completion_tokens,
-            ),
-            RouteAttemptResult::RetryableTimeout => node.record_inference_attempt(
-                Some(model),
-                &target,
-                queue_wait,
-                attempt_time,
-                crate::network::metrics::AttemptOutcome::Timeout,
-                None,
-            ),
-            RouteAttemptResult::RetryableUnavailable => node.record_inference_attempt(
-                Some(model),
-                &target,
-                queue_wait,
-                attempt_time,
-                crate::network::metrics::AttemptOutcome::Unavailable,
-                None,
-            ),
-            RouteAttemptResult::RetryableContextOverflow => node.record_inference_attempt(
-                Some(model),
-                &target,
-                queue_wait,
-                attempt_time,
-                crate::network::metrics::AttemptOutcome::ContextOverflow,
-                None,
-            ),
-            RouteAttemptResult::ClientDisconnected => {}
-        }
-        tracing::info!(
-            model = model,
-            session_hint = session_hint,
-            target = ?target,
-            attempt = attempts,
-            total_targets = total_targets,
-            outcome = route_attempt_result_label(&attempt_result),
-            attempt_ms = attempt_started.elapsed().as_millis(),
-            total_route_ms = route_started.elapsed().as_millis(),
-            "openai route_moe_request attempt"
-        );
-        match attempt_result {
-            RouteAttemptResult::Delivered {
-                status_code,
-                completion_tokens: _,
-            } => {
-                let service = match target {
-                    election::InferenceTarget::Local(_)
-                    | election::InferenceTarget::MoeLocal(_) => {
-                        crate::network::metrics::RequestService::Local
-                    }
-                    election::InferenceTarget::Remote(_)
-                    | election::InferenceTarget::MoeRemote(_) => {
-                        crate::network::metrics::RequestService::Remote
-                    }
-                    election::InferenceTarget::None => {
-                        crate::network::metrics::RequestService::Remote
-                    }
-                };
-                node.record_routed_request(
-                    Some(model),
-                    attempts,
-                    request_outcome_for_status(status_code, service),
-                );
-                tracing::info!(
-                    model = model,
-                    session_hint = session_hint,
-                    attempts = attempts,
-                    status_code = status_code,
-                    route_ms = route_started.elapsed().as_millis(),
-                    "openai route_moe_request delivered"
-                );
-                return true;
-            }
-            RouteAttemptResult::RetryableContextOverflow => {
-                tracing::warn!("MoE target {target:?} rejected request with context overflow-style 400, trying next");
-            }
-            RouteAttemptResult::RetryableTimeout => {
-                if !refreshed {
-                    let refresh_node = node.clone();
-                    tokio::spawn(async move {
-                        refresh_node.gossip_one_peer().await;
-                    });
-                    refreshed = true;
-                }
-                tracing::warn!("MoE target {target:?} timed out, trying next");
-            }
-            RouteAttemptResult::RetryableUnavailable => {
-                if let election::InferenceTarget::MoeRemote(peer_id) = &target {
-                    node.handle_peer_death(*peer_id).await;
-                }
-                if !refreshed {
-                    let refresh_node = node.clone();
-                    tokio::spawn(async move {
-                        refresh_node.gossip_one_peer().await;
-                    });
-                    refreshed = true;
-                }
-                tracing::warn!("MoE target {target:?} unavailable, trying next");
-            }
-            RouteAttemptResult::ClientDisconnected => {
-                tracing::info!(
-                    model = model,
-                    session_hint = session_hint,
-                    attempts = attempts,
-                    route_ms = route_started.elapsed().as_millis(),
-                    "openai route_moe_request downstream disconnected"
-                );
-                return true;
-            }
-        }
-    }
-
-    let _ = send_503(
-        tcp_stream,
-        &format!("all MoE targets for model '{model}' failed"),
-    )
-    .await;
-    node.record_routed_request(
-        Some(model),
-        attempts,
-        crate::network::metrics::RequestOutcome::Unavailable,
-    );
-    tracing::warn!(
-        model = model,
-        session_hint = session_hint,
-        attempts = attempts,
-        route_ms = route_started.elapsed().as_millis(),
-        "openai route_moe_request exhausted targets"
-    );
-    true
-}
-
 /// Route a request to a known inference target (local OpenAI surface or remote host).
 ///
 /// Used by the API proxy after election has determined the target.
@@ -2869,10 +2645,6 @@ pub async fn route_to_target(
     let route_started = Instant::now();
     let mut tcp_stream = tcp_stream;
     tracing::info!("API proxy: routing to target {target:?}");
-    let moe_remote_id = match &target {
-        election::InferenceTarget::MoeRemote(host_id) => Some(*host_id),
-        _ => None,
-    };
     let result = route_attempt_for_target(
         &node,
         &mut tcp_stream,
@@ -2924,10 +2696,10 @@ pub async fn route_to_target(
             completion_tokens: _,
         } => {
             let service = match target {
-                election::InferenceTarget::Local(_) | election::InferenceTarget::MoeLocal(_) => {
+                election::InferenceTarget::Local(_) => {
                     crate::network::metrics::RequestService::Local
                 }
-                election::InferenceTarget::Remote(_) | election::InferenceTarget::MoeRemote(_) => {
+                election::InferenceTarget::Remote(_) => {
                     crate::network::metrics::RequestService::Remote
                 }
                 election::InferenceTarget::None => crate::network::metrics::RequestService::Remote,
@@ -2938,9 +2710,6 @@ pub async fn route_to_target(
         RouteAttemptResult::RetryableTimeout
         | RouteAttemptResult::RetryableContextOverflow
         | RouteAttemptResult::RetryableUnavailable => {
-            if let Some(moe_host_id) = moe_remote_id {
-                node.handle_peer_death(moe_host_id).await;
-            }
             node.record_routed_request(
                 model,
                 1,
@@ -3521,7 +3290,6 @@ mod tests {
             body_len_bytes: 0,
             completion_tokens: None,
             model_name: Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M".to_string()),
-            session_hint: None,
             request_object_request_ids: Vec::new(),
             response_adapter: ResponseAdapter::None,
         };
@@ -3890,7 +3658,7 @@ mod tests {
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/v1/chat/completions");
         assert_eq!(request.model_name.as_deref(), Some("qwen"));
-        assert_eq!(request.session_hint.as_deref(), Some("alice"));
+
         assert!(request.body_json.is_none());
     }
 
@@ -3925,7 +3693,7 @@ mod tests {
         let request = read_request_from_parts(vec![request]).await;
 
         assert_eq!(request.model_name.as_deref(), Some("auto"));
-        assert_eq!(request.session_hint.as_deref(), Some("sess-42"));
+
         assert!(request.body_json.is_none());
     }
 
@@ -4003,7 +3771,7 @@ mod tests {
         client.await.unwrap();
         let request = server.await.unwrap();
         assert_eq!(request.model_name.as_deref(), Some("qwen"));
-        assert_eq!(request.session_hint.as_deref(), Some("bob"));
+
         let raw = String::from_utf8(request.raw).unwrap();
         assert!(!raw.contains("Expect: 100-continue"));
         assert!(raw.contains("Connection: close"));
@@ -4131,7 +3899,6 @@ mod tests {
             body_len_bytes: 45,
             completion_tokens: None,
             model_name: Some("auto".to_string()),
-            session_hint: None,
             request_object_request_ids: Vec::new(),
             response_adapter: ResponseAdapter::None,
         };

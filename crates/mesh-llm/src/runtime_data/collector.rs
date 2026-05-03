@@ -492,43 +492,6 @@ impl RuntimeDataCollector {
                             Some(quant)
                         })
                     });
-                let topology_moe = descriptor
-                    .and_then(|descriptor| descriptor.topology.as_ref())
-                    .and_then(|topology| topology.moe.as_ref());
-                let moe = capabilities.moe
-                    || topology_moe.is_some()
-                    || metadata.map(|m| m.is_moe).unwrap_or(false);
-                let expert_count = topology_moe
-                    .map(|moe| moe.expert_count)
-                    .or_else(|| metadata.map(|m| m.expert_count).filter(|count| *count > 0))
-                    .or_else(|| {
-                        catalog_entry
-                            .and_then(|m| m.moe.as_ref())
-                            .map(|m| m.n_expert)
-                    });
-                let used_expert_count = topology_moe
-                    .map(|moe| moe.used_expert_count)
-                    .or_else(|| {
-                        metadata
-                            .map(|m| m.used_expert_count)
-                            .filter(|count| *count > 0)
-                    })
-                    .or_else(|| {
-                        catalog_entry
-                            .and_then(|m| m.moe.as_ref())
-                            .map(|m| m.n_expert_used)
-                    });
-                let ranking_source = topology_moe
-                    .and_then(|moe| moe.ranking_source.as_ref())
-                    .cloned();
-                let ranking_origin = topology_moe
-                    .and_then(|moe| moe.ranking_origin.as_ref())
-                    .cloned();
-                let ranking_prompt_count = topology_moe.and_then(|moe| moe.ranking_prompt_count);
-                let ranking_tokens = topology_moe.and_then(|moe| moe.ranking_tokens);
-                let ranking_layer_scope = topology_moe
-                    .and_then(|moe| moe.ranking_layer_scope.as_ref())
-                    .cloned();
                 let draft_model = catalog_entry.and_then(|m| m.draft.clone());
                 let source_page_url =
                     identity
@@ -602,14 +565,6 @@ impl RuntimeDataCollector {
                     reasoning_status,
                     tool_use,
                     tool_use_status,
-                    moe,
-                    expert_count,
-                    used_expert_count,
-                    ranking_source,
-                    ranking_origin,
-                    ranking_prompt_count,
-                    ranking_tokens,
-                    ranking_layer_scope,
                     draft_model,
                     request_count,
                     last_active_secs_ago,

@@ -1,4 +1,4 @@
-import { Brain, Boxes, Cpu, ImagePlus, Network, Sparkles, Volume2 } from "lucide-react";
+import { Brain, Cpu, ImagePlus, Network, Sparkles, Volume2 } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "./components/ui/badge";
@@ -100,7 +100,6 @@ function modelCommandBarCapabilityLabels(model: MeshModel) {
     model.vision ? "vision" : null,
     model.audio ? "audio" : null,
     model.reasoning ? "reasoning" : null,
-    model.moe ? "moe" : null,
     model.tool_use ? "tool use" : null,
   ].filter((label): label is string => Boolean(label));
 }
@@ -178,9 +177,6 @@ function ModelCommandBarResultItem({
                   {label === "reasoning" ? (
                     <Brain className="mt-0.5 h-3 w-3 shrink-0" />
                   ) : null}
-                  {label === "moe" ? (
-                    <Boxes className="mt-0.5 h-3 w-3 shrink-0" />
-                  ) : null}
                   {label === "multimodal" ? (
                     <Sparkles className="mt-0.5 h-3 w-3 shrink-0" />
                   ) : null}
@@ -222,7 +218,6 @@ type ModelCapabilityFilterId =
   | "vision"
   | "audio"
   | "reasoning"
-  | "moe"
   | "tool_use";
 
 type ModelStatusFilter = "all" | "warm" | "cold";
@@ -235,7 +230,6 @@ const MODEL_CAPABILITY_FILTERS: ReadonlyArray<{
   { id: "vision", label: "Vision" },
   { id: "audio", label: "Audio" },
   { id: "reasoning", label: "Reasoning" },
-  { id: "moe", label: "MoE" },
   { id: "tool_use", label: "Tool use" },
 ];
 
@@ -247,7 +241,6 @@ function modelMatchesCapabilityFilter(
   if (capability === "vision") return Boolean(model.vision);
   if (capability === "audio") return Boolean(model.audio);
   if (capability === "reasoning") return Boolean(model.reasoning);
-  if (capability === "moe") return Boolean(model.moe);
   return Boolean(model.tool_use);
 }
 

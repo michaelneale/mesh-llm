@@ -155,14 +155,7 @@ impl AffinityRouter {
     }
 
     pub fn learn_target(&self, model: &str, prefix_hash: u64, target: &election::InferenceTarget) {
-        if !self.config.prefix_enabled
-            || matches!(
-                target,
-                election::InferenceTarget::None
-                    | election::InferenceTarget::MoeLocal(_)
-                    | election::InferenceTarget::MoeRemote(_)
-            )
-        {
+        if !self.config.prefix_enabled || matches!(target, election::InferenceTarget::None) {
             return;
         }
 

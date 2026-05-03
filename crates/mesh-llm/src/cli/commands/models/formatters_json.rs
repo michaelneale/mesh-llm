@@ -1,8 +1,8 @@
 use super::formatters::{
     capabilities_json, catalog_model_capabilities, catalog_model_kind_code,
     fit_code_for_size_label, format_installed_size, huggingface_cache_dir,
-    installed_model_kind_code, local_capacity_json, model_kind_code, moe_json, print_json,
-    InstalledRow, JsonFormatter, ModelsFormatter, SearchFormatter,
+    installed_model_kind_code, local_capacity_json, model_kind_code, print_json, InstalledRow,
+    JsonFormatter, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
     catalog, search_catalog_json_payload, search_huggingface_json_payload, ModelDetails,
@@ -27,7 +27,6 @@ fn show_payload(details: &ModelDetails, variants: Option<&[ModelDetails]>) -> Va
         "description": details.description,
         "draft": details.draft,
         "capabilities": capabilities_json(details.capabilities),
-        "moe": moe_json(details.moe.as_ref()),
         "download_url": details.download_url,
         "machine": local_capacity_json(),
         "variants": variants
@@ -116,7 +115,6 @@ impl ModelsFormatter for JsonFormatter {
                     "show": format!("mesh-llm models show {}", model.name),
                     "download": format!("mesh-llm models download {}", model.name),
                     "capabilities": capabilities_json(model_capabilities),
-                    "moe": moe_json(model.moe.as_ref()),
                 })
             })
             .collect();
@@ -145,7 +143,6 @@ impl ModelsFormatter for JsonFormatter {
                     "path": row.path,
                     "about": row.catalog_model.map(|m| m.description.clone()),
                     "draft": row.catalog_model.and_then(|m| m.draft.clone()),
-                    "moe": moe_json(row.catalog_model.and_then(|m| m.moe.as_ref())),
                 })
             })
             .collect();
@@ -247,7 +244,6 @@ mod tests {
             description: None,
             draft: None,
             capabilities: ModelCapabilities::default(),
-            moe: None,
         };
         let variants = vec![
             ModelDetails {
@@ -260,7 +256,6 @@ mod tests {
                 description: None,
                 draft: None,
                 capabilities: ModelCapabilities::default(),
-                moe: None,
             },
             ModelDetails {
                 display_name: "Qwen3.6-35B-A3B-Q4_K_M.gguf".to_string(),
@@ -272,7 +267,6 @@ mod tests {
                 description: None,
                 draft: None,
                 capabilities: ModelCapabilities::default(),
-                moe: None,
             },
         ];
 

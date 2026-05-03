@@ -1043,9 +1043,9 @@ fn model_tiers() -> Vec<(String, f64)> {
 ///   <8GB:    Qwen3-4B (2.5G)
 ///   8-24GB:  Qwen3-8B (5G)
 ///   24-50GB: Qwen3.5-27B (17G) — vision + text
-///   50-63GB: GLM-4.7-Flash (18G) — 30B MoE, fast, tool calling
+///   50-63GB: GLM-4.7-Flash (18G) — fast, tool calling
 ///   63-179GB: Qwen3-Coder-Next (48G) — frontier coder ~85B
-///   179GB+:  MiniMax-M2.5 (138G) — 456B MoE flagship
+///   179GB+:  MiniMax-M2.5 (138G) — flagship
 pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
     let local_models = crate::models::scan_local_models();
     let tiers = model_tiers();

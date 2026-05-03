@@ -134,12 +134,12 @@
             <div class="feature">
                 <div class="feature-icon">⚡</div>
                 <h3>Automatic distribution</h3>
-                <p>Model fits on one machine? Solo mode, full speed. Too big? Dense models pipeline-split by layers across nodes. MoE models (Qwen3, GLM, Mixtral, DeepSeek) split by experts — auto-detected from GGUF metadata, zero config. Splits are latency-aware — low-RTT peers preferred for tighter coordination.</p>
+                <p>Model fits on one machine? Solo mode, full speed. Too big? Dense models pipeline-split by layers across nodes. Splits are latency-aware — low-RTT peers preferred for tighter coordination.</p>
             </div>
             <div class="feature">
                 <div class="feature-icon">🧩</div>
-                <h3>MoE expert sharding</h3>
-                <p>Each node gets the full trunk plus an overlapping expert shard. Critical experts replicated everywhere, remaining distributed uniquely. Each node runs its own llama-server — zero cross-node traffic during inference.</p>
+                <h3>Stage lifecycle</h3>
+                <p>The planner chooses peers and layer ranges, loads stages downstream-to-upstream, waits for readiness, then publishes the stage-0 route.</p>
             </div>
             <div class="feature">
                 <div class="feature-icon">🔀</div>
@@ -317,16 +317,12 @@
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Gemma-3-12B</code></td><td style="padding:0.3rem 0.8rem;">7.3GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Punches above weight</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">11-17GB</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-14B</code></td><td style="padding:0.3rem 0.8rem;">9.0GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Thinking modes</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Devstral-Small-2505</code></td><td style="padding:0.3rem 0.8rem;">14.3GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Agentic coding</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">20-24GB</td><td style="padding:0.3rem 0.8rem;"><code>GLM-4.7-Flash</code></td><td style="padding:0.3rem 0.8rem;">18GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">MoE 64 experts, fast</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-32B</code></td><td style="padding:0.3rem 0.8rem;">19.8GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Best dense Qwen3</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-Coder-30B-A3B</code></td><td style="padding:0.3rem 0.8rem;">18.6GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">MoE agentic coding</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen2.5-Coder-32B</code></td><td style="padding:0.3rem 0.8rem;">20GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Matches GPT-4o on code</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen3.5-27B</code></td><td style="padding:0.3rem 0.8rem;">17GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Latest Qwen dense</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">40GB+</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-Coder-Next</code></td><td style="padding:0.3rem 0.8rem;">48GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">~85B dense, frontier coding</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Llama-3.3-70B</code></td><td style="padding:0.3rem 0.8rem;">43GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Strong all-around</td></tr>
                 <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Qwen2.5-72B</code></td><td style="padding:0.3rem 0.8rem;">47GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Flagship Qwen2.5</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem; color:var(--text3);">100GB+</td><td style="padding:0.3rem 0.8rem;"><code>Qwen3-235B-A22B</code></td><td style="padding:0.3rem 0.8rem;">142GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">MoE 235B/22B active</td></tr>
-                <tr style="border-bottom:1px solid var(--border);"><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>MiniMax-M2.5</code></td><td style="padding:0.3rem 0.8rem;">138GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">MoE 456B/46B active</td></tr>
                 <tr><td style="padding:0.3rem 0.8rem;"></td><td style="padding:0.3rem 0.8rem;"><code>Llama-3.1-405B</code></td><td style="padding:0.3rem 0.8rem;">149GB</td><td style="padding:0.3rem 0.8rem; color:var(--text2);">Largest dense (Q2_K)</td></tr>
             </tbody>
         </table>

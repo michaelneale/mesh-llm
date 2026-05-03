@@ -15,7 +15,6 @@ pub fn infer_catalog_capabilities(model: &catalog::CatalogModel) -> ModelCapabil
         caps.vision = CapabilityLevel::Supported;
         caps.multimodal = true;
     }
-    caps.moe = model.moe.is_some();
     caps = merge_name_signals(
         caps,
         &[

@@ -201,20 +201,7 @@ pub(crate) fn capabilities_json(caps: ModelCapabilities) -> Value {
         "audio": caps.audio_status(),
         "reasoning": caps.reasoning_status(),
         "tool_use": caps.tool_use_status(),
-        "moe": caps.moe,
     })
-}
-
-pub(crate) fn moe_json(moe: Option<&catalog::MoeConfig>) -> Value {
-    match moe {
-        Some(moe) => json!({
-            "n_expert": moe.n_expert,
-            "n_expert_used": moe.n_expert_used,
-            "min_experts_per_node": moe.min_experts_per_node,
-            "ranking_len": moe.ranking.len(),
-        }),
-        None => Value::Null,
-    }
 }
 
 pub(crate) fn fit_code_for_size_label(size_label: &str) -> Option<&'static str> {

@@ -30,14 +30,6 @@ export type MeshModel = {
   reasoning_status?: "supported" | "likely" | "none" | string;
   tool_use?: boolean;
   tool_use_status?: "supported" | "likely" | "none" | string;
-  moe?: boolean;
-  expert_count?: number;
-  used_expert_count?: number;
-  ranking_source?: string;
-  ranking_origin?: string;
-  ranking_prompt_count?: number;
-  ranking_tokens?: number;
-  ranking_layer_scope?: string;
   draft_model?: string;
   source_page_url?: string;
   fit_label?: string;

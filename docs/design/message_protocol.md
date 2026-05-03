@@ -102,7 +102,7 @@ Each `PeerAnnouncement` describes one node's state. Fields:
 | `catalog_models` | This node's contribution to the mesh model catalog |
 | `mesh_id` | Stable mesh identity (self entry only) |
 | `requested_models` | Models this node has requested to load |
-| `experts_summary` | MoE expert usage summary (`ExpertsSummary`; self entry only) |
+| `experts_summary` | legacy expert usage summary (`ExpertsSummary`; self entry only) |
 | `rtt_ms` | Round-trip time to the reporting node in milliseconds |
 | `demand` | Per-model demand entries (self entry only) |
 | `available_model_metadata` | GGUF-derived metadata for each available model |
@@ -151,7 +151,7 @@ message CompactModelMetadata {
 }
 ```
 
-Fields covered: architecture, quantization type, tokenizer, special tokens, RoPE parameters, expert counts (for MoE models), and standard transformer dimensions.
+Fields covered: architecture, quantization type, tokenizer, special tokens, RoPE parameters, expert counts, and standard transformer dimensions.
 
 #### SpecialToken
 

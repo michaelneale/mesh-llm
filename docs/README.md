@@ -19,7 +19,6 @@ This directory holds project documentation that is not owned by a single Rust cr
 | Directory | What belongs there |
 |---|---|
 | [design/](design/) | Architecture notes, protocol design, testing playbooks, and carried llama.cpp patch documentation |
-| [moe/](moe/) | MoE analyzer, placement, and CLI planning notes |
 | [plugins/](plugins/) | Plugin architecture and implementation planning |
 | [plans/](plans/) | Narrow implementation plans that are not yet general design docs |
 | [specs/](specs/) | Focused behavior specs for individual features |

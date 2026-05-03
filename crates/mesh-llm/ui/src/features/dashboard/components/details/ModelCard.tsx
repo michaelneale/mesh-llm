@@ -15,7 +15,6 @@ interface ModelCardProps {
   status: ModelStatus;
   vision?: boolean;
   reasoning?: boolean;
-  moe?: boolean;
   onClick?: () => void;
 }
 
@@ -28,7 +27,6 @@ export function ModelCard({
   status,
   vision,
   reasoning,
-  moe,
   onClick,
 }: ModelCardProps) {
   const shortName = (nameOrDisplay: string) => nameOrDisplay.split("/").pop() ?? nameOrDisplay;
@@ -50,7 +48,6 @@ export function ModelCard({
             <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
               {vision && <span role="img" aria-label="Vision">👁</span>}
               {reasoning && <span role="img" aria-label="Reasoning">🧠</span>}
-              {moe && <span role="img" aria-label="Mixture of Experts">🧩</span>}
             </div>
           </div>
           {subtitle ? (

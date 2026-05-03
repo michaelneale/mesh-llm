@@ -72,7 +72,7 @@ but it does not remove the need for a patched llama.cpp yet. Skippy has its own
 stage ABI patch queue. The replacement is:
 
 - remove mesh's patched `llama-server`, `rpc-server`, mesh hooks, RPC rewrite
-  path, and MoE split tooling;
+  path, and legacy split tooling;
 - adopt the llama-stage ABI build and runtime path;
 - keep mesh-llm as the user-facing product and orchestration layer.
 
@@ -873,10 +873,10 @@ proven:
 - [x] delete RPC port rewrite;
 - [x] replace patched `llama-server` mesh hooks with Rust-owned skippy hook
   points;
-- [x] delete MoE expert split serving from request serving;
+- [x] delete legacy expert split serving from request serving;
 - [x] simplify election around topology planning and backend target readiness;
 - [ ] retire stale legacy build/test/docker artifacts that only existed to
-  package external `llama-server`, `rpc-server`, or `llama-moe-*` binaries.
+  package external `llama-server` or `rpc-server` binaries.
 
 ## Data Model Additions
 

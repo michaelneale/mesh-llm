@@ -451,21 +451,6 @@ pub(crate) struct MeshModelPayload {
     pub(crate) tool_use: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_use_status: Option<&'static str>,
-    pub(crate) moe: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expert_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) used_expert_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ranking_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ranking_origin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ranking_prompt_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ranking_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) ranking_layer_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) draft_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  Boxes,
   Brain,
   Braces,
   Check,
@@ -199,13 +198,6 @@ export function ModelSidebar({
                   tooltip="Reasoning-oriented model behavior."
                 />
               ) : null}
-              {model.moe ? (
-                <CapabilityBadge
-                  label="MoE"
-                  icon={<Boxes className="h-3.5 w-3.5" />}
-                  tooltip="Mixture-of-experts architecture."
-                />
-              ) : null}
               {model.tool_use ? (
                 <CapabilityBadge
                   label="Tool Use"
@@ -222,11 +214,7 @@ export function ModelSidebar({
           model.quantization ||
           model.draft_model ||
           model.source_ref ||
-          model.source_revision ||
-          model.expert_count ||
-          model.used_expert_count ||
-          model.ranking_source ||
-          model.ranking_origin) ? (
+          model.source_revision) ? (
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm">
@@ -257,27 +245,6 @@ export function ModelSidebar({
                   <ModelMetaItem
                     label="Draft Pair"
                     value={model.draft_model}
-                    icon={<Sparkles className="h-3.5 w-3.5" />}
-                  />
-                ) : null}
-                {model.moe && model.expert_count && model.used_expert_count ? (
-                  <ModelMetaItem
-                    label="MoE Topology"
-                    value={`${model.expert_count} experts · top-${model.used_expert_count}`}
-                    icon={<Boxes className="h-3.5 w-3.5" />}
-                  />
-                ) : null}
-                {formatMoeRanking(model) ? (
-                  <ModelMetaItem
-                    label="MoE Ranking"
-                    value={formatMoeRanking(model)!}
-                    icon={<Boxes className="h-3.5 w-3.5" />}
-                  />
-                ) : null}
-                {formatMoeRankingOrigin(model) ? (
-                  <ModelMetaItem
-                    label="Ranking Origin"
-                    value={formatMoeRankingOrigin(model)!}
                     icon={<Sparkles className="h-3.5 w-3.5" />}
                   />
                 ) : null}
@@ -404,39 +371,6 @@ export function ModelSidebar({
       </div>
     </div>
   );
-}
-
-function formatMoeRanking(model?: MeshModel | null) {
-  if (!model?.ranking_source) return null;
-  if (model.ranking_source === "analyze") return "Full analyze";
-  if (model.ranking_source !== "micro-analyze") return model.ranking_source;
-
-  const parts = ["Micro-analyze"];
-  if (model.ranking_prompt_count) {
-    parts.push(`${model.ranking_prompt_count} prompt${model.ranking_prompt_count === 1 ? "" : "s"}`);
-  }
-  if (model.ranking_tokens) {
-    parts.push(`${model.ranking_tokens} tokens`);
-  }
-  if (model.ranking_layer_scope) {
-    parts.push(model.ranking_layer_scope === "all" ? "all layers" : "first layer");
-  }
-  return parts.join(" · ");
-}
-
-function formatMoeRankingOrigin(model?: MeshModel | null) {
-  switch (model?.ranking_origin) {
-    case "local-full-analyze":
-      return "Local full analyze";
-    case "local-micro-analyze":
-      return "Local micro-analyze";
-    case "peer-import":
-      return "Peer import";
-    case "legacy-cache":
-      return "Legacy cache";
-    default:
-      return null;
-  }
 }
 
 function huggingFacePathFromUrl(url?: string) {

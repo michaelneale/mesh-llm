@@ -190,9 +190,6 @@ impl ModelsFormatter for ConsoleFormatter {
             if let Some(label) = model_capabilities.reasoning_label() {
                 writeln!(&mut output, "  🧠 Reasoning: {}", label)?;
             }
-            if model.moe.is_some() {
-                writeln!(&mut output, "  🧩 MoE: yes")?;
-            }
             writeln!(&mut output)?;
         }
         crate::cli::pager::print_or_page(&output)
@@ -278,9 +275,6 @@ impl ModelsFormatter for ConsoleFormatter {
                 if let Some(draft) = model.draft.as_deref() {
                     writeln!(&mut output, "   🧠 draft: {}", draft)?;
                 }
-                if model.moe.is_some() {
-                    writeln!(&mut output, "   🧩 MoE: yes")?;
-                }
             }
             writeln!(&mut output)?;
         }
@@ -325,19 +319,6 @@ impl ModelsFormatter for ConsoleFormatter {
         }
         if let Some(label) = details.capabilities.reasoning_label() {
             println!("  🧠 reasoning ({label})");
-        }
-        if let Some(moe) = details.moe.clone() {
-            println!(
-                "🧩 MoE: {} experts, top-{}, min per node {}{}",
-                moe.n_expert,
-                moe.n_expert_used,
-                moe.min_experts_per_node,
-                if moe.ranking.is_empty() {
-                    ", no embedded ranking".to_string()
-                } else {
-                    format!(", ranking {}", moe.ranking.len())
-                }
-            );
         }
         println!("📥 Download:");
         if model_kind_code(details.kind) == "mlx" {

@@ -9,7 +9,6 @@ Mesh LLM lets you pool spare GPU capacity across machines and expose the result 
 If a model fits on one machine, it runs there. If it does not, Mesh LLM automatically spreads the work across the mesh:
 
 - Dense models use pipeline parallelism.
-- MoE models use expert sharding with zero cross-node inference traffic.
 - Models collaborate during inference — a text-only model consults a vision peer, an uncertain model gets a second opinion from a different architecture.
 - Every node gets the same local API at `http://localhost:9337/v1`.
 
@@ -149,15 +148,12 @@ Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribu
 
 - **Model fits on one machine?** → runs solo, full speed, no network overhead
 - **Dense model too big?** → pipeline parallelism — layers split across nodes
-- **MoE model too big?** → expert parallelism — experts split across nodes, zero cross-node traffic
 
 If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
 Mesh serving embeds the skippy stage runtime and uses a pinned `llama.cpp`
 ABI patch queue; see [docs/SKIPPY.md](docs/SKIPPY.md).
 
 **Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. The planner chooses peers and layer ranges, sends `LoadStage` downstream-to-upstream, waits for readiness, then publishes the stage-0 route. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
-
-**MoE model support** — Mixture-of-Experts models (Qwen3-MoE, GLM, OLMoE, Mixtral, DeepSeek — increasingly the best-performing architectures) are auto-detected from GGUF metadata and routed through the same package/topology path as dense models. Family-specific split safety lives in the skippy topology policy instead of a separate external serving path.
 
 **Multi-model** — different nodes serve different models simultaneously. The API proxy peeks at the `model` field in each request and routes to the right node via QUIC tunnel. `/v1/models` lists everything available.
 
@@ -542,7 +538,6 @@ Mesh LLM keeps the user-facing surface simple: talk to `localhost:9337`, pick a 
 
 - If a model fits on one machine, it runs there with no network overhead.
 - If a dense model does not fit, layers are split across low-latency peers.
-- If an MoE model does not fit, experts are split across nodes and requests are hash-routed for cache locality.
 - Different nodes can serve different models at the same time.
 
 Each node also exposes a management API and web console on port `3131`.
@@ -617,7 +612,6 @@ You can also try the hosted demo:
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for benchmark numbers and context
 - [CONTRIBUTING.md](CONTRIBUTING.md) for local development and build workflows
 - [docs/plugins/README.md](docs/plugins/README.md) for the plugin system and blackboard internals
-- [docs/moe/README.md](docs/moe/README.md) for MoE ranking and placement planning
 - [docs/design/VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md) for inter-model collaboration design
 - [crates/mesh-llm/README.md](crates/mesh-llm/README.md) for Rust crate structure
 - [ROADMAP.md](ROADMAP.md) for future work

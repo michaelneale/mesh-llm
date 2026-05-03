@@ -174,7 +174,7 @@ These metrics existed before the formal metrics system but fit the taxonomy. The
 | `active_demand` | Runtime | mesh-derived |
 | `node_count`, `active_nodes` | Information | mesh-derived |
 | `mesh_vram_gb` | Information | mesh-derived |
-| Capability flags: `vision`, `audio`, `reasoning`, `tool_use`, `moe` | Runtime | peer-advertised |
+| Capability flags: `vision`, `audio`, `reasoning`, `tool_use` | Runtime | peer-advertised |
 
 ### From gossip
 
@@ -202,8 +202,7 @@ These are the highest-priority proposals because they directly affect routing qu
 | Active server count vs. demanded server count by model | Measures serving deficit; if demand exceeds active servers, the mesh is underserving the model | mesh-derived |
 | GPU occupancy / estimated node utilization | Routing needs a utilization signal to avoid overloading nodes that are already near capacity | local-only |
 | Cold-start / model-activation time | Affects TTFT for the first request after a model loads; important for demand-aware rebalancing | local-only |
-| Split-eligibility / split-failure rate | Measures how often pipeline or expert splits fail to form; split failures fall back to single-node serving | local-only |
-| MoE expert pressure / skew indicators | Uneven expert load across nodes degrades MoE throughput; skew detection enables rebalancing | local-only |
+| Split-eligibility / split-failure rate | Measures how often pipeline splits fail to form; split failures fall back to single-node serving | local-only |
 | Client-only vs. host-serving pressure | Distinguishes nodes that are only routing from nodes that are also serving; affects placement decisions | local-only |
 
 ### Information (proposed)
@@ -234,8 +233,8 @@ These are useful for roadmap and longer-horizon analysis. They don't need to be 
 | Direct model-routed vs. auto-routed traffic | Measures how often callers specify a model vs. letting the mesh decide | local-only |
 | Hot-path failure modes | Which failure types dominate on the most-used models | local-only |
 | Discovery-to-join conversion | How many discovered meshes result in a join; measures discovery quality | local-only |
-| Capability demand mix | Which capability types (vision, audio, reasoning, tool_use, moe) are most requested | local-only |
-| Latency/throughput pain by topology type | Whether single-node, pipeline-split, or expert-split topologies have different quality profiles | local-only |
+| Capability demand mix | Which capability types (vision, audio, reasoning, tool_use) are most requested | local-only |
+| Latency/throughput pain by topology type | Whether single-node and pipeline-split topologies have different quality profiles | local-only |
 
 ## Scope Safety
 
@@ -268,5 +267,3 @@ New metrics should expand outward from what already exists: local runtime state 
 **Route explanation: `/api/status` or a dedicated diagnostics endpoint?** Embedding route explanations in `/api/status` keeps the surface simple but adds noise for operators who don't need it. A dedicated `/api/diagnostics` or per-request trace endpoint is cleaner but adds API surface.
 
 **Which strategy metrics are derivable cheaply without persistent storage?** Some strategy metrics (model popularity over time, demand trends) require time-windowed aggregation. Without persistent storage, they can only be approximated from current state. The tradeoff between accuracy and implementation complexity needs to be evaluated per metric.
-
-**MoE expert-pressure signal stability?** Expert load is highly request-dependent and can shift rapidly. A pressure signal that's too noisy will cause unnecessary rebalancing. A signal that's too smooth will miss real skew. The right smoothing window and threshold are unknown without production data.

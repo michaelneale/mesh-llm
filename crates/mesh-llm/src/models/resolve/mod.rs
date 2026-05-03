@@ -38,7 +38,6 @@ pub struct ModelDetails {
     pub description: Option<String>,
     pub draft: Option<String>,
     pub capabilities: ModelCapabilities,
-    pub moe: Option<catalog::MoeConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,7 +79,7 @@ pub(super) fn merge_capabilities(
         audio: left.audio.max(right.audio),
         reasoning: left.reasoning.max(right.reasoning),
         tool_use: left.tool_use.max(right.tool_use),
-        moe: left.moe || right.moe,
+        moe: false,
     }
 }
 
@@ -264,7 +263,6 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
             description: Some(model.description.to_string()),
             draft: model.draft.clone(),
             capabilities: capabilities::infer_catalog_capabilities(model),
-            moe: model.moe.clone(),
         }),
         ExactModelRef::HuggingFace {
             repo,
@@ -315,7 +313,6 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 description: catalog.map(|model| model.description.to_string()),
                 draft: catalog.and_then(|model| model.draft.clone()),
                 capabilities,
-                moe: catalog.and_then(|model| model.moe.clone()),
             })
         }
         ExactModelRef::Url { url, filename } => {
@@ -336,7 +333,6 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 capabilities: catalog
                     .map(capabilities::infer_catalog_capabilities)
                     .unwrap_or_default(),
-                moe: catalog.and_then(|model| model.moe.clone()),
             })
         }
     }
@@ -521,7 +517,6 @@ where
             description: None,
             draft: None,
             capabilities: ModelCapabilities::default(),
-            moe: None,
         });
         progress(ShowVariantsProgress::Inspecting {
             completed: idx + 1,

@@ -12,69 +12,21 @@ pub(super) struct HeartbeatFailurePolicy {
     pub(super) failure_threshold: u32,
 }
 
-fn descriptors_share_exact_moe_identity(
-    local: &[ServedModelDescriptor],
-    remote: &[ServedModelDescriptor],
-) -> bool {
-    local.iter().any(|local_descriptor| {
-        local_descriptor
-            .topology
-            .as_ref()
-            .and_then(|topology| topology.moe.as_ref())
-            .is_some()
-            && remote.iter().any(|remote_descriptor| {
-                remote_descriptor
-                    .topology
-                    .as_ref()
-                    .and_then(|topology| topology.moe.as_ref())
-                    .is_some()
-                    && identities_match_exact(
-                        &local_descriptor.identity,
-                        &remote_descriptor.identity,
-                    )
-            })
-    })
-}
-
 pub(super) fn heartbeat_failure_policy_for_peer(
-    local_descriptors: &[ServedModelDescriptor],
-    local_runtime: &[ModelRuntimeDescriptor],
+    _local_descriptors: &[ServedModelDescriptor],
+    _local_runtime: &[ModelRuntimeDescriptor],
     peer: &PeerInfo,
     is_relay_only: bool,
 ) -> HeartbeatFailurePolicy {
-    if descriptors_share_exact_moe_identity(local_descriptors, &peer.served_model_descriptors) {
-        if exact_moe_starting_during_convergence(local_descriptors, local_runtime, peer) {
-            return HeartbeatFailurePolicy {
-                allow_recent_inbound_grace: true,
-                // Split convergence can spend minutes in split generation + shard
-                // load. During that window, prefer serving continuity over fast
-                // heartbeat-only fail-down; request-path failures still remove
-                // dead shard peers immediately.
-                failure_threshold: 4,
-            };
-        }
-        HeartbeatFailurePolicy {
-            allow_recent_inbound_grace: false,
-            // Shared MoE peers should fail down faster than generic peers, but a
-            // single heartbeat miss is too aggressive on relay-heavy or flaky
-            // links. Request-path shard failures still trigger immediate
-            // fail-down; heartbeat-only loss needs a second miss to avoid
-            // tearing down a healthy split on one transient blip.
-            failure_threshold: 2,
-        }
-    } else {
-        HeartbeatFailurePolicy {
-            allow_recent_inbound_grace: true,
-            // Relay-only peers are more prone to transient timeouts (relay
-            // hiccups, higher base RTT). Give them an extra cycle before
-            // declaring death — the data-path still catches genuinely dead
-            // peers immediately during active inference.
-            failure_threshold: if is_relay_only { 3 } else { 2 },
-        }
+    let _ = peer;
+    HeartbeatFailurePolicy {
+        allow_recent_inbound_grace: true,
+        // Relay-only peers are more prone to transient timeouts (relay hiccups,
+        // higher base RTT). Give them an extra cycle before declaring death.
+        failure_threshold: if is_relay_only { 3 } else { 2 },
     }
 }
 
-pub(super) const MOE_RECOVERY_PROBATION_SECS: u64 = 30;
 pub(super) const RELAY_HEALTH_CHECK_SECS: u64 = 300;
 pub(super) const RELAY_MISSING_GRACE_SECS: u64 = 180;
 pub(super) const RELAY_ONLY_RECONNECT_SECS: u64 = 1800;
@@ -187,126 +139,6 @@ pub(super) fn should_remove_connection(
     closing_stable_id: usize,
 ) -> bool {
     current_stable_id == Some(closing_stable_id)
-}
-
-fn runtime_model_is_starting(runtimes: &[ModelRuntimeDescriptor], model_name: &str) -> bool {
-    runtimes
-        .iter()
-        .any(|runtime| runtime.model_name == model_name && !runtime.ready)
-}
-
-fn exact_moe_starting_during_convergence(
-    local_descriptors: &[ServedModelDescriptor],
-    local_runtime: &[ModelRuntimeDescriptor],
-    peer: &PeerInfo,
-) -> bool {
-    local_descriptors.iter().any(|local_descriptor| {
-        let local_moe = local_descriptor
-            .topology
-            .as_ref()
-            .and_then(|topology| topology.moe.as_ref())
-            .is_some();
-        if !local_moe {
-            return false;
-        }
-
-        peer.served_model_descriptors
-            .iter()
-            .any(|remote_descriptor| {
-                let remote_moe = remote_descriptor
-                    .topology
-                    .as_ref()
-                    .and_then(|topology| topology.moe.as_ref())
-                    .is_some();
-                if !remote_moe
-                    || !identities_match_exact(
-                        &local_descriptor.identity,
-                        &remote_descriptor.identity,
-                    )
-                {
-                    return false;
-                }
-
-                let model_name = &local_descriptor.identity.model_name;
-                runtime_model_is_starting(local_runtime, model_name)
-                    || runtime_model_is_starting(&peer.served_model_runtime, model_name)
-            })
-    })
-}
-
-pub(crate) fn moe_recovery_ready_at(
-    recovered_at: Option<std::time::Instant>,
-    now: std::time::Instant,
-) -> bool {
-    recovered_at
-        .map(|recovered_at| {
-            now.duration_since(recovered_at).as_secs() >= MOE_RECOVERY_PROBATION_SECS
-        })
-        .unwrap_or(true)
-}
-
-pub(crate) fn descriptors_share_exact_moe_identity_for_model(
-    local: &[ServedModelDescriptor],
-    remote: &[ServedModelDescriptor],
-    model_name: &str,
-) -> Option<bool> {
-    let local_moe: Vec<&ServedModelDescriptor> = local
-        .iter()
-        .filter(|descriptor| {
-            descriptor.identity.model_name == model_name
-                && descriptor
-                    .topology
-                    .as_ref()
-                    .and_then(|topology| topology.moe.as_ref())
-                    .is_some()
-        })
-        .collect();
-    let remote_moe: Vec<&ServedModelDescriptor> = remote
-        .iter()
-        .filter(|descriptor| {
-            descriptor.identity.model_name == model_name
-                && descriptor
-                    .topology
-                    .as_ref()
-                    .and_then(|topology| topology.moe.as_ref())
-                    .is_some()
-        })
-        .collect();
-    if local_moe.is_empty() || remote_moe.is_empty() {
-        return None;
-    }
-    Some(local_moe.iter().any(|local_descriptor| {
-        remote_moe.iter().any(|remote_descriptor| {
-            identities_match_exact(&local_descriptor.identity, &remote_descriptor.identity)
-        })
-    }))
-}
-
-pub(crate) fn peer_is_eligible_for_active_moe(
-    local_descriptors: &[ServedModelDescriptor],
-    peer: &PeerInfo,
-    model_name: &str,
-) -> bool {
-    let declares_model = peer.is_assigned_model(model_name)
-        || peer
-            .requested_models
-            .iter()
-            .any(|requested| requested == model_name);
-    if !declares_model || matches!(peer.role, NodeRole::Client) {
-        return false;
-    }
-
-    let identity_matches = descriptors_share_exact_moe_identity_for_model(
-        local_descriptors,
-        &peer.served_model_descriptors,
-        model_name,
-    )
-    .unwrap_or(true);
-    if !identity_matches {
-        return false;
-    }
-
-    moe_recovery_ready_at(peer.moe_recovered_at, std::time::Instant::now())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -611,9 +443,8 @@ impl Node {
                             let count = fail_counts.entry(peer_id).or_default();
                             *count += 1;
                             if *count >= failure_policy.failure_threshold {
-                                // Generic peers require 2 misses so a single timeout doesn't
-                                // evict an otherwise-alive inbound-only peer. Shared MoE peers
-                                // are stricter: one missed heartbeat should trigger re-election.
+                                // Peers require multiple misses so a single timeout doesn't evict
+                                // an otherwise-alive inbound-only peer.
                                 node.state
                                     .lock()
                                     .await

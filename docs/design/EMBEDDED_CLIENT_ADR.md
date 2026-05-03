@@ -122,7 +122,7 @@ Code from `crates/mesh-llm/src/` falls into three categories.
 | Category | Modules | Notes |
 |---|---|---|
 | A: Extract verbatim | `src/protocol/*`, `src/network/{router,affinity,rewrite}`, `src/models/{catalog,capabilities,gguf}`, `src/crypto/{keys,mod}` pure parts | No semantic changes. Copy byte-for-byte, add re-export shim. |
-| B: Extract with rewrite | `src/network/{nostr,proxy,tunnel}`, `src/mesh/mod.rs` (~50%), `src/inference/{election,moe}` (~60-70%) | I/O becomes trait-based. Filesystem and process calls are removed or abstracted. |
+| B: Extract with rewrite | `src/network/{nostr,proxy,tunnel}`, `src/mesh/mod.rs` (~50%), `src/inference/{election}` (~60-70%) | I/O becomes trait-based. Filesystem and process calls are removed or abstracted. |
 | C: Host-only (stays in mesh-llm) | `src/{runtime,api,cli,system,plugin,plugins}/*`, `src/inference/launch.rs`, `src/crypto/{keystore,keychain}.rs`, `src/models/{local,resolve,maintenance}.rs` | Desktop-only. Not extracted. |
 
 Category B modules require the most care. The extraction recipe applies: failing test first, then minimal implementation, then re-export shim, then commit.

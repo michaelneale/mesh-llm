@@ -37,20 +37,6 @@ pub enum InferenceTarget {
     Local(u16),
     /// Another node serves the model; proxy via QUIC to this peer.
     Remote(iroh::EndpointId),
-    /// MoE mode: this node serves an expert shard on the given local HTTP port.
-    MoeLocal(u16),
-    /// MoE mode: another node serves an expert shard.
-    MoeRemote(iroh::EndpointId),
-}
-
-/// MoE deployment state shared between planning and proxying.
-/// The proxy uses this to route sessions to MoE nodes.
-#[derive(Clone, Debug, Default)]
-pub struct MoeState {
-    /// All MoE node targets, in stable order.
-    pub nodes: Vec<InferenceTarget>,
-    /// Full-coverage targets that can serve the whole model if the active shard set fails.
-    pub fallbacks: Vec<InferenceTarget>,
 }
 
 /// Per-model routing table. The API proxy uses this to route by model name.
@@ -58,8 +44,6 @@ pub struct MoeState {
 pub struct ModelTargets {
     /// model_name -> list of inference targets.
     pub targets: HashMap<String, Vec<InferenceTarget>>,
-    /// MoE state if this model uses expert sharding.
-    pub moe: Option<MoeState>,
     /// Shared round-robin counter across clones.
     counter: Arc<AtomicU64>,
 }
@@ -99,33 +83,5 @@ impl ModelTargets {
             let idx = sticky_key as usize % candidates.len();
             candidates[idx].clone()
         }
-    }
-
-    /// Get MoE target for a session using simple hash-based routing.
-    pub fn get_moe_target(&self, session_hint: &str) -> Option<InferenceTarget> {
-        let moe = self.moe.as_ref()?;
-        if moe.nodes.is_empty() {
-            return None;
-        }
-        let hash = session_hint
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let idx = (hash as usize) % moe.nodes.len();
-        Some(moe.nodes[idx].clone())
-    }
-
-    pub fn get_moe_failover_targets(&self, session_hint: &str) -> Vec<InferenceTarget> {
-        let Some(primary) = self.get_moe_target(session_hint) else {
-            return Vec::new();
-        };
-        let mut ordered = vec![primary.clone()];
-        if let Some(moe) = self.moe.as_ref() {
-            for fallback in &moe.fallbacks {
-                if fallback != &primary {
-                    ordered.push(fallback.clone());
-                }
-            }
-        }
-        ordered
     }
 }

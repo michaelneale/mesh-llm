@@ -15,7 +15,6 @@ pub struct CatalogModel {
     pub size: String,
     pub description: String,
     pub draft: Option<String>,
-    pub moe: Option<MoeConfig>,
     pub extra_files: Vec<CatalogAsset>,
     pub mmproj: Option<CatalogAsset>,
 }
@@ -34,14 +33,6 @@ impl CatalogModel {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct MoeConfig {
-    pub n_expert: u32,
-    pub n_expert_used: u32,
-    pub min_experts_per_node: u32,
-    pub ranking: Vec<u32>,
-}
-
 #[derive(Debug, Deserialize)]
 struct CatalogModelJson {
     name: String,
@@ -50,17 +41,9 @@ struct CatalogModelJson {
     size: String,
     description: String,
     draft: Option<String>,
-    moe: Option<MoeConfigJson>,
     #[serde(default)]
     extra_files: Vec<CatalogAsset>,
     mmproj: Option<CatalogAsset>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct MoeConfigJson {
-    n_expert: u32,
-    n_expert_used: u32,
-    min_experts_per_node: u32,
 }
 
 pub static MODEL_CATALOG: LazyLock<Vec<CatalogModel>> = LazyLock::new(load_catalog);
@@ -80,20 +63,8 @@ impl CatalogModel {
             size: raw.size,
             description: raw.description,
             draft: raw.draft,
-            moe: raw.moe.map(MoeConfig::from_json),
             extra_files: raw.extra_files,
             mmproj: raw.mmproj,
-        }
-    }
-}
-
-impl MoeConfig {
-    fn from_json(raw: MoeConfigJson) -> Self {
-        Self {
-            n_expert: raw.n_expert,
-            n_expert_used: raw.n_expert_used,
-            min_experts_per_node: raw.min_experts_per_node,
-            ranking: Vec::new(),
         }
     }
 }

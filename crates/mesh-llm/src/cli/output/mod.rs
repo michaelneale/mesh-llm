@@ -327,70 +327,6 @@ impl LlamaInstanceKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MoeSummary {
-    pub experts: u32,
-    pub top_k: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MoeDistributionSummary {
-    pub leader: String,
-    pub active_nodes: usize,
-    pub fallback_nodes: usize,
-    pub shard_index: usize,
-    pub shard_count: usize,
-    pub ranking_source: String,
-    pub ranking_origin: String,
-    pub overlap: usize,
-    pub shared_experts: usize,
-    pub unique_experts: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MoeStatusSummary {
-    pub phase: String,
-    pub detail: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MoeAnalysisProgressSummary {
-    pub mode: String,
-    pub spinner: String,
-    pub current: usize,
-    pub total: Option<usize>,
-    pub elapsed_secs: u64,
-}
-
-fn format_moe_analysis_progress_line(
-    model_name: &str,
-    mode: &str,
-    spinner: &str,
-    current: usize,
-    total: Option<usize>,
-    elapsed: std::time::Duration,
-) -> String {
-    let mode_label = format!("MoE {mode}");
-    let progress = match total {
-        Some(total) if total > 0 => format!(
-            "{:>5.1}%  {}/{}",
-            (current as f64 / total as f64) * 100.0,
-            current,
-            total
-        ),
-        Some(total) => format!("       0/{}", total),
-        None => "starting".to_string(),
-    };
-    let spinner_progress = format!("{spinner} {progress}");
-    format!(
-        "🧩 [{}] {:<17} {}  {:>3}s",
-        model_name,
-        mode_label,
-        spinner_progress,
-        elapsed.as_secs()
-    )
-}
-
 fn strip_leading_severity_icon(message: &str) -> &str {
     message
         .strip_prefix("⚠️")
@@ -469,27 +405,6 @@ pub enum OutputEvent {
     ModelLoaded {
         model: String,
         bytes: Option<u64>,
-        moe: Option<MoeSummary>,
-    },
-    MoeDetected {
-        model: String,
-        moe: MoeSummary,
-        fits_locally: Option<bool>,
-        capacity_gb: Option<f64>,
-        model_gb: Option<f64>,
-    },
-    MoeDistribution {
-        model: String,
-        moe: MoeSummary,
-        distribution: MoeDistributionSummary,
-    },
-    MoeStatus {
-        model: String,
-        status: MoeStatusSummary,
-    },
-    MoeAnalysisProgress {
-        model: String,
-        progress: MoeAnalysisProgressSummary,
     },
     HostElected {
         model: String,
@@ -591,10 +506,6 @@ impl OutputEvent {
             OutputEvent::ModelQueued { .. } => "model_queued",
             OutputEvent::ModelLoading { .. } => "model_loading",
             OutputEvent::ModelLoaded { .. } => "model_loaded",
-            OutputEvent::MoeDetected { .. } => "moe_detected",
-            OutputEvent::MoeDistribution { .. } => "moe_distribution",
-            OutputEvent::MoeStatus { .. } => "moe_status",
-            OutputEvent::MoeAnalysisProgress { .. } => "moe_analysis_progress",
             OutputEvent::HostElected { .. } => "host_elected",
             OutputEvent::RpcServerStarting { .. } => "rpc_server_starting",
             OutputEvent::RpcReady { .. } => "rpc_ready",
@@ -634,9 +545,7 @@ impl OutputEvent {
                 None => format!("node {node_id} initialized"),
             },
             OutputEvent::InviteToken {
-                mesh_id,
-                mesh_name,
-                ..
+                mesh_id, mesh_name, ..
             } => {
                 let mesh_label = format_invite_mesh_label(mesh_name.as_deref(), mesh_id);
                 format!("invite token ready for mesh {mesh_label}")
@@ -678,69 +587,6 @@ impl OutputEvent {
             OutputEvent::ModelQueued { model } => format!("queued model {model}"),
             OutputEvent::ModelLoading { model, .. } => format!("loading model {model}"),
             OutputEvent::ModelLoaded { model, .. } => format!("loaded model {model}"),
-            OutputEvent::MoeDetected {
-                model,
-                moe,
-                fits_locally,
-                capacity_gb,
-                model_gb,
-            } => {
-                let mut line = format!("MoE model detected for {model}: {} experts, top-{}", moe.experts, moe.top_k);
-                match fits_locally {
-                    Some(true) => {
-                        if let (Some(capacity_gb), Some(model_gb)) = (capacity_gb, model_gb) {
-                            line.push_str(&format!(
-                                " — fits locally ({capacity_gb:.1}GB capacity for {model_gb:.1}GB model)"
-                            ));
-                        } else {
-                            line.push_str(" — fits locally");
-                        }
-                    }
-                    Some(false) => {
-                        if let (Some(capacity_gb), Some(model_gb)) = (capacity_gb, model_gb) {
-                            line.push_str(&format!(
-                                " — waiting for peers ({capacity_gb:.1}GB capacity for {model_gb:.1}GB model)"
-                            ));
-                        } else {
-                            line.push_str(" — waiting for peers");
-                        }
-                    }
-                    None => {}
-                }
-                line
-            }
-            OutputEvent::MoeDistribution {
-                model,
-                moe,
-                distribution,
-            } => format!(
-                "MoE split mode ({model}: {} experts, top-{}) — leader={} active={} fallback={} shard {}/{} ranking={} origin={} overlap={} shared={} unique={}",
-                moe.experts,
-                moe.top_k,
-                distribution.leader,
-                distribution.active_nodes,
-                distribution.fallback_nodes,
-                distribution.shard_index,
-                distribution.shard_count,
-                distribution.ranking_source,
-                distribution.ranking_origin,
-                distribution.overlap,
-                distribution.shared_experts,
-                distribution.unique_experts
-            ),
-            OutputEvent::MoeStatus { model, status } => {
-                format!("{}: {} [{}]", status.phase, status.detail, model)
-            }
-            OutputEvent::MoeAnalysisProgress { model, progress } => {
-                format_moe_analysis_progress_line(
-                    model,
-                    &progress.mode,
-                    &progress.spinner,
-                    progress.current,
-                    progress.total,
-                    std::time::Duration::from_secs(progress.elapsed_secs),
-                )
-            }
             OutputEvent::HostElected {
                 model, host, role, ..
             } => match role {
@@ -763,7 +609,11 @@ impl OutputEvent {
                     msg
                 }
             }
-            OutputEvent::LlamaStarting { http_port, log_path, .. } => {
+            OutputEvent::LlamaStarting {
+                http_port,
+                log_path,
+                ..
+            } => {
                 let msg = format!("llama-server starting on port {http_port}");
                 if let Some(path) = log_path {
                     format!("{msg}\n  ↳ log={path}")
@@ -887,66 +737,6 @@ impl OutputEvent {
                 }
                 line
             }
-            OutputEvent::MoeDetected {
-                model,
-                moe,
-                fits_locally,
-                capacity_gb,
-                model_gb,
-            } => {
-                let mut line = format!("🧩 [{model}] MoE model detected: {} experts, top-{}", moe.experts, moe.top_k);
-                match fits_locally {
-                    Some(true) => {
-                        if let (Some(capacity_gb), Some(model_gb)) = (capacity_gb, model_gb) {
-                            line.push_str(&format!(
-                                " — fits locally ({capacity_gb:.1}GB capacity for {model_gb:.1}GB model)"
-                            ));
-                        } else {
-                            line.push_str(" — fits locally");
-                        }
-                    }
-                    Some(false) => {
-                        if let (Some(capacity_gb), Some(model_gb)) = (capacity_gb, model_gb) {
-                            line.push_str(&format!(
-                                " — waiting for peers ({capacity_gb:.1}GB capacity for {model_gb:.1}GB model)"
-                            ));
-                        } else {
-                            line.push_str(" — waiting for peers");
-                        }
-                    }
-                    None => {}
-                }
-                line
-            }
-            OutputEvent::MoeDistribution {
-                model,
-                moe,
-                distribution,
-            } => format!(
-                "🧩 [{model}] MoE split mode — leader={} active={} fallback={} I am shard {}/{} (ranking={} origin={}, overlap={}); My experts: {} ({} shared + {} unique)",
-                distribution.leader,
-                distribution.active_nodes,
-                distribution.fallback_nodes,
-                distribution.shard_index,
-                distribution.shard_count,
-                distribution.ranking_source,
-                distribution.ranking_origin,
-                distribution.overlap,
-                moe.experts,
-                distribution.shared_experts,
-                distribution.unique_experts
-            ),
-            OutputEvent::MoeStatus { model, status } => {
-                format!("🧩 [{model}] {}: {}", status.phase, status.detail)
-            }
-            OutputEvent::MoeAnalysisProgress { model, progress } => format_moe_analysis_progress_line(
-                model,
-                &progress.mode,
-                &progress.spinner,
-                progress.current,
-                progress.total,
-                std::time::Duration::from_secs(progress.elapsed_secs),
-            ),
             OutputEvent::HostElected {
                 model,
                 host,
@@ -970,7 +760,7 @@ impl OutputEvent {
                 Some(reason) => format!("👋 Peer left: {peer_id} ({reason})"),
                 None => format!("👋 Peer left: {peer_id}"),
             },
-            OutputEvent::ModelLoaded { model, bytes, moe } => {
+            OutputEvent::ModelLoaded { model, bytes } => {
                 let mut line = format!("📦 Model loaded: {model}");
                 if let Some(bytes) = bytes {
                     line.push_str(&format!(
@@ -984,12 +774,6 @@ impl OutputEvent {
                         } else {
                             format!("{bytes}B")
                         }
-                    ));
-                }
-                if let Some(moe) = moe {
-                    line.push_str(&format!(
-                        " [MoE experts={} top_k={}]",
-                        moe.experts, moe.top_k
                     ));
                 }
                 line
@@ -1095,69 +879,9 @@ impl OutputEvent {
             OutputEvent::ModelLoading { model, source } => {
                 json!({ "model": model, "source": source })
             }
-            OutputEvent::ModelLoaded { model, bytes, moe } => json!({
+            OutputEvent::ModelLoaded { model, bytes } => json!({
                 "model": model,
                 "bytes": bytes,
-                "moe": moe.as_ref().map(|moe| json!({
-                    "experts": moe.experts,
-                    "top_k": moe.top_k,
-                })),
-            }),
-            OutputEvent::MoeDetected {
-                model,
-                moe,
-                fits_locally,
-                capacity_gb,
-                model_gb,
-            } => json!({
-                "model": model,
-                "moe": {
-                    "experts": moe.experts,
-                    "top_k": moe.top_k,
-                },
-                "fits_locally": fits_locally,
-                "capacity_gb": capacity_gb,
-                "model_gb": model_gb,
-            }),
-            OutputEvent::MoeDistribution {
-                model,
-                moe,
-                distribution,
-            } => json!({
-                "model": model,
-                "moe": {
-                    "experts": moe.experts,
-                    "top_k": moe.top_k,
-                },
-                "distribution": {
-                    "leader": distribution.leader,
-                    "active_nodes": distribution.active_nodes,
-                    "fallback_nodes": distribution.fallback_nodes,
-                    "shard_index": distribution.shard_index,
-                    "shard_count": distribution.shard_count,
-                    "ranking_source": distribution.ranking_source,
-                    "ranking_origin": distribution.ranking_origin,
-                    "overlap": distribution.overlap,
-                    "shared_experts": distribution.shared_experts,
-                    "unique_experts": distribution.unique_experts,
-                }
-            }),
-            OutputEvent::MoeStatus { model, status } => json!({
-                "model": model,
-                "status": {
-                    "phase": status.phase,
-                    "detail": status.detail,
-                }
-            }),
-            OutputEvent::MoeAnalysisProgress { model, progress } => json!({
-                "model": model,
-                "progress": {
-                    "mode": progress.mode,
-                    "spinner": progress.spinner,
-                    "current": progress.current,
-                    "total": progress.total,
-                    "elapsed_secs": progress.elapsed_secs,
-                }
             }),
             OutputEvent::HostElected {
                 model,
@@ -1330,8 +1054,6 @@ pub struct RunningModelState {
     pub internal_port: Option<u16>,
     pub role: Option<String>,
     pub capacity_gb: Option<f64>,
-    pub moe: Option<MoeSummary>,
-    pub moe_distribution: Option<MoeDistributionSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2003,48 +1725,6 @@ impl DashboardState {
             OutputEvent::ModelLoaded { model, .. } => {
                 self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
             }
-            OutputEvent::MoeDetected { model, moe, .. } => {
-                self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
-                if let Some(existing) = self
-                    .running_models
-                    .iter_mut()
-                    .find(|candidate| candidate.model == *model)
-                {
-                    existing.moe = Some(moe.clone());
-                }
-            }
-            OutputEvent::MoeDistribution {
-                model,
-                moe,
-                distribution,
-            } => {
-                self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
-                if let Some(existing) = self
-                    .running_models
-                    .iter_mut()
-                    .find(|candidate| candidate.model == *model)
-                {
-                    existing.moe = Some(moe.clone());
-                    existing.moe_distribution = Some(distribution.clone());
-                }
-            }
-            OutputEvent::MoeAnalysisProgress { .. } => {}
-            OutputEvent::MoeStatus { model, .. } => {
-                self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
-            }
-            OutputEvent::ModelReady {
-                model,
-                internal_port,
-                role,
-            } => {
-                self.upsert_model(
-                    model,
-                    RuntimeStatus::Ready,
-                    *internal_port,
-                    role.clone(),
-                    None,
-                );
-            }
             OutputEvent::HostElected {
                 model,
                 role,
@@ -2145,6 +1825,19 @@ impl DashboardState {
                 ctx_size: *ctx_size,
                 log_path: log_path.clone(),
             }),
+            OutputEvent::ModelReady {
+                model,
+                internal_port,
+                role,
+            } => {
+                self.upsert_model(
+                    model,
+                    RuntimeStatus::Ready,
+                    *internal_port,
+                    role.clone(),
+                    None,
+                );
+            }
             OutputEvent::WebserverStarting { url } => {
                 self.webserver = Some(EndpointState {
                     label: "Console".to_string(),
@@ -2672,8 +2365,6 @@ impl DashboardState {
                 internal_port,
                 role,
                 capacity_gb,
-                moe: None,
-                moe_distribution: None,
             });
         }
 
@@ -3063,24 +2754,6 @@ fn render_models(state: &DashboardState) -> Vec<String> {
         }
         if let Some(capacity_gb) = model.capacity_gb {
             line.push_str(&format!("   capacity={capacity_gb:.1}GB"));
-        }
-        if let Some(moe) = &model.moe {
-            line.push_str(&format!("   MoE: {} experts, top-{}", moe.experts, moe.top_k));
-        }
-        if let Some(distribution) = &model.moe_distribution {
-            line.push_str(&format!(
-                "   split leader={} active={} fallback={} shard={}/{} ranking={} origin={} overlap={} shared={} unique={}",
-                distribution.leader,
-                distribution.active_nodes,
-                distribution.fallback_nodes,
-                distribution.shard_index,
-                distribution.shard_count,
-                distribution.ranking_source,
-                distribution.ranking_origin,
-                distribution.overlap,
-                distribution.shared_experts,
-                distribution.unique_experts,
-            ));
         }
         line
     }));
@@ -6999,29 +6672,6 @@ impl DashboardFormatter {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_moe_summary() -> MoeSummary {
-        MoeSummary {
-            experts: 128,
-            top_k: 8,
-        }
-    }
-
-    fn sample_moe_distribution() -> MoeDistributionSummary {
-        MoeDistributionSummary {
-            leader: "node-7".to_string(),
-            active_nodes: 3,
-            fallback_nodes: 1,
-            shard_index: 0,
-            shard_count: 3,
-            ranking_source: "shared".to_string(),
-            ranking_origin: "cache".to_string(),
-            overlap: 2,
-            shared_experts: 48,
-            unique_experts: 80,
-        }
-    }
-
     struct StaticDashboardSnapshotProvider {
         snapshot: DashboardSnapshot,
     }
@@ -7184,36 +6834,6 @@ mod tests {
             OutputEvent::ModelLoaded {
                 model: "Qwen3-32B".to_string(),
                 bytes: Some(24_012_755_755),
-                moe: Some(sample_moe_summary()),
-            },
-            OutputEvent::MoeDetected {
-                model: "Qwen3-MoE".to_string(),
-                moe: sample_moe_summary(),
-                fits_locally: Some(false),
-                capacity_gb: Some(24.0),
-                model_gb: Some(36.0),
-            },
-            OutputEvent::MoeDistribution {
-                model: "Qwen3-MoE".to_string(),
-                moe: sample_moe_summary(),
-                distribution: sample_moe_distribution(),
-            },
-            OutputEvent::MoeStatus {
-                model: "Qwen3-MoE".to_string(),
-                status: MoeStatusSummary {
-                    phase: "standing by".to_string(),
-                    detail: "outside active MoE placement".to_string(),
-                },
-            },
-            OutputEvent::MoeAnalysisProgress {
-                model: "Qwen3-MoE".to_string(),
-                progress: MoeAnalysisProgressSummary {
-                    mode: "ranking".to_string(),
-                    spinner: "⠋".to_string(),
-                    current: 3,
-                    total: Some(8),
-                    elapsed_secs: 12,
-                },
             },
             OutputEvent::HostElected {
                 model: "Qwen3-32B".to_string(),
@@ -10587,74 +10207,6 @@ mod tests {
         );
         assert_eq!(failed_value["detail"], Value::Null);
     }
-
-    #[test]
-    fn json_formatter_includes_moe_detection_and_distribution_payloads() {
-        let mut formatter = JsonFormatter;
-
-        let detected = formatter
-            .format(&OutputEvent::MoeDetected {
-                model: "Qwen3-MoE".to_string(),
-                moe: MoeSummary {
-                    experts: 128,
-                    top_k: 8,
-                },
-                fits_locally: Some(true),
-                capacity_gb: Some(24.0),
-                model_gb: Some(18.0),
-            })
-            .expect("moe detection render should succeed");
-        let detected_value: Value = serde_json::from_str(detected.trim_end()).expect("json line");
-        assert_eq!(detected_value["event"], "moe_detected");
-        assert_eq!(detected_value["model"], "Qwen3-MoE");
-        assert_eq!(detected_value["moe"]["experts"], 128);
-        assert_eq!(detected_value["moe"]["top_k"], 8);
-        assert_eq!(detected_value["fits_locally"], true);
-        assert_eq!(detected_value["capacity_gb"], serde_json::json!(24.0));
-        assert_eq!(detected_value["model_gb"], serde_json::json!(18.0));
-
-        let distributed = formatter
-            .format(&OutputEvent::MoeDistribution {
-                model: "Qwen3-MoE".to_string(),
-                moe: MoeSummary {
-                    experts: 128,
-                    top_k: 8,
-                },
-                distribution: MoeDistributionSummary {
-                    leader: "node-7".to_string(),
-                    active_nodes: 3,
-                    fallback_nodes: 1,
-                    shard_index: 0,
-                    shard_count: 3,
-                    ranking_source: "shared".to_string(),
-                    ranking_origin: "cache".to_string(),
-                    overlap: 2,
-                    shared_experts: 48,
-                    unique_experts: 80,
-                },
-            })
-            .expect("moe distribution render should succeed");
-        let distributed_value: Value =
-            serde_json::from_str(distributed.trim_end()).expect("json line");
-        assert_eq!(distributed_value["event"], "moe_distribution");
-        assert_eq!(distributed_value["model"], "Qwen3-MoE");
-        assert_eq!(distributed_value["moe"]["experts"], 128);
-        assert_eq!(distributed_value["moe"]["top_k"], 8);
-        assert_eq!(distributed_value["distribution"]["leader"], "node-7");
-        assert_eq!(distributed_value["distribution"]["active_nodes"], 3);
-        assert_eq!(distributed_value["distribution"]["fallback_nodes"], 1);
-        assert_eq!(distributed_value["distribution"]["shard_index"], 0);
-        assert_eq!(distributed_value["distribution"]["shard_count"], 3);
-        assert_eq!(
-            distributed_value["distribution"]["ranking_source"],
-            "shared"
-        );
-        assert_eq!(distributed_value["distribution"]["ranking_origin"], "cache");
-        assert_eq!(distributed_value["distribution"]["overlap"], 2);
-        assert_eq!(distributed_value["distribution"]["shared_experts"], 48);
-        assert_eq!(distributed_value["distribution"]["unique_experts"], 80);
-    }
-
     #[test]
     fn dashboard_formatter_renders_invite_and_waiting_events_into_mesh_history() {
         let mut formatter =
@@ -11044,74 +10596,6 @@ mod tests {
         assert!(dashboard.contains("No matching model on disk — running as standby GPU node. Proxying requests to other nodes. Will activate when needed. (24.0GB capacity) models=Qwen2.5-32B, GLM-4.7-Flash"));
         assert!(!dashboard.contains('💤'));
     }
-
-    #[test]
-    fn dashboard_formatter_renders_moe_detection_and_distribution_in_running_models() {
-        let mut formatter =
-            DashboardFormatter::with_state(DashboardState::with_mesh_event_limit(4));
-
-        formatter
-            .format(&OutputEvent::MoeDetected {
-                model: "Qwen3-MoE".to_string(),
-                moe: MoeSummary {
-                    experts: 128,
-                    top_k: 8,
-                },
-                fits_locally: None,
-                capacity_gb: None,
-                model_gb: None,
-            })
-            .expect("moe detection render should succeed");
-        let dashboard = formatter
-            .format(&OutputEvent::MoeDistribution {
-                model: "Qwen3-MoE".to_string(),
-                moe: MoeSummary {
-                    experts: 128,
-                    top_k: 8,
-                },
-                distribution: MoeDistributionSummary {
-                    leader: "node-7".to_string(),
-                    active_nodes: 3,
-                    fallback_nodes: 1,
-                    shard_index: 0,
-                    shard_count: 3,
-                    ranking_source: "shared".to_string(),
-                    ranking_origin: "cache".to_string(),
-                    overlap: 2,
-                    shared_experts: 48,
-                    unique_experts: 80,
-                },
-            })
-            .expect("moe distribution render should succeed");
-
-        assert!(dashboard.contains("Running models"));
-        assert!(dashboard.contains("Qwen3-MoE   starting   MoE: 128 experts, top-8"));
-        assert!(dashboard.contains("split leader=node-7 active=3 fallback=1 shard=0/3 ranking=shared origin=cache overlap=2 shared=48 unique=80"));
-        assert!(dashboard.contains("[Qwen3-MoE] MoE model detected: 128 experts, top-8"));
-        assert!(dashboard.contains("[Qwen3-MoE] MoE split mode — leader=node-7 active=3 fallback=1 I am shard 0/3 (ranking=shared origin=cache, overlap=2); My experts: 128 (48 shared + 80 unique)"));
-        assert!(!dashboard.contains('🧩'));
-    }
-
-    #[test]
-    fn dashboard_formatter_renders_moe_status_messages_in_mesh_history() {
-        let mut formatter =
-            DashboardFormatter::with_state(DashboardState::with_mesh_event_limit(4));
-
-        let dashboard = formatter
-            .format(&OutputEvent::MoeStatus {
-                model: "Qwen3-MoE".to_string(),
-                status: MoeStatusSummary {
-                    phase: "standing by".to_string(),
-                    detail: "outside active MoE placement (leader=node-7 active=3 fallback=1)"
-                        .to_string(),
-                },
-            })
-            .expect("moe status render should succeed");
-
-        assert!(dashboard.contains("[Qwen3-MoE] standing by: outside active MoE placement (leader=node-7 active=3 fallback=1)"));
-        assert!(!dashboard.contains('🧩'));
-    }
-
     #[test]
     fn json_formatter_includes_multi_model_mode_payload() {
         let mut formatter = JsonFormatter;
@@ -11162,27 +10646,6 @@ mod tests {
         assert_eq!(value["message"], "joined mesh");
         assert_eq!(value["context"], "mesh=mesh-123");
     }
-
-    #[test]
-    fn json_formatter_includes_moe_status_payload() {
-        let mut formatter = JsonFormatter;
-        let rendered = formatter
-            .format(&OutputEvent::MoeStatus {
-                model: "Qwen3-MoE".to_string(),
-                status: MoeStatusSummary {
-                    phase: "re-checking deployment".to_string(),
-                    detail: "mesh changed".to_string(),
-                },
-            })
-            .expect("moe status render should succeed");
-        let value: Value = serde_json::from_str(rendered.trim_end()).expect("line should parse");
-
-        assert_eq!(value["event"], "moe_status");
-        assert_eq!(value["model"], "Qwen3-MoE");
-        assert_eq!(value["status"]["phase"], "re-checking deployment");
-        assert_eq!(value["status"]["detail"], "mesh changed");
-    }
-
     #[test]
     fn json_formatter_includes_model_ready_port() {
         let mut formatter = JsonFormatter;
@@ -11482,14 +10945,11 @@ mod tests {
             })
             .expect("warning render should succeed");
         let dashboard = formatter
-            .format(&OutputEvent::MoeStatus {
-                model: "Qwen3-MoE".to_string(),
-                status: MoeStatusSummary {
-                    phase: "ranking".to_string(),
-                    detail: "waiting for shared expert rankings".to_string(),
-                },
+            .format(&OutputEvent::Info {
+                message: "waiting for stage readiness".to_string(),
+                context: Some("model=Qwen3-32B".to_string()),
             })
-            .expect("moe status render should succeed");
+            .expect("stage readiness render should succeed");
 
         let mesh_lines: Vec<&str> = dashboard
             .lines()
@@ -11498,7 +10958,7 @@ mod tests {
                 line.contains("Invite created")
                     || line.contains("discovering mesh")
                     || line.contains("legacy capacity estimate may be stale")
-                    || line.contains("waiting for shared expert rankings")
+                    || line.contains("waiting for stage readiness")
             })
             .collect();
 
@@ -11515,11 +10975,10 @@ mod tests {
         assert!(dashboard.contains("Invite created for mesh mesh-abc: invite-token-1234567890"));
         assert!(dashboard.contains("discovering mesh via Nostr re-discovery"));
         assert!(dashboard.contains("model=Qwen3-32B: legacy capacity estimate may be stale"));
-        assert!(dashboard.contains("[Qwen3-MoE] ranking: waiting for shared expert rankings"));
+        assert!(dashboard.contains("model=Qwen3-32B: waiting for stage readiness"));
         assert!(!dashboard.contains('📡'));
         assert!(!dashboard.contains('🔍'));
         assert!(!dashboard.contains("⚠️"));
-        assert!(!dashboard.contains('🧩'));
     }
 
     #[test]

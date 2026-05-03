@@ -58,7 +58,6 @@ Recommended model capabilities:
 - `audio: CapabilityLevel`
 - `reasoning: CapabilityLevel`
 - `tool_use: CapabilityLevel`
-- `moe: bool`
 
 Why:
 
