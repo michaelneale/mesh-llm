@@ -307,10 +307,6 @@ test port="9337":
         -d '{"model":"test","messages":[{"role":"user","content":"Hello! Write a haiku about distributed computing."}],"max_tokens":50}' \
         | python3 -c "import sys,json; d=json.load(sys.stdin); t=d['timings']; print(d['choices'][0]['message'].get('content','')[:200]); print(f\"  prompt: {t['prompt_per_second']:.1f} tok/s  gen: {t['predicted_per_second']:.1f} tok/s ({t['predicted_n']} tok)\")"
 
-# Validate an already-running MoE deployment end-to-end through one API/console pair.
-moe-live-smoke model api_url console_url expected_nodes="2" timeout="120":
-    scripts/moe-live-smoke.sh --expected-nodes {{ expected_nodes }} --timeout {{ timeout }} "{{ model }}" "{{ api_url }}" "{{ console_url }}"
-
 # Show the local llama.cpp ABI patch queue
 diff:
     ls -1 third_party/llama.cpp/patches
