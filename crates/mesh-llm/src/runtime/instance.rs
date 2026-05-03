@@ -60,9 +60,6 @@ use std::fs::{self, File};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-/// Maximum bytes for argv snippet in pidfile metadata.
-pub const ARGV_SNIPPET_MAX_BYTES: usize = 256;
-
 /// Metadata for a child process pidfile (JSON format).
 ///
 /// Written atomically to `{runtime_dir}/pidfiles/{name}.json` and read back
@@ -79,7 +76,7 @@ pub struct PidfileMetadata {
     pub owner_pid: u32,
     /// Owner process start time (Unix timestamp in seconds).
     pub owner_started_at_unix: i64,
-    /// Truncated argv snippet (capped at ARGV_SNIPPET_MAX_BYTES).
+    /// Truncated argv snippet captured by the process owner.
     pub argv_snippet: String,
     /// Runtime directory path where this pidfile is stored.
     pub runtime_dir: PathBuf,
@@ -87,6 +84,7 @@ pub struct PidfileMetadata {
 
 impl PidfileMetadata {
     /// Truncate argv to max_bytes at a valid UTF-8 boundary, appending "…" if truncated.
+    #[cfg(test)]
     pub fn cap_argv(argv: &[String], max_bytes: usize) -> String {
         let joined = argv.join(" ");
         if joined.len() <= max_bytes {
@@ -121,6 +119,7 @@ impl PidfileMetadata {
     ///
     /// Writes to `{path}.tmp`, calls `sync_all()`, then renames to `path`.
     /// If writing or renaming fails, removes the tmp file before returning the error.
+    #[cfg(test)]
     pub fn write_atomic(&self, path: &Path) -> Result<()> {
         if self.child_pid == 0 {
             anyhow::bail!("refusing to write pidfile with child_pid=0");
@@ -196,10 +195,12 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 ///
 /// Logs via `tracing::debug!` if removal fails; never panics.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct PidfileGuard {
     path: PathBuf,
 }
 
+#[cfg(test)]
 impl PidfileGuard {
     /// Create a new guard for the given pidfile path.
     pub fn new(path: PathBuf) -> Self {
@@ -207,6 +208,7 @@ impl PidfileGuard {
     }
 }
 
+#[cfg(test)]
 impl Drop for PidfileGuard {
     fn drop(&mut self) {
         if let Err(e) = fs::remove_file(&self.path) {
@@ -358,15 +360,9 @@ impl InstanceRuntime {
     /// Returns the path where the named child's pidfile should be written.
     ///
     /// Conventionally `{dir}/pidfiles/{name}.json`.
+    #[cfg(test)]
     pub fn pidfile_path(&self, name: &str) -> PathBuf {
         self.dir.join("pidfiles").join(format!("{name}.json"))
-    }
-
-    /// Returns the path where the named child's log file should be written.
-    ///
-    /// Conventionally `{dir}/logs/{name}.log`.
-    pub fn log_path(&self, name: &str) -> PathBuf {
-        self.dir.join("logs").join(format!("{name}.log"))
     }
 
     /// The PID this runtime slot was acquired for.
@@ -376,6 +372,7 @@ impl InstanceRuntime {
     }
 
     /// Write a pidfile atomically and return an RAII guard that removes it on drop.
+    #[cfg(test)]
     pub fn write_pidfile(&self, name: &str, metadata: &PidfileMetadata) -> Result<PidfileGuard> {
         let path = self.pidfile_path(name);
         metadata.write_atomic(&path)?;

@@ -107,9 +107,9 @@ unload or replan.
   session-pool counts before/after execution so concurrent-depth runs can
   separate useful compute, model-lock wait, and non-runtime overhead.
 - Stage configs accept `cache_type_k` and `cache_type_v`, defaulting to `f16`.
-  Qwen3.6 TCQ lab runs use `cache_type_k=turbo3_tcq` and
-  `cache_type_v=turbo2_tcq` so the stage0 OpenAI path exercises the same mixed
-  K/V cache candidate as the local llama.cpp reference sweep.
+  The mesh-llm patch queue intentionally carries only upstream-safe cache
+  types such as `f16` and `q8_0`; the experimental TCQ/TurboQuant cache lane is
+  documented as benchmark evidence but is not built into this tree.
 - Embedded stage-0 OpenAI serving preconnects a persistent downstream lane pool
   sized to `--openai-generation-concurrency`. Each request leases one live
   stage0-to-stage1 stream for its full prefill/decode/stop sequence, then

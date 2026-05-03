@@ -18,11 +18,6 @@ pub mod package;
 pub const MAX_LOGIT_BIAS: usize = 256;
 pub const GGML_TYPE_F16: u32 = 1;
 pub const GGML_TYPE_Q8_0: u32 = 8;
-pub const GGML_TYPE_TURBO3_0: u32 = 42;
-pub const GGML_TYPE_TURBO4_0: u32 = 43;
-pub const GGML_TYPE_TURBO2_0: u32 = 44;
-pub const GGML_TYPE_TURBO3_TCQ: u32 = 45;
-pub const GGML_TYPE_TURBO2_TCQ: u32 = 46;
 
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
 pub use skippy_ffi::{
@@ -150,11 +145,6 @@ pub fn parse_cache_type(value: &str) -> Result<u32> {
     match normalized.as_str() {
         "" | "f16" => Ok(GGML_TYPE_F16),
         "q8" | "q8_0" => Ok(GGML_TYPE_Q8_0),
-        "turbo2" | "turbo2_0" => Ok(GGML_TYPE_TURBO2_0),
-        "turbo3" | "turbo3_0" => Ok(GGML_TYPE_TURBO3_0),
-        "turbo4" | "turbo4_0" => Ok(GGML_TYPE_TURBO4_0),
-        "turbo2_tcq" => Ok(GGML_TYPE_TURBO2_TCQ),
-        "turbo3_tcq" => Ok(GGML_TYPE_TURBO3_TCQ),
         _ => Err(anyhow!("unsupported KV cache type {value:?}")),
     }
 }

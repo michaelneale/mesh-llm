@@ -524,7 +524,6 @@ async fn remove_dashboard_process(
 }
 
 struct StartupLocalModelTask {
-    runtime: Arc<instance::InstanceRuntime>,
     node: mesh::Node,
     tunnel_mgr: tunnel::Manager,
     target_tx: Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
@@ -549,7 +548,6 @@ struct StartupLocalModelTask {
 
 async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let StartupLocalModelTask {
-        runtime,
         node,
         tunnel_mgr,
         target_tx,
@@ -575,7 +573,6 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let startup_load_guard = startup_load_gate.lock().await;
     let (loaded_name, handle, mut death_rx) =
         match start_runtime_local_model(LocalRuntimeModelStartSpec {
-            runtime: &runtime,
             node: &node,
             model_path: &model_path,
             mmproj_override: mmproj_path.as_deref(),
@@ -2582,7 +2579,7 @@ async fn run_auto(
     // wasn't yet wired into run() — keep an explicit error here so any future
     // refactor that drops the acquire surfaces immediately instead of panicking
     // mid-spawn from a child task.
-    let runtime_arc = runtime
+    let _runtime = runtime
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("serve mode requires an instance runtime"))?
         .clone();
@@ -2775,12 +2772,10 @@ async fn run_auto(
         .as_ref()
         .and_then(|model| model.pinned_gpu.clone());
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
-    let primary_runtime = runtime_arc.clone();
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(async move {
         startup_local_model_loop(StartupLocalModelTask {
-            runtime: primary_runtime,
             node: node2,
             tunnel_mgr: tunnel_mgr2,
             target_tx: primary_target_tx,
@@ -2860,12 +2855,10 @@ async fn run_auto(
             let primary_model_name_for_extra = model_name.clone();
             let managed_model_name = extra_name.clone();
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
-            let extra_runtime = runtime_arc.clone();
             let dashboard_processes_for_extra_task = dashboard_processes.clone();
             let extra_control_tx = control_tx.clone();
             let extra_task = tokio::spawn(async move {
                 startup_local_model_loop(StartupLocalModelTask {
-                    runtime: extra_runtime,
                     node: extra_node,
                     tunnel_mgr: extra_tunnel,
                     target_tx: extra_target_tx,
@@ -3000,7 +2993,6 @@ async fn run_auto(
                                 .await;
                             let (loaded_name, handle, death_rx) = start_runtime_local_model(
                                 LocalRuntimeModelStartSpec {
-                                    runtime: &runtime_arc,
                                     node: &node,
                                     model_path: &model_path,
                                     mmproj_override: None,

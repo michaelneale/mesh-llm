@@ -45,7 +45,7 @@ should not assume decode is the bottleneck until the report says so.
 
 ```bash
 skippy-bench run --stage-model model-package/ --model-id org/repo:Q4_K_M
-skippy-bench run --stage-model model-package/ --cache-type-k turbo3_tcq --cache-type-v turbo2_tcq
+skippy-bench run --stage-model model-package/ --cache-type-k q8_0 --cache-type-v q8_0
 skippy-bench local-single --model-path model.gguf --model-id org/repo:Q4_K_M
 skippy-bench local-split-binary --model-path model.gguf --model-id org/repo:Q4_K_M
 skippy-bench local-split-compare --model-path model.gguf --model-id org/repo:Q4_K_M
@@ -68,8 +68,9 @@ as identity, so pass `--model-id` for those runs.
 
 `run` and `local-single` accept `--cache-type-k` and `--cache-type-v`, defaulting
 to `f16`. These are written into generated stage configs so benchmark reports
-can compare baseline K/V cache storage against package candidates such as the
-Qwen3.6 mixed TCQ setting.
+can compare baseline K/V cache storage against upstream-safe package candidates
+such as `q8_0`. The experimental TCQ/TurboQuant lane is intentionally not
+compiled into mesh-llm's current llama.cpp patch queue.
 
 ## Benchmark Corpora
 

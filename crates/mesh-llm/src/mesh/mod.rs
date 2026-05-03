@@ -558,7 +558,6 @@ pub(crate) struct PeerAnnouncement {
 pub struct PeerInfo {
     pub id: EndpointId,
     pub addr: EndpointAddr,
-    pub tunnel_port: Option<u16>,
     pub role: NodeRole,
     pub first_joined_mesh_ts: Option<u64>,
     pub models: Vec<String>,
@@ -631,7 +630,6 @@ impl PeerInfo {
         Self {
             id,
             addr,
-            tunnel_port: None,
             role: ann.role.clone(),
             first_joined_mesh_ts: ann.first_joined_mesh_ts,
             models: ann.models.clone(),
@@ -1651,14 +1649,6 @@ impl Node {
         self.publish_routing_runtime_snapshot();
     }
 
-    #[cfg(test)]
-    pub fn routing_metrics_snapshot(
-        &self,
-    ) -> crate::network::metrics::RoutingMetricsStatusSnapshot {
-        self.routing_metrics
-            .status_snapshot(self.inflight_requests())
-    }
-
     pub fn local_request_metrics_snapshot(&self) -> LocalRequestMetricsSnapshot {
         self.local_request_metrics.snapshot()
     }
@@ -2057,11 +2047,6 @@ impl Node {
         self.state.lock().await.peers.insert(peer.id, peer);
     }
 
-    #[cfg(test)]
-    pub async fn has_test_peer(&self, id: EndpointId) -> bool {
-        self.state.lock().await.peers.contains_key(&id)
-    }
-
     pub fn invite_token(&self) -> String {
         let mut addr = self.endpoint.addr();
         // Inject STUN-discovered public address if relay STUN didn't provide one.
@@ -2257,32 +2242,6 @@ impl Node {
             }
         } else {
             runtimes.retain(|runtime| runtime.model_name != model_name);
-        }
-    }
-
-    pub async fn set_model_runtime_starting(&self, model_name: &str) {
-        let identity_hash = self
-            .served_model_descriptors
-            .lock()
-            .await
-            .iter()
-            .find(|descriptor| descriptor.identity.model_name == model_name)
-            .and_then(|descriptor| descriptor.identity.identity_hash.clone());
-        let mut runtimes = self.model_runtime_descriptors.lock().await;
-        if let Some(runtime) = runtimes
-            .iter_mut()
-            .find(|runtime| runtime.model_name == model_name)
-        {
-            runtime.identity_hash = identity_hash.or_else(|| runtime.identity_hash.clone());
-            runtime.context_length = None;
-            runtime.ready = false;
-        } else {
-            runtimes.push(ModelRuntimeDescriptor {
-                model_name: model_name.to_string(),
-                identity_hash,
-                context_length: None,
-                ready: false,
-            });
         }
     }
 
@@ -2521,10 +2480,6 @@ impl Node {
         if let Some((peer_id, conn)) = conn {
             let _ = self.initiate_gossip_inner(conn, peer_id, false).await;
         }
-    }
-
-    pub async fn set_llama_ready(&self, ready: bool) {
-        *self.llama_ready.lock().await = ready;
     }
 
     pub async fn is_llama_ready(&self) -> bool {
@@ -3264,31 +3219,6 @@ impl Node {
         }
 
         result
-    }
-
-    pub async fn set_tunnel_port(&self, id: EndpointId, port: u16) {
-        if let Some(peer) = self.state.lock().await.peers.get_mut(&id) {
-            peer.tunnel_port = Some(port);
-        }
-    }
-
-    /// Open a tunnel bi-stream to a peer using the stored connection.
-    pub async fn open_tunnel_stream(
-        &self,
-        peer_id: EndpointId,
-    ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
-        let conn = {
-            self.state
-                .lock()
-                .await
-                .connections
-                .get(&peer_id)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("No connection to {}", peer_id.fmt_short()))?
-        };
-        let (mut send, recv) = conn.open_bi().await?;
-        send.write_all(&[STREAM_TUNNEL]).await?;
-        Ok((send, recv))
     }
 
     // --- Connection handling ---

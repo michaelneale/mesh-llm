@@ -9,6 +9,11 @@ pub(crate) enum RuntimeLlamaEndpointStatus {
     Unavailable,
 }
 
+const _: [RuntimeLlamaEndpointStatus; 2] = [
+    RuntimeLlamaEndpointStatus::Ready,
+    RuntimeLlamaEndpointStatus::Error,
+];
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RuntimeLlamaMetricSample {
     pub name: String,

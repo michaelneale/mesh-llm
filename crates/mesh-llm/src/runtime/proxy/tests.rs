@@ -523,14 +523,6 @@ async fn send_request_and_read_response(addr: SocketAddr, parts: Vec<Vec<u8>>) -
     String::from_utf8(response).unwrap()
 }
 
-async fn connected_tcp_pair() -> (TcpStream, TcpStream) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let client = TcpStream::connect(addr).await.unwrap();
-    let (server, _) = listener.accept().await.unwrap();
-    (client, server)
-}
-
 #[tokio::test]
 async fn test_api_proxy_integration_fragmented_post_body() {
     let (upstream_port, upstream_rx, upstream_handle) =

@@ -21,11 +21,6 @@ fn quic_response_first_byte_timeout() -> Duration {
     Duration::from_secs(5 * 60)
 }
 
-/// Get total bytes transferred through all tunnels
-pub fn bytes_transferred() -> u64 {
-    BYTES_TRANSFERRED.load(Ordering::Relaxed)
-}
-
 /// Manages all tunnels for a node
 #[derive(Clone)]
 pub struct Manager {

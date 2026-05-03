@@ -1752,26 +1752,25 @@ Interpretation:
 Status: positive single-node local decode/KV evidence; not three-node topology
 evidence.
 
-Decision: add the proven TCQ KV/cache patches to the llama.cpp patch queue and
-make mixed TCQ the preferred local/default KV type candidate for Qwen3.6
-customer packages. The best measured setting is `-ctk turbo3_tcq -ctv
-turbo2_tcq`. Keep `-ctk turbo2_tcq -ctv turbo2_tcq` as the conservative
-fallback because it is close overall and has strong long-context tail latency.
-Do not promote `turbo4`, DFlash, native n-gram, or draft-model speculative
-decode from this lane.
+Decision: keep this as deferred benchmark evidence, not as current mesh-llm
+patch-queue scope. The best measured setting was `-ctk turbo3_tcq -ctv
+turbo2_tcq`, but the imported TCQ/TurboQuant lane also carries broad ggml,
+Metal, CUDA, and llama cache changes. It is intentionally not built into the
+current Skippy replacement branch until it can be reintroduced as a focused,
+portable cache feature.
 
-Patch queue entry:
+Deferred patch provenance:
 
 | Field | Value |
 | --- | --- |
-| Patch | `third_party/llama.cpp/patches/0030-Import-buun-TCQ-KV-cache-support.patch` |
+| Former patch | `third_party/llama.cpp/patches/0030-Import-buun-TCQ-KV-cache-support.patch` |
 | Source fork | `https://github.com/spiritbuun/buun-llama-cpp` |
 | Source checkout | `/tmp/buun-llama-cpp` at `65ada42cf97ca771cff8bad0923ce8ae41a13378` |
 | Upstream base | `9725a313be0528214c4a02fed906ddaf7b3f712e` |
 | Local mixed-K/V delta | `/Volumes/External/llama-stage-runtime-bench/qwen36-lab/buun-tcq-full-corpus-20260501-180404/buun-local-diff.patch` |
 | Port notes | Preserves pinned-upstream `q1_0`, carries TCQ/TurboQuant KV, Metal, CUDA, and cache changes needed for mixed K/V, and excludes the buun DFlash/context API surface. |
-| Validation | Patch stack applies with `scripts/prepare-llama-stage.sh pinned`; `scripts/build-llama-stage.sh` builds `llama` and `llama-common` from the clean prepared checkout. |
-| Reason carried | Reproduces the winning mixed TCQ candidate and preserves provenance for future rebases against the buun fork. |
+| Validation | Historical local Metal sweep only; not part of the current patch queue. |
+| Reason deferred | The branch now carries only the Skippy runtime ABI and upstream-safe cache type plumbing; TCQ/TurboQuant will need a dedicated portability pass before it returns. |
 
 | Field | Value |
 | --- | --- |
@@ -1844,12 +1843,10 @@ Interpretation:
 
 Status: local staged pass; three-node retry blocked before request traffic.
 
-Decision: keep mixed TCQ as the next local reference/default candidate, but do
-not promote a new three-node TCQ M4 result yet. The staged runtime now exposes
-cache type configuration and the patched static llama build links successfully,
-but the three-node retry could not bring up the embedded stage0 OpenAI lane
-because stage1 on `build` could not establish a runtime downstream connection
-to stage2 on `black`.
+Decision: preserve this run as historical evidence only. The staged runtime
+keeps the generic `cache_type_k` / `cache_type_v` config path, but the
+TCQ/TurboQuant cache implementation is not in the current mesh-llm llama.cpp
+patch queue. The three-node retry also did not produce request-traffic evidence.
 
 | Field | Value |
 | --- | --- |
@@ -1862,12 +1859,12 @@ to stage2 on `black`.
 | Wire / prefill | `activation_wire_dtype=f16`, `openai_prefill_chunk_size=256`, `async_prefill_forward=true`, `reply_credit_limit=0` |
 | Validation | `just llama-stage-prepare`; `just llama-stage-build`; `LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-static cargo build -p metrics-server -p skippy-server -p skippy-bench -p llama-spec-bench` |
 
-Patch queue additions for staged TCQ:
+Patch queue note:
 
 | Patch | Purpose |
 | --- | --- |
-| `0031-Expose-stage-KV-cache-type-config.patch` | Adds `cache_type_k` and `cache_type_v` to the stage ABI config and maps them to `llama_context_params.type_k/type_v`. |
-| `0032-Build-stage-ABI-TurboQuant-helpers.patch` | Links the TurboQuant helper C file into the static stage ABI build and supplies the missing `ggml_graph_next_uid` symbol needed by the TCQ path. |
+| `0031-Expose-stage-KV-cache-type-config.patch` | Adds `cache_type_k` and `cache_type_v` to the stage ABI config and maps them to `llama_context_params.type_k/type_v` for upstream-safe cache types. |
+| Former `0032-Build-stage-ABI-TurboQuant-helpers.patch` | Removed with the deferred TCQ/TurboQuant implementation. |
 
 Local staged OpenAI results:
 

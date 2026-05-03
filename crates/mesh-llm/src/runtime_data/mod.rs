@@ -15,13 +15,13 @@ mod subscriptions;
 
 pub(crate) use self::api_views::{collect_views, mesh_models, status_payload};
 pub(crate) use self::collector::RuntimeDataCollector;
+pub(crate) use self::metrics::{RuntimeLlamaEndpointStatus, RuntimeLlamaRuntimeSnapshot};
+#[cfg(test)]
 pub(crate) use self::metrics::{
-    RuntimeLlamaEndpointStatus, RuntimeLlamaMetricItem, RuntimeLlamaMetricsSnapshot,
-    RuntimeLlamaRuntimeItems, RuntimeLlamaRuntimeSnapshot, RuntimeLlamaSlotItem,
+    RuntimeLlamaMetricItem, RuntimeLlamaMetricSample, RuntimeLlamaMetricsSnapshot,
+    RuntimeLlamaRuntimeItems, RuntimeLlamaSlotItem, RuntimeLlamaSlotSnapshot,
     RuntimeLlamaSlotsSnapshot,
 };
-#[cfg(test)]
-pub(crate) use self::metrics::{RuntimeLlamaMetricSample, RuntimeLlamaSlotSnapshot};
 pub(crate) use self::processes::{
     remove_runtime_process_snapshot, runtime_process_payloads, upsert_runtime_process_snapshot,
     RuntimeProcessSnapshot,

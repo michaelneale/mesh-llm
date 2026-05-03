@@ -578,7 +578,6 @@ mod tests {
                 id: peer_id,
                 addrs: Default::default(),
             },
-            tunnel_port: None,
             role: crate::mesh::NodeRole::Worker,
             first_joined_mesh_ts: None,
             models: vec![],

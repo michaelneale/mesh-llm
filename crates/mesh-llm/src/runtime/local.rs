@@ -49,7 +49,6 @@ pub(super) struct ManagedModelController {
 }
 
 pub(super) struct LocalRuntimeModelStartSpec<'a> {
-    pub(super) runtime: &'a crate::runtime::instance::InstanceRuntime,
     pub(super) node: &'a mesh::Node,
     pub(super) model_path: &'a Path,
     pub(super) mmproj_override: Option<&'a Path>,
