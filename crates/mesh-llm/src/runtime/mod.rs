@@ -541,6 +541,7 @@ struct StartupLocalModelTask {
     console_state: Option<api::MeshApi>,
     api_port: u16,
     startup_ready_reporter: StartupReadyReporter,
+    startup_load_gate: Arc<tokio::sync::Mutex<()>>,
     input_handler_enabled: bool,
     interactive_started: Arc<AtomicBool>,
     interactive_control_tx: tokio::sync::mpsc::UnboundedSender<api::RuntimeControlRequest>,
@@ -565,12 +566,14 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         console_state,
         api_port,
         startup_ready_reporter,
+        startup_load_gate,
         input_handler_enabled,
         interactive_started,
         interactive_control_tx,
         interactive_console_state,
     } = params;
 
+    let startup_load_guard = startup_load_gate.lock().await;
     let (loaded_name, handle, mut death_rx) =
         match start_runtime_local_model(LocalRuntimeModelStartSpec {
             runtime: &runtime,
@@ -586,7 +589,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
             Ok(loaded) => loaded,
             Err(err) => {
                 let _ = emit_event(OutputEvent::Error {
-                    message: format!("Failed to start model {model_name}: {err}"),
+                    message: format!("Failed to start model {model_name}: {err:#}"),
                     context: Some(format!("model={model_name}")),
                 });
                 update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
@@ -596,6 +599,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 return;
             }
         };
+    drop(startup_load_guard);
 
     add_runtime_local_target(&target_tx, &loaded_name, handle.port);
     tunnel_mgr.set_http_port(handle.port);
@@ -1338,7 +1342,13 @@ pub(crate) async fn run() -> Result<()> {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
     };
-    preflight_config_owned_startup_models(&config, &startup_specs, &mut startup_models, None)?;
+    preflight_config_owned_startup_models(
+        &config,
+        &startup_specs,
+        &mut startup_models,
+        cli.llama_flavor,
+        None,
+    )?;
     let resolved_models: Vec<PathBuf> = startup_models
         .iter()
         .map(|model| model.resolved_path.clone())
@@ -1617,6 +1627,7 @@ fn preflight_config_owned_startup_models(
     config: &plugin::MeshConfig,
     specs: &[StartupModelSpec],
     plans: &mut [StartupModelPlan],
+    binary_flavor: Option<launch::BinaryFlavor>,
     backend_probe: Option<&launch::BinaryBackendDeviceProbe>,
 ) -> Result<()> {
     if config.gpu.assignment != plugin::GpuAssignment::Pinned {
@@ -1626,7 +1637,9 @@ fn preflight_config_owned_startup_models(
     let mut survey = hardware::query(pinned_startup_preflight_metrics());
     apply_backend_devices_for_flavor(
         &mut survey.gpus,
-        backend_probe.and_then(|probe| probe.flavor),
+        backend_probe
+            .and_then(|probe| probe.flavor)
+            .or(binary_flavor),
     );
     preflight_config_owned_startup_models_with_gpus(
         config,
@@ -2896,6 +2909,7 @@ async fn run_auto(
         api_port,
         cb_console_port,
     );
+    let startup_load_gate = Arc::new(tokio::sync::Mutex::new(()));
     let primary_startup_ready_reporter = startup_ready_reporter.clone();
     let primary_mmproj = primary_startup_model
         .as_ref()
@@ -2909,6 +2923,7 @@ async fn run_auto(
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_runtime = runtime_arc.clone();
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
+    let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(async move {
         startup_local_model_loop(StartupLocalModelTask {
             runtime: primary_runtime,
@@ -2927,6 +2942,7 @@ async fn run_auto(
             console_state: console_state_for_election,
             api_port,
             startup_ready_reporter: primary_startup_ready_reporter,
+            startup_load_gate: primary_startup_load_gate,
             input_handler_enabled,
             interactive_started,
             interactive_control_tx,
@@ -2986,6 +3002,7 @@ async fn run_auto(
             let slots = extra_model.parallel.or(config.gpu.parallel).unwrap_or(4);
             let extra_console_state = console_state.clone();
             let extra_startup_ready_reporter = startup_ready_reporter.clone();
+            let extra_startup_load_gate = startup_load_gate.clone();
             let primary_model_name_for_extra = model_name.clone();
             let managed_model_name = extra_name.clone();
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
@@ -3010,6 +3027,7 @@ async fn run_auto(
                     console_state: extra_console_state,
                     api_port: api_port_extra,
                     startup_ready_reporter: extra_startup_ready_reporter,
+                    startup_load_gate: extra_startup_load_gate,
                     input_handler_enabled: false,
                     interactive_started: Arc::new(AtomicBool::new(true)),
                     interactive_control_tx: extra_control_tx,
