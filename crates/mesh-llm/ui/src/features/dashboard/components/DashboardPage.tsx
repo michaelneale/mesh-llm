@@ -58,6 +58,7 @@ import {
   localRoutableModels,
   meshGpuVram,
   modelDisplayName,
+  normalizeVramGb,
   ownershipPrimaryLabel,
   ownershipStatusLabel,
   ownershipTone,
@@ -97,10 +98,6 @@ type ActivePeerRow = {
   vramLabel: string;
   shareLabel: string;
 };
-
-function servingVramGb(vramGb?: number | null) {
-  return Math.max(0, vramGb ?? 0);
-}
 
 type NodeSidebarRecord = {
   id: string;
@@ -232,7 +229,7 @@ export function DashboardPage({
     const totalModelVram = selectedCatalogModel.mesh_vram_gb ?? 0;
     const rows: ActivePeerRow[] = [];
     const localServing = localRoutableModels(status).includes(targetModel);
-    const localServingVramGb = servingVramGb(status.my_vram_gb);
+    const localServingVramGb = normalizeVramGb(status.my_vram_gb);
     if (localServing && status.node_state !== "client") {
       rows.push({
         id: status.node_id,
@@ -249,7 +246,7 @@ export function DashboardPage({
         peerRoutableModels(peer).includes(targetModel) ||
         peerAssignedModels(peer).includes(targetModel);
       if (!servesTarget || peer.state === "client") continue;
-      const peerServingVramGb = servingVramGb(peer.vram_gb);
+      const peerServingVramGb = normalizeVramGb(peer.vram_gb);
       rows.push({
         id: peer.id,
         latencyLabel: peer.latencyLabel,

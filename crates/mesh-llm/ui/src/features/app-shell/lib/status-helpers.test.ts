@@ -6,6 +6,8 @@ import {
   gpuInventoryVramGb,
   localRoutableModels,
   meshGpuVram,
+  normalizeVramGb,
+  overviewVramGb,
   topologyStatusTone,
   topologyStatusTooltip,
 } from "./status-helpers";
@@ -107,6 +109,17 @@ describe("live node state helpers", () => {
     expect(displayVramGb(false, 29.4, [])).toBe(29.4);
     expect(displayVramGb(false, 29.4, undefined)).toBe(29.4);
     expect(displayVramGb(true, 29.4, [{ vram_bytes: 17_094_934_528 }])).toBe(0);
+  });
+
+  it("normalizes overview VRAM through the shared clamp helper", () => {
+    expect(normalizeVramGb(null)).toBe(0);
+    expect(normalizeVramGb(undefined)).toBe(0);
+    expect(normalizeVramGb(-4)).toBe(0);
+    expect(normalizeVramGb(12.5)).toBe(12.5);
+
+    expect(overviewVramGb(false, -4)).toBe(normalizeVramGb(-4));
+    expect(overviewVramGb(false, 12.5)).toBe(normalizeVramGb(12.5));
+    expect(overviewVramGb(true, 12.5)).toBe(0);
   });
 
   it("uses physical GPU inventory for mesh VRAM totals when available", () => {

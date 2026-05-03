@@ -45,9 +45,13 @@ export function peerPrimaryModel(peer: Peer): string {
   return peerRoutableModels(peer)[0] ?? peerAssignedModels(peer)[0] ?? "";
 }
 
+export function normalizeVramGb(vramGb?: number | null) {
+  return Math.max(0, vramGb ?? 0);
+}
+
 export function overviewVramGb(isClient: boolean, vramGb?: number | null) {
   if (isClient) return 0;
-  return Math.max(0, vramGb || 0);
+  return normalizeVramGb(vramGb);
 }
 
 export function gpuInventoryVramGb(gpus?: GpuInventory | null) {
