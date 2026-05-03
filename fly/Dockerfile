@@ -37,7 +37,25 @@ COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
 COPY crates/model-ref/ crates/model-ref/
 COPY crates/model-artifact/ crates/model-artifact/
 COPY crates/model-hf/ crates/model-hf/
+COPY crates/skippy-protocol/ crates/skippy-protocol/
+COPY crates/skippy-topology/ crates/skippy-topology/
+COPY crates/skippy-metrics/ crates/skippy-metrics/
+COPY crates/openai-frontend/ crates/openai-frontend/
+COPY crates/skippy-ffi/ crates/skippy-ffi/
+COPY crates/skippy-runtime/ crates/skippy-runtime/
+COPY crates/skippy-server/ crates/skippy-server/
+COPY crates/metrics-server/ crates/metrics-server/
+COPY crates/llama-model-slice/ crates/llama-model-slice/
+COPY crates/skippy-correctness/ crates/skippy-correctness/
+COPY crates/llama-spec-bench/ crates/llama-spec-bench/
+COPY crates/skippy-bench/ crates/skippy-bench/
+COPY crates/skippy-prompt/ crates/skippy-prompt/
 COPY tools/xtask/ tools/xtask/
+COPY scripts/prepare-llama.sh scripts/build-llama.sh scripts/
+COPY third_party/llama.cpp/upstream.txt third_party/llama.cpp/upstream.txt
+COPY third_party/llama.cpp/patches/ third_party/llama.cpp/patches/
+RUN LLAMA_STAGE_USE_SCCACHE=0 scripts/prepare-llama.sh pinned && \
+    LLAMA_STAGE_USE_SCCACHE=0 scripts/build-llama.sh
 COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
