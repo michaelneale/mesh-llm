@@ -1,3 +1,6 @@
+use super::context_planning::{
+    plan_runtime_resources, RuntimeResourcePlan, RuntimeResourcePlanInput,
+};
 use crate::api;
 use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
@@ -72,6 +75,7 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) n_ubatch_override: Option<u32>,
     pub(super) flash_attention_override: FlashAttentionType,
     pub(super) slots: usize,
+    pub(super) parallel_override: Option<usize>,
 }
 
 pub(super) enum SplitRuntimeStart {
@@ -272,7 +276,29 @@ pub(super) async fn start_runtime_local_model(
         "runtime load only supports models that fit locally on this node"
     );
 
-    start_runtime_skippy_model(spec, model_name).await
+    let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k());
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v());
+    let kv_cache_quant = models::gguf::GgufKvCacheQuant::from_llama_args(
+        effective_cache_type_k,
+        effective_cache_type_v,
+    )
+    .unwrap_or_else(models::gguf::GgufKvCacheQuant::f16);
+    let compact_meta = models::gguf::scan_gguf_compact_meta(spec.model_path);
+    let plan = plan_runtime_resources(RuntimeResourcePlanInput {
+        ctx_size_override: spec.ctx_size_override,
+        parallel_override: spec.parallel_override,
+        model_bytes,
+        vram_bytes: my_vram,
+        metadata: compact_meta.as_ref(),
+        kv_cache_quant,
+    });
+
+    start_runtime_skippy_model(spec, model_name, plan).await
 }
 
 pub(super) async fn start_runtime_split_model(
@@ -1319,13 +1345,14 @@ fn now_unix_nanos() -> i64 {
 async fn start_runtime_skippy_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_name: String,
+    plan: RuntimeResourcePlan,
 ) -> Result<(
     String,
     LocalRuntimeModelHandle,
     tokio::sync::oneshot::Receiver<()>,
 )> {
     let port = alloc_local_port().await?;
-    let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let context_length = plan.context_length;
     let model_bytes = election::total_model_bytes(spec.model_path);
     let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
     let effective_cache_type_k = spec
@@ -1348,7 +1375,7 @@ async fn start_runtime_skippy_model(
         .filter(|path| path.exists());
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
-        .with_generation_concurrency(spec.slots)
+        .with_generation_concurrency(plan.slots)
         .with_cache_types(effective_cache_type_k, effective_cache_type_v)
         .with_flash_attn_type(resolved_flash_attn_type);
     if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
@@ -1378,7 +1405,7 @@ async fn start_runtime_skippy_model(
             port: http.port(),
             backend: "skippy".into(),
             context_length,
-            slots: spec.slots,
+            slots: plan.slots,
             inner: LocalRuntimeBackendHandle::Skippy {
                 model: skippy_model,
                 http,
