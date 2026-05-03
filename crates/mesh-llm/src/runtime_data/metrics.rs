@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RuntimeLlamaEndpointStatus {
+    #[cfg(test)]
     Ready,
-    Error,
     #[default]
     Unavailable,
 }

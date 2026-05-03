@@ -17,6 +17,7 @@ pub struct HuggingFaceModelIdentity {
 }
 
 impl HuggingFaceModelIdentity {
+    #[cfg(test)]
     pub fn distribution_ref(&self) -> String {
         format!(
             "{}@{}/{}",
@@ -27,6 +28,7 @@ impl HuggingFaceModelIdentity {
     }
 }
 
+#[cfg(test)]
 fn distribution_ref_file(file: &str) -> String {
     let path = Path::new(file);
     let file_name = path.file_name().and_then(|value| value.to_str());
@@ -101,6 +103,7 @@ pub(crate) fn huggingface_repo_folder_name(repo_id: &str, repo_type: RepoType) -
         .join("--")
 }
 
+#[cfg(test)]
 pub(crate) fn huggingface_snapshot_path(
     repo_id: &str,
     repo_type: RepoType,
@@ -666,6 +669,7 @@ pub fn find_mmproj_path(model_name: &str, model_path: &Path) -> Option<PathBuf> 
     choose_mmproj_candidate(&mmproj_siblings)
 }
 
+#[cfg(test)]
 pub fn resolve_mmproj_path(
     model_name: &str,
     model_path: &Path,

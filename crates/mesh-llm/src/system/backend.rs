@@ -181,51 +181,6 @@ pub(crate) fn terminate_process_blocking(
     }
 }
 
-pub async fn terminate_process(
-    pid: u32,
-    expected_comm: &str,
-    expected_start_time: Option<i64>,
-) -> bool {
-    !matches!(
-        send_signal_if_matches(
-            pid,
-            expected_comm,
-            expected_start_time,
-            ProcessSignal::Terminate
-        ),
-        SignalOutcome::Failed | SignalOutcome::Skipped
-    )
-}
-
-pub async fn force_kill_process(
-    pid: u32,
-    expected_comm: &str,
-    expected_start_time: Option<i64>,
-) -> bool {
-    !matches!(
-        send_signal_if_matches(pid, expected_comm, expected_start_time, ProcessSignal::Kill),
-        SignalOutcome::Failed | SignalOutcome::Skipped
-    )
-}
-
-pub async fn wait_for_exit(pid: u32, timeout_ms: u64) -> bool {
-    if crate::runtime::instance::validate::process_liveness(pid)
-        == crate::runtime::instance::validate::Liveness::Dead
-    {
-        return true;
-    }
-    let steps = timeout_ms.div_ceil(100);
-    for _ in 0..steps {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if crate::runtime::instance::validate::process_liveness(pid)
-            == crate::runtime::instance::validate::Liveness::Dead
-        {
-            return true;
-        }
-    }
-    false
-}
-
 fn send_signal_if_matches(
     pid: u32,
     expected_comm: &str,

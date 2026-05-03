@@ -1,4 +1,4 @@
-use crate::inference::launch::BinaryFlavor;
+use crate::system::backend::BinaryFlavor;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CanonicalOs {

@@ -1,8 +1,99 @@
 use serde::{Deserialize, Serialize};
 
 pub mod binary;
+pub mod proto {
+    pub mod stage {
+        include!(concat!(env!("OUT_DIR"), "/skippy.stage.v1.rs"));
+    }
+}
 
 pub const SCHEMA_VERSION: u32 = 1;
+pub const STAGE_ALPN_V1: &[u8] = b"skippy-stage/1";
+pub const STAGE_PROTOCOL_GENERATION: u32 = 1;
+pub const STAGE_STREAM_CONTROL: u8 = 0x01;
+pub const STAGE_STREAM_TRANSPORT: u8 = 0x02;
+pub const MAX_STAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StageFrameError {
+    BadGeneration { got: u32 },
+    InvalidEndpointId { got: usize },
+    MissingStageControlCommand,
+    MissingStageControlResponse,
+    MissingStageTransportTarget,
+}
+
+impl std::fmt::Display for StageFrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StageFrameError::BadGeneration { got } => write!(
+                f,
+                "bad skippy stage generation: expected {}, got {}",
+                STAGE_PROTOCOL_GENERATION, got
+            ),
+            StageFrameError::InvalidEndpointId { got } => {
+                write!(f, "invalid endpoint_id length: expected 32, got {got}")
+            }
+            StageFrameError::MissingStageControlCommand => {
+                write!(f, "stage control command is required but missing")
+            }
+            StageFrameError::MissingStageControlResponse => {
+                write!(f, "stage control response is required but missing")
+            }
+            StageFrameError::MissingStageTransportTarget => {
+                write!(f, "stage transport target is required but missing")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StageFrameError {}
+
+pub fn validate_stage_control_request(
+    frame: &proto::stage::StageControlRequest,
+) -> Result<(), StageFrameError> {
+    validate_generation(frame.gen)?;
+    validate_endpoint_id(frame.requester_id.len())?;
+    if frame.command.is_none() {
+        return Err(StageFrameError::MissingStageControlCommand);
+    }
+    Ok(())
+}
+
+pub fn validate_stage_control_response(
+    frame: &proto::stage::StageControlResponse,
+) -> Result<(), StageFrameError> {
+    validate_generation(frame.gen)?;
+    if frame.response.is_none() {
+        return Err(StageFrameError::MissingStageControlResponse);
+    }
+    Ok(())
+}
+
+pub fn validate_stage_transport_open(
+    frame: &proto::stage::StageTransportOpen,
+) -> Result<(), StageFrameError> {
+    validate_generation(frame.gen)?;
+    validate_endpoint_id(frame.requester_id.len())?;
+    if frame.topology_id.is_empty() || frame.run_id.is_empty() || frame.stage_id.is_empty() {
+        return Err(StageFrameError::MissingStageTransportTarget);
+    }
+    Ok(())
+}
+
+fn validate_generation(gen: u32) -> Result<(), StageFrameError> {
+    if gen != STAGE_PROTOCOL_GENERATION {
+        return Err(StageFrameError::BadGeneration { got: gen });
+    }
+    Ok(())
+}
+
+fn validate_endpoint_id(len: usize) -> Result<(), StageFrameError> {
+    if len != 32 {
+        return Err(StageFrameError::InvalidEndpointId { got: len });
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
@@ -373,5 +464,169 @@ impl StageMessage {
             },
             acked_seq: base.seq.unwrap_or(0),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::Message as _;
+
+    use super::proto::stage::{
+        stage_control_request, stage_control_response, GetStageStatus, LoadStage,
+        StageControlRequest, StageControlResponse, StageReady, StageRuntimeState, StageStatus,
+        StageTransportOpen, StageWireDType, StopStage,
+    };
+    use super::{
+        validate_stage_control_request, validate_stage_control_response,
+        validate_stage_transport_open, StageFrameError, STAGE_PROTOCOL_GENERATION,
+    };
+
+    #[test]
+    fn stage_control_request_validates_generation_sender_and_command() {
+        let frame = StageControlRequest {
+            gen: STAGE_PROTOCOL_GENERATION,
+            requester_id: vec![9u8; 32],
+            command: Some(stage_control_request::Command::GetStageStatus(
+                GetStageStatus {
+                    topology_id: Some("topology-a".to_string()),
+                    run_id: Some("run-a".to_string()),
+                    stage_id: Some("stage-0".to_string()),
+                },
+            )),
+        };
+        validate_stage_control_request(&frame).unwrap();
+
+        let load = StageControlRequest {
+            command: Some(stage_control_request::Command::LoadStage(LoadStage {
+                topology_id: "topology-a".to_string(),
+                run_id: "run-a".to_string(),
+                model_id: "qwen".to_string(),
+                backend: "skippy".to_string(),
+                package_ref: "hf://repo/model".to_string(),
+                manifest_sha256: "a5".repeat(32),
+                stage_id: "stage-0".to_string(),
+                layer_end: 16,
+                activation_width: 4096,
+                projector_path: Some("/models/mmproj.gguf".to_string()),
+                ..Default::default()
+            })),
+            ..frame.clone()
+        };
+        let decoded = StageControlRequest::decode(load.encode_to_vec().as_slice()).unwrap();
+        match decoded.command {
+            Some(stage_control_request::Command::LoadStage(load)) => {
+                assert_eq!(load.projector_path.as_deref(), Some("/models/mmproj.gguf"));
+            }
+            other => panic!("expected LoadStage, got {other:?}"),
+        }
+
+        let stop = StageControlRequest {
+            command: Some(stage_control_request::Command::StopStage(StopStage {
+                topology_id: "topology-a".to_string(),
+                run_id: "run-a".to_string(),
+                stage_id: "stage-0".to_string(),
+                shutdown_generation: 7,
+            })),
+            ..frame.clone()
+        };
+        validate_stage_control_request(&stop).unwrap();
+
+        let missing_command = StageControlRequest {
+            command: None,
+            ..frame.clone()
+        };
+        assert!(matches!(
+            validate_stage_control_request(&missing_command),
+            Err(StageFrameError::MissingStageControlCommand)
+        ));
+
+        let wrong_gen = StageControlRequest { gen: 2, ..frame };
+        assert!(matches!(
+            validate_stage_control_request(&wrong_gen),
+            Err(StageFrameError::BadGeneration { got: 2 })
+        ));
+    }
+
+    #[test]
+    fn stage_control_response_validates_generation_and_response() {
+        let frame = StageControlResponse {
+            gen: STAGE_PROTOCOL_GENERATION,
+            response: Some(stage_control_response::Response::StageReady(StageReady {
+                accepted: true,
+                status: Some(StageStatus {
+                    topology_id: "topology-a".to_string(),
+                    run_id: "run-a".to_string(),
+                    model_id: "qwen".to_string(),
+                    backend: "skippy".to_string(),
+                    stage_id: "stage-0".to_string(),
+                    stage_index: 0,
+                    layer_start: 0,
+                    layer_end: 16,
+                    state: StageRuntimeState::Ready as i32,
+                    bind_addr: "127.0.0.1:0".to_string(),
+                    activation_width: 4096,
+                    wire_dtype: StageWireDType::StageWireDtypeF16 as i32,
+                    shutdown_generation: 7,
+                    ctx_size: 8192,
+                    projector_path: Some("/models/mmproj.gguf".to_string()),
+                    ..Default::default()
+                }),
+                error: None,
+            })),
+        };
+        let decoded = StageControlResponse::decode(frame.encode_to_vec().as_slice()).unwrap();
+        validate_stage_control_response(&decoded).unwrap();
+        match decoded.response {
+            Some(stage_control_response::Response::StageReady(ready)) => {
+                let status = ready.status.expect("stage-ready status");
+                assert_eq!(
+                    status.projector_path.as_deref(),
+                    Some("/models/mmproj.gguf")
+                );
+            }
+            other => panic!("expected StageReady, got {other:?}"),
+        }
+
+        let missing_response = StageControlResponse {
+            response: None,
+            ..frame.clone()
+        };
+        assert!(matches!(
+            validate_stage_control_response(&missing_response),
+            Err(StageFrameError::MissingStageControlResponse)
+        ));
+
+        let wrong_gen = StageControlResponse { gen: 2, ..frame };
+        assert!(matches!(
+            validate_stage_control_response(&wrong_gen),
+            Err(StageFrameError::BadGeneration { got: 2 })
+        ));
+    }
+
+    #[test]
+    fn stage_transport_open_validates_generation_sender_and_target() {
+        let frame = StageTransportOpen {
+            gen: STAGE_PROTOCOL_GENERATION,
+            requester_id: vec![7u8; 32],
+            topology_id: "topology-a".to_string(),
+            run_id: "run-a".to_string(),
+            stage_id: "stage-1".to_string(),
+        };
+        validate_stage_transport_open(&frame).unwrap();
+
+        let missing_target = StageTransportOpen {
+            stage_id: String::new(),
+            ..frame.clone()
+        };
+        assert!(matches!(
+            validate_stage_transport_open(&missing_target),
+            Err(StageFrameError::MissingStageTransportTarget)
+        ));
+
+        let wrong_gen = StageTransportOpen { gen: 2, ..frame };
+        assert!(matches!(
+            validate_stage_transport_open(&wrong_gen),
+            Err(StageFrameError::BadGeneration { got: 2 })
+        ));
     }
 }

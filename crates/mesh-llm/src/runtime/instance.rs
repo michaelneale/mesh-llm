@@ -1,20 +1,15 @@
-//! Per-instance runtime directory management with scoped child-process cleanup.
+//! Per-instance runtime directory management.
 //!
 //! Each non-client mesh-llm invocation acquires an `InstanceRuntime` under
 //! `~/.mesh-llm/runtime/{pid}/` (overridable via env vars). The directory
-//! holds an advisory `flock(2)` lock for the instance's lifetime, plus
-//! pidfiles for every child process that mesh-llm spawns. On startup,
-//! other mesh-llm instances scan the root for runtime dirs whose locks
-//! are not held (their owners are dead) and reap any orphaned children
-//! listed in their pidfiles.
+//! holds an advisory `flock(2)` lock for the instance's lifetime and an
+//! `owner.json` record for local status and `mesh-llm stop`.
 //!
 //! # Runtime directory layout
 //!
 //! **ALLOWED** under `runtime_dir/`:
 //! - `lock` — `flock(2)` advisory lock file held by the owning mesh-llm
 //! - `owner.json` — metadata about the owning instance (pid, version, api_port, started_at)
-//! - `pidfiles/` — JSON pidfiles for child processes (`llama-server.json`, `rpc-server-{port}.json`)
-//! - `logs/` — stdout/stderr logs for each child (`llama-server-{port}.log`, `rpc-server-{port}.log`)
 //!
 //! **FORBIDDEN** under `runtime_dir/`:
 //! - Application state, configuration, or catalog caches (live elsewhere under `~/.mesh-llm/`)
@@ -38,7 +33,7 @@
 //! Released automatically by the kernel when the owning fd closes (including
 //! on `SIGKILL`). Race-free and survives all abnormal terminations.
 //!
-//! Secondary (PID validation before killing a child):
+//! Secondary (PID validation before stopping an instance):
 //! - `/proc/{pid}/comm` on Linux (no shell spawn)
 //! - `ps -p {pid} -o comm=` on macOS
 //! - `start_time` tolerance ±2 seconds
@@ -50,8 +45,8 @@
 //! - **Symlinked `~/.mesh-llm`**: two mesh-llm instances started via different
 //!   symlink paths to the same physical directory will still see each other
 //!   correctly via `flock`, but may appear as "different" dirs when listed.
-//! - **Windows**: orphan detection is best-effort. `flock` is a no-op.
-//!   Runtime dirs are still created but cleanup falls back to current behavior.
+//! - **Windows**: `flock` is a no-op. Runtime dirs are still created and
+//!   process liveness falls back to best-effort PID checks.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -59,89 +54,6 @@ use std::fs::{self, File};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-
-/// Maximum bytes for argv snippet in pidfile metadata.
-pub const ARGV_SNIPPET_MAX_BYTES: usize = 256;
-
-/// Metadata for a child process pidfile (JSON format).
-///
-/// Written atomically to `{runtime_dir}/pidfiles/{name}.json` and read back
-/// for liveness validation and process reaping.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PidfileMetadata {
-    /// Command name (e.g., "llama-server", "rpc-server").
-    pub cmd_name: String,
-    /// Child process PID.
-    pub child_pid: u32,
-    /// Child process start time (Unix timestamp in seconds).
-    pub child_started_at_unix: i64,
-    /// Owner process PID (the mesh-llm instance that spawned the child).
-    pub owner_pid: u32,
-    /// Owner process start time (Unix timestamp in seconds).
-    pub owner_started_at_unix: i64,
-    /// Truncated argv snippet (capped at ARGV_SNIPPET_MAX_BYTES).
-    pub argv_snippet: String,
-    /// Runtime directory path where this pidfile is stored.
-    pub runtime_dir: PathBuf,
-}
-
-impl PidfileMetadata {
-    /// Truncate argv to max_bytes at a valid UTF-8 boundary, appending "…" if truncated.
-    pub fn cap_argv(argv: &[String], max_bytes: usize) -> String {
-        let joined = argv.join(" ");
-        if joined.len() <= max_bytes {
-            return joined;
-        }
-
-        if max_bytes == 0 {
-            return String::new();
-        }
-
-        let ellipsis = '…';
-        let ellipsis_len = ellipsis.len_utf8();
-        let mut cutoff = if max_bytes < ellipsis_len {
-            max_bytes.min(joined.len())
-        } else {
-            max_bytes.saturating_sub(ellipsis_len).min(joined.len())
-        };
-        while cutoff > 0 && !joined.is_char_boundary(cutoff) {
-            cutoff -= 1;
-        }
-
-        let mut truncated = joined[..cutoff].to_string();
-        if ellipsis_len > max_bytes {
-            return truncated;
-        }
-
-        truncated.push(ellipsis);
-        truncated
-    }
-
-    /// Write this metadata to a pidfile atomically.
-    ///
-    /// Writes to `{path}.tmp`, calls `sync_all()`, then renames to `path`.
-    /// If writing or renaming fails, removes the tmp file before returning the error.
-    pub fn write_atomic(&self, path: &Path) -> Result<()> {
-        if self.child_pid == 0 {
-            anyhow::bail!("refusing to write pidfile with child_pid=0");
-        }
-        let json =
-            serde_json::to_string_pretty(self).context("failed to serialize pidfile metadata")?;
-
-        write_text_file_atomic(path, &json).context("failed to write pidfile atomically")
-    }
-
-    /// Read and deserialize a pidfile from disk.
-    ///
-    /// Returns an error (never panics) if the file is corrupt or missing.
-    pub fn read(path: &Path) -> Result<Self> {
-        let content = fs::read_to_string(path)
-            .with_context(|| format!("failed to read pidfile: {}", path.display()))?;
-
-        serde_json::from_str(&content)
-            .map_err(|err| anyhow::anyhow!("corrupt pidfile at {}: {}", path.display(), err))
-    }
-}
 
 /// Write UTF-8 text atomically to `path` using a sibling `*.tmp` file.
 ///
@@ -190,35 +102,6 @@ fn tmp_path_for(path: &Path) -> PathBuf {
         .map(|ext| format!("{}.tmp", ext.to_string_lossy()))
         .unwrap_or_else(|| "tmp".to_string());
     path.with_extension(extension)
-}
-
-/// RAII guard that removes a pidfile when dropped.
-///
-/// Logs via `tracing::debug!` if removal fails; never panics.
-#[derive(Debug)]
-pub struct PidfileGuard {
-    path: PathBuf,
-}
-
-impl PidfileGuard {
-    /// Create a new guard for the given pidfile path.
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for PidfileGuard {
-    fn drop(&mut self) {
-        if let Err(e) = fs::remove_file(&self.path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::debug!(
-                    path = %self.path.display(),
-                    error = %e,
-                    "failed to remove pidfile on drop"
-                );
-            }
-        }
-    }
 }
 
 /// Resolve the runtime root directory for this mesh-llm installation.
@@ -275,8 +158,6 @@ impl InstanceRuntime {
     ///
     /// Creates the following directories (idempotent):
     /// - `{root}/{pid}/`
-    /// - `{root}/{pid}/pidfiles/`
-    /// - `{root}/{pid}/logs/`
     ///
     /// Then opens `{root}/{pid}/lock` and acquires a **non-blocking exclusive
     /// flock**. Returns `Err` if the lock cannot be obtained (i.e. another live
@@ -291,16 +172,15 @@ impl InstanceRuntime {
         fs::create_dir_all(&root).context("failed to create runtime root")?;
 
         let dir = root.join(pid.to_string());
-        fs::create_dir_all(dir.join("pidfiles")).context("failed to create pidfiles directory")?;
-        fs::create_dir_all(dir.join("logs")).context("failed to create logs directory")?;
+        fs::create_dir_all(&dir).context("failed to create runtime directory")?;
 
-        // On Unix, harden permissions on the runtime directories so that
-        // pidfiles and logs are only readable by the owning user.
+        // On Unix, harden permissions on the runtime directories so instance
+        // metadata is only readable by the owning user.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let private = std::fs::Permissions::from_mode(0o700);
-            for d in [&root, &dir, &dir.join("pidfiles"), &dir.join("logs")] {
+            for d in [&root, &dir] {
                 // Best-effort: log but don't fail if we can't set permissions
                 // (e.g. on a read-only or network filesystem).
                 if let Err(e) = std::fs::set_permissions(d, private.clone()) {
@@ -355,31 +235,10 @@ impl InstanceRuntime {
         &self.dir
     }
 
-    /// Returns the path where the named child's pidfile should be written.
-    ///
-    /// Conventionally `{dir}/pidfiles/{name}.json`.
-    pub fn pidfile_path(&self, name: &str) -> PathBuf {
-        self.dir.join("pidfiles").join(format!("{name}.json"))
-    }
-
-    /// Returns the path where the named child's log file should be written.
-    ///
-    /// Conventionally `{dir}/logs/{name}.log`.
-    pub fn log_path(&self, name: &str) -> PathBuf {
-        self.dir.join("logs").join(format!("{name}.log"))
-    }
-
     /// The PID this runtime slot was acquired for.
     #[allow(dead_code)]
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    /// Write a pidfile atomically and return an RAII guard that removes it on drop.
-    pub fn write_pidfile(&self, name: &str, metadata: &PidfileMetadata) -> Result<PidfileGuard> {
-        let path = self.pidfile_path(name);
-        metadata.write_atomic(&path)?;
-        Ok(PidfileGuard::new(path))
     }
 }
 
@@ -393,7 +252,7 @@ impl InstanceRuntime {
 ///   to treat unknown states as "not locked" (callers must validate independently).
 ///
 /// Only Unix currently supports probing the runtime flock.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub fn is_locked(lock_path: &Path) -> bool {
     use std::os::unix::io::AsRawFd;
 
@@ -426,8 +285,8 @@ pub fn is_locked(lock_path: &Path) -> bool {
 /// Portable process identity validation.
 ///
 /// Reads a process's command name (`comm`) and start time so callers can
-/// confirm that a PID in a pidfile still refers to the same process that wrote
-/// it (guard against PID reuse).
+/// confirm that a recorded PID still refers to the same process that wrote it
+/// (guard against PID reuse).
 ///
 /// # Platform support
 ///
@@ -559,10 +418,8 @@ pub mod validate {
             if s.is_empty() {
                 return Ok(None);
             }
-            // macOS `ps -o comm=` returns the full executable path (e.g.
-            // "/.../llama.cpp/build/bin/llama-server"). Pidfile metadata stores
-            // just the basename so the orphan reaper can match against it on
-            // either Linux (`/proc/{pid}/comm` is the basename) or macOS.
+            // macOS `ps -o comm=` returns the full executable path. Normalize
+            // to a basename so stop-time validation matches Linux comm behavior.
             let basename = std::path::Path::new(&s)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -748,450 +605,6 @@ pub mod validate {
     }
 }
 
-/// Pure reap decision logic for scoped runtime cleanup.
-///
-/// Determines what action to take for a pidfile entry based on liveness
-/// observations already collected by the caller. No IO is performed here.
-pub mod reap {
-    use super::validate;
-    use super::PidfileMetadata;
-    use anyhow::Context;
-    use std::path::{Path, PathBuf};
-
-    #[derive(Debug)]
-    enum PendingActionKind {
-        KillChildAndRemovePidfile {
-            child_pid: u32,
-            cmd_name: String,
-            child_started_at_unix: i64,
-        },
-        RemovePidfileOnly,
-    }
-
-    #[derive(Debug)]
-    struct PendingAction {
-        pidfile_path: PathBuf,
-        kind: PendingActionKind,
-    }
-
-    #[derive(Debug, Default)]
-    struct ScanResult {
-        summary: ReapSummary,
-        pending_actions: Vec<PendingAction>,
-        #[cfg(unix)]
-        stale_runtime_dirs: Vec<PathBuf>,
-    }
-
-    /// Decision returned by [`decide_action`].
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub enum Action {
-        /// Owner process is alive — hands off, do not touch.
-        Keep,
-        /// Orphaned child we own — kill the child and remove the pidfile.
-        KillChildAndRemovePidfile,
-        /// Child is dead or PID was recycled — remove the pidfile only.
-        RemovePidfileOnly,
-        /// Cannot determine liveness — leave for next scan.
-        Skip,
-    }
-
-    /// Pure decision function — NO IO inside this function.
-    ///
-    /// Determines what action to take for a pidfile entry given the liveness
-    /// observations already collected by the caller.
-    ///
-    /// # Decision rules
-    ///
-    /// 1. If `owner_dir_is_locked` → [`Action::Keep`] (owner is alive, never touch).
-    /// 2. Owner is dead. Match on `child_liveness`:
-    ///    - [`validate::Liveness::Dead`] → [`Action::RemovePidfileOnly`]
-    ///    - [`validate::Liveness::Alive`] with `child_comm_matches && child_start_time_matches`
-    ///      → [`Action::KillChildAndRemovePidfile`]
-    ///    - [`validate::Liveness::Alive`] with any mismatch (PID recycled — defensive)
-    ///      → [`Action::RemovePidfileOnly`]
-    ///    - [`validate::Liveness::Unknown`] → [`Action::Skip`]
-    pub fn decide_action(
-        _metadata: &PidfileMetadata,
-        child_liveness: validate::Liveness,
-        child_comm_matches: bool,
-        child_start_time_matches: bool,
-        owner_dir_is_locked: bool,
-    ) -> Action {
-        if owner_dir_is_locked {
-            return Action::Keep;
-        }
-
-        // Owner is dead.
-        match child_liveness {
-            validate::Liveness::Dead => Action::RemovePidfileOnly,
-            validate::Liveness::Alive => {
-                if child_comm_matches && child_start_time_matches {
-                    Action::KillChildAndRemovePidfile
-                } else {
-                    // PID recycled (defensive) — just remove the stale pidfile.
-                    Action::RemovePidfileOnly
-                }
-            }
-            validate::Liveness::Unknown => Action::Skip,
-        }
-    }
-
-    /// Summary of a completed reap scan.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct ReapSummary {
-        /// Number of runtime directories scanned.
-        #[cfg(unix)]
-        pub dirs_scanned: usize,
-        /// Number of directories skipped because the owner is still alive.
-        #[cfg(unix)]
-        pub dirs_skipped_alive: usize,
-        /// Number of directories that were garbage collected.
-        pub dirs_gc_d: usize,
-        /// Number of child processes killed.
-        pub children_killed: usize,
-        /// Number of pidfiles removed.
-        pub pidfiles_removed: usize,
-        /// Number of entries skipped due to errors.
-        pub skipped_errors: usize,
-    }
-
-    /// Scan all peer runtime directories under `root` and reap orphaned children
-    /// whose owner process is dead.
-    ///
-    /// Skips `my_runtime_dir` (own slot by path comparison), directories with live
-    /// owners (flock still held), and entries that cannot be parsed. Removes stale
-    /// directories older than 1 hour that have no live owner.
-    pub async fn reap_cross_runtime_orphans(
-        root: &std::path::Path,
-        my_runtime_dir: &std::path::Path,
-    ) -> anyhow::Result<ReapSummary> {
-        #[cfg(not(unix))]
-        {
-            let _ = root;
-            let _ = my_runtime_dir;
-            return Ok(ReapSummary::default());
-        }
-
-        #[cfg(unix)]
-        {
-            if !root.exists() {
-                return Ok(ReapSummary::default());
-            }
-
-            let root = root.to_path_buf();
-            let my_runtime_dir = my_runtime_dir.to_path_buf();
-            let scan = tokio::task::spawn_blocking(move || {
-                scan_cross_runtime_orphans(&root, &my_runtime_dir)
-            })
-            .await
-            .context("cross-runtime reap scan task panicked")??;
-
-            let mut summary = scan.summary;
-            let pending_actions = scan.pending_actions;
-            let stale_runtime_dirs = scan.stale_runtime_dirs;
-            let mut pidfiles_to_remove = Vec::new();
-
-            for action in &pending_actions {
-                match &action.kind {
-                    PendingActionKind::KillChildAndRemovePidfile {
-                        child_pid,
-                        cmd_name,
-                        child_started_at_unix,
-                    } => {
-                        // Treat 0 as "unknown start time" (detection failed at pidfile creation).
-                        let start_time_hint = if *child_started_at_unix == 0 {
-                            None
-                        } else {
-                            Some(*child_started_at_unix)
-                        };
-                        let terminated = crate::inference::launch::terminate_process(
-                            *child_pid,
-                            cmd_name,
-                            start_time_hint,
-                        )
-                        .await;
-                        let exited =
-                            crate::inference::launch::wait_for_exit(*child_pid, 5000).await;
-                        let force_killed = if exited {
-                            false
-                        } else {
-                            crate::inference::launch::force_kill_process(
-                                *child_pid,
-                                cmd_name,
-                                start_time_hint,
-                            )
-                            .await
-                        };
-                        let exited_after_force = if exited {
-                            true
-                        } else {
-                            crate::inference::launch::wait_for_exit(*child_pid, 5000).await
-                        };
-
-                        if (terminated || force_killed) && exited_after_force {
-                            summary.children_killed += 1;
-                            summary.pidfiles_removed += 1;
-                            pidfiles_to_remove.push(action.pidfile_path.clone());
-                        } else {
-                            tracing::warn!(
-                                pid = *child_pid,
-                                cmd_name,
-                                terminated,
-                                exited,
-                                force_killed,
-                                exited_after_force,
-                                "failed to reap orphan child; keeping pidfile"
-                            );
-                        }
-                    }
-                    PendingActionKind::RemovePidfileOnly => {
-                        summary.pidfiles_removed += 1;
-                        pidfiles_to_remove.push(action.pidfile_path.clone());
-                    }
-                }
-            }
-
-            tokio::task::spawn_blocking(move || {
-                for path in pidfiles_to_remove {
-                    let _ = std::fs::remove_file(path);
-                }
-                for path in stale_runtime_dirs {
-                    let _ = std::fs::remove_dir_all(path);
-                }
-            })
-            .await
-            .context("cross-runtime reap cleanup task panicked")?;
-
-            Ok(summary)
-        }
-    }
-
-    /// Drain stale pidfiles from our own runtime directory.
-    /// Used before retrying a spawn (e.g., pre-rpc-server start).
-    /// Unlike reap_cross_runtime_orphans, this operates on OUR OWN dir only.
-    /// If a child is alive and matches, it is killed (retry drain).
-    /// If dead or mismatched, the pidfile is removed defensively.
-    pub async fn reap_own_stale_pidfiles(my_dir: &std::path::Path) -> anyhow::Result<ReapSummary> {
-        let my_dir = my_dir.to_path_buf();
-        if !my_dir.join("pidfiles").exists() {
-            return Ok(ReapSummary::default());
-        }
-
-        let scan = tokio::task::spawn_blocking(move || scan_own_stale_pidfiles(&my_dir))
-            .await
-            .context("own-runtime reap scan task panicked")??;
-
-        let mut summary = scan.summary;
-        let pending_actions = scan.pending_actions;
-        let mut pidfiles_to_remove = Vec::new();
-
-        for action in &pending_actions {
-            match &action.kind {
-                PendingActionKind::KillChildAndRemovePidfile {
-                    child_pid,
-                    cmd_name,
-                    child_started_at_unix,
-                } => {
-                    // Treat 0 as "unknown start time" (detection failed at pidfile creation).
-                    let start_time_hint = if *child_started_at_unix == 0 {
-                        None
-                    } else {
-                        Some(*child_started_at_unix)
-                    };
-                    let terminated = crate::inference::launch::terminate_process(
-                        *child_pid,
-                        cmd_name,
-                        start_time_hint,
-                    )
-                    .await;
-                    let exited = crate::inference::launch::wait_for_exit(*child_pid, 5000).await;
-                    let force_killed = if exited {
-                        false
-                    } else {
-                        crate::inference::launch::force_kill_process(
-                            *child_pid,
-                            cmd_name,
-                            start_time_hint,
-                        )
-                        .await
-                    };
-                    let exited_after_force = if exited {
-                        true
-                    } else {
-                        crate::inference::launch::wait_for_exit(*child_pid, 5000).await
-                    };
-
-                    if (terminated || force_killed) && exited_after_force {
-                        summary.children_killed += 1;
-                        summary.pidfiles_removed += 1;
-                        pidfiles_to_remove.push(action.pidfile_path.clone());
-                    } else {
-                        tracing::warn!(
-                            pid = *child_pid,
-                            cmd_name,
-                            terminated,
-                            exited,
-                            force_killed,
-                            exited_after_force,
-                            "failed to reap local stale child; keeping pidfile"
-                        );
-                    }
-                }
-                PendingActionKind::RemovePidfileOnly => {
-                    summary.pidfiles_removed += 1;
-                    pidfiles_to_remove.push(action.pidfile_path.clone());
-                }
-            }
-        }
-
-        tokio::task::spawn_blocking(move || {
-            for path in pidfiles_to_remove {
-                let _ = std::fs::remove_file(path);
-            }
-        })
-        .await
-        .context("own-runtime reap cleanup task panicked")?;
-
-        Ok(summary)
-    }
-
-    #[cfg(unix)]
-    fn scan_cross_runtime_orphans(
-        root: &Path,
-        my_runtime_dir: &Path,
-    ) -> anyhow::Result<ScanResult> {
-        let mut result = ScanResult::default();
-        let entries = std::fs::read_dir(root)
-            .with_context(|| format!("failed to read runtime root: {}", root.display()))?;
-
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-
-            if entry_path == my_runtime_dir {
-                continue;
-            }
-
-            if !entry_path.is_dir() {
-                continue;
-            }
-
-            if super::is_locked(&entry_path.join("lock")) {
-                result.summary.dirs_skipped_alive += 1;
-                continue;
-            }
-
-            scan_pidfiles_dir(&entry_path.join("pidfiles"), false, &mut result);
-
-            if std::fs::metadata(&entry_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(|t| t.elapsed().unwrap_or_default().as_secs() > 3600)
-                .unwrap_or(false)
-            {
-                result.stale_runtime_dirs.push(entry_path);
-                result.summary.dirs_gc_d += 1;
-            }
-
-            result.summary.dirs_scanned += 1;
-        }
-
-        Ok(result)
-    }
-
-    fn scan_own_stale_pidfiles(my_dir: &Path) -> anyhow::Result<ScanResult> {
-        let mut result = ScanResult::default();
-        scan_pidfiles_dir(&my_dir.join("pidfiles"), true, &mut result);
-        Ok(result)
-    }
-
-    fn scan_pidfiles_dir(pidfiles_dir: &Path, own_runtime: bool, result: &mut ScanResult) {
-        let Ok(pidfiles) = std::fs::read_dir(pidfiles_dir) else {
-            return;
-        };
-
-        for pidfile_entry in pidfiles.flatten() {
-            let path = pidfile_entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-
-            let metadata = match super::PidfileMetadata::read(&path) {
-                Ok(m) => m,
-                Err(_) => {
-                    result.summary.skipped_errors += 1;
-                    continue;
-                }
-            };
-
-            if metadata.child_pid == 0 || metadata.child_pid == 1 {
-                tracing::warn!(
-                    "skipping pidfile with invalid child_pid={}",
-                    metadata.child_pid
-                );
-                result.pending_actions.push(PendingAction {
-                    pidfile_path: path,
-                    kind: PendingActionKind::RemovePidfileOnly,
-                });
-                continue;
-            }
-
-            let child_liveness = super::validate::process_liveness(metadata.child_pid);
-            let child_comm_matches =
-                super::validate::process_name_matches(metadata.child_pid, &metadata.cmd_name);
-            let child_start_matches = if metadata.child_started_at_unix == 0 {
-                true
-            } else {
-                super::validate::process_started_at_unix(metadata.child_pid)
-                    .ok()
-                    .flatten()
-                    .map(|t| {
-                        (t - metadata.child_started_at_unix).abs()
-                            <= super::validate::START_TIME_TOLERANCE_SECS
-                    })
-                    .unwrap_or(false)
-            };
-
-            let action = if own_runtime {
-                if child_liveness == super::validate::Liveness::Alive
-                    && child_comm_matches
-                    && child_start_matches
-                {
-                    Action::KillChildAndRemovePidfile
-                } else {
-                    Action::RemovePidfileOnly
-                }
-            } else {
-                decide_action(
-                    &metadata,
-                    child_liveness,
-                    child_comm_matches,
-                    child_start_matches,
-                    false,
-                )
-            };
-
-            match action {
-                Action::KillChildAndRemovePidfile => result.pending_actions.push(PendingAction {
-                    pidfile_path: path,
-                    kind: PendingActionKind::KillChildAndRemovePidfile {
-                        child_pid: metadata.child_pid,
-                        cmd_name: metadata.cmd_name,
-                        child_started_at_unix: metadata.child_started_at_unix,
-                    },
-                }),
-                Action::RemovePidfileOnly => result.pending_actions.push(PendingAction {
-                    pidfile_path: path,
-                    kind: PendingActionKind::RemovePidfileOnly,
-                }),
-                Action::Skip => {
-                    result.summary.skipped_errors += 1;
-                }
-                Action::Keep => {}
-            }
-        }
-    }
-}
-
 /// Snapshot of a co-located mesh-llm instance discovered via the runtime root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalInstanceSnapshot {
@@ -1221,12 +634,10 @@ struct OwnerMetadata {
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeProcessTarget {
-    pub runtime_dir: PathBuf,
     pub label: String,
     pub pid: u32,
     pub expected_comm: String,
     pub expected_start_time: Option<i64>,
-    pub is_owner: bool,
 }
 
 fn binary_process_name(binary: &str) -> Option<String> {
@@ -1261,43 +672,6 @@ pub(crate) fn collect_runtime_stop_targets(
         let entry_path = entry.path();
         if !entry_path.is_dir() {
             continue;
-        }
-
-        let pidfiles_dir = entry_path.join("pidfiles");
-        if let Ok(pidfiles) = fs::read_dir(&pidfiles_dir) {
-            for pidfile_entry in pidfiles.flatten() {
-                let pidfile_path = pidfile_entry.path();
-                if pidfile_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                    continue;
-                }
-
-                let metadata = match PidfileMetadata::read(&pidfile_path) {
-                    Ok(metadata) => metadata,
-                    Err(err) => {
-                        tracing::warn!(
-                            path = %pidfile_path.display(),
-                            error = %err,
-                            "failed to parse pidfile while collecting stop targets"
-                        );
-                        continue;
-                    }
-                };
-
-                targets.push(RuntimeProcessTarget {
-                    runtime_dir: entry_path.clone(),
-                    label: metadata.cmd_name.clone(),
-                    pid: metadata.child_pid,
-                    expected_comm: metadata.cmd_name,
-                    // Treat 0 as "unknown" — start-time detection failed at pidfile
-                    // creation, so omit the hint rather than passing a bogus timestamp.
-                    expected_start_time: if metadata.child_started_at_unix == 0 {
-                        None
-                    } else {
-                        Some(metadata.child_started_at_unix)
-                    },
-                    is_owner: false,
-                });
-            }
         }
 
         let owner_path = entry_path.join("owner.json");
@@ -1336,12 +710,10 @@ pub(crate) fn collect_runtime_stop_targets(
             .unwrap_or_else(|| "mesh-llm".to_string());
 
         targets.push(RuntimeProcessTarget {
-            runtime_dir: entry_path,
             label: expected_comm.clone(),
             pid: owner.pid,
             expected_comm,
             expected_start_time: owner.started_at_unix,
-            is_owner: true,
         });
     }
 
@@ -1352,8 +724,7 @@ pub(crate) fn collect_runtime_stop_targets(
 ///
 /// Each subdirectory under `root` represents one instance slot (`{root}/{pid}/`).
 /// An instance is considered live if its PID is still alive according to
-/// [`validate::process_liveness`]. Stale directories (dead owner) are skipped;
-/// they will be garbage-collected by the reaper (T12).
+/// [`validate::process_liveness`]. Stale directories (dead owner) are skipped.
 ///
 /// Returns `Ok(vec![])` immediately if `root` does not exist (first run).
 ///
@@ -1696,14 +1067,7 @@ mod tests {
         let rt = InstanceRuntime::acquire(1001).expect("acquire should succeed");
 
         assert!(rt.dir().exists(), "runtime dir must be created");
-        assert!(
-            rt.dir().join("pidfiles").exists(),
-            "pidfiles subdir must be created"
-        );
-        assert!(
-            rt.dir().join("logs").exists(),
-            "logs subdir must be created"
-        );
+        assert!(rt.dir().join("lock").exists(), "lock file must be created");
     }
 
     #[test]
@@ -1778,179 +1142,6 @@ mod tests {
     }
 
     #[test]
-    fn pidfile_roundtrip() {
-        let metadata = PidfileMetadata {
-            cmd_name: "llama-server".to_string(),
-            child_pid: 1234,
-            child_started_at_unix: 1700000000,
-            owner_pid: 1000,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "llama-server -m model.gguf".to_string(),
-            runtime_dir: PathBuf::from("/tmp/runtime"),
-        };
-
-        let dir = tempdir().unwrap();
-        let pidfile_path = dir.path().join("test.json");
-
-        metadata
-            .write_atomic(&pidfile_path)
-            .expect("write_atomic should succeed");
-
-        let read_back = PidfileMetadata::read(&pidfile_path).expect("read should succeed");
-        assert_eq!(read_back, metadata, "roundtrip must preserve metadata");
-    }
-
-    #[test]
-    fn pidfile_atomic_write_no_partial() {
-        let metadata = PidfileMetadata {
-            cmd_name: "rpc-server".to_string(),
-            child_pid: 5678,
-            child_started_at_unix: 1700000100,
-            owner_pid: 1000,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "rpc-server --port 9999".to_string(),
-            runtime_dir: PathBuf::from("/tmp/runtime"),
-        };
-
-        let dir = tempdir().unwrap();
-        let pidfile_path = dir.path().join("atomic.json");
-
-        metadata
-            .write_atomic(&pidfile_path)
-            .expect("write_atomic should succeed");
-
-        // Verify the main file exists and tmp file does not
-        assert!(
-            pidfile_path.exists(),
-            "pidfile must exist after atomic write"
-        );
-        let tmp_path = pidfile_path.with_extension("json.tmp");
-        assert!(
-            !tmp_path.exists(),
-            "tmp file must not exist after successful atomic write"
-        );
-    }
-
-    #[test]
-    fn pidfile_corrupt_returns_err_not_panic() {
-        let dir = tempdir().unwrap();
-        let pidfile_path = dir.path().join("corrupt.json");
-
-        // Write invalid JSON
-        fs::write(&pidfile_path, "{ invalid json }").expect("write should succeed");
-
-        let result = PidfileMetadata::read(&pidfile_path);
-        assert!(
-            result.is_err(),
-            "read must return Err for corrupt pidfile, not panic"
-        );
-
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("corrupt pidfile"),
-            "error message must mention corrupt pidfile"
-        );
-    }
-
-    #[test]
-    fn pidfile_guard_removes_on_drop() {
-        let dir = tempdir().unwrap();
-        let pidfile_path = dir.path().join("guard_test.json");
-
-        // Create a dummy pidfile
-        fs::write(&pidfile_path, "{}").expect("write should succeed");
-        assert!(
-            pidfile_path.exists(),
-            "pidfile must exist before guard drop"
-        );
-
-        {
-            let _guard = PidfileGuard::new(pidfile_path.clone());
-            assert!(
-                pidfile_path.exists(),
-                "pidfile must exist while guard is held"
-            );
-        }
-
-        assert!(
-            !pidfile_path.exists(),
-            "pidfile must be removed after guard is dropped"
-        );
-    }
-
-    #[test]
-    fn pidfile_guard_survives_missing_file_on_drop() {
-        let dir = tempdir().unwrap();
-        let pidfile_path = dir.path().join("missing.json");
-
-        // Guard for a file that doesn't exist
-        let _guard = PidfileGuard::new(pidfile_path.clone());
-
-        // Drop should not panic even though the file is missing
-        drop(_guard);
-
-        // Test passes if we reach here without panicking
-        assert!(!pidfile_path.exists(), "file should still not exist");
-    }
-
-    #[test]
-    fn cap_argv_truncates_at_byte_boundary() {
-        let argv = vec![
-            "llama-server".to_string(),
-            "-m".to_string(),
-            "model.gguf".to_string(),
-            "--port".to_string(),
-            "9999".to_string(),
-        ];
-
-        let capped = PidfileMetadata::cap_argv(&argv, 20);
-        assert!(
-            capped.ends_with("…"),
-            "truncated argv must end with ellipsis"
-        );
-        assert!(
-            capped.is_char_boundary(capped.len()),
-            "capped argv must end at a valid UTF-8 boundary"
-        );
-    }
-
-    #[test]
-    fn cap_argv_preserves_utf8_multibyte_boundary() {
-        // Create argv with multibyte UTF-8 characters
-        let argv = vec![
-            "test".to_string(),
-            "café".to_string(), // é is 2 bytes in UTF-8
-        ];
-
-        let capped = PidfileMetadata::cap_argv(&argv, 8);
-        // Should truncate before the multibyte character, not in the middle of it
-        assert!(
-            capped.is_char_boundary(capped.len()),
-            "truncated argv must end at a valid UTF-8 boundary"
-        );
-        assert!(
-            capped.len() <= 8,
-            "truncated argv must respect max_bytes including the ellipsis"
-        );
-    }
-
-    #[test]
-    fn cap_argv_handles_zero_max_bytes() {
-        let argv = vec!["llama-server".to_string(), "--model".to_string()];
-
-        let capped = PidfileMetadata::cap_argv(&argv, 0);
-        assert_eq!(capped, "", "zero-byte budget should yield an empty string");
-    }
-
-    #[test]
-    fn cap_argv_preserves_small_byte_budgets_without_ellipsis() {
-        let argv = vec!["abc".to_string()];
-
-        assert_eq!(PidfileMetadata::cap_argv(&argv, 1), "a");
-        assert_eq!(PidfileMetadata::cap_argv(&argv, 2), "ab");
-    }
-
-    #[test]
     fn write_text_file_atomic_cleans_up_tmp_file_on_error() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("owner.json");
@@ -1963,50 +1154,6 @@ mod tests {
         assert!(
             !tmp_path.exists(),
             "tmp file should be removed when the atomic write fails"
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn write_pidfile_creates_file_and_guard() {
-        let dir = tempdir().unwrap();
-        let _g = EnvGuard::save_and_set("MESH_LLM_RUNTIME_ROOT", dir.path().to_str().unwrap());
-
-        let rt = InstanceRuntime::acquire(2000).expect("acquire should succeed");
-
-        let metadata = PidfileMetadata {
-            cmd_name: "test-server".to_string(),
-            child_pid: 9999,
-            child_started_at_unix: 1700000000,
-            owner_pid: 2000,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "test-server".to_string(),
-            runtime_dir: rt.dir().to_path_buf(),
-        };
-
-        let pidfile_path = rt.pidfile_path("test-server");
-        assert!(
-            !pidfile_path.exists(),
-            "pidfile must not exist before write_pidfile"
-        );
-
-        let _guard = rt
-            .write_pidfile("test-server", &metadata)
-            .expect("write_pidfile should succeed");
-
-        assert!(
-            pidfile_path.exists(),
-            "pidfile must exist after write_pidfile"
-        );
-
-        let read_back = PidfileMetadata::read(&pidfile_path).expect("read should succeed");
-        assert_eq!(read_back, metadata, "written metadata must match");
-
-        drop(_guard);
-
-        assert!(
-            !pidfile_path.exists(),
-            "pidfile must be removed after guard is dropped"
         );
     }
 
@@ -2143,286 +1290,5 @@ mod tests {
             validate::Liveness::Dead,
             "liveness for nonexistent PID 999999 must be Dead"
         );
-    }
-
-    fn dummy_metadata() -> PidfileMetadata {
-        PidfileMetadata {
-            cmd_name: "test-server".to_string(),
-            child_pid: 1234,
-            child_started_at_unix: 1700000000,
-            owner_pid: 5678,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "test-server --port 9999".to_string(),
-            runtime_dir: PathBuf::from("/tmp/runtime"),
-        }
-    }
-
-    #[test]
-    fn decide_keep_when_owner_locked() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Alive, true, true, true);
-        assert_eq!(action, reap::Action::Keep);
-    }
-
-    #[test]
-    fn decide_remove_pidfile_when_child_dead() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Dead, false, false, false);
-        assert_eq!(action, reap::Action::RemovePidfileOnly);
-    }
-
-    #[test]
-    fn decide_kill_and_remove_when_child_alive_and_matches() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Alive, true, true, false);
-        assert_eq!(action, reap::Action::KillChildAndRemovePidfile);
-    }
-
-    #[test]
-    fn decide_remove_only_when_child_pid_recycled_comm_mismatch() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Alive, false, true, false);
-        assert_eq!(action, reap::Action::RemovePidfileOnly);
-    }
-
-    #[test]
-    fn decide_remove_only_when_child_start_time_drifted() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Alive, true, false, false);
-        assert_eq!(action, reap::Action::RemovePidfileOnly);
-    }
-
-    #[test]
-    fn decide_skip_when_child_liveness_unknown() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Unknown, false, false, false);
-        assert_eq!(action, reap::Action::Skip);
-    }
-
-    #[test]
-    fn decide_keep_trumps_everything_when_owner_locked() {
-        let meta = dummy_metadata();
-        let action = reap::decide_action(&meta, validate::Liveness::Dead, false, false, true);
-        assert_eq!(action, reap::Action::Keep);
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[cfg(unix)]
-    async fn reap_skips_own_dir() {
-        let root = tempdir().unwrap();
-        let dir_a = root.path().join("1001");
-        let dir_b = root.path().join("1002");
-        fs::create_dir_all(dir_a.join("pidfiles")).unwrap();
-        fs::create_dir_all(dir_b.join("pidfiles")).unwrap();
-
-        let summary = reap::reap_cross_runtime_orphans(root.path(), &dir_a)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            summary.dirs_scanned, 1,
-            "only the peer dir should be scanned, not own dir"
-        );
-        assert_eq!(summary.dirs_skipped_alive, 0);
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[cfg(unix)]
-    async fn reap_skips_alive_owner() {
-        let root = tempdir().unwrap();
-        let _g = EnvGuard::save_and_set("MESH_LLM_RUNTIME_ROOT", root.path().to_str().unwrap());
-
-        let rt = InstanceRuntime::acquire(9100).expect("acquire should succeed");
-
-        let my_dir = root.path().join("99999");
-        let summary = reap::reap_cross_runtime_orphans(root.path(), &my_dir)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            summary.dirs_skipped_alive, 1,
-            "live-owner dir must be skipped"
-        );
-        assert_eq!(summary.dirs_scanned, 0);
-
-        drop(rt);
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[cfg(unix)]
-    async fn reap_removes_dead_child_pidfile() {
-        let root = tempdir().unwrap();
-        let peer_dir = root.path().join("50001");
-        let pidfiles_dir = peer_dir.join("pidfiles");
-        fs::create_dir_all(&pidfiles_dir).unwrap();
-
-        let metadata = PidfileMetadata {
-            cmd_name: "llama-server".to_string(),
-            child_pid: 999999,
-            child_started_at_unix: 1700000000,
-            owner_pid: 50001,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "llama-server".to_string(),
-            runtime_dir: peer_dir.clone(),
-        };
-        let pidfile_path = pidfiles_dir.join("llama-server.json");
-        metadata.write_atomic(&pidfile_path).unwrap();
-
-        let my_dir = root.path().join("99999");
-        let summary = reap::reap_cross_runtime_orphans(root.path(), &my_dir)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            summary.pidfiles_removed, 1,
-            "dead-child pidfile must be removed"
-        );
-        assert!(!pidfile_path.exists(), "pidfile must be gone from disk");
-        assert_eq!(summary.children_killed, 0, "no kill for a dead PID");
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[cfg(unix)]
-    async fn reap_preserves_external_pid_via_comm_mismatch() {
-        let root = tempdir().unwrap();
-        let peer_dir = root.path().join("60001");
-        let pidfiles_dir = peer_dir.join("pidfiles");
-        fs::create_dir_all(&pidfiles_dir).unwrap();
-
-        let self_pid = std::process::id();
-        let metadata = PidfileMetadata {
-            cmd_name: "definitely-not-this-binary".to_string(),
-            child_pid: self_pid,
-            child_started_at_unix: 1700000000,
-            owner_pid: 60001,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "fake".to_string(),
-            runtime_dir: peer_dir.clone(),
-        };
-        let pidfile_path = pidfiles_dir.join("fake-server.json");
-        metadata.write_atomic(&pidfile_path).unwrap();
-
-        let my_dir = root.path().join("99999");
-        let summary = reap::reap_cross_runtime_orphans(root.path(), &my_dir)
-            .await
-            .unwrap();
-
-        assert_eq!(
-            summary.pidfiles_removed, 1,
-            "pidfile removed on comm mismatch (RemovePidfileOnly path)"
-        );
-        assert!(!pidfile_path.exists(), "pidfile must be removed from disk");
-        assert_eq!(
-            summary.children_killed, 0,
-            "process must not be killed on comm mismatch"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn own_drain_removes_dead_pidfile() {
-        let dir = tempdir().unwrap();
-        let my_dir = dir.path().join("my_runtime");
-        let pidfiles_dir = my_dir.join("pidfiles");
-        fs::create_dir_all(&pidfiles_dir).unwrap();
-
-        let metadata = PidfileMetadata {
-            cmd_name: "llama-server".to_string(),
-            child_pid: 999999,
-            child_started_at_unix: 1700000000,
-            owner_pid: 1234,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "llama-server".to_string(),
-            runtime_dir: my_dir.clone(),
-        };
-        let pidfile_path = pidfiles_dir.join("llama-server.json");
-        metadata.write_atomic(&pidfile_path).unwrap();
-
-        let summary = reap::reap_own_stale_pidfiles(&my_dir).await.unwrap();
-
-        assert_eq!(summary.pidfiles_removed, 1, "dead pidfile must be removed");
-        assert_eq!(summary.children_killed, 0, "dead PID must not be killed");
-        assert!(!pidfile_path.exists(), "pidfile must be gone from disk");
-    }
-
-    #[tokio::test]
-    #[serial]
-    #[cfg(unix)]
-    async fn cross_runtime_reaper_ignores_non_directories() {
-        let root = tempdir().unwrap();
-        let my_dir = root.path().join("self");
-        fs::create_dir_all(&my_dir).unwrap();
-
-        let stray_file = root.path().join("README.txt");
-        fs::write(&stray_file, "not a runtime directory").unwrap();
-
-        let result = reap::reap_cross_runtime_orphans(root.path(), &my_dir)
-            .await
-            .unwrap();
-
-        assert_eq!(result.dirs_scanned, 0);
-        assert_eq!(result.dirs_gc_d, 0);
-        assert!(
-            stray_file.exists(),
-            "non-directory entries must not be collected"
-        );
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn own_drain_removes_mismatched_pidfile_defensively() {
-        let dir = tempdir().unwrap();
-        let my_dir = dir.path().join("my_runtime");
-        let pidfiles_dir = my_dir.join("pidfiles");
-        fs::create_dir_all(&pidfiles_dir).unwrap();
-
-        let self_pid = std::process::id();
-        let metadata = PidfileMetadata {
-            cmd_name: "definitely-not-this-binary".to_string(),
-            child_pid: self_pid,
-            child_started_at_unix: 1700000000,
-            owner_pid: 1234,
-            owner_started_at_unix: 1699999900,
-            argv_snippet: "fake".to_string(),
-            runtime_dir: my_dir.clone(),
-        };
-        let pidfile_path = pidfiles_dir.join("fake-server.json");
-        metadata.write_atomic(&pidfile_path).unwrap();
-
-        let summary = reap::reap_own_stale_pidfiles(&my_dir).await.unwrap();
-
-        assert_eq!(
-            summary.pidfiles_removed, 1,
-            "mismatched pidfile must be removed defensively"
-        );
-        assert_eq!(
-            summary.children_killed, 0,
-            "bystander process must not be killed on comm mismatch"
-        );
-        assert!(!pidfile_path.exists(), "pidfile must be gone from disk");
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn own_drain_returns_empty_when_no_pidfiles_dir() {
-        let dir = tempdir().unwrap();
-        let my_dir = dir.path().join("my_runtime_no_pidfiles");
-        fs::create_dir_all(&my_dir).unwrap();
-
-        let summary = reap::reap_own_stale_pidfiles(&my_dir).await.unwrap();
-
-        assert_eq!(
-            summary.pidfiles_removed, 0,
-            "no pidfiles dir — nothing to remove"
-        );
-        assert_eq!(
-            summary.children_killed, 0,
-            "no pidfiles dir — nothing to kill"
-        );
-        assert_eq!(summary.skipped_errors, 0, "no pidfiles dir — no errors");
     }
 }

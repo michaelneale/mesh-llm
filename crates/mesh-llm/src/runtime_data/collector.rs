@@ -23,9 +23,11 @@ use super::snapshots::{
 use super::subscriptions::{
     RuntimeDataDirty, RuntimeDataSubscriptionState, RuntimeDataSubscriptions,
 };
+use super::RuntimeLlamaRuntimeSnapshot;
+#[cfg(test)]
 use super::{
     RuntimeLlamaMetricItem, RuntimeLlamaMetricsSnapshot, RuntimeLlamaRuntimeItems,
-    RuntimeLlamaRuntimeSnapshot, RuntimeLlamaSlotItem, RuntimeLlamaSlotsSnapshot,
+    RuntimeLlamaSlotItem, RuntimeLlamaSlotsSnapshot,
 };
 use crate::api::status::{
     build_gpus, build_ownership_payload, LocalInstance, MeshModelPayload, NodeState, PeerPayload,
@@ -122,6 +124,7 @@ impl RuntimeDataCollector {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn replace_llama_metrics_snapshot(
         &self,
         snapshot: RuntimeLlamaMetricsSnapshot,
@@ -140,6 +143,7 @@ impl RuntimeDataCollector {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn replace_llama_slots_snapshot(&self, snapshot: RuntimeLlamaSlotsSnapshot) -> bool {
         self.update_runtime_status(RuntimeDataDirty::RUNTIME, |runtime_status| {
             let next_items =
@@ -627,6 +631,7 @@ impl RuntimeDataCollector {
     }
 }
 
+#[cfg(test)]
 fn build_llama_runtime_items(
     metrics: &RuntimeLlamaMetricsSnapshot,
     slots: &RuntimeLlamaSlotsSnapshot,

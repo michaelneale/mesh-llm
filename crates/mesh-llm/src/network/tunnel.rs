@@ -2,9 +2,7 @@
 //! local backend.
 
 use crate::mesh::Node;
-use crate::protocol::{
-    read_len_prefixed, ValidateControlFrame, NODE_PROTOCOL_GENERATION, STREAM_STAGE_TRANSPORT,
-};
+use crate::protocol::read_len_prefixed;
 use anyhow::Result;
 use iroh::EndpointId;
 use prost::Message;
@@ -19,11 +17,6 @@ static BYTES_TRANSFERRED: AtomicU64 = AtomicU64::new(0);
 
 fn quic_response_first_byte_timeout() -> Duration {
     Duration::from_secs(5 * 60)
-}
-
-/// Get total bytes transferred through all tunnels
-pub fn bytes_transferred() -> u64 {
-    BYTES_TRANSFERRED.load(Ordering::Relaxed)
 }
 
 /// Manages all tunnels for a node
@@ -128,15 +121,10 @@ async fn handle_inbound_stage_transport(
     mut quic_recv: iroh::endpoint::RecvStream,
 ) -> Result<()> {
     let buf = read_len_prefixed(&mut quic_recv).await?;
-    let open = crate::proto::node::StageTransportOpen::decode(buf.as_slice())
+    let open = skippy_protocol::proto::stage::StageTransportOpen::decode(buf.as_slice())
         .map_err(|e| anyhow::anyhow!("StageTransportOpen decode error: {e}"))?;
-    open.validate_frame()
+    skippy_protocol::validate_stage_transport_open(&open)
         .map_err(|e| anyhow::anyhow!("StageTransportOpen validation error: {e}"))?;
-    if open.gen != NODE_PROTOCOL_GENERATION {
-        anyhow::bail!(
-            "stage transport generation mismatch on stream {STREAM_STAGE_TRANSPORT:#04x}"
-        );
-    }
     if open.requester_id.as_slice() != remote.as_bytes() {
         anyhow::bail!("stage transport requester_id does not match QUIC peer identity");
     }

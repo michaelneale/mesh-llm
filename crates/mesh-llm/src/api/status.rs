@@ -717,8 +717,8 @@ pub(crate) fn build_runtime_llama_payload(
 
 fn runtime_llama_endpoint_status(status: runtime_data::RuntimeLlamaEndpointStatus) -> &'static str {
     match status {
+        #[cfg(test)]
         runtime_data::RuntimeLlamaEndpointStatus::Ready => "ready",
-        runtime_data::RuntimeLlamaEndpointStatus::Error => "error",
         runtime_data::RuntimeLlamaEndpointStatus::Unavailable => "unavailable",
     }
 }

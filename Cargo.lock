@@ -7084,6 +7084,9 @@ dependencies = [
 name = "skippy-protocol"
 version = "0.1.0"
 dependencies = [
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
  "serde",
 ]
 

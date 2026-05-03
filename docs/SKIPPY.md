@@ -189,7 +189,8 @@ Mesh continues to own:
 Skippy owns:
 
 - model/session execution through the stage ABI;
-- stage protocol types and activation wire encoding;
+- stage protocol types, the `skippy-stage/1` QUIC ALPN, protobuf frames in
+  `skippy-protocol`, and activation wire encoding;
 - layer package loading/materialization;
 - topology planning primitives and family capability policy;
 - backend telemetry emitted by runtime/stage execution.
@@ -818,15 +819,18 @@ The command should include:
 - bind/listen information;
 - shutdown/reload generation.
 
-Older nodes must ignore or reject this stream cleanly. Do not break mixed
-version meshes.
+The stage protocol is new and does not need backward compatibility. Keep it out
+of `mesh-llm/1` so mixed-version mesh membership, gossip, routing, and public
+OpenAI proxy traffic continue to interoperate even when a peer cannot
+participate in skippy stage execution.
 
 ### 8. Wire Stage Transport
 
-Extend the tunnel manager so stage traffic uses plain bidirectional relay.
-
-Do not repurpose the old RPC stream in a way that strands older nodes. The
-stage path should be explicit and independently routable.
+Stage traffic uses the `skippy-stage/1` QUIC ALPN. Each accepted stage
+connection carries skippy-owned stream kinds for control and activation
+transport, then length-prefixed `skippy-protocol` protobuf frames. The
+activation transport switches to raw activation bytes after the
+`StageTransportOpen` frame.
 
 ### 9. Replace Split Serving
 
