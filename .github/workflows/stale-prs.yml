@@ -1,0 +1,65 @@
+name: Close stale pull requests
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: stale-pr-cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  PR_CLOSE_DAYS: ${{ vars.STALE_PR_DAYS || '7' }}
+  PR_WARNING_DAYS: ${{ vars.STALE_PR_WARNING_DAYS || '2' }}
+
+jobs:
+  close_stale_prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate stale warning window
+        id: stale_window
+        shell: bash
+        run: |
+          if ! [[ "$PR_CLOSE_DAYS" =~ ^[0-9]+$ ]] || (( PR_CLOSE_DAYS <= 0 )); then
+            echo "STALE_PR_DAYS must be a positive integer." >&2
+            exit 1
+          fi
+
+          if ! [[ "$PR_WARNING_DAYS" =~ ^[0-9]+$ ]] || (( PR_WARNING_DAYS <= 0 )); then
+            echo "STALE_PR_WARNING_DAYS must be a positive integer." >&2
+            exit 1
+          fi
+
+          if (( PR_CLOSE_DAYS <= PR_WARNING_DAYS )); then
+            echo "STALE_PR_DAYS must be greater than STALE_PR_WARNING_DAYS." >&2
+            exit 1
+          fi
+
+          echo "days_before_stale=$((PR_CLOSE_DAYS - PR_WARNING_DAYS))" >> "$GITHUB_OUTPUT"
+          echo "days_before_close=$PR_WARNING_DAYS" >> "$GITHUB_OUTPUT"
+
+      - name: Close stale pull requests
+        uses: actions/stale@v10
+        with:
+          repo-token: ${{ github.token }}
+          days-before-issue-stale: -1
+          days-before-issue-close: -1
+          days-before-pr-stale: ${{ steps.stale_window.outputs.days_before_stale }}
+          days-before-pr-close: ${{ steps.stale_window.outputs.days_before_close }}
+          stale-pr-label: stale
+          stale-pr-message: >
+            This pull request has not been updated in at least ${{ steps.stale_window.outputs.days_before_stale }} days.
+            It will be closed after ${{ env.PR_CLOSE_DAYS }} days of inactivity to keep the active
+            review queue current. Please update it within ${{ env.PR_WARNING_DAYS }} days if the
+            changes are still moving forward.
+          close-pr-message: >
+            Closing this pull request because it has not been updated in at least ${{ env.PR_CLOSE_DAYS }} days.
+            Please reopen or create a fresh pull request when the changes are ready to continue.
+          exempt-draft-pr: true
+          operations-per-run: 1000
