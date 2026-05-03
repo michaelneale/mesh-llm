@@ -23,6 +23,16 @@ pub struct GpuFacts {
     pub pnp_instance_id: Option<String>,
 }
 
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct VulkanGpuFacts {
+    pub index: usize,
+    pub display_name: String,
+    pub device_type: String,
+    pub vendor_id: Option<String>,
+    pub device_id: Option<String>,
+    pub device_uuid: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PinnedGpuResolverError {
     MissingConfiguredId {
@@ -1228,6 +1238,172 @@ fn hydrate_gpu_facts_with_identities(
     }
 }
 
+fn parse_vulkan_gpu_header(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    let suffix = trimmed.strip_prefix("GPU")?.strip_suffix(':')?;
+    suffix.parse().ok()
+}
+
+/// Parse `vulkaninfo --summary` device sections.
+pub fn parse_vulkaninfo_summary_devices(output: &str) -> Vec<VulkanGpuFacts> {
+    let mut devices = Vec::new();
+    let mut current: Option<VulkanGpuFacts> = None;
+
+    for line in output.lines() {
+        if let Some(index) = parse_vulkan_gpu_header(line) {
+            if let Some(device) = current.take() {
+                devices.push(device);
+            }
+            current = Some(VulkanGpuFacts {
+                index,
+                ..Default::default()
+            });
+            continue;
+        }
+
+        let Some(device) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim().to_string();
+        match key {
+            "vendorID" => device.vendor_id = Some(value),
+            "deviceID" => device.device_id = Some(value),
+            "deviceType" => device.device_type = value,
+            "deviceName" => device.display_name = value,
+            "deviceUUID" => device.device_uuid = Some(value),
+            _ => {}
+        }
+    }
+
+    if let Some(device) = current {
+        devices.push(device);
+    }
+    devices
+}
+
+fn pci_bdf_from_radv_vulkan_uuid(uuid: &str) -> Option<String> {
+    let parts = uuid.split('-').collect::<Vec<_>>();
+    if parts.len() != 5 {
+        return None;
+    }
+    if parts[0].len() != 8
+        || parts[1].len() != 4
+        || parts[2].len() != 4
+        || !parts
+            .iter()
+            .all(|part| part.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    if parts[2] != "0000" || parts[3] != "0000" || parts[4] != "000000000000" {
+        return None;
+    }
+
+    let domain = parts[0];
+    let bus = &parts[1][..2];
+    let device = &parts[1][2..4];
+    let function = &parts[2][..1];
+    Some(format!("{domain}:{bus}:{device}.{function}"))
+}
+
+fn vendor_uuid_matches_vulkan_device(gpu: &GpuFacts, device: &VulkanGpuFacts) -> bool {
+    let Some(vulkan_uuid) = device.device_uuid.as_deref() else {
+        return false;
+    };
+    let Some(vendor_uuid) = gpu.vendor_uuid.as_deref() else {
+        return false;
+    };
+    vendor_uuid
+        .strip_prefix("GPU-")
+        .unwrap_or(vendor_uuid)
+        .eq_ignore_ascii_case(vulkan_uuid)
+}
+
+pub fn merge_vulkan_devices_into_gpu_facts(
+    gpus: &mut Vec<GpuFacts>,
+    devices: &[VulkanGpuFacts],
+    unified_memory_bytes: u64,
+) {
+    for device in devices {
+        if device.device_type.contains("CPU") {
+            continue;
+        }
+
+        if let Some(existing) = gpus
+            .iter_mut()
+            .find(|gpu| vendor_uuid_matches_vulkan_device(gpu, device))
+        {
+            existing.index = device.index;
+            existing.backend_device = Some(format!("Vulkan{}", device.index));
+            continue;
+        }
+
+        let pci_bdf = device
+            .device_uuid
+            .as_deref()
+            .and_then(pci_bdf_from_radv_vulkan_uuid);
+        let Some(pci_bdf) = pci_bdf else {
+            continue;
+        };
+        let stable_id = format!("pci:{pci_bdf}");
+        if gpus
+            .iter()
+            .any(|gpu| gpu.stable_id.as_deref() == Some(stable_id.as_str()))
+        {
+            continue;
+        }
+
+        let unified_memory = device.device_type.contains("INTEGRATED");
+        let vram_bytes = if unified_memory {
+            (unified_memory_bytes as f64 * 0.75) as u64
+        } else {
+            0
+        };
+        gpus.push(GpuFacts {
+            index: device.index,
+            display_name: device.display_name.clone(),
+            backend_device: Some(format!("Vulkan{}", device.index)),
+            vram_bytes,
+            reserved_bytes: None,
+            mem_bandwidth_gbps: None,
+            compute_tflops_fp32: None,
+            compute_tflops_fp16: None,
+            unified_memory,
+            stable_id: Some(stable_id),
+            pci_bdf: Some(pci_bdf),
+            vendor_uuid: device.device_uuid.clone(),
+            metal_registry_id: None,
+            dxgi_luid: None,
+            pnp_instance_id: None,
+        });
+    }
+}
+
+pub fn augment_gpu_facts_with_vulkan_devices(gpus: &mut Vec<GpuFacts>) {
+    let Ok(output) = std::process::Command::new("vulkaninfo")
+        .arg("--summary")
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return;
+    };
+    let devices = parse_vulkaninfo_summary_devices(&stdout);
+    #[cfg(target_os = "linux")]
+    let unified_memory_bytes = read_system_ram_bytes();
+    #[cfg(not(target_os = "linux"))]
+    let unified_memory_bytes = 0;
+    merge_vulkan_devices_into_gpu_facts(gpus, &devices, unified_memory_bytes);
+}
+
 /// Collect only the requested hardware metrics.
 pub fn query(metrics: &[Metric]) -> HardwareSurvey {
     let collector = detect_collector();
@@ -1274,6 +1450,83 @@ mod tests {
             dxgi_luid: None,
             pnp_instance_id: None,
         }
+    }
+
+    #[test]
+    fn test_parse_vulkaninfo_summary_devices() {
+        let fixture = r#"
+Devices:
+========
+GPU0:
+    vendorID           = 0x10de
+    deviceID           = 0x2c02
+    deviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+    deviceName         = NVIDIA GeForce RTX 5080
+    deviceUUID         = 459fc93e-aae5-c491-2080-5b93901cdcce
+GPU1:
+    vendorID           = 0x1002
+    deviceID           = 0x164e
+    deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+    deviceName         = AMD Ryzen 7 7800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO)
+    deviceUUID         = 00000000-0c00-0000-0000-000000000000
+GPU2:
+    deviceType         = PHYSICAL_DEVICE_TYPE_CPU
+    deviceName         = llvmpipe
+"#;
+
+        let devices = parse_vulkaninfo_summary_devices(fixture);
+
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].index, 0);
+        assert_eq!(devices[0].display_name, "NVIDIA GeForce RTX 5080");
+        assert_eq!(devices[1].index, 1);
+        assert_eq!(
+            devices[1].device_uuid.as_deref(),
+            Some("00000000-0c00-0000-0000-000000000000")
+        );
+    }
+
+    #[test]
+    fn test_merge_vulkan_devices_adds_integrated_pci_device() {
+        let mut gpus = vec![GpuFacts {
+            vendor_uuid: Some("GPU-459fc93e-aae5-c491-2080-5b93901cdcce".to_string()),
+            stable_id: Some("pci:00000000:01:00.0".to_string()),
+            pci_bdf: Some("00000000:01:00.0".to_string()),
+            ..synthetic_gpu(0, Some("pci:00000000:01:00.0"))
+        }];
+        let devices = vec![
+            VulkanGpuFacts {
+                index: 0,
+                display_name: "NVIDIA GeForce RTX 5080".to_string(),
+                device_type: "PHYSICAL_DEVICE_TYPE_DISCRETE_GPU".to_string(),
+                device_uuid: Some("459fc93e-aae5-c491-2080-5b93901cdcce".to_string()),
+                ..Default::default()
+            },
+            VulkanGpuFacts {
+                index: 1,
+                display_name: "AMD Ryzen 7 7800X3D 8-Core Processor (RADV RAPHAEL_MENDOCINO)"
+                    .to_string(),
+                device_type: "PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU".to_string(),
+                device_uuid: Some("00000000-0c00-0000-0000-000000000000".to_string()),
+                ..Default::default()
+            },
+            VulkanGpuFacts {
+                index: 2,
+                display_name: "llvmpipe".to_string(),
+                device_type: "PHYSICAL_DEVICE_TYPE_CPU".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        merge_vulkan_devices_into_gpu_facts(&mut gpus, &devices, 64 * 1024 * 1024 * 1024);
+
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].backend_device.as_deref(), Some("Vulkan0"));
+        assert_eq!(gpus[1].stable_id.as_deref(), Some("pci:00000000:0c:00.0"));
+        assert_eq!(gpus[1].backend_device.as_deref(), Some("Vulkan1"));
+        assert_eq!(gpus[1].pci_bdf.as_deref(), Some("00000000:0c:00.0"));
+        assert!(gpus[1].unified_memory);
+        assert!(gpus[1].vram_bytes > 0);
     }
 
     #[test]
