@@ -1,8 +1,7 @@
 # Distributed LLM Inference — build & run tasks
 
 llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
-llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
-build_dir := env("MESH_LLM_LLAMA_BUILD_DIR", llama_build_root / "build-cpu")
+build_dir := llama_dir / "build"
 mesh_dir := "mesh-llm"
 ui_dir := mesh_dir / "ui"
 benchmark_src_dir := mesh_dir / "benchmarks"
@@ -41,11 +40,6 @@ build-mac:
 # Build on Linux with CUDA, ROCm, or Vulkan — delegates to scripts/build-linux.sh
 build-linux backend="" cuda_arch="" rocm_arch="":
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
-
-# Build the native Linux runtime quickly without rebuilding the UI.
-[linux]
-build-runtime backend="" cuda_arch="" rocm_arch="":
-    @scripts/build-linux.sh --skip-ui --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
 # Build release artifacts for the current platform.
 

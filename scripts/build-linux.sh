@@ -2,7 +2,7 @@
 # build-linux.sh — build llama.cpp + mesh-llm on Linux
 #
 # Usage:
-#   scripts/build-linux.sh [--clean] [--skip-ui] [--backend cpu|cuda|rocm|vulkan] [--cuda-arch SM_LIST] [--rocm-arch GFX_LIST]
+#   scripts/build-linux.sh [--clean] [--backend cpu|cuda|rocm|vulkan] [--cuda-arch SM_LIST] [--rocm-arch GFX_LIST]
 #
 # Examples:
 #   scripts/build-linux.sh
@@ -10,7 +10,6 @@
 #   scripts/build-linux.sh --backend cuda --cuda-arch '120;86'
 #   scripts/build-linux.sh --backend rocm --rocm-arch 'gfx942;gfx90a'
 #   scripts/build-linux.sh --backend vulkan
-#   scripts/build-linux.sh --skip-ui --backend cuda --cuda-arch 120
 #
 # Must be run from the repository root.
 
@@ -20,13 +19,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
-LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$REPO_ROOT/.deps/llama-build}"
-BUILD_DIR="${MESH_LLM_LLAMA_BUILD_DIR:-}"
+BUILD_DIR="$LLAMA_DIR/build"
 MESH_DIR="$REPO_ROOT/crates/mesh-llm"
 UI_DIR="$MESH_DIR/ui"
 
 CLEAN=0
-SKIP_UI="${MESH_LLM_SKIP_UI:-0}"
 BACKEND=""
 CUDA_ARCH=""
 ROCM_ARCH=""
@@ -36,10 +33,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean)
             CLEAN=1
-            shift
-            ;;
-        --skip-ui)
-            SKIP_UI=1
             shift
             ;;
         --backend)
@@ -228,36 +221,6 @@ stage_dev_runtime_binaries() {
     echo "Staged llama.cpp runtime binaries in $target_dir with '$backend' flavor names."
 }
 
-detect_jobs() {
-    if [[ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]]; then
-        echo "$CMAKE_BUILD_PARALLEL_LEVEL"
-    elif command -v nproc >/dev/null 2>&1; then
-        nproc
-    elif command -v sysctl >/dev/null 2>&1; then
-        sysctl -n hw.ncpu
-    else
-        echo 4
-    fi
-}
-
-sanitize_build_component() {
-    printf '%s' "$1" | tr ';, /:' '_____' | tr -cd 'A-Za-z0-9_.-'
-}
-
-default_build_dir_for_backend() {
-    local backend="$1"
-    local suffix="$backend"
-    case "$backend" in
-        cuda)
-            suffix="cuda-sm$(sanitize_build_component "$CUDA_ARCH")"
-            ;;
-        rocm)
-            suffix="rocm-$(sanitize_build_component "$ROCM_ARCH")"
-            ;;
-    esac
-    printf '%s/build-%s\n' "$LLAMA_BUILD_ROOT" "$suffix"
-}
-
 if [[ -z "$BACKEND" ]]; then
     BACKEND="$(detect_backend)"
 fi
@@ -312,11 +275,6 @@ case "$BACKEND" in
         ;;
 esac
 
-if [[ -z "$BUILD_DIR" ]]; then
-    BUILD_DIR="$(default_build_dir_for_backend "$BACKEND")"
-fi
-echo "Using llama.cpp build dir: $BUILD_DIR"
-
 LLAMA_WORKDIR="$LLAMA_DIR" "$SCRIPT_DIR/prepare-llama.sh" "${MESH_LLM_LLAMA_PIN_SHA:-pinned}"
 
 if [[ "$CLEAN" -eq 1 && -d "$BUILD_DIR" ]]; then
@@ -333,11 +291,6 @@ cmake_flags=(
     -DBUILD_SHARED_LIBS=OFF
     -DLLAMA_OPENSSL=OFF
 )
-
-if command -v ninja >/dev/null 2>&1; then
-    echo "Using CMake generator: Ninja"
-    cmake_flags=(-G Ninja "${cmake_flags[@]}")
-fi
 
 if [[ "$BACKEND" == "cpu" ]]; then
     cmake_flags+=(
@@ -420,7 +373,7 @@ fi
 build_args=(
     --build "$BUILD_DIR"
     --config Release
-    --parallel "$(detect_jobs)"
+    -j"$(nproc)"
 )
 
 if [[ -n "$LLAMA_TARGETS" ]]; then
@@ -435,9 +388,7 @@ cmake "${build_args[@]}"
 echo "llama.cpp build complete: $BUILD_DIR/bin/"
 
 if [[ -d "$MESH_DIR" ]]; then
-    if [[ "$SKIP_UI" == "1" ]]; then
-        echo "Skipping UI build (MESH_LLM_SKIP_UI=1 or --skip-ui)."
-    elif [[ -d "$UI_DIR" ]]; then
+    if [[ -d "$UI_DIR" ]]; then
         "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
     fi
 
