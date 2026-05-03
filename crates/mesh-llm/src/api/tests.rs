@@ -415,7 +415,7 @@ fn test_runtime_processes_payload_includes_context_length() {
         .as_array()
         .expect("processes array");
     assert!(
-        !processes[1].get("context_length").is_some() && processes[1]["context_length"].is_null()
+        processes[1].get("context_length").is_none() && processes[1]["context_length"].is_null()
     );
 }
 
