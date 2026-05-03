@@ -39,6 +39,7 @@ use crate::network::metrics::RoutingCollectorSnapshot;
 use crate::plugin::PluginEndpointSummary;
 use crate::runtime::instance::LocalInstanceSnapshot;
 use crate::runtime::wakeable::{WakeableInventoryEntry, WakeableState};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
@@ -351,8 +352,26 @@ impl RuntimeDataCollector {
             }
         }
 
-        let models = input
-            .catalog
+        let mut catalog = input.catalog;
+        let mut catalog_names = catalog
+            .iter()
+            .map(|entry| entry.model_name.clone())
+            .collect::<HashSet<_>>();
+        for model_name in input
+            .served_models
+            .iter()
+            .chain(input.my_hosted_models.iter())
+        {
+            if model_name.trim().is_empty() || !catalog_names.insert(model_name.clone()) {
+                continue;
+            }
+            catalog.push(mesh::MeshCatalogEntry {
+                model_name: model_name.clone(),
+                descriptor: None,
+            });
+        }
+
+        let models = catalog
             .iter()
             .map(|entry| {
                 let name = &entry.model_name;
@@ -496,7 +515,7 @@ impl RuntimeDataCollector {
                             Some(quant)
                         })
                     });
-                let draft_model = catalog_entry.and_then(|m| m.draft.clone());
+                let draft_model = catalog_entry.and_then(crate::models::catalog_model_draft_ref);
                 let source_page_url =
                     identity
                         .and_then(source_page_url_from_identity)
@@ -862,9 +881,7 @@ fn build_local_instances(
 }
 
 fn find_catalog_model(name: &str) -> Option<&'static crate::models::catalog::CatalogModel> {
-    crate::models::catalog::MODEL_CATALOG
-        .iter()
-        .find(|m| m.name == name || m.file.strip_suffix(".gguf").unwrap_or(m.file.as_str()) == name)
+    crate::models::find_catalog_model_exact(name)
 }
 
 fn is_huggingface_repository_like(repository: &str) -> bool {

@@ -208,6 +208,29 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
     );
     telemetry.emit("stage.binary_server_start", lifecycle_attrs(&config));
     let runtime = load_runtime(&config)?.context("binary stage server requires model_path")?;
+    {
+        let timer = Instant::now();
+        let sessions = runtime
+            .lock()
+            .map_err(|_| anyhow!("runtime lock poisoned"))?
+            .prewarm_idle_sessions(max_inflight)
+            .context("prewarm binary stage runtime sessions")?;
+        let mut attrs = lifecycle_attrs(&config);
+        attrs.insert("llama_stage.max_inflight".to_string(), json!(max_inflight));
+        attrs.insert(
+            "llama_stage.runtime_sessions_active".to_string(),
+            json!(sessions.active_sessions),
+        );
+        attrs.insert(
+            "llama_stage.runtime_sessions_idle".to_string(),
+            json!(sessions.idle_sessions),
+        );
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(timer.elapsed().as_secs_f64() * 1000.0),
+        );
+        telemetry.emit("stage.binary_runtime_prewarm", attrs);
+    }
     let kv_cache_safe = model_supports_kv_only_cache(&config);
     let kv = if kv_cache_safe {
         KvStageIntegration::from_config(&config)?.map(Arc::new)

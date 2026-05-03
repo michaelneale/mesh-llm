@@ -675,6 +675,27 @@ describe("App routing and status", () => {
     expect(screen.getByTestId("chat-send")).toBeDisabled();
   });
 
+  it("allows chat from a stage-only node with a mesh-routable model", async () => {
+    statusPayload = {
+      ...createStatusPayload(),
+      is_client: false,
+      is_host: false,
+      llama_ready: false,
+      node_state: "standby",
+      node_status: "Standby",
+      model_name: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
+      models: ["unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL"],
+      hosted_models: [],
+      serving_models: ["unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL"],
+    };
+    setPath("/chat");
+    render(<App />);
+
+    const input = await screen.findByTestId("chat-input");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    expect(input).toHaveAttribute("placeholder", "Ask me anything...");
+  });
+
 
   it("ignores the global command-bar shortcut when focus is inside the chat input", async () => {
     statusPayload = createStatusPayload();

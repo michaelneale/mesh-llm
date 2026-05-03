@@ -10,6 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use hf_hub::{ListModelsParams, RepoInfo, RepoInfoParams};
 use model_artifact::{select_primary_artifact_file, ModelArtifactFile};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 // std imports kept minimal; filesystem ops via std::fs::read_dir used in helper
@@ -87,6 +88,7 @@ pub fn find_catalog_model_exact(query: &str) -> Option<&'static catalog::Catalog
     let q = query.to_lowercase();
     catalog::MODEL_CATALOG.iter().find(|model| {
         model.name.to_lowercase() == q
+            || catalog_model_ref(model).to_lowercase() == q
             || model.file.to_lowercase() == q
             || model.file.trim_end_matches(".gguf").to_lowercase() == q
     })
@@ -102,11 +104,11 @@ pub fn canonicalize_interest_model_ref(input: &str) -> Result<String> {
     }
 
     if let Some(model) = find_catalog_model_exact(trimmed) {
-        return Ok(model.name.to_string());
+        return Ok(catalog_model_ref(model));
     }
 
     match parse_exact_model_ref(trimmed)? {
-        ExactModelRef::Catalog(model) => Ok(model.name.to_string()),
+        ExactModelRef::Catalog(model) => Ok(catalog_model_ref(model)),
         ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -125,6 +127,50 @@ pub fn canonicalize_interest_model_ref(input: &str) -> Result<String> {
             "Invalid 'model_ref'. Use a canonical ref returned by /api/search, not a direct URL"
         ),
     }
+}
+
+pub fn catalog_model_ref(model: &catalog::CatalogModel) -> String {
+    if let (Some(repo), _revision, Some(file)) = (
+        model.source_repo(),
+        model.source_revision(),
+        model.source_file(),
+    ) {
+        return format_huggingface_display_ref(repo, None, file);
+    }
+
+    let mut repo_name = String::with_capacity(model.name.len());
+    for ch in model.name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            repo_name.push(ch);
+        } else {
+            repo_name.push('-');
+        }
+    }
+    let repo_name = repo_name.trim_matches('-');
+    let repo_name = if repo_name.is_empty() {
+        "model"
+    } else {
+        repo_name
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(model.url.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(model.file.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    model_ref::format_model_ref(
+        &format!("catalog-gguf/{repo_name}"),
+        None,
+        Some(&format!("sha256-{}", &digest[..12])),
+    )
+}
+
+pub fn catalog_model_draft_ref(model: &catalog::CatalogModel) -> Option<String> {
+    model.draft.as_deref().map(|draft| {
+        find_catalog_model_exact(draft)
+            .map(catalog_model_ref)
+            .unwrap_or_else(|| draft.to_string())
+    })
 }
 
 pub async fn download_model_ref_with_progress_details(
@@ -215,7 +261,7 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
             record_resolved_model_usage(&installed_path, Some(&model_ref));
             return Ok(installed_path);
         }
-        if let Some(entry) = catalog::find_model(&raw) {
+        if let Some(entry) = find_catalog_model_exact(&raw).or_else(|| catalog::find_model(&raw)) {
             return catalog::download_model_with_progress(entry, progress).await;
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
@@ -246,24 +292,29 @@ fn record_resolved_model_usage(path: &Path, model_ref: Option<&str>) {
 pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
     let input = canonicalize_model_ref_input(input).await?;
     match parse_exact_model_ref(&input)? {
-        ExactModelRef::Catalog(model) => Ok(ModelDetails {
-            display_name: model.name.to_string(),
-            exact_ref: model.name.to_string(),
-            source: "catalog",
-            kind: catalog_model_kind(model),
-            download_url: match (
-                model.source_repo(),
-                model.source_revision(),
-                model.source_file(),
-            ) {
-                (Some(repo), revision, Some(file)) => huggingface_resolve_url(repo, revision, file),
-                _ => model.url.to_string(),
-            },
-            size_label: Some(model.size.to_string()),
-            description: Some(model.description.to_string()),
-            draft: model.draft.clone(),
-            capabilities: capabilities::infer_catalog_capabilities(model),
-        }),
+        ExactModelRef::Catalog(model) => {
+            let exact_ref = catalog_model_ref(model);
+            Ok(ModelDetails {
+                display_name: exact_ref.clone(),
+                exact_ref,
+                source: "catalog",
+                kind: catalog_model_kind(model),
+                download_url: match (
+                    model.source_repo(),
+                    model.source_revision(),
+                    model.source_file(),
+                ) {
+                    (Some(repo), revision, Some(file)) => {
+                        huggingface_resolve_url(repo, revision, file)
+                    }
+                    _ => model.url.to_string(),
+                },
+                size_label: Some(model.size.to_string()),
+                description: Some(model.description.to_string()),
+                draft: catalog_model_draft_ref(model),
+                capabilities: capabilities::infer_catalog_capabilities(model),
+            })
+        }
         ExactModelRef::HuggingFace {
             repo,
             revision,
@@ -311,7 +362,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 download_url,
                 size_label,
                 description: catalog.map(|model| model.description.to_string()),
-                draft: catalog.and_then(|model| model.draft.clone()),
+                draft: catalog.and_then(catalog_model_draft_ref),
                 capabilities,
             })
         }
@@ -329,7 +380,7 @@ pub async fn show_exact_model(input: &str) -> Result<ModelDetails> {
                 download_url: url,
                 size_label,
                 description: catalog.map(|model| model.description.to_string()),
-                draft: catalog.and_then(|model| model.draft.clone()),
+                draft: catalog.and_then(catalog_model_draft_ref),
                 capabilities: catalog
                     .map(capabilities::infer_catalog_capabilities)
                     .unwrap_or_default(),

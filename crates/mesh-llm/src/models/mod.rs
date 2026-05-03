@@ -21,14 +21,15 @@ pub use capabilities::{CapabilityLevel, ModelCapabilities};
 pub use inventory::{scan_local_inventory_snapshot_with_progress, LocalModelInventorySnapshot};
 pub use local::{
     find_mmproj_path, find_model_path, huggingface_hub_cache_dir, huggingface_identity_for_path,
-    mesh_llm_cache_dir, scan_installed_models, scan_local_models,
+    mesh_llm_cache_dir, model_ref_for_path, scan_installed_models, scan_local_models,
 };
 pub use maintenance::{run_update, warn_about_updates_for_paths};
 pub use resolve::{
-    canonicalize_interest_model_ref, download_model_ref_with_progress_details,
-    find_catalog_model_exact, installed_model_capabilities, installed_model_display_name,
-    installed_model_huggingface_ref, resolve_model_spec, show_exact_model,
-    show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
+    canonicalize_interest_model_ref, catalog_model_draft_ref, catalog_model_ref,
+    download_model_ref_with_progress_details, find_catalog_model_exact,
+    installed_model_capabilities, installed_model_display_name, installed_model_huggingface_ref,
+    resolve_model_spec, show_exact_model, show_model_variants_with_progress, ModelDetails,
+    ShowVariantsProgress,
 };
 pub use search::{
     search_catalog_json_payload, search_catalog_models, search_huggingface,

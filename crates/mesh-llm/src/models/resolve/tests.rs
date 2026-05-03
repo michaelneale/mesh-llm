@@ -121,7 +121,7 @@ fn repo_only_resolution_falls_back_to_gguf_when_no_mlx_weights() {
 #[test]
 fn canonicalize_interest_model_ref_accepts_catalog_names() {
     let canonical = canonicalize_interest_model_ref("Qwen3-8B-Q4_K_M").unwrap();
-    assert_eq!(canonical, "Qwen3-8B-Q4_K_M");
+    assert_eq!(canonical, "unsloth/Qwen3-8B-GGUF:Q4_K_M");
 }
 
 #[test]

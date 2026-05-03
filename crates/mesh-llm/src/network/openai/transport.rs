@@ -2929,9 +2929,15 @@ fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescri
 fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
     match identity.source_kind {
         mesh::ModelSourceKind::HuggingFace => identity
-            .repository
+            .canonical_ref
             .as_deref()
-            .and_then(|repo| public_huggingface_model_ref(repo, identity.artifact.as_deref())),
+            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+            .map(|model_ref| model_ref.display_id())
+            .or_else(|| {
+                identity.repository.as_deref().and_then(|repo| {
+                    public_huggingface_model_ref(repo, identity.artifact.as_deref())
+                })
+            }),
         mesh::ModelSourceKind::Catalog => identity
             .canonical_ref
             .as_deref()
@@ -2945,11 +2951,13 @@ fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option
 
 fn public_model_id_from_local_path(model_name: &str) -> Option<String> {
     let path = crate::models::find_model_path(model_name);
+    if !path.is_file() {
+        return None;
+    }
     if path.extension().and_then(|extension| extension.to_str()) != Some("gguf") {
         return None;
     }
-    let identity = crate::models::huggingface_identity_for_path(&path)?;
-    Some(crate::models::installed_model_huggingface_ref(&identity))
+    Some(crate::models::model_ref_for_path(&path))
 }
 
 fn public_huggingface_model_ref(repo: &str, artifact: Option<&str>) -> Option<String> {

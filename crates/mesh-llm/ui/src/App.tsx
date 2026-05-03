@@ -398,7 +398,7 @@ export function App() {
     }
     for (const peer of status.peers ?? []) {
       if (peer.state === "client") continue;
-      for (const model of new Set(peerRoutableModels(peer))) {
+      for (const model of new Set(peerAssignedModels(peer))) {
         if (model && model !== "(idle)") addServingNode(model, peer.vram_gb);
       }
     }

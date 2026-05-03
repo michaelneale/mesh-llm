@@ -7,6 +7,10 @@ import {
   hasBlobContent,
   parseApiErrorBody,
 } from "../../../lib/streaming";
+import {
+  localRoutableModels,
+  peerRoutableModels,
+} from "../../app-shell/lib/status-helpers";
 import type { TopSection } from "../../app-shell/lib/routes";
 import type { MeshModel, StatusPayload } from "../../app-shell/hooks/useStatusStream";
 import { parseDataUrl } from "../lib/chat-attachments";
@@ -374,10 +378,19 @@ export function useChatSession({
   const messages = activeConversation?.messages ?? [];
   const lastMessageId = messages[messages.length - 1]?.id ?? "";
 
-  const warmModels = useMemo(
-    () => meshModels.filter((model) => model.status === "warm").map((model) => model.name),
-    [meshModels],
-  );
+  const warmModels = useMemo(() => {
+    const models = new Set(
+      meshModels
+        .filter((model) => model.status === "warm")
+        .map((model) => model.name),
+    );
+    for (const model of localRoutableModels(status)) models.add(model);
+    for (const peer of status?.peers ?? []) {
+      if (peer.state === "client") continue;
+      for (const model of peerRoutableModels(peer)) models.add(model);
+    }
+    return [...models].filter((model) => model && model !== "(idle)");
+  }, [meshModels, status]);
   const audioModels = useMemo(() => {
     const set = new Set<string>();
     for (const model of meshModels) {
@@ -524,8 +537,7 @@ export function useChatSession({
 
   useEffect(() => () => currentAbortRef.current?.abort(), []);
 
-  const canChat =
-    !!status && (status.llama_ready || (status.is_client && warmModels.length > 0));
+  const canChat = !!status && (status.llama_ready || warmModels.length > 0);
   const canRegenerate =
     canChat &&
     !!activeConversation &&

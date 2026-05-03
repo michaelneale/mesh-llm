@@ -5,8 +5,8 @@ use super::formatters::{
     variant_selector_label, ConsoleFormatter, InstalledRow, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
-    catalog, DeleteResult as CliDeleteResult, ModelDetails, ResolvedModel as CliResolvedModel,
-    SearchArtifactFilter, SearchHit, SearchSort,
+    catalog, catalog_model_draft_ref, catalog_model_ref, DeleteResult as CliDeleteResult,
+    ModelDetails, ResolvedModel as CliResolvedModel, SearchArtifactFilter, SearchHit, SearchSort,
 };
 use anyhow::Result;
 use std::fmt::Write as FmtWrite;
@@ -54,7 +54,9 @@ impl SearchFormatter for ConsoleFormatter {
         }
         writeln!(&mut output)?;
         for model in results.iter().take(limit) {
+            let model_ref = catalog_model_ref(model);
             writeln!(&mut output, "• {}  {}", model.name, model.size)?;
+            writeln!(&mut output, "  ref: {}", model_ref)?;
             writeln!(&mut output, "  {}", model.description)?;
             if let Some(fit) = fit_hint_for_size_label(&model.size) {
                 writeln!(&mut output, "  {}", fit)?;
@@ -176,9 +178,11 @@ impl ModelsFormatter for ConsoleFormatter {
         writeln!(&mut output)?;
         for model in models {
             let model_capabilities = catalog_model_capabilities(model);
+            let model_ref = catalog_model_ref(model);
             writeln!(&mut output, "• {}  {}", model.name, model.size)?;
+            writeln!(&mut output, "  ref: {}", model_ref)?;
             writeln!(&mut output, "  {}", model.description)?;
-            if let Some(draft) = model.draft.as_deref() {
+            if let Some(draft) = catalog_model_draft_ref(model) {
                 writeln!(&mut output, "  🧠 Draft: {}", draft)?;
             }
             if let Some(label) = model_capabilities.vision_label() {

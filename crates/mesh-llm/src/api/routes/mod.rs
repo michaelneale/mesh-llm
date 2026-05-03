@@ -161,6 +161,13 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                     Ok(true)
                 }
                 (m, p)
+                    if matches!(m, "GET" | "POST" | "OPTIONS")
+                        && (p.starts_with("/v1/") || p == "/models") =>
+                {
+                    chat::handle(stream, state, method, path_only, req).await?;
+                    Ok(true)
+                }
+                (m, p)
                     if m != "POST"
                         && (p.starts_with("/api/chat") || p.starts_with("/api/responses")) =>
                 {

@@ -55,6 +55,7 @@ pub(crate) async fn api_proxy(
                 Ok(mut request) => {
                     if proxy::is_models_list_request(&request.method, &request.path) {
                         let mut models = callable_models(&targets);
+                        models.extend(node.models_being_served().await);
                         if let Some(plugin_manager) = plugin_manager.as_ref() {
                             if let Ok(mut external_models) = plugin_manager.inference_models().await
                             {
@@ -106,7 +107,13 @@ pub(crate) async fn api_proxy(
                         return;
                     }
 
-                    let callable = callable_models(&targets);
+                    let mut callable = callable_models(&targets);
+                    for name in node.models_being_served().await {
+                        if !callable.iter().any(|existing| existing == &name) {
+                            callable.push(name);
+                        }
+                    }
+                    callable.sort();
                     let descriptors = node.served_model_descriptors().await;
                     proxy::rewrite_public_model_alias(&mut request, &callable, &descriptors);
 
@@ -284,7 +291,35 @@ pub(crate) async fn api_proxy(
                     }
 
                     let target = if let Some(ref name) = effective_model {
-                        if targets.candidates(name).is_empty() {
+                        if !has_available_candidates(&targets, name) {
+                            let remote_hosts = node.hosts_for_model(name).await;
+                            if !remote_hosts.is_empty() {
+                                let mut mesh_targets = targets.clone();
+                                mesh_targets.targets.insert(
+                                    name.clone(),
+                                    remote_hosts
+                                        .into_iter()
+                                        .map(election::InferenceTarget::Remote)
+                                        .collect(),
+                                );
+                                let routed = proxy::route_model_request(
+                                    node.clone(),
+                                    tcp_stream,
+                                    &mesh_targets,
+                                    name,
+                                    &request,
+                                    required_tokens,
+                                    &affinity,
+                                )
+                                .await;
+                                proxy::release_request_objects(
+                                    &node,
+                                    &request.request_object_request_ids,
+                                )
+                                .await;
+                                debug_assert!(routed);
+                                return;
+                            }
                             if let Some(plugin_manager) = plugin_manager.as_ref() {
                                 match plugin_manager.inference_endpoint_for_model(name).await {
                                     Ok(Some(endpoint)) => {
@@ -444,6 +479,13 @@ fn first_available_target(targets: &election::ModelTargets) -> election::Inferen
         }
     }
     election::InferenceTarget::None
+}
+
+fn has_available_candidates(targets: &election::ModelTargets, model: &str) -> bool {
+    targets
+        .candidates(model)
+        .iter()
+        .any(|target| !matches!(target, election::InferenceTarget::None))
 }
 
 pub(crate) fn callable_models(targets: &election::ModelTargets) -> Vec<String> {

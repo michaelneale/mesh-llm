@@ -1,10 +1,12 @@
 use hf_hub::cache::scan_cache_dir;
 use hf_hub::types::cache::{CachedFileInfo, CachedRepoInfo, CachedRevisionInfo, HFCacheInfo};
 use hf_hub::RepoType;
+use model_ref::{format_model_ref, gguf_matches_quant_selector, normalize_gguf_distribution_id};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,6 +16,26 @@ pub struct HuggingFaceModelIdentity {
     pub file: String,
     pub canonical_ref: String,
     pub local_file_name: String,
+}
+
+static MODEL_REF_PATHS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+
+fn model_ref_paths() -> &'static Mutex<HashMap<String, PathBuf>> {
+    MODEL_REF_PATHS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_model_ref_path(model_ref: &str, path: &Path) {
+    if let Ok(mut paths) = model_ref_paths().lock() {
+        paths.insert(model_ref.to_string(), path.to_path_buf());
+    }
+}
+
+fn remembered_model_ref_path(model_ref: &str) -> Option<PathBuf> {
+    model_ref_paths()
+        .lock()
+        .ok()
+        .and_then(|paths| paths.get(model_ref).cloned())
+        .filter(|path| path.exists())
 }
 
 impl HuggingFaceModelIdentity {
@@ -353,7 +375,7 @@ fn push_model_name(
     if size <= min_size_bytes {
         return;
     }
-    let name = split_gguf_base_name(stem).unwrap_or(stem).to_string();
+    let name = model_ref_for_path(path);
     if seen.insert(name.clone()) {
         names.push(name);
     }
@@ -396,14 +418,113 @@ fn scan_models_with_min_size(min_size_bytes: u64) -> Vec<String> {
     names
 }
 
-/// Scan model directories for GGUF files and return their stem names.
+/// Scan model directories for GGUF files and return canonical model refs.
 pub fn scan_local_models() -> Vec<String> {
     scan_models_with_min_size(500_000_000)
 }
 
-/// Scan installed GGUF models, including small draft models.
+/// Scan installed GGUF models, including small draft models, and return canonical model refs.
 pub fn scan_installed_models() -> Vec<String> {
     scan_models_with_min_size(0)
+}
+
+fn hf_identity_model_ref(identity: &HuggingFaceModelIdentity) -> String {
+    let selector = model_ref::quant_selector_from_gguf_file(&identity.file)
+        .or_else(|| normalize_gguf_distribution_id(&identity.file));
+    format_model_ref(&identity.repo_id, None, selector.as_deref())
+}
+
+fn synthetic_local_gguf_model_ref(path: &Path) -> String {
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("model.gguf");
+    let metadata = std::fs::metadata(path).ok();
+    let len = metadata.as_ref().map(std::fs::Metadata::len).unwrap_or(0);
+    let modified = metadata
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = Sha256::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(filename.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(len.to_le_bytes());
+    hasher.update(modified.to_le_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format_model_ref(&format!("local-gguf/sha256-{}", &digest[..16]), None, None)
+}
+
+pub fn model_ref_for_path(path: &Path) -> String {
+    let model_ref = huggingface_identity_for_path(path)
+        .map(|identity| hf_identity_model_ref(&identity))
+        .unwrap_or_else(|| synthetic_local_gguf_model_ref(path));
+    remember_model_ref_path(&model_ref, path);
+    model_ref
+}
+
+fn find_hf_cache_model_ref_path(root: &Path, model: &model_ref::ModelRef) -> Option<PathBuf> {
+    if model.repo.starts_with("local-gguf/") {
+        return find_synthetic_local_gguf_path(root, model);
+    }
+    let cache_info = scan_hf_cache_info(root)?;
+    let mut candidates = Vec::new();
+    for repo in &cache_info.repos {
+        if repo.repo_type != RepoType::Model || repo.repo_id != model.repo {
+            continue;
+        }
+        for revision in &repo.revisions {
+            if let Some(wanted_revision) = model.revision.as_deref() {
+                if revision.commit_hash != wanted_revision {
+                    continue;
+                }
+            }
+            for file in &revision.files {
+                if !file.file_name.ends_with(".gguf") {
+                    continue;
+                }
+                let matches = match model.selector.as_deref() {
+                    Some(selector) => {
+                        gguf_matches_quant_selector(&file.file_name, selector)
+                            || normalize_gguf_distribution_id(&file.file_name).as_deref()
+                                == Some(selector)
+                    }
+                    None => true,
+                };
+                if matches {
+                    candidates.push(cache_scanned_file_path(root, repo, revision, file));
+                }
+            }
+        }
+    }
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn find_synthetic_local_gguf_path(root: &Path, model: &model_ref::ModelRef) -> Option<PathBuf> {
+    let wanted = model.display_id();
+    let mut candidates = direct_hf_cache_root_gguf_paths(root);
+    let cache_info = scan_hf_cache_info(root);
+    if let Some(cache_info) = cache_info {
+        for repo in &cache_info.repos {
+            if repo.repo_type != RepoType::Model {
+                continue;
+            }
+            for revision in &repo.revisions {
+                for file in &revision.files {
+                    if file.file_name.ends_with(".gguf") {
+                        candidates.push(cache_scanned_file_path(root, repo, revision, file));
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort();
+    candidates
+        .into_iter()
+        .find(|path| model_ref_for_path(path) == wanted)
 }
 
 fn find_hf_cache_model_path(root: &Path, stem: &str) -> Option<PathBuf> {
@@ -455,15 +576,24 @@ pub(crate) fn split_gguf_base_name(stem: &str) -> Option<&str> {
     Some(&stem[..dash])
 }
 
-/// Find a GGUF model file by stem name in the Hugging Face cache.
+/// Find a GGUF model file by canonical model ref in the Hugging Face cache.
 /// For split GGUFs, finds the first part (name-00001-of-NNNNN.gguf).
-pub fn find_model_path(stem: &str) -> PathBuf {
+pub fn find_model_path(model_ref: &str) -> PathBuf {
+    if let Some(path) = remembered_model_ref_path(model_ref) {
+        return path;
+    }
     let canonical_dir = huggingface_hub_cache_dir();
-    if let Some(found) = find_hf_cache_model_path(&canonical_dir, stem) {
+    if let Ok(parsed) = model_ref::ModelRef::parse(model_ref) {
+        if let Some(found) = find_hf_cache_model_ref_path(&canonical_dir, &parsed) {
+            return found;
+        }
+    }
+
+    if let Some(found) = find_hf_cache_model_path(&canonical_dir, model_ref) {
         return found;
     }
 
-    canonical_dir.join(format!("{stem}.gguf"))
+    canonical_dir.join(format!("{model_ref}.gguf"))
 }
 
 /// Strip common GGUF quantization suffixes from a lowercased stem.
@@ -903,7 +1033,9 @@ mod tests {
         std::env::remove_var("XDG_CACHE_HOME");
 
         let installed = scan_installed_models();
-        assert!(installed.iter().any(|name| name == "Direct-Root-Q4_K_M"));
+        assert!(installed
+            .iter()
+            .any(|name| name.starts_with("local-gguf/sha256-")));
 
         let _ = std::fs::remove_dir_all(&temp);
         restore_env("HF_HUB_CACHE", prev_hub_cache);

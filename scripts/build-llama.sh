@@ -121,6 +121,8 @@ if [[ "$USE_SCCACHE" != "0" && -n "$SCCACHE_BIN" ]]; then
   echo "using sccache for llama.cpp C/C++ compilation: $SCCACHE_BIN"
 elif [[ "$USE_SCCACHE" != "0" ]]; then
   echo "sccache not found; llama.cpp build will run without compiler caching" >&2
+else
+  CMAKE_ARGS+=(-DGGML_CCACHE=OFF)
 fi
 
 if [[ "$#" -gt 0 ]]; then

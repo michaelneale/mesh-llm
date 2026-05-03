@@ -486,7 +486,7 @@ impl MeshApi {
 
     async fn runtime_stages(&self) -> serde_json::Value {
         let node = self.inner.lock().await.node.clone();
-        node.refresh_stage_runtime_statuses(std::time::Duration::from_millis(750))
+        node.refresh_stage_runtime_statuses(std::time::Duration::from_secs(2))
             .await;
         let topologies = node.stage_topologies().await;
         let statuses = node.stage_runtime_statuses().await;
@@ -791,7 +791,7 @@ impl MeshApi {
             runtime_status.llama_port,
             local_processes.clone(),
         );
-        node.refresh_stage_runtime_statuses(std::time::Duration::from_millis(750))
+        node.refresh_stage_runtime_statuses(std::time::Duration::from_secs(2))
             .await;
         runtime.stages = build_runtime_stage_payloads(node.stage_runtime_statuses().await);
 

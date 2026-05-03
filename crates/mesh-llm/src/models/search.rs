@@ -1,5 +1,6 @@
 use super::resolve::{
-    file_preference_score, gguf_variant_size_bytes_from_siblings, is_known_gguf_sidecar,
+    catalog_model_draft_ref, catalog_model_ref, file_preference_score,
+    gguf_variant_size_bytes_from_siblings, is_known_gguf_sidecar,
     matching_catalog_model_for_huggingface, merge_capabilities, quant_selector_from_gguf_file,
     remote_hf_size_label_with_api,
 };
@@ -88,6 +89,7 @@ pub fn search_catalog_json_payload(
         .iter()
         .take(limit)
         .map(|model| {
+            let model_ref = catalog_model_ref(model);
             json!({
                 "name": model.name,
                 "repo_id": model.source_repo(),
@@ -95,10 +97,10 @@ pub fn search_catalog_json_payload(
                 "size": model.size,
                 "description": model.description,
                 "fit": fit_code_for_size_label(&model.size),
-                "ref": model.name,
-                "show": format!("mesh-llm models show {}", model.name),
-                "download": format!("mesh-llm models download {}", model.name),
-                "draft": model.draft,
+                "ref": model_ref,
+                "show": format!("mesh-llm models show {model_ref}"),
+                "download": format!("mesh-llm models download {model_ref}"),
+                "draft": catalog_model_draft_ref(model),
                 "capabilities": capabilities_json(capabilities::infer_catalog_capabilities(model)),
             })
         })

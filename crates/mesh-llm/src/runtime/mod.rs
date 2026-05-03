@@ -10,9 +10,10 @@ use self::discovery::{nostr_rediscovery, start_new_mesh};
 use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
-    remove_runtime_local_target, remove_serving_assignment, resolved_model_name,
-    set_advertised_model_context, start_runtime_local_model, withdraw_advertised_model,
-    LocalRuntimeModelHandle, LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent,
+    remove_runtime_local_target, remove_serving_assignment, set_advertised_model_context,
+    start_runtime_local_model, start_runtime_split_model, stop_split_generation_cleanup,
+    withdraw_advertised_model, LocalRuntimeModelHandle, LocalRuntimeModelStartSpec,
+    ManagedModelController, RuntimeEvent, SplitCoordinatorAck, SplitRuntimeStart,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -31,7 +32,7 @@ use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
 use crate::models::catalog;
-use crate::network::{affinity, nostr, router, tunnel};
+use crate::network::{affinity, nostr, tunnel};
 use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
 use anyhow::{Context, Result};
@@ -528,12 +529,14 @@ struct StartupLocalModelTask {
     tunnel_mgr: tunnel::Manager,
     target_tx: Arc<tokio::sync::watch::Sender<election::ModelTargets>>,
     model_path: PathBuf,
+    model_ref: String,
     model_name: String,
     primary_model_name: String,
     mmproj_path: Option<PathBuf>,
     ctx_size: Option<u32>,
     pinned_gpu: Option<StartupPinnedGpuTarget>,
     slots: usize,
+    split: bool,
     stop_rx: tokio::sync::watch::Receiver<bool>,
     dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
     console_state: Option<api::MeshApi>,
@@ -552,12 +555,14 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         tunnel_mgr,
         target_tx,
         model_path,
+        model_ref,
         model_name,
         primary_model_name,
         mmproj_path,
         ctx_size,
         pinned_gpu,
         slots,
+        split,
         mut stop_rx,
         dashboard_processes,
         console_state,
@@ -571,18 +576,46 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     } = params;
 
     let startup_load_guard = startup_load_gate.lock().await;
-    let (loaded_name, handle, mut death_rx) =
-        match start_runtime_local_model(LocalRuntimeModelStartSpec {
-            node: &node,
-            model_path: &model_path,
-            mmproj_override: mmproj_path.as_deref(),
-            ctx_size_override: ctx_size,
-            pinned_gpu: pinned_gpu.as_ref(),
-            slots,
-        })
-        .await
-        {
-            Ok(loaded) => loaded,
+    let start_spec = LocalRuntimeModelStartSpec {
+        node: &node,
+        model_path: &model_path,
+        mmproj_override: mmproj_path.as_deref(),
+        ctx_size_override: ctx_size,
+        pinned_gpu: pinned_gpu.as_ref(),
+        slots,
+    };
+    let (
+        mut loaded_name,
+        mut handle,
+        mut death_rx,
+        mut split_cleanup,
+        mut split_event_rx,
+        mut coordinator_task,
+    ) = if split {
+        match start_runtime_split_model(start_spec, &model_ref).await {
+            Ok(SplitRuntimeStart::Started(mut loaded)) => (
+                loaded.loaded_name,
+                loaded.handle,
+                loaded.death_rx,
+                loaded.cleanup.take(),
+                loaded.coordinator_rx.take(),
+                loaded.coordinator_task.take(),
+            ),
+            Ok(SplitRuntimeStart::Standby { coordinator }) => {
+                drop(startup_load_guard);
+                let _ = emit_event(OutputEvent::Info {
+                    message: format!(
+                        "Split runtime coordinator is {}; standing by for stage assignment",
+                        coordinator.fmt_short()
+                    ),
+                    context: Some(format!("model={model_ref}")),
+                });
+                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                if let Some(cs) = console_state {
+                    cs.update(false, false).await;
+                }
+                return;
+            }
             Err(err) => {
                 let _ = emit_event(OutputEvent::Error {
                     message: format!("Failed to start model {model_name}: {err:#}"),
@@ -594,11 +627,29 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 }
                 return;
             }
-        };
+        }
+    } else {
+        match start_runtime_local_model(start_spec).await {
+            Ok((loaded_name, handle, death_rx)) => {
+                (loaded_name, handle, death_rx, None, None, None)
+            }
+            Err(err) => {
+                let _ = emit_event(OutputEvent::Error {
+                    message: format!("Failed to start model {model_name}: {err:#}"),
+                    context: Some(format!("model={model_name}")),
+                });
+                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                if let Some(cs) = console_state {
+                    cs.update(false, false).await;
+                }
+                return;
+            }
+        }
+    };
     drop(startup_load_guard);
 
     add_runtime_local_target(&target_tx, &loaded_name, handle.port);
-    tunnel_mgr.set_http_port(handle.port);
+    tunnel_mgr.set_http_port(api_port);
     node.set_role(NodeRole::Host {
         http_port: api_port,
     })
@@ -648,21 +699,88 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         }
     }
 
-    tokio::select! {
-        _ = &mut death_rx => {
-            let _ = emit_event(OutputEvent::Warning {
-                message: format!("Startup model '{loaded_name}' exited unexpectedly"),
-                context: Some(format!("model={loaded_name} port={}", handle.port)),
-            });
-        }
-        res = stop_rx.changed() => {
-            let _ = res;
+    loop {
+        tokio::select! {
+            _ = &mut death_rx => {
+                let _ = emit_event(OutputEvent::Warning {
+                    message: format!("Startup model '{loaded_name}' exited unexpectedly"),
+                    context: Some(format!("model={loaded_name} port={}", handle.port)),
+                });
+                break;
+            }
+            event = async {
+                if let Some(rx) = split_event_rx.as_mut() {
+                    rx.recv().await
+                } else {
+                    std::future::pending().await
+                }
+            } => {
+                let Some(event) = event else {
+                    split_event_rx = None;
+                    continue;
+                };
+                let mut next = event.loaded;
+                let old_loaded_name = loaded_name.clone();
+                let old_port = handle.port;
+                let old_context_length = handle.context_length;
+                remove_runtime_local_target(&target_tx, &old_loaded_name, old_port);
+                add_runtime_local_target(&target_tx, &next.loaded_name, next.handle.port);
+                tunnel_mgr.set_http_port(api_port);
+                if old_loaded_name != next.loaded_name {
+                    withdraw_advertised_model(&node, &old_loaded_name).await;
+                    set_advertised_model_context(&node, &old_loaded_name, None).await;
+                    advertise_model_ready(&node, &primary_model_name, &next.loaded_name).await;
+                }
+                set_advertised_model_context(
+                    &node,
+                    &next.loaded_name,
+                    Some(next.handle.context_length),
+                )
+                .await;
+                let payload = local_process_payload(
+                    &next.loaded_name,
+                    &next.handle.backend,
+                    next.handle.port,
+                    next.handle.pid(),
+                    next.handle.slots,
+                    next.handle.context_length,
+                );
+                upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
+                if let Some(ref cs) = console_state {
+                    cs.upsert_local_process(payload).await;
+                    cs.update(true, true).await;
+                }
+                let old_handle = std::mem::replace(&mut handle, next.handle);
+                loaded_name = next.loaded_name;
+                death_rx = next.death_rx;
+                split_cleanup = next.cleanup.take();
+                let _ = event.ack.send(SplitCoordinatorAck::Accepted);
+                old_handle.shutdown().await;
+                let _ = emit_event(OutputEvent::Info {
+                    message: format!(
+                        "Split runtime cut over model '{}' from :{} to :{}",
+                        loaded_name, old_port, handle.port
+                    ),
+                    context: Some(format!(
+                        "reason={} generation={} previous_ctx={} new_ctx={}",
+                        event.reason, event.generation, old_context_length, handle.context_length
+                    )),
+                });
+            }
+            res = stop_rx.changed() => {
+                let _ = res;
+                break;
+            }
         }
     }
 
+    if let Some(task) = coordinator_task.take() {
+        task.abort();
+        let _ = task.await;
+    }
     let port = handle.port;
     remove_runtime_local_target(&target_tx, &loaded_name, port);
-    tunnel_mgr.set_http_port(0);
+    tunnel_mgr.set_http_port(api_port);
     withdraw_advertised_model(&node, &loaded_name).await;
     set_advertised_model_context(&node, &loaded_name, None).await;
     upsert_dashboard_process(
@@ -679,6 +797,9 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         .await;
     }
     handle.shutdown().await;
+    if let Some(cleanup) = split_cleanup.take() {
+        stop_split_generation_cleanup(&node, cleanup, u64::MAX).await;
+    }
     remove_dashboard_process(&dashboard_processes, &loaded_name).await;
     if let Some(cs) = console_state {
         cs.remove_local_process(&loaded_name).await;
@@ -1335,15 +1456,9 @@ pub(crate) async fn run() -> Result<()> {
         }
     }
 
-    // Build requested model names from all resolved models
-    // Strip split GGUF suffix so "MiniMax-M2.5-Q4_K_M-00001-of-00004" → "MiniMax-M2.5-Q4_K_M"
-    let requested_model_names: Vec<String> = resolved_models
+    let requested_model_names: Vec<String> = startup_models
         .iter()
-        .filter_map(|m| {
-            m.file_stem()
-                .and_then(|s| s.to_str())
-                .map(router::strip_split_suffix_owned)
-        })
+        .map(|model| model.declared_ref.clone())
         .collect();
 
     run_auto(
@@ -1429,8 +1544,12 @@ async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<Startu
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
+        let requested_ref = spec.model_ref.to_string_lossy();
+        let declared_ref = models::find_catalog_model_exact(&requested_ref)
+            .map(models::catalog_model_ref)
+            .unwrap_or_else(|| models::model_ref_for_path(&resolved_path));
         plans.push(StartupModelPlan {
-            declared_ref: spec.model_ref.to_string_lossy().to_string(),
+            declared_ref,
             resolved_path,
             mmproj_path,
             ctx_size: spec.ctx_size,
@@ -1770,7 +1889,7 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
         if serving_count.get(m).copied().unwrap_or(0) > 0 {
             continue;
         }
-        if let Some(cat) = catalog::find_model(m) {
+        if let Some(cat) = models::find_catalog_model_exact(m) {
             let size_bytes = parse_size_str(&cat.size);
             let needed = (size_bytes as f64 * 1.1) as u64;
             if needed <= my_vram {
@@ -2135,10 +2254,6 @@ async fn run_auto(
     skippy::configure_materialized_stage_cache();
     let console_port = Some(cli.console);
     let is_client = cli.client;
-    let resolved_models: Vec<PathBuf> = startup_models
-        .iter()
-        .map(|model| model.resolved_path.clone())
-        .collect();
 
     // Scan local models on disk
     let local_models = if is_client {
@@ -2466,7 +2581,7 @@ async fn run_auto(
             let model_path = models::find_model_path(&model_name);
             if model_path.exists() {
                 model_path
-            } else if let Some(cat) = catalog::find_model(&model_name) {
+            } else if let Some(cat) = models::find_catalog_model_exact(&model_name) {
                 // Model not on disk but in catalog — download it
                 let _ = emit_event(OutputEvent::Info {
                     message: format!("Downloading {model_name} for mesh..."),
@@ -2512,15 +2627,10 @@ async fn run_auto(
         }
     };
 
-    let model_name = {
-        let stem = model
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        // Strip split GGUF suffix: "MiniMax-M2.5-Q4_K_M-00001-of-00004" → "MiniMax-M2.5-Q4_K_M"
-        router::strip_split_suffix_owned(&stem)
-    };
+    let model_name = primary_startup_model
+        .as_ref()
+        .map(|model| model.declared_ref.clone())
+        .unwrap_or_else(|| models::model_ref_for_path(&model));
 
     // Set model source for gossip (so other joiners can discover it too)
     let model_source = primary_startup_model
@@ -2530,7 +2640,7 @@ async fn run_auto(
     node.set_model_source(model_source).await;
     // Declare which models this node may serve, but do not advertise them as
     // live/routable until their local processes have passed health checks.
-    let all_declared = build_serving_list(&resolved_models, &model_name);
+    let all_declared = build_serving_list(&startup_models, &model_name);
     node.set_serving_models(all_declared.clone()).await;
     node.set_hosted_models(Vec::new()).await;
     node.set_models(all_declared.clone()).await;
@@ -2540,6 +2650,7 @@ async fn run_auto(
 
     let tunnel_mgr =
         tunnel::Manager::start(node.clone(), channels.rpc, channels.http, channels.stage).await?;
+    tunnel_mgr.set_http_port(api_port);
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -2698,15 +2809,7 @@ async fn run_auto(
     let primary_model_name_for_advertise = model_name.clone();
     let startup_model_names: Vec<String> = startup_models
         .iter()
-        .map(|model| {
-            router::strip_split_suffix_owned(
-                &model
-                    .resolved_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-            )
-        })
+        .map(|model| model.declared_ref.clone())
         .collect();
     let startup_ready_reporter = StartupReadyReporter::new(
         &startup_model_names,
@@ -2725,6 +2828,11 @@ async fn run_auto(
     let primary_pinned_gpu = primary_startup_model
         .as_ref()
         .and_then(|model| model.pinned_gpu.clone());
+    let primary_model_ref = primary_startup_model
+        .as_ref()
+        .map(|model| model.declared_ref.clone())
+        .unwrap_or_else(|| model_name.clone());
+    let startup_split = cli.split;
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
@@ -2734,12 +2842,14 @@ async fn run_auto(
             tunnel_mgr: tunnel_mgr2,
             target_tx: primary_target_tx,
             model_path: model2,
+            model_ref: primary_model_ref,
             model_name: model_name_for_election,
             primary_model_name: primary_model_name_for_advertise,
             mmproj_path: primary_mmproj,
             ctx_size: primary_ctx_size,
             pinned_gpu: primary_pinned_gpu,
             slots,
+            split: startup_split,
             stop_rx: primary_stop_rx,
             dashboard_processes: dashboard_processes_for_primary_task,
             console_state: console_state_for_election,
@@ -2768,13 +2878,7 @@ async fn run_auto(
         // Announce all models to mesh
         let all_names: Vec<String> = startup_models
             .iter()
-            .map(|m| {
-                m.resolved_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            })
+            .map(|model| model.declared_ref.clone())
             .collect();
         let _ = emit_event(OutputEvent::MultiModelMode {
             count: all_names.len(),
@@ -2784,18 +2888,11 @@ async fn run_auto(
         node.regossip().await;
 
         for extra_model in startup_models.iter().skip(1) {
-            let extra_name = {
-                let stem = extra_model
-                    .resolved_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                router::strip_split_suffix_owned(&stem)
-            };
+            let extra_name = extra_model.declared_ref.clone();
             let extra_node = node.clone();
             let extra_tunnel = tunnel_mgr.clone();
             let extra_path = extra_model.resolved_path.clone();
+            let extra_ref = extra_model.declared_ref.clone();
             let extra_mmproj = extra_model.mmproj_path.clone();
             let extra_ctx_size = extra_model.ctx_size;
             let extra_pinned_gpu = extra_model.pinned_gpu.clone();
@@ -2817,12 +2914,14 @@ async fn run_auto(
                     tunnel_mgr: extra_tunnel,
                     target_tx: extra_target_tx,
                     model_path: extra_path,
+                    model_ref: extra_ref,
                     model_name: extra_model_name,
                     primary_model_name: primary_model_name_for_extra,
                     mmproj_path: extra_mmproj,
                     ctx_size: extra_ctx_size,
                     pinned_gpu: extra_pinned_gpu,
                     slots,
+                    split: startup_split,
                     stop_rx: extra_stop_rx,
                     dashboard_processes: dashboard_processes_for_extra_task,
                     console_state: extra_console_state,
@@ -2923,7 +3022,9 @@ async fn run_auto(
                         let mut assigned_runtime_model: Option<String> = None;
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
-                            let runtime_model_name = resolved_model_name(&model_path);
+                            let runtime_model_name = models::find_catalog_model_exact(&spec)
+                                .map(models::catalog_model_ref)
+                                .unwrap_or_else(|| models::model_ref_for_path(&model_path));
                             let already_loaded = managed_models.contains_key(&runtime_model_name)
                                 || runtime_models.contains_key(&runtime_model_name);
                             anyhow::ensure!(
@@ -3524,27 +3625,22 @@ fn update_pi_models_json(model_id: &str, port: u16) {
 }
 
 /// Resolve Nostr relay URLs from CLI or defaults.
-/// Build the list of models this node is serving for gossip announcement.
-/// `resolved_models` comes from explicit `--model` args (may be empty for `--auto`).
-/// `model_name` is the actual model we're about to serve (always set).
-/// The primary model must always appear in the result.
-fn build_serving_list(resolved_models: &[PathBuf], model_name: &str) -> Vec<String> {
-    let clean_name = router::strip_split_suffix_owned(model_name);
-    let mut all: Vec<String> = resolved_models
+/// Build the list of model refs this node is assigned to serve for gossip announcement.
+/// The primary model ref must always appear first in the result.
+fn build_serving_list(startup_models: &[StartupModelPlan], model_ref: &str) -> Vec<String> {
+    let mut all: Vec<String> = startup_models
         .iter()
-        .map(|m| {
-            let stem = m
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            // Strip split GGUF suffix: "Model-00001-of-00004" → "Model"
-            router::strip_split_suffix_owned(&stem)
-        })
+        .map(|model| model.declared_ref.clone())
         .collect();
-    if !all.contains(&clean_name) {
-        all.insert(0, clean_name);
+    if !all.iter().any(|model| model == model_ref) {
+        all.insert(0, model_ref.to_string());
     }
+    all.sort();
+    if let Some(pos) = all.iter().position(|model| model == model_ref) {
+        let primary = all.remove(pos);
+        all.insert(0, primary);
+    }
+    all.dedup();
     all
 }
 
@@ -3575,6 +3671,18 @@ mod tests {
             std::env::set_var(key, value);
         } else {
             std::env::remove_var(key);
+        }
+    }
+
+    fn startup_model_plan(model_ref: &str) -> StartupModelPlan {
+        StartupModelPlan {
+            declared_ref: model_ref.to_string(),
+            resolved_path: PathBuf::from("/tmp/model.gguf"),
+            mmproj_path: None,
+            ctx_size: None,
+            gpu_id: None,
+            pinned_gpu: None,
+            parallel: None,
         }
     }
 
@@ -3848,58 +3956,48 @@ mod tests {
 
     #[test]
     fn test_build_serving_list_auto_no_resolved() {
-        // --auto: resolved_models is empty, model picked dynamically
-        let resolved: Vec<PathBuf> = vec![];
-        let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
-        assert_eq!(result, vec!["Qwen3-30B-A3B-Q4_K_M"]);
+        let resolved: Vec<StartupModelPlan> = vec![];
+        let result = build_serving_list(&resolved, "unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M");
+        assert_eq!(result, vec!["unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M"]);
     }
 
     #[test]
     fn test_build_serving_list_explicit_single_model() {
-        // --model Qwen3-30B: resolved_models has the model
-        let resolved = vec![PathBuf::from(
-            "/home/.cache/huggingface/hub/Qwen3-30B-A3B-Q4_K_M.gguf",
-        )];
-        let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
-        assert_eq!(result, vec!["Qwen3-30B-A3B-Q4_K_M"]);
-        // No duplicate
+        let resolved = vec![startup_model_plan("unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M")];
+        let result = build_serving_list(&resolved, "unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M");
+        assert_eq!(result, vec!["unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M"]);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn test_build_serving_list_explicit_multi_model() {
-        // --model A --model B: both resolved
         let resolved = vec![
-            PathBuf::from("/home/.cache/huggingface/hub/Qwen3-30B-A3B-Q4_K_M.gguf"),
-            PathBuf::from("/home/.cache/huggingface/hub/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"),
+            startup_model_plan("unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M"),
+            startup_model_plan("Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"),
         ];
-        let result = build_serving_list(&resolved, "Qwen3-30B-A3B-Q4_K_M");
+        let result = build_serving_list(&resolved, "unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M");
         assert_eq!(
             result,
-            vec!["Qwen3-30B-A3B-Q4_K_M", "Qwen2.5-Coder-7B-Instruct-Q4_K_M"]
+            vec![
+                "unsloth/Qwen3-30B-A3B-GGUF:Q4_K_M",
+                "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M"
+            ]
         );
     }
 
     #[test]
     fn test_build_serving_list_split_gguf() {
-        // Split GGUF: file is "MiniMax-M2.5-Q4_K_M-00001-of-00004.gguf"
-        // Serving list should strip the split suffix
-        let resolved = vec![PathBuf::from(
-            "/home/.cache/huggingface/hub/MiniMax-M2.5-Q4_K_M-00001-of-00004.gguf",
-        )];
-        let result = build_serving_list(&resolved, "MiniMax-M2.5-Q4_K_M");
-        assert_eq!(result, vec!["MiniMax-M2.5-Q4_K_M"]);
+        let resolved = vec![startup_model_plan("MiniMaxAI/MiniMax-M2.5-GGUF:Q4_K_M")];
+        let result = build_serving_list(&resolved, "MiniMaxAI/MiniMax-M2.5-GGUF:Q4_K_M");
+        assert_eq!(result, vec!["MiniMaxAI/MiniMax-M2.5-GGUF:Q4_K_M"]);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_build_serving_list_split_gguf_model_name_also_has_suffix() {
-        // If model_name also has the suffix (from dynamic pick), strip it too
-        let resolved = vec![PathBuf::from(
-            "/home/.cache/huggingface/hub/MiniMax-M2.5-Q4_K_M-00001-of-00004.gguf",
-        )];
-        let result = build_serving_list(&resolved, "MiniMax-M2.5-Q4_K_M-00001-of-00004");
-        assert_eq!(result, vec!["MiniMax-M2.5-Q4_K_M"]);
+    fn test_build_serving_list_keeps_synthetic_local_ref() {
+        let resolved = vec![startup_model_plan("local-gguf/sha256-abcdef0123456789")];
+        let result = build_serving_list(&resolved, "local-gguf/sha256-abcdef0123456789");
+        assert_eq!(result, vec!["local-gguf/sha256-abcdef0123456789"]);
         assert_eq!(result.len(), 1);
     }
 

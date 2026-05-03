@@ -983,3 +983,21 @@ fn rejects_requests_that_exceed_context_window() {
         Some("context_length_exceeded")
     );
 }
+
+#[test]
+fn omitted_max_tokens_can_use_remaining_context_budget() {
+    let limit = GenerationTokenLimit::from_request(None, CONTEXT_BUDGET_MAX_TOKENS);
+    assert_eq!(limit.resolve(5, 8).unwrap(), 3);
+}
+
+#[test]
+fn configured_default_max_tokens_remains_explicit() {
+    let limit = GenerationTokenLimit::from_request(None, 4);
+    assert_eq!(limit.resolve(4, 8).unwrap(), 4);
+
+    let error = limit.resolve(5, 8).unwrap_err();
+    assert_eq!(
+        error.body().error.code.as_deref(),
+        Some("context_length_exceeded")
+    );
+}

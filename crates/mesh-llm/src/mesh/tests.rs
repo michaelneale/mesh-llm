@@ -555,7 +555,7 @@ fn identity_from_model_source_keeps_huggingface_refs() {
     let identity =
         identity_from_model_source("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M").expect("identity");
 
-    assert_eq!(identity.source_kind, ModelSourceKind::Catalog);
+    assert_eq!(identity.source_kind, ModelSourceKind::HuggingFace);
     assert_eq!(
         identity.canonical_ref.as_deref(),
         Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M")
@@ -4783,6 +4783,105 @@ fn full_stage_topology_remains_visible_after_status_updates() {
     let visible = state.visible_topologies();
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].stages[1].endpoint.bind_addr, "127.0.0.1:51234");
+}
+
+#[test]
+fn active_stage_topology_replaces_previous_generation_for_model() {
+    let host_id = EndpointId::from(SecretKey::from_bytes(&[0x36; 32]).public());
+    let first_worker_id = EndpointId::from(SecretKey::from_bytes(&[0x37; 32]).public());
+    let second_worker_id = EndpointId::from(SecretKey::from_bytes(&[0x38; 32]).public());
+    let mut state = StageTopologyState::default();
+    state.activate_topology(StageTopologyInstance {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stages: vec![
+            StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: host_id,
+                layer_start: 0,
+                layer_end: 12,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:50000".to_string(),
+                },
+            },
+            StageAssignment {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                node_id: first_worker_id,
+                layer_start: 12,
+                layer_end: 24,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:0".to_string(),
+                },
+            },
+        ],
+    });
+    state.record_status(test_stage_status(
+        first_worker_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    ));
+
+    state.activate_topology(StageTopologyInstance {
+        topology_id: "topology-b".to_string(),
+        run_id: "run-b".to_string(),
+        model_id: "model-a".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stages: vec![
+            StageAssignment {
+                stage_id: "stage-0".to_string(),
+                stage_index: 0,
+                node_id: host_id,
+                layer_start: 0,
+                layer_end: 8,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:50001".to_string(),
+                },
+            },
+            StageAssignment {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                node_id: second_worker_id,
+                layer_start: 8,
+                layer_end: 24,
+                endpoint: StageEndpoint {
+                    bind_addr: "127.0.0.1:0".to_string(),
+                },
+            },
+        ],
+    });
+
+    let visible = state.visible_topologies();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].topology_id, "topology-b");
+    assert!(state.runtime_statuses().is_empty());
+}
+
+#[test]
+fn empty_stage_status_snapshots_are_ignored() {
+    let node_id = EndpointId::from(SecretKey::from_bytes(&[0x39; 32]).public());
+    let mut state = StageTopologyState::default();
+    let mut status = test_stage_status(
+        node_id,
+        "stage-1",
+        1,
+        "127.0.0.1:51234",
+        crate::inference::skippy::StageRuntimeState::Ready,
+    );
+    status.topology_id.clear();
+    status.run_id.clear();
+    status.stage_id.clear();
+
+    state.record_status(status);
+
+    assert!(state.runtime_statuses().is_empty());
 }
 
 #[test]

@@ -1,5 +1,5 @@
-//! QUIC tunnel management for forwarding OpenAI HTTP traffic to the active
-//! local backend.
+//! QUIC tunnel management for forwarding OpenAI HTTP traffic to the local
+//! model-aware API proxy.
 
 use crate::mesh::Node;
 use crate::protocol::read_len_prefixed;
@@ -28,8 +28,8 @@ pub struct Manager {
 
 impl Manager {
     /// Start the tunnel manager.
-    /// The backend port for inbound HTTP tunnels is set dynamically via
-    /// `set_http_port()` when local serving starts or stops.
+    /// The API proxy port for inbound HTTP tunnels is set by the runtime once
+    /// the node begins serving.
     pub async fn start(
         node: Node,
         _legacy_tunnel_rx: tokio::sync::mpsc::Receiver<(
@@ -52,7 +52,7 @@ impl Manager {
         };
 
         // Handle inbound HTTP tunnel streams.
-        // These connect to the local OpenAI surface for the selected model.
+        // These connect to the local model-aware OpenAI proxy.
         let http_port_ref = mgr.http_port.clone();
         let http_node = mgr.node.clone();
         tokio::spawn(async move {
@@ -89,8 +89,7 @@ impl Manager {
         Ok(mgr)
     }
 
-    /// Update the local serving port for inbound HTTP tunnel streams.
-    /// This should be the per-model internal OpenAI surface port.
+    /// Update the local model-aware API proxy port for inbound HTTP tunnel streams.
     /// Set to 0 to disable.
     pub fn set_http_port(&self, port: u16) {
         self.http_port.store(port, Ordering::Relaxed);
@@ -98,14 +97,14 @@ impl Manager {
     }
 }
 
-/// Handle an inbound HTTP tunnel bi-stream: connect to the local OpenAI surface and relay.
+/// Handle an inbound HTTP tunnel bi-stream: connect to the local API proxy and relay.
 async fn handle_inbound_http_stream(
     node: Node,
     quic_send: iroh::endpoint::SendStream,
     quic_recv: iroh::endpoint::RecvStream,
     http_port: u16,
 ) -> Result<()> {
-    tracing::info!("Inbound HTTP tunnel stream -> OpenAI surface :{http_port}");
+    tracing::info!("Inbound HTTP tunnel stream -> API proxy :{http_port}");
     let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
     tcp_stream.set_nodelay(true)?;
     let _inflight = node.begin_inflight_request();

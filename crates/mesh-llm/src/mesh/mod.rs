@@ -226,6 +226,21 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
         return None;
     }
 
+    if let Ok(model_ref) = model_ref::ModelRef::parse(trimmed) {
+        let display_id = model_ref.display_id();
+        return Some(ServedModelIdentity {
+            model_name: String::new(),
+            is_primary: false,
+            source_kind: ModelSourceKind::HuggingFace,
+            canonical_ref: Some(display_id.clone()),
+            repository: Some(model_ref.repo),
+            revision: model_ref.revision,
+            artifact: model_ref.selector,
+            local_file_name: None,
+            identity_hash: Some(identity_hash_for(&display_id)),
+        });
+    }
+
     if trimmed.starts_with('/') || trimmed.starts_with("./") || trimmed.starts_with("../") {
         return Some(local_gguf_identity_from_source(trimmed));
     }
@@ -509,11 +524,19 @@ fn upsert_mesh_catalog_descriptor(
     if descriptor.identity.model_name.is_empty() {
         return;
     }
-    match descriptors.get(&descriptor.identity.model_name) {
-        Some(existing)
-            if model_descriptor_score(existing) >= model_descriptor_score(&descriptor) => {}
-        _ => {
-            descriptors.insert(descriptor.identity.model_name.clone(), descriptor);
+    let mut keys = vec![descriptor.identity.model_name.clone()];
+    if let Some(public_id) = public_model_id_from_identity(&descriptor.identity) {
+        keys.push(public_id);
+    }
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        match descriptors.get(&key) {
+            Some(existing)
+                if model_descriptor_score(existing) >= model_descriptor_score(&descriptor) => {}
+            _ => {
+                descriptors.insert(key, descriptor.clone());
+            }
         }
     }
 }
@@ -676,24 +699,35 @@ impl PeerInfo {
         }
     }
 
+    #[cfg(test)]
     pub fn is_assigned_model(&self, model: &str) -> bool {
         self.serving_models.iter().any(|m| m == model)
     }
 
     pub fn routable_models(&self) -> Vec<String> {
-        if self.hosted_models_known {
-            self.hosted_models.clone()
+        let raw = if self.hosted_models_known {
+            &self.hosted_models
         } else {
-            self.serving_models.clone()
-        }
+            &self.serving_models
+        };
+        let mut models = raw
+            .iter()
+            .map(|model| self.public_model_id_for_routable_model(model))
+            .collect::<Vec<_>>();
+        models.sort();
+        models.dedup();
+        models
     }
 
     pub fn routes_model(&self, model: &str) -> bool {
-        if self.hosted_models_known {
-            self.hosted_models.iter().any(|m| m == model)
+        let raw = if self.hosted_models_known {
+            &self.hosted_models
         } else {
-            self.is_assigned_model(model)
-        }
+            &self.serving_models
+        };
+        raw.iter().any(|candidate| {
+            candidate == model || self.public_model_id_for_routable_model(candidate) == model
+        })
     }
 
     pub fn accepts_http_inference(&self) -> bool {
@@ -712,12 +746,54 @@ impl PeerInfo {
         self.accepts_http_inference() && self.routes_model(model)
     }
 
+    fn public_model_id_for_routable_model(&self, model: &str) -> String {
+        self.served_model_descriptors
+            .iter()
+            .find(|descriptor| descriptor.identity.model_name == model)
+            .and_then(|descriptor| public_model_id_from_identity(&descriptor.identity))
+            .unwrap_or_else(|| canonical_demand_model_ref(model))
+    }
+
     pub fn advertised_context_length(&self, model: &str) -> Option<u32> {
         self.served_model_runtime
             .iter()
             .find(|runtime| runtime.model_name == model)
             .and_then(ModelRuntimeDescriptor::advertised_context_length)
     }
+}
+
+fn public_model_id_from_identity(identity: &ServedModelIdentity) -> Option<String> {
+    match identity.source_kind {
+        ModelSourceKind::HuggingFace => identity
+            .canonical_ref
+            .as_deref()
+            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+            .map(|model_ref| model_ref.display_id())
+            .or_else(|| {
+                let repo = identity.repository.as_deref()?;
+                let selector = identity
+                    .artifact
+                    .as_deref()
+                    .and_then(model_ref::quant_selector_from_gguf_file)
+                    .or_else(|| identity.artifact.clone());
+                Some(model_ref::format_model_ref(repo, None, selector.as_deref()))
+            }),
+        ModelSourceKind::Catalog => identity
+            .canonical_ref
+            .as_deref()
+            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+            .map(|model_ref| model_ref.display_id()),
+        ModelSourceKind::LocalGguf | ModelSourceKind::DirectUrl | ModelSourceKind::Unknown => None,
+    }
+}
+
+fn canonical_demand_model_ref(model: &str) -> String {
+    if let Ok(model_ref) = model_ref::ModelRef::parse(model) {
+        return model_ref.display_id();
+    }
+    crate::models::find_catalog_model_exact(model)
+        .map(crate::models::catalog_model_ref)
+        .unwrap_or_else(|| model.to_string())
 }
 
 /// Peers not directly verified within this window are considered stale
@@ -1206,6 +1282,18 @@ impl StageTopologyState {
         );
     }
 
+    fn activate_topology(&mut self, topology: StageTopologyInstance) {
+        let active_key = stage_topology_key(&topology.topology_id, &topology.run_id);
+        let model_id = topology.model_id.clone();
+        self.topologies
+            .retain(|key, existing| existing.model_id != model_id || key == &active_key);
+        self.statuses.retain(|_, status| {
+            status.model_id != model_id
+                || (status.topology_id == topology.topology_id && status.run_id == topology.run_id)
+        });
+        self.record_topology(topology);
+    }
+
     fn visible_topologies(&self) -> Vec<StageTopologyInstance> {
         self.topologies
             .values()
@@ -1221,10 +1309,24 @@ impl StageTopologyState {
     }
 
     fn runtime_statuses(&self) -> Vec<StageRuntimeStatus> {
-        self.statuses.values().cloned().collect()
+        self.statuses
+            .values()
+            .filter(|status| {
+                !status.topology_id.is_empty()
+                    && !status.run_id.is_empty()
+                    && !status.stage_id.is_empty()
+            })
+            .cloned()
+            .collect()
     }
 
     fn record_status(&mut self, runtime_status: StageRuntimeStatus) {
+        if runtime_status.topology_id.is_empty()
+            || runtime_status.run_id.is_empty()
+            || runtime_status.stage_id.is_empty()
+        {
+            return;
+        }
         if !runtime_status.bind_addr.is_empty() && !runtime_status.bind_addr.ends_with(":0") {
             let topology_key =
                 stage_topology_key(&runtime_status.topology_id, &runtime_status.run_id);
@@ -1343,6 +1445,13 @@ impl Node {
         self.stage_topologies.lock().await.record_topology(topology);
     }
 
+    pub async fn activate_stage_topology(&self, topology: StageTopologyInstance) {
+        self.stage_topologies
+            .lock()
+            .await
+            .activate_topology(topology);
+    }
+
     pub async fn stage_topologies(&self) -> Vec<StageTopologyInstance> {
         self.stage_topologies.lock().await.visible_topologies()
     }
@@ -1411,15 +1520,13 @@ impl Node {
                     .await;
                 }
                 Err(_) => {
-                    self.record_stage_status(
-                        Some(peer_id),
-                        stage_snapshot_from_runtime_status(
-                            &status,
-                            crate::inference::skippy::StageRuntimeState::Failed,
-                            Some("stage status refresh timed out".to_string()),
-                        ),
-                    )
-                    .await;
+                    tracing::debug!(
+                        topology_id = %status.topology_id,
+                        run_id = %status.run_id,
+                        stage_id = %status.stage_id,
+                        peer = %peer_id.fmt_short(),
+                        "stage status refresh timed out; preserving last known status"
+                    );
                 }
             }
         }
@@ -1462,6 +1569,43 @@ impl Node {
         }
     }
 
+    pub(crate) async fn send_local_stage_control(
+        &self,
+        mut request: crate::inference::skippy::StageControlRequest,
+    ) -> Result<crate::inference::skippy::StageControlResponse> {
+        self.prepare_stage_control_request(&mut request).await?;
+        if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
+            self.record_stage_topology(stage_topology_from_load(self.endpoint.id(), load))
+                .await;
+        }
+        let control_tx = self.stage_control_tx.lock().await.clone();
+        let Some(tx) = control_tx else {
+            anyhow::bail!("stage control is not available");
+        };
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        tx.send(crate::inference::skippy::StageControlCommand {
+            request,
+            resp: resp_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("stage control loop is unavailable"))?;
+        let response = resp_rx
+            .await
+            .map_err(|_| anyhow::anyhow!("stage control response dropped"))??;
+        match &response {
+            crate::inference::skippy::StageControlResponse::Ready(ready) => {
+                self.record_stage_status(Some(self.endpoint.id()), ready.status.clone())
+                    .await;
+            }
+            crate::inference::skippy::StageControlResponse::Status(statuses) => {
+                for status in statuses {
+                    self.record_stage_status(Some(self.endpoint.id()), status.clone())
+                        .await;
+                }
+            }
+        }
+        Ok(response)
+    }
+
     pub async fn send_stage_control(
         &self,
         peer_id: EndpointId,
@@ -1469,13 +1613,14 @@ impl Node {
     ) -> Result<crate::inference::skippy::StageControlResponse> {
         use prost::Message as _;
 
+        let timeout = Self::stage_control_request_timeout(&request);
         if let crate::inference::skippy::StageControlRequest::Load(load) = &request {
             self.record_stage_topology(stage_topology_from_load(peer_id, load))
                 .await;
         }
         let frame = stage_control_request_to_proto(self.endpoint.id(), request);
         let conn = self.stage_connection_to_peer(peer_id).await?;
-        let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let response = tokio::time::timeout(timeout, async {
             let (mut send, mut recv) = conn.open_bi().await?;
             send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
                 .await?;
@@ -1490,7 +1635,9 @@ impl Node {
             stage_control_response_from_proto(response)
         })
         .await
-        .map_err(|_| anyhow::anyhow!("timeout waiting for stage control response"))??;
+        .map_err(|_| {
+            anyhow::anyhow!("timeout waiting for stage control response after {timeout:?}")
+        })??;
 
         match &response {
             crate::inference::skippy::StageControlResponse::Ready(ready) => {
@@ -1505,6 +1652,20 @@ impl Node {
             }
         }
         Ok(response)
+    }
+
+    fn stage_control_request_timeout(
+        request: &crate::inference::skippy::StageControlRequest,
+    ) -> std::time::Duration {
+        match request {
+            crate::inference::skippy::StageControlRequest::Load(_) => {
+                std::time::Duration::from_secs(180)
+            }
+            crate::inference::skippy::StageControlRequest::Stop(_)
+            | crate::inference::skippy::StageControlRequest::Status(_) => {
+                std::time::Duration::from_secs(30)
+            }
+        }
     }
 
     pub async fn open_stage_transport_stream(
@@ -2565,8 +2726,9 @@ impl Node {
         if model == "auto" || model.is_empty() {
             return;
         }
+        let model_ref = canonical_demand_model_ref(model);
         let mut demand = self.model_demand.lock().unwrap();
-        let entry = demand.entry(model.to_string()).or_default();
+        let entry = demand.entry(model_ref).or_default();
         entry.last_active = now_secs();
         entry.request_count += 1;
     }
@@ -2626,6 +2788,10 @@ impl Node {
     }
 
     pub async fn set_requested_models(&self, models: Vec<String>) {
+        let models = models
+            .into_iter()
+            .map(|model| canonical_demand_model_ref(&model))
+            .collect::<Vec<_>>();
         // Seed demand entries for --model declarations
         {
             let mut demand = self.model_demand.lock().unwrap();
@@ -2994,7 +3160,7 @@ impl Node {
     }
 
     /// Get the mesh catalog: local installed models plus mesh served/requested models.
-    /// Returns deduplicated list of model names (file stems, no .gguf).
+    /// Returns deduplicated canonical model refs.
     pub async fn mesh_catalog(&self) -> Vec<String> {
         // Snapshot each lock independently to avoid holding multiple locks.
         let my_available = self.available_models.lock().await.clone();
@@ -3917,6 +4083,29 @@ impl Node {
     ) -> anyhow::Result<()> {
         match request {
             crate::inference::skippy::StageControlRequest::Load(load) => {
+                if load.load_mode == skippy_protocol::LoadMode::RuntimeSlice
+                    && load
+                        .model_path
+                        .as_deref()
+                        .is_none_or(|path| !std::path::Path::new(path).exists())
+                {
+                    for candidate in [
+                        load.model_id.as_str(),
+                        load.package_ref.strip_prefix("gguf://").unwrap_or_default(),
+                    ]
+                    .into_iter()
+                    .filter(|candidate| !candidate.is_empty())
+                    {
+                        if let Ok(path) =
+                            crate::models::resolve_model_spec(std::path::Path::new(candidate)).await
+                        {
+                            if path.exists() {
+                                load.model_path = Some(path.to_string_lossy().to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
                 let Some(downstream) = load.downstream.as_mut() else {
                     return Ok(());
                 };

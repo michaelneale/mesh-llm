@@ -463,6 +463,36 @@ mod tests {
         assert_eq!(payload[0].fit_label, "Likely comfortable");
     }
 
+    #[test]
+    fn runtime_data_model_snapshot_includes_routable_model_refs_without_catalog_entry() {
+        let collector = RuntimeDataCollector::new();
+        let model_ref = "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL".to_string();
+        let snapshot = collector.build_model_view(ModelViewInput {
+            peers: vec![],
+            catalog: vec![],
+            served_models: vec![model_ref.clone()],
+            active_demand: HashMap::new(),
+            my_serving_models: vec![model_ref.clone()],
+            my_hosted_models: vec![model_ref.clone()],
+            local_inventory: LocalModelInventorySnapshot::default(),
+            node_hostname: Some("white".into()),
+            my_vram_gb: 28.0,
+            model_name: model_ref.clone(),
+            model_size_bytes: 22_000_000_000,
+            now_unix_secs: 1_700_000_000,
+        });
+
+        let payload = mesh_models(snapshot);
+        let model = payload
+            .iter()
+            .find(|model| model.name == model_ref)
+            .expect("routable model ref should be exposed as a mesh model");
+        assert_eq!(model.status, "warm");
+        assert_eq!(model.node_count, 1);
+        assert_eq!(model.active_nodes, vec!["white".to_string()]);
+        assert_eq!(model.size_gb, 22.0);
+    }
+
     #[tokio::test]
     async fn runtime_data_inventory_single_flight_scan_coalesces() {
         let collector = RuntimeDataCollector::new();

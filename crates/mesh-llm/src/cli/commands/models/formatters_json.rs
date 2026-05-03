@@ -5,8 +5,8 @@ use super::formatters::{
     JsonFormatter, ModelsFormatter, SearchFormatter,
 };
 use crate::models::{
-    catalog, search_catalog_json_payload, search_huggingface_json_payload, ModelDetails,
-    SearchArtifactFilter, SearchHit, SearchSort,
+    catalog, catalog_model_draft_ref, catalog_model_ref, search_catalog_json_payload,
+    search_huggingface_json_payload, ModelDetails, SearchArtifactFilter, SearchHit, SearchSort,
 };
 use crate::models::{DeleteResult as CliDeleteResult, ResolvedModel as CliResolvedModel};
 use anyhow::Result;
@@ -105,15 +105,16 @@ impl ModelsFormatter for JsonFormatter {
             .iter()
             .map(|model| {
                 let model_capabilities = catalog_model_capabilities(model);
+                let model_ref = catalog_model_ref(model);
                 json!({
                     "name": model.name,
                     "size": model.size,
                     "description": model.description,
-                    "draft": model.draft,
+                    "draft": catalog_model_draft_ref(model),
                     "type": catalog_model_kind_code(model),
-                    "ref": model.name,
-                    "show": format!("mesh-llm models show {}", model.name),
-                    "download": format!("mesh-llm models download {}", model.name),
+                    "ref": model_ref,
+                    "show": format!("mesh-llm models show {model_ref}"),
+                    "download": format!("mesh-llm models download {model_ref}"),
                     "capabilities": capabilities_json(model_capabilities),
                 })
             })

@@ -70,6 +70,8 @@ use self::{request::*, util::*};
 
 static OPENAI_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+pub const CONTEXT_BUDGET_MAX_TOKENS: u32 = u32::MAX;
+
 pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
     let config = load_json::<StageConfig>(&args.config)
         .with_context(|| format!("load stage config {}", args.config.display()))?;
@@ -123,6 +125,16 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         args.telemetry_level,
     );
     telemetry.emit("stage.openai_server_start", lifecycle_attrs(&config));
+    if matches!(&mode, OpenAiBackendMode::LocalRuntime) {
+        prewarm_generation_sessions(
+            &runtime,
+            args.generation_concurrency,
+            &telemetry,
+            &config,
+            "stage.openai_runtime_prewarm",
+        )
+        .context("prewarm OpenAI runtime sessions")?;
+    }
     let ctx_size = usize::try_from(config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime,
@@ -275,6 +287,14 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
     };
     args.telemetry
         .emit("stage.openai_server_start", lifecycle_attrs(&args.config));
+    prewarm_generation_sessions(
+        &args.runtime,
+        args.generation_concurrency,
+        &args.telemetry,
+        &args.config,
+        "stage.openai_runtime_prewarm",
+    )
+    .context("prewarm embedded OpenAI runtime sessions")?;
     let ctx_size = usize::try_from(args.config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime: args.runtime,
@@ -314,11 +334,75 @@ struct StageOpenAiBackend {
     hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenerationTokenLimit {
+    Explicit(u32),
+    ContextBudget,
+}
+
+impl GenerationTokenLimit {
+    fn from_request(requested: Option<u32>, default_max_tokens: u32) -> Self {
+        match requested {
+            Some(max_tokens) => Self::Explicit(max_tokens),
+            None if default_max_tokens == CONTEXT_BUDGET_MAX_TOKENS => Self::ContextBudget,
+            None => Self::Explicit(default_max_tokens),
+        }
+    }
+
+    fn resolve(self, prompt_token_count: usize, ctx_size: usize) -> OpenAiResult<u32> {
+        match self {
+            Self::Explicit(max_tokens) => {
+                ensure_context_capacity(prompt_token_count, max_tokens, ctx_size)?;
+                Ok(max_tokens)
+            }
+            Self::ContextBudget => context_budget_completion_tokens(prompt_token_count, ctx_size),
+        }
+    }
+}
+
 fn instrumented_openai_router(backend: Arc<dyn OpenAiBackend>, telemetry: Telemetry) -> Router {
     openai_frontend::router_for(backend).layer(middleware::from_fn_with_state(
         telemetry,
         openai_http_telemetry,
     ))
+}
+
+fn prewarm_generation_sessions(
+    runtime: &Arc<Mutex<RuntimeState>>,
+    generation_concurrency: usize,
+    telemetry: &Telemetry,
+    config: &StageConfig,
+    event_name: &'static str,
+) -> Result<()> {
+    let timer = PhaseTimer::start();
+    let sessions = runtime
+        .lock()
+        .map_err(|_| anyhow!("runtime lock poisoned"))?
+        .prewarm_idle_sessions(generation_concurrency)?;
+    let mut attrs = lifecycle_attrs(config);
+    attrs.insert(
+        "llama_stage.generation_concurrency".to_string(),
+        json!(generation_concurrency),
+    );
+    attrs.insert(
+        "llama_stage.runtime_sessions_active".to_string(),
+        json!(sessions.active_sessions),
+    );
+    attrs.insert(
+        "llama_stage.runtime_sessions_idle".to_string(),
+        json!(sessions.idle_sessions),
+    );
+    attrs.insert(
+        "llama_stage.elapsed_ms".to_string(),
+        json!(timer.elapsed_ms()),
+    );
+    telemetry.emit_span(
+        event_name,
+        attrs,
+        timer.start_unix_nanos,
+        now_unix_nanos() as u64,
+    );
+    Ok(())
 }
 
 async fn openai_http_telemetry(
@@ -995,9 +1079,10 @@ impl OpenAiBackend for StageOpenAiBackend {
             json!(prompt.media.len()),
         );
         self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
-        let max_tokens = request
-            .effective_max_tokens()
-            .unwrap_or(self.default_max_tokens);
+        let max_tokens = GenerationTokenLimit::from_request(
+            request.effective_max_tokens(),
+            self.default_max_tokens,
+        );
         let output = self
             .run_generation(
                 prompt,
@@ -1083,9 +1168,10 @@ impl OpenAiBackend for StageOpenAiBackend {
             json!(prompt.media.len()),
         );
         self.emit_openai_phase("stage.openai_chat_template", template_timer, template_attrs);
-        let max_tokens = request
-            .effective_max_tokens()
-            .unwrap_or(self.default_max_tokens);
+        let max_tokens = GenerationTokenLimit::from_request(
+            request.effective_max_tokens(),
+            self.default_max_tokens,
+        );
         let model = request.model.clone();
         let stream = self
             .run_generation_stream(
@@ -1110,7 +1196,8 @@ impl OpenAiBackend for StageOpenAiBackend {
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
-        let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
+        let max_tokens =
+            GenerationTokenLimit::from_request(request.max_tokens, self.default_max_tokens);
         let prompt_timer = PhaseTimer::start();
         let prompt = PreparedGenerationPrompt::text(request.prompt.text_lossy());
         let mut prompt_attrs = self.openai_attrs(&ids);
@@ -1186,7 +1273,8 @@ impl OpenAiBackend for StageOpenAiBackend {
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
         let include_usage = request.include_usage();
-        let max_tokens = request.max_tokens.unwrap_or(self.default_max_tokens);
+        let max_tokens =
+            GenerationTokenLimit::from_request(request.max_tokens, self.default_max_tokens);
         let model = request.model.clone();
         let prompt_timer = PhaseTimer::start();
         let prompt = PreparedGenerationPrompt::text(request.prompt.text_lossy());
@@ -1310,7 +1398,7 @@ impl StageOpenAiBackend {
     async fn run_generation(
         &self,
         prompt: PreparedGenerationPrompt,
-        max_tokens: u32,
+        max_tokens: GenerationTokenLimit,
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
         hook_request: Option<ChatCompletionRequest>,
@@ -1352,7 +1440,7 @@ impl StageOpenAiBackend {
     async fn run_generation_stream(
         &self,
         prompt: PreparedGenerationPrompt,
-        max_tokens: u32,
+        max_tokens: GenerationTokenLimit,
         stop: Option<openai_frontend::StopSequence>,
         sampling: SamplingConfig,
         include_usage: bool,
@@ -1462,7 +1550,7 @@ impl StageOpenAiBackend {
     fn generate_text(
         &self,
         prompt: PreparedGenerationPrompt,
-        max_tokens: u32,
+        max_tokens: GenerationTokenLimit,
         stop: Option<&openai_frontend::StopSequence>,
         sampling: SamplingConfig,
         hook_request: Option<ChatCompletionRequest>,
@@ -1506,7 +1594,7 @@ impl StageOpenAiBackend {
         if prompt_token_ids.is_empty() {
             return Err(OpenAiError::invalid_request("prompt produced no tokens"));
         }
-        ensure_context_capacity(prompt_token_ids.len(), max_tokens, self.ctx_size)?;
+        let max_tokens = max_tokens.resolve(prompt_token_ids.len(), self.ctx_size)?;
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
@@ -1606,7 +1694,7 @@ impl StageOpenAiBackend {
     fn generate_multimodal_text(
         &self,
         prompt: PreparedGenerationPrompt,
-        max_tokens: u32,
+        max_tokens: GenerationTokenLimit,
         stop: Option<&openai_frontend::StopSequence>,
         sampling: SamplingConfig,
         hook_request: Option<ChatCompletionRequest>,
@@ -1721,7 +1809,7 @@ impl StageOpenAiBackend {
             self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
             (prefill, token_signal, signal_window)
         };
-        ensure_context_capacity(prefill.position as usize, max_tokens, self.ctx_size)?;
+        let max_tokens = max_tokens.resolve(prefill.position as usize, self.ctx_size)?;
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
@@ -1966,7 +2054,9 @@ impl StageOpenAiBackend {
                 prefill
             };
             prompt_tokens = prefill.token_count;
-            ensure_context_capacity(prefill.position as usize, request.max_tokens, self.ctx_size)?;
+            let max_tokens = request
+                .max_tokens
+                .resolve(prefill.position as usize, self.ctx_size)?;
 
             let final_prefill = multimodal_final_prefill_message(
                 request.wire_dtype,
@@ -2034,7 +2124,7 @@ impl StageOpenAiBackend {
             let mut decode_output_activation_bytes = 0usize;
             let mut decode_forward_activation_bytes = 0usize;
 
-            while decoded_tokens < request.max_tokens as usize {
+            while decoded_tokens < max_tokens as usize {
                 if request
                     .cancellation
                     .is_some_and(openai_frontend::CancellationToken::is_cancelled)
@@ -2046,7 +2136,7 @@ impl StageOpenAiBackend {
                     break;
                 }
                 decoded_tokens += 1;
-                if decoded_tokens >= request.max_tokens as usize {
+                if decoded_tokens >= max_tokens as usize {
                     break;
                 }
 
@@ -3920,7 +4010,7 @@ struct EmbeddedStageZeroGeneration<'a> {
 
 struct SplitMultimodalGeneration<'a> {
     prompt: PreparedGenerationPrompt,
-    max_tokens: u32,
+    max_tokens: GenerationTokenLimit,
     stop: Option<&'a openai_frontend::StopSequence>,
     sampling: SamplingConfig,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
@@ -4457,6 +4547,20 @@ fn ensure_context_capacity(
         )));
     }
     Ok(())
+}
+
+fn context_budget_completion_tokens(
+    prompt_token_count: usize,
+    ctx_size: usize,
+) -> OpenAiResult<u32> {
+    if prompt_token_count > ctx_size {
+        return Err(OpenAiError::context_length_exceeded(format!(
+            "requested prompt tokens ({prompt_token_count}) exceed context window ({ctx_size})"
+        )));
+    }
+    Ok(ctx_size
+        .saturating_sub(prompt_token_count)
+        .min(u32::MAX as usize) as u32)
 }
 
 fn detokenize_bytes_with_runtime(

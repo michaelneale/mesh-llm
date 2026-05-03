@@ -1022,13 +1022,18 @@ fn parse_size_gb(s: &str) -> f64 {
 }
 
 /// Build model tiers from the catalog, sorted largest first.
-/// Each entry is (model_name, min_vram_gb) where min_vram = file_size * 1.1.
+/// Each entry is (model_ref, min_vram_gb) where min_vram = file_size * 1.1.
 /// Excludes draft models (< 1GB).
 fn model_tiers() -> Vec<(String, f64)> {
     let mut tiers: Vec<_> = crate::models::catalog::MODEL_CATALOG
         .iter()
         .filter(|m| parse_size_gb(&m.size) >= 1.0) // skip drafts
-        .map(|m| (m.name.clone(), parse_size_gb(&m.size) * 1.1))
+        .map(|m| {
+            (
+                crate::models::catalog_model_ref(m),
+                parse_size_gb(&m.size) * 1.1,
+            )
+        })
         .collect();
     tiers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     tiers
@@ -1066,33 +1071,38 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
     // The order within a tier prefers: on-disk first, then opinionated default.
     struct Pack {
         min_vram: f64,
-        models: &'static [&'static str],
+        models: Vec<String>,
     }
-    let packs: &[Pack] = &[
+    let catalog_ref = |name: &str| {
+        crate::models::find_catalog_model_exact(name)
+            .map(crate::models::catalog_model_ref)
+            .unwrap_or_else(|| name.to_string())
+    };
+    let packs: Vec<Pack> = vec![
         // One model per tier. Node serves one model at a time.
         Pack {
             min_vram: 179.0,
-            models: &["MiniMax-M2.5-Q4_K_M"],
+            models: vec![catalog_ref("MiniMax-M2.5-Q4_K_M")],
         },
         Pack {
             min_vram: 63.0,
-            models: &["Qwen3-Coder-Next-Q4_K_M"],
+            models: vec![catalog_ref("Qwen3-Coder-Next-Q4_K_M")],
         },
         Pack {
             min_vram: 50.0,
-            models: &["GLM-4.7-Flash-Q4_K_M"],
+            models: vec![catalog_ref("GLM-4.7-Flash-Q4_K_M")],
         },
         Pack {
             min_vram: 24.0,
-            models: &["Qwen3.5-27B-Q4_K_M"],
+            models: vec![catalog_ref("Qwen3.5-27B-Q4_K_M")],
         },
         Pack {
             min_vram: 8.0,
-            models: &["Qwen3-8B-Q4_K_M"],
+            models: vec![catalog_ref("Qwen3-8B-Q4_K_M")],
         },
         Pack {
             min_vram: 0.0,
-            models: &["Qwen3-4B-Q4_K_M"],
+            models: vec![catalog_ref("Qwen3-4B-Q4_K_M")],
         },
     ];
 
@@ -1104,7 +1114,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
         // Check all models in the pack actually fit within usable VRAM
         let total: f64 = pack.models.iter().map(|m| size_of(m)).sum();
         if total <= usable {
-            return pack.models.iter().map(|m| m.to_string()).collect();
+            return pack.models.clone();
         }
     }
 
@@ -1117,7 +1127,7 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
     let primary = on_disk_fit
         .or(any_fit)
         .map(|(name, _)| name.to_string())
-        .unwrap_or_else(|| "Qwen3-4B-Q4_K_M".into());
+        .unwrap_or_else(|| catalog_ref("Qwen3-4B-Q4_K_M"));
 
     vec![primary]
 }
@@ -1126,14 +1136,21 @@ pub fn auto_model_pack(vram_gb: f64) -> Vec<String> {
 /// These tell other nodes what the mesh could use, covering every VRAM tier.
 /// NOT served by this node — just demand hints for the mesh.
 pub fn demand_seed_models() -> Vec<String> {
-    vec![
-        "Qwen3-Coder-Next-Q4_K_M".into(),
-        "Qwen3.5-27B-Q4_K_M".into(),
-        "GLM-4.7-Flash-Q4_K_M".into(),
-        "Qwen3-8B-Q4_K_M".into(),
-        "Qwen3-4B-Q4_K_M".into(),
-        "Qwen3-0.6B-Q4_K_M".into(),
+    [
+        "Qwen3-Coder-Next-Q4_K_M",
+        "Qwen3.5-27B-Q4_K_M",
+        "GLM-4.7-Flash-Q4_K_M",
+        "Qwen3-8B-Q4_K_M",
+        "Qwen3-4B-Q4_K_M",
+        "Qwen3-0.6B-Q4_K_M",
     ]
+    .into_iter()
+    .map(|name| {
+        crate::models::find_catalog_model_exact(name)
+            .map(crate::models::catalog_model_ref)
+            .unwrap_or_else(|| name.to_string())
+    })
+    .collect()
 }
 
 /// Legacy wrapper — returns serving models + demand seeds combined.

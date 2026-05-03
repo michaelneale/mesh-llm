@@ -23,9 +23,9 @@ use openai_frontend::{
 use skippy_protocol::{LoadMode, StageConfig, StageDevice};
 use skippy_runtime::ModelInfo;
 use skippy_server::{
-    binary_transport::WireCondition, embedded_openai_backend, telemetry::Telemetry,
-    telemetry::TelemetryLevel, EmbeddedOpenAiArgs, EmbeddedRuntimeOptions, EmbeddedRuntimeStatus,
-    EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
+    binary_transport::WireCondition, embedded_openai_backend, openai::CONTEXT_BUDGET_MAX_TOKENS,
+    telemetry::Telemetry, telemetry::TelemetryLevel, EmbeddedOpenAiArgs, EmbeddedRuntimeOptions,
+    EmbeddedRuntimeStatus, EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
 };
 
 pub(crate) use hooks::MeshAutoHookPolicy;
@@ -114,7 +114,7 @@ impl SkippyModelLoadOptions {
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
             generation_concurrency: 1,
-            default_max_tokens: 256,
+            default_max_tokens: CONTEXT_BUDGET_MAX_TOKENS,
             layer_end: None,
             selected_device: None,
             package_identity: None,

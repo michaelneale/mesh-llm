@@ -6,11 +6,11 @@ use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
 use crate::models::{
-    catalog, delete, download_model_ref_with_progress_details, find_catalog_model_exact,
-    installed_model_capabilities, load_model_usage_record_for_path, model_usage_cache_dir,
-    plan_model_cleanup, scan_installed_models, search_catalog_models, search_huggingface,
-    show_exact_model, show_model_variants_with_progress, ModelCleanupPlan, ModelCleanupResult,
-    SearchArtifactFilter, SearchProgress, SearchSort, ShowVariantsProgress,
+    catalog, catalog_model_ref, delete, download_model_ref_with_progress_details,
+    find_catalog_model_exact, installed_model_capabilities, load_model_usage_record_for_path,
+    model_usage_cache_dir, plan_model_cleanup, scan_installed_models, search_catalog_models,
+    search_huggingface, show_exact_model, show_model_variants_with_progress, ModelCleanupPlan,
+    ModelCleanupResult, SearchArtifactFilter, SearchProgress, SearchSort, ShowVariantsProgress,
 };
 use anyhow::{anyhow, bail, Result};
 use serde_json::json;
@@ -141,7 +141,7 @@ fn build_installed_rows() -> Vec<InstalledRow> {
             let display_name = crate::models::installed_model_display_name(&name);
             let catalog_model = find_catalog_model_exact(&name);
             let model_ref = if let Some(model) = catalog_model {
-                model.name.clone()
+                catalog_model_ref(model)
             } else if let Some(identity) = crate::models::huggingface_identity_for_path(&path) {
                 crate::models::installed_model_huggingface_ref(&identity)
             } else {

@@ -228,6 +228,16 @@ impl RuntimeState {
             .expect("session inserted above"))
     }
 
+    pub fn prewarm_idle_sessions(
+        &mut self,
+        target_idle_sessions: usize,
+    ) -> Result<RuntimeSessionStats> {
+        while self.idle_sessions.len() < target_idle_sessions {
+            self.idle_sessions.push(self.model.create_session()?);
+        }
+        Ok(self.session_stats())
+    }
+
     pub fn drop_session_timed(&mut self, session_id: &str) -> Result<RuntimeSessionDropStats> {
         let reset_started = Instant::now();
         let mut reset_session = false;

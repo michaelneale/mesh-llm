@@ -25,7 +25,7 @@ pub(crate) use plugins::blackboard;
 use anyhow::Result;
 use std::time::Duration;
 
-pub const VERSION: &str = "0.65.0+skippy.20260503";
+pub const VERSION: &str = "0.65.0+skippy.20260504.console.3";
 
 pub async fn run() -> Result<()> {
     runtime::run().await

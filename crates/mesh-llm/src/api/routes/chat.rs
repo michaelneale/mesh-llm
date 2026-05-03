@@ -9,11 +9,23 @@ pub(super) async fn handle(
     path_only: &str,
     req: &str,
 ) -> anyhow::Result<()> {
-    if method != "POST" {
+    let is_openai_passthrough = path_only.starts_with("/v1/") || path_only == "/models";
+    if method == "OPTIONS" && is_openai_passthrough {
+        stream
+            .write_all(
+                b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: content-type, authorization\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await?;
+        return Ok(());
+    }
+
+    if method != "POST" && !(method == "GET" && is_openai_passthrough) {
         return respond_error(stream, 405, "Method Not Allowed").await;
     }
 
-    let upstream_path = if path_only.starts_with("/api/chat") {
+    let upstream_path = if is_openai_passthrough {
+        path_only
+    } else if path_only.starts_with("/api/chat") {
         "/v1/chat/completions"
     } else if path_only.starts_with("/api/responses") {
         "/v1/responses"
@@ -21,17 +33,13 @@ pub(super) async fn handle(
         return Ok(());
     };
 
-    let inner = state.inner.lock().await;
-    if !inner.llama_ready && !inner.is_client {
-        drop(inner);
-        return respond_error(stream, 503, "LLM not ready").await;
-    }
-    let port = inner.api_port;
-    drop(inner);
+    let port = state.inner.lock().await.api_port;
 
     let target = format!("127.0.0.1:{port}");
     if let Ok(mut upstream) = TcpStream::connect(&target).await {
-        let rewritten = if path_only.starts_with("/api/chat") {
+        let rewritten = if is_openai_passthrough {
+            req.to_string()
+        } else if path_only.starts_with("/api/chat") {
             req.replacen("/api/chat", upstream_path, 1)
         } else {
             req.replacen("/api/responses", upstream_path, 1)
