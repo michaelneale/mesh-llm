@@ -63,7 +63,13 @@ pub(crate) async fn api_proxy(
                         }
                         models.sort();
                         models.dedup();
-                        let _ = proxy::send_models_list(tcp_stream, &models).await;
+                        let descriptors = node.served_model_descriptors().await;
+                        let _ = proxy::send_models_list_with_descriptors(
+                            tcp_stream,
+                            &models,
+                            &descriptors,
+                        )
+                        .await;
                         return;
                     }
 
@@ -99,6 +105,10 @@ pub(crate) async fn api_proxy(
                         }
                         return;
                     }
+
+                    let callable = callable_models(&targets);
+                    let descriptors = node.served_model_descriptors().await;
+                    proxy::rewrite_public_model_alias(&mut request, &callable, &descriptors);
 
                     if proxy::is_drop_request(&request.method, &request.path) {
                         if let Some(ref name) = request.model_name {
@@ -140,7 +150,7 @@ pub(crate) async fn api_proxy(
                         request.ensure_body_json();
                         if let Some(body_json) = request.body_json.as_ref() {
                             let cl = router::classify(body_json);
-                            let mut available_models = callable_models(&targets);
+                            let mut available_models = callable.clone();
                             if let Some(plugin_manager) = plugin_manager.as_ref() {
                                 if let Ok(external_models) = plugin_manager.inference_models().await
                                 {

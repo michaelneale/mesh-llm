@@ -1947,7 +1947,8 @@ pub async fn handle_mesh_request(
     // Handle /v1/models
     if is_models_list_request(&request.method, &request.path) {
         let served = node.models_being_served().await;
-        let _ = send_models_list(tcp_stream, &served).await;
+        let descriptors = node.served_model_descriptors().await;
+        let _ = send_models_list_with_descriptors(tcp_stream, &served, &descriptors).await;
         return;
     }
 
@@ -1963,6 +1964,10 @@ pub async fn handle_mesh_request(
     // we cache the classified model choice by session key, so every turn
     // in the same auto-routed chat reuses the first pick. Prefix affinity
     // then has a chance to keep those turns on the same peer too.
+    let served = node.models_being_served().await;
+    let descriptors = node.served_model_descriptors().await;
+    rewrite_public_model_alias(&mut request, &served, &descriptors);
+
     let is_auto_request =
         request.model_name.is_none() || request.model_name.as_deref() == Some("auto");
     let auto_session_key = if is_auto_request {
@@ -2019,7 +2024,6 @@ pub async fn handle_mesh_request(
                 Some(name)
             } else {
                 let cl = router::classify(body_json);
-                let served = node.models_being_served().await;
                 let with_caps: Vec<(&str, f64, crate::models::ModelCapabilities)> = served
                     .iter()
                     .map(|name| {
@@ -3040,10 +3044,34 @@ pub async fn route_http_endpoint_request(
 
 // ── Response helpers ──
 
-pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::io::Result<()> {
+pub async fn send_models_list_with_descriptors(
+    mut stream: TcpStream,
+    models: &[String],
+    descriptors: &[mesh::ServedModelDescriptor],
+) -> std::io::Result<()> {
+    let body = models_list_json(models, descriptors).to_string();
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+        body.len(), body
+    );
+    stream.write_all(resp.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+fn models_list_json(
+    models: &[String],
+    descriptors: &[mesh::ServedModelDescriptor],
+) -> serde_json::Value {
+    let mut seen = std::collections::HashSet::new();
     let data: Vec<serde_json::Value> = models
         .iter()
-        .map(|m| {
+        .filter_map(|m| {
+            let descriptor = descriptor_for_model(descriptors, m);
+            let public_id = public_model_id(m, descriptor);
+            if !seen.insert(public_id.clone()) {
+                return None;
+            }
             let capabilities = crate::models::installed_model_capabilities(m);
             let has_multimodal = capabilities.supports_multimodal_runtime();
             let has_vision = capabilities.supports_vision_runtime();
@@ -3061,9 +3089,13 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
             if capabilities.reasoning_label().is_some() {
                 caps.push("reasoning");
             }
-            let display_name = crate::models::installed_model_display_name(m);
-            serde_json::json!({
-                "id": m,
+            let display_name = if public_id == *m {
+                crate::models::installed_model_display_name(m)
+            } else {
+                public_id.clone()
+            };
+            Some(serde_json::json!({
+                "id": public_id,
                 "display_name": display_name,
                 "object": "model",
                 "owned_by": "mesh-llm",
@@ -3072,18 +3104,83 @@ pub async fn send_models_list(mut stream: TcpStream, models: &[String]) -> std::
                 "vision_status": capabilities.vision_status(),
                 "audio_status": capabilities.audio_status(),
                 "reasoning_status": capabilities.reasoning_status(),
-            })
+            }))
         })
         .collect();
 
-    let body = serde_json::json!({ "object": "list", "data": data }).to_string();
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
-        body.len(), body
-    );
-    stream.write_all(resp.as_bytes()).await?;
-    stream.shutdown().await?;
-    Ok(())
+    serde_json::json!({ "object": "list", "data": data })
+}
+
+pub fn rewrite_public_model_alias(
+    request: &mut BufferedHttpRequest,
+    models: &[String],
+    descriptors: &[mesh::ServedModelDescriptor],
+) {
+    let Some(requested) = request.model_name.as_deref() else {
+        return;
+    };
+    if requested == "auto" || models.iter().any(|model| model == requested) {
+        return;
+    }
+    let Some(internal) = internal_model_for_public_id(requested, models, descriptors) else {
+        return;
+    };
+    rewrite_model_field(request, &internal);
+}
+
+fn internal_model_for_public_id(
+    requested: &str,
+    models: &[String],
+    descriptors: &[mesh::ServedModelDescriptor],
+) -> Option<String> {
+    models.iter().find_map(|model| {
+        let descriptor = descriptor_for_model(descriptors, model);
+        (public_model_id(model, descriptor) == requested).then(|| model.clone())
+    })
+}
+
+fn descriptor_for_model<'a>(
+    descriptors: &'a [mesh::ServedModelDescriptor],
+    model_name: &str,
+) -> Option<&'a mesh::ServedModelDescriptor> {
+    descriptors
+        .iter()
+        .find(|descriptor| descriptor.identity.model_name == model_name)
+}
+
+fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescriptor>) -> String {
+    descriptor
+        .and_then(|descriptor| public_model_id_from_identity(&descriptor.identity))
+        .or_else(|| public_model_id_from_local_path(model_name))
+        .unwrap_or_else(|| model_name.to_string())
+}
+
+fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
+    match identity.source_kind {
+        mesh::ModelSourceKind::HuggingFace => identity
+            .repository
+            .as_deref()
+            .and_then(|repo| public_huggingface_model_ref(repo, identity.artifact.as_deref())),
+        mesh::ModelSourceKind::Catalog => identity
+            .canonical_ref
+            .as_deref()
+            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+            .map(|model_ref| model_ref.display_id()),
+        mesh::ModelSourceKind::LocalGguf
+        | mesh::ModelSourceKind::DirectUrl
+        | mesh::ModelSourceKind::Unknown => None,
+    }
+}
+
+fn public_model_id_from_local_path(model_name: &str) -> Option<String> {
+    let path = crate::models::find_model_path(model_name);
+    let identity = crate::models::huggingface_identity_for_path(&path)?;
+    Some(crate::models::installed_model_huggingface_ref(&identity))
+}
+
+fn public_huggingface_model_ref(repo: &str, artifact: Option<&str>) -> Option<String> {
+    let selector = artifact.and_then(model_ref::quant_selector_from_gguf_file);
+    Some(model_ref::format_model_ref(repo, None, selector.as_deref()))
 }
 
 pub async fn send_json_ok(mut stream: TcpStream, data: &serde_json::Value) -> std::io::Result<()> {
@@ -3309,6 +3406,36 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
+    fn hf_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
+        mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: model_name.to_string(),
+                source_kind: mesh::ModelSourceKind::HuggingFace,
+                repository: Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF".to_string()),
+                revision: Some("0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a".to_string()),
+                artifact: Some("Falcon-H1-1.5B-Instruct-Q4_K_M.gguf".to_string()),
+                canonical_ref: Some(
+                    "tiiuae/Falcon-H1-1.5B-Instruct-GGUF@0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a/Falcon-H1-1.5B-Instruct-Q4_K_M.gguf"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn catalog_model_ref_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
+        mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: model_name.to_string(),
+                source_kind: mesh::ModelSourceKind::Catalog,
+                canonical_ref: Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     async fn read_request_from_parts_with_limits(
         parts: Vec<Vec<u8>>,
         limits: HttpReadLimits,
@@ -3336,6 +3463,73 @@ mod tests {
 
     async fn read_request_from_parts(parts: Vec<Vec<u8>>) -> BufferedHttpRequest {
         read_request_from_parts_with_limits(parts, HTTP_READ_LIMITS).await
+    }
+
+    #[test]
+    fn models_list_uses_public_huggingface_model_ref_ids() {
+        let models = vec!["Falcon-H1-1.5B-Instruct-Q4_K_M".to_string()];
+        let descriptors = vec![hf_descriptor(&models[0])];
+
+        let body = models_list_json(&models, &descriptors);
+
+        assert_eq!(
+            body["data"][0]["id"],
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
+        );
+        assert_eq!(
+            body["data"][0]["display_name"],
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
+        );
+        assert_eq!(body["data"][0]["owned_by"], "mesh-llm");
+    }
+
+    #[test]
+    fn models_list_uses_catalog_model_ref_ids() {
+        let models = vec!["Falcon-H1-1.5B-Instruct-Q4_K_M".to_string()];
+        let descriptors = vec![catalog_model_ref_descriptor(&models[0])];
+
+        let body = models_list_json(&models, &descriptors);
+
+        assert_eq!(
+            body["data"][0]["id"],
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
+        );
+    }
+
+    #[test]
+    fn public_model_alias_rewrites_request_to_internal_model_name() {
+        let models = vec!["Falcon-H1-1.5B-Instruct-Q4_K_M".to_string()];
+        let descriptors = vec![catalog_model_ref_descriptor(&models[0])];
+        let body = serde_json::json!({
+            "model": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+        let mut raw = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+            body_bytes.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(&body_bytes);
+        let mut request = BufferedHttpRequest {
+            raw,
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            body_json: Some(body),
+            body_json_attempted: true,
+            body_bytes: Some(body_bytes),
+            body_len_bytes: 0,
+            completion_tokens: None,
+            model_name: Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M".to_string()),
+            session_hint: None,
+            request_object_request_ids: Vec::new(),
+            response_adapter: ResponseAdapter::None,
+        };
+
+        rewrite_public_model_alias(&mut request, &models, &descriptors);
+
+        assert_eq!(request.model_name.as_deref(), Some(models[0].as_str()));
+        assert_eq!(request.body_json.as_ref().unwrap()["model"], models[0]);
     }
 
     fn build_chunked_request(body: &[u8], chunks: &[usize]) -> Vec<u8> {
