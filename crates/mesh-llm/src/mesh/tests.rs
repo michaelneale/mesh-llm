@@ -834,6 +834,23 @@ fn non_matching_or_non_moe_peers_keep_default_heartbeat_grace() {
 }
 
 #[test]
+fn relay_only_non_moe_peers_get_extra_heartbeat_cycle() {
+    let peer = make_test_peer_info(make_test_endpoint_id(12));
+    let local_descriptors = vec![];
+    let local_runtime = vec![];
+
+    let policy = heartbeat_failure_policy_for_peer(&local_descriptors, &local_runtime, &peer, true);
+
+    assert_eq!(
+        policy,
+        HeartbeatFailurePolicy {
+            allow_recent_inbound_grace: true,
+            failure_threshold: 3,
+        }
+    );
+}
+
+#[test]
 fn shared_exact_moe_startup_relaxes_heartbeat_during_convergence() {
     let mut peer = make_test_peer_info(make_test_endpoint_id(11));
     peer.served_model_descriptors = vec![make_test_moe_descriptor(

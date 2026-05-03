@@ -3416,19 +3416,32 @@ impl Node {
                         // may be broken/stale while the peer is genuinely alive on
                         // a different path).
                         if recently_seen {
-                            emit_mesh_info(format!(
-                                "ℹ️  Peer {} reported dead by {} but seen recently (direct alive), ignoring",
-                                dead_id.fmt_short(),
-                                remote.fmt_short()
-                            ));
-                        } else if reporter_cooled {
-                            // This reporter recently had a false claim about this
-                            // target rejected — skip the expensive probe.
-                            tracing::debug!(
-                                "PeerDown: {} reported {} dead but reporter is in cooldown, ignoring",
-                                remote.fmt_short(),
-                                dead_id.fmt_short()
-                            );
+                            if reporter_cooled {
+                                // This reporter recently had a false claim
+                                // about this target rejected, and we still
+                                // have direct proof-of-life — skip repeated
+                                // handling/logging without suppressing future
+                                // stale-peer confirmation.
+                                tracing::debug!(
+                                    "PeerDown: {} reported {} dead but reporter is in cooldown and peer was seen recently, ignoring",
+                                    remote.fmt_short(),
+                                    dead_id.fmt_short()
+                                );
+                            } else {
+                                emit_mesh_info(format!(
+                                    "ℹ️  Peer {} reported dead by {} but seen recently (direct alive), ignoring",
+                                    dead_id.fmt_short(),
+                                    remote.fmt_short()
+                                ));
+                                // Record rejection so repeated false reports from
+                                // this reporter about this target are suppressed
+                                // while we still have recent proof-of-life.
+                                node.state
+                                    .lock()
+                                    .await
+                                    .peer_down_rejections
+                                    .insert((remote, dead_id), std::time::Instant::now());
+                            }
                         } else {
                             let should_remove = if let Some(conn) = conn_opt {
                                 // Have a connection — probe it. Treat both

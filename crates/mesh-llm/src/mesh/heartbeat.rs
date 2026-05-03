@@ -542,14 +542,17 @@ impl Node {
                         fail_counts.remove(&peer_id);
                     } else {
                         let (recently_seen, failure_policy) = {
-                            let state = node.state.lock().await;
-                            let peer = state.peers.get(&peer_id).cloned();
-                            let is_relay_only = state
-                                .connections
-                                .get(&peer_id)
+                            let (peer, conn) = {
+                                let state = node.state.lock().await;
+                                (
+                                    state.peers.get(&peer_id).cloned(),
+                                    state.connections.get(&peer_id).cloned(),
+                                )
+                            };
+                            let is_relay_only = conn
+                                .as_ref()
                                 .map(|c| selected_path_snapshot(c).kind == SelectedPathKind::Relay)
                                 .unwrap_or(false);
-                            drop(state);
                             let local_descriptors =
                                 node.served_model_descriptors.lock().await.clone();
                             let local_runtime = node.model_runtime_descriptors.lock().await.clone();
