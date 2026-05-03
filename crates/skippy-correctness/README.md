@@ -118,5 +118,5 @@ exit non-zero on mismatch unless `--allow-mismatch` is set.
 - Requires a built `skippy-server` binary for binary transport checks.
 - Uses the same llama-backed runtime ABI as the server.
 - The default build statically links llama from
-  `.deps/llama-stage.cpp/build-stage-abi-static`; set
+  `.deps/llama.cpp/build-stage-abi-static`; set
   `LLAMA_STAGE_BUILD_DIR` only when using a non-default build directory.

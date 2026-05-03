@@ -9,7 +9,6 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
-$buildBinDir = if ($env:MESH_LLM_LLAMA_BUILD_BIN_DIR) { $env:MESH_LLM_LLAMA_BUILD_BIN_DIR } else { Join-Path $repoRoot ".deps\llama.cpp\build\bin" }
 $releaseBinDir = Join-Path $repoRoot "target\release"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -107,14 +106,6 @@ function Get-BundleBinaryName {
     return "$BaseName.exe"
 }
 
-function Copy-RuntimeLibs {
-    param([string]$BundleDir)
-
-    Get-ChildItem -Path $buildBinDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item $_.FullName -Destination (Join-Path $BundleDir $_.Name) -Force
-    }
-}
-
 function Copy-BenchmarkBinaries {
     param([string]$BundleDir)
 
@@ -181,7 +172,6 @@ New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 
 try {
     Copy-Item $meshBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "mesh-llm" $binaryFlavor)) -Force
-    Copy-RuntimeLibs $bundleDir
     Copy-BenchmarkBinaries $bundleDir
 
     $versionedPath = Join-Path $resolvedOutputDir $versionedAsset

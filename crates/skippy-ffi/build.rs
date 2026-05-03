@@ -35,12 +35,8 @@ fn main() {
             }
         })
         .unwrap_or_else(|_| {
-            let default_dir = workspace_root.join(".deps/llama-stage.cpp/build-stage-abi-static");
-            if default_dir.exists() {
-                default_dir
-            } else {
-                workspace_root.join(".deps/skippy-llama.cpp/build-stage-abi-static")
-            }
+            let default_dir = workspace_root.join(".deps/llama.cpp/build-stage-abi-static");
+            default_dir
         });
 
     let search_dirs = [

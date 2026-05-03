@@ -35,8 +35,8 @@ materialization, telemetry, and benchmark policy belongs in the crates above it.
 ## Build Integration
 
 By default the build script statically links patched llama.cpp from
-`.deps/llama-stage.cpp/build-stage-abi-static`. Prepare and build it with
-`just llama-stage-build`. Set `LLAMA_STAGE_BUILD_DIR` to point at another
+`.deps/llama.cpp/build-stage-abi-static`. Prepare and build it with
+`just llama-build`. Set `LLAMA_STAGE_BUILD_DIR` to point at another
 prepared build directory, for example a Linux GPU backend build:
 
 | Backend | Expected ggml archive | Runtime libraries linked on Linux |

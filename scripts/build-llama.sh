@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama-stage.cpp}"
+LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama.cpp}"
 LLAMA_BACKEND="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-cpu}}}"
 
 case "$LLAMA_BACKEND" in
-  cpu|cuda|rocm|hip|vulkan) ;;
+  cpu|cuda|rocm|hip|vulkan|metal) ;;
   *)
     echo "unsupported LLAMA_STAGE_BACKEND: $LLAMA_BACKEND" >&2
-    echo "expected one of: cpu, cuda, rocm, hip, vulkan" >&2
+    echo "expected one of: cpu, cuda, rocm, hip, vulkan, metal" >&2
     exit 1
     ;;
 esac
@@ -25,7 +25,7 @@ fi
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
   echo "llama checkout not found: $LLAMA_WORKDIR" >&2
-  echo "run: just llama-stage-prepare" >&2
+    echo "run: just llama-prepare" >&2
   exit 1
 fi
 
@@ -62,6 +62,9 @@ case "$LLAMA_BACKEND" in
     ;;
   vulkan)
     CMAKE_ARGS+=(-DGGML_VULKAN=ON)
+    ;;
+  metal)
+    CMAKE_ARGS+=(-DGGML_METAL=ON)
     ;;
 esac
 

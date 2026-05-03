@@ -304,7 +304,7 @@ maybe_build() {
     return
   fi
   run_logged "build" "" \
-    env LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-$ROOT/.deps/llama-stage.cpp/build-stage-abi-static}" \
+    env LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-$ROOT/.deps/llama.cpp/build-stage-abi-static}" \
     cargo build -p skippy-correctness -p skippy-server -p llama-spec-bench
 }
 
@@ -423,7 +423,7 @@ if [[ -n "$DRAFT_MODEL_PATH" ]]; then
   mkdir -p "$SPEC_DIR"
   spec_args=(
     env
-    "LLAMA_STAGE_BUILD_DIR=${LLAMA_STAGE_BUILD_DIR:-$ROOT/.deps/llama-stage.cpp/build-stage-abi-static}"
+    "LLAMA_STAGE_BUILD_DIR=${LLAMA_STAGE_BUILD_DIR:-$ROOT/.deps/llama.cpp/build-stage-abi-static}"
     "$ROOT/target/debug/llama-spec-bench"
     --target-model-path "$TARGET_MODEL_PATH"
     --draft-model-path "$DRAFT_MODEL_PATH"

@@ -152,7 +152,7 @@ Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribu
 - **MoE model too big?** → expert parallelism — experts split across nodes, zero cross-node traffic
 
 If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
-Mesh serving embeds the skippy stage runtime and uses a pinned `llama-stage.cpp`
+Mesh serving embeds the skippy stage runtime and uses a pinned `llama.cpp`
 ABI patch queue; see [docs/SKIPPY.md](docs/SKIPPY.md).
 
 **Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. The planner chooses peers and layer ranges, sends `LoadStage` downstream-to-upstream, waits for readiness, then publishes the stage-0 route. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
@@ -619,8 +619,6 @@ You can also try the hosted demo:
 - [docs/plugins/README.md](docs/plugins/README.md) for the plugin system and blackboard internals
 - [docs/moe/README.md](docs/moe/README.md) for MoE ranking and placement planning
 - [docs/design/VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md) for inter-model collaboration design
-- [docs/design/LLAMA_CPP_FORK.md](docs/design/LLAMA_CPP_FORK.md) for llama.cpp patch queue maintenance
-- [docs/design/LLAMA_STAGE_INTEGRATION_PLAN.md](docs/design/LLAMA_STAGE_INTEGRATION_PLAN.md) for the planned llama-stage-runtime integration
 - [crates/mesh-llm/README.md](crates/mesh-llm/README.md) for Rust crate structure
 - [ROADMAP.md](ROADMAP.md) for future work
 

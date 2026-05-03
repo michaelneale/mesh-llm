@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
 $llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join-Path $repoRoot ".deps\llama.cpp" }
-$buildDir = Join-Path $llamaDir "build"
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi" }
 $meshUiDir = Join-Path $repoRoot "crates\mesh-llm\ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
@@ -588,30 +588,6 @@ function Ensure-VulkanToolchain {
     }
 }
 
-function Copy-DevRuntimeBinaries {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$BackendName,
-        [Parameter(Mandatory = $true)]
-        [string]$BuildDir,
-        [Parameter(Mandatory = $true)]
-        [string]$RepoRoot
-    )
-
-    $sourceBinDir = Join-Path $BuildDir "bin"
-    $targetDir = Join-Path $RepoRoot "target\release"
-    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-
-    foreach ($name in @("llama-moe-analyze.exe", "llama-moe-split.exe")) {
-        $source = Join-Path $sourceBinDir $name
-        if (Test-Path $source) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $name) -Force
-        }
-    }
-
-    Write-Host "Staged llama.cpp support binaries in target\release."
-}
-
 function Invoke-InRepo {
     param(
         [scriptblock]$Script
@@ -630,6 +606,7 @@ $CudaArch = Normalize-RecipeArgument $CudaArch @("cuda_arch", "cudaarch")
 $RocmArch = Normalize-RecipeArgument $RocmArch @("rocm_arch", "rocmarch", "amd_arch", "amdarch")
 
 $backendName = Resolve-Backend $Backend
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi-$backendName" }
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
@@ -669,13 +646,13 @@ Invoke-InRepo {
         "-S", $llamaDir,
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_CXX_FLAGS=/DPATH_MAX=4096",
-        "-DGGML_RPC=ON",
         "-DGGML_METAL=OFF",
         "-DGGML_CUDA=OFF",
         "-DGGML_HIP=OFF",
         "-DGGML_VULKAN=OFF",
         "-DBUILD_SHARED_LIBS=OFF",
-        "-DLLAMA_OPENSSL=OFF",
+        "-DLLAMA_CURL=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=OFF",
         "-DLLAMA_BUILD_TESTS=OFF",
         "-DGGML_BUILD_TESTS=OFF"
     )
@@ -726,8 +703,8 @@ Invoke-InRepo {
 
     $parallelJobs = [Environment]::ProcessorCount
     Invoke-NativeCommand "cmake" $cmakeArgs
-    Invoke-NativeCommand "cmake" @("--build", $buildDir, "--config", "Release", "--parallel", "$parallelJobs")
-    Write-Host "Build complete: $buildDir\bin\"
+    Invoke-NativeCommand "cmake" @("--build", $buildDir, "--config", "Release", "--parallel", "$parallelJobs", "--target", "llama", "llama-common", "mtmd")
+    Write-Host "Patched llama.cpp ABI build complete: $buildDir"
 
     if (Test-Path $meshUiDir) {
         if (Test-UiBuildRequired -UiDirectory $meshUiDir) {
@@ -747,7 +724,7 @@ Invoke-InRepo {
     }
 
     Write-Host "Building mesh-llm..."
+    $env:LLAMA_STAGE_BUILD_DIR = $buildDir
     Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
-    Copy-DevRuntimeBinaries -BackendName $backendName -BuildDir $buildDir -RepoRoot $repoRoot
     Write-Host "Mesh binary: target\release\mesh-llm.exe"
 }

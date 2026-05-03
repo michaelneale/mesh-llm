@@ -51,7 +51,7 @@ Bring over these skippy crates:
 
 | Crate | Why mesh needs it |
 |---|---|
-| `skippy-ffi` | Rust FFI bindings to the llama-stage.cpp ABI |
+| `skippy-ffi` | Rust FFI bindings to the llama.cpp ABI |
 | `skippy-runtime` | Safe model/session/runtime wrapper and layer package materialization |
 | `skippy-protocol` | Stage wire protocol and shared stage config types |
 | `skippy-server` | Stage transport and OpenAI driver code to refactor into embeddable APIs |
@@ -688,7 +688,7 @@ Bring over:
 
 - `skippy-ffi`
 - `skippy-runtime`
-- llama-stage.cpp ABI build scripts
+- llama.cpp ABI build scripts
 
 Add a mesh build path for the skippy ABI. This step must also add any missing
 ABI/config support needed for mesh parity, especially selected device and

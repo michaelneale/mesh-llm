@@ -7,8 +7,8 @@ NEW_SHA="${2:?new upstream sha required}"
 LLAMA_WORKDIR="${3:-${LLAMA_WORKDIR:-$ROOT/.deps/llama.cpp}}"
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
-    echo "llama checkout not found: $LLAMA_WORKDIR" >&2
-    exit 1
+  echo "llama checkout not found: $LLAMA_WORKDIR" >&2
+  exit 1
 fi
 
 git -C "$LLAMA_WORKDIR" fetch origin master --tags >/dev/null 2>&1 || true
@@ -16,51 +16,54 @@ git -C "$LLAMA_WORKDIR" fetch origin master --tags >/dev/null 2>&1 || true
 CHANGED_FILES="$(git -C "$LLAMA_WORKDIR" diff --name-only "$OLD_SHA..$NEW_SHA" || true)"
 
 commit_base_url() {
-    local remote_url
-    remote_url="$(git -C "$LLAMA_WORKDIR" remote get-url origin 2>/dev/null || true)"
+  local remote_url
+  remote_url="$(git -C "$LLAMA_WORKDIR" remote get-url origin 2>/dev/null || true)"
 
-    case "$remote_url" in
-        git@github.com:*)
-            remote_url="https://github.com/${remote_url#git@github.com:}"
-            ;;
-        https://github.com/*)
-            ;;
-        *)
-            echo "https://github.com/ggml-org/llama.cpp/commit"
-            return
-            ;;
-    esac
+  case "$remote_url" in
+    git@github.com:*)
+      remote_url="https://github.com/${remote_url#git@github.com:}"
+      ;;
+    https://github.com/*)
+      ;;
+    *)
+      echo "https://github.com/ggml-org/llama.cpp/commit"
+      return
+      ;;
+  esac
 
-    remote_url="${remote_url%.git}"
-    echo "$remote_url/commit"
+  remote_url="${remote_url%.git}"
+  echo "$remote_url/commit"
 }
 
 commit_list() {
-    local base_url="$1"
-    git -C "$LLAMA_WORKDIR" log --reverse --format='%H%x09%h%x09%s' "$OLD_SHA..$NEW_SHA" |
-        while IFS=$'\t' read -r full_sha short_sha subject; do
-            printf -- '- [%s](%s/%s) %s\n' "$short_sha" "$base_url" "$full_sha" "$subject"
-        done
+  local base_url="$1"
+  git -C "$LLAMA_WORKDIR" log --reverse --format='%H%x09%h%x09%s' "$OLD_SHA..$NEW_SHA" |
+    while IFS=$'\t' read -r full_sha short_sha subject; do
+      printf -- '- [%s](%s/%s) %s\n' "$short_sha" "$base_url" "$full_sha" "$subject"
+    done
 }
 
 area_count() {
-    local pattern="$1"
-    awk -v pattern="$pattern" 'NF && $0 ~ pattern { count++ } END { print count + 0 }' <<< "$CHANGED_FILES"
+  local pattern="$1"
+  awk -v pattern="$pattern" 'NF && $0 ~ pattern { count++ } END { print count + 0 }' <<< "$CHANGED_FILES"
 }
 
 runtime_count="$(area_count '^(src/llama|include/llama|src/models/)')"
 gguf_count="$(area_count '(^gguf|gguf|ggml.*gguf|src/llama-model-loader)')"
 metal_count="$(area_count '(^ggml/src/ggml-metal|metal)')"
 cuda_count="$(area_count '(^ggml/src/ggml-cuda|cuda|CUDA)')"
-rocm_count="$(area_count '(^ggml/src/ggml-hip|hip|rocm|ROCm|HIP)')"
-vulkan_count="$(area_count '(^ggml/src/ggml-vulkan|vulkan|Vulkan)')"
 tokenizer_count="$(area_count '(vocab|token|tokenizer|unicode)')"
 build_count="$(area_count '(^CMakeLists.txt|^cmake/|CMake|Makefile|scripts/)')"
 test_count="$(area_count '(^tests/|^examples/)')"
 upstream_commit_base_url="$(commit_base_url)"
 upstream_commit_list="$(commit_list "$upstream_commit_base_url")"
 if [[ -z "$upstream_commit_list" ]]; then
-    upstream_commit_list="_No upstream commits found._"
+  upstream_commit_list="_No upstream commits found._"
+fi
+if [[ -n "${SKIPPY_CORRECTNESS_MODEL:-}" ]]; then
+  correctness_checked="x"
+else
+  correctness_checked=" "
 fi
 
 cat <<EOF
@@ -84,8 +87,6 @@ git diff --stat $OLD_SHA..$NEW_SHA
 - GGUF / model loading: $gguf_count changed files
 - Metal backend: $metal_count changed files
 - CUDA backend: $cuda_count changed files
-- ROCm / HIP backend: $rocm_count changed files
-- Vulkan backend: $vulkan_count changed files
 - Tokenizer / vocab: $tokenizer_count changed files
 - Build / CMake / scripts: $build_count changed files
 - Tests / examples: $test_count changed files
@@ -102,10 +103,13 @@ $upstream_commit_list
 
 ## Validation
 
-- [x] Applied Mesh-LLM llama.cpp patch queue
-- [x] Built mesh-llm debug binary on Linux
-- [x] Ran Linux unit tests and protocol compatibility tests
-- [x] Built patched llama.cpp CPU/RPC binaries on Linux
-- [x] Ran Linux CLI and client-auto smokes
-- [x] Ran reusable Linux inference smoke workflow
+- [x] Applied Mesh-LLM llama.cpp ABI patch stack
+- [x] Built patched llama.cpp stage ABI
+- [x] Built imported skippy Rust crates
+- [x] Ran targeted Rust checks/tests
+- [$correctness_checked] Ran \`skippy-correctness single-step\`
+- [$correctness_checked] Ran \`skippy-correctness chain\`
+
+Correctness smokes are checked when \`SKIPPY_CORRECTNESS_MODEL\` is
+available to the workflow runner.
 EOF

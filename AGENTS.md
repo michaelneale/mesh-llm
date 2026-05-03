@@ -54,18 +54,18 @@ This is an npm bug that surfaces when `node_modules` gets into a bad state (e.g.
 
 See `CONTRIBUTING.md` for full dev workflow.
 
-## llama.cpp Fork
+## llama.cpp ABI Patch Queue
 
-mesh-llm depends on a patched fork of llama.cpp at **[github.com/Mesh-LLM/llama.cpp](https://github.com/Mesh-LLM/llama.cpp)** (`master` branch). The fork carries 8 commits on top of upstream: RPC optimizations, MoE expert splitting, and mesh hooks for inter-model collaboration.
+mesh-llm embeds the stage runtime and links patched llama.cpp static ABI
+libraries. The only durable llama.cpp patch queue is
+`third_party/llama.cpp/patches`, pinned by `third_party/llama.cpp/upstream.txt`.
 
-**Be careful with this fork.** It is a separate repo with its own history. Breaking the fork breaks all builds.
-
-- The pinned commit SHA lives in `LLAMA_CPP_SHA` at the repo root. All build scripts and CI read from this file.
-- `just build` clones/pulls the fork automatically. You do not need to touch it for normal Rust or UI work.
-- **Do not update the fork to upstream HEAD unless explicitly asked.** Upstream llama.cpp changes frequently and rebasing our patches can introduce conflicts.
-- If you need to update the fork, read `docs/design/LLAMA_CPP_FORK.md` first. It has the full procedure: rebase, resolve conflicts, push, bump SHA, rebuild, test.
-- If you need to add a new C++ patch, work in the fork checkout, commit, push, then bump `LLAMA_CPP_SHA`.
-- The fork's `master` is always: upstream HEAD + our patches rebased on top. Linear history, never merge commits.
+- `just build` prepares `.deps/llama.cpp`, applies the ABI patch queue, builds
+  the static libraries, builds the UI, and builds `mesh-llm`.
+- Do not reintroduce an external `llama-server` / `rpc-server` runtime lane.
+- If you need to update upstream llama.cpp, use `scripts/prepare-llama.sh`,
+  `scripts/build-llama.sh`, `scripts/update-llama-pin.sh`, and
+  `scripts/summarize-llama-upstream.sh`.
 
 ## Project Structure
 
@@ -274,7 +274,7 @@ Those paths use the runtime metadata under `~/.mesh-llm/runtime/` to stop the tr
 If an instance is wedged badly enough that the scoped stop path cannot reach it, fall back to an emergency kill:
 
 ```bash
-pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
+pkill -f mesh-llm
 ```
 
 ## Deploy Checklist — MANDATORY
@@ -284,35 +284,25 @@ pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
 ### Before starting nodes
 1. **Bump VERSION** in `main.rs` so you can verify the running binary is new code.
 2. `just build && just bundle`
-3. Kill ALL processes on ALL nodes — `pkill -9 -f mesh-llm; pkill -9 -f llama-server; pkill -9 -f rpc-server`
-4. Verify clean — `ps -eo pid,args | grep -E 'mesh-llm|llama-server|rpc-server' | grep -v grep` must be empty.
+3. Kill ALL processes on ALL nodes — `pkill -9 -f mesh-llm`
+4. Verify clean — `ps -eo pid,args | grep -E 'mesh-llm' | grep -v grep` must be empty.
 5. Deploy bundle — scp + tar + codesign on remote nodes.
 6. Verify version — `mesh-llm --version` on every node.
 
 ### After starting nodes
 7. Verify exactly 1 mesh-llm process per node.
-8. Verify child processes (at most 1 rpc-server + 1 llama-server per mesh-llm).
+8. Verify no external llama serving child processes are required.
 9. `curl -s http://localhost:3131/api/status` returns valid JSON on every node.
 10. Check `/api/status` peers for new version string.
 11. Verify expected peer count.
 12. Test inference through every model in `/v1/models`.
 13. Test `/v1/` passthrough on port 3131.
 
-### Debugging llama-server startup
+### Debugging Embedded Runtime Startup
 
-If llama-server fails to start (stuck at "⏳ Starting llama-server..."), check its log file inside the per-instance runtime directory:
-
-```bash
-# Default location
-ls ~/.mesh-llm/runtime/
-# Your instance ID is the mesh-llm process PID
-cat ~/.mesh-llm/runtime/$(pgrep -f mesh-llm | head -1)/logs/llama-server.log
-
-# Or look at the stderr output from mesh-llm itself — it now prints
-# the absolute log path when spawning llama-server / rpc-server.
-```
-
-rpc-server logs live at `~/.mesh-llm/runtime/{pid}/logs/rpc-server-{port}.log`.
+If the embedded runtime fails to load, check mesh-llm stderr/log output and
+`~/.mesh-llm/runtime/` for the active instance metadata. The old external
+`llama-server` and `rpc-server` log files are no longer produced.
 
 To override the runtime root (e.g., for tests or systemd):
 - `MESH_LLM_RUNTIME_ROOT=/path/to/custom/root` — highest priority
