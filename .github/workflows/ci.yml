@@ -181,10 +181,10 @@ jobs:
           echo "PASS: No forbidden dependencies found"
 
       # skippy-ffi links the stage ABI static libraries at Rust compile time.
-      - name: Build skippy llama.cpp ABI (CPU)
+      - name: Build llama-stage.cpp ABI (CPU)
         run: |
-          scripts/prepare-skippy-llama.sh pinned
-          scripts/build-skippy-llama.sh
+          scripts/prepare-llama-stage.sh pinned
+          scripts/build-llama-stage.sh
 
       # Build in dev/debug profile, NOT release. Two reasons:
       #  1. Build + Unit tests steps share one target/ subdir and one
@@ -386,10 +386,10 @@ jobs:
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
 
       # skippy-ffi links the stage ABI static libraries at Rust compile time.
-      - name: Build skippy llama.cpp ABI (CPU)
+      - name: Build llama-stage.cpp ABI (CPU)
         run: |
-          scripts/prepare-skippy-llama.sh pinned
-          scripts/build-skippy-llama.sh
+          scripts/prepare-llama-stage.sh pinned
+          scripts/build-llama-stage.sh
 
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
@@ -496,11 +496,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       # skippy-ffi links the stage ABI static libraries at Rust compile time.
-      - name: Build skippy llama.cpp ABI (CPU)
+      - name: Build llama-stage.cpp ABI (CPU)
         if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
-          scripts/prepare-skippy-llama.sh pinned
-          scripts/build-skippy-llama.sh
+          scripts/prepare-llama-stage.sh pinned
+          scripts/build-llama-stage.sh
 
       # See linux job for rationale on building in dev/debug, not release.
       - name: Build mesh-llm binary (debug)

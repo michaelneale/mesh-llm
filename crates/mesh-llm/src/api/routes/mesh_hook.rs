@@ -4,12 +4,12 @@ use crate::inference::virtual_llm;
 use serde_json::Value;
 use tokio::net::TcpStream;
 
-/// Handle mesh hook callbacks from llama-server.
+/// Handle mesh hook callbacks from the serving runtime.
 ///
 /// Parses the JSON payload once, dispatches to typed handler functions.
 /// Each hook blocks the C++ slot until we respond.
 ///
-/// Only accepts connections from loopback — llama-server is always on localhost.
+/// Only accepts connections from loopback because hook callbacks are local-only.
 /// This prevents remote callers from triggering costly peer consultations even
 /// when the management API is bound to 0.0.0.0 via `--listen-all`.
 pub async fn handle(

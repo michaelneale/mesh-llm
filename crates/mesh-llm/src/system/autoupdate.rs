@@ -421,38 +421,18 @@ fn mesh_binary_name() -> String {
     launch::platform_bin_name("mesh-llm")
 }
 
-fn bundled_server_flavor_name(name: &str, flavor: launch::BinaryFlavor) -> String {
-    launch::platform_bin_name(&format!("{name}-{}", flavor.suffix()))
-}
-
-fn has_bundled_server_pair(dir: &Path, flavor: launch::BinaryFlavor) -> bool {
-    dir.join(bundled_server_flavor_name("rpc-server", flavor))
-        .is_file()
-        && dir
-            .join(bundled_server_flavor_name("llama-server", flavor))
-            .is_file()
-}
-
-fn bundled_server_flavors(dir: &Path) -> Vec<launch::BinaryFlavor> {
-    launch::BinaryFlavor::ALL
-        .into_iter()
-        .filter(|flavor| has_bundled_server_pair(dir, *flavor))
-        .collect()
-}
-
 fn installed_bundle_flavor(
-    dir: &Path,
+    _dir: &Path,
     requested: Option<launch::BinaryFlavor>,
 ) -> Option<launch::BinaryFlavor> {
     if let Some(flavor) = requested {
-        return has_bundled_server_pair(dir, flavor).then_some(flavor);
+        return Some(flavor);
     }
 
-    let mut matches = bundled_server_flavors(dir);
-    if matches.len() == 1 {
-        matches.pop()
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Some(launch::BinaryFlavor::Metal)
     } else {
-        None
+        Some(launch::BinaryFlavor::Cpu)
     }
 }
 
@@ -762,17 +742,7 @@ fn collect_bundle_files(
     extracted: &Path,
     expected_flavor: launch::BinaryFlavor,
 ) -> Result<Vec<String>> {
-    let flavors = bundled_server_flavors(extracted);
-    anyhow::ensure!(
-        flavors.len() == 1,
-        "Downloaded bundle must contain exactly one bundled server flavor"
-    );
-    anyhow::ensure!(
-        flavors[0] == expected_flavor,
-        "Downloaded bundle flavor mismatch: expected {}, found {}",
-        expected_flavor.suffix(),
-        flavors[0].suffix()
-    );
+    let _ = expected_flavor;
 
     let mut files = Vec::new();
     for entry in std::fs::read_dir(extracted)
@@ -840,16 +810,10 @@ fn replace_bundle_files(
     std::fs::create_dir_all(backup)
         .with_context(|| format!("Failed to create backup dir {}", backup.display()))?;
 
-    let staged_names: BTreeSet<&str> = staged_files.iter().map(String::as_str).collect();
-    let mut managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
-    managed_names.extend(crate::runtime::bundled_bin_names("rpc-server"));
-    managed_names.extend(crate::runtime::bundled_bin_names("llama-server"));
+    let managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
 
     let mut backed_up = Vec::new();
     for name in managed_names {
-        if staged_names.contains(name.as_str()) {
-            continue;
-        }
         backup_existing_file(install_dir, backup, &name, &mut backed_up)?;
     }
     for name in staged_files {
@@ -959,9 +923,7 @@ fn windows_update_script(
         .collect();
     let args_json = serde_json::to_string(&args)?;
 
-    let mut managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
-    managed_names.extend(crate::runtime::bundled_bin_names("rpc-server"));
-    managed_names.extend(crate::runtime::bundled_bin_names("llama-server"));
+    let managed_names: BTreeSet<String> = BTreeSet::from([mesh_binary_name()]);
     let managed_json = serde_json::to_string(&managed_names.into_iter().collect::<Vec<_>>())?;
 
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "''");
@@ -1441,46 +1403,25 @@ mod tests {
     }
 
     #[test]
-    fn test_bundle_install_dir_requires_matching_flavor_pair() {
+    fn test_bundle_install_dir_uses_requested_or_platform_default_flavor() {
         let dir = temp_dir("bundle-install");
         let exe = dir.join(mesh_binary_name());
         std::fs::write(&exe, b"binary").unwrap();
-        std::fs::write(
-            dir.join(bundled_server_flavor_name(
-                "rpc-server",
-                launch::BinaryFlavor::Cpu,
-            )),
-            b"rpc",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join(bundled_server_flavor_name(
-                "llama-server",
-                launch::BinaryFlavor::Cpu,
-            )),
-            b"llama",
-        )
-        .unwrap();
+        let default_flavor = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            launch::BinaryFlavor::Metal
+        } else {
+            launch::BinaryFlavor::Cpu
+        };
 
         assert_eq!(
             bundle_install_dir(&exe, None),
-            Some((dir.clone(), launch::BinaryFlavor::Cpu))
+            Some((dir.clone(), default_flavor))
         );
         assert_eq!(
-            bundle_install_dir(&exe, Some(launch::BinaryFlavor::Cpu)),
-            Some((dir.clone(), launch::BinaryFlavor::Cpu))
+            bundle_install_dir(&exe, Some(launch::BinaryFlavor::Vulkan)),
+            Some((dir.clone(), launch::BinaryFlavor::Vulkan))
         );
-        assert_eq!(
-            bundle_install_dir(&exe, Some(launch::BinaryFlavor::Cuda)),
-            None
-        );
-
-        let missing = temp_dir("bundle-missing");
-        let missing_exe = missing.join(mesh_binary_name());
-        std::fs::write(&missing_exe, b"binary").unwrap();
-        assert_eq!(bundle_install_dir(&missing_exe, None), None);
 
         let _ = std::fs::remove_dir_all(dir);
-        let _ = std::fs::remove_dir_all(missing);
     }
 }

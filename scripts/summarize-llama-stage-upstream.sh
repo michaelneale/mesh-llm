@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OLD_SHA="${1:?old upstream sha required}"
 NEW_SHA="${2:?new upstream sha required}"
-LLAMA_WORKDIR="${3:-${LLAMA_WORKDIR:-$ROOT/.deps/skippy-llama.cpp}}"
+LLAMA_WORKDIR="${3:-${LLAMA_WORKDIR:-$ROOT/.deps/llama-stage.cpp}}"
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
   echo "llama checkout not found: $LLAMA_WORKDIR" >&2
@@ -67,7 +67,7 @@ else
 fi
 
 cat <<EOF
-## Skippy llama.cpp Upstream Pin Update
+## llama-stage.cpp Upstream Pin Update
 
 Previous pin: \`$OLD_SHA\`
 New pin: \`$NEW_SHA\`
@@ -103,8 +103,8 @@ $upstream_commit_list
 
 ## Validation
 
-- [x] Applied Mesh-LLM skippy llama.cpp patch stack
-- [x] Built patched skippy llama stage ABI
+- [x] Applied Mesh-LLM llama-stage.cpp patch stack
+- [x] Built patched llama stage stage ABI
 - [x] Built imported skippy Rust crates
 - [x] Ran targeted Rust checks/tests
 - [$correctness_checked] Ran \`skippy-correctness single-step\`

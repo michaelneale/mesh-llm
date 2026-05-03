@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::cli::GpuCommand;
-use crate::inference::launch;
 
 use crate::system::{
     benchmark::{self, SavedBenchmark},
@@ -18,7 +17,6 @@ pub(crate) fn dispatch_gpu_command(json_output: bool, command: Option<&GpuComman
 
 pub(crate) fn run_gpus(json_output: bool) -> Result<()> {
     let mut hw = hardware::survey();
-    apply_installed_backend_devices(&mut hw);
     attach_cached_bandwidth(&mut hw);
 
     if json_output {
@@ -38,23 +36,6 @@ pub(crate) fn run_gpus(json_output: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn apply_installed_backend_devices(hw: &mut HardwareSurvey) {
-    let Some(flavor) = installed_rpc_binary_flavor() else {
-        return;
-    };
-
-    for gpu in &mut hw.gpus {
-        gpu.backend_device = launch::backend_device_for_flavor(gpu.index, flavor);
-    }
-}
-
-fn installed_rpc_binary_flavor() -> Option<launch::BinaryFlavor> {
-    let bin_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    launch::resolve_binary_flavor(&bin_dir, "rpc-server", None)
-        .ok()
-        .flatten()
 }
 
 fn run_gpu_benchmark(json_output: bool) -> Result<()> {

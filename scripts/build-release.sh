@@ -84,14 +84,14 @@ cmake "${cmake_flags[@]}"
 echo "Building llama.cpp..."
 cmake --build "$BUILD_DIR" --config Release --parallel "$(detect_jobs)"
 
-SKIPPY_LLAMA_WORKDIR="${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/skippy-llama.cpp}"
-export SKIPPY_LLAMA_BUILD_DIR="${SKIPPY_LLAMA_BUILD_DIR:-$SKIPPY_LLAMA_WORKDIR/build-stage-abi-static}"
+LLAMA_STAGE_WORKDIR="${LLAMA_STAGE_WORKDIR:-${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/llama-stage.cpp}}"
+export LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-${SKIPPY_LLAMA_BUILD_DIR:-$LLAMA_STAGE_WORKDIR/build-stage-abi-static}}"
 
-echo "Building Skippy stage ABI..."
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" "$SCRIPT_DIR/prepare-skippy-llama.sh" "${SKIPPY_LLAMA_PIN_SHA:-pinned}"
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" \
-    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR" \
-    "$SCRIPT_DIR/build-skippy-llama.sh"
+echo "Building llama-stage ABI..."
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" "$SCRIPT_DIR/prepare-llama-stage.sh" "${LLAMA_STAGE_PIN_SHA:-${SKIPPY_LLAMA_PIN_SHA:-pinned}}"
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" \
+    LLAMA_BUILD_DIR="$LLAMA_STAGE_BUILD_DIR" \
+    "$SCRIPT_DIR/build-llama-stage.sh"
 
 echo "Building UI..."
 "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"

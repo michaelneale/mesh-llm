@@ -1,9 +1,7 @@
 use crate::api;
-use crate::cli::ServingBackend;
-use crate::inference::{election, launch, skippy};
+use crate::inference::{election, skippy};
 use crate::mesh;
 use crate::models;
-use crate::network::openai::backend;
 use crate::network::router;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -13,10 +11,6 @@ pub(super) enum RuntimeEvent {
 }
 
 pub(super) enum LocalRuntimeBackendHandle {
-    Llama {
-        process: launch::InferenceServerHandle,
-        backend_proxy: backend::BackendProxyHandle,
-    },
     Skippy {
         model: skippy::SkippyModelHandle,
         http: skippy::SkippyHttpHandle,
@@ -35,20 +29,12 @@ pub(super) struct LocalRuntimeModelHandle {
 impl LocalRuntimeModelHandle {
     pub(super) fn pid(&self) -> u32 {
         match &self.inner {
-            LocalRuntimeBackendHandle::Llama { process, .. } => process.pid(),
             LocalRuntimeBackendHandle::Skippy { .. } => std::process::id(),
         }
     }
 
     pub(super) async fn shutdown(self) {
         match self.inner {
-            LocalRuntimeBackendHandle::Llama {
-                process,
-                backend_proxy,
-            } => {
-                backend_proxy.shutdown().await;
-                process.shutdown().await;
-            }
             LocalRuntimeBackendHandle::Skippy { model, http, .. } => {
                 let _ = http.shutdown().await;
                 model.shutdown();
@@ -64,15 +50,12 @@ pub(super) struct ManagedModelController {
 
 pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) runtime: &'a crate::runtime::instance::InstanceRuntime,
-    pub(super) bin_dir: &'a Path,
-    pub(super) binary_flavor: Option<launch::BinaryFlavor>,
     pub(super) node: &'a mesh::Node,
     pub(super) model_path: &'a Path,
     pub(super) mmproj_override: Option<&'a Path>,
     pub(super) ctx_size_override: Option<u32>,
     pub(super) pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
     pub(super) slots: usize,
-    pub(super) serving_backend: ServingBackend,
 }
 
 pub(super) fn resolved_model_name(path: &Path) -> String {
@@ -221,77 +204,7 @@ pub(super) async fn start_runtime_local_model(
         "runtime load only supports models that fit locally on this node"
     );
 
-    match spec.serving_backend {
-        ServingBackend::Llama => {
-            return start_runtime_llama_model(spec, model_name, model_bytes, my_vram).await;
-        }
-        ServingBackend::Skippy => {
-            return start_runtime_skippy_model(spec, model_name).await;
-        }
-    }
-}
-
-async fn start_runtime_llama_model(
-    spec: LocalRuntimeModelStartSpec<'_>,
-    model_name: String,
-    model_bytes: u64,
-    my_vram: u64,
-) -> Result<(
-    String,
-    LocalRuntimeModelHandle,
-    tokio::sync::oneshot::Receiver<()>,
-)> {
-    let llama_port = alloc_local_port().await?;
-    let mmproj_path = spec
-        .mmproj_override
-        .map(Path::to_path_buf)
-        .or_else(|| mmproj_path_for_model(&model_name));
-    let process = launch::start_llama_server(
-        spec.runtime,
-        spec.bin_dir,
-        spec.binary_flavor,
-        launch::ModelLaunchSpec {
-            model: spec.model_path,
-            http_port: llama_port,
-            tunnel_ports: &[],
-            tensor_split: None,
-            split_mode: election::local_multi_gpu_split_mode(spec.binary_flavor),
-            draft: None,
-            draft_max: 0,
-            model_bytes,
-            my_vram,
-            mmproj: mmproj_path.as_deref(),
-            ctx_size_override: spec.ctx_size_override,
-            total_group_vram: None,
-            selected_gpu: spec.pinned_gpu,
-            slots: spec.slots,
-            runtime_data_producer: Some(spec.node.runtime_data_collector().producer(
-                crate::runtime_data::RuntimeDataSource {
-                    scope: "runtime",
-                    plugin_data_key: None,
-                    plugin_endpoint_key: None,
-                },
-            )),
-        },
-    )
-    .await?;
-    let backend_proxy = backend::start_backend_proxy(llama_port).await?;
-    let port = backend_proxy.port();
-
-    Ok((
-        model_name,
-        LocalRuntimeModelHandle {
-            port,
-            backend: "llama".into(),
-            context_length: process.context_length,
-            slots: spec.slots,
-            inner: LocalRuntimeBackendHandle::Llama {
-                process: process.handle,
-                backend_proxy,
-            },
-        },
-        process.death_rx,
-    ))
+    start_runtime_skippy_model(spec, model_name).await
 }
 
 async fn start_runtime_skippy_model(

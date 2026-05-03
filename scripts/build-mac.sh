@@ -49,17 +49,6 @@ stage_dev_runtime_binaries() {
     local source_bin_dir="$BUILD_DIR/bin"
 
     mkdir -p "$target_dir"
-    rm -f "$target_dir/rpc-server" "$target_dir/llama-server"
-    rm -f "$target_dir"/rpc-server-*(N) "$target_dir"/llama-server-*(N)
-
-    for name in rpc-server llama-server; do
-        local source="$source_bin_dir/$name"
-        if [[ ! -f "$source" ]]; then
-            echo "Error: expected llama.cpp binary not found: $source" >&2
-            exit 1
-        fi
-        cp "$source" "$target_dir/$name-$backend"
-    done
 
     for name in llama-moe-analyze llama-moe-split; do
         local source="$source_bin_dir/$name"
@@ -97,14 +86,14 @@ echo "Building llama.cpp..."
 cmake --build "$BUILD_DIR" --config Release --parallel "$(detect_jobs)"
 echo "Build complete: $BUILD_DIR/bin/"
 
-SKIPPY_LLAMA_WORKDIR="${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/skippy-llama.cpp}"
-export SKIPPY_LLAMA_BUILD_DIR="${SKIPPY_LLAMA_BUILD_DIR:-$SKIPPY_LLAMA_WORKDIR/build-stage-abi-static}"
+LLAMA_STAGE_WORKDIR="${LLAMA_STAGE_WORKDIR:-${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/llama-stage.cpp}}"
+export LLAMA_STAGE_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-${SKIPPY_LLAMA_BUILD_DIR:-$LLAMA_STAGE_WORKDIR/build-stage-abi-static}}"
 
-echo "Building Skippy stage ABI..."
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" "$SCRIPT_DIR/prepare-skippy-llama.sh" "${SKIPPY_LLAMA_PIN_SHA:-pinned}"
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" \
-    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR" \
-    "$SCRIPT_DIR/build-skippy-llama.sh"
+echo "Building llama-stage ABI..."
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" "$SCRIPT_DIR/prepare-llama-stage.sh" "${LLAMA_STAGE_PIN_SHA:-${SKIPPY_LLAMA_PIN_SHA:-pinned}}"
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" \
+    LLAMA_BUILD_DIR="$LLAMA_STAGE_BUILD_DIR" \
+    "$SCRIPT_DIR/build-llama-stage.sh"
 
 if [[ -d "$MESH_DIR" ]]; then
     echo "Building mesh-llm..."

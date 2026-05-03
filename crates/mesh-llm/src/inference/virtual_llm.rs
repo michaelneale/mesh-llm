@@ -1,7 +1,7 @@
 //! Virtual LLM — consult other models in the mesh during inference.
 //!
-//! llama-server POSTs to /mesh/hook at key points. Each hook blocks the
-//! slot. We can ask mesh peers for help and tell C++ to inject context
+//! The serving runtime POSTs to /mesh/hook at key points. Each hook blocks the
+//! slot. We can ask mesh peers for help and tell the runtime to inject context
 //! or replace the response.
 //!
 //! | Function          | When                      | Action                    |
@@ -279,8 +279,8 @@ pub fn extract_image(payload: &Value) -> (String, String) {
                     }
                     Some("image_url") => {}
                     Some("text") => {
-                        // Check for mesh_image_url — preserved by llama-server's
-                        // content parser when mesh hooks strip unsupported images.
+                        // Check for mesh_image_url preserved by the OpenAI surface
+                        // when mesh hooks strip unsupported images.
                         if image_url.is_empty() {
                             if let Some(url) = part["mesh_image_url"]["url"].as_str() {
                                 image_url = url.to_string();

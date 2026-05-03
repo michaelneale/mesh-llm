@@ -3,13 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/skippy-llama.cpp}"
-LLAMA_BACKEND="${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-cpu}}"
+LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama-stage.cpp}"
+LLAMA_BACKEND="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-cpu}}}"
 
 case "$LLAMA_BACKEND" in
   cpu|cuda|rocm|hip|vulkan) ;;
   *)
-    echo "unsupported SKIPPY_LLAMA_BACKEND: $LLAMA_BACKEND" >&2
+    echo "unsupported LLAMA_STAGE_BACKEND: $LLAMA_BACKEND" >&2
     echo "expected one of: cpu, cuda, rocm, hip, vulkan" >&2
     exit 1
     ;;
@@ -25,7 +25,7 @@ fi
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
   echo "llama checkout not found: $LLAMA_WORKDIR" >&2
-  echo "run: just llama-prepare" >&2
+  echo "run: just llama-stage-prepare" >&2
   exit 1
 fi
 
@@ -39,7 +39,7 @@ CMAKE_ARGS=(
   -B "$LLAMA_BUILD_DIR"
   -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
   -DBUILD_SHARED_LIBS=OFF
-  -DGGML_NATIVE="${SKIPPY_GGML_NATIVE:-OFF}"
+  -DGGML_NATIVE="${LLAMA_STAGE_GGML_NATIVE:-${SKIPPY_GGML_NATIVE:-OFF}}"
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_CURL=OFF
@@ -48,14 +48,16 @@ CMAKE_ARGS=(
 case "$LLAMA_BACKEND" in
   cuda)
     CMAKE_ARGS+=(-DGGML_CUDA=ON)
-    if [[ -n "${SKIPPY_CUDA_ARCHITECTURES:-}" ]]; then
-      CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$SKIPPY_CUDA_ARCHITECTURES")
+    CUDA_ARCHITECTURES="${LLAMA_STAGE_CUDA_ARCHITECTURES:-${SKIPPY_CUDA_ARCHITECTURES:-}}"
+    if [[ -n "$CUDA_ARCHITECTURES" ]]; then
+      CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES")
     fi
     ;;
   rocm|hip)
     CMAKE_ARGS+=(-DGGML_HIP=ON)
-    if [[ -n "${SKIPPY_AMDGPU_TARGETS:-}" ]]; then
-      CMAKE_ARGS+=(-DAMDGPU_TARGETS="$SKIPPY_AMDGPU_TARGETS")
+    AMDGPU_TARGETS="${LLAMA_STAGE_AMDGPU_TARGETS:-${SKIPPY_AMDGPU_TARGETS:-}}"
+    if [[ -n "$AMDGPU_TARGETS" ]]; then
+      CMAKE_ARGS+=(-DAMDGPU_TARGETS="$AMDGPU_TARGETS")
     fi
     ;;
   vulkan)
@@ -63,13 +65,14 @@ case "$LLAMA_BACKEND" in
     ;;
 esac
 
-if [[ "${SKIPPY_USE_SCCACHE:-1}" != "0" && -n "$SCCACHE_BIN" ]]; then
+USE_SCCACHE="${LLAMA_STAGE_USE_SCCACHE:-${SKIPPY_USE_SCCACHE:-1}}"
+if [[ "$USE_SCCACHE" != "0" && -n "$SCCACHE_BIN" ]]; then
   CMAKE_ARGS+=(
     -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE_BIN"
     -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_BIN"
   )
   echo "using sccache for llama.cpp C/C++ compilation: $SCCACHE_BIN"
-elif [[ "${SKIPPY_USE_SCCACHE:-1}" != "0" ]]; then
+elif [[ "$USE_SCCACHE" != "0" ]]; then
   echo "sccache not found; llama.cpp build will run without compiler caching" >&2
 fi
 

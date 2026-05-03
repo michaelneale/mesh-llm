@@ -1359,18 +1359,18 @@ async fn probe_http_response<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Res
 }
 
 /// Like `probe_http_response` but with a much longer timeout suitable for
-/// the local backend proxy (which fronts llama-server). Prefill on a busy
-/// or slow machine can legitimately take minutes (large prompts,
-/// concurrent slot contention, slower hardware). We still bound the wait
-/// to catch a truly wedged local backend proxy path.
+/// the local OpenAI surface. Prefill on a busy or slow machine can
+/// legitimately take minutes (large prompts, concurrent slot contention,
+/// slower hardware). We still bound the wait to catch a truly wedged local
+/// runtime path.
 async fn probe_http_response_local<R: AsyncRead + Unpin>(reader: &mut R) -> Result<ResponseProbe> {
     probe_http_response_with_timeout(reader, local_response_first_byte_timeout()).await
 }
 
-/// Local backend proxy timeout: 10 minutes. This is a safety net for a
-/// wedged local proxy path, not a latency budget. Normal prefill even on
-/// slow hardware with large prompts and concurrent slots completes well
-/// within this window.
+/// Local OpenAI surface timeout: 10 minutes. This is a safety net for a wedged
+/// local runtime path, not a latency budget. Normal prefill even on slow
+/// hardware with large prompts and concurrent slots completes well within this
+/// window.
 fn local_response_first_byte_timeout() -> Duration {
     Duration::from_secs(10 * 60)
 }
@@ -1598,7 +1598,7 @@ async fn route_local_attempt(
             let _ = upstream.set_nodelay(true);
             if let Err(err) = upstream.write_all(prefetched).await {
                 tracing::warn!(
-                    "API proxy: failed to forward buffered request to local backend proxy on {port}: {err}"
+                    "API proxy: failed to forward buffered request to local OpenAI surface on {port}: {err}"
                 );
                 return RouteAttemptResult::RetryableUnavailable;
             }
@@ -1633,7 +1633,7 @@ async fn route_local_attempt(
                 }
                 Err(err) => {
                     tracing::warn!(
-                        "API proxy: failed to read local response from backend proxy on {port}: {err}"
+                        "API proxy: failed to read local response from OpenAI surface on {port}: {err}"
                     );
                     if is_timeout_error(&err) {
                         RouteAttemptResult::RetryableTimeout
@@ -1644,7 +1644,7 @@ async fn route_local_attempt(
             }
         }
         Err(err) => {
-            tracing::warn!("API proxy: can't reach local backend proxy on {port}: {err}");
+            tracing::warn!("API proxy: can't reach local OpenAI surface on {port}: {err}");
             RouteAttemptResult::RetryableUnavailable
         }
     }
@@ -2855,7 +2855,7 @@ pub async fn route_moe_request(
     true
 }
 
-/// Route a request to a known inference target (local backend proxy or remote host).
+/// Route a request to a known inference target (local OpenAI surface or remote host).
 ///
 /// Used by the API proxy after election has determined the target.
 pub async fn route_to_target(
@@ -4024,8 +4024,8 @@ mod tests {
     }
 
     /// `probe_http_response_local` uses a much longer timeout (10 min)
-    /// than `probe_http_response` (5 min), because local llama-server
-    /// prefill can legitimately take minutes under load.
+    /// than `probe_http_response` (5 min), because local prefill can
+    /// legitimately take minutes under load.
     ///
     /// This test sends a response after a 2s delay and verifies that
     /// `probe_http_response_local` waits for it (well within its 10-min

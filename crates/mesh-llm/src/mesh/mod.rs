@@ -657,10 +657,10 @@ fn upsert_mesh_catalog_descriptor(
 /// Role a node plays in the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum NodeRole {
-    /// Provides GPU compute via rpc-server for a specific model.
+    /// Provides staged GPU compute for a specific model.
     #[default]
     Worker,
-    /// Runs llama-server for a specific model, orchestrates inference, provides HTTP API.
+    /// Runs the local serving runtime for a specific model and provides the HTTP API.
     Host { http_port: u16 },
     /// Lite client — no compute, accesses the API via tunnel.
     Client,
@@ -5489,13 +5489,13 @@ mod heartbeat;
 pub use gossip::backfill_legacy_descriptors;
 #[allow(unused_imports)]
 use gossip::{apply_transitive_ann, peer_meaningfully_changed};
+#[cfg(test)]
+pub(crate) use heartbeat::peer_is_eligible_for_active_moe;
 #[allow(unused_imports)]
 use heartbeat::{
     heartbeat_failure_policy_for_peer, HeartbeatFailurePolicy, MOE_RECOVERY_PROBATION_SECS,
 };
-pub(crate) use heartbeat::{
-    moe_recovery_ready_at, peer_is_eligible_for_active_moe, resolve_peer_down,
-};
+pub(crate) use heartbeat::{moe_recovery_ready_at, resolve_peer_down};
 
 #[cfg(test)]
 mod tests;

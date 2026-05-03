@@ -51,7 +51,7 @@ Bring over these skippy crates:
 
 | Crate | Why mesh needs it |
 |---|---|
-| `skippy-ffi` | Rust FFI bindings to the skippy llama.cpp ABI |
+| `skippy-ffi` | Rust FFI bindings to the llama-stage.cpp ABI |
 | `skippy-runtime` | Safe model/session/runtime wrapper and layer package materialization |
 | `skippy-protocol` | Stage wire protocol and shared stage config types |
 | `skippy-server` | Stage transport and OpenAI driver code to refactor into embeddable APIs |
@@ -73,7 +73,7 @@ stage ABI patch queue. The replacement is:
 
 - remove mesh's patched `llama-server`, `rpc-server`, mesh hooks, RPC rewrite
   path, and MoE split tooling;
-- adopt the skippy stage ABI build and runtime path;
+- adopt the llama-stage ABI build and runtime path;
 - keep mesh-llm as the user-facing product and orchestration layer.
 
 ## Lessons From PR #421
@@ -595,11 +595,11 @@ Current branch status:
 
 ## PR Readiness Notes
 
-This branch has moved from planning into an integration branch for merging
-parts of skippy into mesh-llm. It imports the skippy runtime/protocol/topology
-crates, introduces `openai-frontend`, adds the metrics workflow, wires skippy as
-a selectable serving backend, and keeps the legacy llama backend reachable only
-as a transition path while parity is burned in.
+This branch has moved from planning into an integration branch for replacing
+mesh's old llama-server/rpc-server serving path with the embedded skippy
+runtime. It imports the skippy runtime/protocol/topology crates, introduces
+`openai-frontend`, adds the metrics workflow, and routes mesh serving through
+the embedded runtime.
 
 Mergeability notes:
 
@@ -623,15 +623,15 @@ Local burn-in checklist for this branch:
 
 Legacy reachability audit:
 
-- `--serving-backend skippy` skips legacy `rpc-server` startup and routes direct
-  GGUFs through the embedded skippy backend.
-- `--serving-backend llama` still reaches `inference::launch` and the legacy
-  election loop; this remains the known transitional backend until staged
-  topology, multimodal, tool/logprob/structured-output, lifecycle, and Auto LLM
-  hook parity are fully burned in.
-- `mesh_hook` routes and `inference::virtual_llm` remain for legacy
-  `llama-server` callbacks, while the skippy path carries Rust-owned hook
-  policy integration.
+- the `--serving-backend` selector has been removed;
+- legacy `rpc-server` startup and direct RPC tunnel/rewrite paths have been
+  removed;
+- direct GGUFs route through the embedded skippy runtime as single-stage fake
+  packages;
+- stage splits route through topology planning, downstream `LoadStage`
+  readiness, and stage-0 route publication;
+- `mesh_hook` routes and `inference::virtual_llm` remain as the Rust-owned hook
+  policy surface used by the embedded runtime.
 - No standalone `kv-server`, `ngram-pool`, or `ngram-pool-server` crates are
   present in mesh. Mentions in `SKIPPY_RUNTIME_README.md` are imported
   standalone-skippy background, not planned mesh runtime components.
@@ -688,7 +688,7 @@ Bring over:
 
 - `skippy-ffi`
 - `skippy-runtime`
-- skippy llama.cpp ABI build scripts
+- llama-stage.cpp ABI build scripts
 
 Add a mesh build path for the skippy ABI. This step must also add any missing
 ABI/config support needed for mesh parity, especially selected device and
@@ -859,8 +859,7 @@ Implementation checkpoints:
   signals supplied by skippy;
 - [x] preserve `inference::virtual_llm` behavior and peer consultation
   semantics;
-- [x] keep `/mesh/hook` available only as a legacy compatibility route while the
-  llama backend exists;
+- [x] keep `/mesh/hook` available as the local Rust-owned hook policy route;
 - [x] add fixture tests for `mesh_hooks` injection, recursion guard, media
   fallback, uncertainty hint, drift hint behavior, and debug forcing controls.
 
@@ -870,13 +869,14 @@ After lifecycle, device pinning, OpenAI compatibility, direct GGUF packages,
 staged serving, runtime status, multimodal parity, and Auto LLM hook parity are
 proven:
 
-- delete `rpc-server` launch and pidfile paths;
-- delete RPC port rewrite;
-- delete patched `llama-server` mesh hooks only after equivalent Rust-owned
-  skippy hook points are live;
-- delete MoE expert split serving;
-- delete the old mesh llama.cpp patch queue;
-- simplify election around topology planning and backend target readiness.
+- [x] delete `rpc-server` launch and pidfile paths from the serving runtime;
+- [x] delete RPC port rewrite;
+- [x] replace patched `llama-server` mesh hooks with Rust-owned skippy hook
+  points;
+- [x] delete MoE expert split serving from request serving;
+- [x] simplify election around topology planning and backend target readiness;
+- [ ] retire stale legacy build/test/docker artifacts that only existed to
+  package external `llama-server`, `rpc-server`, or `llama-moe-*` binaries.
 
 ## Data Model Additions
 

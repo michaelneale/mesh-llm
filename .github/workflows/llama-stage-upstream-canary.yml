@@ -1,4 +1,4 @@
-name: Skippy llama.cpp Upstream Canary
+name: llama-stage.cpp Upstream Canary
 
 on:
   schedule:
@@ -30,16 +30,16 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build build-essential libcurl4-openssl-dev
 
-      - name: Prepare requested skippy llama upstream
+      - name: Prepare requested llama stage upstream
         env:
           UPSTREAM_SHA: ${{ github.event.inputs.upstream_sha || 'latest' }}
-        run: scripts/prepare-skippy-llama.sh "$UPSTREAM_SHA"
+        run: scripts/prepare-llama-stage.sh "$UPSTREAM_SHA"
 
       - name: Capture upstream SHAs
         id: sha
         run: |
-          old_sha="$(tr -d '[:space:]' < third_party/skippy-llama.cpp/upstream.txt)"
-          new_sha="$(tr -d '[:space:]' < .deps/skippy-llama.cpp/.skippy-upstream-sha)"
+          old_sha="$(tr -d '[:space:]' < third_party/llama-stage.cpp/upstream.txt)"
+          new_sha="$(tr -d '[:space:]' < .deps/llama-stage.cpp/.llama-stage-upstream-sha)"
           echo "old_sha=$old_sha" >> "$GITHUB_OUTPUT"
           echo "new_sha=$new_sha" >> "$GITHUB_OUTPUT"
           if [[ "$old_sha" == "$new_sha" ]]; then
@@ -48,41 +48,41 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build patched skippy llama
+      - name: Build patched llama stage
         if: steps.sha.outputs.changed == 'true'
-        run: scripts/build-skippy-llama.sh
+        run: scripts/build-llama-stage.sh
 
-      - name: Build imported skippy crates
+      - name: Build stage runtime crates
         if: steps.sha.outputs.changed == 'true'
         run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p llama-model-slice -p skippy-correctness -p llama-spec-bench
 
-      - name: Update skippy llama upstream pin
+      - name: Update llama stage upstream pin
         if: steps.sha.outputs.changed == 'true'
-        run: scripts/update-skippy-llama-pin.sh
+        run: scripts/update-llama-stage-pin.sh
 
       - name: Generate summary
         if: steps.sha.outputs.changed == 'true'
         run: |
-          scripts/summarize-skippy-llama-upstream.sh \
+          scripts/summarize-llama-stage-upstream.sh \
             "${{ steps.sha.outputs.old_sha }}" \
             "${{ steps.sha.outputs.new_sha }}" \
-            .deps/skippy-llama.cpp \
-            > /tmp/skippy-llama-upstream-pr.md
+            .deps/llama-stage.cpp \
+            > /tmp/llama-stage-upstream-pr.md
 
       - name: Push upstream pin branch
         if: steps.sha.outputs.changed == 'true'
         env:
-          BRANCH: automation/update-skippy-llama-upstream
+          BRANCH: automation/update-llama-stage-upstream
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add third_party/skippy-llama.cpp/upstream.txt
+          git add third_party/llama-stage.cpp/upstream.txt
           if git diff --cached --quiet; then
             echo "No upstream pin changes to commit."
             exit 0
           fi
-          git commit -m "Update skippy llama.cpp upstream pin"
+          git commit -m "Update llama-stage.cpp upstream pin"
           remote_sha="$(git ls-remote --heads origin "$BRANCH" | awk '{print $1}')"
           if [[ -n "$remote_sha" ]]; then
             git push --force-with-lease="refs/heads/$BRANCH:$remote_sha" origin "$BRANCH:$BRANCH"
@@ -94,11 +94,11 @@ jobs:
         if: steps.sha.outputs.changed == 'true'
         run: |
           {
-            echo "## Skippy llama.cpp upstream pin update"
+            echo "## llama-stage.cpp upstream pin update"
             echo
-            echo "Pushed \`automation/update-skippy-llama-upstream\`."
+            echo "Pushed \`automation/update-llama-stage-upstream\`."
             echo
-            cat /tmp/skippy-llama-upstream-pr.md
+            cat /tmp/llama-stage-upstream-pr.md
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Show sccache stats

@@ -601,25 +601,6 @@ function Copy-DevRuntimeBinaries {
     $sourceBinDir = Join-Path $BuildDir "bin"
     $targetDir = Join-Path $RepoRoot "target\release"
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-    Remove-Item -LiteralPath (Join-Path $targetDir "rpc-server.exe") -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $targetDir "llama-server.exe") -Force -ErrorAction SilentlyContinue
-    foreach ($pattern in @("rpc-server-*.exe", "llama-server-*.exe")) {
-        Get-ChildItem -Path (Join-Path $targetDir $pattern) -File -ErrorAction SilentlyContinue |
-            Remove-Item -Force
-    }
-
-    $flavoredCopies = @(
-        @{ Source = "rpc-server.exe"; Target = "rpc-server-$BackendName.exe" },
-        @{ Source = "llama-server.exe"; Target = "llama-server-$BackendName.exe" }
-    )
-
-    foreach ($copy in $flavoredCopies) {
-        $source = Join-Path $sourceBinDir $copy.Source
-        if (-not (Test-Path $source)) {
-            throw "Expected llama.cpp binary not found: $source"
-        }
-        Copy-Item -LiteralPath $source -Destination (Join-Path $targetDir $copy.Target) -Force
-    }
 
     foreach ($name in @("llama-moe-analyze.exe", "llama-moe-split.exe")) {
         $source = Join-Path $sourceBinDir $name
@@ -628,7 +609,7 @@ function Copy-DevRuntimeBinaries {
         }
     }
 
-    Write-Host "Staged llama.cpp runtime binaries in target\release with '$BackendName' flavor names."
+    Write-Host "Staged llama.cpp support binaries in target\release."
 }
 
 function Invoke-InRepo {

@@ -21,7 +21,7 @@ pub use capabilities::{CapabilityLevel, ModelCapabilities};
 pub use inventory::{scan_local_inventory_snapshot_with_progress, LocalModelInventorySnapshot};
 pub use local::{
     find_mmproj_path, find_model_path, huggingface_hub_cache_dir, huggingface_identity_for_path,
-    mesh_llm_cache_dir, resolve_mmproj_path, scan_installed_models, scan_local_models,
+    mesh_llm_cache_dir, scan_installed_models, scan_local_models,
 };
 pub use maintenance::{run_update, warn_about_updates_for_paths};
 pub(crate) use resolve::resolve_model_spec_with_progress;

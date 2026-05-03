@@ -199,17 +199,6 @@ stage_dev_runtime_binaries() {
     local source_bin_dir="$BUILD_DIR/bin"
 
     mkdir -p "$target_dir"
-    rm -f "$target_dir/rpc-server" "$target_dir/llama-server"
-    rm -f "$target_dir"/rpc-server-* "$target_dir"/llama-server-*
-
-    for name in rpc-server llama-server; do
-        local source="$source_bin_dir/$name"
-        if [[ ! -f "$source" ]]; then
-            echo "Error: expected llama.cpp binary not found: $source" >&2
-            exit 1
-        fi
-        cp "$source" "$target_dir/$name-$backend"
-    done
 
     for name in llama-moe-analyze llama-moe-split; do
         local source="$source_bin_dir/$name"
@@ -300,9 +289,9 @@ if [[ "$BACKEND" == "cpu" ]]; then
         -DGGML_METAL=OFF
     )
 elif [[ "$BACKEND" == "cuda" ]]; then
-    # GGML_CUDA_FA_ALL_QUANTS compiles the full matrix of FlashAttention
-    # kernels so mismatched K/V cache quantization types (e.g. K=q8_0, V=q4_0)
-    # don't hit BEST_FATTN_KERNEL_NONE and crash the rpc-server.
+            # GGML_CUDA_FA_ALL_QUANTS compiles the full matrix of FlashAttention
+            # kernels so mismatched K/V cache quantization types (e.g. K=q8_0, V=q4_0)
+            # don't hit BEST_FATTN_KERNEL_NONE in the llama runtime.
     # Required for any asymmetric KV cache; the default (ON) is what user-
     # facing release artifacts must ship. Tracking:
     # https://github.com/ggml-org/llama.cpp/issues/20866
@@ -387,24 +376,27 @@ fi
 cmake "${build_args[@]}"
 echo "llama.cpp build complete: $BUILD_DIR/bin/"
 
-SKIPPY_LLAMA_WORKDIR="${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/skippy-llama.cpp}"
-SKIPPY_STAGE_ABI_BACKEND="${SKIPPY_LLAMA_BACKEND:-cpu}"
-if [[ -z "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; then
-    if [[ "$SKIPPY_STAGE_ABI_BACKEND" == "cpu" ]]; then
-        export SKIPPY_LLAMA_BUILD_DIR="$SKIPPY_LLAMA_WORKDIR/build-stage-abi-static"
+LLAMA_STAGE_WORKDIR="${LLAMA_STAGE_WORKDIR:-${SKIPPY_LLAMA_WORKDIR:-$REPO_ROOT/.deps/llama-stage.cpp}}"
+LLAMA_STAGE_BACKEND_NAME="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-cpu}}"
+if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" && -n "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; then
+    export LLAMA_STAGE_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR"
+fi
+if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
+    if [[ "$LLAMA_STAGE_BACKEND_NAME" == "cpu" ]]; then
+        export LLAMA_STAGE_BUILD_DIR="$LLAMA_STAGE_WORKDIR/build-stage-abi-static"
     else
-        export SKIPPY_LLAMA_BUILD_DIR="$SKIPPY_LLAMA_WORKDIR/build-stage-abi-$SKIPPY_STAGE_ABI_BACKEND"
+        export LLAMA_STAGE_BUILD_DIR="$LLAMA_STAGE_WORKDIR/build-stage-abi-$LLAMA_STAGE_BACKEND_NAME"
     fi
 fi
 
-echo "Building Skippy stage ABI ($SKIPPY_STAGE_ABI_BACKEND)..."
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" "$SCRIPT_DIR/prepare-skippy-llama.sh" "${SKIPPY_LLAMA_PIN_SHA:-pinned}"
-LLAMA_WORKDIR="$SKIPPY_LLAMA_WORKDIR" \
-    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR" \
-    SKIPPY_LLAMA_BACKEND="$SKIPPY_STAGE_ABI_BACKEND" \
-    SKIPPY_CUDA_ARCHITECTURES="$CUDA_ARCH" \
-    SKIPPY_AMDGPU_TARGETS="$ROCM_ARCH" \
-    "$SCRIPT_DIR/build-skippy-llama.sh"
+echo "Building llama-stage ABI ($LLAMA_STAGE_BACKEND_NAME)..."
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" "$SCRIPT_DIR/prepare-llama-stage.sh" "${LLAMA_STAGE_PIN_SHA:-pinned}"
+LLAMA_WORKDIR="$LLAMA_STAGE_WORKDIR" \
+    LLAMA_BUILD_DIR="$LLAMA_STAGE_BUILD_DIR" \
+    LLAMA_STAGE_BACKEND="$LLAMA_STAGE_BACKEND_NAME" \
+    LLAMA_STAGE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
+    LLAMA_STAGE_AMDGPU_TARGETS="$ROCM_ARCH" \
+    "$SCRIPT_DIR/build-llama-stage.sh"
 
 if [[ -d "$MESH_DIR" ]]; then
     if [[ -d "$UI_DIR" ]]; then

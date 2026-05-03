@@ -152,11 +152,12 @@ Every node gets an OpenAI-compatible API at `http://localhost:9337/v1`. Distribu
 - **MoE model too big?** → expert parallelism — experts split across nodes, zero cross-node traffic
 
 If a node has enough VRAM, it always runs the full model. Splitting only happens when it has to.
-Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [docs/design/LLAMA_CPP_FORK.md](docs/design/LLAMA_CPP_FORK.md).
+Mesh serving embeds the skippy stage runtime and uses a pinned `llama-stage.cpp`
+ABI patch queue; see [docs/SKIPPY.md](docs/SKIPPY.md).
 
-**Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. llama-server runs on the highest-VRAM node and coordinates via RPC. Each rpc-server loads only its assigned layers from local disk. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
+**Pipeline parallelism** — for dense models that don't fit on one machine, layers are distributed across nodes proportional to VRAM. The planner chooses peers and layer ranges, sends `LoadStage` downstream-to-upstream, waits for readiness, then publishes the stage-0 route. Latency-aware: peers are selected by lowest RTT first, with an 80ms hard cap — high-latency nodes stay in the mesh as API clients but don't participate in splits.
 
-**MoE expert parallelism** — Mixture-of-Experts models (Qwen3-MoE, GLM, OLMoE, Mixtral, DeepSeek — increasingly the best-performing architectures) are auto-detected from the GGUF header. The mesh reads expert routing statistics to identify which experts matter most, then assigns each node an overlapping shard: a shared core of critical experts replicated everywhere, plus unique experts distributed across nodes. Each node gets a standalone GGUF with the full trunk + its expert subset and runs its own independent llama-server — zero cross-node traffic during inference. Sessions are hash-routed to nodes for KV cache locality.
+**MoE model support** — Mixture-of-Experts models (Qwen3-MoE, GLM, OLMoE, Mixtral, DeepSeek — increasingly the best-performing architectures) are auto-detected from GGUF metadata and routed through the same package/topology path as dense models. Family-specific split safety lives in the skippy topology policy instead of a separate external serving path.
 
 **Multi-model** — different nodes serve different models simultaneously. The API proxy peeks at the `model` field in each request and routes to the right node via QUIC tunnel. `/v1/models` lists everything available.
 
@@ -164,13 +165,13 @@ Currently using upstream llama.cpp with a pinned Mesh-LLM patch queue; see [docs
 
 **Inter-model collaboration** — models on the mesh help each other during inference. When a text-only model receives an image, it silently consults a vision model on the mesh for a caption and generates from that. When a small model is uncertain, it races two peers for a second opinion and injects the winner's answer as context. When a model gets stuck in a repetition loop, another model nudges it out. The caller sees one seamless response — they don't know multiple models collaborated. Inspired by [Mixture of Models (NSED)](https://arxiv.org/pdf/2601.16863) — the mesh is the ensemble. See [VIRTUAL_LLM.md](docs/design/VIRTUAL_LLM.md).
 
-**Latency design** — the key insight is that HTTP streaming is latency-tolerant while RPC is latency-multiplied. llama-server always runs on the same box as the GPU. The mesh tunnels HTTP, so cross-network latency only affects time-to-first-token, not per-token throughput. RPC only crosses the network for pipeline splits where the model physically doesn't fit on one machine.
+**Latency design** — the key insight is that HTTP streaming is latency-tolerant while per-token stage traffic needs explicit topology control. The mesh tunnels HTTP for request routing, and stage transport is used only when the model physically needs a split.
 
 ### Network optimizations
 
-- **Zero-transfer GGUF loading** — `SET_TENSOR_GGUF` tells rpc-server to read weights from local disk. Dropped model load from 111s → 5s.
-- **RPC round-trip reduction** — cached `get_alloc_size`, skip GGUF lookups for intermediates. Per-token round-trips: 558 → 8.
-- **Direct server-to-server transfers** — intermediate tensors pushed directly between rpc-servers via TCP, not relayed through the client.
+- **Direct GGUF packages** — direct `--gguf-file` loads materialize as single-stage fake packages in the runtime.
+- **Stage packages** — split serving loads derived stage artifacts from package materialization instead of launching external worker servers.
+- **Stage transport** — activation frames move between selected stage peers over the mesh stage transport, not through the OpenAI request tunnel.
 - **Speculative decoding** — draft model runs locally on the host, proposes tokens verified in one batched forward pass. +38% throughput on code (75% acceptance).
 
 ## Usage

@@ -1,10 +1,17 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_BUILD_DIR");
+    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=LLAMA_STAGE_LINK_MODE");
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SKIPPY_LLAMA_LINK_MODE");
 
-    if std::env::var("SKIPPY_LLAMA_LINK_MODE").as_deref() == Ok("dynamic") {
-        if let Ok(lib_dir) = std::env::var("SKIPPY_LLAMA_LIB_DIR") {
+    let link_mode =
+        std::env::var("LLAMA_STAGE_LINK_MODE").or_else(|_| std::env::var("SKIPPY_LLAMA_LINK_MODE"));
+    if link_mode.as_deref() == Ok("dynamic") {
+        if let Ok(lib_dir) =
+            std::env::var("LLAMA_STAGE_LIB_DIR").or_else(|_| std::env::var("SKIPPY_LLAMA_LIB_DIR"))
+        {
             println!("cargo:rustc-link-search=native={lib_dir}");
         }
         println!("cargo:rustc-link-lib=dylib=mtmd");
@@ -17,7 +24,8 @@ fn main() {
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"),
     )
     .join("../..");
-    let build_dir = std::env::var("SKIPPY_LLAMA_BUILD_DIR")
+    let build_dir = std::env::var("LLAMA_STAGE_BUILD_DIR")
+        .or_else(|_| std::env::var("SKIPPY_LLAMA_BUILD_DIR"))
         .map(std::path::PathBuf::from)
         .map(|path| {
             if path.is_absolute() {
@@ -26,7 +34,14 @@ fn main() {
                 workspace_root.join(path)
             }
         })
-        .unwrap_or_else(|_| workspace_root.join(".deps/skippy-llama.cpp/build-stage-abi-static"));
+        .unwrap_or_else(|_| {
+            let default_dir = workspace_root.join(".deps/llama-stage.cpp/build-stage-abi-static");
+            if default_dir.exists() {
+                default_dir
+            } else {
+                workspace_root.join(".deps/skippy-llama.cpp/build-stage-abi-static")
+            }
+        });
 
     let search_dirs = [
         build_dir.join("tools/mtmd"),

@@ -11,7 +11,7 @@ behavior belongs here. Prefer adding safe behavior in `skippy-runtime`.
 - expose C-compatible constants, structs, and function declarations
 - keep ABI ownership and error shapes explicit
 - link the patched llama.cpp and ggml static archives selected by
-  `SKIPPY_LLAMA_BUILD_DIR`
+  `LLAMA_STAGE_BUILD_DIR`
 
 Consumers should use `skippy-runtime` unless they are extending the ABI
 boundary itself.
@@ -35,8 +35,8 @@ materialization, telemetry, and benchmark policy belongs in the crates above it.
 ## Build Integration
 
 By default the build script statically links patched llama.cpp from
-`.deps/skippy-llama.cpp/build-stage-abi-static`. Prepare and build it with
-`just skippy-llama-build`. Set `SKIPPY_LLAMA_BUILD_DIR` to point at another
+`.deps/llama-stage.cpp/build-stage-abi-static`. Prepare and build it with
+`just llama-stage-build`. Set `LLAMA_STAGE_BUILD_DIR` to point at another
 prepared build directory, for example a Linux GPU backend build:
 
 | Backend | Expected ggml archive | Runtime libraries linked on Linux |
@@ -46,7 +46,7 @@ prepared build directory, for example a Linux GPU backend build:
 | Vulkan | `ggml/src/ggml-vulkan/libggml-vulkan.a` | `vulkan` |
 
 The backend archives are optional. The build script links each one only when it
-exists in `SKIPPY_LLAMA_BUILD_DIR`, so CPU-only and accelerator builds share the
+exists in `LLAMA_STAGE_BUILD_DIR`, so CPU-only and accelerator builds share the
 same Rust crate.
 
 ## ABI Contract

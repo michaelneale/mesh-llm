@@ -59,13 +59,13 @@ llama-prepare:
 llama-prepare-latest:
     @scripts/prepare-llama.sh latest
 
-# Prepare the pinned llama.cpp checkout and apply the Skippy stage ABI patch queue.
-skippy-llama-prepare:
-    @scripts/prepare-skippy-llama.sh pinned
+# Prepare the pinned llama.cpp checkout and apply the llama-stage ABI patch queue.
+llama-stage-prepare:
+    @scripts/prepare-llama-stage.sh pinned
 
-# Build the Skippy stage ABI static llama.cpp libraries.
-skippy-llama-build: skippy-llama-prepare
-    @scripts/build-skippy-llama.sh
+# Build the llama-stage ABI static llama.cpp libraries.
+llama-stage-build: llama-stage-prepare
+    @scripts/build-llama-stage.sh
 
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
@@ -105,8 +105,8 @@ family-certify *ARGS:
 
 # Run target/draft speculative compatibility checks.
 spec-bench target draft *ARGS:
-    SKIPPY_LLAMA_BUILD_DIR=".deps/skippy-llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
-    SKIPPY_LLAMA_BUILD_DIR=".deps/skippy-llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-stage.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
+    LLAMA_STAGE_BUILD_DIR=".deps/llama-stage.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
 
 # Smoke a standalone skippy OpenAI frontend stage.
 skippy-openai-smoke *ARGS:
@@ -129,63 +129,15 @@ download-model:
             "https://huggingface.co/unsloth/GLM-4.7-Flash-GGUF/resolve/main/GLM-4.7-Flash-Q4_K_M.gguf"
     fi
 
-# ── Raw TCP (no mesh) ──────────────────────────────────────────
-
-# Start rpc-server (worker) with local GGUF loading
-worker host="0.0.0.0" port="50052" device="" gguf=model:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    DEVICE="{{ device }}"
-    if [ -z "$DEVICE" ]; then
-        DEVICE="$(scripts/detect-llama-device.sh "{{ build_dir }}/bin/rpc-server")"
-    fi
-    exec {{ build_dir }}/bin/rpc-server --host {{ host }} --port {{ port }} -d "$DEVICE" --gguf {{ gguf }}
-
-# Start llama-server (orchestrator) pointing at an RPC worker
-serve rpc="127.0.0.1:50052" port="8080" gguf=model:
-    {{ build_dir }}/bin/llama-server \
-        --model {{ gguf }} \
-        --rpc {{ rpc }} \
-        -ngl 99 -fit off \
-        --port {{ port }}
-
-# Start both worker + server on localhost for testing
-local: build download-model
-    #!/usr/bin/env bash
-    set -euo pipefail
-    DEVICE="$(scripts/detect-llama-device.sh "{{ build_dir }}/bin/rpc-server")"
-    echo "Starting rpc-server (worker)..."
-    {{ build_dir }}/bin/rpc-server --host 127.0.0.1 --port 50052 -d "$DEVICE" --gguf {{ model }} &
-    WORKER_PID=$!
-    sleep 3
-    echo "Starting llama-server (orchestrator)..."
-    {{ build_dir }}/bin/llama-server \
-        --model {{ model }} \
-        --rpc 127.0.0.1:50052 \
-        -ngl 99 -fit off \
-        --port 8080 &
-    SERVER_PID=$!
-    echo "Waiting for server..."
-    for i in $(seq 1 120); do
-        curl -s http://localhost:8080/health 2>/dev/null | grep -q '"ok"' && break
-        sleep 1
-    done
-    echo "Ready: http://localhost:8080"
-    echo "Worker PID: $WORKER_PID  Server PID: $SERVER_PID"
-    echo "Press Ctrl+C to stop"
-    wait
-
 # ── QUIC Mesh ──────────────────────────────────────────────────
 
 mesh_bin := "target/release/mesh-llm"
-
-# Start a mesh worker (no llama-server, just rpc-server + mesh)
 
 # Prints an invite token for other nodes to join.
 mesh-worker gguf=model:
     {{ mesh_bin }} --model {{ gguf }} --bin-dir {{ build_dir }}/bin
 
-# Join an existing mesh. Auto-elects host, starts llama-server or contributes as worker.
+# Join an existing mesh and serve through the embedded runtime.
 mesh-join join="" port="9337" gguf=model split="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -205,27 +157,14 @@ bundle output="/tmp/mesh-bundle.tar.gz":
     DIR=$(mktemp -d)
     BUNDLE="$DIR/mesh-bundle"
     mkdir -p "$BUNDLE"
-    case "$(uname -s)" in
-        Darwin) LLAMA_FLAVOR="metal" ;;
-        Linux) LLAMA_FLAVOR="cpu" ;;
-        *) LLAMA_FLAVOR="" ;;
-    esac
-    rpc_name="rpc-server"
-    llama_name="llama-server"
-    if [ -n "$LLAMA_FLAVOR" ]; then
-        rpc_name="rpc-server-$LLAMA_FLAVOR"
-        llama_name="llama-server-$LLAMA_FLAVOR"
-    fi
     cp {{ mesh_bin }} "$BUNDLE/"
-    cp {{ build_dir }}/bin/rpc-server "$BUNDLE/$rpc_name"
-    cp {{ build_dir }}/bin/llama-server "$BUNDLE/$llama_name"
     cp {{ build_dir }}/bin/llama-moe-analyze "$BUNDLE/"
     cp {{ build_dir }}/bin/llama-moe-split "$BUNDLE/"
     for lib in {{ build_dir }}/bin/*.dylib; do
         cp "$lib" "$BUNDLE/" 2>/dev/null || true
     done
     # Fix rpaths for portability
-    for bin in "$BUNDLE/mesh-llm" "$BUNDLE/$rpc_name" "$BUNDLE/$llama_name" "$BUNDLE/llama-moe-analyze" "$BUNDLE/llama-moe-split"; do
+    for bin in "$BUNDLE/mesh-llm" "$BUNDLE/llama-moe-analyze" "$BUNDLE/llama-moe-split"; do
         [ -f "$bin" ] || continue
         install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
     done
@@ -365,11 +304,9 @@ clean-ui:
 clean-ui:
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location '{{ ui_dir }}'; Remove-Item -Recurse -Force node_modules,dist -ErrorAction SilentlyContinue"
     echo "Cleaned UI: node_modules + dist removed"
-# Stop all running servers
+# Stop mesh-llm processes
 stop:
     pkill -f "mesh-llm" 2>/dev/null || true
-    pkill -f "rpc-server" 2>/dev/null || true
-    pkill -f "llama-server" 2>/dev/null || true
     echo "Stopped"
 
 # Quick test inference (works with any running server on 8080 or 8090)

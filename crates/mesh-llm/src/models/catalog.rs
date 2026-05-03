@@ -36,8 +36,7 @@ pub struct CatalogModel {
     /// llama.cpp auto-discovers splits from the first file, but all parts
     /// must be present in the same directory.
     pub extra_files: Vec<CatalogAsset>,
-    /// Multimodal projector for vision models.
-    /// When set, llama-server is launched with `--mmproj <file>`.
+    /// Multimodal projector sidecar for vision models.
     pub mmproj: Option<CatalogAsset>,
 }
 

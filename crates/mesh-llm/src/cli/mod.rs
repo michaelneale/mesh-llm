@@ -230,19 +230,12 @@ pub enum LogFormat {
     Json,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-pub(crate) enum ServingBackend {
-    #[default]
-    Llama,
-    Skippy,
-}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "mesh-llm",
     version = crate::VERSION,
     about = "Pool GPUs over the internet for LLM inference",
-    after_help = "Preferred runtime entrypoints:\n  mesh-llm serve\n  mesh-llm serve --model Qwen3-8B-Q4_K_M\n  mesh-llm client --auto\n  mesh-llm gpus\n\n`mesh-llm serve` loads startup models from ~/.mesh-llm/config.toml.\nRun with --help-advanced for all options.\n\nExternal backends (vLLM, TGI, Ollama):\n  Add to ~/.mesh-llm/config.toml:\n    [[plugin]]\n    name = \"openai-endpoint\"\n    url = \"http://gpu-box:8000/v1\"\n  Then: mesh-llm serve     (or: mesh-llm client  to skip llama.cpp)"
+    after_help = "Preferred runtime entrypoints:\n  mesh-llm serve\n  mesh-llm serve --model Qwen3-8B-Q4_K_M\n  mesh-llm client --auto\n  mesh-llm gpus\n\n`mesh-llm serve` loads startup models from ~/.mesh-llm/config.toml.\nRun with --help-advanced for all options.\n\nExternal backends (vLLM, TGI, Ollama):\n  Add to ~/.mesh-llm/config.toml:\n    [[plugin]]\n    name = \"openai-endpoint\"\n    url = \"http://gpu-box:8000/v1\"\n  Then: mesh-llm serve     (or: mesh-llm client  for client-only mode)"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -276,7 +269,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) gguf: Vec<PathBuf>,
 
-    /// Explicit mmproj sidecar to pass to llama-server for the primary served model.
+    /// Explicit mmproj sidecar for the primary served model.
     #[arg(long, hide = true)]
     pub(crate) mmproj: Option<PathBuf>,
 
@@ -355,7 +348,7 @@ pub(crate) struct Cli {
     #[arg(long = "no-enumerate-host", hide = true)]
     pub(crate) no_enumerate_host: bool,
 
-    /// Path to rpc-server, llama-server, and llama-moe-split binaries.
+    /// Path to bundled mesh support binaries.
     #[arg(long, hide = true)]
     pub(crate) bin_dir: Option<PathBuf>,
 
@@ -363,15 +356,11 @@ pub(crate) struct Cli {
     #[arg(long, value_enum)]
     pub(crate) llama_flavor: Option<crate::inference::launch::BinaryFlavor>,
 
-    /// Select the local model-serving backend.
-    #[arg(long, value_enum, default_value_t = ServingBackend::Llama, hide = true)]
-    pub(crate) serving_backend: ServingBackend,
-
-    /// Device for rpc-server (e.g. MTL0, CUDA0, ROCm0, Vulkan0, CPU).
+    /// Device override for local backend selection.
     #[arg(long, hide = true)]
     pub(crate) device: Option<String>,
 
-    /// Tensor split ratios for llama-server (e.g. "0.8,0.2").
+    /// Deprecated tensor split override retained for CLI compatibility.
     #[arg(long, hide = true)]
     pub(crate) tensor_split: Option<String>,
 
@@ -568,7 +557,7 @@ pub(crate) enum Command {
         #[arg(long)]
         write: bool,
     },
-    /// Stop all running mesh-llm, llama-server, and rpc-server processes.
+    /// Stop running mesh-llm processes.
     Stop,
     /// Blackboard — post, search, and read messages shared across the mesh.
     ///

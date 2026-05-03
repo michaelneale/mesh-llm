@@ -177,7 +177,7 @@ Patch groups should stay reviewable:
 0001-00xx  mesh RPC patches
 00xx-00xx  mesh MoE patches
 00xx-00xx  mesh hook patches
-00xx-00xx  llama stage ABI/runtime patches
+00xx-00xx  llama-stage ABI/runtime patches
 ```
 
 Build scripts should prepare llama.cpp by:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LLAMA_BUILD_DIR="${SKIPPY_LLAMA_BUILD_DIR:-.deps/skippy-llama.cpp/build-stage-abi-static}"
+LLAMA_BUILD_DIR="${LLAMA_STAGE_BUILD_DIR:-.deps/llama-stage.cpp/build-stage-abi-static}"
 MODEL_REPO="${MODEL_REPO:-jc-builds/SmolLM2-135M-Instruct-Q4_K_M-GGUF}"
 MODEL_FILE="${MODEL_FILE:-SmolLM2-135M-Instruct.Q4_K_M.gguf}"
 MODEL_SELECTOR="${MODEL_SELECTOR:-Q4_K_M}"
@@ -66,11 +66,11 @@ if [[ ! -f "$MODEL_PATH" ]]; then
 fi
 
 echo "building skippy-server and llama-model-slice"
-SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" cargo build -p skippy-server -p llama-model-slice
+LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" cargo build -p skippy-server -p llama-model-slice
 
 echo "inferring layer_end from $MODEL_PATH"
 LAYER_END="$(
-  SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" target/debug/llama-model-slice inspect "$MODEL_PATH" \
+  LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" target/debug/llama-model-slice inspect "$MODEL_PATH" \
     | jq '[.tensors[] | select(.role == "layer") | .layer_index] | max + 1'
 )"
 if [[ -z "$LAYER_END" || "$LAYER_END" == "null" ]]; then
@@ -115,7 +115,7 @@ fi
 
 SERVER_LOG="${WORK_DIR}/serve-openai.log"
 echo "starting serve-openai on ${BASE_URL}"
-SKIPPY_LLAMA_BUILD_DIR="$LLAMA_BUILD_DIR" \
+LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   target/debug/skippy-server serve-openai \
     --config "$CONFIG_PATH" \
     --bind-addr "${HOST}:${PORT}" \

@@ -165,12 +165,8 @@ $stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTrip
 $versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
 
 $meshBinary = Join-Path $releaseBinDir "mesh-llm.exe"
-$rpcBinary = Join-Path $buildBinDir "rpc-server.exe"
-$llamaBinary = Join-Path $buildBinDir "llama-server.exe"
 
 Require-File $meshBinary
-Require-File $rpcBinary
-Require-File $llamaBinary
 
 $resolvedOutputDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     [System.IO.Path]::GetFullPath($OutputDir)
@@ -185,8 +181,6 @@ New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 
 try {
     Copy-Item $meshBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "mesh-llm" $binaryFlavor)) -Force
-    Copy-Item $rpcBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "rpc-server" $binaryFlavor)) -Force
-    Copy-Item $llamaBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "llama-server" $binaryFlavor)) -Force
     Copy-RuntimeLibs $bundleDir
     Copy-BenchmarkBinaries $bundleDir
 

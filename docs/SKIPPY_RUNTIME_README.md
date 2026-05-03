@@ -486,57 +486,57 @@ putting full record commit back on the request path.
 This repo carries the llama-side ABI as clean patches on top of upstream
 `ggml-org/llama.cpp` `master`.
 
-- `third_party/llama.cpp/upstream.txt` pins the validated upstream commit.
-- `third_party/llama.cpp/patches/*.patch` is the Mesh-LLM ABI patch stack.
-- `just llama-prepare` checks out the pinned upstream commit into
-  `.deps/llama.cpp` and applies the patches.
-- `just llama-build` builds patched llama.cpp as static archives, using
+- `third_party/llama-stage.cpp/upstream.txt` pins the validated upstream commit.
+- `third_party/llama-stage.cpp/patches/*.patch` is the Mesh-LLM stage ABI patch
+  stack.
+- `just llama-stage-prepare` checks out the pinned upstream commit into
+  `.deps/llama-stage.cpp` and applies the patches.
+- `just llama-stage-build` builds patched llama.cpp as static archives, using
   `sccache` when it is installed.
-- `just test-with-llama` builds patched llama.cpp and runs the Rust checks.
 
 Linux GPU backend builds use the same patch stack but should write to distinct
-build directories. `scripts/build-llama.sh` accepts `SKIPPY_LLAMA_BACKEND` with
-`cuda`, `rocm`/`hip`, or `vulkan`:
+build directories. `scripts/build-llama-stage.sh` accepts `LLAMA_STAGE_BACKEND`
+with `cuda`, `rocm`/`hip`, or `vulkan`:
 
 ```bash
-just llama-prepare
+just llama-stage-prepare
 
-SKIPPY_LLAMA_BACKEND=cuda \
-SKIPPY_CUDA_ARCHITECTURES=89 \
-  scripts/build-llama.sh
-SKIPPY_LLAMA_BUILD_DIR=.deps/llama.cpp/build-stage-abi-cuda \
+LLAMA_STAGE_BACKEND=cuda \
+LLAMA_STAGE_CUDA_ARCHITECTURES=89 \
+  scripts/build-llama-stage.sh
+LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-cuda \
   cargo build --workspace
 
-SKIPPY_LLAMA_BACKEND=rocm \
-SKIPPY_AMDGPU_TARGETS=gfx1036 \
-  scripts/build-llama.sh
-SKIPPY_LLAMA_BUILD_DIR=.deps/llama.cpp/build-stage-abi-rocm \
+LLAMA_STAGE_BACKEND=rocm \
+LLAMA_STAGE_AMDGPU_TARGETS=gfx1036 \
+  scripts/build-llama-stage.sh
+LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-rocm \
   cargo build --workspace
 
-SKIPPY_LLAMA_BACKEND=vulkan \
-  scripts/build-llama.sh
-SKIPPY_LLAMA_BUILD_DIR=.deps/llama.cpp/build-stage-abi-vulkan \
+LLAMA_STAGE_BACKEND=vulkan \
+  scripts/build-llama-stage.sh
+LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-vulkan \
   cargo build --workspace
 ```
 
-Set `SKIPPY_CUDA_ARCHITECTURES` or `SKIPPY_AMDGPU_TARGETS` when the build host
-cannot reliably infer a device architecture, such as compile-only ROCm hosts or
-newer NVIDIA GPUs with an older CUDA compiler.
+Set `LLAMA_STAGE_CUDA_ARCHITECTURES` or `LLAMA_STAGE_AMDGPU_TARGETS` when the
+build host cannot reliably infer a device architecture, such as compile-only
+ROCm hosts or newer NVIDIA GPUs with an older CUDA compiler.
 
 Set `SKIPPY_CORRECTNESS_MODEL=/path/to/model.gguf` before
-`just test-with-llama` to include model-backed `skippy-correctness`
+the skippy correctness tests to include model-backed `skippy-correctness`
 single-step and binary-chain smokes.
 
 Rust builds also use `sccache` automatically when it is available and
-`RUSTC_WRAPPER` is not already set. Set `SKIPPY_USE_SCCACHE=0` to disable
+`RUSTC_WRAPPER` is not already set. Set `LLAMA_STAGE_USE_SCCACHE=0` to disable
 that local auto-detection.
 
 By default, `skippy-ffi` statically links the patched `libllama.a` and
-ggml archives from `.deps/llama.cpp/build-stage-abi-static`. Dynamic linking is
-kept as an explicit escape hatch with `SKIPPY_LLAMA_LINK_MODE=dynamic` and
-`SKIPPY_LLAMA_LIB_DIR=/path/to/lib`.
+ggml archives from `.deps/llama-stage.cpp/build-stage-abi-static`. Dynamic linking is
+kept as an explicit escape hatch with `LLAMA_STAGE_LINK_MODE=dynamic` and
+`LLAMA_STAGE_LIB_DIR=/path/to/lib`.
 On Linux static builds, `skippy-ffi` also detects and links ggml CUDA, HIP, and
-Vulkan backend archives when they are present in `SKIPPY_LLAMA_BUILD_DIR`.
+Vulkan backend archives when they are present in `LLAMA_STAGE_BUILD_DIR`.
 
 ## Crates
 

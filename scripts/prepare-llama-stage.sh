@@ -5,9 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-pinned}"
 
 LLAMA_UPSTREAM_URL="${LLAMA_UPSTREAM_URL:-https://github.com/ggml-org/llama.cpp.git}"
-LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/skippy-llama.cpp}"
-PIN_FILE="${LLAMA_PIN_FILE:-$ROOT/third_party/skippy-llama.cpp/upstream.txt}"
-PATCH_DIR="${LLAMA_PATCH_DIR:-$ROOT/third_party/skippy-llama.cpp/patches}"
+LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama-stage.cpp}"
+PIN_FILE="${LLAMA_PIN_FILE:-$ROOT/third_party/llama-stage.cpp/upstream.txt}"
+PATCH_DIR="${LLAMA_PATCH_DIR:-$ROOT/third_party/llama-stage.cpp/patches}"
 
 if [[ ! -f "$PIN_FILE" ]]; then
   echo "missing llama upstream pin: $PIN_FILE" >&2
@@ -45,14 +45,15 @@ case "$MODE" in
 esac
 
 # The llama.cpp checkout is a generated dependency worktree. Local edits there
-# should live in third_party/llama.cpp/patches, so reset before switching pins.
+# should live in third_party/llama-stage.cpp/patches, so reset before switching
+# pins.
 git -C "$LLAMA_WORKDIR" reset --hard HEAD
 git -C "$LLAMA_WORKDIR" clean -fdx
 git -C "$LLAMA_WORKDIR" checkout --force --detach "$TARGET_SHA"
 git -C "$LLAMA_WORKDIR" reset --hard "$TARGET_SHA"
 git -C "$LLAMA_WORKDIR" clean -fdx
 
-printf '%s\n' "$TARGET_SHA" > "$LLAMA_WORKDIR/.skippy-upstream-sha"
+printf '%s\n' "$TARGET_SHA" > "$LLAMA_WORKDIR/.llama-stage-upstream-sha"
 
 PATCHES=()
 while IFS= read -r patch; do
@@ -62,9 +63,9 @@ if (( ${#PATCHES[@]} > 0 )); then
   git -C "$LLAMA_WORKDIR" am --3way "${PATCHES[@]}"
 fi
 
-git -C "$LLAMA_WORKDIR" rev-parse HEAD > "$LLAMA_WORKDIR/.skippy-patched-sha"
+git -C "$LLAMA_WORKDIR" rev-parse HEAD > "$LLAMA_WORKDIR/.llama-stage-patched-sha"
 
 echo "prepared llama.cpp"
 echo "  upstream: $TARGET_SHA"
-echo "  patched:  $(cat "$LLAMA_WORKDIR/.skippy-patched-sha")"
+echo "  patched:  $(cat "$LLAMA_WORKDIR/.llama-stage-patched-sha")"
 echo "  workdir:  $LLAMA_WORKDIR"

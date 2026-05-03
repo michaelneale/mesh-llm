@@ -1770,7 +1770,7 @@ Patch queue entry:
 | Upstream base | `9725a313be0528214c4a02fed906ddaf7b3f712e` |
 | Local mixed-K/V delta | `/Volumes/External/llama-stage-runtime-bench/qwen36-lab/buun-tcq-full-corpus-20260501-180404/buun-local-diff.patch` |
 | Port notes | Preserves pinned-upstream `q1_0`, carries TCQ/TurboQuant KV, Metal, CUDA, and cache changes needed for mixed K/V, and excludes the buun DFlash/context API surface. |
-| Validation | Patch stack applies with `scripts/prepare-llama.sh pinned`; `scripts/build-llama.sh` builds `llama` and `llama-common` from the clean prepared checkout. |
+| Validation | Patch stack applies with `scripts/prepare-llama-stage.sh pinned`; `scripts/build-llama-stage.sh` builds `llama` and `llama-common` from the clean prepared checkout. |
 | Reason carried | Reproduces the winning mixed TCQ candidate and preserves provenance for future rebases against the buun fork. |
 
 | Field | Value |
@@ -1860,7 +1860,7 @@ to stage2 on `black`.
 | TCQ knobs | `cache_type_k=turbo3_tcq`, `cache_type_v=turbo2_tcq` |
 | Stage split | `0..14`, `14..27`, `27..40` |
 | Wire / prefill | `activation_wire_dtype=f16`, `openai_prefill_chunk_size=256`, `async_prefill_forward=true`, `reply_credit_limit=0` |
-| Validation | `just llama-prepare`; `just llama-build`; `SKIPPY_LLAMA_BUILD_DIR=.deps/llama.cpp/build-stage-abi-static cargo build -p metrics-server -p skippy-server -p skippy-bench -p llama-spec-bench` |
+| Validation | `just llama-stage-prepare`; `just llama-stage-build`; `LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-static cargo build -p metrics-server -p skippy-server -p skippy-bench -p llama-spec-bench` |
 
 Patch queue additions for staged TCQ:
 

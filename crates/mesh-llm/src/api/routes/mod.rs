@@ -149,7 +149,7 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                         .await?;
                     Ok(true)
                 }
-                // Mesh hook callbacks from llama-server
+                // Mesh hook callbacks from the serving runtime
                 ("POST", "/mesh/hook") => {
                     mesh_hook::handle(stream, state, method, path_only, body).await?;
                     Ok(true)

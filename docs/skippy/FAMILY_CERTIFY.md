@@ -149,7 +149,7 @@ prompt/spec lifecycle:
 bash -n scripts/family-certify.sh
 cargo fmt --check -p skippy-topology -p llama-model-slice -p skippy-prompt
 cargo test -p skippy-topology
-SKIPPY_LLAMA_BUILD_DIR=.deps/skippy-llama.cpp/build-stage-abi-static \
+LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-static \
   cargo build -p skippy-prompt -p llama-model-slice -p skippy-topology
 git diff --check
 ```

@@ -321,7 +321,7 @@ pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLo
         eprintln!("   Will delist when {} clients connected", cap);
     }
 
-    // Wait for llama-server to be ready before first publish (up to 60s).
+    // Wait for local serving to be ready before first publish (up to 60s).
     for _ in 0..120 {
         if node.is_llama_ready().await {
             break;
@@ -438,7 +438,7 @@ pub async fn publish_loop(node: crate::mesh::Node, keys: Keys, config: PublishLo
             }
         }
 
-        // "Actually serving" = a Host node has llama-server running for this model.
+        // "Actually serving" = a Host node has a ready local runtime for this model.
         let my_role = node.role().await;
         let mut actually_serving: Vec<String> = Vec::new();
         if matches!(my_role, crate::mesh::NodeRole::Host { .. }) {
