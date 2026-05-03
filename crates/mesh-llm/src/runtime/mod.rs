@@ -1,4 +1,5 @@
 pub(crate) mod config_state;
+mod context_planning;
 mod discovery;
 pub mod instance;
 mod interactive;
@@ -806,6 +807,7 @@ struct StartupLocalModelTask {
     n_ubatch: Option<u32>,
     flash_attention: FlashAttentionType,
     slots: usize,
+    parallel_override: Option<usize>,
     split: bool,
     stop_rx: tokio::sync::watch::Receiver<bool>,
     dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
@@ -838,6 +840,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         n_ubatch,
         flash_attention,
         slots,
+        parallel_override,
         split,
         mut stop_rx,
         dashboard_processes,
@@ -871,6 +874,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         n_ubatch_override: n_ubatch,
         flash_attention_override: flash_attention,
         slots,
+        parallel_override,
     };
     let (
         mut loaded_name,
@@ -949,7 +953,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         &handle.backend,
         handle.port,
         handle.pid(),
-        slots,
+        handle.slots,
         handle.context_length,
     );
     upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
@@ -3889,11 +3893,11 @@ async fn run_auto(
     let node2 = node.clone();
     let tunnel_mgr2 = tunnel_mgr.clone();
     let model2 = model.clone();
-    let slots = primary_startup_model
+    let primary_parallel_override = primary_startup_model
         .as_ref()
         .and_then(|m| m.parallel)
-        .or(config.gpu.parallel)
-        .unwrap_or(4);
+        .or(config.gpu.parallel);
+    let primary_slots = primary_parallel_override.unwrap_or(4);
     let model_name_for_election = model_name.clone();
     let primary_target_tx = target_tx.clone();
     let console_state_for_election = console_state.clone();
@@ -3966,7 +3970,8 @@ async fn run_auto(
             n_batch: primary_n_batch,
             n_ubatch: primary_n_ubatch,
             flash_attention: primary_flash_attention,
-            slots,
+            slots: primary_slots,
+            parallel_override: primary_parallel_override,
             split: startup_split,
             stop_rx: primary_stop_rx,
             dashboard_processes: dashboard_processes_for_primary_task,
@@ -4023,7 +4028,8 @@ async fn run_auto(
             let extra_target_tx = target_tx.clone();
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
-            let slots = extra_model.parallel.or(config.gpu.parallel).unwrap_or(4);
+            let extra_parallel_override = extra_model.parallel.or(config.gpu.parallel);
+            let extra_slots = extra_parallel_override.unwrap_or(4);
             let extra_console_state = console_state.clone();
             let extra_startup_ready_reporter = startup_ready_reporter.clone();
             let extra_startup_load_gate = startup_load_gate.clone();
@@ -4050,7 +4056,8 @@ async fn run_auto(
                     n_batch: extra_n_batch,
                     n_ubatch: extra_n_ubatch,
                     flash_attention: extra_flash_attention,
-                    slots,
+                    slots: extra_slots,
+                    parallel_override: extra_parallel_override,
                     split: startup_split,
                     stop_rx: extra_stop_rx,
                     dashboard_processes: dashboard_processes_for_extra_task,
@@ -4187,14 +4194,15 @@ async fn run_auto(
                                 "model '{runtime_model_name}' is already loaded"
                             );
 
-                            // Look up per-model parallel from TOML config by matching the
-                            // spec string against [[models]].model entries. Falls back to
-                            // gpu.parallel or default 4 when no entry matches.
+                            // Look up per-model overrides from TOML config by matching the
+                            // spec string against [[models]].model entries. Metadata-based
+                            // planning chooses direct-local defaults when no parallel
+                            // override matches.
                             let model_overrides = config.models.iter().find(|m| m.model == spec);
-                            let slots = model_overrides
+                            let parallel_override = model_overrides
                                 .and_then(|m| m.parallel)
-                                .or(config.gpu.parallel)
-                                .unwrap_or(4);
+                                .or(config.gpu.parallel);
+                            let slots = parallel_override.unwrap_or(4);
 
                             assigned_runtime_model = Some(runtime_model_name.clone());
                             add_serving_assignment(&node, &primary_model_name, &runtime_model_name)
@@ -4216,6 +4224,7 @@ async fn run_auto(
                                         .and_then(|m| m.flash_attention)
                                         .unwrap_or(FlashAttentionType::Auto),
                                     slots,
+                                    parallel_override,
                                 },
                             )
                             .await?;
@@ -4234,7 +4243,7 @@ async fn run_auto(
                                 &handle.backend,
                                 handle.port,
                                 handle.pid(),
-                                slots,
+                                handle.slots,
                                 handle.context_length,
                             );
                             upsert_dashboard_process(&dashboard_processes, payload.clone())
