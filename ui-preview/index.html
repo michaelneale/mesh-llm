@@ -8,7 +8,7 @@
     <meta name="theme-color" content="#171b24" media="(prefers-color-scheme: dark)" />
     <meta name="description" content="MeshLLM clean-room app UI" />
     <script>
-      (() => {
+      ;(() => {
         const defaults = { theme: 'dark', accent: 'blue', density: 'normal', panelStyle: 'solid' }
         const backgrounds = { dark: 'oklch(0.17 0.015 250)', light: 'oklch(0.985 0.003 80)' }
         const themeColors = { dark: '#171b24', light: '#fbfaf7' }
@@ -41,11 +41,15 @@
           const parsed = stored ? JSON.parse(stored) : defaults
           apply({
             theme: oneOf(parsed.theme, ['light', 'dark']) ? parsed.theme : defaults.theme,
-            accent: oneOf(parsed.accent, ['blue', 'cyan', 'violet', 'green', 'amber', 'pink']) ? parsed.accent : defaults.accent,
+            accent: oneOf(parsed.accent, ['blue', 'cyan', 'violet', 'green', 'amber', 'pink'])
+              ? parsed.accent
+              : defaults.accent,
             density: oneOf(parsed.density, ['compact', 'normal', 'sparse']) ? parsed.density : defaults.density,
             panelStyle: oneOf(parsed.panelStyle, ['solid', 'soft'])
               ? parsed.panelStyle
-              : oneOf(parsed.configPanelStyle, ['solid', 'soft']) ? parsed.configPanelStyle : defaults.panelStyle,
+              : oneOf(parsed.configPanelStyle, ['solid', 'soft'])
+                ? parsed.configPanelStyle
+                : defaults.panelStyle
           })
         } catch {
           apply(defaults)
@@ -74,7 +78,10 @@
     <link rel="apple-touch-icon" href="/meshllm-apple-touch-icon.png?v=20260430" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    />
   </head>
   <body>
     <div id="root"></div>

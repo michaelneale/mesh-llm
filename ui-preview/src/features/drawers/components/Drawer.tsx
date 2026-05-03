@@ -10,21 +10,16 @@ type DrawerProps = {
   children: ReactNode
 }
 
-export function Drawer({
-  open,
-  onClose,
-  width = 'min(480px, 92vw)',
-  labelledBy,
-  ariaLabel,
-  children,
-}: DrawerProps) {
+export function Drawer({ open, onClose, width = 'min(480px, 92vw)', labelledBy, ariaLabel, children }: DrawerProps) {
   return (
-    <DialogPrimitive.Root open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose() }}>
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose()
+      }}
+    >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay
-          aria-hidden="true"
-          className="drawer-backdrop surface-scrim fixed inset-0 z-50"
-        />
+        <DialogPrimitive.Overlay aria-hidden="true" className="drawer-backdrop surface-scrim fixed inset-0 z-50" />
 
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-y-0 right-0 max-w-full">
@@ -34,7 +29,7 @@ export function Drawer({
               aria-labelledby={labelledBy}
               className="drawer-panel shadow-surface-drawer h-full max-w-[92vw] overflow-y-auto overscroll-contain border-l border-border bg-panel text-foreground outline-none"
               style={{
-                width,
+                width
               }}
               tabIndex={-1}
             >

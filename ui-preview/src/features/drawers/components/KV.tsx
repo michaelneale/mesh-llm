@@ -10,7 +10,12 @@ export function KV({ label, children, mono = true, icon }: KVProps) {
         {icon}
         {label}
       </div>
-      <div className={cn('truncate text-[length:var(--density-type-body)] leading-[18px] text-foreground', mono && 'font-mono')}>
+      <div
+        className={cn(
+          'truncate text-[length:var(--density-type-body)] leading-[18px] text-foreground',
+          mono && 'font-mono'
+        )}
+      >
         {children}
       </div>
     </div>

@@ -13,7 +13,7 @@ const CommandBarDialogOverlay = React.forwardRef<
     ref={ref}
     className={cn(
       'surface-scrim fixed inset-0 z-50 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-      className,
+      className
     )}
     {...props}
   />
@@ -34,7 +34,7 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         'shadow-surface-modal fixed left-1/2 top-1/2 z-50 grid w-[min(720px,calc(100vw-1.5rem))] max-h-[78vh] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel text-foreground outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
-        className,
+        className
       )}
       {...props}
     >
@@ -48,7 +48,11 @@ const DialogTitle = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-[length:var(--density-type-body)] font-semibold text-foreground', className)} {...props} />
+  <DialogPrimitive.Title
+    ref={ref}
+    className={cn('text-[length:var(--density-type-body)] font-semibold text-foreground', className)}
+    {...props}
+  />
 ))
 DialogTitle.displayName = DialogPrimitive.Title.displayName
 
@@ -56,38 +60,54 @@ const DialogDescription = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn('text-[length:var(--density-type-caption)] text-muted-foreground', className)} {...props} />
+  <DialogPrimitive.Description
+    ref={ref}
+    className={cn('text-[length:var(--density-type-caption)] text-muted-foreground', className)}
+    {...props}
+  />
 ))
 DialogDescription.displayName = DialogPrimitive.Description.displayName
 
-const alertVariants = cva('relative w-full rounded-[var(--radius)] border px-3 py-2.5 text-[length:var(--density-type-caption)]', {
-  variants: {
-    variant: {
-      default: 'border-border bg-background text-foreground',
-      destructive:
-        'border-[color:color-mix(in_oklch,var(--color-destructive)_48%,var(--color-border))] bg-[color:color-mix(in_oklch,var(--color-destructive)_10%,var(--color-panel))] text-destructive',
+const alertVariants = cva(
+  'relative w-full rounded-[var(--radius)] border px-3 py-2.5 text-[length:var(--density-type-caption)]',
+  {
+    variants: {
+      variant: {
+        default: 'border-border bg-background text-foreground',
+        destructive:
+          'border-[color:color-mix(in_oklch,var(--color-destructive)_48%,var(--color-border))] bg-[color:color-mix(in_oklch,var(--color-destructive)_10%,var(--color-panel))] text-destructive'
+      }
     },
-  },
-  defaultVariants: {
-    variant: 'default',
-  },
-})
-
-const Alert = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>>(
-  ({ className, variant, ...props }, ref) => (
-    <div ref={ref} role="alert" className={cn(alertVariants({ variant }), className)} {...props} />
-  ),
+    defaultVariants: {
+      variant: 'default'
+    }
+  }
 )
+
+const Alert = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
+>(({ className, variant, ...props }, ref) => (
+  <div ref={ref} role="alert" className={cn(alertVariants({ variant }), className)} {...props} />
+))
 Alert.displayName = 'CommandBarAlert'
 
-const AlertTitle = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLHeadingElement>>(({ className, ...props }, ref) => (
-  <h4 ref={ref} className={cn('font-medium leading-none tracking-tight', className)} {...props} />
-))
+const AlertTitle = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLHeadingElement>>(
+  ({ className, ...props }, ref) => (
+    <h4 ref={ref} className={cn('font-medium leading-none tracking-tight', className)} {...props} />
+  )
+)
 AlertTitle.displayName = 'CommandBarAlertTitle'
 
-const AlertDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(({ className, ...props }, ref) => (
-  <p ref={ref} className={cn('mt-1 text-[length:var(--density-type-label)] text-current/85 [&_p]:leading-relaxed', className)} {...props} />
-))
+const AlertDescription = React.forwardRef<HTMLParagraphElement, React.HTMLAttributes<HTMLParagraphElement>>(
+  ({ className, ...props }, ref) => (
+    <p
+      ref={ref}
+      className={cn('mt-1 text-[length:var(--density-type-label)] text-current/85 [&_p]:leading-relaxed', className)}
+      {...props}
+    />
+  )
+)
 AlertDescription.displayName = 'CommandBarAlertDescription'
 
 function Badge({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
@@ -95,7 +115,7 @@ function Badge({ className, ...props }: React.HTMLAttributes<HTMLSpanElement>) {
     <span
       className={cn(
         'inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 font-mono text-[length:var(--density-type-label)] font-medium text-muted-foreground',
-        className,
+        className
       )}
       {...props}
     />
@@ -111,7 +131,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(({ className, type,
     type={type}
     className={cn(
       'flex h-10 w-full rounded-[var(--radius)] border border-border bg-background px-3 py-2 text-[length:var(--density-type-control)] text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',
-      className,
+      className
     )}
     {...props}
   />

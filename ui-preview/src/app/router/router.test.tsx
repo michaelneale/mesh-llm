@@ -12,24 +12,26 @@ vi.mock('@/features/developer/pages/DeveloperPlaygroundPage', async () => {
       const { tab } = router.useSearch({ from: '/__playground' })
 
       return <div>Active developer route tab: {tab}</div>
-    },
+    }
   }
 })
 
 vi.mock('@/features/configuration/pages/ConfigurationPage', () => ({
-  ConfigurationPageContent: ({ activeTab }: { activeTab: ConfigurationTabId }) => <div>Active route tab: {activeTab}</div>,
+  ConfigurationPageContent: ({ activeTab }: { activeTab: ConfigurationTabId }) => (
+    <div>Active route tab: {activeTab}</div>
+  )
 }))
 
 vi.mock('@/features/network/pages/DashboardPage', () => ({
-  DashboardPageSurface: () => <div>Dashboard route</div>,
+  DashboardPageSurface: () => <div>Dashboard route</div>
 }))
 
 vi.mock('@/features/chat/pages/ChatPage', () => ({
-  ChatPageContent: () => <div>Chat route</div>,
+  ChatPageContent: () => <div>Chat route</div>
 }))
 
 vi.mock('@/lib/feature-flags', () => ({
-  useBooleanFeatureFlag: () => true,
+  useBooleanFeatureFlag: () => true
 }))
 
 function renderRouterAt(pathname: string) {
@@ -39,7 +41,7 @@ function renderRouterAt(pathname: string) {
 function renderRouterWithHistory(history: ReturnType<typeof createMemoryHistory>) {
   const testRouter = createRouter({
     history,
-    routeTree,
+    routeTree
   })
 
   render(<RouterProvider router={testRouter} />)
@@ -52,7 +54,7 @@ describe('app router routes', () => {
     ['/', 'MeshLLM - Dashboard', 'Dashboard route'],
     ['/chat', 'MeshLLM - Chat', 'Chat route'],
     ['/configuration/defaults', 'MeshLLM - Configuration', 'Active route tab: defaults'],
-    ['/__playground?tab=shell-controls', 'MeshLLM - Developer Playground', 'Active developer route tab: shell-controls'],
+    ['/__playground?tab=shell-controls', 'MeshLLM - Developer Playground', 'Active developer route tab: shell-controls']
   ])('sets the document title for %s', async (pathname, title, routeText) => {
     renderRouterAt(pathname)
 
@@ -92,7 +94,7 @@ describe('app router routes', () => {
   it('preserves the developer playground tab when browser back returns to the page', async () => {
     const history = createMemoryHistory({
       initialEntries: ['/', '/__playground?tab=chat-components', '/configuration/defaults'],
-      initialIndex: 2,
+      initialIndex: 2
     })
     const testRouter = renderRouterWithHistory(history)
 

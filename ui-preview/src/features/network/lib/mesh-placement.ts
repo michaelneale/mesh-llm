@@ -65,7 +65,7 @@ function unboundedRoamingPosition(meshSeed: string, index: number): MeshNodePosi
 
   return {
     x: roundMeshCoordinate(DEBUG_PLACEMENT_GAP_PERCENT + random() * span),
-    y: roundMeshCoordinate(DEBUG_PLACEMENT_GAP_PERCENT + random() * span),
+    y: roundMeshCoordinate(DEBUG_PLACEMENT_GAP_PERCENT + random() * span)
   }
 }
 
@@ -75,7 +75,7 @@ function candidatePosition(
   attempt: number,
   profile: MeshPlacementProfile,
   anchors: MeshNode[],
-  centroid: MeshNodePosition,
+  centroid: MeshNodePosition
 ): MeshNodePosition {
   const random = createSeededRandom(`${meshSeed}:${index}:${attempt}`)
 
@@ -92,13 +92,11 @@ function candidatePosition(
     : DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT
   const radius = minRadius + random() * (maxRadius - minRadius)
   const outwardAngle = Math.atan2(anchor.y - centroid.y, anchor.x - centroid.x)
-  const angle = isClientProfile
-    ? outwardAngle + (random() - 0.5) * Math.PI * 1.35
-    : random() * Math.PI * 2
+  const angle = isClientProfile ? outwardAngle + (random() - 0.5) * Math.PI * 1.35 : random() * Math.PI * 2
 
   return {
     x: roundMeshCoordinate(anchor.x + Math.cos(angle) * radius),
-    y: roundMeshCoordinate(anchor.y + Math.sin(angle) * radius),
+    y: roundMeshCoordinate(anchor.y + Math.sin(angle) * radius)
   }
 }
 
@@ -131,7 +129,7 @@ function placementCentroid(nodes: Array<Pick<MeshNode, 'x' | 'y'>>): MeshNodePos
 
   return {
     x: nodes.reduce((sum, node) => sum + node.x, 0) / nodes.length,
-    y: nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length,
+    y: nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length
   }
 }
 
@@ -146,7 +144,7 @@ function placementRadius(nodes: Array<Pick<MeshNode, 'x' | 'y'>>, centroid: Mesh
 function compatiblePlacementAnchors(
   profile: MeshPlacementProfile,
   existingNodes: MeshNode[],
-  centroid: MeshNodePosition,
+  centroid: MeshNodePosition
 ) {
   const nonClientNodes = existingNodes.filter((node) => placementRenderKind(node) !== 'client')
   const anchors = nonClientNodes.length > 0 ? nonClientNodes : existingNodes
@@ -170,9 +168,9 @@ function clusterEnvelopeRadius(existingNodes: MeshNode[], baseNodes: MeshNode[],
 
   return Math.max(
     DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT * 2,
-    placementRadius(baseNodes, centroid)
-      + DEBUG_PLACEMENT_CLUSTER_PADDING_PERCENT
-      + Math.sqrt(debugCount + 1) * DEBUG_PLACEMENT_CLUSTER_GROWTH_PERCENT,
+    placementRadius(baseNodes, centroid) +
+      DEBUG_PLACEMENT_CLUSTER_PADDING_PERCENT +
+      Math.sqrt(debugCount + 1) * DEBUG_PLACEMENT_CLUSTER_GROWTH_PERCENT
   )
 }
 
@@ -180,7 +178,11 @@ function isWithinClusterEnvelope(position: MeshNodePosition, centroid: MeshNodeP
   return positionDistanceSquared(position, centroid) <= radius ** 2
 }
 
-function clampPositionToCluster(position: MeshNodePosition, centroid: MeshNodePosition, radius: number): MeshNodePosition {
+function clampPositionToCluster(
+  position: MeshNodePosition,
+  centroid: MeshNodePosition,
+  radius: number
+): MeshNodePosition {
   const distance = Math.hypot(position.x - centroid.x, position.y - centroid.y)
 
   if (distance <= radius || distance === 0) {
@@ -191,7 +193,7 @@ function clampPositionToCluster(position: MeshNodePosition, centroid: MeshNodePo
 
   return {
     x: roundMeshCoordinate(centroid.x + (position.x - centroid.x) * scale),
-    y: roundMeshCoordinate(centroid.y + (position.y - centroid.y) * scale),
+    y: roundMeshCoordinate(centroid.y + (position.y - centroid.y) * scale)
   }
 }
 
@@ -208,7 +210,7 @@ function fallbackPosition(
   profile: MeshPlacementProfile,
   centroid: MeshNodePosition,
   clusterRadius: number,
-  anchors: MeshNode[],
+  anchors: MeshNode[]
 ): MeshNodePosition {
   if (anchors.length === 0) {
     return unboundedRoamingPosition(meshSeed, index)
@@ -217,7 +219,7 @@ function fallbackPosition(
   return clampPositionToCluster(
     candidatePosition(meshSeed, index, DEBUG_PLACEMENT_ATTEMPTS, profile, anchors, centroid),
     centroid,
-    clusterRadius,
+    clusterRadius
   )
 }
 
@@ -225,21 +227,21 @@ export function chooseClusteredMeshNodePosition(
   meshSeed: string,
   index: number,
   profile: MeshPlacementProfile,
-  existingNodes: MeshNode[],
+  existingNodes: MeshNode[]
 ): MeshNodePosition {
   const baseNodes = placementBaseNodes(existingNodes)
   const centroid = placementCentroid(baseNodes)
   const clusterRadius = clusterEnvelopeRadius(existingNodes, baseNodes, centroid)
   const anchors = compatiblePlacementAnchors(profile, existingNodes, centroid)
-  const candidates = Array.from({ length: DEBUG_PLACEMENT_ATTEMPTS }, (_, attempt) => (
+  const candidates = Array.from({ length: DEBUG_PLACEMENT_ATTEMPTS }, (_, attempt) =>
     candidatePosition(meshSeed, index, attempt, profile, anchors, centroid)
-  )).filter((position) => (
-    isWithinClusterEnvelope(position, centroid, clusterRadius)
-    && isWithinPlacementDistance(position, existingNodes)
-  ))
-  const sparseCandidates = candidates.filter((position) => (
-    sparsePlacementScore(position, existingNodes) >= DEBUG_PLACEMENT_MIN_DISTANCE_PERCENT ** 2
-  ))
+  ).filter(
+    (position) =>
+      isWithinClusterEnvelope(position, centroid, clusterRadius) && isWithinPlacementDistance(position, existingNodes)
+  )
+  const sparseCandidates = candidates.filter(
+    (position) => sparsePlacementScore(position, existingNodes) >= DEBUG_PLACEMENT_MIN_DISTANCE_PERCENT ** 2
+  )
   const candidatePool = sparseCandidates.length > 0 ? sparseCandidates : candidates
 
   if (candidatePool.length === 0) {
@@ -247,8 +249,8 @@ export function chooseClusteredMeshNodePosition(
   }
 
   return candidatePool.sort((first, second) => {
-    const scoreDelta = clusteredPlacementScore(second, existingNodes, centroid)
-      - clusteredPlacementScore(first, existingNodes, centroid)
+    const scoreDelta =
+      clusteredPlacementScore(second, existingNodes, centroid) - clusteredPlacementScore(first, existingNodes, centroid)
 
     if (scoreDelta !== 0) return scoreDelta
     if (first.x !== second.x) return first.x - second.x

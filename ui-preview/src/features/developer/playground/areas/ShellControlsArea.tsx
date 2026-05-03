@@ -24,7 +24,7 @@ const commandBarModes = [
     source: [
       { id: 'network', label: 'Network workspace', summary: 'Inspect peers, models, and mesh routing.' },
       { id: 'chat', label: 'Chat workspace', summary: 'Draft prompts against harness threads.' },
-      { id: 'configuration', label: 'Configuration workspace', summary: 'Tune placements and local model assignments.' },
+      { id: 'configuration', label: 'Configuration workspace', summary: 'Tune placements and local model assignments.' }
     ] satisfies PreviewCommand[],
     getItemKey: (item: PreviewCommand) => item.id,
     getSearchText: (item: PreviewCommand) => `${item.label} ${item.summary}`,
@@ -34,8 +34,8 @@ const commandBarModes = [
         <div className="mt-0.5 text-[length:var(--density-type-caption)] text-fg-faint">{item.summary}</div>
       </div>
     ),
-    onSelect: () => true,
-  },
+    onSelect: () => true
+  }
 ]
 
 function CommandBarPreview() {
@@ -45,14 +45,19 @@ function CommandBarPreview() {
     <PlaygroundPanel
       title="Command bar"
       description="Open the production command search shell with a small harness command set."
-      actions={(
-        <button className="ui-control-primary inline-flex items-center rounded-[var(--radius)] px-3 py-1.5 text-[length:var(--density-type-control)] font-medium" onClick={() => openCommandBar('routes')} type="button">
+      actions={
+        <button
+          className="ui-control-primary inline-flex items-center rounded-[var(--radius)] px-3 py-1.5 text-[length:var(--density-type-control)] font-medium"
+          onClick={() => openCommandBar('routes')}
+          type="button"
+        >
           Open command bar
         </button>
-      )}
+      }
     >
       <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2.5 text-[length:var(--density-type-caption-lg)] text-fg-dim">
-        Preview modes: routes. Shortcut guidance and keyboard result navigation are owned by the real command bar implementation.
+        Preview modes: routes. Shortcut guidance and keyboard result navigation are owned by the real command bar
+        implementation.
       </div>
       <CommandBarModal<PreviewCommand>
         behavior="distinct"
@@ -99,12 +104,21 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                 description="Adjust compact command text and description without drifting from the restrained console tone."
               >
                 <div className="space-y-3">
-                  <TextField label="Connect description" value={state.connectDescription} onChange={state.setConnectDescription} />
-                  <TextAreaField label="Run command" rows={4} value={state.connectRunCommand} onChange={state.setConnectRunCommand} />
+                  <TextField
+                    label="Connect description"
+                    value={state.connectDescription}
+                    onChange={state.setConnectDescription}
+                  />
+                  <TextAreaField
+                    label="Run command"
+                    rows={4}
+                    value={state.connectRunCommand}
+                    onChange={state.setConnectRunCommand}
+                  />
                 </div>
               </PlaygroundPanel>
             </div>
-          ),
+          )
         },
         {
           value: 'chrome',
@@ -127,13 +141,14 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                     tabHrefs={{
                       network: hrefWithBasePath('/'),
                       chat: hrefWithBasePath('/chat'),
-                      configuration: hrefWithBasePath('/configuration/defaults'),
+                      configuration: hrefWithBasePath('/configuration/defaults')
                     }}
                     theme={theme}
                     version="v0.1.0-preview"
                   />
                   <div className="px-4 py-3 text-[length:var(--density-type-caption-lg)] text-fg-dim">
-                    Active tab: <span className="font-mono text-foreground">{tab}</span> · theme preview: <span className="font-mono text-foreground">{theme}</span>
+                    Active tab: <span className="font-mono text-foreground">{tab}</span> · theme preview:{' '}
+                    <span className="font-mono text-foreground">{theme}</span>
                   </div>
                 </div>
               </PlaygroundPanel>
@@ -141,11 +156,15 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
               <PlaygroundPanel
                 title="Preferences panel"
                 description="Keep theme, accent, density, panel style, and data source controls visible without booting the full app shell."
-                actions={(
-                  <button className="ui-control inline-flex items-center rounded-[var(--radius)] border px-3 py-1.5 text-[length:var(--density-type-control)] font-medium" onClick={() => setPreferencesOpen((open) => !open)} type="button">
+                actions={
+                  <button
+                    className="ui-control inline-flex items-center rounded-[var(--radius)] border px-3 py-1.5 text-[length:var(--density-type-control)] font-medium"
+                    onClick={() => setPreferencesOpen((open) => !open)}
+                    type="button"
+                  >
                     Toggle preferences
                   </button>
-                )}
+                }
               >
                 <div className="relative min-h-[420px] overflow-hidden rounded-[var(--radius-lg)] border border-border bg-background">
                   <PreferencesPanel
@@ -161,16 +180,27 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                     theme={theme}
                   />
                   <div className="grid gap-2 p-4 text-[length:var(--density-type-caption-lg)] text-fg-dim sm:grid-cols-2">
-                    <div>Accent: <span className="font-mono text-foreground">{accent}</span></div>
-                    <div>Density: <span className="font-mono text-foreground">{density}</span></div>
-                    <div>Panels: <span className="font-mono text-foreground">{panelStyle}</span></div>
-                    <div>Theme: <span className="font-mono text-foreground">{theme}</span></div>
+                    <div>
+                      Accent: <span className="font-mono text-foreground">{accent}</span>
+                    </div>
+                    <div>
+                      Density: <span className="font-mono text-foreground">{density}</span>
+                    </div>
+                    <div>
+                      Panels: <span className="font-mono text-foreground">{panelStyle}</span>
+                    </div>
+                    <div>
+                      Theme: <span className="font-mono text-foreground">{theme}</span>
+                    </div>
                   </div>
                 </div>
               </PlaygroundPanel>
 
               <Footer
-                links={[{ href: hrefWithBasePath('/configuration/defaults'), label: 'Configuration' }, { href: hrefWithBasePath('/chat'), label: 'Chat' }]}
+                links={[
+                  { href: hrefWithBasePath('/configuration/defaults'), label: 'Configuration' },
+                  { href: hrefWithBasePath('/chat'), label: 'Chat' }
+                ]}
                 productName="mesh-llm/ui-preview"
                 trailingLink={{ href: 'https://github.com/anarchai/mesh-llm', label: 'GitHub' }}
                 version="0.1.0"
@@ -180,7 +210,7 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                 <CommandBarPreview />
               </CommandBarProvider>
             </div>
-          ),
+          )
         },
         {
           value: 'selectors',
@@ -195,24 +225,31 @@ export function ShellControlsArea({ state }: { state: DeveloperPlaygroundState }
                   <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2.5">
                     <div className="type-label text-fg-faint">Selected model</div>
                     <div className="mt-2">
-                      <ModelSelect options={state.chatOptions} value={state.shellSelectedModel} onChange={state.setShellSelectedModel} />
+                      <ModelSelect
+                        options={state.chatOptions}
+                        value={state.shellSelectedModel}
+                        onChange={state.setShellSelectedModel}
+                      />
                     </div>
                   </div>
                   <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2.5">
                     <div className="type-label text-fg-faint">Preview state</div>
-                    <div className="mt-2 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">{state.shellSelectedModel}</div>
+                    <div className="mt-2 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">
+                      {state.shellSelectedModel}
+                    </div>
                   </div>
                 </div>
                 <div className="rounded-[var(--radius-lg)] border border-border bg-background px-4 py-4">
                   <div className="type-panel-title text-foreground">Shell control notes</div>
                   <p className="mt-2 max-w-[62ch] text-[length:var(--density-type-caption-lg)] text-fg-dim">
-                    Keep shell actions short, direct, and easy to scan. Selection state should be obvious from border and tint, not from decoration.
+                    Keep shell actions short, direct, and easy to scan. Selection state should be obvious from border
+                    and tint, not from decoration.
                   </p>
                 </div>
               </div>
             </PlaygroundPanel>
-          ),
-        },
+          )
+        }
       ]}
     />
   )

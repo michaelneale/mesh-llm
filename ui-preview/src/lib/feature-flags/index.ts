@@ -10,6 +10,6 @@ export {
   type FeatureFlagOverrides,
   type FeatureFlagPath,
   type FeatureFlagSectionDefinition,
-  type FeatureFlagSectionId,
+  type FeatureFlagSectionId
 } from './definitions'
 export { useBooleanFeatureFlag, useFeatureFlagSettings } from './hooks'

@@ -49,7 +49,7 @@ const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
     status: 'online',
     client: true,
     hostnamePrefix: 'debug-client',
-    latencyMs: null,
+    latencyMs: null
   },
   {
     renderKind: 'worker',
@@ -59,7 +59,7 @@ const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
     status: 'online',
     hostnamePrefix: 'debug-worker',
     vramGB: 24,
-    latencyMs: 7.2,
+    latencyMs: 7.2
   },
   {
     renderKind: 'serving',
@@ -70,7 +70,7 @@ const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
     servingModels: ['debug-model-q4'],
     hostnamePrefix: 'debug-serving',
     vramGB: 48,
-    latencyMs: 3.8,
+    latencyMs: 3.8
   },
   {
     renderKind: 'active',
@@ -81,7 +81,7 @@ const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
     servingModels: ['debug-active-route'],
     hostnamePrefix: 'debug-active',
     vramGB: 32,
-    latencyMs: 11.4,
+    latencyMs: 11.4
   },
   {
     renderKind: 'worker',
@@ -92,20 +92,22 @@ const DEBUG_NODE_BLUEPRINTS: [DebugNodeBlueprint, ...DebugNodeBlueprint[]] = [
     host: true,
     hostnamePrefix: 'debug-host',
     vramGB: 64,
-    latencyMs: 1.6,
-  },
+    latencyMs: 1.6
+  }
 ]
 
 const DEBUG_NODE_SHORTCUT_BLUEPRINTS = {
   1: DEBUG_NODE_BLUEPRINTS[0],
   2: DEBUG_NODE_BLUEPRINTS[1],
-  3: DEBUG_NODE_BLUEPRINTS[4],
+  3: DEBUG_NODE_BLUEPRINTS[4]
 } satisfies Record<DebugNodeShortcut, DebugNodeBlueprint>
 
 export function prefersReducedMotion() {
-  return typeof window !== 'undefined'
-    && typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
 }
 
 export function isTextEditingTarget(target: EventTarget | null) {
@@ -136,7 +138,7 @@ export function statusTone(status: MeshNode['status']): CSSProperties {
     return {
       background: 'color-mix(in oklab, var(--color-good) 18%, var(--color-background))',
       borderColor: 'color-mix(in oklab, var(--color-good) 30%, var(--color-background))',
-      color: 'var(--color-good)',
+      color: 'var(--color-good)'
     }
   }
 
@@ -144,14 +146,14 @@ export function statusTone(status: MeshNode['status']): CSSProperties {
     return {
       background: 'color-mix(in oklab, var(--color-warn) 16%, var(--color-background))',
       borderColor: 'color-mix(in oklab, var(--color-warn) 28%, var(--color-background))',
-      color: 'var(--color-warn)',
+      color: 'var(--color-warn)'
     }
   }
 
   return {
     background: 'color-mix(in oklab, var(--color-bad) 14%, var(--color-background))',
     borderColor: 'color-mix(in oklab, var(--color-bad) 24%, var(--color-background))',
-    color: 'var(--color-bad)',
+    color: 'var(--color-bad)'
   }
 }
 
@@ -187,7 +189,7 @@ export function schemeNodeFill(
   node: MeshNode,
   peer: Peer | undefined,
   isSelf: boolean,
-  nodeColors: MeshVizNodeColors | undefined,
+  nodeColors: MeshVizNodeColors | undefined
 ) {
   if (!nodeColors) {
     return isDebugNode(node) ? debugFill(node, peer) : statusFill(node.status)
@@ -210,7 +212,7 @@ export function nodeVisuals(
   peer: Peer | undefined,
   isSelf: boolean,
   isSelected: boolean,
-  nodeColors?: MeshVizNodeColors,
+  nodeColors?: MeshVizNodeColors
 ) {
   const fill = schemeNodeFill(node, peer, isSelf, nodeColors)
   const isHost = isHostNode(node, peer)
@@ -221,7 +223,7 @@ export function nodeVisuals(
     fill,
     haloSize: isSelf ? 52 : isDebugNode(node) ? 40 + hostBoost : isHost ? 42 : kind === 'client' ? 34 : 36,
     coreSize: isSelf ? 18 : isHost ? 17 : kind === 'client' ? 14 : 16,
-    labelColor: isSelected || isSelf || isDebugNode(node) ? fill : 'var(--color-foreground)',
+    labelColor: isSelected || isSelf || isDebugNode(node) ? fill : 'var(--color-foreground)'
   }
 }
 
@@ -238,7 +240,11 @@ export function debugNodeMatchesShortcut(node: DebugMeshNode, shortcut: DebugNod
   return node.renderKind === blueprint.renderKind && !node.host && !node.client
 }
 
-export function createDebugNode(index: number, blueprint: DebugNodeBlueprint, position: DebugNodePosition): DebugMeshNode {
+export function createDebugNode(
+  index: number,
+  blueprint: DebugNodeBlueprint,
+  position: DebugNodePosition
+): DebugMeshNode {
   const node: DebugMeshNode = {
     debug: true,
     id: `debug-${blueprint.label.toLowerCase()}-${index}`,
@@ -250,7 +256,7 @@ export function createDebugNode(index: number, blueprint: DebugNodeBlueprint, po
     subLabel: blueprint.subLabel,
     renderKind: blueprint.renderKind,
     meshState: blueprint.meshState,
-    hostname: `${blueprint.hostnamePrefix}-${index}.mesh.test`,
+    hostname: `${blueprint.hostnamePrefix}-${index}.mesh.test`
   }
 
   if (blueprint.host) node.host = blueprint.host
@@ -286,13 +292,15 @@ export function latencyLabel(node: MeshNode, peer: Peer | undefined) {
 export function hoverCardPlacement(node: MeshNode): HoverCardPlacement {
   return {
     side: node.y > 58 ? 'top' : 'bottom',
-    align: node.x < 30 ? 'start' : node.x > 70 ? 'end' : 'center',
+    align: node.x < 30 ? 'start' : node.x > 70 ? 'end' : 'center'
   }
 }
 
 export function nodeMetrics(node: MeshNode, peer: Peer | undefined): HoverMetric[] {
   const computeLabel = peer
-    ? (peer.role === 'you' ? 'Local' : peer.region)
+    ? peer.role === 'you'
+      ? 'Local'
+      : peer.region
     : node.role === 'self'
       ? 'Local'
       : roleLabel(node, peer)
@@ -302,25 +310,30 @@ export function nodeMetrics(node: MeshNode, peer: Peer | undefined): HoverMetric
       id: 'model',
       label: 'Model',
       value: peer?.hostedModels[0] ?? node.servingModels?.[0] ?? (node.client ? 'API-only' : 'No hosted model'),
-      icon: Hash,
+      icon: Hash
     },
     {
       id: 'latency',
       label: 'Latency',
       value: latencyLabel(node, peer),
-      icon: Activity,
+      icon: Activity
     },
     {
       id: 'compute',
       label: 'Compute',
       value: computeLabel,
-      icon: Cpu,
+      icon: Cpu
     },
     {
       id: 'vram',
       label: 'VRAM',
-      value: peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : node.vramGB != null ? `${node.vramGB.toFixed(1)} GB` : 'N/A',
-      icon: HardDrive,
-    },
+      value:
+        peer?.vramGB != null
+          ? `${peer.vramGB.toFixed(1)} GB`
+          : node.vramGB != null
+            ? `${node.vramGB.toFixed(1)} GB`
+            : 'N/A',
+      icon: HardDrive
+    }
   ]
 }

@@ -10,7 +10,7 @@ describe('ErrorBoundaryPanel', () => {
     error.stack = 'Error: boom\n    at FaultyComponent'
 
     expect(formatErrorDiagnostics(error, '\n    at RoutePanel')).toBe(
-      'Error: boom\n    at FaultyComponent\n\nReact component stack:\nat RoutePanel',
+      'Error: boom\n    at FaultyComponent\n\nReact component stack:\nat RoutePanel'
     )
   })
 
@@ -24,7 +24,7 @@ describe('ErrorBoundaryPanel', () => {
         description="This section failed to render."
         error={error}
         scopeLabel="Route section"
-      />,
+      />
     )
 
     expect(screen.getByRole('alert')).toHaveClass('max-w-6xl')

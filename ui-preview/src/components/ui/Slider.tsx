@@ -47,7 +47,12 @@ function sliderProgress(value: string, min: number, max: number) {
   return `${((clamped - min) / (max - min)) * 100}%`
 }
 
-function valueLabelContent(value: string, valueLabel: ReactNode | undefined, unit: ReactNode | undefined, formatValue: ((value: string) => ReactNode) | undefined) {
+function valueLabelContent(
+  value: string,
+  valueLabel: ReactNode | undefined,
+  unit: ReactNode | undefined,
+  formatValue: ((value: string) => ReactNode) | undefined
+) {
   if (valueLabel !== undefined && valueLabel !== null) return valueLabel
 
   const formattedValue = formatValue ? formatValue(value) : value
@@ -55,7 +60,9 @@ function valueLabelContent(value: string, valueLabel: ReactNode | undefined, uni
 
   return (
     <>
-      <span className="font-mono text-[length:var(--density-type-caption)] font-medium tabular-nums text-fg-dim">{formattedValue}</span>
+      <span className="font-mono text-[length:var(--density-type-caption)] font-medium tabular-nums text-fg-dim">
+        {formattedValue}
+      </span>
       <span className="text-[length:var(--density-type-caption)] font-medium text-fg-dim">{unit}</span>
     </>
   )
@@ -65,7 +72,12 @@ function textFromNode(node: ReactNode) {
   return typeof node === 'string' || typeof node === 'number' ? String(node) : undefined
 }
 
-function valueLabelText(value: string, valueLabel: ReactNode | undefined, unit: ReactNode | undefined, formatValue: ((value: string) => ReactNode) | undefined) {
+function valueLabelText(
+  value: string,
+  valueLabel: ReactNode | undefined,
+  unit: ReactNode | undefined,
+  formatValue: ((value: string) => ReactNode) | undefined
+) {
   const labelText = textFromNode(valueLabel)
   if (labelText !== undefined) return labelText
 
@@ -80,9 +92,7 @@ function boundaryLabel(boundary: SliderBoundary | undefined, side: 'lower' | 'up
   if (!boundary) return null
 
   const inclusive = boundary.inclusive ?? true
-  const marker = side === 'lower'
-    ? inclusive ? '[' : '('
-    : inclusive ? ']' : ')'
+  const marker = side === 'lower' ? (inclusive ? '[' : '(') : inclusive ? ']' : ')'
 
   return (
     <span className="inline-flex items-baseline gap-1 font-mono text-[length:var(--density-type-annotation)] text-fg-faint">
@@ -120,26 +130,34 @@ export function Slider({
   valueLabelAlign = 'right',
   valueClassName,
   valueLabelPlacement = 'inline',
-  valueLabel,
+  valueLabel
 }: SliderProps) {
   const handleChange: ChangeEventHandler<HTMLInputElement> = (event) => {
     onValueChange(event.currentTarget.value)
   }
 
   const progressStyle: SliderProgressStyle = {
-    '--slider-progress': sliderProgress(value, min, max),
+    '--slider-progress': sliderProgress(value, min, max)
   }
   const resolvedValueLabel = valueLabelContent(value, valueLabel, unit, formatValue)
   const resolvedAriaValueText = ariaValueText ?? valueLabelText(value, valueLabel, unit, formatValue)
   const hasLabel = label !== undefined && label !== null
   const hasBounds = lowerBound !== undefined || upperBound !== undefined
-  const valueLabelClassName = cn('inline-flex min-w-[64px] items-baseline gap-1 text-[length:var(--density-type-caption)] font-medium tabular-nums text-fg-dim', valueLabelAlignClassName(valueLabelAlign), valueClassName)
+  const valueLabelClassName = cn(
+    'inline-flex min-w-[64px] items-baseline gap-1 text-[length:var(--density-type-caption)] font-medium tabular-nums text-fg-dim',
+    valueLabelAlignClassName(valueLabelAlign),
+    valueClassName
+  )
 
   return (
     <div className={cn('grid min-w-[280px] gap-1.5', disabled && 'opacity-60', className)}>
       {hasLabel || valueLabelPlacement === 'top' ? (
         <div className="flex items-baseline justify-between gap-3">
-          {hasLabel ? <span className="text-[length:var(--density-type-control)] font-medium text-foreground">{label}</span> : <span />}
+          {hasLabel ? (
+            <span className="text-[length:var(--density-type-control)] font-medium text-foreground">{label}</span>
+          ) : (
+            <span />
+          )}
           {valueLabelPlacement === 'top' ? <span className={valueLabelClassName}>{resolvedValueLabel}</span> : null}
         </div>
       ) : null}
@@ -148,7 +166,11 @@ export function Slider({
           aria-describedby={ariaDescribedBy}
           aria-label={ariaLabel}
           aria-valuetext={resolvedAriaValueText}
-          className={cn('ui-slider min-w-[180px] flex-1 outline-none', disabled ? 'cursor-not-allowed' : 'cursor-pointer', inputClassName)}
+          className={cn(
+            'ui-slider min-w-[180px] flex-1 outline-none',
+            disabled ? 'cursor-not-allowed' : 'cursor-pointer',
+            inputClassName
+          )}
           disabled={disabled}
           max={max}
           min={min}

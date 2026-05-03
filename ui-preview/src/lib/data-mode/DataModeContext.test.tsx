@@ -50,7 +50,7 @@ describe('DataModeProvider', () => {
     const storageKey = 'host-owned:data-mode'
 
     const { result } = renderHook(() => useDataMode(), {
-      wrapper: providerWrapper({ initialMode: 'live', persist: false, storageKey }),
+      wrapper: providerWrapper({ initialMode: 'live', persist: false, storageKey })
     })
 
     expect(result.current.mode).toBe('live')

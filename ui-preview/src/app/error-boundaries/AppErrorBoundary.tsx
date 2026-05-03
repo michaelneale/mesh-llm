@@ -20,9 +20,7 @@ export function NotFoundRoute() {
     <main className="mx-auto max-w-3xl p-8">
       <div className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-6">
         <h1 className="type-display">Route not found</h1>
-        <p className="type-body mt-2 max-w-[68ch] text-muted-foreground">
-          The requested app surface does not exist.
-        </p>
+        <p className="type-body mt-2 max-w-[68ch] text-muted-foreground">The requested app surface does not exist.</p>
       </div>
     </main>
   )

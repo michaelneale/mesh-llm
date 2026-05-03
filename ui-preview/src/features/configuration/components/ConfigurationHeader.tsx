@@ -25,15 +25,22 @@ function formatLocalHostname(node: ConfigNode | undefined) {
 
 function InlineMeta({ children, className, icon }: { children: ReactNode; className?: string; icon: ReactNode }) {
   return (
-    <span className={cn('inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] leading-none text-fg-dim', className)}>
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 whitespace-nowrap text-[12px] leading-none text-fg-dim',
+        className
+      )}
+    >
       <span className="inline-flex size-3 items-center justify-center text-fg-faint">{icon}</span>
       {children}
     </span>
   )
 }
 
-const iconActionClass = 'ui-control inline-flex size-[30px] items-center justify-center rounded-[var(--radius)] border text-[length:var(--density-type-caption-lg)] font-semibold leading-none'
-const textActionClass = 'ui-control inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-4 text-[length:var(--density-type-control)] font-medium leading-none'
+const iconActionClass =
+  'ui-control inline-flex size-[30px] items-center justify-center rounded-[var(--radius)] border text-[length:var(--density-type-caption-lg)] font-semibold leading-none'
+const textActionClass =
+  'ui-control inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-4 text-[length:var(--density-type-control)] font-medium leading-none'
 
 export function ConfigurationHistoryActions({
   canUndo,
@@ -43,18 +50,31 @@ export function ConfigurationHistoryActions({
   onUndo,
   onRedo,
   onRevert,
-  onSave,
+  onSave
 }: Omit<ConfigurationHeaderProps, 'title' | 'description' | 'nodes'>) {
   return (
     <fieldset aria-label="Configuration history actions" className="mt-[11px] flex items-center gap-1.5 border-0 p-0">
-      <button className={iconActionClass} disabled={!canUndo} onClick={onUndo} type="button" aria-label="Undo" aria-keyshortcuts="Control+Z"><Undo2 aria-hidden="true" className="size-3.5" /></button>
-      <button className={iconActionClass} disabled={!canRedo} onClick={onRedo} type="button" aria-label="Redo" aria-keyshortcuts="Control+R"><Redo2 aria-hidden="true" className="size-3.5" /></button>
       <button
-        className={textActionClass}
-        onClick={onRevert}
+        className={iconActionClass}
+        disabled={!canUndo}
+        onClick={onUndo}
         type="button"
-        aria-keyshortcuts="Control+X"
+        aria-label="Undo"
+        aria-keyshortcuts="Control+Z"
       >
+        <Undo2 aria-hidden="true" className="size-3.5" />
+      </button>
+      <button
+        className={iconActionClass}
+        disabled={!canRedo}
+        onClick={onRedo}
+        type="button"
+        aria-label="Redo"
+        aria-keyshortcuts="Control+R"
+      >
+        <Redo2 aria-hidden="true" className="size-3.5" />
+      </button>
+      <button className={textActionClass} onClick={onRevert} type="button" aria-keyshortcuts="Control+X">
         <RotateCcw aria-hidden="true" className="size-3.5" />
         Revert
       </button>
@@ -62,11 +82,17 @@ export function ConfigurationHistoryActions({
         aria-invalid={hasInvalidNode}
         className={cn(
           'inline-flex h-[30px] items-center gap-1.5 rounded-[var(--radius)] border px-4 text-[length:var(--density-type-control)] font-semibold leading-none',
-          hasInvalidNode ? 'ui-control-destructive' : 'ui-control-primary',
+          hasInvalidNode ? 'ui-control-destructive' : 'ui-control-primary'
         )}
         disabled={hasInvalidNode || !hasUnsavedChanges}
         onClick={onSave}
-        title={hasInvalidNode ? 'Resolve invalid model allocations before saving' : hasUnsavedChanges ? 'Save config' : 'No changes to save'}
+        title={
+          hasInvalidNode
+            ? 'Resolve invalid model allocations before saving'
+            : hasUnsavedChanges
+              ? 'Save config'
+              : 'No changes to save'
+        }
         type="button"
         aria-keyshortcuts="Control+S"
       >
@@ -92,7 +118,10 @@ export function ConfigurationHeader(props: ConfigurationHeaderProps) {
               Editing <strong className="font-mono text-[11.5px] font-semibold text-foreground">{localHostname}</strong>
               <span className="hidden text-fg-faint md:inline">· local node only</span>
             </InlineMeta>
-            <InlineMeta className="hidden md:inline-flex" icon={<Network aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}>
+            <InlineMeta
+              className="hidden md:inline-flex"
+              icon={<Network aria-hidden="true" className="size-[11px]" strokeWidth={1.6} />}
+            >
               {onlineNodes} nodes connected · remote read-only
             </InlineMeta>
           </div>

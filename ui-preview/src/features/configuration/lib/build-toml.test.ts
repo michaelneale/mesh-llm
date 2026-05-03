@@ -13,14 +13,14 @@ describe('buildTOML', () => {
       cpu: 'test cpu',
       ramGB: 64,
       gpus: [],
-      placement: 'pooled',
+      placement: 'pooled'
     }
     const assign: ConfigAssign = {
       id: 'assign "quoted"',
       modelId: 'custom\\model\nname',
       nodeId: node.id,
       containerIdx: 0,
-      ctx: 4096,
+      ctx: 4096
     }
 
     const toml = buildTOML([node], [assign])
@@ -36,7 +36,7 @@ describe('buildTOML', () => {
     const draftToml = buildTOML([], [], [], { defaults: CONFIGURATION_DEFAULTS })
     const ngramToml = buildTOML([], [], [], {
       defaults: CONFIGURATION_DEFAULTS,
-      defaultsValues: { 'speculation-mode': 'ngram', 'incompatible-pairing-behavior': 'fail_launch' },
+      defaultsValues: { 'speculation-mode': 'ngram', 'incompatible-pairing-behavior': 'fail_launch' }
     })
 
     expect(draftToml).toContain('mode = "draft_model"')

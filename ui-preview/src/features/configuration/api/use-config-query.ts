@@ -20,10 +20,11 @@ export function useConfigQuery(options?: { enabled?: boolean }): ConfigQueryResu
   const modelsQuery = useModelsQuery(options)
 
   const data = useMemo(
-    () => statusQuery.data && modelsQuery.data
-      ? adaptStatusToConfiguration(statusQuery.data, modelsQuery.data.mesh_models ?? [])
-      : undefined,
-    [modelsQuery.data, statusQuery.data],
+    () =>
+      statusQuery.data && modelsQuery.data
+        ? adaptStatusToConfiguration(statusQuery.data, modelsQuery.data.mesh_models ?? [])
+        : undefined,
+    [modelsQuery.data, statusQuery.data]
   )
 
   return {
@@ -32,6 +33,6 @@ export function useConfigQuery(options?: { enabled?: boolean }): ConfigQueryResu
     isFetching: statusQuery.isFetching || modelsQuery.isFetching,
     isError: statusQuery.isError || modelsQuery.isError,
     statusQuery,
-    modelsQuery,
+    modelsQuery
   }
 }

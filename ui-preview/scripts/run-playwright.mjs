@@ -31,7 +31,7 @@ const port = process.env.PLAYWRIGHT_PORT ?? String(await findAvailablePort())
 const child = spawn('playwright', ['test', ...process.argv.slice(2)], {
   env: { ...process.env, PLAYWRIGHT_HOST: host, PLAYWRIGHT_PORT: port },
   shell: process.platform === 'win32',
-  stdio: 'inherit',
+  stdio: 'inherit'
 })
 
 child.once('error', (error) => {

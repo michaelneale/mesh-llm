@@ -43,18 +43,26 @@ export function SidebarNavigation<TId extends string = string>({
   navClassName,
   itemClassName,
   sectionTitleClassName,
-  sectionItemsClassName,
+  sectionItemsClassName
 }: SidebarNavigationProps<TId>) {
   const navigationSections = sections ?? [{ id: 'items', items: items ?? [] }]
 
   return (
     <aside className={cn('min-w-0', className)}>
-      {eyebrow ? <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-fg-faint">{eyebrow}</p> : null}
+      {eyebrow ? (
+        <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[0.07em] text-fg-faint">{eyebrow}</p>
+      ) : null}
       <nav aria-label={ariaLabel} className={cn('space-y-0.5', navClassName)}>
         {navigationSections.map((section, sectionIndex) => (
           <div key={section.id}>
             {section.title ? (
-              <p className={cn('px-0.5 pb-1 text-[length:var(--density-type-micro)] font-semibold uppercase tracking-[0.05em] text-fg-faint', sectionIndex === 0 ? 'pt-1' : 'pt-3', sectionTitleClassName)}>
+              <p
+                className={cn(
+                  'px-0.5 pb-1 text-[length:var(--density-type-micro)] font-semibold uppercase tracking-[0.05em] text-fg-faint',
+                  sectionIndex === 0 ? 'pt-1' : 'pt-3',
+                  sectionTitleClassName
+                )}
+              >
                 {section.title}
               </p>
             ) : null}
@@ -71,22 +79,41 @@ export function SidebarNavigation<TId extends string = string>({
                       active
                         ? 'text-foreground before:absolute before:-left-3 before:bottom-[7px] before:top-[7px] before:w-[2.5px] before:rounded-[2px] before:bg-accent before:content-[""]'
                         : 'text-fg-dim',
-                      itemClassName,
+                      itemClassName
                     )}
                     data-active={active ? 'true' : undefined}
                     disabled={item.disabled}
                     key={item.id}
                     onClick={() => onSelect(item.id)}
-                    style={active ? { background: 'color-mix(in oklab, var(--color-accent) 16%, transparent)' } : undefined}
+                    style={
+                      active ? { background: 'color-mix(in oklab, var(--color-accent) 16%, transparent)' } : undefined
+                    }
                     type="button"
                   >
                     <span className={cn('flex gap-2.5', hasSummary ? 'items-start' : 'items-center')}>
-                      {item.icon ? <span className="mt-0.5 grid shrink-0 place-items-center text-current opacity-85">{item.icon}</span> : null}
+                      {item.icon ? (
+                        <span className="mt-0.5 grid shrink-0 place-items-center text-current opacity-85">
+                          {item.icon}
+                        </span>
+                      ) : null}
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[length:var(--density-type-control-lg)] leading-none" style={{ fontWeight: active ? 500 : 400 }}>{item.label}</span>
-                        {item.summary ? <span className="mt-1 block line-clamp-2 text-[length:var(--density-type-caption)] leading-snug text-fg-faint">{item.summary}</span> : null}
+                        <span
+                          className="block truncate text-[length:var(--density-type-control-lg)] leading-none"
+                          style={{ fontWeight: active ? 500 : 400 }}
+                        >
+                          {item.label}
+                        </span>
+                        {item.summary ? (
+                          <span className="mt-1 block line-clamp-2 text-[length:var(--density-type-caption)] leading-snug text-fg-faint">
+                            {item.summary}
+                          </span>
+                        ) : null}
                       </span>
-                      {item.count !== undefined ? <span className="shrink-0 font-mono text-[length:var(--density-type-annotation)] text-fg-faint">{item.count}</span> : null}
+                      {item.count !== undefined ? (
+                        <span className="shrink-0 font-mono text-[length:var(--density-type-annotation)] text-fg-faint">
+                          {item.count}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 )
@@ -95,7 +122,11 @@ export function SidebarNavigation<TId extends string = string>({
           </div>
         ))}
       </nav>
-      {footer ? <div className="mt-3 border-t border-border-soft px-2 pb-1 pt-3 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">{footer}</div> : null}
+      {footer ? (
+        <div className="mt-3 border-t border-border-soft px-2 pb-1 pt-3 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">
+          {footer}
+        </div>
+      ) : null}
     </aside>
   )
 }

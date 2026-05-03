@@ -10,35 +10,41 @@ const enableMeshVizPerfRoute = import.meta.env.DEV || import.meta.env.VITE_ENABL
 const rootRoute = createRootRoute({
   component: RootLayout,
   errorComponent: AppErrorBoundary,
-  notFoundComponent: NotFoundRoute,
+  notFoundComponent: NotFoundRoute
 })
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   head: () => ({ meta: [{ title: 'MeshLLM - Dashboard' }] }),
   component: lazyRouteComponent(() => import('@/features/network/pages/DashboardPage'), 'DashboardPageSurface'),
-  errorComponent: FeatureErrorBoundary,
+  errorComponent: FeatureErrorBoundary
 })
 const chatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/chat',
   head: () => ({ meta: [{ title: 'MeshLLM - Chat' }] }),
   component: lazyRouteComponent(() => import('@/features/chat/pages/ChatPage'), 'ChatPageContent'),
-  errorComponent: FeatureErrorBoundary,
+  errorComponent: FeatureErrorBoundary
 })
 const configurationRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/configuration',
   head: () => ({ meta: [{ title: 'MeshLLM - Configuration' }] }),
-  component: lazyRouteComponent(() => import('@/features/configuration/pages/ConfigurationRoutePage'), 'ConfigurationRoutePage'),
-  errorComponent: FeatureErrorBoundary,
+  component: lazyRouteComponent(
+    () => import('@/features/configuration/pages/ConfigurationRoutePage'),
+    'ConfigurationRoutePage'
+  ),
+  errorComponent: FeatureErrorBoundary
 })
 const configurationTabRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/configuration/$configurationTab',
   head: () => ({ meta: [{ title: 'MeshLLM - Configuration' }] }),
-  component: lazyRouteComponent(() => import('@/features/configuration/pages/ConfigurationRoutePage'), 'ConfigurationRoutePage'),
-  errorComponent: FeatureErrorBoundary,
+  component: lazyRouteComponent(
+    () => import('@/features/configuration/pages/ConfigurationRoutePage'),
+    'ConfigurationRoutePage'
+  ),
+  errorComponent: FeatureErrorBoundary
 })
 const developerPlaygroundRoute = import.meta.env.DEV
   ? createRoute({
@@ -46,13 +52,16 @@ const developerPlaygroundRoute = import.meta.env.DEV
       path: '/__playground',
       head: () => ({ meta: [{ title: 'MeshLLM - Developer Playground' }] }),
       validateSearch: parseDeveloperPlaygroundSearch,
-      component: lazyRouteComponent(() => import('@/features/developer/pages/DeveloperPlaygroundPage'), 'DeveloperPlaygroundPage'),
+      component: lazyRouteComponent(
+        () => import('@/features/developer/pages/DeveloperPlaygroundPage'),
+        'DeveloperPlaygroundPage'
+      )
     })
   : null
 const meshVizPerfRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/__meshviz-perf',
-  component: lazyRouteComponent(() => import('@/features/network/pages/MeshVizPerfPage'), 'MeshVizPerfPage'),
+  component: lazyRouteComponent(() => import('@/features/network/pages/MeshVizPerfPage'), 'MeshVizPerfPage')
 })
 export const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -60,7 +69,11 @@ export const routeTree = rootRoute.addChildren([
   configurationRoute,
   configurationTabRoute,
   ...(developerPlaygroundRoute ? [developerPlaygroundRoute] : []),
-  ...(enableMeshVizPerfRoute ? [meshVizPerfRoute] : []),
+  ...(enableMeshVizPerfRoute ? [meshVizPerfRoute] : [])
 ])
 export const router = createRouter({ routeTree, basepath: env.routerBasePath })
-declare module '@tanstack/react-router' { interface Register { router: typeof router } }
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: typeof router
+  }
+}

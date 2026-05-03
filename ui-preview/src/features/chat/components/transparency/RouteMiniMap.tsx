@@ -23,9 +23,11 @@ function isDeskNode(node: TransparencyNode) {
 
 function findNode(nodes: TransparencyNode[], id: string) {
   const normalizedId = normalizeNodeId(id)
-  return nodes.find((node) => node.id === id)
-    ?? nodes.find((node) => normalizeNodeId(node.id) === normalizedId)
-    ?? nodes.find((node) => normalizeNodeId(node.label) === normalizedId)
+  return (
+    nodes.find((node) => node.id === id) ??
+    nodes.find((node) => normalizeNodeId(node.id) === normalizedId) ??
+    nodes.find((node) => normalizeNodeId(node.label) === normalizedId)
+  )
 }
 
 function nodeLabel(node: TransparencyNode, local: boolean) {
@@ -38,22 +40,18 @@ function packetTransform(point: Point) {
 
 export function RouteMiniMap({ nodes, pickId, direction }: RouteMiniMapProps) {
   const packetRef = useRef<SVGGElement>(null)
-  const localNode = nodes.find((node) => node.isLocal === true)
-    ?? nodes.find((node) => !isDeskNode(node))
-    ?? nodes[0]
+  const localNode = nodes.find((node) => node.isLocal === true) ?? nodes.find((node) => !isDeskNode(node)) ?? nodes[0]
 
-  const pickedNode = localNode ? findNode(nodes, pickId) ?? localNode : undefined
-  const remoteNodes = localNode
-    ? nodes.filter((node) => !isDeskNode(node) && node.id !== localNode.id)
-    : []
+  const pickedNode = localNode ? (findNode(nodes, pickId) ?? localNode) : undefined
+  const remoteNodes = localNode ? nodes.filter((node) => !isDeskNode(node) && node.id !== localNode.id) : []
   const orderedRemoteNodes = [
     localNode && pickedNode?.id !== localNode.id ? pickedNode : undefined,
-    ...remoteNodes.filter((node) => node.id !== pickedNode?.id),
+    ...remoteNodes.filter((node) => node.id !== pickedNode?.id)
   ].filter((node): node is TransparencyNode => node != null)
 
   const positionedPeers: PositionedNode[] = orderedRemoteNodes.slice(0, 2).map((node, index) => ({
     node,
-    point: index === 0 ? TOP_PEER_POINT : BOTTOM_PEER_POINT,
+    point: index === 0 ? TOP_PEER_POINT : BOTTOM_PEER_POINT
   }))
   const pickedPeer = positionedPeers.find(({ node }) => node.id === pickedNode?.id)
   const activeTarget = pickedPeer?.point ?? LOCAL_POINT
@@ -81,7 +79,7 @@ export function RouteMiniMap({ nodes, pickId, direction }: RouteMiniMapProps) {
       duration: 1500,
       ease: 'out(2)',
       loop: true,
-      onUpdate: () => placePacket(packetPosition),
+      onUpdate: () => placePacket(packetPosition)
     })
 
     return () => {
@@ -101,18 +99,20 @@ export function RouteMiniMap({ nodes, pickId, direction }: RouteMiniMapProps) {
       role="img"
       aria-label={`${direction} route map`}
     >
-      {positionedPeers.filter(({ node }) => node.id !== pickedNode.id).map(({ node, point }) => (
-        <line
-          key={node.id}
-          x1={LOCAL_POINT.x}
-          y1={LOCAL_POINT.y}
-          x2={point.x}
-          y2={point.y}
-          stroke="var(--color-border)"
-          strokeWidth="1"
-          strokeDasharray="2 3"
-        />
-      ))}
+      {positionedPeers
+        .filter(({ node }) => node.id !== pickedNode.id)
+        .map(({ node, point }) => (
+          <line
+            key={node.id}
+            x1={LOCAL_POINT.x}
+            y1={LOCAL_POINT.y}
+            x2={point.x}
+            y2={point.y}
+            stroke="var(--color-border)"
+            strokeWidth="1"
+            strokeDasharray="2 3"
+          />
+        ))}
 
       {activeTarget !== LOCAL_POINT && (
         <line

@@ -10,18 +10,21 @@ import { FeatureFlagProvider } from '@/lib/feature-flags'
 vi.mock('@/features/chat/api/chat-storage', () => ({
   clearChatState: vi.fn(),
   loadChatState: vi.fn(),
-  saveChatState: vi.fn(),
+  saveChatState: vi.fn()
 }))
 
 function renderChatPage({ transparencyTabEnabled = false }: { transparencyTabEnabled?: boolean } = {}) {
   if (transparencyTabEnabled) {
-    window.localStorage.setItem(APP_STORAGE_KEYS.featureFlagOverrides, JSON.stringify({ chat: { transparencyTab: true } }))
+    window.localStorage.setItem(
+      APP_STORAGE_KEYS.featureFlagOverrides,
+      JSON.stringify({ chat: { transparencyTab: true } })
+    )
   }
 
   render(
     <FeatureFlagProvider>
       <ChatPage />
-    </FeatureFlagProvider>,
+    </FeatureFlagProvider>
   )
 }
 
@@ -76,7 +79,7 @@ describe('ChatPage', () => {
         title="Chat"
       >
         <div data-testid="message-content">Messages</div>
-      </ChatLayout>,
+      </ChatLayout>
     )
 
     expect(screen.queryByRole('tablist', { name: 'Chat sidebar views' })).not.toBeInTheDocument()

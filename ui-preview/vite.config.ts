@@ -13,12 +13,14 @@ function plugins(): PluginOption[] {
   // The app uses code-defined TanStack routes by default. Keep the file-router generator
   // opt-in until route files are added so typecheck/test never depend on missing stubs.
   if (process.env.TANSTACK_FILE_ROUTER === 'true') {
-    vitePlugins.push(tanstackRouter({
-      target: 'react',
-      autoCodeSplitting: true,
-      routesDirectory: './src/app/router/routes',
-      generatedRouteTree: './src/routeTree.gen.ts',
-    }))
+    vitePlugins.push(
+      tanstackRouter({
+        target: 'react',
+        autoCodeSplitting: true,
+        routesDirectory: './src/app/router/routes',
+        generatedRouteTree: './src/routeTree.gen.ts'
+      })
+    )
   }
   vitePlugins.push(react(), tailwindcss())
   return vitePlugins
@@ -34,15 +36,15 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:9337',
-        changeOrigin: true,
-      },
-    },
+        changeOrigin: true
+      }
+    }
   },
   test: {
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/lib/test/setup.ts'],
     css: true,
-    include: ['src/**/*.test.{ts,tsx}'],
-  },
+    include: ['src/**/*.test.{ts,tsx}']
+  }
 })

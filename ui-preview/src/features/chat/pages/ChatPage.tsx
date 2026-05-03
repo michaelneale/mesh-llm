@@ -19,7 +19,14 @@ import { useDataMode } from '@/lib/data-mode'
 import { useBooleanFeatureFlag } from '@/lib/feature-flags'
 import { QueryProvider } from '@/lib/query/QueryProvider'
 import { CHAT_HARNESS } from '@/features/app-tabs/data'
-import type { ChatActionMetric, ChatHarnessData, Conversation, ModelSelectOption, ModelSummary, TransparencyMessage } from '@/features/app-tabs/types'
+import type {
+  ChatActionMetric,
+  ChatHarnessData,
+  Conversation,
+  ModelSelectOption,
+  ModelSummary,
+  TransparencyMessage
+} from '@/features/app-tabs/types'
 
 type ChatPageProps = { data?: ChatHarnessData }
 
@@ -36,7 +43,9 @@ function ChatLiveLoadingGhost() {
         <LoadingGhostBlock className="mt-2 h-3 w-44" shimmer />
       </div>
       <div className="space-y-2 p-3">
-        {conversations.map((conversation) => <LoadingGhostBlock key={conversation} className="h-14" shimmer />)}
+        {conversations.map((conversation) => (
+          <LoadingGhostBlock key={conversation} className="h-14" shimmer />
+        ))}
       </div>
     </aside>
   )
@@ -47,12 +56,12 @@ function ChatLiveLoadingGhost() {
         sidebar={sidebar}
         title="Live chat"
         subtitle="Connecting to the backend model catalog"
-        actions={(
+        actions={
           <>
             <LoadingGhostBlock className="h-6 w-20 rounded-full" shimmer />
             <LoadingGhostBlock className="h-8 w-44" shimmer />
           </>
-        )}
+        }
         composer={<LoadingGhostBlock className="h-11" shimmer />}
       >
         <div className="space-y-4">
@@ -106,22 +115,24 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
   const [inspectedMessage, setInspectedMessage] = useState<TransparencyMessage | undefined>()
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState(data.models[0]?.name ?? '')
-  const activeModelName = displayModels.some((item) => item.name === model) ? model : displayModels[0]?.name ?? ''
+  const activeModelName = displayModels.some((item) => item.name === model) ? model : (displayModels[0]?.name ?? '')
 
   const conversations = useConversations(conversationFallback)
-  const activeConversation = conversations.conversations.find((c) => c.id === activeConversationId) ?? conversations.conversations[0]
+  const activeConversation =
+    conversations.conversations.find((c) => c.id === activeConversationId) ?? conversations.conversations[0]
   const activeConversationKey = activeConversation?.id ?? ''
   const chat = useMeshChat(activeModelName)
   const liveMessages = useChatMessages(chat.messages)
-  const resolvedThreads = liveMessages.length > 0
-    ? { ...conversations.threads, [activeConversationKey]: liveMessages }
-    : conversations.threads
+  const resolvedThreads =
+    liveMessages.length > 0
+      ? { ...conversations.threads, [activeConversationKey]: liveMessages }
+      : conversations.threads
 
   const options: ModelSelectOption[] = displayModels.map((item) => ({
     value: item.name,
     label: item.name,
     meta: `${item.family} · ${item.context}`,
-    status: modelStatusBadge(item),
+    status: modelStatusBadge(item)
   }))
   const activeMessages = resolvedThreads[activeConversationKey] ?? []
 
@@ -157,9 +168,13 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
 
   const actions = (
     <>
-      {data.actionMetrics.map((metric) => <ChatMetricBadge key={metric.id} metric={metric} />)}
+      {data.actionMetrics.map((metric) => (
+        <ChatMetricBadge key={metric.id} metric={metric} />
+      ))}
       <div className="flex min-w-0 flex-1 basis-full items-center gap-2 sm:basis-auto md:flex-none">
-        <span className="hidden shrink-0 whitespace-nowrap text-[length:var(--density-type-caption)] text-fg-faint md:inline">{data.modelLabel}</span>
+        <span className="hidden shrink-0 whitespace-nowrap text-[length:var(--density-type-caption)] text-fg-faint md:inline">
+          {data.modelLabel}
+        </span>
         <ModelSelect options={options} value={activeModelName} onChange={setModel} />
       </div>
     </>
@@ -193,7 +208,16 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
         title={data.title}
         subtitle={activeConversation?.title}
         actions={actions}
-        composer={<Composer value={prompt} onChange={setPrompt} onSend={() => { void chat.sendMessage(prompt); setPrompt('') }} />}
+        composer={
+          <Composer
+            value={prompt}
+            onChange={setPrompt}
+            onSend={() => {
+              void chat.sendMessage(prompt)
+              setPrompt('')
+            }}
+          />
+        }
         onMessageAreaClick={() => setInspectedMessage(undefined)}
       >
         {activeMessages.map((message) => {
@@ -211,7 +235,9 @@ export function ChatPageContent({ data = CHAT_HARNESS }: ChatPageProps) {
               tokens={message.tokens}
               tokPerSec={message.tokPerSec}
               ttft={message.ttft}
-              inspect={transparencyTabEnabled && transparencyMessage ? () => inspectMessage(transparencyMessage) : undefined}
+              inspect={
+                transparencyTabEnabled && transparencyMessage ? () => inspectMessage(transparencyMessage) : undefined
+              }
               inspectLabel={message.inspectLabel}
               inspected={transparencyMessage != null && inspectedMessage?.id === transparencyMessage.id}
             />

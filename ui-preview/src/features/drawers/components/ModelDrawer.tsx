@@ -18,7 +18,7 @@ function isConfigModel(model: DrawerModel): model is ConfigModel {
 }
 
 function modelSubtitle(model: DrawerModel) {
-  return isConfigModel(model) ? model.family : model.fullId ?? model.family
+  return isConfigModel(model) ? model.family : (model.fullId ?? model.family)
 }
 
 function modelQuant(model: ModelSummary) {
@@ -64,7 +64,7 @@ function ModelDrawerContent({
   model,
   peers,
   onClose,
-  titleId,
+  titleId
 }: {
   model: DrawerModel
   peers: Peer[]
@@ -91,16 +91,26 @@ function ModelDrawerContent({
         <div className="pb-[20px] pt-[12px]">
           <SectionHead icon={drawerIcon(Cpu)}>Model metadata</SectionHead>
           <div className="grid grid-cols-2 gap-[8px] px-[18px]">
-            <KV icon={drawerIcon(Cpu)} label="Params">{model.paramsB}B</KV>
-            <KV icon={drawerIcon(HardDrive)} label="Size">{model.sizeGB} GB</KV>
-            <KV icon={drawerIcon(HardDrive)} label="Disk">{model.diskGB} GB</KV>
-            <KV icon={drawerIcon(Cpu)} label="Context">{model.ctxMaxK}k</KV>
+            <KV icon={drawerIcon(Cpu)} label="Params">
+              {model.paramsB}B
+            </KV>
+            <KV icon={drawerIcon(HardDrive)} label="Size">
+              {model.sizeGB} GB
+            </KV>
+            <KV icon={drawerIcon(HardDrive)} label="Disk">
+              {model.diskGB} GB
+            </KV>
+            <KV icon={drawerIcon(Cpu)} label="Context">
+              {model.ctxMaxK}k
+            </KV>
           </div>
 
           <SectionHead icon={drawerIcon(Network)}>Capabilities</SectionHead>
           <div className="flex flex-wrap gap-[6px] px-[18px]">
             {model.tags.map((tag) => (
-              <DrawerBadge key={tag} tone="accent">{tag}</DrawerBadge>
+              <DrawerBadge key={tag} tone="accent">
+                {tag}
+              </DrawerBadge>
             ))}
           </div>
         </div>
@@ -117,7 +127,9 @@ function ModelDrawerContent({
       <DrawerHeader
         badges={
           <>
-            <DrawerBadge dot tone={status.tone}>{status.label}</DrawerBadge>
+            <DrawerBadge dot tone={status.tone}>
+              {status.label}
+            </DrawerBadge>
             <DrawerBadge tone="good">Fits</DrawerBadge>
           </>
         }
@@ -131,23 +143,37 @@ function ModelDrawerContent({
         <h3 className="sr-only">Model metadata</h3>
         <span className="sr-only">{model.context}</span>
         <div className="flex gap-[8px] px-[18px]">
-          <KV icon={drawerIcon(Network)} label="Availability">{availability} node{availability === 1 ? '' : 's'}</KV>
-          <KV icon={drawerIcon(HardDrive)} label="Mesh VRAM">{modelSummarySize(model)}</KV>
-          <KV icon={drawerIcon(Cpu)} label="Context">{modelSummaryContext(model)}</KV>
-          <KV icon={drawerIcon(Cpu)} label="Quant">{modelQuant(model)}</KV>
+          <KV icon={drawerIcon(Network)} label="Availability">
+            {availability} node{availability === 1 ? '' : 's'}
+          </KV>
+          <KV icon={drawerIcon(HardDrive)} label="Mesh VRAM">
+            {modelSummarySize(model)}
+          </KV>
+          <KV icon={drawerIcon(Cpu)} label="Context">
+            {modelSummaryContext(model)}
+          </KV>
+          <KV icon={drawerIcon(Cpu)} label="Quant">
+            {modelQuant(model)}
+          </KV>
         </div>
 
         <SectionHead icon={drawerIcon(Network)}>Capabilities</SectionHead>
         <div className="flex flex-wrap gap-[6px] px-[18px]">
           {model.tags.map((tag) => (
-            <DrawerBadge key={tag} tone="accent">{tag}</DrawerBadge>
+            <DrawerBadge key={tag} tone="accent">
+              {tag}
+            </DrawerBadge>
           ))}
         </div>
 
         <SectionHead icon={drawerIcon(Hash)}>Files</SectionHead>
         <div className="flex flex-col gap-[8px] px-[18px]">
-          <KV icon={drawerIcon(Hash)} label="Shorthand">{model.name}</KV>
-          <KV icon={drawerIcon(Hash)} label="Full name">{model.fullId ?? model.name}.gguf</KV>
+          <KV icon={drawerIcon(Hash)} label="Shorthand">
+            {model.name}
+          </KV>
+          <KV icon={drawerIcon(Hash)} label="Full name">
+            {model.fullId ?? model.name}.gguf
+          </KV>
         </div>
 
         <SectionHead icon={drawerIcon(Network)}>Active peers</SectionHead>
@@ -178,7 +204,11 @@ function ModelDrawerContent({
           )}
         </div>
 
-        {model.activitySummary ? <div className="px-[18px] pt-[8px] text-[length:var(--density-type-caption)] leading-[16px] text-fg-faint">{model.activitySummary}</div> : null}
+        {model.activitySummary ? (
+          <div className="px-[18px] pt-[8px] text-[length:var(--density-type-caption)] leading-[16px] text-fg-faint">
+            {model.activitySummary}
+          </div>
+        ) : null}
       </div>
     </div>
   )

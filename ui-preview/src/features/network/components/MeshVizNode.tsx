@@ -65,7 +65,7 @@ export function MeshVizNode({
   onHoverStart,
   onHoverEnd,
   onToggleOpen,
-  onCloseOpen,
+  onCloseOpen
 }: MeshVizNodeProps) {
   const isDebug = isDebugNode(node)
   const isSelf = node.id === selfId
@@ -76,11 +76,7 @@ export function MeshVizNode({
   const screenPoint = pointToScreen(node, canvasWidth, canvasHeight, viewport)
 
   return (
-    <HoverCardPrimitive.Root
-      open={isOpen}
-      openDelay={0}
-      closeDelay={0}
-    >
+    <HoverCardPrimitive.Root open={isOpen} openDelay={0} closeDelay={0}>
       <HoverCardPrimitive.Trigger asChild>
         <button
           type="button"
@@ -107,11 +103,11 @@ export function MeshVizNode({
             'group absolute flex -translate-x-1/2 items-center bg-transparent p-0 outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
             isLeaving && 'pointer-events-none',
             isSelected && 'z-20',
-            isOpen && 'z-30',
+            isOpen && 'z-30'
           )}
           style={{
             left: `${screenPoint.x}px`,
-            top: `${screenPoint.y - haloSize / 2}px`,
+            top: `${screenPoint.y - haloSize / 2}px`
           }}
         >
           <span
@@ -119,19 +115,16 @@ export function MeshVizNode({
             style={{
               transform: 'scale(var(--mesh-node-live-scale, 1))',
               transformOrigin: `50% ${haloSize / 2}px`,
-              willChange: 'transform',
+              willChange: 'transform'
             }}
           >
             <span
               data-node-lifecycle={lifecycle}
-              className={cn(
-                meshPaletteFadeClassName,
-                'mesh-node-orb relative grid place-items-center rounded-full',
-              )}
+              className={cn(meshPaletteFadeClassName, 'mesh-node-orb relative grid place-items-center rounded-full')}
               style={{
                 color: fill,
                 width: haloSize,
-                height: haloSize,
+                height: haloSize
               }}
             >
               <span
@@ -140,16 +133,14 @@ export function MeshVizNode({
                 data-testid="mesh-node-context-highlight"
                 className={cn(
                   'pointer-events-none absolute rounded-full transition-opacity duration-150 ease-out',
-                  isOpen ? 'opacity-100' : 'opacity-0',
+                  isOpen ? 'opacity-100' : 'opacity-0'
                 )}
                 style={{
                   inset: -6,
                   background:
                     'radial-gradient(circle, color-mix(in oklab, currentColor 52%, transparent) 0%, color-mix(in oklab, currentColor 28%, transparent) 48%, transparent 74%)',
-                  border:
-                    '1px solid color-mix(in oklab, currentColor 52%, var(--color-background))',
-                  boxShadow:
-                    '0 0 20px color-mix(in oklab, currentColor 28%, transparent)',
+                  border: '1px solid color-mix(in oklab, currentColor 52%, var(--color-background))',
+                  boxShadow: '0 0 20px color-mix(in oklab, currentColor 28%, transparent)'
                 }}
               />
               {isSelf && (
@@ -166,18 +157,17 @@ export function MeshVizNode({
                 data-testid="mesh-node-core"
                 className={cn(
                   meshPaletteFadeClassName,
-                  'mesh-glow mesh-node-core relative overflow-hidden rounded-full',
+                  'mesh-glow mesh-node-core relative overflow-hidden rounded-full'
                 )}
                 style={{
                   color: fill,
                   width: coreSize,
                   height: coreSize,
                   backgroundColor: `color-mix(in oklab, currentColor ${isSelf ? '18%' : '14%'}, var(--color-panel-strong))`,
-                  border:
-                    `1px solid color-mix(in oklab, currentColor ${isSelf ? '68%' : '58%'}, var(--color-border))`,
+                  border: `1px solid color-mix(in oklab, currentColor ${isSelf ? '68%' : '58%'}, var(--color-border))`,
                   boxShadow: isSelected
                     ? `0 0 ${isSelf ? 16 : 13}px color-mix(in oklab, currentColor 24%, transparent), 0 0 0 3px color-mix(in oklab, currentColor 12%, transparent), inset 0 0 8px color-mix(in oklab, currentColor 12%, transparent)`
-                    : `0 0 ${isSelf ? 12 : 10}px color-mix(in oklab, currentColor 16%, transparent), inset 0 0 8px color-mix(in oklab, currentColor 8%, transparent)`,
+                    : `0 0 ${isSelf ? 12 : 10}px color-mix(in oklab, currentColor 16%, transparent), inset 0 0 8px color-mix(in oklab, currentColor 8%, transparent)`
                 }}
               >
                 <span
@@ -186,7 +176,7 @@ export function MeshVizNode({
                   data-testid="mesh-node-core-overlay"
                   className={cn(
                     'pointer-events-none absolute inset-0 rounded-full transition-opacity duration-150 ease-out',
-                    isOpen ? 'opacity-45' : 'opacity-0',
+                    isOpen ? 'opacity-45' : 'opacity-0'
                   )}
                   style={{ backgroundColor: 'color-mix(in oklab, currentColor 56%, transparent)' }}
                 />
@@ -213,7 +203,7 @@ export function MeshVizNodeLabel({
   canvasHeight,
   viewport,
   nodeColors,
-  lifecycle,
+  lifecycle
 }: MeshVizNodeLabelProps) {
   const isDebug = isDebugNode(node)
   const isSelf = node.id === selfId
@@ -239,7 +229,7 @@ export function MeshVizNodeLabel({
     const currentOpacity = Number.parseFloat(labelElement.style.opacity)
     const fromOpacity = Number.isFinite(currentOpacity)
       ? currentOpacity
-      : previousLabelOpacityRef.current ?? targetOpacity
+      : (previousLabelOpacityRef.current ?? targetOpacity)
 
     if (reduceMotion || fromOpacity === targetOpacity) {
       labelElement.style.opacity = `${targetOpacity}`
@@ -253,7 +243,7 @@ export function MeshVizNodeLabel({
     const animation = animate(labelElement, {
       opacity: { from: fromOpacity, to: targetOpacity },
       duration: labelFadeDuration,
-      ease: 'out(3)',
+      ease: 'out(3)'
     })
 
     labelAnimationRef.current = animation
@@ -275,24 +265,23 @@ export function MeshVizNodeLabel({
           ? labelFadeDuration === 300
             ? 'opacity-100 duration-[300ms]'
             : 'opacity-100 duration-[500ms]'
-          : 'opacity-0 duration-[500ms]',
+          : 'opacity-0 duration-[500ms]'
       )}
       style={{
         left: `${screenPoint.x}px`,
         top: `${screenPoint.y + haloSize / 2}px`,
         transform: 'translateX(-50%) scale(var(--mesh-node-live-scale, 1))',
         transformOrigin: '50% 0',
-        willChange: 'transform, opacity',
+        willChange: 'transform, opacity'
       }}
     >
       <span
         className={cn(
           meshPaletteFadeClassName,
-          'font-mono text-[length:var(--density-type-label)] font-semibold uppercase leading-none tracking-[0.06em]',
+          'font-mono text-[length:var(--density-type-label)] font-semibold uppercase leading-none tracking-[0.06em]'
         )}
         style={{
-          color:
-            labelColor,
+          color: labelColor
         }}
       >
         {node.label}

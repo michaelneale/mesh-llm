@@ -15,17 +15,12 @@ export function DrawerHeader({ title, titleId, subtitle, badges, onClose }: Draw
       <div className="flex items-start gap-[12px]">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
-            <h2
-              className="type-headline min-w-0 truncate font-mono"
-              id={titleId}
-            >
+            <h2 className="type-headline min-w-0 truncate font-mono" id={titleId}>
               {title}
             </h2>
             {badges ? <div className="flex shrink-0 flex-wrap items-center gap-1.5">{badges}</div> : null}
           </div>
-          {subtitle ? (
-            <p className="type-caption mt-[3px] truncate font-mono text-fg-faint">{subtitle}</p>
-          ) : null}
+          {subtitle ? <p className="type-caption mt-[3px] truncate font-mono text-fg-faint">{subtitle}</p> : null}
         </div>
 
         <button

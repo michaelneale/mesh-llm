@@ -13,7 +13,7 @@ describe('MessageRow', () => {
         model="llama-local-q4"
         route="carrack.mesh"
         tokens="256 tokens"
-      />,
+      />
     )
 
     const article = container.querySelector('article')
@@ -37,12 +37,20 @@ describe('MessageRow', () => {
         timestamp="12:10"
         inspect={inspect}
         inspectLabel="Inspect mesh route"
-      />,
+      />
     )
 
     const button = screen.getByRole('button', { name: 'Inspect mesh route' })
 
-    expect(button).toHaveClass('relative', '-mx-2', 'mb-5', 'block', 'w-[calc(100%+16px)]', 'select-none', 'focus-visible:outline-accent')
+    expect(button).toHaveClass(
+      'relative',
+      '-mx-2',
+      'mb-5',
+      'block',
+      'w-[calc(100%+16px)]',
+      'select-none',
+      'focus-visible:outline-accent'
+    )
     expect(button).toHaveTextContent('Inspectable response from the mesh')
 
     await user.click(button)
@@ -57,24 +65,21 @@ describe('MessageRow', () => {
         body="Route this prompt through the local node"
         timestamp="12:11"
         inspect={() => {}}
-      />,
+      />
     )
 
     expect(screen.getByRole('button', { name: 'Inspect user message from 12:11' })).toBeInTheDocument()
   })
 
   it('renders user messages on a subtly dimmed surface', () => {
-    render(
-      <MessageRow
-        messageRole="user"
-        body="Route this prompt through the local node"
-        timestamp="12:11"
-      />,
-    )
+    render(<MessageRow messageRole="user" body="Route this prompt through the local node" timestamp="12:11" />)
 
     const userSurface = screen.getByText('Route this prompt through the local node').parentElement
 
-    expect(userSurface).toHaveAttribute('style', expect.stringContaining('background: var(--chat-user-message-background)'))
+    expect(userSurface).toHaveAttribute(
+      'style',
+      expect.stringContaining('background: var(--chat-user-message-background)')
+    )
     expect(userSurface).toHaveAttribute('style', expect.stringContaining('border-left: 1px solid var(--color-accent)'))
     expect(userSurface).not.toHaveAttribute('style', expect.stringContaining('border-radius'))
   })
@@ -88,7 +93,7 @@ describe('MessageRow', () => {
         model="llama-local-q4"
         route="carrack.mesh"
         tokens="256 tokens"
-      />,
+      />
     )
 
     expect(container.querySelector('article')).toHaveClass('select-none')
@@ -98,16 +103,12 @@ describe('MessageRow', () => {
   })
 
   it('does not draw a rectangular border around inspected assistant message bodies', () => {
-    render(
-      <MessageRow
-        messageRole="assistant"
-        body="Selected assistant response"
-        timestamp="12:12"
-        inspected
-      />,
-    )
+    render(<MessageRow messageRole="assistant" body="Selected assistant response" timestamp="12:12" inspected />)
 
-    expect(screen.getByText('Selected assistant response')).toHaveAttribute('style', expect.stringContaining('border: 1px solid transparent'))
+    expect(screen.getByText('Selected assistant response')).toHaveAttribute(
+      'style',
+      expect.stringContaining('border: 1px solid transparent')
+    )
   })
 
   it('hides route metadata when disabled', () => {
@@ -128,7 +129,7 @@ describe('MessageRow', () => {
           routeNode="carrack"
           showRouteMetadata={false}
         />
-      </>,
+      </>
     )
 
     expect(screen.queryByText(/sent to/i)).not.toBeInTheDocument()

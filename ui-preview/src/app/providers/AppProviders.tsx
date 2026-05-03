@@ -20,7 +20,7 @@ export function AppProviders({
   initialDataMode,
   locale = 'en-US',
   persistDataMode,
-  queryClient,
+  queryClient
 }: AppProvidersProps) {
   return (
     <QueryProvider client={queryClient}>

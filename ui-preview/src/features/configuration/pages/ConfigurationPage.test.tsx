@@ -5,14 +5,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const blockedBlocker = vi.hoisted(() => ({ status: 'blocked', proceed: vi.fn(), reset: vi.fn() }))
 const idleBlocker = vi.hoisted(() => ({ status: 'idle', proceed: vi.fn(), reset: vi.fn() }))
 const mockUseBlocker = vi.hoisted(() => vi.fn())
-const defaultBlockerTransition = vi.hoisted(() => ({ current: { pathname: '/configuration/local-deployment' }, next: { pathname: '/chat' } }))
+const defaultBlockerTransition = vi.hoisted(() => ({
+  current: { pathname: '/configuration/local-deployment' },
+  next: { pathname: '/chat' }
+}))
 const featureFlagMocks = vi.hoisted(() => ({
   integrationsEnabled: false,
-  signingAttestationEnabled: false,
+  signingAttestationEnabled: false
 }))
 
 vi.mock('@tanstack/react-router', () => ({
-  useBlocker: mockUseBlocker,
+  useBlocker: mockUseBlocker
 }))
 
 vi.mock('@/lib/feature-flags', () => ({
@@ -20,7 +23,7 @@ vi.mock('@/lib/feature-flags', () => ({
     if (path === 'configuration/integrations') return featureFlagMocks.integrationsEnabled
     if (path === 'configuration/signingAttestation') return featureFlagMocks.signingAttestationEnabled
     return true
-  }),
+  })
 }))
 
 import { ConfigurationPage } from '@/features/configuration/pages/ConfigurationPage'
@@ -63,7 +66,10 @@ describe('ConfigurationPage', () => {
     vi.clearAllMocks()
     featureFlagMocks.integrationsEnabled = false
     featureFlagMocks.signingAttestationEnabled = false
-    mockUseBlocker.mockImplementation(({ shouldBlockFn }: { shouldBlockFn: (transition: typeof defaultBlockerTransition) => boolean }) => (shouldBlockFn(defaultBlockerTransition) ? blockedBlocker : idleBlocker))
+    mockUseBlocker.mockImplementation(
+      ({ shouldBlockFn }: { shouldBlockFn: (transition: typeof defaultBlockerTransition) => boolean }) =>
+        shouldBlockFn(defaultBlockerTransition) ? blockedBlocker : idleBlocker
+    )
   })
 
   it('renders the persistent header, shared tab bar, and defaults workspace first', () => {
@@ -228,7 +234,7 @@ describe('ConfigurationPage', () => {
       width: 304,
       x: 10,
       y: 0,
-      toJSON: () => ({}),
+      toJSON: () => ({})
     })
 
     fireEvent.pointerDown(slotMeter, { buttons: 1, clientX: 10, pointerId: 1 })
@@ -245,7 +251,10 @@ describe('ConfigurationPage', () => {
     render(<ConfigurationPage enableNavigationBlocker={false} />)
 
     const policyControl = within(screen.getByRole('radiogroup', { name: 'KV cache policy' }))
-    const tiers = () => within(screen.getByRole('group', { name: 'KV cache memory tiers' })).getAllByText(/^K /).map((node) => node.closest('[data-kv-tier-active]'))
+    const tiers = () =>
+      within(screen.getByRole('group', { name: 'KV cache memory tiers' }))
+        .getAllByText(/^K /)
+        .map((node) => node.closest('[data-kv-tier-active]'))
 
     expect(tiers().map((node) => node?.getAttribute('data-kv-tier-active'))).toEqual(['true', 'true', 'true'])
 
@@ -370,7 +379,9 @@ describe('ConfigurationPage', () => {
 
     render(<ConfigurationPage initialTab="local-deployment" enableNavigationBlocker={false} />)
 
-    const carrackGpu3Capacity = within(getCarrackSection()).getAllByRole('region', { name: /rtx 6000 pro capacity/i })[2]
+    const carrackGpu3Capacity = within(getCarrackSection()).getAllByRole('region', {
+      name: /rtx 6000 pro capacity/i
+    })[2]
     if (!carrackGpu3Capacity) throw new Error('Expected carrack GPU 3 capacity region')
 
     await user.click(carrackGpu3Capacity)
@@ -411,7 +422,8 @@ describe('ConfigurationPage', () => {
     await user.click(gpu3Capacity)
 
     const selectedGpu3Container = gpu3Capacity.closest('[data-config-container-selected="true"]')
-    if (!(selectedGpu3Container instanceof HTMLElement)) throw new Error('Expected clicked GPU 3 container to be selected')
+    if (!(selectedGpu3Container instanceof HTMLElement))
+      throw new Error('Expected clicked GPU 3 container to be selected')
 
     await user.click(within(getCarrackSection()).getByRole('button', { name: 'Add model to carrack' }))
     await user.type(screen.getByRole('textbox', { name: 'Command bar search' }), 'phi')
@@ -469,9 +481,9 @@ describe('ConfigurationPage', () => {
       ...CONFIGURATION_HARNESS,
       assigns: [
         ...CONFIGURATION_HARNESS.assigns,
-        { id: 'a6', modelId: 'phi4', nodeId: 'node-b', containerIdx: 0, ctx: 4096 },
+        { id: 'a6', modelId: 'phi4', nodeId: 'node-b', containerIdx: 0, ctx: 4096 }
       ],
-      preferredAssignId: 'a2',
+      preferredAssignId: 'a2'
     }
 
     render(<ConfigurationPage initialTab="local-deployment" data={data} enableNavigationBlocker={false} />)
@@ -480,7 +492,9 @@ describe('ConfigurationPage', () => {
     const contextEvent = await dispatchShortcut('ArrowRight', { altKey: true })
 
     expect(contextEvent.defaultPrevented).toBe(true)
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('17,408 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '17,408 ctx'
+    )
 
     const tomlSource = await openTomlOutput(user)
     expect(tomlSource.value).not.toContain('phi-4-mini')
@@ -492,9 +506,9 @@ describe('ConfigurationPage', () => {
       ...CONFIGURATION_HARNESS,
       assigns: [
         ...CONFIGURATION_HARNESS.assigns,
-        { id: 'a6', modelId: 'phi4', nodeId: 'node-a', containerIdx: 2, ctx: 4096 },
+        { id: 'a6', modelId: 'phi4', nodeId: 'node-a', containerIdx: 2, ctx: 4096 }
       ],
-      preferredAssignId: 'a3',
+      preferredAssignId: 'a3'
     }
 
     render(<ConfigurationPage initialTab="local-deployment" data={data} enableNavigationBlocker={false} />)
@@ -522,7 +536,9 @@ describe('ConfigurationPage', () => {
     const gpu2Capacity = within(getCarrackSection()).getAllByRole('region', { name: /rtx 6000 pro capacity/i })[1]
     if (!gpu2Capacity) throw new Error('Expected carrack GPU 2 capacity region')
 
-    await user.click(within(gpu2Capacity).getByRole('button', { name: /system reserved space, .* reserved on rtx 6000 pro/i }))
+    await user.click(
+      within(gpu2Capacity).getByRole('button', { name: /system reserved space, .* reserved on rtx 6000 pro/i })
+    )
     expect(screen.queryByRole('button', { name: /remove qwen3\.5-27b-q4_k_m from gpu 2/i })).not.toBeInTheDocument()
 
     await user.keyboard('{ArrowRight}')
@@ -535,15 +551,19 @@ describe('ConfigurationPage', () => {
       ...CONFIGURATION_HARNESS,
       assigns: [
         ...CONFIGURATION_HARNESS.assigns,
-        { id: 'a6', modelId: 'phi4', nodeId: 'node-b', containerIdx: 0, ctx: 4096 },
+        { id: 'a6', modelId: 'phi4', nodeId: 'node-b', containerIdx: 0, ctx: 4096 }
       ],
-      preferredAssignId: 'a5',
+      preferredAssignId: 'a5'
     }
 
     render(<ConfigurationPage initialTab="local-deployment" data={data} enableNavigationBlocker={false} />)
 
-    expect(screen.queryByRole('button', { name: /remove qwen3\.5-27b-ud-q4_k_xl from perseus\.local pool/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /remove phi-4-mini from perseus\.local pool/i })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /remove qwen3\.5-27b-ud-q4_k_xl from perseus\.local pool/i })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /remove phi-4-mini from perseus\.local pool/i })
+    ).not.toBeInTheDocument()
     expect(screen.getByText('Qwen3.5-27B-UD-Q4_K_XL')).toBeInTheDocument()
     expect(screen.getByText('phi-4-mini')).toBeInTheDocument()
   })
@@ -563,7 +583,9 @@ describe('ConfigurationPage', () => {
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'separate' }))
 
-    const restoredGpu2Capacity = within(getCarrackSection()).getAllByRole('region', { name: /rtx 6000 pro capacity/i })[1]
+    const restoredGpu2Capacity = within(getCarrackSection()).getAllByRole('region', {
+      name: /rtx 6000 pro capacity/i
+    })[1]
     const restoredRtx3080Capacity = within(getCarrackSection()).getByRole('region', { name: /rtx 3080 capacity/i })
     if (!restoredGpu2Capacity) throw new Error('Expected restored carrack GPU 2 capacity region')
 
@@ -624,17 +646,23 @@ describe('ConfigurationPage', () => {
     await user.keyboard('{ArrowDown}')
     const contextEvent = await dispatchShortcut('ArrowRight', { altKey: true })
     expect(contextEvent.defaultPrevented).toBe(true)
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('17,408 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '17,408 ctx'
+    )
     expect(undoButton).toBeEnabled()
 
     const undoEvent = await dispatchShortcut('z', { ctrlKey: true })
     expect(undoEvent.defaultPrevented).toBe(true)
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('16,384 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '16,384 ctx'
+    )
     expect(redoButton).toBeEnabled()
 
     const redoEvent = await dispatchShortcut('r', { ctrlKey: true })
     expect(redoEvent.defaultPrevented).toBe(true)
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('17,408 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '17,408 ctx'
+    )
 
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
     await openTomlOutput(user)

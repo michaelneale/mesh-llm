@@ -8,32 +8,46 @@ const routerMocks = vi.hoisted(() => {
   return {
     navigate,
     useNavigate: vi.fn(() => navigate),
-    useParams: vi.fn(() => ({})),
+    useParams: vi.fn(() => ({}))
   }
 })
 
 const featureFlagMocks = vi.hoisted(() => ({
   integrationsEnabled: false,
   newConfigurationPageEnabled: true,
-  signingAttestationEnabled: false,
+  signingAttestationEnabled: false
 }))
 
 vi.mock('@tanstack/react-router', () => ({
-  Navigate: ({ params, replace, to }: { params: { configurationTab: ConfigurationTabId }; replace?: boolean; to: string }) => (
+  Navigate: ({
+    params,
+    replace,
+    to
+  }: {
+    params: { configurationTab: ConfigurationTabId }
+    replace?: boolean
+    to: string
+  }) => (
     <div data-replace={replace ? 'true' : 'false'} data-testid="redirect" data-to={to}>
       {params.configurationTab}
     </div>
   ),
   useNavigate: routerMocks.useNavigate,
-  useParams: routerMocks.useParams,
+  useParams: routerMocks.useParams
 }))
 
 vi.mock('@/features/configuration/pages/ConfigurationPage', () => ({
-  ConfigurationPageContent: ({ activeTab, onTabChange }: { activeTab: ConfigurationTabId; onTabChange: (tab: ConfigurationTabId) => void }) => (
+  ConfigurationPageContent: ({
+    activeTab,
+    onTabChange
+  }: {
+    activeTab: ConfigurationTabId
+    onTabChange: (tab: ConfigurationTabId) => void
+  }) => (
     <button type="button" onClick={() => onTabChange('toml-review')}>
       Active tab: {activeTab}
     </button>
-  ),
+  )
 }))
 
 vi.mock('@/lib/feature-flags', () => ({
@@ -41,7 +55,7 @@ vi.mock('@/lib/feature-flags', () => ({
     if (path === 'configuration/integrations') return featureFlagMocks.integrationsEnabled
     if (path === 'configuration/signingAttestation') return featureFlagMocks.signingAttestationEnabled
     return featureFlagMocks.newConfigurationPageEnabled
-  }),
+  })
 }))
 
 import { ConfigurationRoutePage } from '@/features/configuration/pages/ConfigurationRoutePage'
@@ -94,7 +108,7 @@ describe('ConfigurationRoutePage', () => {
     expect(routerMocks.navigate).toHaveBeenCalledWith({
       params: { configurationTab: 'toml-review' },
       replace: true,
-      to: '/configuration/$configurationTab',
+      to: '/configuration/$configurationTab'
     })
   })
 
