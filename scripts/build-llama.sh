@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 LLAMA_WORKDIR="${LLAMA_WORKDIR:-$ROOT/.deps/llama.cpp}"
+LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$ROOT/.deps/llama-build}"
 LLAMA_BACKEND="${LLAMA_STAGE_BACKEND:-${SKIPPY_LLAMA_BACKEND:-${LLAMA_BACKEND:-cpu}}}"
 
 case "$LLAMA_BACKEND" in
@@ -15,12 +16,42 @@ case "$LLAMA_BACKEND" in
     ;;
 esac
 
-if [[ -z "${LLAMA_BUILD_DIR:-}" ]]; then
-  if [[ "$LLAMA_BACKEND" == "cpu" ]]; then
-    LLAMA_BUILD_DIR="$LLAMA_WORKDIR/build-stage-abi-static"
+sanitize_build_component() {
+  printf '%s' "$1" | tr ';, /:' '_____' | tr -cd 'A-Za-z0-9_.-'
+}
+
+default_build_dir_for_backend() {
+  local suffix="$LLAMA_BACKEND"
+  case "$LLAMA_BACKEND" in
+    cpu)
+      suffix="cpu"
+      ;;
+    cuda)
+      local cuda_arch="${LLAMA_STAGE_CUDA_ARCHITECTURES:-${SKIPPY_CUDA_ARCHITECTURES:-}}"
+      suffix="cuda-sm$(sanitize_build_component "$cuda_arch")"
+      ;;
+    rocm|hip)
+      local amdgpu_targets="${LLAMA_STAGE_AMDGPU_TARGETS:-${SKIPPY_AMDGPU_TARGETS:-}}"
+      suffix="rocm-$(sanitize_build_component "$amdgpu_targets")"
+      ;;
+  esac
+  printf '%s/build-stage-abi-%s\n' "$LLAMA_BUILD_ROOT" "$suffix"
+}
+
+detect_jobs() {
+  if [[ -n "${CMAKE_BUILD_PARALLEL_LEVEL:-}" ]]; then
+    echo "$CMAKE_BUILD_PARALLEL_LEVEL"
+  elif command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v sysctl >/dev/null 2>&1; then
+    sysctl -n hw.ncpu
   else
-    LLAMA_BUILD_DIR="$LLAMA_WORKDIR/build-stage-abi-$LLAMA_BACKEND"
+    echo 4
   fi
+}
+
+if [[ -z "${LLAMA_BUILD_DIR:-}" ]]; then
+  LLAMA_BUILD_DIR="$(default_build_dir_for_backend)"
 fi
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then
@@ -44,6 +75,11 @@ CMAKE_ARGS=(
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_CURL=OFF
 )
+
+if command -v ninja >/dev/null 2>&1; then
+  CMAKE_ARGS=(-G Ninja "${CMAKE_ARGS[@]}")
+  echo "using CMake generator: Ninja"
+fi
 
 case "$LLAMA_BACKEND" in
   cuda)
@@ -74,6 +110,14 @@ if [[ "$USE_SCCACHE" != "0" && -n "$SCCACHE_BIN" ]]; then
     -DCMAKE_C_COMPILER_LAUNCHER="$SCCACHE_BIN"
     -DCMAKE_CXX_COMPILER_LAUNCHER="$SCCACHE_BIN"
   )
+  case "$LLAMA_BACKEND" in
+    cuda)
+      CMAKE_ARGS+=(-DCMAKE_CUDA_COMPILER_LAUNCHER="$SCCACHE_BIN")
+      ;;
+    rocm|hip)
+      CMAKE_ARGS+=(-DCMAKE_HIP_COMPILER_LAUNCHER="$SCCACHE_BIN")
+      ;;
+  esac
   echo "using sccache for llama.cpp C/C++ compilation: $SCCACHE_BIN"
 elif [[ "$USE_SCCACHE" != "0" ]]; then
   echo "sccache not found; llama.cpp build will run without compiler caching" >&2
@@ -85,7 +129,7 @@ fi
 
 cmake "${CMAKE_ARGS[@]}"
 
-cmake --build "$LLAMA_BUILD_DIR" --config "${CMAKE_BUILD_TYPE:-Release}" --target llama llama-common mtmd
+cmake --build "$LLAMA_BUILD_DIR" --config "${CMAKE_BUILD_TYPE:-Release}" --parallel "$(detect_jobs)" --target llama llama-common mtmd
 
 echo "built patched llama.cpp"
 echo "  backend:   $LLAMA_BACKEND"

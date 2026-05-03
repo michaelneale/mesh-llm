@@ -2,7 +2,7 @@
 # build-linux.sh — build patched llama.cpp ABI libraries + mesh-llm on Linux
 #
 # Usage:
-#   scripts/build-linux.sh [--clean] [--backend cpu|cuda|rocm|vulkan] [--cuda-arch SM_LIST] [--rocm-arch GFX_LIST]
+#   scripts/build-linux.sh [--clean] [--skip-ui] [--backend cpu|cuda|rocm|vulkan] [--cuda-arch SM_LIST] [--rocm-arch GFX_LIST]
 
 set -euo pipefail
 
@@ -10,10 +10,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LLAMA_DIR="${MESH_LLM_LLAMA_DIR:-$REPO_ROOT/.deps/llama.cpp}"
+LLAMA_BUILD_ROOT="${MESH_LLM_LLAMA_BUILD_ROOT:-$REPO_ROOT/.deps/llama-build}"
 MESH_DIR="$REPO_ROOT/crates/mesh-llm"
 UI_DIR="$MESH_DIR/ui"
 
 CLEAN=0
+SKIP_UI="${MESH_LLM_SKIP_UI:-0}"
 BACKEND=""
 CUDA_ARCH=""
 ROCM_ARCH=""
@@ -22,6 +24,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --clean)
             CLEAN=1
+            shift
+            ;;
+        --skip-ui)
+            SKIP_UI=1
             shift
             ;;
         --backend)
@@ -109,6 +115,27 @@ locate_vulkan_toolchain() {
     return 1
 }
 
+sanitize_build_component() {
+    printf '%s' "$1" | tr ';, /:' '_____' | tr -cd 'A-Za-z0-9_.-'
+}
+
+default_llama_build_dir_for_backend() {
+    local backend="$1"
+    local suffix="$backend"
+    case "$backend" in
+        cpu)
+            suffix="cpu"
+            ;;
+        cuda)
+            suffix="cuda-sm$(sanitize_build_component "$CUDA_ARCH")"
+            ;;
+        rocm)
+            suffix="rocm-$(sanitize_build_component "$ROCM_ARCH")"
+            ;;
+    esac
+    printf '%s/build-stage-abi-%s\n' "$LLAMA_BUILD_ROOT" "$suffix"
+}
+
 if [[ -z "$BACKEND" ]]; then
     BACKEND="$(detect_backend)"
 fi
@@ -151,19 +178,16 @@ case "$BACKEND" in
         ;;
 esac
 
-if [[ "$CLEAN" -eq 1 ]]; then
-    rm -rf "$LLAMA_DIR"/build-stage-abi-*
-fi
-
 if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" && -n "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; then
     export LLAMA_STAGE_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR"
 fi
 if [[ -z "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
-    if [[ "$BACKEND" == "cpu" ]]; then
-        export LLAMA_STAGE_BUILD_DIR="$LLAMA_DIR/build-stage-abi-static"
-    else
-        export LLAMA_STAGE_BUILD_DIR="$LLAMA_DIR/build-stage-abi-$BACKEND"
-    fi
+    export LLAMA_STAGE_BUILD_DIR="$(default_llama_build_dir_for_backend "$BACKEND")"
+fi
+echo "Using llama.cpp build dir: $LLAMA_STAGE_BUILD_DIR"
+
+if [[ "$CLEAN" -eq 1 ]]; then
+    rm -rf "$LLAMA_STAGE_BUILD_DIR"
 fi
 
 echo "Preparing patched llama.cpp ABI checkout..."
@@ -177,7 +201,9 @@ LLAMA_WORKDIR="$LLAMA_DIR" \
     LLAMA_STAGE_AMDGPU_TARGETS="$ROCM_ARCH" \
     "$SCRIPT_DIR/build-llama.sh"
 
-if [[ -d "$UI_DIR" ]]; then
+if [[ "$SKIP_UI" == "1" ]]; then
+    echo "Skipping UI build (MESH_LLM_SKIP_UI=1 or --skip-ui)."
+elif [[ -d "$UI_DIR" ]]; then
     "$SCRIPT_DIR/build-ui.sh" "$UI_DIR"
 fi
 

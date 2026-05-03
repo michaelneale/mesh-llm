@@ -1,7 +1,8 @@
 # Distributed LLM Inference — build & run tasks
 
 llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
-build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_dir / "build-stage-abi-static")
+llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
+build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "mesh-llm"
 ui_dir := mesh_dir / "ui"
 benchmark_src_dir := mesh_dir / "benchmarks"
@@ -40,6 +41,11 @@ build-mac:
 # Build patched llama.cpp ABI and mesh-llm on Linux
 build-linux backend="" cuda_arch="" rocm_arch="":
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
+
+# Build patched llama.cpp ABI and mesh-llm on Linux without rebuilding the UI.
+[linux]
+build-runtime backend="" cuda_arch="" rocm_arch="":
+    @scripts/build-linux.sh --skip-ui --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
 # Build release artifacts for the current platform.
 
