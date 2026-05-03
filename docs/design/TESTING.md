@@ -493,4 +493,6 @@ Must codesign + xattr after every scp or macOS kills the binary (exit 137).
 pkill -f mesh-llm; pkill -f rpc-server; pkill -f llama-server
 ```
 
-Always kill all three — child processes can orphan.
+Prefer `mesh-llm stop` for tracked local instances. If the runtime is wedged,
+kill any remaining mesh-llm process and then verify no stale backend process is
+still bound to the test ports.

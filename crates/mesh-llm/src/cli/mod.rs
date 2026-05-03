@@ -352,7 +352,7 @@ pub(crate) struct Cli {
 
     /// Override which bundled llama.cpp flavor to use.
     #[arg(long, value_enum)]
-    pub(crate) llama_flavor: Option<crate::inference::launch::BinaryFlavor>,
+    pub(crate) llama_flavor: Option<crate::system::backend::BinaryFlavor>,
 
     /// Device override for local backend selection.
     #[arg(long, hide = true)]

@@ -3,16 +3,11 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RuntimeLlamaEndpointStatus {
+    #[cfg(test)]
     Ready,
-    Error,
     #[default]
     Unavailable,
 }
-
-const _: [RuntimeLlamaEndpointStatus; 2] = [
-    RuntimeLlamaEndpointStatus::Ready,
-    RuntimeLlamaEndpointStatus::Error,
-];
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RuntimeLlamaMetricSample {

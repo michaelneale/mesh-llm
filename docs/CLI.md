@@ -289,7 +289,7 @@ Switches:
 
 ### `stop`
 
-Use this to stop local `mesh-llm`, `llama-server`, and `rpc-server` processes.
+Use this to stop local `mesh-llm` instances tracked in the runtime root.
 
 
 ### `blackboard`

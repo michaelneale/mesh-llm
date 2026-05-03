@@ -1,8 +1,8 @@
 //! Mesh membership via iroh QUIC connections.
 //!
-//! Control traffic uses one QUIC connection per peer. Bi-streams are multiplexed by first byte:
-//! 0x01 = gossip, 0x02 = tunnel (RPC), 0x03 = tunnel map, 0x04 = tunnel (HTTP),
-//! 0x0d = stage control, 0x0e = stage activation transport.
+//! Mesh control traffic uses QUIC ALPN `mesh-llm/1` and multiplexes bi-streams
+//! by first byte. Skippy stage control and activation transport use the
+//! separate `skippy-stage/1` ALPN.
 
 pub use mesh_client::mesh::{
     infer_available_model_descriptors, infer_local_served_model_descriptor,
@@ -27,6 +27,8 @@ use crate::crypto::{
     DEFAULT_NODE_CERT_LIFETIME_SECS,
 };
 use crate::protocol::*;
+
+use skippy_protocol::proto::stage as skippy_stage_proto;
 
 const PRETTY_LOCAL_REQUEST_WINDOW_SECS: u64 = 24 * 60 * 60;
 
@@ -1461,16 +1463,17 @@ impl Node {
                 .await;
         }
         let frame = stage_control_request_to_proto(self.endpoint.id(), request);
-        let conn = self.connection_to_peer(peer_id).await?;
+        let conn = self.stage_connection_to_peer(peer_id).await?;
         let response = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             let (mut send, mut recv) = conn.open_bi().await?;
-            send.write_all(&[STREAM_STAGE_CONTROL]).await?;
+            send.write_all(&[skippy_protocol::STAGE_STREAM_CONTROL])
+                .await?;
             write_len_prefixed(&mut send, &frame.encode_to_vec()).await?;
             let buf = read_len_prefixed(&mut recv).await?;
-            let response = crate::proto::node::StageControlResponse::decode(buf.as_slice())
-                .map_err(|e| anyhow::anyhow!("StageControlResponse decode error: {e}"))?;
-            response
-                .validate_frame()
+            let response =
+                skippy_protocol::proto::stage::StageControlResponse::decode(buf.as_slice())
+                    .map_err(|e| anyhow::anyhow!("StageControlResponse decode error: {e}"))?;
+            skippy_protocol::validate_stage_control_response(&response)
                 .map_err(|e| anyhow::anyhow!("StageControlResponse validation error: {e}"))?;
             let _ = send.finish();
             stage_control_response_from_proto(response)
@@ -1502,18 +1505,19 @@ impl Node {
     ) -> Result<(iroh::endpoint::SendStream, iroh::endpoint::RecvStream)> {
         use prost::Message as _;
 
-        let open = crate::proto::node::StageTransportOpen {
-            gen: NODE_PROTOCOL_GENERATION,
+        let open = skippy_protocol::proto::stage::StageTransportOpen {
+            gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
             requester_id: self.endpoint.id().as_bytes().to_vec(),
             topology_id: topology_id.into(),
             run_id: run_id.into(),
             stage_id: stage_id.into(),
         };
-        open.validate_frame()
+        skippy_protocol::validate_stage_transport_open(&open)
             .map_err(|e| anyhow::anyhow!("StageTransportOpen validation error: {e}"))?;
-        let conn = self.connection_to_peer(peer_id).await?;
+        let conn = self.stage_connection_to_peer(peer_id).await?;
         let (mut send, recv) = conn.open_bi().await?;
-        send.write_all(&[STREAM_STAGE_TRANSPORT]).await?;
+        send.write_all(&[skippy_protocol::STAGE_STREAM_TRANSPORT])
+            .await?;
         write_len_prefixed(&mut send, &open.encode_to_vec()).await?;
         Ok((send, recv))
     }
@@ -1690,7 +1694,10 @@ impl Node {
             .build();
         let mut builder = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(secret_key)
-            .alpns(vec![ALPN_V1.to_vec()])
+            .alpns(vec![
+                ALPN_V1.to_vec(),
+                skippy_protocol::STAGE_ALPN_V1.to_vec(),
+            ])
             .transport_config(transport_config);
 
         {
@@ -1947,7 +1954,7 @@ impl Node {
             .build();
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .secret_key(SecretKey::generate())
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), skippy_protocol::STAGE_ALPN_V1.to_vec()])
             .relay_mode(iroh::endpoint::RelayMode::Disabled)
             .transport_config(transport_config)
             .bind()
@@ -3193,6 +3200,30 @@ impl Node {
         }
     }
 
+    async fn stage_connection_to_peer(&self, peer_id: EndpointId) -> Result<Connection> {
+        let addr = {
+            let state = self.state.lock().await;
+            state.peers.get(&peer_id).map(|p| p.addr.clone())
+        };
+        let Some(addr) = addr else {
+            anyhow::bail!("No address for stage peer {}", peer_id.fmt_short());
+        };
+        let conn = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            self.endpoint
+                .connect(addr, skippy_protocol::STAGE_ALPN_V1)
+                .await
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Timeout connecting to stage peer {}", peer_id.fmt_short()))?
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to connect to stage peer {}: {e}",
+                peer_id.fmt_short()
+            )
+        })?;
+        Ok(conn)
+    }
+
     /// Open an HTTP tunnel bi-stream to a peer (tagged STREAM_TUNNEL_HTTP).
     /// If no connection exists, tries to connect on-demand (for passive nodes
     /// that learned about hosts from routing table but aren't directly connected).
@@ -3247,9 +3278,17 @@ impl Node {
 
     async fn handle_incoming(&self, incoming: iroh::endpoint::Incoming) -> Result<()> {
         let mut accepting = incoming.accept()?;
-        let _alpn = accepting.alpn().await?;
+        let alpn = accepting.alpn().await?;
         let conn = accepting.await?;
         let remote = conn.remote_id();
+        if alpn.as_slice() == skippy_protocol::STAGE_ALPN_V1 {
+            tracing::info!(
+                "Inbound skippy stage connection from {}",
+                remote.fmt_short()
+            );
+            self.dispatch_stage_streams(conn, remote).await;
+            return Ok(());
+        }
         tracing::info!("Inbound connection from {}", remote.fmt_short());
 
         // Store connection for stream dispatch (tunneling, route requests, etc.)
@@ -3282,6 +3321,66 @@ impl Node {
 
         self.dispatch_streams(conn, remote).await;
         Ok(())
+    }
+
+    async fn dispatch_stage_streams(&self, conn: Connection, remote: EndpointId) {
+        loop {
+            let (send, mut recv) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(e) => {
+                    tracing::info!(
+                        "Skippy stage connection to {} closed: {e}",
+                        remote.fmt_short()
+                    );
+                    break;
+                }
+            };
+
+            let admitted = {
+                let state = self.state.lock().await;
+                state.peers.contains_key(&remote)
+            };
+            if !admitted {
+                tracing::warn!(
+                    "Quarantine: skippy stage stream from unadmitted peer {} rejected",
+                    remote.fmt_short()
+                );
+                drop((send, recv));
+                continue;
+            }
+
+            let mut type_buf = [0u8; 1];
+            if recv.read_exact(&mut type_buf).await.is_err() {
+                continue;
+            }
+
+            match type_buf[0] {
+                skippy_protocol::STAGE_STREAM_CONTROL => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_stage_control(remote, send, recv).await {
+                            tracing::warn!("stage control error from {}: {e}", remote.fmt_short());
+                        }
+                    });
+                }
+                skippy_protocol::STAGE_STREAM_TRANSPORT => {
+                    if self
+                        .stage_transport_tx
+                        .send((remote, send, recv))
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("Stage transport channel closed, dropping stream");
+                    }
+                }
+                other => {
+                    tracing::warn!(
+                        "Unknown skippy stage stream type {other:#04x} from {}",
+                        remote.fmt_short()
+                    );
+                }
+            }
+        }
     }
 
     /// Dispatch bi-streams on a connection by type byte
@@ -3738,24 +3837,6 @@ impl Node {
                         }
                     });
                 }
-                STREAM_STAGE_CONTROL => {
-                    let node = self.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = node.handle_stage_control(remote, send, recv).await {
-                            tracing::warn!("stage control error from {}: {e}", remote.fmt_short());
-                        }
-                    });
-                }
-                STREAM_STAGE_TRANSPORT => {
-                    if self
-                        .stage_transport_tx
-                        .send((remote, send, recv))
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!("Stage transport channel closed, dropping stream");
-                    }
-                }
                 other => {
                     tracing::warn!("Unknown stream type {other} from {}", remote.fmt_short());
                 }
@@ -3772,10 +3853,9 @@ impl Node {
         use prost::Message as _;
 
         let buf = read_len_prefixed(&mut recv).await?;
-        let frame = crate::proto::node::StageControlRequest::decode(buf.as_slice())
+        let frame = skippy_protocol::proto::stage::StageControlRequest::decode(buf.as_slice())
             .map_err(|e| anyhow::anyhow!("StageControlRequest decode error: {e}"))?;
-        frame
-            .validate_frame()
+        skippy_protocol::validate_stage_control_request(&frame)
             .map_err(|e| anyhow::anyhow!("StageControlRequest validation error: {e}"))?;
         if frame.requester_id.as_slice() != remote.as_bytes() {
             anyhow::bail!("stage control requester_id does not match QUIC peer identity");
@@ -4597,15 +4677,15 @@ fn stage_topology_from_load(
 fn stage_control_request_to_proto(
     requester_id: EndpointId,
     request: crate::inference::skippy::StageControlRequest,
-) -> crate::proto::node::StageControlRequest {
-    use crate::proto::node::stage_control_request::Command;
+) -> skippy_stage_proto::StageControlRequest {
+    use skippy_stage_proto::stage_control_request::Command;
 
     let command = match request {
         crate::inference::skippy::StageControlRequest::Load(load) => {
             Command::LoadStage(stage_load_to_proto(load))
         }
         crate::inference::skippy::StageControlRequest::Stop(stop) => {
-            Command::StopStage(crate::proto::node::StopStage {
+            Command::StopStage(skippy_stage_proto::StopStage {
                 topology_id: stop.topology_id,
                 run_id: stop.run_id,
                 stage_id: stop.stage_id,
@@ -4613,7 +4693,7 @@ fn stage_control_request_to_proto(
             })
         }
         crate::inference::skippy::StageControlRequest::Status(status) => {
-            Command::GetStageStatus(crate::proto::node::GetStageStatus {
+            Command::GetStageStatus(skippy_stage_proto::GetStageStatus {
                 topology_id: status.topology_id,
                 run_id: status.run_id,
                 stage_id: status.stage_id,
@@ -4621,8 +4701,8 @@ fn stage_control_request_to_proto(
         }
     };
 
-    crate::proto::node::StageControlRequest {
-        gen: NODE_PROTOCOL_GENERATION,
+    skippy_stage_proto::StageControlRequest {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         requester_id: requester_id.as_bytes().to_vec(),
         command: Some(command),
     }
@@ -4630,8 +4710,8 @@ fn stage_control_request_to_proto(
 
 fn stage_load_to_proto(
     load: crate::inference::skippy::StageLoadRequest,
-) -> crate::proto::node::LoadStage {
-    crate::proto::node::LoadStage {
+) -> skippy_stage_proto::LoadStage {
+    skippy_stage_proto::LoadStage {
         topology_id: load.topology_id,
         run_id: load.run_id,
         model_id: load.model_id,
@@ -4655,13 +4735,13 @@ fn stage_load_to_proto(
         shutdown_generation: load.shutdown_generation,
         load_mode: match load.load_mode {
             skippy_protocol::LoadMode::RuntimeSlice => {
-                crate::proto::node::StageLoadMode::RuntimeSlice as i32
+                skippy_stage_proto::StageLoadMode::RuntimeSlice as i32
             }
             skippy_protocol::LoadMode::LayerPackage => {
-                crate::proto::node::StageLoadMode::LayerPackage as i32
+                skippy_stage_proto::StageLoadMode::LayerPackage as i32
             }
             skippy_protocol::LoadMode::ArtifactSlice => {
-                crate::proto::node::StageLoadMode::ArtifactSlice as i32
+                skippy_stage_proto::StageLoadMode::ArtifactSlice as i32
             }
         },
         upstream: load.upstream.map(stage_peer_to_proto),
@@ -4671,8 +4751,8 @@ fn stage_load_to_proto(
 
 fn stage_peer_to_proto(
     peer: crate::inference::skippy::StagePeerDescriptor,
-) -> crate::proto::node::StagePeer {
-    crate::proto::node::StagePeer {
+) -> skippy_stage_proto::StagePeer {
+    skippy_stage_proto::StagePeer {
         stage_id: peer.stage_id,
         stage_index: peer.stage_index,
         endpoint: peer.endpoint,
@@ -4680,8 +4760,8 @@ fn stage_peer_to_proto(
     }
 }
 
-fn stage_device_to_proto(device: skippy_protocol::StageDevice) -> crate::proto::node::StageDevice {
-    crate::proto::node::StageDevice {
+fn stage_device_to_proto(device: skippy_protocol::StageDevice) -> skippy_stage_proto::StageDevice {
+    skippy_stage_proto::StageDevice {
         backend_device: device.backend_device,
         stable_id: device.stable_id,
         index: device.index.map(|value| value as u64),
@@ -4690,9 +4770,9 @@ fn stage_device_to_proto(device: skippy_protocol::StageDevice) -> crate::proto::
 }
 
 fn stage_control_request_from_proto(
-    frame: crate::proto::node::StageControlRequest,
+    frame: skippy_stage_proto::StageControlRequest,
 ) -> anyhow::Result<crate::inference::skippy::StageControlRequest> {
-    use crate::proto::node::stage_control_request::Command;
+    use skippy_stage_proto::stage_control_request::Command;
 
     match frame
         .command
@@ -4722,7 +4802,7 @@ fn stage_control_request_from_proto(
 }
 
 fn stage_load_from_proto(
-    load: crate::proto::node::LoadStage,
+    load: skippy_stage_proto::LoadStage,
 ) -> anyhow::Result<crate::inference::skippy::StageLoadRequest> {
     Ok(crate::inference::skippy::StageLoadRequest {
         topology_id: load.topology_id,
@@ -4757,7 +4837,7 @@ fn stage_load_from_proto(
 }
 
 fn stage_device_from_proto(
-    device: crate::proto::node::StageDevice,
+    device: skippy_stage_proto::StageDevice,
 ) -> anyhow::Result<skippy_protocol::StageDevice> {
     Ok(skippy_protocol::StageDevice {
         backend_device: device.backend_device,
@@ -4772,7 +4852,7 @@ fn stage_device_from_proto(
 }
 
 fn stage_peer_from_proto(
-    peer: crate::proto::node::StagePeer,
+    peer: skippy_stage_proto::StagePeer,
 ) -> anyhow::Result<crate::inference::skippy::StagePeerDescriptor> {
     Ok(crate::inference::skippy::StagePeerDescriptor {
         stage_id: peer.stage_id,
@@ -4787,32 +4867,32 @@ fn stage_peer_from_proto(
 }
 
 fn stage_load_mode_from_proto(value: i32) -> skippy_protocol::LoadMode {
-    match crate::proto::node::StageLoadMode::try_from(value)
-        .unwrap_or(crate::proto::node::StageLoadMode::Unspecified)
+    match skippy_stage_proto::StageLoadMode::try_from(value)
+        .unwrap_or(skippy_stage_proto::StageLoadMode::Unspecified)
     {
-        crate::proto::node::StageLoadMode::Unspecified
-        | crate::proto::node::StageLoadMode::RuntimeSlice => {
+        skippy_stage_proto::StageLoadMode::Unspecified
+        | skippy_stage_proto::StageLoadMode::RuntimeSlice => {
             skippy_protocol::LoadMode::RuntimeSlice
         }
-        crate::proto::node::StageLoadMode::LayerPackage => skippy_protocol::LoadMode::LayerPackage,
-        crate::proto::node::StageLoadMode::ArtifactSlice => {
+        skippy_stage_proto::StageLoadMode::LayerPackage => skippy_protocol::LoadMode::LayerPackage,
+        skippy_stage_proto::StageLoadMode::ArtifactSlice => {
             skippy_protocol::LoadMode::ArtifactSlice
         }
     }
 }
 
 fn stage_wire_dtype_from_proto(value: i32) -> crate::inference::skippy::StageWireDType {
-    match crate::proto::node::StageWireDType::try_from(value)
-        .unwrap_or(crate::proto::node::StageWireDType::StageWireDtypeUnspecified)
+    match skippy_stage_proto::StageWireDType::try_from(value)
+        .unwrap_or(skippy_stage_proto::StageWireDType::StageWireDtypeUnspecified)
     {
-        crate::proto::node::StageWireDType::StageWireDtypeUnspecified
-        | crate::proto::node::StageWireDType::StageWireDtypeF16 => {
+        skippy_stage_proto::StageWireDType::StageWireDtypeUnspecified
+        | skippy_stage_proto::StageWireDType::StageWireDtypeF16 => {
             crate::inference::skippy::StageWireDType::F16
         }
-        crate::proto::node::StageWireDType::StageWireDtypeF32 => {
+        skippy_stage_proto::StageWireDType::StageWireDtypeF32 => {
             crate::inference::skippy::StageWireDType::F32
         }
-        crate::proto::node::StageWireDType::StageWireDtypeQ8 => {
+        skippy_stage_proto::StageWireDType::StageWireDtypeQ8 => {
             crate::inference::skippy::StageWireDType::Q8
         }
     }
@@ -4900,12 +4980,12 @@ fn stage_status_from_load(
 
 fn stage_control_response_to_proto(
     response: crate::inference::skippy::StageControlResponse,
-) -> crate::proto::node::StageControlResponse {
-    use crate::proto::node::stage_control_response::Response;
+) -> skippy_stage_proto::StageControlResponse {
+    use skippy_stage_proto::stage_control_response::Response;
 
     let response = match response {
         crate::inference::skippy::StageControlResponse::Ready(ready) => {
-            Response::StageReady(crate::proto::node::StageReady {
+            Response::StageReady(skippy_stage_proto::StageReady {
                 accepted: ready.accepted,
                 status: Some(stage_status_to_proto(ready.status)),
                 error: ready.error,
@@ -4913,8 +4993,8 @@ fn stage_control_response_to_proto(
         }
         crate::inference::skippy::StageControlResponse::Status(statuses) => {
             Response::StageStatus(statuses.into_iter().next().map_or_else(
-                || crate::proto::node::StageStatus {
-                    state: crate::proto::node::StageRuntimeState::Stopped as i32,
+                || skippy_stage_proto::StageStatus {
+                    state: skippy_stage_proto::StageRuntimeState::Stopped as i32,
                     ..Default::default()
                 },
                 stage_status_to_proto,
@@ -4922,16 +5002,16 @@ fn stage_control_response_to_proto(
         }
     };
 
-    crate::proto::node::StageControlResponse {
-        gen: NODE_PROTOCOL_GENERATION,
+    skippy_stage_proto::StageControlResponse {
+        gen: skippy_protocol::STAGE_PROTOCOL_GENERATION,
         response: Some(response),
     }
 }
 
 fn stage_control_response_from_proto(
-    frame: crate::proto::node::StageControlResponse,
+    frame: skippy_stage_proto::StageControlResponse,
 ) -> anyhow::Result<crate::inference::skippy::StageControlResponse> {
-    use crate::proto::node::stage_control_response::Response;
+    use skippy_stage_proto::stage_control_response::Response;
 
     match frame
         .response
@@ -4959,8 +5039,8 @@ fn stage_control_response_from_proto(
 
 fn stage_status_to_proto(
     status: crate::inference::skippy::StageStatusSnapshot,
-) -> crate::proto::node::StageStatus {
-    crate::proto::node::StageStatus {
+) -> skippy_stage_proto::StageStatus {
+    skippy_stage_proto::StageStatus {
         topology_id: status.topology_id,
         run_id: status.run_id,
         model_id: status.model_id,
@@ -4989,7 +5069,7 @@ fn stage_status_to_proto(
 }
 
 fn stage_status_from_proto(
-    status: crate::proto::node::StageStatus,
+    status: skippy_stage_proto::StageStatus,
 ) -> anyhow::Result<crate::inference::skippy::StageStatusSnapshot> {
     Ok(crate::inference::skippy::StageStatusSnapshot {
         topology_id: status.topology_id,
@@ -5023,23 +5103,23 @@ fn stage_status_from_proto(
 }
 
 fn stage_runtime_state_from_proto(value: i32) -> crate::inference::skippy::StageRuntimeState {
-    match crate::proto::node::StageRuntimeState::try_from(value)
-        .unwrap_or(crate::proto::node::StageRuntimeState::Failed)
+    match skippy_stage_proto::StageRuntimeState::try_from(value)
+        .unwrap_or(skippy_stage_proto::StageRuntimeState::Failed)
     {
-        crate::proto::node::StageRuntimeState::Starting => {
+        skippy_stage_proto::StageRuntimeState::Starting => {
             crate::inference::skippy::StageRuntimeState::Starting
         }
-        crate::proto::node::StageRuntimeState::Ready => {
+        skippy_stage_proto::StageRuntimeState::Ready => {
             crate::inference::skippy::StageRuntimeState::Ready
         }
-        crate::proto::node::StageRuntimeState::Stopping => {
+        skippy_stage_proto::StageRuntimeState::Stopping => {
             crate::inference::skippy::StageRuntimeState::Stopping
         }
-        crate::proto::node::StageRuntimeState::Stopped
-        | crate::proto::node::StageRuntimeState::Unspecified => {
+        skippy_stage_proto::StageRuntimeState::Stopped
+        | skippy_stage_proto::StageRuntimeState::Unspecified => {
             crate::inference::skippy::StageRuntimeState::Stopped
         }
-        crate::proto::node::StageRuntimeState::Failed => {
+        skippy_stage_proto::StageRuntimeState::Failed => {
             crate::inference::skippy::StageRuntimeState::Failed
         }
     }
@@ -5047,38 +5127,38 @@ fn stage_runtime_state_from_proto(value: i32) -> crate::inference::skippy::Stage
 
 fn stage_runtime_state_to_proto(
     state: crate::inference::skippy::StageRuntimeState,
-) -> crate::proto::node::StageRuntimeState {
+) -> skippy_stage_proto::StageRuntimeState {
     match state {
         crate::inference::skippy::StageRuntimeState::Starting => {
-            crate::proto::node::StageRuntimeState::Starting
+            skippy_stage_proto::StageRuntimeState::Starting
         }
         crate::inference::skippy::StageRuntimeState::Ready => {
-            crate::proto::node::StageRuntimeState::Ready
+            skippy_stage_proto::StageRuntimeState::Ready
         }
         crate::inference::skippy::StageRuntimeState::Stopping => {
-            crate::proto::node::StageRuntimeState::Stopping
+            skippy_stage_proto::StageRuntimeState::Stopping
         }
         crate::inference::skippy::StageRuntimeState::Stopped => {
-            crate::proto::node::StageRuntimeState::Stopped
+            skippy_stage_proto::StageRuntimeState::Stopped
         }
         crate::inference::skippy::StageRuntimeState::Failed => {
-            crate::proto::node::StageRuntimeState::Failed
+            skippy_stage_proto::StageRuntimeState::Failed
         }
     }
 }
 
 fn stage_wire_dtype_to_proto(
     dtype: crate::inference::skippy::StageWireDType,
-) -> crate::proto::node::StageWireDType {
+) -> skippy_stage_proto::StageWireDType {
     match dtype {
         crate::inference::skippy::StageWireDType::F32 => {
-            crate::proto::node::StageWireDType::StageWireDtypeF32
+            skippy_stage_proto::StageWireDType::StageWireDtypeF32
         }
         crate::inference::skippy::StageWireDType::F16 => {
-            crate::proto::node::StageWireDType::StageWireDtypeF16
+            skippy_stage_proto::StageWireDType::StageWireDtypeF16
         }
         crate::inference::skippy::StageWireDType::Q8 => {
-            crate::proto::node::StageWireDType::StageWireDtypeQ8
+            skippy_stage_proto::StageWireDType::StageWireDtypeQ8
         }
     }
 }

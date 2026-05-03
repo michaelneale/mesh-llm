@@ -26,14 +26,14 @@ use crate::crypto::{
     default_keystore_path, default_trust_store_path, keystore_exists, keystore_metadata,
     load_keystore, load_owner_keypair_from_keychain, load_trust_store, OwnerKeychainLoadError,
 };
-use crate::inference::{election, launch, skippy};
+use crate::inference::{election, skippy};
 use crate::mesh;
 use crate::mesh::NodeRole;
 use crate::models;
 use crate::models::catalog;
 use crate::network::{affinity, nostr, router, tunnel};
 use crate::plugin;
-use crate::system::{autoupdate, benchmark, hardware};
+use crate::system::{autoupdate, backend, benchmark, hardware};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::cell::Cell;
@@ -726,7 +726,7 @@ fn write_stderr_newline() {
 }
 
 fn emit_shutdown(reason: Option<String>) {
-    crate::inference::launch::mark_runtime_shutting_down();
+    crate::system::backend::mark_runtime_shutting_down();
     let _ = emit_event(OutputEvent::Shutdown { reason });
 }
 
@@ -959,7 +959,7 @@ async fn wait_shutdown_signal() {
 }
 
 pub(crate) async fn run() -> Result<()> {
-    crate::inference::launch::clear_runtime_shutting_down();
+    crate::system::backend::clear_runtime_shutting_down();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
@@ -1065,37 +1065,6 @@ pub(crate) async fn run() -> Result<()> {
         let owner_path = rt.dir().join("owner.json");
         if let Ok(json) = serde_json::to_string_pretty(&owner_meta) {
             let _ = crate::runtime::instance::write_text_file_atomic(&owner_path, &json);
-        }
-    }
-
-    // Reap stale runtime state from dead sibling instances (skip for client).
-    // This intentionally happens after subcommand dispatch so control commands
-    // targeting a live instance don't kill it before sending the request.
-    // Uses scoped reap that only touches runtime dirs whose owner has died (flock-released).
-    if !cli.client {
-        if let Some(ref rt) = runtime {
-            match crate::runtime::instance::runtime_root() {
-                Ok(root) => {
-                    let my_dir = rt.dir().to_path_buf();
-                    match crate::runtime::instance::reap::reap_cross_runtime_orphans(&root, &my_dir)
-                        .await
-                    {
-                        Ok(summary) => {
-                            if summary.children_killed > 0 || summary.dirs_gc_d > 0 {
-                                let _ = emit_event(OutputEvent::Info {
-                                    message: format!(
-                                        "Reaped {} orphan children from {} dead instance(s)",
-                                        summary.children_killed, summary.dirs_gc_d
-                                    ),
-                                    context: None,
-                                });
-                            }
-                        }
-                        Err(e) => tracing::warn!("cross-runtime reap failed: {e}"),
-                    }
-                }
-                Err(e) => tracing::warn!("runtime_root resolution failed during reap: {e}"),
-            }
         }
     }
 
@@ -1477,8 +1446,8 @@ fn preflight_config_owned_startup_models(
     config: &plugin::MeshConfig,
     specs: &[StartupModelSpec],
     plans: &mut [StartupModelPlan],
-    binary_flavor: Option<launch::BinaryFlavor>,
-    backend_probe: Option<&launch::BinaryBackendDeviceProbe>,
+    binary_flavor: Option<backend::BinaryFlavor>,
+    backend_probe: Option<&backend::BinaryBackendDeviceProbe>,
 ) -> Result<()> {
     if config.gpu.assignment != plugin::GpuAssignment::Pinned {
         return Ok(());
@@ -1488,7 +1457,7 @@ fn preflight_config_owned_startup_models(
         .and_then(|probe| probe.flavor)
         .or(binary_flavor);
     let mut survey = hardware::query(pinned_startup_preflight_metrics());
-    if binary_flavor == Some(launch::BinaryFlavor::Vulkan) {
+    if binary_flavor == Some(backend::BinaryFlavor::Vulkan) {
         hardware::augment_gpu_facts_with_vulkan_devices(&mut survey.gpus);
     }
     apply_backend_devices_for_flavor(&mut survey.gpus, binary_flavor);
@@ -1503,14 +1472,14 @@ fn preflight_config_owned_startup_models(
 
 fn apply_backend_devices_for_flavor(
     gpus: &mut [hardware::GpuFacts],
-    binary_flavor: Option<launch::BinaryFlavor>,
+    binary_flavor: Option<backend::BinaryFlavor>,
 ) {
     let Some(binary_flavor) = binary_flavor else {
         return;
     };
 
     for gpu in gpus {
-        gpu.backend_device = launch::backend_device_for_flavor(gpu.index, binary_flavor);
+        gpu.backend_device = backend::backend_device_for_flavor(gpu.index, binary_flavor);
     }
 }
 
@@ -1528,7 +1497,7 @@ fn preflight_config_owned_startup_models_with_gpus(
     specs: &[StartupModelSpec],
     plans: &mut [StartupModelPlan],
     gpus: &[hardware::GpuFacts],
-    backend_probe: Option<&launch::BinaryBackendDeviceProbe>,
+    backend_probe: Option<&backend::BinaryBackendDeviceProbe>,
 ) -> Result<()> {
     if config.gpu.assignment != plugin::GpuAssignment::Pinned {
         return Ok(());
@@ -1579,7 +1548,7 @@ fn preflight_config_owned_startup_models_with_gpus(
                 )
             })?;
         let backend_device = if let Some(probe) = backend_probe {
-            launch::resolve_requested_device_from_available(
+            backend::resolve_requested_device_from_available(
                 &probe.available_devices,
                 &probe.path,
                 &backend_device,
@@ -2568,21 +2537,6 @@ async fn run_auto(
     // Re-gossip so peers learn our catalog/requested state without prematurely
     // routing requests to not-yet-ready local processes.
     node.regossip().await;
-
-    // Drain stale pidfiles from our own runtime dir before starting local runtime models.
-    if let Some(ref rt) = runtime {
-        let _ = crate::runtime::instance::reap::reap_own_stale_pidfiles(rt.dir()).await;
-    }
-
-    // Serve mode (non-client) always has the InstanceRuntime acquired above.
-    // The fallback was only relevant during the T1-T11 staging when acquisition
-    // wasn't yet wired into run() — keep an explicit error here so any future
-    // refactor that drops the acquire surfaces immediately instead of panicking
-    // mid-spawn from a child task.
-    let _runtime = runtime
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("serve mode requires an instance runtime"))?
-        .clone();
 
     let tunnel_mgr =
         tunnel::Manager::start(node.clone(), channels.rpc, channels.http, channels.stage).await?;
@@ -4088,7 +4042,7 @@ mod tests {
             synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1")),
         ];
 
-        apply_backend_devices_for_flavor(&mut gpus, Some(launch::BinaryFlavor::Vulkan));
+        apply_backend_devices_for_flavor(&mut gpus, Some(backend::BinaryFlavor::Vulkan));
 
         assert_eq!(gpus[0].backend_device.as_deref(), Some("Vulkan0"));
         assert_eq!(gpus[1].backend_device.as_deref(), Some("Vulkan1"));
@@ -4121,9 +4075,9 @@ mod tests {
             parallel: None,
         }];
         let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("Vulkan1"))];
-        let backend_probe = launch::BinaryBackendDeviceProbe {
+        let backend_probe = backend::BinaryBackendDeviceProbe {
             path: PathBuf::from("/tmp/backend-vulkan"),
-            flavor: Some(launch::BinaryFlavor::Vulkan),
+            flavor: Some(backend::BinaryFlavor::Vulkan),
             available_devices: vec!["Vulkan0".into(), "CPU".into()],
         };
 
@@ -4169,9 +4123,9 @@ mod tests {
             parallel: None,
         }];
         let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1"))];
-        let backend_probe = launch::BinaryBackendDeviceProbe {
+        let backend_probe = backend::BinaryBackendDeviceProbe {
             path: PathBuf::from("/tmp/backend-rocm"),
-            flavor: Some(launch::BinaryFlavor::Rocm),
+            flavor: Some(backend::BinaryFlavor::Rocm),
             available_devices: vec!["HIP1".into(), "CPU".into()],
         };
 
