@@ -309,6 +309,26 @@ pub(crate) fn peer_is_eligible_for_active_moe(
     moe_recovery_ready_at(peer.moe_recovered_at, std::time::Instant::now())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PeerDownReportDisposition {
+    SuppressReporterCooldown,
+    RejectRecentlySeen,
+    ProbeReachability,
+}
+
+pub(crate) fn peer_down_report_disposition(
+    reporter_cooled: bool,
+    recently_seen: bool,
+) -> PeerDownReportDisposition {
+    if reporter_cooled {
+        PeerDownReportDisposition::SuppressReporterCooldown
+    } else if recently_seen {
+        PeerDownReportDisposition::RejectRecentlySeen
+    } else {
+        PeerDownReportDisposition::ProbeReachability
+    }
+}
+
 /// Applies the reachability-confirmation rule for a `PeerDown` claim.
 /// Returns `Some(dead_id)` if `dead_id != self_id` AND `should_remove` is `true` (peer confirmed gone).
 /// Returns `None` if `dead_id == self_id` (never self-evict) or `should_remove` is `false` (peer still reachable).

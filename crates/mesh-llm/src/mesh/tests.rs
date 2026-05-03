@@ -2076,6 +2076,30 @@ fn peer_down_ignored_when_recently_seen_direct() {
     );
 }
 
+#[test]
+fn peer_down_reporter_cooldown_suppresses_probe_before_recently_seen_check() {
+    assert_eq!(
+        peer_down_report_disposition(true, false),
+        PeerDownReportDisposition::SuppressReporterCooldown,
+        "cooldown must suppress repeated false reports even for stale/not-recently-seen peers"
+    );
+    assert_eq!(
+        peer_down_report_disposition(true, true),
+        PeerDownReportDisposition::SuppressReporterCooldown,
+        "cooldown remains the cheapest rejection path when direct proof-of-life also exists"
+    );
+    assert_eq!(
+        peer_down_report_disposition(false, true),
+        PeerDownReportDisposition::RejectRecentlySeen,
+        "recent direct gossip should reject first-time false reports without probing"
+    );
+    assert_eq!(
+        peer_down_report_disposition(false, false),
+        PeerDownReportDisposition::ProbeReachability,
+        "only uncooldowned stale reports should trigger open_bi/connect_mesh probing"
+    );
+}
+
 /// PeerDown for a peer whose last_seen is stale and has no connection
 /// should be confirmed (the old behavior for genuinely dead peers).
 #[test]
@@ -2683,9 +2707,9 @@ fn dead_peer_ttl_expires() {
 
     // The TTL check used in connect_to_peer / update_transitive_peer should NOT block
     assert!(
-        !dead_peers
+        dead_peers
             .get(&peer_id)
-            .is_some_and(|t| t.elapsed() < super::DEAD_PEER_TTL),
+            .is_none_or(|t| t.elapsed() >= super::DEAD_PEER_TTL),
         "expired dead_peers entry must not block reconnection"
     );
 

@@ -3410,24 +3410,24 @@ impl Node {
                             (conn, addr, seen, cooled)
                         };
 
-                        // If we've heard from this peer recently via direct gossip,
-                        // they're alive from our perspective — ignore the death report
-                        // regardless of whether we have a connection (the connection
-                        // may be broken/stale while the peer is genuinely alive on
-                        // a different path).
-                        if recently_seen {
-                            if reporter_cooled {
-                                // This reporter recently had a false claim
-                                // about this target rejected, and we still
-                                // have direct proof-of-life — skip repeated
-                                // handling/logging without suppressing future
-                                // stale-peer confirmation.
+                        match peer_down_report_disposition(reporter_cooled, recently_seen) {
+                            PeerDownReportDisposition::SuppressReporterCooldown => {
+                                // This reporter recently had a false claim about
+                                // this target rejected. Suppress repeated handling
+                                // before probing so false reports do not keep
+                                // triggering open_bi()/connect_mesh() work and logs.
                                 tracing::debug!(
-                                    "PeerDown: {} reported {} dead but reporter is in cooldown and peer was seen recently, ignoring",
+                                    "PeerDown: {} reported {} dead but reporter is in cooldown, ignoring",
                                     remote.fmt_short(),
                                     dead_id.fmt_short()
                                 );
-                            } else {
+                            }
+                            PeerDownReportDisposition::RejectRecentlySeen => {
+                                // If we've heard from this peer recently via direct gossip,
+                                // they're alive from our perspective — ignore the death report
+                                // regardless of whether we have a connection (the connection
+                                // may be broken/stale while the peer is genuinely alive on
+                                // a different path).
                                 emit_mesh_info(format!(
                                     "ℹ️  Peer {} reported dead by {} but seen recently (direct alive), ignoring",
                                     dead_id.fmt_short(),
@@ -3442,88 +3442,89 @@ impl Node {
                                     .peer_down_rejections
                                     .insert((remote, dead_id), std::time::Instant::now());
                             }
-                        } else {
-                            let should_remove = if let Some(conn) = conn_opt {
-                                // Have a connection — probe it. Treat both
-                                // timeout and open_bi() error as unreachable.
-                                // 5s allows relay-only peers (400ms+ RTT) to
-                                // respond without false-confirming death.
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(5),
-                                    conn.open_bi(),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(_)) => false, // stream opened — peer is alive
-                                    _ => true,          // timeout or error — unreachable
-                                }
-                            } else if let Some(addr) = peer_addr {
-                                // No connection but we know the peer — try to reach them
-                                // before trusting the reporter's claim.
-                                match tokio::time::timeout(
-                                    std::time::Duration::from_secs(8),
-                                    connect_mesh(&node.endpoint, addr),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(new_conn)) => {
-                                        // Peer is reachable — restore connection.
-                                        emit_mesh_info(format!(
-                                            "ℹ️  Peer {} reported dead by {} but we reached them, keeping",
-                                            dead_id.fmt_short(),
-                                            remote.fmt_short()
-                                        ));
-                                        let mut state = node.state.lock().await;
-                                        // Only insert if no other task raced and
-                                        // established a connection while we were probing.
-                                        #[allow(clippy::map_entry)]
-                                        // manual drop(state) before async spawn
-                                        if !state.connections.contains_key(&dead_id) {
-                                            state.connections.insert(dead_id, new_conn.clone());
-                                            drop(state);
-                                            let n2 = node.clone();
-                                            tokio::spawn(async move {
-                                                n2.dispatch_streams(new_conn, dead_id).await;
-                                            });
-                                        } else {
-                                            drop(state);
-                                        }
-                                        false
-                                    }
-                                    _ => true, // genuinely unreachable
-                                }
-                            } else {
-                                // Unknown peer — trust the reporter.
-                                true
-                            };
-                            if let Some(id) =
-                                resolve_peer_down(node.endpoint.id(), dead_id, should_remove)
-                            {
-                                emit_mesh_warning(format!(
-                                    "⚠️  Peer {} reported dead by {}, confirmed, removing",
-                                    id.fmt_short(),
-                                    remote.fmt_short()
-                                ));
-                                let mut state = node.state.lock().await;
-                                // Quarantine so transitive gossip doesn't
-                                // immediately re-introduce this peer.
-                                state.dead_peers.insert(id, std::time::Instant::now());
-                                state.connections.remove(&id);
-                                drop(state);
-                                node.remove_peer(id).await;
-                            } else if dead_id != node.endpoint.id() {
-                                emit_mesh_info(format!(
-                                    "ℹ️  Peer {} reported dead by {} but still reachable, ignoring",
-                                    dead_id.fmt_short(),
-                                    remote.fmt_short()
-                                ));
-                                // Record rejection so repeated false reports from
-                                // this reporter about this target are suppressed.
-                                node.state
-                                    .lock()
+                            PeerDownReportDisposition::ProbeReachability => {
+                                let should_remove = if let Some(conn) = conn_opt {
+                                    // Have a connection — probe it. Treat both
+                                    // timeout and open_bi() error as unreachable.
+                                    // 5s allows relay-only peers (400ms+ RTT) to
+                                    // respond without false-confirming death.
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(5),
+                                        conn.open_bi(),
+                                    )
                                     .await
-                                    .peer_down_rejections
-                                    .insert((remote, dead_id), std::time::Instant::now());
+                                    {
+                                        Ok(Ok(_)) => false, // stream opened — peer is alive
+                                        _ => true,          // timeout or error — unreachable
+                                    }
+                                } else if let Some(addr) = peer_addr {
+                                    // No connection but we know the peer — try to reach them
+                                    // before trusting the reporter's claim.
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_secs(8),
+                                        connect_mesh(&node.endpoint, addr),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(new_conn)) => {
+                                            // Peer is reachable — restore connection.
+                                            emit_mesh_info(format!(
+                                                "ℹ️  Peer {} reported dead by {} but we reached them, keeping",
+                                                dead_id.fmt_short(),
+                                                remote.fmt_short()
+                                            ));
+                                            let mut state = node.state.lock().await;
+                                            // Only insert if no other task raced and
+                                            // established a connection while we were probing.
+                                            #[allow(clippy::map_entry)]
+                                            // manual drop(state) before async spawn
+                                            if !state.connections.contains_key(&dead_id) {
+                                                state.connections.insert(dead_id, new_conn.clone());
+                                                drop(state);
+                                                let n2 = node.clone();
+                                                tokio::spawn(async move {
+                                                    n2.dispatch_streams(new_conn, dead_id).await;
+                                                });
+                                            } else {
+                                                drop(state);
+                                            }
+                                            false
+                                        }
+                                        _ => true, // genuinely unreachable
+                                    }
+                                } else {
+                                    // Unknown peer — trust the reporter.
+                                    true
+                                };
+                                if let Some(id) =
+                                    resolve_peer_down(node.endpoint.id(), dead_id, should_remove)
+                                {
+                                    emit_mesh_warning(format!(
+                                        "⚠️  Peer {} reported dead by {}, confirmed, removing",
+                                        id.fmt_short(),
+                                        remote.fmt_short()
+                                    ));
+                                    let mut state = node.state.lock().await;
+                                    // Quarantine so transitive gossip doesn't
+                                    // immediately re-introduce this peer.
+                                    state.dead_peers.insert(id, std::time::Instant::now());
+                                    state.connections.remove(&id);
+                                    drop(state);
+                                    node.remove_peer(id).await;
+                                } else if dead_id != node.endpoint.id() {
+                                    emit_mesh_info(format!(
+                                        "ℹ️  Peer {} reported dead by {} but still reachable, ignoring",
+                                        dead_id.fmt_short(),
+                                        remote.fmt_short()
+                                    ));
+                                    // Record rejection so repeated false reports from
+                                    // this reporter about this target are suppressed.
+                                    node.state
+                                        .lock()
+                                        .await
+                                        .peer_down_rejections
+                                        .insert((remote, dead_id), std::time::Instant::now());
+                                }
                             }
                         }
                     });
@@ -4505,7 +4506,8 @@ use heartbeat::{
     heartbeat_failure_policy_for_peer, HeartbeatFailurePolicy, MOE_RECOVERY_PROBATION_SECS,
 };
 pub(crate) use heartbeat::{
-    moe_recovery_ready_at, peer_is_eligible_for_active_moe, resolve_peer_down,
+    moe_recovery_ready_at, peer_down_report_disposition, peer_is_eligible_for_active_moe,
+    resolve_peer_down, PeerDownReportDisposition,
 };
 
 #[cfg(test)]

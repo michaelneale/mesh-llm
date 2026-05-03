@@ -382,12 +382,12 @@ fn model_name_for_model_ref(model_ref: &str, index: &CatalogTargetIndex) -> Opti
     index.model_name_by_ref.get(model_ref).cloned()
 }
 
-fn ensure_model_target<'a>(
-    targets: &'a mut HashMap<String, ModelTargetAccumulator>,
+fn ensure_model_target(
+    targets: &mut HashMap<String, ModelTargetAccumulator>,
     model_ref: String,
     model_name: Option<String>,
     display_name: String,
-) -> &'a mut ModelTargetAccumulator {
+) -> &mut ModelTargetAccumulator {
     targets
         .entry(model_ref.clone())
         .or_insert_with(|| ModelTargetAccumulator {

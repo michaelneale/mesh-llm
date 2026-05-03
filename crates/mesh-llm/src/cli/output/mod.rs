@@ -8965,7 +8965,7 @@ mod tests {
         assert_eq!(status_width, 5);
         assert_eq!(model_width, 32);
 
-        let rows = vec![DashboardEndpointRow {
+        let rows = [DashboardEndpointRow {
             label: "Plugin: browser-tools".to_string(),
             status: RuntimeStatus::Ready,
             url: "browser-tools".to_string(),
