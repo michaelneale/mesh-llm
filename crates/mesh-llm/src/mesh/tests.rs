@@ -536,6 +536,33 @@ fn protocol_from_alpn_defaults_to_v1() {
 }
 
 #[test]
+fn identity_from_model_source_treats_absolute_gguf_as_local() {
+    let identity =
+        identity_from_model_source("/home/jdumay/models/smollm2-a.gguf").expect("identity");
+
+    assert_eq!(identity.source_kind, ModelSourceKind::LocalGguf);
+    assert_eq!(identity.local_file_name.as_deref(), Some("smollm2-a.gguf"));
+    assert_eq!(identity.repository, None);
+}
+
+#[test]
+fn parse_hf_ref_parts_rejects_absolute_paths() {
+    assert!(parse_hf_ref_parts("/home/jdumay/models/smollm2-a.gguf").is_none());
+}
+
+#[test]
+fn identity_from_model_source_keeps_huggingface_refs() {
+    let identity =
+        identity_from_model_source("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M").expect("identity");
+
+    assert_eq!(identity.source_kind, ModelSourceKind::Catalog);
+    assert_eq!(
+        identity.canonical_ref.as_deref(),
+        Some("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M")
+    );
+}
+
+#[test]
 fn control_frame_roundtrip() {
     let frame = make_valid_gossip_frame();
     let encoded = encode_control_frame(STREAM_GOSSIP, &frame);

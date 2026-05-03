@@ -2,10 +2,8 @@ use std::{
     collections::{BTreeMap, VecDeque},
     future::Future,
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
-    os::fd::AsRawFd,
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     path::PathBuf,
-    ptr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,

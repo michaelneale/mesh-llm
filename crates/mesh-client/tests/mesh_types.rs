@@ -134,6 +134,27 @@ fn infer_served_model_descriptors_from_catalog_source() {
 }
 
 #[test]
+fn infer_served_model_descriptors_treats_absolute_gguf_source_as_local() {
+    let descriptors = infer_served_model_descriptors(
+        "smollm2-a",
+        &["smollm2-a".to_string()],
+        Some("/home/jdumay/models/smollm2-a.gguf"),
+        None,
+    );
+
+    assert_eq!(descriptors.len(), 1);
+    let d = &descriptors[0];
+    assert_eq!(d.identity.model_name, "smollm2-a");
+    assert!(d.identity.is_primary);
+    assert!(matches!(d.identity.source_kind, ModelSourceKind::LocalGguf));
+    assert_eq!(
+        d.identity.local_file_name.as_deref(),
+        Some("smollm2-a.gguf")
+    );
+    assert_eq!(d.identity.repository, None);
+}
+
+#[test]
 fn infer_available_model_descriptors_returns_empty_for_sdk() {
     let descriptors = infer_available_model_descriptors(&["Qwen3-8B-Q4_K_M".to_string()]);
     assert!(descriptors.is_empty());
@@ -174,7 +195,6 @@ fn should_be_host_for_model_loses_to_higher_vram_peer() {
         available_models: vec![],
         requested_models: vec![],
         last_seen: std::time::Instant::now(),
-        moe_recovered_at: None,
         version: None,
         gpu_name: None,
         hostname: None,
@@ -215,7 +235,6 @@ fn should_be_host_for_model_wins_with_lower_vram_peer() {
         available_models: vec![],
         requested_models: vec![],
         last_seen: std::time::Instant::now(),
-        moe_recovered_at: None,
         version: None,
         gpu_name: None,
         hostname: None,

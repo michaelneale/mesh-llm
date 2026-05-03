@@ -2918,10 +2918,12 @@ fn descriptor_for_model<'a>(
 }
 
 fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescriptor>) -> String {
-    descriptor
-        .and_then(|descriptor| public_model_id_from_identity(&descriptor.identity))
-        .or_else(|| public_model_id_from_local_path(model_name))
-        .unwrap_or_else(|| model_name.to_string())
+    if let Some(descriptor) = descriptor {
+        return public_model_id_from_identity(&descriptor.identity)
+            .unwrap_or_else(|| model_name.to_string());
+    }
+
+    public_model_id_from_local_path(model_name).unwrap_or_else(|| model_name.to_string())
 }
 
 fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
@@ -2943,6 +2945,9 @@ fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option
 
 fn public_model_id_from_local_path(model_name: &str) -> Option<String> {
     let path = crate::models::find_model_path(model_name);
+    if path.extension().and_then(|extension| extension.to_str()) != Some("gguf") {
+        return None;
+    }
     let identity = crate::models::huggingface_identity_for_path(&path)?;
     Some(crate::models::installed_model_huggingface_ref(&identity))
 }
@@ -3205,6 +3210,18 @@ mod tests {
         }
     }
 
+    fn local_gguf_descriptor(model_name: &str) -> mesh::ServedModelDescriptor {
+        mesh::ServedModelDescriptor {
+            identity: mesh::ServedModelIdentity {
+                model_name: model_name.to_string(),
+                source_kind: mesh::ModelSourceKind::LocalGguf,
+                local_file_name: Some(format!("{model_name}.gguf")),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     async fn read_request_from_parts_with_limits(
         parts: Vec<Vec<u8>>,
         limits: HttpReadLimits,
@@ -3263,6 +3280,17 @@ mod tests {
             body["data"][0]["id"],
             "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M"
         );
+    }
+
+    #[test]
+    fn models_list_keeps_local_gguf_model_name_ids() {
+        let models = vec!["smollm2-a".to_string()];
+        let descriptors = vec![local_gguf_descriptor(&models[0])];
+
+        let body = models_list_json(&models, &descriptors);
+
+        assert_eq!(body["data"][0]["id"], "smollm2-a");
+        assert_eq!(body["data"][0]["display_name"], "smollm2-a");
     }
 
     #[test]

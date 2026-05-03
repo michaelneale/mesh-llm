@@ -226,6 +226,10 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
         return None;
     }
 
+    if trimmed.starts_with('/') || trimmed.starts_with("./") || trimmed.starts_with("../") {
+        return Some(local_gguf_identity_from_source(trimmed));
+    }
+
     if let Some((repo_id, revision, file)) = parse_hf_resolve_url_parts(trimmed) {
         let canonical_ref = format_hf_canonical_ref(&repo_id, revision.as_deref(), &file);
         return Some(ServedModelIdentity {
@@ -271,26 +275,9 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
     }
 
     if trimmed.ends_with(".gguf")
-        || trimmed.starts_with('/')
-        || trimmed.starts_with("./")
-        || trimmed.starts_with("../")
         || (trimmed.contains('/') && !trimmed.ends_with('/') && trimmed.split('/').count() != 2)
     {
-        let local_file_name = std::path::Path::new(trimmed)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .map(str::to_string);
-        return Some(ServedModelIdentity {
-            model_name: String::new(),
-            is_primary: false,
-            source_kind: ModelSourceKind::LocalGguf,
-            canonical_ref: None,
-            repository: None,
-            revision: None,
-            artifact: None,
-            local_file_name,
-            identity_hash: None,
-        });
+        return Some(local_gguf_identity_from_source(trimmed));
     }
 
     Some(ServedModelIdentity {
@@ -304,6 +291,24 @@ fn identity_from_model_source(source: &str) -> Option<ServedModelIdentity> {
         local_file_name: None,
         identity_hash: Some(identity_hash_for(&format!("catalog:{trimmed}"))),
     })
+}
+
+fn local_gguf_identity_from_source(source: &str) -> ServedModelIdentity {
+    let local_file_name = std::path::Path::new(source)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string);
+    ServedModelIdentity {
+        model_name: String::new(),
+        is_primary: false,
+        source_kind: ModelSourceKind::LocalGguf,
+        canonical_ref: None,
+        repository: None,
+        revision: None,
+        artifact: None,
+        local_file_name,
+        identity_hash: None,
+    }
 }
 
 fn identity_from_model_path(
@@ -377,6 +382,9 @@ fn descriptor_from_identity(
 }
 
 fn parse_hf_ref_parts(input: &str) -> Option<(String, Option<String>, String)> {
+    if input.starts_with('/') || input.starts_with("./") || input.starts_with("../") {
+        return None;
+    }
     let parts: Vec<&str> = input.splitn(3, '/').collect();
     if parts.len() != 3 {
         return None;
@@ -385,6 +393,9 @@ fn parse_hf_ref_parts(input: &str) -> Option<(String, Option<String>, String)> {
         Some((repo, revision)) => (repo, Some(revision.to_string())),
         None => (parts[1], None),
     };
+    if parts[0].is_empty() || repo_tail.is_empty() || parts[2].is_empty() {
+        return None;
+    }
     Some((
         format!("{}/{}", parts[0], repo_tail),
         revision,
