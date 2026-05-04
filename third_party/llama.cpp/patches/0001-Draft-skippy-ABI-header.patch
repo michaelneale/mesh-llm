@@ -1,16 +1,16 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 820459fc37a31ef59aaa6aaaff643cf75b178aca Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 10:19:37 +1000
-Subject: [PATCH] Draft skippy ABI header
+Subject: [PATCH 01/33] Draft skippy ABI header
 
 ---
- include/skippy.h | 241 ++++++++++++++++++++++++++++++++++++++
+ include/skippy.h | 241 +++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 241 insertions(+)
  create mode 100644 include/skippy.h
 
 diff --git a/include/skippy.h b/include/skippy.h
 new file mode 100644
-index 00000000..ad68d61f
+index 000000000..b0f3d227f
 --- /dev/null
 +++ b/include/skippy.h
 @@ -0,0 +1,241 @@
@@ -255,5 +255,6 @@ index 00000000..ad68d61f
 +#endif
 +
 +#endif // SKIPPY_ABI_H
---
+-- 
 2.50.1 (Apple Git-155)
+

@@ -1,24 +1,24 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fbc3d2467f8992dd04bf465401b9109d73f598f8 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 20:15:33 +1000
-Subject: [PATCH] Add stage sampling config ABI
+Subject: [PATCH 19/33] Add stage sampling config ABI
 
 ---
- include/skippy.h |  41 ++++++++++++-
- src/skippy.cpp       | 119 +++++++++++++++++++++++++++++++++++++-
+ include/skippy.h |  41 +++++++++++++++-
+ src/skippy.cpp   | 119 ++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 157 insertions(+), 3 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index e68210c3..e936a2d8 100644
+index 23a46e0f2..79027cd08 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 2
 +#define SKIPPY_ABI_VERSION_PATCH 4
-
+ 
  enum skippy_feature {
      SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
 @@ -41,6 +41,7 @@ enum skippy_feature {
@@ -27,12 +27,12 @@ index e68210c3..e936a2d8 100644
      SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
 +    SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -133,6 +134,19 @@ struct skippy_activation_desc {
      uint64_t flags;
  };
-
+ 
 +struct skippy_sampling_config {
 +    uint32_t version;
 +    uint32_t flags;
@@ -52,7 +52,7 @@ index e68210c3..e936a2d8 100644
 @@ -217,6 +231,18 @@ LLAMA_API enum skippy_status skippy_verify_tokens(
          size_t * out_token_count,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_decode_step_sampled(
 +        struct skippy_session * session,
 +        llama_token token_id,
@@ -71,7 +71,7 @@ index e68210c3..e936a2d8 100644
 @@ -241,6 +267,19 @@ LLAMA_API enum skippy_status skippy_decode_step_frame(
          llama_token * out_predicted_token,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_decode_step_frame_sampled(
 +        struct skippy_session * session,
 +        llama_token token_id,
@@ -89,7 +89,7 @@ index e68210c3..e936a2d8 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 043143e4..1c2862aa 100644
+index 50e25c8f5..894ad0934 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -32,6 +32,7 @@ struct skippy_session {
@@ -98,12 +98,12 @@ index 043143e4..1c2862aa 100644
      int32_t n_past = 0;
 +    std::vector<llama_token> token_history;
  };
-
+ 
  struct skippy_tensor_meta {
 @@ -659,6 +660,15 @@ static enum skippy_status skippy_decode_batch(
      return skippy_success(out_error);
  }
-
+ 
 +static void skippy_record_tokens(
 +        skippy_session * session,
 +        const llama_token * token_ids,
@@ -117,7 +117,7 @@ index 043143e4..1c2862aa 100644
          skippy_session * session,
          const llama_token * token_ids,
 @@ -693,6 +703,9 @@ static enum skippy_status skippy_decode_tokens(
-
+ 
      enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
      llama_batch_free(batch);
 +    if (status == SKIPPY_STATUS_OK) {
@@ -125,11 +125,11 @@ index 043143e4..1c2862aa 100644
 +    }
      return status;
  }
-
-@@ -733,6 +746,57 @@ static llama_token skippy_greedy_sample_ith(skippy_session * session,
+ 
+@@ -733,6 +746,57 @@ static llama_token skippy_greedy_sample_ith(skippy_session * session, int32_t in
      return best;
  }
-
+ 
 +static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {
 +    if (sampling == nullptr || sampling->version == 0 || sampling->flags == 0) {
 +        return false;
@@ -185,7 +185,7 @@ index 043143e4..1c2862aa 100644
          skippy_session * session,
          size_t token_count,
 @@ -1020,6 +1084,7 @@ enum skippy_status skippy_session_reset(
-
+ 
      llama_memory_clear(memory, true);
      session->n_past = 0;
 +    session->token_history.clear();
@@ -225,12 +225,12 @@ index 043143e4..1c2862aa 100644
      (void) output_activation;
 @@ -1081,7 +1170,7 @@ enum skippy_status skippy_decode_step(
      }
-
+ 
      if (out_predicted_token != nullptr) {
 -        *out_predicted_token = skippy_greedy_sample(session);
 +        *out_predicted_token = skippy_sample_token(session, sampling);
      }
-
+ 
      return skippy_success(out_error);
 @@ -1201,6 +1290,32 @@ enum skippy_status skippy_decode_step_frame(
          size_t * out_output_payload_bytes,
@@ -267,12 +267,13 @@ index 043143e4..1c2862aa 100644
              input_desc,
 @@ -1233,7 +1348,7 @@ enum skippy_status skippy_decode_step_frame(
      }
-
+ 
      if (out_predicted_token != nullptr) {
 -        *out_predicted_token = session->stage_model->config.include_output ? skippy_greedy_sample(session) : -1;
 +        *out_predicted_token = session->stage_model->config.include_output ? skippy_sample_token(session, sampling) : -1;
      }
-
+ 
      return skippy_copy_output_activation_frame(session, 1, output_payload, out_error);
---
+-- 
 2.50.1 (Apple Git-155)
+

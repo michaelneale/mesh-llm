@@ -1,7 +1,7 @@
-From f7ff1460fe0da075f90438b78102301d14cd64b2 Mon Sep 17 00:00:00 2001
+From a3870c7fd4f76af2e19a885fd64522cff56bb58f Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 16:10:53 +1000
-Subject: [PATCH 35/35] Expose external media prefill ABI
+Subject: [PATCH 33/33] Expose external media prefill ABI
 
 ---
  include/skippy.h | 35 +++++++++++++++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 35/35] Expose external media prefill ABI
  2 files changed, 117 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 2f8f8466..1db835d5 100644
+index 2f8f84669..1db835d5f 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -81,7 +81,7 @@ index 2f8f8466..1db835d5 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 26209b45..a9ea0446 100644
+index 26209b450..a9ea04461 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1126,7 +1126,8 @@ uint64_t skippy_abi_features(void) {

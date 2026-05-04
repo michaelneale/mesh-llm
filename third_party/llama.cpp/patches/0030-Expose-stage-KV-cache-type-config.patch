@@ -1,7 +1,7 @@
-From 4f645d6674d72534799625b6b94e8d0f739f916d Mon Sep 17 00:00:00 2001
+From 985fbf6062ae829999fca189e865474a98b05a4e Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 08:41:07 +1000
-Subject: [PATCH] Expose stage KV cache type config
+Subject: [PATCH 30/33] Expose stage KV cache type config
 
 ---
  include/skippy.h | 4 +++-
@@ -9,7 +9,7 @@ Subject: [PATCH] Expose stage KV cache type config
  2 files changed, 5 insertions(+), 1 deletion(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 4dd985da..ce27c5ea 100644
+index 4dd985da2..ce27c5ea2 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -31,7 +31,7 @@ index 4dd985da..ce27c5ea 100644
      enum skippy_load_mode load_mode;
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 1139464a..5a1d7cfa 100644
+index 1139464ab..5a1d7cfa9 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1210,6 +1210,8 @@ enum skippy_status skippy_session_create(

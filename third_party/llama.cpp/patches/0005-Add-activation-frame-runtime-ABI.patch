@@ -1,15 +1,15 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 09d7e473fecccf99de1b902a632d5a3b5661b95c Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:15:31 +1000
-Subject: [PATCH] Add activation frame runtime ABI
+Subject: [PATCH 05/33] Add activation frame runtime ABI
 
 ---
- include/skippy.h |  50 +++++++++++++++++
- src/skippy.cpp       | 112 +++++++++++++++++++++++++++++++++++++-
+ include/skippy.h |  50 +++++++++++++++++++++
+ src/skippy.cpp   | 112 ++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 161 insertions(+), 1 deletion(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index ad68d61f..9061920d 100644
+index b0f3d227f..cd72379df 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -36,6 +36,7 @@ enum skippy_feature {
@@ -18,12 +18,12 @@ index ad68d61f..9061920d 100644
      SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
 +    SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
  };
-
+ 
  enum skippy_status {
 @@ -65,6 +66,18 @@ enum skippy_tensor_role {
      SKIPPY_TENSOR_ROLE_OUTPUT             = 6,
  };
-
+ 
 +enum skippy_activation_dtype {
 +    SKIPPY_ACTIVATION_DTYPE_UNKNOWN       = 0,
 +    SKIPPY_ACTIVATION_DTYPE_F32           = 1,
@@ -42,7 +42,7 @@ index ad68d61f..9061920d 100644
 @@ -99,6 +112,19 @@ struct skippy_tensor_info {
      uint64_t element_count;
  };
-
+ 
 +struct skippy_activation_desc {
 +    uint32_t version;
 +    enum skippy_activation_dtype dtype;
@@ -62,7 +62,7 @@ index ad68d61f..9061920d 100644
 @@ -154,6 +180,30 @@ LLAMA_API enum skippy_status skippy_decode_step(
          llama_token * out_predicted_token,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_prefill_chunk_frame(
 +        struct skippy_session * session,
 +        const llama_token * token_ids,
@@ -91,13 +91,13 @@ index ad68d61f..9061920d 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 7df4640b..fed46b6a 100644
+index 10876ee50..4aef362ab 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -187,6 +187,44 @@ static llama_token skippy_greedy_sample(skippy_session * session) {
      return best;
  }
-
+ 
 +static bool skippy_has_activation_payload(const skippy_activation_desc * desc, const void * payload) {
 +    return desc != nullptr && desc->payload_bytes > 0 && payload != nullptr;
 +}
@@ -137,22 +137,22 @@ index 7df4640b..fed46b6a 100644
 +}
 +
  extern "C" {
-
+ 
  struct skippy_abi_version skippy_abi_version(void) {
 @@ -199,7 +237,8 @@ struct skippy_abi_version skippy_abi_version(void) {
-
+ 
  uint64_t skippy_abi_features(void) {
      return SKIPPY_FEATURE_MODEL_INTROSPECTION |
 -           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE;
 +           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE |
 +           SKIPPY_FEATURE_ACTIVATION_FRAME;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -384,6 +423,77 @@ enum skippy_status skippy_decode_step(
      return skippy_success(out_error);
  }
-
+ 
 +enum skippy_status skippy_prefill_chunk_frame(
 +        struct skippy_session * session,
 +        const llama_token * token_ids,
@@ -227,5 +227,6 @@ index 7df4640b..fed46b6a 100644
  enum skippy_status skippy_export_state(
          struct skippy_session * session,
          int32_t layer_start,
---
+-- 
 2.50.1 (Apple Git-155)
+

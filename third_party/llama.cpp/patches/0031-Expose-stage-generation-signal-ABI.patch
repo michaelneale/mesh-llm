@@ -1,7 +1,7 @@
-From ee848a273be2909621eb70fdf5ea68d62887403f Mon Sep 17 00:00:00 2001
+From 494c887d6b2d3606ac83810ff1f3ae7a6d52ec82 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 11:53:03 +1000
-Subject: [PATCH] Expose stage generation signal ABI
+Subject: [PATCH 31/33] Expose stage generation signal ABI
 
 ---
  include/skippy-signals.h |  44 ++++++++++
@@ -12,7 +12,7 @@ Subject: [PATCH] Expose stage generation signal ABI
 
 diff --git a/include/skippy-signals.h b/include/skippy-signals.h
 new file mode 100644
-index 00000000..a19aab8b
+index 000000000..a19aab8bd
 --- /dev/null
 +++ b/include/skippy-signals.h
 @@ -0,0 +1,44 @@
@@ -61,7 +61,7 @@ index 00000000..a19aab8b
 +
 +#endif // SKIPPY_SIGNALS_ABI_H
 diff --git a/include/skippy.h b/include/skippy.h
-index ce27c5ea..4f1c8805 100644
+index ce27c5ea2..4f1c8805d 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -82,7 +82,7 @@ index ce27c5ea..4f1c8805 100644
  
  enum skippy_kv_page_flag {
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 5a1d7cfa..4b4bf8eb 100644
+index 5a1d7cfa9..4b4bf8ebd 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,4 +1,5 @@

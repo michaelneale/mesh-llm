@@ -1,38 +1,38 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From c96584f33f3d053d855f11133226d116da812861 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:57:39 +1000
-Subject: [PATCH] Add native stage session checkpoint ABI
+Subject: [PATCH 24/33] Add native stage session checkpoint ABI
 
 ---
- include/skippy.h | 13 +++++-
- src/skippy.cpp       | 98 ++++++++++++++++++++++++++++++++++++++-
+ include/skippy.h | 13 ++++++-
+ src/skippy.cpp   | 98 +++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 109 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 320fe5fc..2f15bfb5 100644
+index ef4022b95..302ad3b46 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 8
 +#define SKIPPY_ABI_VERSION_PATCH 9
-
+ 
  #define SKIPPY_MAX_LOGIT_BIAS 256
-
+ 
 @@ -48,6 +48,7 @@ enum skippy_feature {
      SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
      SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
      SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
 +    SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -205,6 +206,16 @@ LLAMA_API enum skippy_status skippy_session_reset(
          struct skippy_session * session,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_checkpoint_session(
 +        struct skippy_session * session,
 +        uint64_t * out_token_count,
@@ -47,12 +47,12 @@ index 320fe5fc..2f15bfb5 100644
          struct skippy_session * session,
          struct skippy_error ** out_error);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 7b93cd8c..f0d50e05 100644
+index 5f5d33b4f..5abd16aaf 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,6 +1,7 @@
  #include "skippy.h"
-
+ 
  #include "gguf.h"
 +#include "llama-arch.h"
  #include "llama-context.h"
@@ -66,7 +66,7 @@ index 7b93cd8c..f0d50e05 100644
 +    int32_t checkpoint_n_past = 0;
      std::vector<llama_token> token_history;
  };
-
+ 
 @@ -995,7 +998,8 @@ uint64_t skippy_abi_features(void) {
             SKIPPY_FEATURE_BATCH_VERIFY_FRAME |
             SKIPPY_FEATURE_RECURRENT_STATE |
@@ -75,7 +75,7 @@ index 7b93cd8c..f0d50e05 100644
 +           SKIPPY_FEATURE_SESSION_TRIM |
 +           SKIPPY_FEATURE_SESSION_CHECKPOINT;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -1140,6 +1144,10 @@ enum skippy_status skippy_session_create(
      params.n_ctx = model->config.ctx_size > 0 ? static_cast<uint32_t>(model->config.ctx_size) : 512;
@@ -85,7 +85,7 @@ index 7b93cd8c..f0d50e05 100644
 +        params.n_seq_max = 2;
 +        params.kv_unified = true;
 +    }
-
+ 
      skippy_graph_filter_scope graph_filter_scope(&model->config);
      llama_context * ctx = llama_init_from_model(model->model, params);
 @@ -1152,6 +1160,8 @@ enum skippy_status skippy_session_create(
@@ -98,7 +98,7 @@ index 7b93cd8c..f0d50e05 100644
      return skippy_success(out_error);
  }
 @@ -1173,6 +1183,8 @@ enum skippy_status skippy_session_reset(
-
+ 
      llama_memory_clear(memory, true);
      session->n_past = 0;
 +    session->checkpoint_valid = false;
@@ -109,7 +109,7 @@ index 7b93cd8c..f0d50e05 100644
 @@ -1911,6 +1923,90 @@ enum skippy_status skippy_trim_session(
      return skippy_success(out_error);
  }
-
+ 
 +enum skippy_status skippy_checkpoint_session(
 +        struct skippy_session * session,
 +        uint64_t * out_token_count,
@@ -197,5 +197,6 @@ index 7b93cd8c..f0d50e05 100644
  static llama_kv_cache * skippy_get_kv_cache(
          skippy_session * session,
          skippy_error ** out_error) {
---
+-- 
 2.50.1 (Apple Git-155)
+

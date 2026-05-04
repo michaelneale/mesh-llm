@@ -1,18 +1,18 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From debc5cf805e76fa9d0a887abec369e72818ddb62 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 19:14:50 +1000
-Subject: [PATCH] Expose stage chat template ABI
+Subject: [PATCH 17/33] Expose stage chat template ABI
 
 ---
- common/CMakeLists.txt     |   1 +
- common/stage-chat.cpp     | 122 ++++++++++++++++++++++++++++++++++++++
- include/skippy.h |  14 +++++
- src/skippy.cpp       |   8 +++
+ common/CMakeLists.txt |   1 +
+ common/stage-chat.cpp | 122 ++++++++++++++++++++++++++++++++++++++++++
+ include/skippy.h      |  14 +++++
+ src/skippy.cpp        |   8 +++
  4 files changed, 145 insertions(+)
  create mode 100644 common/stage-chat.cpp
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 1a56c258..b51b6f55 100644
+index 1a56c2585..b51b6f555 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -100,6 +100,7 @@ add_library(${TARGET}
@@ -25,7 +25,7 @@ index 1a56c258..b51b6f55 100644
      unicode.cpp
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
 new file mode 100644
-index 00000000..84b1d725
+index 000000000..39d6331ac
 --- /dev/null
 +++ b/common/stage-chat.cpp
 @@ -0,0 +1,122 @@
@@ -152,7 +152,7 @@ index 00000000..84b1d725
 +    return skippy_common_success(out_error);
 +}
 diff --git a/include/skippy.h b/include/skippy.h
-index bb838e9f..3c9709f5 100644
+index 97ce352f7..6dc5af7b1 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -40,6 +40,7 @@ enum skippy_feature {
@@ -161,12 +161,12 @@ index bb838e9f..3c9709f5 100644
      SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
 +    SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -300,6 +301,19 @@ LLAMA_API enum skippy_status skippy_token_is_eog(
          bool * out_is_eog,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API const struct llama_model * skippy_model_native_model(
 +        const struct skippy_model * model);
 +
@@ -184,13 +184,13 @@ index bb838e9f..3c9709f5 100644
          const char * path,
          struct skippy_model_info ** out_info,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 25d38431..04ac6643 100644
+index 712aec9fa..f0b70b962 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1427,6 +1427,14 @@ enum skippy_status skippy_token_is_eog(
      return skippy_success(out_error);
  }
-
+ 
 +const struct llama_model * skippy_model_native_model(
 +        const struct skippy_model * model) {
 +    if (model == nullptr) {
@@ -202,5 +202,6 @@ index 25d38431..04ac6643 100644
  enum skippy_status skippy_model_info_open(
          const char * path,
          struct skippy_model_info ** out_info,
---
+-- 
 2.50.1 (Apple Git-155)
+

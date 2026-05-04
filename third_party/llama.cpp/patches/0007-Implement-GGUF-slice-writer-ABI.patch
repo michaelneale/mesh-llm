@@ -1,14 +1,14 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 14816981996ca269a23e219439262bd30babb50c Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 14:39:10 +1000
-Subject: [PATCH] Implement GGUF slice writer ABI
+Subject: [PATCH 07/33] Implement GGUF slice writer ABI
 
 ---
- src/skippy.cpp | 413 ++++++++++++++++++++++++++++++++++++++++++++
+ src/skippy.cpp | 413 +++++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 413 insertions(+)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 33abcbb3..32fe8996 100644
+index 732a1a15c..2b54a7db7 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -11,9 +11,12 @@
@@ -21,13 +21,13 @@ index 33abcbb3..32fe8996 100644
  #include <string>
 +#include <utility>
 +#include <vector>
-
+ 
  struct skippy_model {
      llama_model * model = nullptr;
 @@ -27,8 +30,32 @@ struct skippy_session {
      int32_t n_past = 0;
  };
-
+ 
 +struct skippy_tensor_meta {
 +    std::string name;
 +    int32_t layer_index = -1;
@@ -55,12 +55,12 @@ index 33abcbb3..32fe8996 100644
 +    std::string path;
 +    std::vector<skippy_tensor_meta> tensors;
  };
-
+ 
  static skippy_error * skippy_make_error(enum skippy_status status, const char * message) {
-@@ -110,6 +137,182 @@ static enum skippy_tensor_role skippy_role_from_name(const char * name
+@@ -110,6 +137,182 @@ static enum skippy_tensor_role skippy_role_from_name(const char * name, int32_t
      return SKIPPY_TENSOR_ROLE_METADATA;
  }
-
+ 
 +template <typename T>
 +static bool skippy_read(FILE * file, T & out) {
 +    return std::fread(&out, 1, sizeof(T), file) == sizeof(T);
@@ -249,7 +249,7 @@ index 33abcbb3..32fe8996 100644
             SKIPPY_FEATURE_ACTIVATION_FRAME;
  }
 @@ -894,6 +1098,13 @@ enum skippy_status skippy_model_info_open(
-
+ 
      skippy_model_info * info = new skippy_model_info{};
      info->ctx = ctx;
 +    info->path = path;
@@ -265,7 +265,7 @@ index 33abcbb3..32fe8996 100644
 @@ -956,4 +1167,206 @@ enum skippy_status skippy_model_info_tensor_at(
      return skippy_success(out_error);
  }
-
+ 
 +enum skippy_status skippy_slice_plan_create(
 +        struct skippy_model_info * info,
 +        struct skippy_slice_plan ** out_plan,
@@ -469,5 +469,6 @@ index 33abcbb3..32fe8996 100644
 +}
 +
  }
---
+-- 
 2.50.1 (Apple Git-155)
+

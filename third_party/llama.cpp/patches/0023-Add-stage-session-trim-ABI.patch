@@ -1,38 +1,38 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 8b5362f32d081601ed8ffd89732857b97328787a Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:42:15 +1000
-Subject: [PATCH] Add stage session trim ABI
+Subject: [PATCH 23/33] Add stage session trim ABI
 
 ---
- include/skippy.h |  8 ++++-
- src/skippy.cpp       | 61 ++++++++++++++++++++++++++++++++++++++-
+ include/skippy.h |  8 ++++++-
+ src/skippy.cpp   | 61 +++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 67 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 0f7fb0db..320fe5fc 100644
+index bf54c23ea..ef4022b95 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 7
 +#define SKIPPY_ABI_VERSION_PATCH 8
-
+ 
  #define SKIPPY_MAX_LOGIT_BIAS 256
-
+ 
 @@ -47,6 +47,7 @@ enum skippy_feature {
      SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
      SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
      SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
 +    SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -350,6 +351,11 @@ LLAMA_API enum skippy_status skippy_import_recurrent_state(
          size_t input_bytes,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_trim_session(
 +        struct skippy_session * session,
 +        uint64_t token_count,
@@ -42,7 +42,7 @@ index 0f7fb0db..320fe5fc 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index b624d507..7b93cd8c 100644
+index b7188fb4b..5f5d33b4f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -990,8 +990,12 @@ uint64_t skippy_abi_features(void) {
@@ -57,12 +57,12 @@ index b624d507..7b93cd8c 100644
 +           SKIPPY_FEATURE_LOGIT_BIAS |
 +           SKIPPY_FEATURE_SESSION_TRIM;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -1852,6 +1856,61 @@ enum skippy_status skippy_import_recurrent_state(
      return skippy_success(out_error);
  }
-
+ 
 +static llama_kv_cache * skippy_get_kv_cache(
 +        skippy_session * session,
 +        skippy_error ** out_error);
@@ -121,5 +121,6 @@ index b624d507..7b93cd8c 100644
  static llama_kv_cache * skippy_get_kv_cache(
          skippy_session * session,
          skippy_error ** out_error) {
---
+-- 
 2.50.1 (Apple Git-155)
+

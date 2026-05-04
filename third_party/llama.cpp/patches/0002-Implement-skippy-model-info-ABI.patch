@@ -1,29 +1,29 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 8c4876ab47b9299015dbc36b5327acf61389e2eb Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 10:28:54 +1000
-Subject: [PATCH] Implement skippy model info ABI
+Subject: [PATCH 02/33] Implement skippy model info ABI
 
 ---
- CMakeLists.txt      |   1 +
- src/CMakeLists.txt  |   1 +
- src/skippy.cpp | 219 ++++++++++++++++++++++++++++++++++++++++++++
+ CMakeLists.txt     |   1 +
+ src/CMakeLists.txt |   1 +
+ src/skippy.cpp     | 219 +++++++++++++++++++++++++++++++++++++++++++++
  3 files changed, 221 insertions(+)
  create mode 100644 src/skippy.cpp
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 310a3dcf..66aa8cea 100644
+index 310a3dcfd..d56e2f9af 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -241,6 +241,7 @@ set(LLAMA_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location o
-
+ 
  set(LLAMA_PUBLIC_HEADERS
      ${CMAKE_CURRENT_SOURCE_DIR}/include/llama.h
 +    ${CMAKE_CURRENT_SOURCE_DIR}/include/skippy.h
      ${CMAKE_CURRENT_SOURCE_DIR}/include/llama-cpp.h)
-
+ 
  set_target_properties(llama
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 7b1fcfca..5b2e8217 100644
+index 7b1fcfca0..8f3aa8c1e 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -34,6 +34,7 @@ add_library(llama
@@ -36,7 +36,7 @@ index 7b1fcfca..5b2e8217 100644
              unicode.cpp
 diff --git a/src/skippy.cpp b/src/skippy.cpp
 new file mode 100644
-index 00000000..7b1aa845
+index 000000000..bd94fa37f
 --- /dev/null
 +++ b/src/skippy.cpp
 @@ -0,0 +1,219 @@
@@ -259,5 +259,6 @@ index 00000000..7b1aa845
 +}
 +
 +}
---
+-- 
 2.50.1 (Apple Git-155)
+

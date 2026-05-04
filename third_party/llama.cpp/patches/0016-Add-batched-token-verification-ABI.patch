@@ -1,24 +1,24 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 764d0ee809fce7f9fe32542d70aa227374caa866 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:30:00 +1000
-Subject: [PATCH] Add batched token verification ABI
+Subject: [PATCH 16/33] Add batched token verification ABI
 
 ---
- include/skippy.h | 12 ++++++-
- src/skippy.cpp       | 72 ++++++++++++++++++++++++++++++++++++++-
+ include/skippy.h | 12 +++++++-
+ src/skippy.cpp   | 72 +++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 82 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index e5817bae..bb838e9f 100644
+index df8bcb4c1..97ce352f7 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 1
 +#define SKIPPY_ABI_VERSION_PATCH 2
-
+ 
  enum skippy_feature {
      SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
 @@ -39,6 +39,7 @@ enum skippy_feature {
@@ -27,12 +27,12 @@ index e5817bae..bb838e9f 100644
      SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
 +    SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -206,6 +207,15 @@ LLAMA_API enum skippy_status skippy_decode_step(
          llama_token * out_predicted_token,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_verify_tokens(
 +        struct skippy_session * session,
 +        const llama_token * token_ids,
@@ -46,13 +46,13 @@ index e5817bae..bb838e9f 100644
          struct skippy_session * session,
          const llama_token * token_ids,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index fed66224..25d38431 100644
+index 16d77e256..712aec9fa 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -693,6 +693,26 @@ static llama_token skippy_greedy_sample(skippy_session * session) {
      return best;
  }
-
+ 
 +static llama_token skippy_greedy_sample_ith(skippy_session * session, int32_t index) {
 +    const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
 +    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
@@ -84,12 +84,12 @@ index fed66224..25d38431 100644
 +           SKIPPY_FEATURE_SESSION_RESET |
 +           SKIPPY_FEATURE_BATCH_VERIFY;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -1030,6 +1051,55 @@ enum skippy_status skippy_decode_step(
      return skippy_success(out_error);
  }
-
+ 
 +enum skippy_status skippy_verify_tokens(
 +        struct skippy_session * session,
 +        const llama_token * token_ids,
@@ -142,5 +142,6 @@ index fed66224..25d38431 100644
  enum skippy_status skippy_prefill_chunk_frame(
          struct skippy_session * session,
          const llama_token * token_ids,
---
+-- 
 2.50.1 (Apple Git-155)
+

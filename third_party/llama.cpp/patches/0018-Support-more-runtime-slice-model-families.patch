@@ -1,15 +1,14 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 8a3d492f1f77bb9a60f6295dd25f06b0b8777924 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 16:07:00 +1000
-Subject: [PATCH] Support more runtime-slice model families
+Subject: [PATCH 18/33] Support more runtime-slice model families
 
 ---
- include/skippy.h  |  17 +++
+ include/skippy.h           |  17 +++
  src/llama-graph.cpp        |  25 ++++
  src/llama-graph.h          |  20 +++
  src/llama-model-loader.cpp |   7 ++
  src/llama-model.cpp        |   9 +-
- src/skippy.cpp        | 250 ++++++++++++++++++++++++++++++++++---
  src/models/deepseek2.cpp   |  22 +++-
  src/models/falcon-h1.cpp   |  20 ++-
  src/models/gemma.cpp       |  26 +++-
@@ -22,16 +21,17 @@ Subject: [PATCH] Support more runtime-slice model families
  src/models/qwen2.cpp       |  20 ++-
  src/models/qwen3.cpp       |  20 ++-
  src/models/qwen3next.cpp   |  29 ++++-
+ src/skippy.cpp             | 250 ++++++++++++++++++++++++++++++++++---
  18 files changed, 560 insertions(+), 87 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 3c9709f5..e68210c3 100644
+index 6dc5af7b1..23a46e0f2 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -258,6 +258,23 @@ LLAMA_API enum skippy_status skippy_import_state(
          size_t input_bytes,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_export_full_state(
 +        struct skippy_session * session,
 +        int32_t layer_start,
@@ -53,21 +53,21 @@ index 3c9709f5..e68210c3 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 186f07aa..f6136069 100644
+index 8e4ad86ea..00260b97c 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -19,6 +19,7 @@
  #include <unordered_set>
-
+ 
  static thread_local skippy_graph_filter g_skippy_graph_filter;
 +static thread_local skippy_activation_tokens g_skippy_activation_tokens;
-
+ 
  void skippy_graph_set_filter(const skippy_graph_filter & filter) {
      g_skippy_graph_filter = filter;
 @@ -32,6 +33,18 @@ const skippy_graph_filter & skippy_graph_get_filter() {
      return g_skippy_graph_filter;
  }
-
+ 
 +void skippy_graph_set_activation_tokens(const skippy_activation_tokens & tokens) {
 +    g_skippy_activation_tokens = tokens;
 +}
@@ -81,12 +81,12 @@ index 186f07aa..f6136069 100644
 +}
 +
  // dedup helpers
-
+ 
  static ggml_tensor * build_attn_inp_kq_mask(
 @@ -111,6 +124,18 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
      return res;
  }
-
+ 
 +void llm_graph_input_stage_tokens::set_input(const llama_ubatch * ubatch) {
 +    const skippy_activation_tokens & stage_tokens = skippy_graph_get_activation_tokens();
 +    GGML_ASSERT(stage_tokens.tokens != nullptr);
@@ -103,13 +103,13 @@ index 186f07aa..f6136069 100644
      if (ubatch->pos && pos) {
          const int64_t n_tokens = ubatch->n_tokens;
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index f07444f2..d7ee251e 100644
+index e7fd09fd6..d2ba21881 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
 @@ -35,9 +35,17 @@ struct skippy_graph_filter {
      bool include_output = false;
  };
-
+ 
 +struct skippy_activation_tokens {
 +    const llama_token * tokens = nullptr;
 +    uint32_t token_count = 0;
@@ -121,13 +121,13 @@ index f07444f2..d7ee251e 100644
 +void skippy_graph_set_activation_tokens(const skippy_activation_tokens & tokens);
 +void skippy_graph_clear_activation_tokens();
 +const skippy_activation_tokens & skippy_graph_get_activation_tokens();
-
+ 
  // certain models (typically multi-modal) can produce different types of graphs
  enum llm_graph_type {
 @@ -132,6 +140,18 @@ public:
      const int64_t n_embd = 0;
  };
-
+ 
 +class llm_graph_input_stage_tokens : public llm_graph_input_i {
 +public:
 +    llm_graph_input_stage_tokens() = default;
@@ -144,13 +144,13 @@ index f07444f2..d7ee251e 100644
  public:
      llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index f823bc60..3d546fc2 100644
+index ee44dd00c..d15de1c42 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -1119,6 +1119,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
                      break;
              }
-
+ 
 +            if (!keep && llm_kv.arch == LLM_ARCH_GEMMA4 && hparams.n_embd_per_layer > 0) {
 +                keep = tn.tensor == LLM_TENSOR_TOKEN_EMBD ||
 +                       tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD ||
@@ -162,23 +162,23 @@ index f823bc60..3d546fc2 100644
                  if (t_meta) {
                      const size_t nbytes = ggml_nbytes(t_meta);
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 9e2a13cb..256124b0 100644
+index 9e2a13cbd..256124b0e 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
 @@ -4618,8 +4618,9 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                          layer.ffn_post_norm = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM, "weight", i), {n_embd}, 0);
-
+ 
                          // MoE router
 +                        const std::string ffn_gate_inp_name = tn(LLM_TENSOR_FFN_GATE_INP, "weight", i).str();
                          layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED);
 -                        bool has_expert = layer.ffn_gate_inp != nullptr;
 +                        bool has_expert = layer.ffn_gate_inp != nullptr || ml.get_tensor_meta(ffn_gate_inp_name.c_str()) != nullptr;
-
+ 
                          // norm
                          if (has_expert) {
 @@ -7833,13 +7834,13 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
              }
-
+ 
              // MoE expert weight scales (per-expert, shape {n_expert})
 -            if (!layer.ffn_gate_exps_s && layer.ffn_gate_exps) {
 +            if (!layer.ffn_gate_exps_s && (layer.ffn_gate_exps || ml.get_tensor_meta(tn(LLM_TENSOR_FFN_GATE_EXPS, "scale", i).str().c_str()) != nullptr)) {
@@ -192,15 +192,748 @@ index 9e2a13cb..256124b0 100644
 +            if (!layer.ffn_up_exps_s && (layer.ffn_up_exps || ml.get_tensor_meta(tn(LLM_TENSOR_FFN_UP_EXPS, "scale", i).str().c_str()) != nullptr)) {
                  layer.ffn_up_exps_s = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "scale", i), {n_expert}, TENSOR_NOT_REQUIRED);
              }
-
+ 
+diff --git a/src/models/deepseek2.cpp b/src/models/deepseek2.cpp
+index 303fc72c6..5f6ba1237 100644
+--- a/src/models/deepseek2.cpp
++++ b/src/models/deepseek2.cpp
+@@ -31,8 +31,14 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
++    const int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : effective_n_layers;
++
+     // {n_embd, n_tokens}
+-    inpL = build_inp_embd(model.tok_embd);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // (optional) temperature tuning - used by mistral-large
+     ggml_tensor * inp_attn_scale = nullptr;
+@@ -46,10 +52,9 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+     auto * inp_attn_kv = !is_mla ? build_attn_inp_kv() : nullptr;
+     auto * inp_attn_k  =  is_mla ? build_attn_inp_k()  : nullptr;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
+-    for (int il = 0; il < effective_n_layers; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -223,7 +228,7 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+                             Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+             }
+         }
+-        if (il == effective_n_layers - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -281,6 +286,13 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/models/falcon-h1.cpp b/src/models/falcon-h1.cpp
+index 05accf90f..743c0eacc 100644
+--- a/src/models/falcon-h1.cpp
++++ b/src/models/falcon-h1.cpp
+@@ -7,7 +7,12 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -18,9 +23,9 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+     const float kq_scale =
+         hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+@@ -57,7 +62,7 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+         inpSA = ggml_add(ctx0, cur, inpSA);
+         cb(cur, "layer_out", il);
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -85,6 +90,13 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/models/gemma.cpp b/src/models/gemma.cpp
+index 09d2ff8ba..0357e45e2 100644
+--- a/src/models/gemma.cpp
++++ b/src/models/gemma.cpp
+@@ -6,19 +6,26 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
+ 
+-    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
+-    cb(inpL, "inp_scaled", -1);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
++
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         // norm
+         cur = build_norm(inpL,
+                 model.layers[il].attn_norm, NULL,
+@@ -52,7 +59,7 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -84,6 +91,13 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma2-iswa.cpp b/src/models/gemma2-iswa.cpp
+index 0ef07df8d..0a9fb8366 100644
+--- a/src/models/gemma2-iswa.cpp
++++ b/src/models/gemma2-iswa.cpp
+@@ -6,19 +6,26 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
+ 
+-    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
+-    cb(inpL, "inp_scaled", -1);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
++
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv_iswa();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const float freq_base_l  = model.get_rope_freq_base (cparams, il);
+         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
+ 
+@@ -54,7 +61,7 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -96,6 +103,13 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma3.cpp b/src/models/gemma3.cpp
+index 0da4af21c..387148dde 100644
+--- a/src/models/gemma3.cpp
++++ b/src/models/gemma3.cpp
+@@ -7,11 +7,18 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
+-    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+-    cb(inpL, "inp_scaled", -1);
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -26,9 +33,9 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+         inp_attn = build_attn_inp_kv();
+     }
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         float freq_base_l  = 0.0f;
+         float freq_scale_l = 0.0f;
+ 
+@@ -77,7 +84,7 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -119,6 +126,13 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma4-iswa.cpp b/src/models/gemma4-iswa.cpp
+index c7fb77474..c38f4b437 100644
+--- a/src/models/gemma4-iswa.cpp
++++ b/src/models/gemma4-iswa.cpp
+@@ -14,7 +14,12 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // important: do not normalize weights for raw embeddings input (i.e. encoded image emdeddings)
+     inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+@@ -26,18 +31,39 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+     // TODO: is causal == true correct? might need some changes
+     auto * inp_attn = build_attn_inp_kv_iswa();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+     ggml_tensor * inp_per_layer = nullptr;
+     if (model.per_layer_tok_embd) {
++        ggml_tensor * inp_per_layer_proj = inpL;
++        const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
++        const bool use_activation_token_sideband =
++            stage_filtered && il_start > 0 &&
++            activation_tokens.tokens != nullptr &&
++            activation_tokens.token_count == ubatch.n_tokens &&
++            model.tok_embd != nullptr;
++
++        if (use_activation_token_sideband) {
++            auto inp = std::make_unique<llm_graph_input_stage_tokens>();
++            inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
++            cb(inp->tokens, "inp_stage_tokens", -1);
++            ggml_set_input(inp->tokens);
++
++            inp_per_layer_proj = ggml_get_rows(ctx0, model.tok_embd, inp->tokens);
++            inp_per_layer_proj = ggml_scale(ctx0, inp_per_layer_proj, sqrtf(n_embd));
++            cb(inp_per_layer_proj, "inp_per_layer_proj_embd", -1);
++
++            res->add_input(std::move(inp));
++        }
++
+         inp_per_layer = build_inp_per_layer();
+         ggml_build_forward_expand(gf, inp_per_layer);
+ 
+         // inp_per_layer shape: [n_embd_per_layer, n_tokens, n_layer]
+-        inp_per_layer = project_per_layer_inputs(inpL, inp_per_layer);
++        inp_per_layer = project_per_layer_inputs(inp_per_layer_proj, inp_per_layer);
+     }
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const int64_t n_embd_head = hparams.n_embd_head_k(il);
+         GGML_ASSERT(n_embd_head == hparams.n_embd_head_v(il));
+ 
+@@ -110,7 +136,7 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+         }
+ 
+         // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -237,6 +263,13 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, nullptr,
+             LLM_NORM_RMS, -1);
+@@ -266,7 +299,12 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
+ 
+     ggml_tensor * inp_per_layer;
+     float tok_embd_scale = sqrtf((float) n_embd_per_layer);
+-    if (ubatch.token) {
++    const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
++    const bool use_activation_token_sideband =
++        activation_tokens.tokens != nullptr &&
++        activation_tokens.token_count == ubatch.n_tokens;
++
++    if (ubatch.token || use_activation_token_sideband) {
+         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
+         ggml_set_input(inp->tokens);
+         res->t_inp_tokens = inp->tokens;
+@@ -276,7 +314,13 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
+         inp_per_layer = ggml_scale     (ctx0, inp_per_layer, tok_embd_scale);
+         cb(inp_per_layer, "inp_per_layer_selected", -1);
+ 
+-        res->add_input(std::move(inp));
++        if (ubatch.token) {
++            res->add_input(std::move(inp));
++        } else {
++            auto stage_inp = std::make_unique<llm_graph_input_stage_tokens>();
++            stage_inp->tokens = inp->tokens;
++            res->add_input(std::move(stage_inp));
++        }
+     } else {
+         // Multimodal embedding path: use padding token (ID=0) embedding
+         // TODO: verify if this is the correct behavior in transformers implementation
+diff --git a/src/models/glm4.cpp b/src/models/glm4.cpp
+index f0bfda393..da598cf65 100644
+--- a/src/models/glm4.cpp
++++ b/src/models/glm4.cpp
+@@ -11,10 +11,18 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    // Only process up to last layer (skip final NextN layer)
++    // Final layer tensors are loaded but not processed in forward pass
++    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? std::min(stage_filter.layer_end, n_transformer_layers) : n_transformer_layers;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     bool use_mrope = hparams.use_mrope();
+-    if (ubatch.embd && !use_mrope) {
++    if (ubatch.embd && !use_mrope && !stage_filtered) {
+         // unfortunately, we need to forcefully stop here, to avoid users complaining about wrong results
+         GGML_ABORT("This GGUF does not support multimodal. Please reconvert it.");
+     }
+@@ -24,12 +32,9 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    // Only process up to last layer (skip final NextN layer)
+-    // Final layer tensors are loaded but not processed in forward pass
+-    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
+-    for (int il = 0; il < n_transformer_layers; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // Pre-attention norm
+@@ -68,7 +73,7 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f / sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_transformer_layers - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -106,8 +111,17 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+         // input for next layer
+         inpL = cur;
+     }
++    cur = inpL;
++
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     // Final norm
+-    cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
++    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+     res->t_embd = cur;
+diff --git a/src/models/minimax-m2.cpp b/src/models/minimax-m2.cpp
+index b809b79f2..958c29954 100644
+--- a/src/models/minimax-m2.cpp
++++ b/src/models/minimax-m2.cpp
+@@ -9,13 +9,18 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     ggml_tensor * inp_pos = build_inp_pos();
+     auto inp_attn = build_attn_inp_kv();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = inpL;
+@@ -68,7 +73,7 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -106,6 +111,13 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+ 
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/olmo.cpp b/src/models/olmo.cpp
+index a9974025f..48759d1a3 100644
+--- a/src/models/olmo.cpp
++++ b/src/models/olmo.cpp
+@@ -9,16 +9,21 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -53,7 +58,7 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+                     model.layers[il].wo, nullptr, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -85,6 +90,13 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             NULL, NULL,
+             LLM_NORM, -1);
+diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
+index 2892dd750..2b451a661 100644
+--- a/src/models/qwen2.cpp
++++ b/src/models/qwen2.cpp
+@@ -9,16 +9,21 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -53,7 +58,7 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -84,6 +89,13 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
+index 883dd5f9a..a8e33349b 100644
+--- a/src/models/qwen3.cpp
++++ b/src/models/qwen3.cpp
+@@ -9,16 +9,21 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -59,7 +64,7 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -90,6 +95,13 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/qwen3next.cpp b/src/models/qwen3next.cpp
+index 1beda70b7..5b7475f95 100644
+--- a/src/models/qwen3next.cpp
++++ b/src/models/qwen3next.cpp
+@@ -7,15 +7,27 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++    bool has_attention_layer = false;
++    for (int il = il_start; il < il_end; ++il) {
++        if (!hparams.is_recurrent(il)) {
++            has_attention_layer = true;
++            break;
++        }
++    }
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+     cb(inpL, "model.embed_tokens", -1);
+ 
+     auto * inp = build_inp_mem_hybrid();
+ 
+-    ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_pos     = has_attention_layer ? build_inp_pos() : nullptr;
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+@@ -32,7 +44,7 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -64,6 +76,13 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     // Final norm
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 04ac6643..043143e4 100644
+index f0b70b962..50e25c8f5 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -500,6 +500,26 @@ struct skippy_graph_filter_scope {
      bool enabled = false;
  };
-
+ 
 +struct skippy_activation_tokens_scope {
 +    skippy_activation_tokens_scope(const llama_token * tokens, size_t token_count) {
 +        if (tokens != nullptr && token_count > 0 && token_count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
@@ -235,7 +968,7 @@ index 04ac6643..043143e4 100644
 @@ -796,6 +817,7 @@ static enum skippy_status skippy_decode_activation_frame(
          batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
      }
-
+ 
 +    skippy_activation_tokens_scope activation_tokens_scope(token_ids, token_count);
      enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
      llama_batch_free(batch);
@@ -249,7 +982,7 @@ index 04ac6643..043143e4 100644
             SKIPPY_FEATURE_ACTIVATION_FRAME |
             SKIPPY_FEATURE_NATIVE_KV_PAGE |
 @@ -889,9 +912,22 @@ enum skippy_status skippy_model_open(
-
+ 
      if (config != nullptr && config->filter_tensors_on_load) {
          const int32_t n_layer = llama_model_n_layer(model);
 -        if (model->arch != LLM_ARCH_LLAMA && model->arch != LLM_ARCH_QWEN35MOE) {
@@ -275,7 +1008,7 @@ index 04ac6643..043143e4 100644
          if (config->layer_end > n_layer) {
 @@ -1143,7 +1179,7 @@ enum skippy_status skippy_prefill_chunk_frame(
      }
-
+ 
      if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
 -        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_count, false, out_error);
 +        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, false, out_error);
@@ -284,7 +1017,7 @@ index 04ac6643..043143e4 100644
      }
 @@ -1188,7 +1224,7 @@ enum skippy_status skippy_decode_step_frame(
      }
-
+ 
      if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
 -        status = skippy_decode_activation_frame(session, input_desc, input_payload, 1, true, out_error);
 +        status = skippy_decode_activation_frame(session, input_desc, input_payload, &token_id, 1, true, out_error);
@@ -349,7 +1082,7 @@ index 04ac6643..043143e4 100644
 +
 +    return skippy_success(out_error);
  }
-
+ 
  enum skippy_status skippy_import_state(
 @@ -1228,13 +1301,152 @@ enum skippy_status skippy_import_state(
          const void * input,
@@ -509,740 +1242,8 @@ index 04ac6643..043143e4 100644
 +
 +    return skippy_success(out_error);
  }
-
+ 
  static llama_kv_cache * skippy_get_kv_cache(
-diff --git a/src/models/deepseek2.cpp b/src/models/deepseek2.cpp
-index 303fc72c..bab59569 100644
---- a/src/models/deepseek2.cpp
-+++ b/src/models/deepseek2.cpp
-@@ -31,8 +31,14 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
-+    const int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : effective_n_layers;
-+
-     // {n_embd, n_tokens}
--    inpL = build_inp_embd(model.tok_embd);
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // (optional) temperature tuning - used by mistral-large
-     ggml_tensor * inp_attn_scale = nullptr;
-@@ -46,10 +52,9 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
-     auto * inp_attn_kv = !is_mla ? build_attn_inp_kv() : nullptr;
-     auto * inp_attn_k  =  is_mla ? build_attn_inp_k()  : nullptr;
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
--    for (int il = 0; il < effective_n_layers; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         // norm
-@@ -223,7 +228,7 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
-                             Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
-             }
-         }
--        if (il == effective_n_layers - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -281,6 +286,13 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
-
-     cb(cur, "result_norm", -1);
-diff --git a/src/models/falcon-h1.cpp b/src/models/falcon-h1.cpp
-index 05accf90..44f17d2b 100644
---- a/src/models/falcon-h1.cpp
-+++ b/src/models/falcon-h1.cpp
-@@ -7,7 +7,12 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-@@ -18,9 +23,9 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
-     const float kq_scale =
-         hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
-@@ -57,7 +62,7 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
-         inpSA = ggml_add(ctx0, cur, inpSA);
-         cb(cur, "layer_out", il);
-
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -85,6 +90,13 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
-
-     cb(cur, "result_norm", -1);
-diff --git a/src/models/gemma.cpp b/src/models/gemma.cpp
-index 09d2ff8b..ba80e141 100644
---- a/src/models/gemma.cpp
-+++ b/src/models/gemma.cpp
-@@ -6,19 +6,26 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-
--    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
--    cb(inpL, "inp_scaled", -1);
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-+
-+    if (!stage_filtered || il_start == 0) {
-+        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
-+        cb(inpL, "inp_scaled", -1);
-+    }
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-
-     auto * inp_attn = build_attn_inp_kv();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         // norm
-         cur = build_norm(inpL,
-                 model.layers[il].attn_norm, NULL,
-@@ -52,7 +59,7 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
-                     model.layers[il].wo, NULL, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
-             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
-         }
-@@ -84,6 +91,13 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/gemma2-iswa.cpp b/src/models/gemma2-iswa.cpp
-index 0ef07df8..dd636d43 100644
---- a/src/models/gemma2-iswa.cpp
-+++ b/src/models/gemma2-iswa.cpp
-@@ -6,19 +6,26 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-
--    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
--    cb(inpL, "inp_scaled", -1);
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-+
-+    if (!stage_filtered || il_start == 0) {
-+        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
-+        cb(inpL, "inp_scaled", -1);
-+    }
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-
-     auto * inp_attn = build_attn_inp_kv_iswa();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         const float freq_base_l  = model.get_rope_freq_base (cparams, il);
-         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
-
-@@ -54,7 +61,7 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
-                     model.layers[il].wo, NULL, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
-             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
-         }
-@@ -96,6 +103,13 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/gemma3.cpp b/src/models/gemma3.cpp
-index 0da4af21..cdb246a4 100644
---- a/src/models/gemma3.cpp
-+++ b/src/models/gemma3.cpp
-@@ -7,11 +7,18 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
--    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
--    cb(inpL, "inp_scaled", -1);
-+    if (!stage_filtered || il_start == 0) {
-+        inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
-+        cb(inpL, "inp_scaled", -1);
-+    }
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-@@ -26,9 +33,9 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
-         inp_attn = build_attn_inp_kv();
-     }
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         float freq_base_l  = 0.0f;
-         float freq_scale_l = 0.0f;
-
-@@ -77,7 +84,7 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
-                     model.layers[il].wo, NULL, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
-             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
-         }
-@@ -119,6 +126,13 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/gemma4-iswa.cpp b/src/models/gemma4-iswa.cpp
-index c7fb7747..544d6f98 100644
---- a/src/models/gemma4-iswa.cpp
-+++ b/src/models/gemma4-iswa.cpp
-@@ -14,7 +14,12 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // important: do not normalize weights for raw embeddings input (i.e. encoded image emdeddings)
-     inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
-@@ -26,18 +31,39 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
-     // TODO: is causal == true correct? might need some changes
-     auto * inp_attn = build_attn_inp_kv_iswa();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
-     ggml_tensor * inp_per_layer = nullptr;
-     if (model.per_layer_tok_embd) {
-+        ggml_tensor * inp_per_layer_proj = inpL;
-+        const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
-+        const bool use_activation_token_sideband =
-+            stage_filtered && il_start > 0 &&
-+            activation_tokens.tokens != nullptr &&
-+            activation_tokens.token_count == ubatch.n_tokens &&
-+            model.tok_embd != nullptr;
-+
-+        if (use_activation_token_sideband) {
-+            auto inp = std::make_unique<llm_graph_input_stage_tokens>();
-+            inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
-+            cb(inp->tokens, "inp_stage_tokens", -1);
-+            ggml_set_input(inp->tokens);
-+
-+            inp_per_layer_proj = ggml_get_rows(ctx0, model.tok_embd, inp->tokens);
-+            inp_per_layer_proj = ggml_scale(ctx0, inp_per_layer_proj, sqrtf(n_embd));
-+            cb(inp_per_layer_proj, "inp_per_layer_proj_embd", -1);
-+
-+            res->add_input(std::move(inp));
-+        }
-+
-         inp_per_layer = build_inp_per_layer();
-         ggml_build_forward_expand(gf, inp_per_layer);
-
-         // inp_per_layer shape: [n_embd_per_layer, n_tokens, n_layer]
--        inp_per_layer = project_per_layer_inputs(inpL, inp_per_layer);
-+        inp_per_layer = project_per_layer_inputs(inp_per_layer_proj, inp_per_layer);
-     }
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         const int64_t n_embd_head = hparams.n_embd_head_k(il);
-         GGML_ASSERT(n_embd_head == hparams.n_embd_head_v(il));
-
-@@ -110,7 +136,7 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
-         }
-
-         // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
-             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
-         }
-@@ -237,6 +263,13 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, nullptr,
-             LLM_NORM_RMS, -1);
-@@ -266,7 +299,12 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
-
-     ggml_tensor * inp_per_layer;
-     float tok_embd_scale = sqrtf((float) n_embd_per_layer);
--    if (ubatch.token) {
-+    const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
-+    const bool use_activation_token_sideband =
-+        activation_tokens.tokens != nullptr &&
-+        activation_tokens.token_count == ubatch.n_tokens;
-+
-+    if (ubatch.token || use_activation_token_sideband) {
-         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
-         ggml_set_input(inp->tokens);
-         res->t_inp_tokens = inp->tokens;
-@@ -276,7 +314,13 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
-         inp_per_layer = ggml_scale     (ctx0, inp_per_layer, tok_embd_scale);
-         cb(inp_per_layer, "inp_per_layer_selected", -1);
-
--        res->add_input(std::move(inp));
-+        if (ubatch.token) {
-+            res->add_input(std::move(inp));
-+        } else {
-+            auto stage_inp = std::make_unique<llm_graph_input_stage_tokens>();
-+            stage_inp->tokens = inp->tokens;
-+            res->add_input(std::move(stage_inp));
-+        }
-     } else {
-         // Multimodal embedding path: use padding token (ID=0) embedding
-         // TODO: verify if this is the correct behavior in transformers implementation
-diff --git a/src/models/glm4.cpp b/src/models/glm4.cpp
-index f0bfda39..b15bf213 100644
---- a/src/models/glm4.cpp
-+++ b/src/models/glm4.cpp
-@@ -11,10 +11,18 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    // Only process up to last layer (skip final NextN layer)
-+    // Final layer tensors are loaded but not processed in forward pass
-+    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? std::min(stage_filter.layer_end, n_transformer_layers) : n_transformer_layers;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     bool use_mrope = hparams.use_mrope();
--    if (ubatch.embd && !use_mrope) {
-+    if (ubatch.embd && !use_mrope && !stage_filtered) {
-         // unfortunately, we need to forcefully stop here, to avoid users complaining about wrong results
-         GGML_ABORT("This GGUF does not support multimodal. Please reconvert it.");
-     }
-@@ -24,12 +32,9 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
-
-     auto * inp_attn = build_attn_inp_kv();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    // Only process up to last layer (skip final NextN layer)
--    // Final layer tensors are loaded but not processed in forward pass
--    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
--    for (int il = 0; il < n_transformer_layers; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         // Pre-attention norm
-@@ -68,7 +73,7 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
-                     model.layers[il].wo, NULL, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f / sqrtf(float(n_embd_head)), il);
-         }
--        if (il == n_transformer_layers - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -106,8 +111,17 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
-         // input for next layer
-         inpL = cur;
-     }
-+    cur = inpL;
-+
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     // Final norm
--    cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
-+    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
-
-     cb(cur, "result_norm", -1);
-     res->t_embd = cur;
-diff --git a/src/models/minimax-m2.cpp b/src/models/minimax-m2.cpp
-index b809b79f..254ef3da 100644
---- a/src/models/minimax-m2.cpp
-+++ b/src/models/minimax-m2.cpp
-@@ -9,13 +9,18 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     ggml_tensor * inp_pos = build_inp_pos();
-     auto inp_attn = build_attn_inp_kv();
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         cur = inpL;
-@@ -68,7 +73,7 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
-         }
-
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -106,6 +111,13 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
-
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/olmo.cpp b/src/models/olmo.cpp
-index a9974025..157f9206 100644
---- a/src/models/olmo.cpp
-+++ b/src/models/olmo.cpp
-@@ -9,16 +9,21 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-
-     auto * inp_attn = build_attn_inp_kv();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         // norm
-@@ -53,7 +58,7 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
-                     model.layers[il].wo, nullptr, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -85,6 +90,13 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             NULL, NULL,
-             LLM_NORM, -1);
-diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
-index 2892dd75..69258369 100644
---- a/src/models/qwen2.cpp
-+++ b/src/models/qwen2.cpp
-@@ -9,16 +9,21 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
-
-     auto * inp_attn = build_attn_inp_kv();
-
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         // norm
-@@ -53,7 +58,7 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
-                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
-                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -84,6 +89,13 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
-index e6f1fc81..f38e7c79 100644
---- a/src/models/qwen3.cpp
-+++ b/src/models/qwen3.cpp
-@@ -9,16 +9,21 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
- 
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
- 
-     // inp_pos - contains the positions
-     ggml_tensor * inp_pos = build_inp_pos();
- 
-     auto * inp_attn = build_attn_inp_kv();
- 
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
- 
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
- 
-         // norm
-@@ -62,7 +67,7 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
-                 cur = ggml_mul(ctx0, cur, model.layers[il].wo_s);
-             }
-         }
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -93,6 +98,13 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
-     }
-     cur = inpL;
- 
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     cur = build_norm(cur,
-             model.output_norm, NULL,
-             LLM_NORM_RMS, -1);
-diff --git a/src/models/qwen3next.cpp b/src/models/qwen3next.cpp
-index 1beda70b..5adca21b 100644
---- a/src/models/qwen3next.cpp
-+++ b/src/models/qwen3next.cpp
-@@ -7,15 +7,27 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
-     ggml_tensor * cur;
-     ggml_tensor * inpL;
-
--    inpL = build_inp_embd(model.tok_embd);
-+    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
-+    const bool stage_filtered = stage_filter.enabled;
-+    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
-+    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
-+    bool has_attention_layer = false;
-+    for (int il = il_start; il < il_end; ++il) {
-+        if (!hparams.is_recurrent(il)) {
-+            has_attention_layer = true;
-+            break;
-+        }
-+    }
-+
-+    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
-     cb(inpL, "model.embed_tokens", -1);
-
-     auto * inp = build_inp_mem_hybrid();
-
--    ggml_tensor * inp_pos     = build_inp_pos();
--    ggml_tensor * inp_out_ids = build_inp_out_ids();
-+    ggml_tensor * inp_pos     = has_attention_layer ? build_inp_pos() : nullptr;
-+    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
-
--    for (int il = 0; il < n_layer; ++il) {
-+    for (int il = il_start; il < il_end; ++il) {
-         ggml_tensor * inpSA = inpL;
-
-         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-@@ -32,7 +44,7 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
-             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
-         }
-
--        if (il == n_layer - 1 && inp_out_ids) {
-+        if (il == il_end - 1 && inp_out_ids) {
-             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-         }
-@@ -64,6 +76,13 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
-     }
-     cur = inpL;
-
-+    if (stage_filtered && !stage_filter.include_output) {
-+        cb(cur, "stage_boundary", il_end - 1);
-+        res->t_embd = cur;
-+        ggml_build_forward_expand(gf, cur);
-+        return;
-+    }
-+
-     // Final norm
-     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
-
---
+-- 
 2.50.1 (Apple Git-155)
+

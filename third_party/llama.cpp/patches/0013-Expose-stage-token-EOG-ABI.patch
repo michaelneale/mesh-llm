@@ -1,21 +1,21 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 16b52b87c1f295d96b3f4c3a51ce39dc0e388b5c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 18:45:00 +1000
-Subject: [PATCH] Expose stage token EOG ABI
+Subject: [PATCH 13/33] Expose stage token EOG ABI
 
 ---
  include/skippy.h |  6 ++++++
- src/skippy.cpp       | 15 +++++++++++++++
+ src/skippy.cpp   | 15 +++++++++++++++
  2 files changed, 21 insertions(+)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index da5c24bc..e5817bae 100644
+index c355b8442..df8bcb4c1 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -284,6 +284,12 @@ LLAMA_API enum skippy_status skippy_detokenize(
          size_t * out_text_bytes,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_token_is_eog(
 +        struct skippy_model * model,
 +        llama_token token,
@@ -26,13 +26,13 @@ index da5c24bc..e5817bae 100644
          const char * path,
          struct skippy_model_info ** out_info,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 7f732c92..d9c0b900 100644
+index fcd8576a6..12c1f6468 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1333,6 +1333,21 @@ enum skippy_status skippy_detokenize(
      return skippy_success(out_error);
  }
-
+ 
 +enum skippy_status skippy_token_is_eog(
 +        struct skippy_model * model,
 +        llama_token token,
@@ -51,5 +51,6 @@ index 7f732c92..d9c0b900 100644
  enum skippy_status skippy_model_info_open(
          const char * path,
          struct skippy_model_info ** out_info,
---
+-- 
 2.50.1 (Apple Git-155)
+

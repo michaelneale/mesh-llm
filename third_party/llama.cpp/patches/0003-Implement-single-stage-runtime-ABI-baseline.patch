@@ -1,20 +1,20 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 951107f7d566540f6ccf8c938b8ae17a9c1775ae Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 11:04:49 +1000
-Subject: [PATCH] Implement single-stage runtime ABI baseline
+Subject: [PATCH 03/33] Implement single-stage runtime ABI baseline
 
 ---
- src/skippy.cpp | 323 +++++++++++++++++++++++++++++++++++++++++++-
+ src/skippy.cpp | 323 ++++++++++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 322 insertions(+), 1 deletion(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 7b1aa845..d0520d5a 100644
+index bd94fa37f..4feca3b8f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -2,14 +2,27 @@
-
+ 
  #include "gguf.h"
-
+ 
 +#include <algorithm>
  #include <cerrno>
  #include <cstdint>
@@ -24,7 +24,7 @@ index 7b1aa845..d0520d5a 100644
 +#include <limits>
  #include <regex>
  #include <string>
-
+ 
 +struct skippy_model {
 +    llama_model * model = nullptr;
 +    skippy_runtime_config config = {};
@@ -39,10 +39,10 @@ index 7b1aa845..d0520d5a 100644
  struct skippy_model_info {
      gguf_context * ctx = nullptr;
  };
-@@ -93,6 +106,62 @@ static enum skippy_tensor_role skippy_role_from_name(const char * name
+@@ -93,6 +106,62 @@ static enum skippy_tensor_role skippy_role_from_name(const char * name, int32_t
      return SKIPPY_TENSOR_ROLE_METADATA;
  }
-
+ 
 +static bool skippy_is_full_model_config(const struct skippy_runtime_config * config) {
 +    if (config == nullptr) {
 +        return true;
@@ -100,22 +100,22 @@ index 7b1aa845..d0520d5a 100644
 +}
 +
  extern "C" {
-
+ 
  struct skippy_abi_version skippy_abi_version(void) {
 @@ -104,7 +173,8 @@ struct skippy_abi_version skippy_abi_version(void) {
  }
-
+ 
  uint64_t skippy_abi_features(void) {
 -    return SKIPPY_FEATURE_MODEL_INTROSPECTION;
 +    return SKIPPY_FEATURE_MODEL_INTROSPECTION |
 +           SKIPPY_FEATURE_TOKENIZE_DETOKENIZE;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -131,6 +201,257 @@ void skippy_error_free(struct skippy_error * error) {
      delete error;
  }
-
+ 
 +enum skippy_status skippy_model_open(
 +        const char * path,
 +        const struct skippy_runtime_config * config,
@@ -370,5 +370,6 @@ index 7b1aa845..d0520d5a 100644
  enum skippy_status skippy_model_info_open(
          const char * path,
          struct skippy_model_info ** out_info,
---
+-- 
 2.50.1 (Apple Git-155)
+

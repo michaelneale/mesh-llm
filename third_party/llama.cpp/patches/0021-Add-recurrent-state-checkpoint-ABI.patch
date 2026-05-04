@@ -1,24 +1,24 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0505a24dfb94efe82396a55de15df332379fedb0 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 14:07:00 +1000
-Subject: [PATCH] Add recurrent state checkpoint ABI
+Subject: [PATCH 21/33] Add recurrent state checkpoint ABI
 
 ---
- include/skippy.h |  16 ++++-
- src/skippy.cpp       | 127 +++++++++++++++++++++++++++++++++++++-
+ include/skippy.h |  16 +++++-
+ src/skippy.cpp   | 127 ++++++++++++++++++++++++++++++++++++++++++++++-
  2 files changed, 141 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 20ea6bad..757809c5 100644
+index f461ee51d..c5c22b5d8 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 5
 +#define SKIPPY_ABI_VERSION_PATCH 6
-
+ 
  enum skippy_feature {
      SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
 @@ -43,6 +43,7 @@ enum skippy_feature {
@@ -27,12 +27,12 @@ index 20ea6bad..757809c5 100644
      SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
 +    SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
  };
-
+ 
  enum skippy_kv_page_flag {
 @@ -322,6 +323,13 @@ LLAMA_API enum skippy_status skippy_export_full_state(
          size_t * out_bytes,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_export_recurrent_state(
 +        struct skippy_session * session,
 +        void * output,
@@ -46,7 +46,7 @@ index 20ea6bad..757809c5 100644
 @@ -330,6 +338,12 @@ LLAMA_API enum skippy_status skippy_import_full_state(
          size_t input_bytes,
          struct skippy_error ** out_error);
-
+ 
 +LLAMA_API enum skippy_status skippy_import_recurrent_state(
 +        struct skippy_session * session,
 +        const void * input,
@@ -57,7 +57,7 @@ index 20ea6bad..757809c5 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index ec091956..c1ab7219 100644
+index e3c1f4a7d..ce454d6c3 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -5,6 +5,8 @@
@@ -68,7 +68,7 @@ index ec091956..c1ab7219 100644
 +#include "llama-memory-recurrent.h"
  #include "llama-model.h"
  #include "llama-model-loader.h"
-
+ 
 @@ -974,7 +976,8 @@ uint64_t skippy_abi_features(void) {
             SKIPPY_FEATURE_NATIVE_KV_PAGE |
             SKIPPY_FEATURE_SESSION_RESET |
@@ -77,12 +77,12 @@ index ec091956..c1ab7219 100644
 +           SKIPPY_FEATURE_BATCH_VERIFY_FRAME |
 +           SKIPPY_FEATURE_RECURRENT_STATE;
  }
-
+ 
  const char * skippy_status_string(enum skippy_status status) {
 @@ -1713,6 +1716,128 @@ enum skippy_status skippy_import_full_state(
      return skippy_success(out_error);
  }
-
+ 
 +static llama_memory_recurrent * skippy_get_recurrent_memory(
 +        skippy_session * session,
 +        skippy_error ** out_error) {
@@ -208,5 +208,6 @@ index ec091956..c1ab7219 100644
  static llama_kv_cache * skippy_get_kv_cache(
          skippy_session * session,
          skippy_error ** out_error) {
---
+-- 
 2.50.1 (Apple Git-155)
+
