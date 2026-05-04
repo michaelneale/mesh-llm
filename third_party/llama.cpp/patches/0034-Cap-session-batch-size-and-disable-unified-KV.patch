@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sun, 4 May 2026 16:00:00 +1000
+Subject: [PATCH 34/34] Cap session batch size and disable unified KV
+
+Cap n_batch to 2048 instead of n_ctx to avoid excessive compute buffer
+allocation. Set kv_unified=false so each sequence gets a dedicated KV
+partition, matching llama-server non-unified behavior and preventing
+sequences from competing for cache cells.
+
+---
+ src/skippy.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 5a1d7cfa9..000000001 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1347,7 +1347,8 @@ enum skippy_status skippy_session_create(
+ 
+     llama_context_params params = llama_context_default_params();
+     params.n_ctx = model->config.ctx_size > 0 ? static_cast<uint32_t>(model->config.ctx_size) : 512;
+-    params.n_batch = params.n_ctx;
++    params.n_batch = std::min(params.n_ctx, 2048u);
++    params.kv_unified = false;
+     params.type_k = model->config.cache_type_k > 0 ? static_cast<ggml_type>(model->config.cache_type_k) : GGML_TYPE_F16;
+     params.type_v = model->config.cache_type_v > 0 ? static_cast<ggml_type>(model->config.cache_type_v) : GGML_TYPE_F16;
+     params.embeddings = model->config.filter_tensors_on_load && !model->config.include_output;
+-- 
+2.50.1 (Apple Git-155)

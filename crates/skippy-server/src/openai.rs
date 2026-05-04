@@ -378,7 +378,7 @@ fn prewarm_generation_sessions(
     let sessions = runtime
         .lock()
         .map_err(|_| anyhow!("runtime lock poisoned"))?
-        .prewarm_idle_sessions(generation_concurrency)?;
+        .prewarm_idle_sessions(1.min(generation_concurrency))?;
     let mut attrs = lifecycle_attrs(config);
     attrs.insert(
         "llama_stage.generation_concurrency".to_string(),

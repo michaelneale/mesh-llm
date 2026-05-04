@@ -213,7 +213,7 @@ fn run_binary_stage(options: BinaryStageOptions, shutdown: Arc<AtomicBool>) -> R
         let sessions = runtime
             .lock()
             .map_err(|_| anyhow!("runtime lock poisoned"))?
-            .prewarm_idle_sessions(max_inflight)
+            .prewarm_idle_sessions(1.min(max_inflight))
             .context("prewarm binary stage runtime sessions")?;
         let mut attrs = lifecycle_attrs(&config);
         attrs.insert("llama_stage.max_inflight".to_string(), json!(max_inflight));

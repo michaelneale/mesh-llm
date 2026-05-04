@@ -248,11 +248,22 @@ impl RuntimeState {
         }
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
+        // Evict excess idle sessions to free VRAM. Keep at most 1 idle
+        // session ready; the rest are created on demand by `session()`.
+        self.evict_idle_sessions(1);
         Ok(RuntimeSessionDropStats {
             reset_session,
             reset_ms: reset_started.elapsed().as_secs_f64() * 1000.0,
             stats_after: self.session_stats(),
         })
+    }
+
+    /// Drop idle sessions beyond `keep`, freeing their VRAM.
+    pub fn evict_idle_sessions(&mut self, keep: usize) {
+        while self.idle_sessions.len() > keep {
+            // pop drops the StageSession, which calls skippy_session_free → llama_free
+            self.idle_sessions.pop();
+        }
     }
 
     pub fn session_stats(&self) -> RuntimeSessionStats {
