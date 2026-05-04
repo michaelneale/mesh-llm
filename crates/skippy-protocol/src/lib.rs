@@ -127,6 +127,15 @@ pub enum LoadMode {
     ArtifactSlice,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlashAttentionType {
+    #[default]
+    Auto,
+    Disabled,
+    Enabled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StageConfig {
     pub run_id: String,
@@ -156,12 +165,20 @@ pub struct StageConfig {
     pub layer_end: u32,
     #[serde(default = "default_ctx_size")]
     pub ctx_size: u32,
+    #[serde(default = "default_lane_count")]
+    pub lane_count: u32,
+    #[serde(default)]
+    pub n_batch: Option<u32>,
+    #[serde(default)]
+    pub n_ubatch: Option<u32>,
     #[serde(default)]
     pub n_gpu_layers: i32,
     #[serde(default = "default_cache_type")]
     pub cache_type_k: String,
     #[serde(default = "default_cache_type")]
     pub cache_type_v: String,
+    #[serde(default)]
+    pub flash_attn_type: FlashAttentionType,
     #[serde(default)]
     pub filter_tensors_on_load: bool,
     #[serde(default)]
@@ -187,6 +204,10 @@ pub struct StageDevice {
 
 fn default_ctx_size() -> u32 {
     512
+}
+
+fn default_lane_count() -> u32 {
+    4
 }
 
 fn default_cache_type() -> String {
@@ -568,6 +589,7 @@ mod tests {
                     wire_dtype: StageWireDType::StageWireDtypeF16 as i32,
                     shutdown_generation: 7,
                     ctx_size: 8192,
+                    lane_count: 2,
                     projector_path: Some("/models/mmproj.gguf".to_string()),
                     ..Default::default()
                 }),
@@ -583,6 +605,7 @@ mod tests {
                     status.projector_path.as_deref(),
                     Some("/models/mmproj.gguf")
                 );
+                assert_eq!(status.lane_count, 2);
             }
             other => panic!("expected StageReady, got {other:?}"),
         }

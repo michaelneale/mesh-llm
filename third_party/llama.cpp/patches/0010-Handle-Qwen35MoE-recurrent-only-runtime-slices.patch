@@ -1,7 +1,7 @@
-From 45e60dc72799d3737ce93a8fd83afacd8481a504 Mon Sep 17 00:00:00 2001
+From dd6c01b798667bfb5984b32c94c24127e750ad8b Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 15:44:46 +1000
-Subject: [PATCH 10/33] Handle Qwen35MoE recurrent-only runtime slices
+Subject: [PATCH 10/34] Handle Qwen35MoE recurrent-only runtime slices
 
 ---
  src/llama-graph.cpp      | 24 +++++++++++++++++-------

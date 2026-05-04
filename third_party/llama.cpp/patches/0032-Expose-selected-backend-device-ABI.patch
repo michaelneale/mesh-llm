@@ -1,7 +1,7 @@
-From 733cdc5486b7b368e04f9dd08b7fbfdb2d8d9509 Mon Sep 17 00:00:00 2001
+From 4e957b92aa0b494f9fb881f1538d05fa736c402d Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 14:14:40 +1000
-Subject: [PATCH 32/33] Expose selected backend device ABI
+Subject: [PATCH 32/34] Expose selected backend device ABI
 
 ---
  include/skippy.h |  5 +++++

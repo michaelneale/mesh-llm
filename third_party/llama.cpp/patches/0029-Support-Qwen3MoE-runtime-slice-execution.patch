@@ -1,7 +1,7 @@
-From cb65afc8bf9aee200a21bfd54e4dd36df98ecf6c Mon Sep 17 00:00:00 2001
+From 7d3756d1a686b73776034f155a7ea48e2bcbc7ac Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Thu, 30 Apr 2026 18:55:00 +1000
-Subject: [PATCH 29/33] Support Qwen3MoE runtime-slice execution
+Subject: [PATCH 29/34] Support Qwen3MoE runtime-slice execution
 
 Add LLM_ARCH_QWEN3MOE to the supported architecture list in the stage
 filter gate and add stage filter hooks to the qwen3moe.cpp graph builder

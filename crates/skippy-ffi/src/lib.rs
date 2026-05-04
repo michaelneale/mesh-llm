@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 14;
+pub const ABI_VERSION_PATCH: u32 = 18;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -69,9 +69,13 @@ pub struct RuntimeConfig {
     pub layer_start: i32,
     pub layer_end: i32,
     pub ctx_size: i32,
+    pub lane_count: i32,
+    pub n_batch: i32,
+    pub n_ubatch: i32,
     pub n_gpu_layers: i32,
     pub cache_type_k: i32,
     pub cache_type_v: i32,
+    pub flash_attn_type: i32,
     pub load_mode: LoadMode,
     pub disable_repack: bool,
     pub filter_tensors_on_load: bool,
@@ -173,24 +177,6 @@ pub struct ActivationDesc {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct KvPageDesc {
-    pub version: u32,
-    pub layer_start: i32,
-    pub layer_end: i32,
-    pub token_start: u64,
-    pub token_count: u64,
-    pub layer_count: u32,
-    pub k_type: u32,
-    pub v_type: u32,
-    pub k_row_bytes: u32,
-    pub v_row_bytes: u32,
-    pub v_element_bytes: u32,
-    pub payload_bytes: u64,
-    pub flags: u64,
-}
-
-#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct LogitBias {
     pub token_id: i32,
@@ -285,6 +271,14 @@ extern "C" {
         session: *mut Session,
         sampling: *const SamplingConfig,
         out_predicted_token: *mut i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_configure_chat_sampling(
+        session: *mut Session,
+        sampling: *const SamplingConfig,
+        metadata_json: *const c_char,
+        prompt_token_count: u64,
         out_error: *mut *mut Error,
     ) -> Status;
 
@@ -430,80 +424,6 @@ extern "C" {
         out_error: *mut *mut Error,
     ) -> Status;
 
-    pub fn skippy_export_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_full_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_full_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_kv_page(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        token_start: u64,
-        token_count: u64,
-        out_desc: *mut KvPageDesc,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_kv_page(
-        session: *mut Session,
-        desc: *const KvPageDesc,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_recurrent_state(
-        session: *mut Session,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_recurrent_state(
-        session: *mut Session,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
     pub fn skippy_trim_session(
         session: *mut Session,
         token_count: u64,
@@ -547,6 +467,34 @@ extern "C" {
         output_text: *mut c_char,
         output_text_capacity: usize,
         out_text_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_apply_chat_template_json(
+        model: *mut Model,
+        messages_json: *const c_char,
+        tools_json: *const c_char,
+        tool_choice_json: *const c_char,
+        add_assistant: bool,
+        override_enable_thinking: bool,
+        enable_thinking: bool,
+        parallel_tool_calls: bool,
+        output_text: *mut c_char,
+        output_text_capacity: usize,
+        out_text_bytes: *mut usize,
+        output_metadata_json: *mut c_char,
+        output_metadata_json_capacity: usize,
+        out_metadata_json_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_parse_chat_response_json(
+        generated_text: *const c_char,
+        metadata_json: *const c_char,
+        is_partial: bool,
+        output_message_json: *mut c_char,
+        output_message_json_capacity: usize,
+        out_message_json_bytes: *mut usize,
         out_error: *mut *mut Error,
     ) -> Status;
 

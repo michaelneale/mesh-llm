@@ -1,7 +1,7 @@
-From b568557ef397e14f9ac22d8685ec9f69f0982f6e Mon Sep 17 00:00:00 2001
+From 3014f4dc2f25ad3989ee055dc67b7de06ba587a4 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:17:13 +1000
-Subject: [PATCH 15/33] Optimize native KV page cell lookup
+Subject: [PATCH 15/34] Optimize native KV page cell lookup
 
 ---
  src/llama-kv-cache.cpp | 29 +++++++++++++++--------------

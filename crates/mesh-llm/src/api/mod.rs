@@ -531,6 +531,7 @@ impl MeshApi {
                         })
                     }),
                     "ctx_size": status.ctx_size,
+                    "lane_count": status.lane_count,
                     "error": status.error.clone(),
                     "shutdown_generation": status.shutdown_generation,
                 })

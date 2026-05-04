@@ -52,7 +52,7 @@ same Rust crate.
 
 ## ABI Contract
 
-The staged ABI is versioned as `0.1.10` in both this crate and the patched
+The staged ABI is versioned as `0.1.18` in both this crate and the patched
 llama.cpp header. Version `0` is still experimental, so callers should treat the
 ABI as feature-probed rather than permanently stable.
 
@@ -109,19 +109,21 @@ the patched llama.cpp library:
 | `ARTIFACT_SLICE` | `1 << 2` | Artifact-slice load mode |
 | `MODEL_INTROSPECTION` | `1 << 3` | `skippy_model_info_*` tensor metadata calls |
 | `GGUF_SLICE_WRITE` | `1 << 4` | `skippy_slice_plan_*`, `skippy_write_*` |
-| `STATE_IMPORT_EXPORT` | `1 << 5` | `skippy_export_state`, `skippy_import_state` |
 | `TOKENIZE_DETOKENIZE` | `1 << 6` | Tokenization, detokenization, EOG checks |
 | `ACTIVATION_FRAME` | `1 << 7` | Descriptor-plus-payload execution calls |
-| `NATIVE_KV_PAGE` | `1 << 8` | KV page import/export calls |
 | `SESSION_RESET` | `1 << 9` | `skippy_session_reset` |
 | `BATCH_VERIFY` | `1 << 10` | `skippy_verify_tokens` |
 | `CHAT_TEMPLATE` | `1 << 11` | `skippy_apply_chat_template` |
 | `SAMPLING_CONFIG` | `1 << 12` | Sampled decode calls using `SamplingConfig` |
 | `BATCH_VERIFY_FRAME` | `1 << 13` | `skippy_verify_tokens_frame` |
-| `RECURRENT_STATE` | `1 << 14` | Recurrent state import/export calls |
 | `LOGIT_BIAS` | `1 << 15` | `SamplingConfig.logit_bias` |
 | `SESSION_TRIM` | `1 << 16` | `skippy_trim_session` |
 | `SESSION_CHECKPOINT` | `1 << 17` | Native checkpoint/restore calls |
+| `PACKAGE_PART_LOAD` | `1 << 18` | Ordered GGUF package part loading |
+| `GENERATION_SIGNALS` | `1 << 19` | Generation progress and cancellation signal hooks |
+| `EXTERNAL_MEDIA_PREFILL` | `1 << 20` | Multimodal prefill from externally materialized media chunks |
+| `CHAT_TEMPLATE_TOOLS` | `1 << 21` | llama.cpp OpenAI-compatible chat templating and tool-call response parsing |
+| `CHAT_SAMPLING_GRAMMAR` | `1 << 22` | Session-local llama.cpp grammar-constrained sampling from chat template metadata |
 
 ## Function Surface
 
@@ -153,6 +155,7 @@ hook currently bound by this crate.
 | `skippy_session_reset` | Clears session state so the session can be reused. |
 | `skippy_checkpoint_session` | Records a native session checkpoint and returns the checkpoint token count. |
 | `skippy_restore_session_checkpoint` | Restores the native checkpoint when the requested token count matches. |
+| `skippy_session_configure_chat_sampling` | Configures session-local sampling with llama.cpp chat metadata so tool-call grammars constrain generated tokens. |
 | `skippy_session_free` | Releases a session handle. |
 | `skippy_trim_session` | Trims session state to a token count. |
 
@@ -169,19 +172,6 @@ hook currently bound by this crate.
 | `skippy_verify_tokens_frame` | Runs batched verification with activation-frame descriptors and payloads. |
 | `skippy_decode_step_frame_sampled` | Decodes one token with activation-frame I/O and `SamplingConfig`. |
 
-### State transfer
-
-| Function | Purpose |
-| --- | --- |
-| `skippy_export_state` | Exports stage state for a layer range into a caller-provided buffer. |
-| `skippy_import_state` | Imports state bytes for a layer range. |
-| `skippy_export_full_state` | Exports a full state payload for a layer range. |
-| `skippy_import_full_state` | Imports a full state payload for a layer range. |
-| `skippy_export_kv_page` | Exports a token window from the native KV cache and fills `KvPageDesc`. |
-| `skippy_import_kv_page` | Imports a native KV page described by `KvPageDesc`. |
-| `skippy_export_recurrent_state` | Exports recurrent model state bytes. |
-| `skippy_import_recurrent_state` | Imports recurrent model state bytes. |
-
 ### Token and chat helpers
 
 | Function | Purpose |
@@ -190,6 +180,8 @@ hook currently bound by this crate.
 | `skippy_detokenize` | Converts token IDs back to text bytes. |
 | `skippy_token_is_eog` | Reports whether a token is an end-of-generation token. |
 | `skippy_apply_chat_template` | Applies the model chat template, with optional assistant prompt and thinking-mode override. |
+| `skippy_apply_chat_template_json` | Applies llama.cpp's OpenAI-compatible chat template path from JSON messages, tools, and tool-choice metadata, returning the prompt plus parser metadata. |
+| `skippy_parse_chat_response_json` | Parses generated assistant text with llama.cpp's chat parser and returns an OpenAI-compatible assistant message JSON object, including tool calls when emitted by the model. |
 
 ### Model introspection and GGUF writing
 

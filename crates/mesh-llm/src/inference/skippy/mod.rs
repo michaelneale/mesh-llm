@@ -2,6 +2,7 @@
 
 mod deployment;
 mod hooks;
+mod kv_cache;
 mod materialization;
 mod package;
 mod stage;
@@ -20,7 +21,7 @@ use openai_frontend::{
     CompletionResponse, CompletionStream, ModelObject, OpenAiBackend, OpenAiHookPolicy,
     OpenAiRequestContext, OpenAiResult,
 };
-use skippy_protocol::{LoadMode, StageConfig, StageDevice};
+use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig, StageDevice};
 use skippy_runtime::ModelInfo;
 use skippy_server::{
     binary_transport::WireCondition, embedded_openai_backend, openai::CONTEXT_BUDGET_MAX_TOKENS,
@@ -29,6 +30,7 @@ use skippy_server::{
 };
 
 pub(crate) use hooks::MeshAutoHookPolicy;
+pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
     configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
     materialized_stage_cache_dir, prune_unpinned_materialized_stages,
@@ -65,7 +67,11 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) materialized_pinned: bool,
     pub(crate) projector_path: Option<String>,
     pub(crate) ctx_size: u32,
+    pub(crate) lane_count: u32,
+    pub(crate) n_batch: Option<u32>,
+    pub(crate) n_ubatch: Option<u32>,
     pub(crate) n_gpu_layers: i32,
+    pub(crate) flash_attn_type: FlashAttentionType,
     pub(crate) selected_device: Option<SkippyDeviceDescriptor>,
     pub(crate) layer_start: u32,
     pub(crate) layer_end: u32,
@@ -93,6 +99,9 @@ pub(crate) struct SkippyModelLoadOptions {
     pub(crate) n_gpu_layers: i32,
     pub(crate) cache_type_k: String,
     pub(crate) cache_type_v: String,
+    pub(crate) n_batch: Option<u32>,
+    pub(crate) n_ubatch: Option<u32>,
+    pub(crate) flash_attn_type: FlashAttentionType,
     pub(crate) generation_concurrency: usize,
     pub(crate) default_max_tokens: u32,
     pub(crate) layer_end: Option<u32>,
@@ -113,6 +122,9 @@ impl SkippyModelLoadOptions {
             n_gpu_layers: -1,
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
+            n_batch: None,
+            n_ubatch: None,
+            flash_attn_type: FlashAttentionType::Auto,
             generation_concurrency: 1,
             default_max_tokens: CONTEXT_BUDGET_MAX_TOKENS,
             layer_end: None,
@@ -129,6 +141,23 @@ impl SkippyModelLoadOptions {
 
     pub(crate) fn with_generation_concurrency(mut self, generation_concurrency: usize) -> Self {
         self.generation_concurrency = generation_concurrency;
+        self
+    }
+
+    pub(crate) fn with_cache_types(mut self, cache_type_k: &str, cache_type_v: &str) -> Self {
+        self.cache_type_k = cache_type_k.to_string();
+        self.cache_type_v = cache_type_v.to_string();
+        self
+    }
+
+    pub(crate) fn with_batch_sizes(mut self, n_batch: Option<u32>, n_ubatch: Option<u32>) -> Self {
+        self.n_batch = n_batch;
+        self.n_ubatch = n_ubatch;
+        self
+    }
+
+    pub(crate) fn with_flash_attn_type(mut self, flash_attn_type: FlashAttentionType) -> Self {
+        self.flash_attn_type = flash_attn_type;
         self
     }
 
@@ -446,9 +475,13 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         layer_start: 0,
         layer_end,
         ctx_size: options.ctx_size,
+        lane_count: options.generation_concurrency as u32,
+        n_batch: options.n_batch,
+        n_ubatch: options.n_ubatch,
         n_gpu_layers: options.n_gpu_layers,
         cache_type_k: options.cache_type_k.clone(),
         cache_type_v: options.cache_type_v.clone(),
+        flash_attn_type: options.flash_attn_type,
         filter_tensors_on_load: false,
         selected_device: options.selected_device.clone().map(Into::into),
         load_mode: LoadMode::RuntimeSlice,
@@ -520,7 +553,11 @@ fn status_from_parts(
         materialized_pinned: config.materialized_pinned,
         projector_path: config.projector_path.clone(),
         ctx_size: config.ctx_size,
+        lane_count: config.lane_count,
+        n_batch: config.n_batch,
+        n_ubatch: config.n_ubatch,
         n_gpu_layers: config.n_gpu_layers,
+        flash_attn_type: config.flash_attn_type,
         selected_device: config.selected_device.clone().map(Into::into),
         layer_start: config.layer_start,
         layer_end: config.layer_end,

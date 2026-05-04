@@ -4,7 +4,7 @@ use crate::mesh::{self, NodeRole};
 use crate::models;
 use crate::network::router;
 use anyhow::{Context, Result};
-use skippy_protocol::{LoadMode, PeerConfig, StageConfig};
+use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
 use skippy_topology::{
     infer_family_capability, plan_weighted_contiguous, BoundaryDecision, DiagnosticSeverity,
     LayerSpec, NodeSpec, PlannerPolicy, TopologyPlanRequest,
@@ -66,6 +66,11 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) mmproj_override: Option<&'a Path>,
     pub(super) ctx_size_override: Option<u32>,
     pub(super) pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
+    pub(super) cache_type_k_override: Option<&'a str>,
+    pub(super) cache_type_v_override: Option<&'a str>,
+    pub(super) n_batch_override: Option<u32>,
+    pub(super) n_ubatch_override: Option<u32>,
+    pub(super) flash_attention_override: FlashAttentionType,
     pub(super) slots: usize,
 }
 
@@ -119,6 +124,20 @@ pub(super) fn resolved_model_name(path: &Path) -> String {
 fn mmproj_path_for_model(model_name: &str) -> Option<PathBuf> {
     let model_path = models::find_model_path(model_name);
     models::find_mmproj_path(model_name, &model_path)
+}
+
+fn effective_flash_attention(
+    override_value: FlashAttentionType,
+    effective_cache_type_v: &str,
+) -> FlashAttentionType {
+    if override_value != FlashAttentionType::Auto {
+        return override_value;
+    }
+
+    match effective_cache_type_v {
+        "f16" => FlashAttentionType::Auto,
+        _ => FlashAttentionType::Enabled,
+    }
 }
 
 async fn alloc_local_port() -> Result<u16> {
@@ -309,6 +328,11 @@ pub(super) async fn start_runtime_split_model(
         generation: &active,
         projector_path: projector_path.clone(),
         ctx_size,
+        cache_type_k_override: spec.cache_type_k_override,
+        cache_type_v_override: spec.cache_type_v_override,
+        n_batch_override: spec.n_batch_override,
+        n_ubatch_override: spec.n_ubatch_override,
+        flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu,
         slots: spec.slots,
     })
@@ -324,6 +348,11 @@ pub(super) async fn start_runtime_split_model(
         active,
         projector_path,
         ctx_size,
+        cache_type_k_override: spec.cache_type_k_override.map(str::to_string),
+        cache_type_v_override: spec.cache_type_v_override.map(str::to_string),
+        n_batch_override: spec.n_batch_override,
+        n_ubatch_override: spec.n_ubatch_override,
+        flash_attention_override: spec.flash_attention_override,
         pinned_gpu: spec.pinned_gpu.cloned(),
         slots: spec.slots,
         event_tx: coordinator_tx,
@@ -378,6 +407,11 @@ struct SplitGenerationLoadSpec<'a> {
     ctx_size: u32,
     pinned_gpu: Option<&'a crate::runtime::StartupPinnedGpuTarget>,
     slots: usize,
+    cache_type_k_override: Option<&'a str>,
+    cache_type_v_override: Option<&'a str>,
+    n_batch_override: Option<u32>,
+    n_ubatch_override: Option<u32>,
+    flash_attention_override: FlashAttentionType,
 }
 
 async fn load_split_runtime_generation(
@@ -397,6 +431,22 @@ async fn load_split_runtime_generation(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
+    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k())
+        .to_string();
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v())
+        .to_string();
+    let resolved_flash_attn_type =
+        effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
+    tracing::info!(
+        model = spec.model_ref,
+        "KV cache: {}",
+        kv_cache.label(spec.package.source_model_bytes)
+    );
 
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
@@ -417,9 +467,13 @@ async fn load_split_runtime_generation(
             activation_width: spec.package.activation_width as i32,
             wire_dtype: skippy::StageWireDType::F16,
             ctx_size: spec.ctx_size,
+            lane_count: spec.slots as u32,
+            n_batch: spec.n_batch_override,
+            n_ubatch: spec.n_ubatch_override,
             n_gpu_layers: -1,
-            cache_type_k: "f16".to_string(),
-            cache_type_v: "f16".to_string(),
+            cache_type_k: effective_cache_type_k.clone(),
+            cache_type_v: effective_cache_type_v.clone(),
+            flash_attn_type: resolved_flash_attn_type,
             shutdown_generation: spec.generation.generation,
             load_mode: LoadMode::RuntimeSlice,
             upstream: None,
@@ -489,6 +543,13 @@ async fn load_split_runtime_generation(
         downstream_endpoint,
         spec.projector_path,
         spec.ctx_size,
+        spec.slots as u32,
+        kv_cache,
+        spec.cache_type_k_override,
+        spec.cache_type_v_override,
+        spec.n_batch_override,
+        spec.n_ubatch_override,
+        spec.flash_attention_override,
         spec.pinned_gpu,
     );
     let handle = skippy::SkippyModelHandle::load_stage0_config(
@@ -579,6 +640,11 @@ struct SplitTopologyCoordinator {
     active: SplitTopologyGeneration,
     projector_path: Option<String>,
     ctx_size: u32,
+    cache_type_k_override: Option<String>,
+    cache_type_v_override: Option<String>,
+    n_batch_override: Option<u32>,
+    n_ubatch_override: Option<u32>,
+    flash_attention_override: FlashAttentionType,
     pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
     slots: usize,
     event_tx: tokio::sync::mpsc::Sender<SplitCoordinatorEvent>,
@@ -744,6 +810,11 @@ impl SplitTopologyCoordinator {
             generation: &candidate,
             projector_path: self.projector_path.clone(),
             ctx_size: self.ctx_size,
+            cache_type_k_override: self.cache_type_k_override.as_deref(),
+            cache_type_v_override: self.cache_type_v_override.as_deref(),
+            n_batch_override: self.n_batch_override,
+            n_ubatch_override: self.n_ubatch_override,
+            flash_attention_override: self.flash_attention_override,
             pinned_gpu: self.pinned_gpu.as_ref(),
             slots: self.slots,
         })
@@ -1145,8 +1216,23 @@ fn split_stage0_config(
     downstream_endpoint: String,
     projector_path: Option<String>,
     ctx_size: u32,
+    lane_count: u32,
+    kv_cache: skippy::KvCachePolicy,
+    cache_type_k_override: Option<&str>,
+    cache_type_v_override: Option<&str>,
+    n_batch_override: Option<u32>,
+    n_ubatch_override: Option<u32>,
+    flash_attention_override: FlashAttentionType,
     pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
 ) -> StageConfig {
+    let effective_cache_type_k = cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k())
+        .to_string();
+    let effective_cache_type_v = cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v())
+        .to_string();
+    let resolved_flash_attn_type =
+        effective_flash_attention(flash_attention_override, &effective_cache_type_v);
     StageConfig {
         run_id: run_id.to_string(),
         topology_id: topology_id.to_string(),
@@ -1165,9 +1251,13 @@ fn split_stage0_config(
         layer_start: stage0.layer_start,
         layer_end: stage0.layer_end,
         ctx_size,
+        lane_count,
+        n_batch: n_batch_override,
+        n_ubatch: n_ubatch_override,
         n_gpu_layers: -1,
-        cache_type_k: "f16".to_string(),
-        cache_type_v: "f16".to_string(),
+        cache_type_k: effective_cache_type_k,
+        cache_type_v: effective_cache_type_v,
+        flash_attn_type: resolved_flash_attn_type,
         filter_tensors_on_load: true,
         selected_device: pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
             backend_device: gpu.backend_device.clone(),
@@ -1236,6 +1326,21 @@ async fn start_runtime_skippy_model(
 )> {
     let port = alloc_local_port().await?;
     let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let model_bytes = election::total_model_bytes(spec.model_path);
+    let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
+    let effective_cache_type_k = spec
+        .cache_type_k_override
+        .unwrap_or(kv_cache.cache_type_k());
+    let effective_cache_type_v = spec
+        .cache_type_v_override
+        .unwrap_or(kv_cache.cache_type_v());
+    let resolved_flash_attn_type =
+        effective_flash_attention(spec.flash_attention_override, effective_cache_type_v);
+    tracing::info!(
+        model = model_name,
+        "KV cache: {}",
+        kv_cache.label(model_bytes)
+    );
     let projector_path = spec
         .mmproj_override
         .map(Path::to_path_buf)
@@ -1243,7 +1348,12 @@ async fn start_runtime_skippy_model(
         .filter(|path| path.exists());
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
-        .with_generation_concurrency(spec.slots);
+        .with_generation_concurrency(spec.slots)
+        .with_cache_types(effective_cache_type_k, effective_cache_type_v)
+        .with_flash_attn_type(resolved_flash_attn_type);
+    if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
+        options = options.with_batch_sizes(spec.n_batch_override, spec.n_ubatch_override);
+    }
     if let Some(projector_path) = projector_path {
         options = options.with_projector_path(projector_path);
     }

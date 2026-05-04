@@ -37,6 +37,7 @@ use crate::plugin;
 use crate::system::{autoupdate, backend, benchmark, hardware};
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
+use skippy_protocol::FlashAttentionType;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
@@ -535,6 +536,11 @@ struct StartupLocalModelTask {
     mmproj_path: Option<PathBuf>,
     ctx_size: Option<u32>,
     pinned_gpu: Option<StartupPinnedGpuTarget>,
+    cache_type_k: Option<String>,
+    cache_type_v: Option<String>,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
+    flash_attention: FlashAttentionType,
     slots: usize,
     split: bool,
     stop_rx: tokio::sync::watch::Receiver<bool>,
@@ -561,6 +567,11 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mmproj_path,
         ctx_size,
         pinned_gpu,
+        cache_type_k,
+        cache_type_v,
+        n_batch,
+        n_ubatch,
+        flash_attention,
         slots,
         split,
         mut stop_rx,
@@ -582,6 +593,11 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mmproj_override: mmproj_path.as_deref(),
         ctx_size_override: ctx_size,
         pinned_gpu: pinned_gpu.as_ref(),
+        cache_type_k_override: cache_type_k.as_deref(),
+        cache_type_v_override: cache_type_v.as_deref(),
+        n_batch_override: n_batch,
+        n_ubatch_override: n_ubatch,
+        flash_attention_override: flash_attention,
         slots,
     };
     let (
@@ -940,6 +956,11 @@ struct StartupModelSpec {
     gpu_id: Option<String>,
     config_owned: bool,
     parallel: Option<usize>,
+    cache_type_k: Option<String>,
+    cache_type_v: Option<String>,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
+    flash_attention: FlashAttentionType,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -959,6 +980,11 @@ struct StartupModelPlan {
     gpu_id: Option<String>,
     pinned_gpu: Option<StartupPinnedGpuTarget>,
     parallel: Option<usize>,
+    cache_type_k: Option<String>,
+    cache_type_v: Option<String>,
+    n_batch: Option<u32>,
+    n_ubatch: Option<u32>,
+    flash_attention: FlashAttentionType,
 }
 
 fn resolve_runtime_owner_key_path(cli: &Cli) -> Result<Option<PathBuf>> {
@@ -1503,6 +1529,11 @@ fn build_startup_model_specs(
                 gpu_id: None,
                 config_owned: false,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                n_batch: None,
+                n_ubatch: None,
+                flash_attention: FlashAttentionType::Auto,
             });
         }
         for model in &cli.model {
@@ -1513,6 +1544,11 @@ fn build_startup_model_specs(
                 gpu_id: None,
                 config_owned: false,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                n_batch: None,
+                n_ubatch: None,
+                flash_attention: FlashAttentionType::Auto,
             });
         }
         if let Some(mmproj) = &cli.mmproj {
@@ -1531,6 +1567,11 @@ fn build_startup_model_specs(
             gpu_id: model.gpu_id.clone(),
             config_owned: true,
             parallel: model.parallel,
+            cache_type_k: model.cache_type_k.clone(),
+            cache_type_v: model.cache_type_v.clone(),
+            n_batch: model.batch,
+            n_ubatch: model.ubatch,
+            flash_attention: model.flash_attention.unwrap_or(FlashAttentionType::Auto),
         });
     }
     Ok(specs)
@@ -1556,6 +1597,11 @@ async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<Startu
             gpu_id: spec.gpu_id.clone(),
             pinned_gpu: None,
             parallel: spec.parallel,
+            cache_type_k: spec.cache_type_k.clone(),
+            cache_type_v: spec.cache_type_v.clone(),
+            n_batch: spec.n_batch,
+            n_ubatch: spec.n_ubatch,
+            flash_attention: spec.flash_attention,
         });
     }
     Ok(plans)
@@ -2828,6 +2874,22 @@ async fn run_auto(
     let primary_pinned_gpu = primary_startup_model
         .as_ref()
         .and_then(|model| model.pinned_gpu.clone());
+    let primary_cache_type_k = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.cache_type_k.clone());
+    let primary_cache_type_v = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.cache_type_v.clone());
+    let primary_n_batch = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.n_batch);
+    let primary_n_ubatch = primary_startup_model
+        .as_ref()
+        .and_then(|model| model.n_ubatch);
+    let primary_flash_attention = primary_startup_model
+        .as_ref()
+        .map(|model| model.flash_attention)
+        .unwrap_or(FlashAttentionType::Auto);
     let primary_model_ref = primary_startup_model
         .as_ref()
         .map(|model| model.declared_ref.clone())
@@ -2848,6 +2910,11 @@ async fn run_auto(
             mmproj_path: primary_mmproj,
             ctx_size: primary_ctx_size,
             pinned_gpu: primary_pinned_gpu,
+            cache_type_k: primary_cache_type_k,
+            cache_type_v: primary_cache_type_v,
+            n_batch: primary_n_batch,
+            n_ubatch: primary_n_ubatch,
+            flash_attention: primary_flash_attention,
             slots,
             split: startup_split,
             stop_rx: primary_stop_rx,
@@ -2896,6 +2963,11 @@ async fn run_auto(
             let extra_mmproj = extra_model.mmproj_path.clone();
             let extra_ctx_size = extra_model.ctx_size;
             let extra_pinned_gpu = extra_model.pinned_gpu.clone();
+            let extra_cache_type_k = extra_model.cache_type_k.clone();
+            let extra_cache_type_v = extra_model.cache_type_v.clone();
+            let extra_n_batch = extra_model.n_batch;
+            let extra_n_ubatch = extra_model.n_ubatch;
+            let extra_flash_attention = extra_model.flash_attention;
             let extra_target_tx = target_tx.clone();
             let extra_model_name = extra_name.clone();
             let api_port_extra = api_port;
@@ -2920,6 +2992,11 @@ async fn run_auto(
                     mmproj_path: extra_mmproj,
                     ctx_size: extra_ctx_size,
                     pinned_gpu: extra_pinned_gpu,
+                    cache_type_k: extra_cache_type_k,
+                    cache_type_v: extra_cache_type_v,
+                    n_batch: extra_n_batch,
+                    n_ubatch: extra_n_ubatch,
+                    flash_attention: extra_flash_attention,
                     slots,
                     split: startup_split,
                     stop_rx: extra_stop_rx,
@@ -3035,10 +3112,8 @@ async fn run_auto(
                             // Look up per-model parallel from TOML config by matching the
                             // spec string against [[models]].model entries. Falls back to
                             // gpu.parallel or default 4 when no entry matches.
-                            let slots = config
-                                .models
-                                .iter()
-                                .find(|m| m.model == spec)
+                            let model_overrides = config.models.iter().find(|m| m.model == spec);
+                            let slots = model_overrides
                                 .and_then(|m| m.parallel)
                                 .or(config.gpu.parallel)
                                 .unwrap_or(4);
@@ -3053,6 +3128,15 @@ async fn run_auto(
                                     mmproj_override: None,
                                     ctx_size_override: cli.ctx_size,
                                     pinned_gpu: None,
+                                    cache_type_k_override: model_overrides
+                                        .and_then(|m| m.cache_type_k.as_deref()),
+                                    cache_type_v_override: model_overrides
+                                        .and_then(|m| m.cache_type_v.as_deref()),
+                                    n_batch_override: model_overrides.and_then(|m| m.batch),
+                                    n_ubatch_override: model_overrides.and_then(|m| m.ubatch),
+                                    flash_attention_override: model_overrides
+                                        .and_then(|m| m.flash_attention)
+                                        .unwrap_or(FlashAttentionType::Auto),
                                     slots,
                                 },
                             )
@@ -3683,6 +3767,11 @@ mod tests {
             gpu_id: None,
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }
     }
 
@@ -4017,6 +4106,11 @@ mod tests {
                 ctx_size: Some(8192),
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
         };
@@ -4041,6 +4135,11 @@ mod tests {
                     ctx_size: Some(8192),
                     gpu_id: None,
                     parallel: None,
+                    cache_type_k: None,
+                    cache_type_v: None,
+                    batch: None,
+                    ubatch: None,
+                    flash_attention: None,
                 },
                 plugin::ModelConfigEntry {
                     model: "bartowski/Qwen2.5-VL/model.gguf".into(),
@@ -4048,6 +4147,11 @@ mod tests {
                     ctx_size: Some(16384),
                     gpu_id: None,
                     parallel: None,
+                    cache_type_k: None,
+                    cache_type_v: None,
+                    batch: None,
+                    ubatch: None,
+                    flash_attention: None,
                 },
             ],
             ..plugin::MeshConfig::default()
@@ -4078,6 +4182,11 @@ mod tests {
                 ctx_size: Some(8192),
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
         };
@@ -4100,6 +4209,11 @@ mod tests {
                 ctx_size: Some(8192),
                 gpu_id: Some("pci:0000:65:00.0".into()),
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
         };
@@ -4112,6 +4226,11 @@ mod tests {
             gpu_id: specs[0].gpu_id.clone(),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![
             synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0")),
@@ -4162,6 +4281,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4171,6 +4295,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("Vulkan1"))];
         let backend_probe = backend::BinaryBackendDeviceProbe {
@@ -4210,6 +4339,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4219,6 +4353,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(1, Some("pci:0000:b3:00.0"), Some("ROCm1"))];
         let backend_probe = backend::BinaryBackendDeviceProbe {
@@ -4273,6 +4412,11 @@ mod tests {
                 ctx_size: Some(8192),
                 gpu_id: Some("pci:0000:65:00.0".into()),
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
         };
@@ -4285,6 +4429,11 @@ mod tests {
             gpu_id: specs[0].gpu_id.clone(),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
@@ -4313,6 +4462,11 @@ mod tests {
             gpu_id: None,
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4322,6 +4476,11 @@ mod tests {
             gpu_id: None,
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
@@ -4351,6 +4510,11 @@ mod tests {
             gpu_id: Some("uuid:GPU-123".into()),
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4360,6 +4524,11 @@ mod tests {
             gpu_id: Some("uuid:GPU-123".into()),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), Some("CUDA3"))];
 
@@ -4389,6 +4558,11 @@ mod tests {
             gpu_id: Some("uuid:GPU-123".into()),
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4398,6 +4572,11 @@ mod tests {
             gpu_id: Some("uuid:GPU-123".into()),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(3, Some("uuid:GPU-123"), None)];
 
@@ -4427,6 +4606,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             config_owned: true,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let mut plans = vec![StartupModelPlan {
             declared_ref: "Qwen3-8B-Q4_K_M".into(),
@@ -4436,6 +4620,11 @@ mod tests {
             gpu_id: Some("pci:0000:b3:00.0".into()),
             pinned_gpu: None,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
         let gpus = vec![synthetic_gpu(0, Some("pci:0000:65:00.0"), Some("CUDA0"))];
 
@@ -4471,6 +4660,11 @@ mod tests {
             gpu_id: None,
             config_owned: false,
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
         }];
 
         assert!(!should_show_serve_config_help(
@@ -4773,6 +4967,11 @@ mod tests {
             ctx_size: None,
             gpu_id: None,
             parallel: Some(1),
+            cache_type_k: None,
+            cache_type_v: None,
+            batch: None,
+            ubatch: None,
+            flash_attention: None,
         }];
         let gpu_config = GpuConfig::default(); // no parallel set
 
@@ -4801,6 +5000,11 @@ mod tests {
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None, // no override
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             },
             ModelConfigEntry {
                 model: "model-b".to_string(),
@@ -4808,6 +5012,11 @@ mod tests {
                 ctx_size: None,
                 gpu_id: None,
                 parallel: Some(3), // only this one has an override
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             },
         ];
         let gpu_config = GpuConfig::default();
@@ -4846,6 +5055,11 @@ mod tests {
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None, // missing — should use global fallback
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             },
             ModelConfigEntry {
                 model: "second".to_string(),
@@ -4853,6 +5067,11 @@ mod tests {
                 ctx_size: None,
                 gpu_id: None,
                 parallel: Some(2), // explicit override
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             },
         ];
         let gpu_config = GpuConfig {

@@ -745,6 +745,11 @@ pub(crate) fn proto_config_to_mesh(
             ctx_size: m.ctx_size,
             gpu_id: m.gpu_id.clone(),
             parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            batch: None,
+            ubatch: None,
+            flash_attention: None,
         })
         .collect();
     let plugins = snapshot

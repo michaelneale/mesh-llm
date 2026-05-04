@@ -1,7 +1,7 @@
-From b49f25ea7660aded778253244799a0dec15c4552 Mon Sep 17 00:00:00 2001
+From baa90ff0d885acc671f450489bdbc8133df744b1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 13:20:03 +1000
-Subject: [PATCH 12/33] Add stage session reset ABI
+Subject: [PATCH 12/34] Add stage session reset ABI
 
 ---
  include/skippy.h |  7 ++++++-

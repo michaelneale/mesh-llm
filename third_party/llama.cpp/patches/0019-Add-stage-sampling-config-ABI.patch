@@ -1,7 +1,7 @@
-From fbc3d2467f8992dd04bf465401b9109d73f598f8 Mon Sep 17 00:00:00 2001
+From 1ae674e0a7eac925f396cf7361fe59a3bb922c5a Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 20:15:33 +1000
-Subject: [PATCH 19/33] Add stage sampling config ABI
+Subject: [PATCH 19/34] Add stage sampling config ABI
 
 ---
  include/skippy.h |  41 +++++++++++++++-

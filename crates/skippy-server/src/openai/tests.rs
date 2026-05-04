@@ -169,7 +169,7 @@ fn chat_runtime_feature_guard_rejects_structured_output() {
 }
 
 #[test]
-fn chat_runtime_feature_guard_rejects_tool_calls() {
+fn chat_runtime_feature_guard_allows_tool_calls() {
     for payload in [
         json!({
             "model": "test",
@@ -188,12 +188,145 @@ fn chat_runtime_feature_guard_rejects_tool_calls() {
         }),
     ] {
         let request: ChatCompletionRequest = serde_json::from_value(payload).unwrap();
-        let error = ensure_chat_runtime_features_supported(&request).unwrap_err();
-        assert_eq!(
-            unsupported_code(error),
-            Some("unsupported_model_feature".to_string())
-        );
+        ensure_chat_runtime_features_supported(&request).unwrap();
     }
+}
+
+fn tool_request() -> ChatCompletionRequest {
+    serde_json::from_value(json!({
+        "model": "test",
+        "messages": [{"role": "user", "content": "look this up"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string"}
+                    },
+                    "required": ["city"]
+                }
+            }
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn parses_llama_message_tool_calls() {
+    let request = tool_request();
+    let parsed = parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Sydney\"}"}}]}"#,
+        &request,
+    )
+    .expect("tool call");
+
+    assert_eq!(parsed.content, None);
+    assert_eq!(parsed.tool_calls[0]["id"], "call_123");
+    assert_eq!(parsed.tool_calls[0]["function"]["name"], "lookup");
+    assert_eq!(
+        parsed.tool_calls[0]["function"]["arguments"],
+        "{\"city\":\"Sydney\"}"
+    );
+}
+
+#[test]
+fn llama_message_tool_parser_rejects_unknown_tool() {
+    let request = tool_request();
+    let parsed = parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Sydney\"}"}}]}"#,
+        &request,
+    )
+    .expect("tool call");
+    assert_eq!(parsed.tool_calls[0]["function"]["name"], "lookup");
+
+    assert!(parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"shell","arguments":"{}"}}]}"#,
+        &request
+    )
+    .is_none());
+}
+
+#[test]
+fn tool_choice_limits_allowed_tool_name() {
+    let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+        "model": "test",
+        "messages": [{"role": "user", "content": "look this up"}],
+        "tools": [
+            {"type": "function", "function": {"name": "lookup"}},
+            {"type": "function", "function": {"name": "search"}}
+        ],
+        "tool_choice": {"type": "function", "function": {"name": "lookup"}}
+    }))
+    .unwrap();
+
+    assert!(parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"search","arguments":"{}"}}]}"#,
+        &request
+    )
+    .is_none());
+
+    request.tool_choice = Some(json!("search"));
+    let parsed = parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"search","arguments":"{}"}}]}"#,
+        &request,
+    )
+    .expect("selected tool call");
+    assert_eq!(parsed.tool_calls[0]["function"]["name"], "search");
+}
+
+#[test]
+fn parallel_tool_calls_false_keeps_first_call() {
+    let mut request = tool_request();
+    request.parallel_tool_calls = Some(false);
+    let parsed = parsed_tool_calls_from_message_json(
+        r#"{"role":"assistant","content":null,"tool_calls":[
+            {"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Sydney\"}"}},
+            {"id":"call_2","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Melbourne\"}"}}
+        ]}"#,
+        &request,
+    )
+    .expect("tool calls");
+
+    assert_eq!(parsed.tool_calls.as_array().unwrap().len(), 1);
+    assert_eq!(
+        parsed.tool_calls[0]["function"]["arguments"],
+        "{\"city\":\"Sydney\"}"
+    );
+}
+
+#[test]
+fn tool_call_stream_delta_adds_indexes() {
+    let delta = tool_calls_stream_delta(json!([
+        {"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{}"}},
+        {"id":"call_b","type":"function","function":{"name":"lookup","arguments":"{}"}}
+    ]));
+
+    assert_eq!(delta[0]["index"], 0);
+    assert_eq!(delta[1]["index"], 1);
+}
+
+#[test]
+fn chat_message_generation_value_preserves_tool_history() {
+    let message: openai_frontend::ChatMessage = serde_json::from_value(json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": "call_123",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": "{\"city\":\"Sydney\"}"}
+        }]
+    }))
+    .unwrap();
+    let mut media = Vec::new();
+
+    let value = chat_message_generation_value(&message, "<__media__>", &mut media).unwrap();
+
+    assert_eq!(value["content"], Value::Null);
+    assert_eq!(value["tool_calls"][0]["id"], "call_123");
+    assert_eq!(value["tool_calls"][0]["function"]["name"], "lookup");
 }
 
 #[test]
@@ -263,9 +396,13 @@ fn multimodal_stage_config(
         layer_start,
         layer_end,
         ctx_size: fixture.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: 999,
         cache_type_k: "f16".to_string(),
         cache_type_v: "f16".to_string(),
+        flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
         filter_tensors_on_load: false,
         selected_device: None,
         load_mode: skippy_protocol::LoadMode::RuntimeSlice,

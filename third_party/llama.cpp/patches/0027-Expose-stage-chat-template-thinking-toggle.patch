@@ -1,7 +1,7 @@
-From f02fe3b50269b3735c8e2ffb58b08efe1c31cebd Mon Sep 17 00:00:00 2001
+From fa3eded8dd008a665ea4466fe8a2a6aff7ab5059 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 28 Apr 2026 00:00:00 +1000
-Subject: [PATCH 27/33] Expose stage chat template thinking toggle
+Subject: [PATCH 27/34] Expose stage chat template thinking toggle
 
 ---
  common/stage-chat.cpp | 15 +++++++++++++++

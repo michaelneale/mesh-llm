@@ -8,7 +8,7 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, CommandKind},
-    runner::{chain, dtype_matrix, single_step, split_scan, state_handoff},
+    runner::{chain, dtype_matrix, single_step, split_scan},
 };
 
 fn main() -> Result<()> {
@@ -17,6 +17,5 @@ fn main() -> Result<()> {
         CommandKind::Chain(args) => chain(args),
         CommandKind::SplitScan(args) => split_scan(args),
         CommandKind::DtypeMatrix(args) => dtype_matrix(args),
-        CommandKind::StateHandoff(args) => state_handoff(args),
     }
 }
