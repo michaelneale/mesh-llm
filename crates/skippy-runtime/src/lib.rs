@@ -446,6 +446,33 @@ impl Default for ChatTemplateOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTemplateJsonOptions {
+    pub add_assistant: bool,
+    pub enable_thinking: Option<bool>,
+    pub tools_json: Option<String>,
+    pub tool_choice_json: Option<String>,
+    pub parallel_tool_calls: bool,
+}
+
+impl Default for ChatTemplateJsonOptions {
+    fn default() -> Self {
+        Self {
+            add_assistant: true,
+            enable_thinking: None,
+            tools_json: None,
+            tool_choice_json: None,
+            parallel_tool_calls: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTemplateJsonResult {
+    pub prompt: String,
+    pub metadata_json: String,
+}
+
 // The experimental C ABI owns synchronization internally for model/session use.
 // Rust stage-server access is additionally serialized behind a Mutex.
 unsafe impl Send for StageModel {}
@@ -920,6 +947,142 @@ impl StageModel {
         output.truncate(bytes);
         String::from_utf8(output).context("chat template output is not valid UTF-8")
     }
+
+    pub fn apply_chat_template_json(
+        &self,
+        messages_json: &str,
+        options: ChatTemplateJsonOptions,
+    ) -> Result<ChatTemplateJsonResult> {
+        let messages_json =
+            CString::new(messages_json).context("messages JSON contains an interior NUL byte")?;
+        let tools_json = options
+            .tools_json
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .context("tools JSON contains an interior NUL byte")?;
+        let tool_choice_json = options
+            .tool_choice_json
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .context("tool choice JSON contains an interior NUL byte")?;
+        let tools_ptr = tools_json
+            .as_ref()
+            .map(|value| value.as_ptr())
+            .unwrap_or(ptr::null());
+        let tool_choice_ptr = tool_choice_json
+            .as_ref()
+            .map(|value| value.as_ptr())
+            .unwrap_or(ptr::null());
+
+        let mut prompt_bytes = 0usize;
+        let mut metadata_bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_apply_chat_template_json(
+                self.raw,
+                messages_json.as_ptr(),
+                tools_ptr,
+                tool_choice_ptr,
+                options.add_assistant,
+                options.enable_thinking.is_some(),
+                options.enable_thinking.unwrap_or(true),
+                options.parallel_tool_calls,
+                ptr::null_mut(),
+                0,
+                &mut prompt_bytes,
+                ptr::null_mut(),
+                0,
+                &mut metadata_bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut prompt = vec![0_u8; prompt_bytes.max(1)];
+        let mut metadata = vec![0_u8; metadata_bytes.max(1)];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_apply_chat_template_json(
+                self.raw,
+                messages_json.as_ptr(),
+                tools_ptr,
+                tool_choice_ptr,
+                options.add_assistant,
+                options.enable_thinking.is_some(),
+                options.enable_thinking.unwrap_or(true),
+                options.parallel_tool_calls,
+                prompt.as_mut_ptr().cast(),
+                prompt.len(),
+                &mut prompt_bytes,
+                metadata.as_mut_ptr().cast(),
+                metadata.len(),
+                &mut metadata_bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        prompt.truncate(prompt_bytes);
+        metadata.truncate(metadata_bytes);
+        Ok(ChatTemplateJsonResult {
+            prompt: String::from_utf8(prompt).context("chat template output is not valid UTF-8")?,
+            metadata_json: String::from_utf8(metadata)
+                .context("chat template metadata is not valid UTF-8")?,
+        })
+    }
+
+    pub fn parse_chat_response_json(
+        &self,
+        generated_text: &str,
+        metadata_json: &str,
+        is_partial: bool,
+    ) -> Result<String> {
+        let generated_text =
+            CString::new(generated_text).context("generated text contains an interior NUL byte")?;
+        let metadata_json = CString::new(metadata_json)
+            .context("chat template metadata contains an interior NUL byte")?;
+
+        let mut bytes = 0usize;
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_parse_chat_response_json(
+                generated_text.as_ptr(),
+                metadata_json.as_ptr(),
+                is_partial,
+                ptr::null_mut(),
+                0,
+                &mut bytes,
+                &mut error,
+            )
+        };
+        if status != Status::BufferTooSmall && status != Status::Ok {
+            ensure_ok(status, error)?;
+        } else {
+            free_error(error);
+        }
+
+        let mut output = vec![0_u8; bytes.max(1)];
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_parse_chat_response_json(
+                generated_text.as_ptr(),
+                metadata_json.as_ptr(),
+                is_partial,
+                output.as_mut_ptr().cast(),
+                output.len(),
+                &mut bytes,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        output.truncate(bytes);
+        String::from_utf8(output).context("parsed chat response is not valid UTF-8")
+    }
 }
 
 impl Drop for StageModel {
@@ -972,6 +1135,31 @@ impl StageSession {
         ensure_ok(status, error)?;
         self.token_count = 0;
         Ok(())
+    }
+
+    pub fn configure_chat_sampling(
+        &mut self,
+        metadata_json: &str,
+        prompt_token_count: u64,
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<()> {
+        let metadata_json = CString::new(metadata_json)
+            .context("chat sampling metadata contains an interior NUL byte")?;
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_configure_chat_sampling(
+                self.raw,
+                sampling_ptr,
+                metadata_json.as_ptr(),
+                prompt_token_count,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
     }
 
     pub fn trim_session(&mut self, token_count: u64) -> Result<()> {

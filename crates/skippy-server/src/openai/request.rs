@@ -151,17 +151,6 @@ pub(super) fn ensure_chat_runtime_features_supported(
             "chat logprobs are parsed by openai-frontend but not yet implemented by skippy runtime",
         ));
     }
-    if request.tools.as_ref().is_some_and(has_requested_tools)
-        || request
-            .tool_choice
-            .as_ref()
-            .is_some_and(has_requested_tool_choice)
-        || request.parallel_tool_calls == Some(true)
-    {
-        return Err(OpenAiError::unsupported(
-            "tool calls are parsed by openai-frontend but not yet implemented by skippy runtime",
-        ));
-    }
     if request
         .response_format
         .as_ref()
@@ -187,10 +176,6 @@ pub(super) fn ensure_completion_runtime_features_supported(
 
 pub(super) fn has_requested_tools(value: &Value) -> bool {
     !matches!(value, Value::Array(items) if items.is_empty())
-}
-
-pub(super) fn has_requested_tool_choice(value: &Value) -> bool {
-    !value.is_null()
 }
 
 pub(super) fn requires_structured_output(value: &Value) -> bool {

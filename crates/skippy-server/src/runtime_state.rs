@@ -110,6 +110,20 @@ impl RuntimeState {
         Ok(token)
     }
 
+    pub fn configure_chat_sampling(
+        &mut self,
+        session_id: &str,
+        metadata_json: &str,
+        prompt_token_count: u64,
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<()> {
+        self.session(session_id)?.configure_chat_sampling(
+            metadata_json,
+            prompt_token_count,
+            sampling,
+        )
+    }
+
     pub fn last_token_signal(&mut self, session_id: &str) -> Result<TokenSignal> {
         self.session(session_id)?.last_token_signal()
     }

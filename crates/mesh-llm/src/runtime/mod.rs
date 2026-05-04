@@ -4108,8 +4108,8 @@ mod tests {
                 parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
@@ -4137,8 +4137,8 @@ mod tests {
                     parallel: None,
                     cache_type_k: None,
                     cache_type_v: None,
-                    n_batch: None,
-                    n_ubatch: None,
+                    batch: None,
+                    ubatch: None,
                     flash_attention: None,
                 },
                 plugin::ModelConfigEntry {
@@ -4149,8 +4149,8 @@ mod tests {
                     parallel: None,
                     cache_type_k: None,
                     cache_type_v: None,
-                    n_batch: None,
-                    n_ubatch: None,
+                    batch: None,
+                    ubatch: None,
                     flash_attention: None,
                 },
             ],
@@ -4184,8 +4184,8 @@ mod tests {
                 parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
@@ -4211,8 +4211,8 @@ mod tests {
                 parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
@@ -4414,8 +4414,8 @@ mod tests {
                 parallel: None,
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             }],
             ..plugin::MeshConfig::default()
@@ -4969,8 +4969,8 @@ mod tests {
             parallel: Some(1),
             cache_type_k: None,
             cache_type_v: None,
-            n_batch: None,
-            n_ubatch: None,
+            batch: None,
+            ubatch: None,
             flash_attention: None,
         }];
         let gpu_config = GpuConfig::default(); // no parallel set
@@ -5002,8 +5002,8 @@ mod tests {
                 parallel: None, // no override
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             },
             ModelConfigEntry {
@@ -5014,8 +5014,8 @@ mod tests {
                 parallel: Some(3), // only this one has an override
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             },
         ];
@@ -5057,8 +5057,8 @@ mod tests {
                 parallel: None, // missing — should use global fallback
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             },
             ModelConfigEntry {
@@ -5069,8 +5069,8 @@ mod tests {
                 parallel: Some(2), // explicit override
                 cache_type_k: None,
                 cache_type_v: None,
-                n_batch: None,
-                n_ubatch: None,
+                batch: None,
+                ubatch: None,
                 flash_attention: None,
             },
         ];

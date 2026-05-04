@@ -1,10 +1,8 @@
 use std::{
-    collections::HashSet,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Instant,
 };
 
 use anyhow::{bail, Context, Result};
@@ -14,27 +12,24 @@ use model_ref::ModelRef;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use skippy_protocol::binary::{
-    read_stage_message, recv_reply, state_flags, write_stage_message, StageStateHeader,
-    StageWireMessage, WireMessageKind, WireReplyKind,
+    recv_reply, write_stage_message, StageStateHeader, StageWireMessage, WireMessageKind,
+    WireReplyKind,
 };
 use skippy_runtime::{
     package::{materialize_layer_package_details, MaterializedPackage, PackageStageRequest},
-    ActivationFrame, RuntimeConfig, RuntimeKvPageDesc, RuntimeLoadMode, StageModel, StageSession,
-    GGML_TYPE_F16,
+    RuntimeConfig, RuntimeLoadMode, StageModel, GGML_TYPE_F16,
 };
 
 use crate::{
     cli::{
         ChainArgs, DtypeMatrixArgs, RuntimeArgs, ServerArgs, SingleStepArgs, SplitScanArgs,
-        StageLoadMode, StateHandoffArgs, StatePayloadKind,
+        StageLoadMode,
     },
     report::{
         BaselineReport, BoundaryReport, ChainReport, ChainStageReport, DtypeMatrixReport,
         PackagePartReport, PackageStageReport, SingleStepReport, SplitReport, SplitScanReport,
-        StageModelReport, StateHandoffReport, StatePayloadBlockDigestReport,
-        StatePayloadDigestReport,
+        StageModelReport,
     },
     support::{
         activation_width, connect_ready, generate_run_id, parse_wire_dtype, temp_config_path_for,
@@ -108,133 +103,6 @@ struct BinaryChainResult {
     split_layer_2: u32,
     layer_end: u32,
     stage_models: Vec<StageModelReport>,
-}
-
-struct BinaryStateHandoffConfig {
-    stage_server_bin: PathBuf,
-    model: PathBuf,
-    stage_model: Option<PathBuf>,
-    stage_load_mode: StageLoadMode,
-    state_layer_start: u32,
-    state_layer_end: u32,
-    state_stage_index: u32,
-    layer_end: u32,
-    ctx_size: u32,
-    n_gpu_layers: i32,
-    prompt: String,
-    source_bind_addr: SocketAddr,
-    restore_bind_addr: SocketAddr,
-    activation_width: i32,
-    activation_wire_dtype: String,
-    state_payload_kind: StatePayloadKind,
-    prefix_token_count: Option<usize>,
-    cache_hit_repeats: usize,
-    child_logs: bool,
-    startup_timeout_secs: u64,
-    model_identity: ModelIdentity,
-}
-
-struct BinaryStateHandoffResult {
-    prompt_token_count: usize,
-    requested_prefix_token_count: Option<usize>,
-    stage_index: u32,
-    layer_start: u32,
-    layer_end: u32,
-    include_embeddings: bool,
-    include_output: bool,
-    handoff_transport: &'static str,
-    state_payload_kind: StatePayloadKind,
-    activation_width: i32,
-    source_predicted_token: i32,
-    restored_predicted_token: i32,
-    state_bytes: usize,
-    roundtrip_state_bytes: usize,
-    payload_digest: StatePayloadDigestReport,
-    tokenize_ms: f64,
-    source_prefill_ms: f64,
-    source_export_ms: f64,
-    source_decode_ms: f64,
-    restore_import_ms: f64,
-    restore_export_ms: f64,
-    restore_decode_ms: f64,
-    cache_hit_import_ms: Vec<f64>,
-    cache_hit_decode_ms: Vec<f64>,
-    matches: bool,
-    stage_models: Vec<StageModelReport>,
-}
-
-enum LocalStatePayload {
-    FullState(Vec<u8>),
-    RecurrentOnly(Vec<u8>),
-    KvRecurrent {
-        kv_desc: RuntimeKvPageDesc,
-        kv: Vec<u8>,
-        recurrent: Vec<u8>,
-    },
-}
-
-impl LocalStatePayload {
-    fn byte_len(&self) -> usize {
-        match self {
-            Self::FullState(bytes) | Self::RecurrentOnly(bytes) => bytes.len(),
-            Self::KvRecurrent { kv, recurrent, .. } => kv.len().saturating_add(recurrent.len()),
-        }
-    }
-
-    fn same_payload(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::FullState(a), Self::FullState(b))
-            | (Self::RecurrentOnly(a), Self::RecurrentOnly(b)) => a == b,
-            (
-                Self::KvRecurrent {
-                    kv_desc: a_desc,
-                    kv: a_kv,
-                    recurrent: a_recurrent,
-                },
-                Self::KvRecurrent {
-                    kv_desc: b_desc,
-                    kv: b_kv,
-                    recurrent: b_recurrent,
-                },
-            ) => a_desc == b_desc && a_kv == b_kv && a_recurrent == b_recurrent,
-            _ => false,
-        }
-    }
-
-    fn digest_report(&self) -> StatePayloadDigestReport {
-        match self {
-            Self::FullState(bytes) => payload_digest_report(
-                state_payload_kind_name(StatePayloadKind::FullState),
-                bytes,
-                None,
-                None,
-            ),
-            Self::RecurrentOnly(recurrent) => payload_digest_report(
-                state_payload_kind_name(StatePayloadKind::RecurrentOnly),
-                recurrent,
-                None,
-                Some(recurrent.as_slice()),
-            ),
-            Self::KvRecurrent { kv, recurrent, .. } => {
-                let mut hasher = Sha256::new();
-                hasher.update(b"kv-recurrent:kv:");
-                hasher.update((kv.len() as u64).to_le_bytes());
-                hasher.update(kv);
-                hasher.update(b":recurrent:");
-                hasher.update((recurrent.len() as u64).to_le_bytes());
-                hasher.update(recurrent);
-                let mut report = payload_digest_report(
-                    state_payload_kind_name(StatePayloadKind::KvRecurrent),
-                    &[],
-                    Some(kv.as_slice()),
-                    Some(recurrent.as_slice()),
-                );
-                report.payload_sha256 = hex_sha256_finish(hasher);
-                report.total_bytes = kv.len().saturating_add(recurrent.len());
-                report
-            }
-        }
-    }
 }
 
 pub fn single_step(args: SingleStepArgs) -> Result<()> {
@@ -321,90 +189,6 @@ pub fn chain(args: ChainArgs) -> Result<()> {
         stage_models: chain.stage_models,
     };
     emit_report(&report, args.output.report_out.as_deref())?;
-    ensure_matches(report.matches, args.allow_mismatch)?;
-    Ok(())
-}
-
-pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
-    let report_out = args.output.report_out;
-    let model_identity = runtime_model_identity(&args.runtime)?;
-    let state_layer_end = args.state_layer_end.unwrap_or(args.runtime.layer_end);
-    let state_stage_index = args.state_stage_index.unwrap_or({
-        if args.state_layer_start == 0 {
-            0
-        } else if state_layer_end == args.runtime.layer_end {
-            2
-        } else {
-            1
-        }
-    });
-    let handoff = run_binary_state_handoff(BinaryStateHandoffConfig {
-        stage_server_bin: args.server.stage_server_bin,
-        model: args.runtime.model,
-        stage_model: args.runtime.stage_model,
-        stage_load_mode: args.runtime.stage_load_mode,
-        state_layer_start: args.state_layer_start,
-        state_layer_end,
-        state_stage_index,
-        layer_end: args.runtime.layer_end,
-        ctx_size: args.runtime.ctx_size,
-        n_gpu_layers: args.runtime.n_gpu_layers,
-        prompt: args.runtime.prompt,
-        source_bind_addr: args.source_bind_addr,
-        restore_bind_addr: args.restore_bind_addr,
-        activation_width: args.activation_width,
-        activation_wire_dtype: args.activation_wire_dtype,
-        state_payload_kind: args.state_payload_kind,
-        prefix_token_count: args.prefix_token_count,
-        cache_hit_repeats: args.cache_hit_repeats,
-        child_logs: args.server.child_logs,
-        startup_timeout_secs: args.server.startup_timeout_secs,
-        model_identity: model_identity.clone(),
-    })?;
-    let report = StateHandoffReport {
-        mode: "state-handoff",
-        status: status(handoff.matches),
-        model_identity,
-        matches: handoff.matches,
-        stage_index: handoff.stage_index,
-        layer_start: handoff.layer_start,
-        layer_end: handoff.layer_end,
-        include_embeddings: handoff.include_embeddings,
-        include_output: handoff.include_output,
-        handoff_transport: handoff.handoff_transport,
-        state_payload_kind: state_payload_kind_name(handoff.state_payload_kind),
-        source_predicted_token: handoff.source_predicted_token,
-        restored_predicted_token: handoff.restored_predicted_token,
-        prompt_token_count: handoff.prompt_token_count,
-        requested_prefix_token_count: handoff.requested_prefix_token_count,
-        activation_width: handoff.activation_width,
-        state_bytes: handoff.state_bytes,
-        state_bytes_per_prompt_token: handoff.state_bytes as f64
-            / handoff.prompt_token_count as f64,
-        roundtrip_state_bytes: handoff.roundtrip_state_bytes,
-        payload_digest: handoff.payload_digest,
-        tokenize_ms: handoff.tokenize_ms,
-        source_prefill_ms: handoff.source_prefill_ms,
-        source_export_ms: handoff.source_export_ms,
-        source_decode_ms: handoff.source_decode_ms,
-        restore_import_ms: handoff.restore_import_ms,
-        restore_export_ms: handoff.restore_export_ms,
-        restore_decode_ms: handoff.restore_decode_ms,
-        cache_hit_repeats: handoff.cache_hit_import_ms.len(),
-        recompute_total_ms: handoff.source_prefill_ms + handoff.source_decode_ms,
-        cache_hit_total_ms: mean_pair_sum(
-            &handoff.cache_hit_import_ms,
-            &handoff.cache_hit_decode_ms,
-        ),
-        cache_hit_speedup: speedup(
-            handoff.source_prefill_ms + handoff.source_decode_ms,
-            mean_pair_sum(&handoff.cache_hit_import_ms, &handoff.cache_hit_decode_ms),
-        ),
-        cache_hit_import_ms: handoff.cache_hit_import_ms,
-        cache_hit_decode_ms: handoff.cache_hit_decode_ms,
-        stage_models: handoff.stage_models,
-    };
-    emit_report(&report, report_out.as_deref())?;
     ensure_matches(report.matches, args.allow_mismatch)?;
     Ok(())
 }
@@ -709,6 +493,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         request_id: 1,
         session_id: 1,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: vec![token_id],
         activation,
         raw_bytes: Vec::new(),
@@ -951,6 +736,7 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         request_id: 2,
         session_id: 2,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: vec![token_id],
         activation,
         raw_bytes: Vec::new(),

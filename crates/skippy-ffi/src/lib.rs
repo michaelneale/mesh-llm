@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 16;
+pub const ABI_VERSION_PATCH: u32 = 18;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -274,6 +274,14 @@ extern "C" {
         out_error: *mut *mut Error,
     ) -> Status;
 
+    pub fn skippy_session_configure_chat_sampling(
+        session: *mut Session,
+        sampling: *const SamplingConfig,
+        metadata_json: *const c_char,
+        prompt_token_count: u64,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
     pub fn skippy_session_reset(session: *mut Session, out_error: *mut *mut Error) -> Status;
 
     pub fn skippy_checkpoint_session(
@@ -459,6 +467,34 @@ extern "C" {
         output_text: *mut c_char,
         output_text_capacity: usize,
         out_text_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_apply_chat_template_json(
+        model: *mut Model,
+        messages_json: *const c_char,
+        tools_json: *const c_char,
+        tool_choice_json: *const c_char,
+        add_assistant: bool,
+        override_enable_thinking: bool,
+        enable_thinking: bool,
+        parallel_tool_calls: bool,
+        output_text: *mut c_char,
+        output_text_capacity: usize,
+        out_text_bytes: *mut usize,
+        output_metadata_json: *mut c_char,
+        output_metadata_json_capacity: usize,
+        out_metadata_json_bytes: *mut usize,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_parse_chat_response_json(
+        generated_text: *const c_char,
+        metadata_json: *const c_char,
+        is_partial: bool,
+        output_message_json: *mut c_char,
+        output_message_json_capacity: usize,
+        out_message_json_bytes: *mut usize,
         out_error: *mut *mut Error,
     ) -> Status;
 

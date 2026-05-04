@@ -110,11 +110,25 @@ pub fn write_stage_message(
     } else {
         state.flags &= !super::state_flags::SAMPLING;
     }
+    if message.chat_sampling_metadata.is_some() {
+        state.flags |= super::state_flags::CHAT_SAMPLING_METADATA;
+    } else {
+        state.flags &= !super::state_flags::CHAT_SAMPLING_METADATA;
+    }
     write_state_header(&mut writer, state)?;
     write_u64(&mut writer, message.request_id)?;
     write_u64(&mut writer, message.session_id)?;
     if let Some(sampling) = message.sampling.as_ref() {
         write_sampling_config(&mut writer, sampling)?;
+    }
+    if let Some(metadata) = message.chat_sampling_metadata.as_ref() {
+        let bytes = metadata.as_bytes();
+        write_u32(
+            &mut writer,
+            u32::try_from(bytes.len())
+                .map_err(|_| invalid_input("chat sampling metadata is too large"))?,
+        )?;
+        writer.write_all(bytes)?;
     }
 
     if message.kind == WireMessageKind::StateImport {
@@ -144,6 +158,19 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     } else {
         None
     };
+    let chat_sampling_metadata = if (state.flags & super::state_flags::CHAT_SAMPLING_METADATA) != 0
+    {
+        let len = usize::try_from(read_u32(&mut reader)?)
+            .map_err(|_| invalid_data("chat sampling metadata length overflows usize"))?;
+        let mut bytes = vec![0_u8; len];
+        reader.read_exact(&mut bytes)?;
+        Some(
+            String::from_utf8(bytes)
+                .map_err(|_| invalid_data("chat sampling metadata is not UTF-8"))?,
+        )
+    } else {
+        None
+    };
     let dtype = state.dtype()?;
     if kind == WireMessageKind::Stop {
         return Ok(StageWireMessage {
@@ -154,6 +181,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
             request_id,
             session_id,
             sampling,
+            chat_sampling_metadata,
             tokens: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
@@ -173,6 +201,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
             request_id,
             session_id,
             sampling,
+            chat_sampling_metadata,
             tokens: Vec::new(),
             activation: Vec::new(),
             raw_bytes,
@@ -200,6 +229,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         request_id,
         session_id,
         sampling,
+        chat_sampling_metadata,
         tokens,
         activation,
         raw_bytes: Vec::new(),
