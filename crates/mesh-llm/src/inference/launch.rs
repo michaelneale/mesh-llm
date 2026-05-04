@@ -480,6 +480,14 @@ pub struct ModelLaunchSpec<'a> {
     /// Set from the `[[models]].slots` TOML config; defaults to 4 when unset.
     pub slots: usize,
     pub runtime_data_producer: Option<crate::runtime_data::RuntimeDataProducer>,
+    /// Trunk/experts split mode: when `Some`, we launch llama-server with
+    /// `--model-trunk <trunk> --model-experts <experts>` instead of
+    /// `-m <model>`. `model` is ignored for selection but still reported in
+    /// logs for continuity.
+    pub split_shards: Option<&'a crate::inference::moe::ResolvedShards>,
+    /// Storage-mode toggles (prefault / mlock) for split mode. Required when
+    /// `split_shards` is `Some`; ignored in monolithic mode.
+    pub moe_storage: Option<&'a crate::plugin::MoeStorageConfig>,
 }
 
 pub(crate) const GB: u64 = 1_000_000_000;
@@ -496,6 +504,79 @@ pub(crate) fn clear_runtime_shutting_down() {
 
 pub(crate) fn runtime_shutting_down() -> bool {
     RUNTIME_SHUTTING_DOWN.load(Ordering::Relaxed)
+}
+
+/// Pure helper: build the leading model-related args for llama-server.
+/// Split mode emits `--model-experts` + `--model-trunk` and optionally
+/// `--prefault-trunk` / `--mlock-trunk`. Monolithic mode emits `-m <model>`.
+/// Lives outside `start_llama_server` so unit tests can assert the exact
+/// flag sequence without spawning a process.
+pub(crate) fn build_model_args(
+    model: &Path,
+    split_shards: Option<&crate::inference::moe::ResolvedShards>,
+    moe_storage: Option<&crate::plugin::MoeStorageConfig>,
+) -> Vec<String> {
+    if let Some(shards) = split_shards {
+        let mut v = vec![
+            "--model-experts".to_string(),
+            shards.experts.to_string_lossy().to_string(),
+            "--model-trunk".to_string(),
+            shards.trunk.to_string_lossy().to_string(),
+        ];
+        if let Some(cfg) = moe_storage {
+            if cfg.prefault_trunk {
+                v.push("--prefault-trunk".to_string());
+            }
+            if cfg.mlock_trunk {
+                v.push("--mlock-trunk".to_string());
+            }
+        }
+        v
+    } else {
+        vec!["-m".to_string(), model.to_string_lossy().to_string()]
+    }
+}
+
+/// Verify the process can `mlock()` at least `required` bytes before we
+/// spawn llama-server. On Linux/macOS this reads `RLIMIT_MEMLOCK`. We skip
+/// the check on non-Unix platforms.
+pub(crate) fn ensure_memlock_rlimit_at_least(required: u64) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::mem::MaybeUninit;
+        let mut rl = MaybeUninit::<libc::rlimit>::uninit();
+        // SAFETY: libc call; rl is written on success.
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, rl.as_mut_ptr()) };
+        if rc != 0 {
+            // If getrlimit itself fails, treat as "unknown" and warn rather than hard-fail.
+            tracing::warn!(
+                "getrlimit(RLIMIT_MEMLOCK) failed: {} — proceeding without RLIMIT check",
+                std::io::Error::last_os_error()
+            );
+            return Ok(());
+        }
+        // SAFETY: rc == 0 implies rl was written.
+        let rl = unsafe { rl.assume_init() };
+        // `rlim_cur == RLIM_INFINITY` means unlimited; always OK.
+        if rl.rlim_cur == libc::RLIM_INFINITY {
+            return Ok(());
+        }
+        if (rl.rlim_cur as u64) < required {
+            anyhow::bail!(
+                "--mlock-trunk requires RLIMIT_MEMLOCK >= {required} bytes, but current soft limit is {cur} bytes (hard {hard}); \
+                 raise it via `ulimit -l unlimited` in the shell, or `LimitMEMLOCK=infinity` in the systemd unit / docker `--ulimit memlock=-1:-1`",
+                required = required,
+                cur = rl.rlim_cur as u64,
+                hard = rl.rlim_max as u64
+            );
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = required;
+        Ok(())
+    }
 }
 
 fn spawned_binary_name(path: &Path) -> String {
@@ -1304,9 +1385,36 @@ pub async fn start_llama_server(
     let selected_gpu = spec.selected_gpu;
     let slots = spec.slots;
     let runtime_data_producer = spec.runtime_data_producer;
+    let split_shards = spec.split_shards;
+    let moe_storage = spec.moe_storage;
     let llama_server = resolve_binary_path(bin_dir, "llama-server", binary_flavor)?;
 
-    anyhow::ensure!(model.exists(), "Model not found at {}", model.display());
+    // In split mode we look at the (trunk, experts) pair; in monolithic mode
+    // the usual `model` path.
+    if let Some(shards) = split_shards {
+        anyhow::ensure!(
+            shards.trunk.exists(),
+            "trunk GGUF not found at {}",
+            shards.trunk.display()
+        );
+        anyhow::ensure!(
+            shards.experts.exists(),
+            "experts GGUF not found at {}",
+            shards.experts.display()
+        );
+    } else {
+        anyhow::ensure!(model.exists(), "Model not found at {}", model.display());
+    }
+
+    // If --mlock-trunk will be requested, verify RLIMIT_MEMLOCK up front so
+    // users see a clear error from mesh-llm rather than a silent mlock
+    // failure inside llama-server.
+    if let (Some(shards), Some(cfg)) = (split_shards, moe_storage) {
+        if cfg.mlock_trunk {
+            let trunk_size = std::fs::metadata(&shards.trunk)?.len();
+            ensure_memlock_rlimit_at_least(trunk_size)?;
+        }
+    }
 
     // Build --rpc argument: all tunnel ports as localhost endpoints
     let rpc_endpoints: Vec<String> = tunnel_ports
@@ -1371,7 +1479,11 @@ pub async fn start_llama_server(
         }
     );
 
-    let mut args = vec!["-m".to_string(), model.to_string_lossy().to_string()];
+    // Model args: split mode uses `--model-experts` + `--model-trunk`;
+    // monolithic uses the existing `-m`. Extracted into `build_model_args`
+    // so the split-mode emission can be unit-tested without spawning a
+    // llama-server process.
+    let mut args: Vec<String> = build_model_args(model, split_shards, moe_storage);
     if !tunnel_ports.is_empty() {
         args.push("--rpc".to_string());
         args.push(rpc_arg);
@@ -2395,13 +2507,113 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_context_size, is_safe_kill_target, model_label, parse_available_devices,
+        build_model_args, compute_context_size, is_safe_kill_target, model_label,
+        parse_available_devices,
         preferred_device, terminate_process, wait_for_exit, BinaryFlavor, KvCacheQuant,
         KvCacheWarning, KvType, RpcServerHandle, SplitMode, GB,
     };
     use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    use crate::inference::moe::ResolvedShards;
+    use crate::plugin::{MoeStorageConfig, MoeStorageMode};
+
+    #[test]
+    fn build_model_args_monolithic_emits_dash_m_only() {
+        let model = Path::new("/models/mono.gguf");
+        let args = build_model_args(model, None, None);
+        assert_eq!(args, vec!["-m".to_string(), "/models/mono.gguf".to_string()]);
+    }
+
+    #[test]
+    fn build_model_args_split_emits_experts_then_trunk() {
+        let shards = ResolvedShards {
+            experts: PathBuf::from("/nas/mesh-llm/experts/m/2-nodes/v/node-0-experts.gguf"),
+            trunk: PathBuf::from("/nas/mesh-llm/trunks/m/v/trunk.gguf"),
+            manifest_version: "v".into(),
+        };
+        let cfg = MoeStorageConfig {
+            mode: MoeStorageMode::Split,
+            trunk_path: Some(PathBuf::from("/nas/mesh-llm/trunks")),
+            experts_path: Some(PathBuf::from("/nas/mesh-llm/experts")),
+            experts_local_override: None,
+            prefault_trunk: false,
+            mlock_trunk: false,
+        };
+        let args = build_model_args(Path::new("/ignored"), Some(&shards), Some(&cfg));
+        assert_eq!(
+            args,
+            vec![
+                "--model-experts".to_string(),
+                "/nas/mesh-llm/experts/m/2-nodes/v/node-0-experts.gguf".to_string(),
+                "--model-trunk".to_string(),
+                "/nas/mesh-llm/trunks/m/v/trunk.gguf".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_model_args_split_appends_prefault_when_enabled() {
+        let shards = ResolvedShards {
+            experts: PathBuf::from("/e"),
+            trunk: PathBuf::from("/t"),
+            manifest_version: "v".into(),
+        };
+        let cfg = MoeStorageConfig {
+            mode: MoeStorageMode::Split,
+            trunk_path: Some(PathBuf::from("/x")),
+            experts_path: Some(PathBuf::from("/y")),
+            experts_local_override: None,
+            prefault_trunk: true,
+            mlock_trunk: false,
+        };
+        let args = build_model_args(Path::new("/ignored"), Some(&shards), Some(&cfg));
+        assert!(args.contains(&"--prefault-trunk".to_string()));
+        assert!(!args.contains(&"--mlock-trunk".to_string()));
+    }
+
+    #[test]
+    fn build_model_args_split_appends_mlock_when_enabled() {
+        let shards = ResolvedShards {
+            experts: PathBuf::from("/e"),
+            trunk: PathBuf::from("/t"),
+            manifest_version: "v".into(),
+        };
+        let cfg = MoeStorageConfig {
+            mode: MoeStorageMode::Split,
+            trunk_path: Some(PathBuf::from("/x")),
+            experts_path: Some(PathBuf::from("/y")),
+            experts_local_override: None,
+            prefault_trunk: true,
+            mlock_trunk: true,
+        };
+        let args = build_model_args(Path::new("/ignored"), Some(&shards), Some(&cfg));
+        assert!(args.contains(&"--prefault-trunk".to_string()));
+        assert!(args.contains(&"--mlock-trunk".to_string()));
+    }
+
+    #[test]
+    fn build_model_args_split_without_moe_storage_uses_no_toggles() {
+        // Defensive: if split_shards is Some but moe_storage is None (shouldn't
+        // happen in practice), we still emit correct model args without toggles.
+        let shards = ResolvedShards {
+            experts: PathBuf::from("/e"),
+            trunk: PathBuf::from("/t"),
+            manifest_version: "v".into(),
+        };
+        let args = build_model_args(Path::new("/ignored"), Some(&shards), None);
+        assert_eq!(
+            args,
+            vec![
+                "--model-experts".to_string(),
+                "/e".to_string(),
+                "--model-trunk".to_string(),
+                "/t".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn kv_quant_small_model_is_plain_f16() {
@@ -3015,6 +3227,8 @@ No devices found
             selected_gpu: None,
             slots: 8, // ← compile-time check: field must exist and be accessible
             runtime_data_producer: None,
+            split_shards: None,
+            moe_storage: None,
         };
     }
 
@@ -3043,6 +3257,8 @@ No devices found
             selected_gpu: None,
             slots: 16, // non-default value from TOML config
             runtime_data_producer: None,
+            split_shards: None,
+            moe_storage: None,
         };
         assert_eq!(spec.slots, 16);
     }
@@ -3072,6 +3288,8 @@ No devices found
             selected_gpu: None,
             slots: 32,
             runtime_data_producer: None,
+            split_shards: None,
+            moe_storage: None,
         };
 
         // Destructure exactly as start_llama_server does it (lines ~1078-1091)
@@ -3118,6 +3336,8 @@ No devices found
             selected_gpu: None,
             slots: 4, // explicit default from TOML config fallback
             runtime_data_producer: None,
+            split_shards: None,
+            moe_storage: None,
         };
         assert_eq!(good_spec.slots, 4);
     }

@@ -1095,6 +1095,9 @@ struct MoeElectionParams {
     binary_flavor: Option<launch::BinaryFlavor>,
     ctx_size_override: Option<u32>,
     pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
+    /// Opt-in trunk/experts split storage for this model. `None` or
+    /// `mode == Monolithic` preserves today's per-node shard behavior.
+    moe_storage: Option<crate::plugin::MoeStorageConfig>,
     target_tx: Arc<watch::Sender<ModelTargets>>,
     stop_rx: watch::Receiver<bool>,
     slots: usize,
@@ -1135,6 +1138,9 @@ pub struct ElectionLoopParams {
     pub ctx_size_override: Option<u32>,
     pub pinned_gpu: Option<crate::runtime::StartupPinnedGpuTarget>,
     pub moe_runtime_options: moe::MoeRuntimeOptions,
+    /// Trunk/experts split-mode storage config. `None` or
+    /// `mode == Monolithic` preserves today's per-node shard behavior.
+    pub moe_storage: Option<crate::plugin::MoeStorageConfig>,
     pub target_tx: Arc<watch::Sender<ModelTargets>>,
     pub stop_rx: watch::Receiver<bool>,
     pub slots: usize,
@@ -1668,6 +1674,7 @@ pub async fn election_loop(
         ctx_size_override,
         pinned_gpu,
         moe_runtime_options,
+        moe_storage,
         target_tx,
         mut stop_rx,
         slots,
@@ -1773,6 +1780,7 @@ pub async fn election_loop(
                     binary_flavor,
                     ctx_size_override,
                     pinned_gpu: pinned_gpu.clone(),
+                    moe_storage,
                     target_tx,
                     stop_rx,
                     slots,
@@ -2206,6 +2214,7 @@ async fn moe_election_loop(
         binary_flavor,
         ctx_size_override,
         pinned_gpu,
+        moe_storage,
         target_tx,
         mut stop_rx,
         slots,
@@ -2496,6 +2505,8 @@ async fn moe_election_loop(
                             plugin_endpoint_key: None,
                         },
                     )),
+                    split_shards: None,
+                    moe_storage: None,
                 },
             )
             .await
@@ -2626,6 +2637,8 @@ async fn moe_election_loop(
                                 plugin_endpoint_key: None,
                             },
                         )),
+                        split_shards: None,
+                        moe_storage: None,
                     },
                 )
                 .await
@@ -2710,12 +2723,89 @@ async fn moe_election_loop(
             let my_shard_index = plan.shard_index_for(my_id).unwrap_or(0);
             on_change(true, false);
 
-            let assignments = moe::compute_assignments_with_overlap(
-                &moe_cfg.config.ranking,
-                plan.active_ids.len(),
-                moe_cfg.config.min_experts_per_node,
-                plan.overlap,
-            );
+            // Manifest-pin: when storage.mode=split AND a pre-built manifest
+            // exists for this source model with n_nodes matching the runtime
+            // peer count, adopt the manifest's assignments verbatim. Without
+            // this, the runtime ranking/overlap will almost never reproduce
+            // the exact assignments hash that derived the manifest's
+            // `version` string, so the manifest is ignored and the legacy
+            // local-cache split runs instead.
+            let pinned: Option<moe::SplitManifest> = if moe_storage
+                .as_ref()
+                .map(|c| matches!(c.mode, crate::plugin::MoeStorageMode::Split))
+                .unwrap_or(false)
+            {
+                let cfg = moe_storage.as_ref().expect("split-mode set above");
+                match moe::find_pinned_manifest(cfg, &model, Some(plan.active_ids.len())) {
+                    Some((path, m)) if m.n_nodes == plan.active_ids.len() => {
+                        eprintln!(
+                            "  📌 Pinned to manifest {} ({}, n_nodes={}); skipping runtime ranking.",
+                            m.version,
+                            path.display(),
+                            m.n_nodes
+                        );
+                        Some(m)
+                    }
+                    Some((path, m)) => {
+                        eprintln!(
+                            "  ℹ️  Found manifest {} (n_nodes={}) at {}, but runtime active={} — not pinning. Re-run `mesh-llm moe migrate --n-nodes {}` to make it reusable, or proceed and a fresh split will be built.",
+                            m.version,
+                            m.n_nodes,
+                            path.display(),
+                            plan.active_ids.len(),
+                            plan.active_ids.len()
+                        );
+                        None
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
+
+            let assignments: Vec<moe::NodeAssignment> = if let Some(m) = pinned.as_ref() {
+                let mut out: Vec<moe::NodeAssignment> = Vec::with_capacity(m.n_nodes);
+                // Build NodeAssignment per node from manifest. n_shared/n_unique
+                // are cosmetic (log only) — derive cheaply: shared = experts
+                // present on every node; unique = experts not on any other
+                // node.
+                let all_sets: Vec<std::collections::BTreeSet<u32>> = (0..m.n_nodes)
+                    .map(|i| {
+                        m.assignments
+                            .get(&i)
+                            .cloned()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .collect()
+                    })
+                    .collect();
+                for i in 0..m.n_nodes {
+                    let mine = &all_sets[i];
+                    let shared = mine
+                        .iter()
+                        .filter(|e| all_sets.iter().enumerate().all(|(j, s)| j == i || s.contains(*e)))
+                        .count();
+                    let unique = mine
+                        .iter()
+                        .filter(|e| !all_sets.iter().enumerate().any(|(j, s)| j != i && s.contains(*e)))
+                        .count();
+                    let mut experts: Vec<u32> = mine.iter().copied().collect();
+                    experts.sort_unstable();
+                    out.push(moe::NodeAssignment {
+                        experts,
+                        n_shared: shared,
+                        n_unique: unique,
+                    });
+                }
+                out
+            } else {
+                moe::compute_assignments_with_overlap(
+                    &moe_cfg.config.ranking,
+                    plan.active_ids.len(),
+                    moe_cfg.config.min_experts_per_node,
+                    plan.overlap,
+                )
+            };
             let my_assignment = &assignments[my_shard_index];
             let _ = emit_event(OutputEvent::MoeDistribution {
                 model: model_name.clone(),
@@ -2733,41 +2823,78 @@ async fn moe_election_loop(
                     unique_experts: my_assignment.n_unique,
                 },
             });
-
-            // Advertise a non-ready local runtime before split generation / load so
-            // peer liveness stays conservative during MoE convergence.
-            node.set_model_runtime_starting(&model_name).await;
-            node.regossip().await;
-
-            let shard_path = moe::split_path(&model, plan.active_ids.len(), my_shard_index);
-
-            if !shard_path.exists() {
+            if pinned.is_some() {
                 emit_warning(
-                    format!("Splitting GGUF → {} ...", shard_path.display()),
+                    "Using pinned MoE expert assignments from manifest",
                     Some(format!(
                         "model={model_name} shard={}/{}",
                         my_shard_index + 1,
                         plan.active_ids.len()
                     )),
                 );
-                match moe::run_split(&bin_dir, &model, my_assignment, &shard_path) {
-                    Ok(()) => {
-                        let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
+            }
+
+            // Advertise a non-ready local runtime before split generation / load so
+            // peer liveness stays conservative during MoE convergence.
+            node.set_model_runtime_starting(&model_name).await;
+            node.regossip().await;
+
+            // Branch: trunk/experts split storage vs. monolithic per-node shard.
+            let use_split_storage = moe_storage
+                .as_ref()
+                .map(|cfg| matches!(cfg.mode, crate::plugin::MoeStorageMode::Split))
+                .unwrap_or(false);
+
+            let monolithic_shard_path =
+                moe::split_path(&model, plan.active_ids.len(), my_shard_index);
+            let mut resolved_shards: Option<moe::ResolvedShards> = None;
+            let (shard_model_path, shard_bytes): (std::path::PathBuf, u64) = if use_split_storage {
+                // Trunk/experts mode: produce (or reuse) shared trunk + this node's experts,
+                // publish / wait for the shared manifest, then hand both paths to the launcher.
+                let cfg = moe_storage.as_ref().expect("use_split_storage ⇒ moe_storage set");
+                let mut assignments_map = std::collections::BTreeMap::new();
+                for (i, a) in assignments.iter().enumerate() {
+                    assignments_map.insert(i, a.experts.clone());
+                }
+                let is_leader = my_shard_index == 0;
+                let opts = moe::EnsureOpts {
+                    bin_dir: bin_dir.clone(),
+                    model_path: model.clone(),
+                    assignments: assignments_map,
+                    node_index: my_shard_index,
+                    is_leader,
+                    follower_timeout: std::time::Duration::from_secs(30 * 60),
+                };
+                match moe::ensure_trunk_and_expert(cfg, &opts) {
+                    Ok(shards) => {
+                        let t_sz = std::fs::metadata(&shards.trunk)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        let e_sz = std::fs::metadata(&shards.experts)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
                         emit_warning(
-                            format!("Split complete: {:.1} GB", size as f64 / 1e9),
+                            format!(
+                                "Trunk/experts ready (manifest={}): trunk={:.2} GB experts={:.2} GB",
+                                shards.manifest_version,
+                                t_sz as f64 / 1e9,
+                                e_sz as f64 / 1e9
+                            ),
                             Some(format!(
-                                "model={model_name} shard_path={}",
-                                shard_path.display()
+                                "model={model_name} trunk={} experts={}",
+                                shards.trunk.display(),
+                                shards.experts.display()
                             )),
                         );
+                        let total = t_sz + e_sz;
+                        let experts_path = shards.experts.clone();
+                        resolved_shards = Some(shards);
+                        (experts_path, total)
                     }
                     Err(e) => {
                         emit_error(
-                            format!("moe-split failed: {e}"),
-                            Some(format!(
-                                "model={model_name} shard_path={}",
-                                shard_path.display()
-                            )),
+                            format!("ensure_trunk_and_expert failed: {e}"),
+                            Some(format!("model={model_name} mode=moe-split-storage")),
                         );
                         node.set_model_runtime_context_length(&model_name, None)
                             .await;
@@ -2780,13 +2907,70 @@ async fn moe_election_loop(
                     }
                 }
             } else {
-                let size = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
-                emit_moe_status(
-                    &model_name,
-                    "using cached shard",
-                    format!("{} ({:.1} GB)", shard_path.display(), size as f64 / 1e9),
-                );
-            }
+                if !monolithic_shard_path.exists() {
+                    emit_warning(
+                        format!("Splitting GGUF → {} ...", monolithic_shard_path.display()),
+                        Some(format!(
+                            "model={model_name} shard={}/{}",
+                            my_shard_index + 1,
+                            plan.active_ids.len()
+                        )),
+                    );
+                    match moe::run_split(
+                        &bin_dir,
+                        &model,
+                        my_assignment,
+                        &monolithic_shard_path,
+                    ) {
+                        Ok(()) => {
+                            let size = std::fs::metadata(&monolithic_shard_path)
+                                .map(|m| m.len())
+                                .unwrap_or(0);
+                            emit_warning(
+                                format!("Split complete: {:.1} GB", size as f64 / 1e9),
+                                Some(format!(
+                                    "model={model_name} shard_path={}",
+                                    monolithic_shard_path.display()
+                                )),
+                            );
+                        }
+                        Err(e) => {
+                            emit_error(
+                                format!("moe-split failed: {e}"),
+                                Some(format!(
+                                    "model={model_name} shard_path={}",
+                                    monolithic_shard_path.display()
+                                )),
+                            );
+                            node.set_model_runtime_context_length(&model_name, None)
+                                .await;
+                            node.regossip().await;
+                            if peer_rx.changed().await.is_err() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                            continue;
+                        }
+                    }
+                } else {
+                    let size = std::fs::metadata(&monolithic_shard_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    emit_moe_status(
+                        &model_name,
+                        "using cached shard",
+                        format!(
+                            "{} ({:.1} GB)",
+                            monolithic_shard_path.display(),
+                            size as f64 / 1e9
+                        ),
+                    );
+                }
+                let size = std::fs::metadata(&monolithic_shard_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                (monolithic_shard_path.clone(), size)
+            };
 
             // Start llama-server with our shard
             let llama_port = match find_free_port().await {
@@ -2804,13 +2988,12 @@ async fn moe_election_loop(
                 }
             };
 
-            let shard_bytes = std::fs::metadata(&shard_path).map(|m| m.len()).unwrap_or(0);
             match launch::start_llama_server(
                 &runtime,
                 &bin_dir,
                 binary_flavor,
                 launch::ModelLaunchSpec {
-                    model: &shard_path,
+                    model: &shard_model_path,
                     http_port: llama_port,
                     tunnel_ports: &[],
                     tensor_split: None,
@@ -2834,6 +3017,8 @@ async fn moe_election_loop(
                             plugin_endpoint_key: None,
                         },
                     )),
+                    split_shards: resolved_shards.as_ref(),
+                    moe_storage: moe_storage.as_ref(),
                 },
             )
             .await
@@ -2900,7 +3085,7 @@ async fn moe_election_loop(
                     emit_error(
                         format!(
                             "MoE split validation failed for shard {}: {e}",
-                            shard_path.display()
+                            shard_model_path.display()
                         ),
                         Some(format!("model={model_name}")),
                     );
@@ -2908,7 +3093,7 @@ async fn moe_election_loop(
                         "Refusing to enter MoE split mode on this node until the shard validates",
                         Some(format!(
                             "model={model_name} shard_path={}",
-                            shard_path.display()
+                            shard_model_path.display()
                         )),
                     );
                     node.set_model_runtime_context_length(&model_name, None)
@@ -3233,6 +3418,8 @@ async fn start_llama(
                     plugin_endpoint_key: None,
                 },
             )),
+            split_shards: None,
+            moe_storage: None,
         },
     )
     .await

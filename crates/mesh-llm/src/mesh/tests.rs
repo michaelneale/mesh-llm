@@ -3686,6 +3686,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_older_peer() -> Result<()>
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );
@@ -3784,6 +3785,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_malformed_peer_version() -
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );
@@ -3880,6 +3882,7 @@ async fn config_subscribe_allows_pinned_snapshot_for_same_release_prerelease_pee
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );
@@ -4055,6 +4058,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_malformed_peer
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );
@@ -4155,6 +4159,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_older_peer() -
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );
@@ -4256,6 +4261,7 @@ async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_sam
                     parallel: None,
                 }],
                 plugins: vec![],
+                moe: Default::default(),
             },
             expected_revision,
         );

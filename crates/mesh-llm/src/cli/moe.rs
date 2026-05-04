@@ -40,6 +40,39 @@ pub(crate) enum MoeCommand {
         #[arg(long, default_value = "meshllm/moe-rankings")]
         dataset_repo: String,
     },
+    /// Convert a model into Mesh-LLM trunk/experts split layout on shared
+    /// storage. Runs the splitter from the source GGUF (existing monolithic
+    /// per-node shards can't be losslessly decomposed) and publishes a
+    /// manifest. Idempotent: re-running with the same inputs skips files
+    /// that already exist and match the expected hash.
+    Migrate {
+        /// Source monolithic GGUF. Local path (HF/catalog resolution is NOT
+        /// attempted here — this command targets already-staged models).
+        #[arg(long = "source-model")]
+        source_model: PathBuf,
+        /// Override for `moe.storage.trunk_path`. Falls back to config then
+        /// the `MESH_LLM_NAS_ROOT` env var.
+        #[arg(long)]
+        nas_root: Option<PathBuf>,
+        /// Number of nodes in the target mesh.
+        #[arg(long, default_value = "2")]
+        n_nodes: usize,
+        /// Expert-replication factor (overlap) passed to the planner. 1 = no
+        /// replication; 2 = shared core doubled across every node, etc.
+        #[arg(long, default_value = "2")]
+        overlap: u32,
+        /// Override the ranking CSV instead of resolving it via cache / HF.
+        #[arg(long)]
+        ranking_file: Option<PathBuf>,
+        /// Print the planned layout + projected storage savings and exit
+        /// without invoking the splitter.
+        #[arg(long)]
+        dry_run: bool,
+        /// Directory containing `llama-moe-split`. Defaults to the sibling
+        /// bin dir of the current executable.
+        #[arg(long)]
+        bin_dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -33,8 +33,9 @@ pub(crate) use self::config::validate_config;
 pub use self::config::ExternalPluginSpec;
 #[allow(unused_imports)]
 pub use self::config::{
-    config_path, load_config, resolve_plugins, GpuAssignment, GpuConfig, MeshConfig,
-    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins,
+    config_path, load_config, resolve_experts_root, resolve_plugins, resolve_trunk_root,
+    GpuAssignment, GpuConfig, MeshConfig, ModelConfigEntry, MoeConfig, MoeStorageConfig,
+    MoeStorageMode, PluginConfigEntry, PluginHostMode, ResolvedPlugins,
 };
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;

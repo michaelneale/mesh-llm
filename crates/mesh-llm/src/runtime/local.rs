@@ -219,6 +219,8 @@ pub(super) async fn start_runtime_local_model(
                     plugin_endpoint_key: None,
                 },
             )),
+            split_shards: None,
+            moe_storage: None,
         },
     )
     .await?;

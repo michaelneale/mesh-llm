@@ -2873,6 +2873,17 @@ async fn run_auto(
     let primary_pinned_gpu = primary_startup_model
         .as_ref()
         .and_then(|model| model.pinned_gpu.clone());
+    // Clone the MoE storage config once for the primary election task. Only
+    // forward it when the user explicitly enabled split mode; monolithic
+    // passes `None` so the legacy per-node shard path runs untouched.
+    let primary_moe_storage = if matches!(
+        config.moe.storage.mode,
+        plugin::MoeStorageMode::Split
+    ) {
+        Some(config.moe.storage.clone())
+    } else {
+        None
+    };
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let primary_runtime = runtime_arc.clone();
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
@@ -2895,6 +2906,7 @@ async fn run_auto(
                 ctx_size_override: primary_ctx_size,
                 pinned_gpu: primary_pinned_gpu,
                 moe_runtime_options,
+                moe_storage: primary_moe_storage,
                 target_tx: primary_target_tx,
                 stop_rx: primary_stop_rx,
                 slots,
@@ -3054,6 +3066,14 @@ async fn run_auto(
             let extra_llama_flavor = cli.llama_flavor;
             let slots = extra_model.parallel.or(config.gpu.parallel).unwrap_or(4);
             let extra_moe_runtime_options = moe::MoeRuntimeOptions::default();
+            let extra_moe_storage = if matches!(
+                config.moe.storage.mode,
+                plugin::MoeStorageMode::Split
+            ) {
+                Some(config.moe.storage.clone())
+            } else {
+                None
+            };
             let extra_console_state = console_state.clone();
             let extra_model_name_for_status = extra_model_name.clone();
             let extra_model_name_for_process = extra_model_name.clone();
@@ -3085,6 +3105,7 @@ async fn run_auto(
                         ctx_size_override: extra_ctx_size,
                         pinned_gpu: extra_pinned_gpu,
                         moe_runtime_options: extra_moe_runtime_options,
+                        moe_storage: extra_moe_storage,
                         target_tx: extra_target_tx,
                         stop_rx: extra_stop_rx,
                         slots,
