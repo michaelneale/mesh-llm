@@ -51,7 +51,13 @@ detect_jobs() {
 }
 
 if [[ -z "${LLAMA_BUILD_DIR:-}" ]]; then
-  LLAMA_BUILD_DIR="$(default_build_dir_for_backend)"
+  if [[ -n "${LLAMA_STAGE_BUILD_DIR:-}" ]]; then
+    LLAMA_BUILD_DIR="$LLAMA_STAGE_BUILD_DIR"
+  elif [[ -n "${SKIPPY_LLAMA_BUILD_DIR:-}" ]]; then
+    LLAMA_BUILD_DIR="$SKIPPY_LLAMA_BUILD_DIR"
+  else
+    LLAMA_BUILD_DIR="$(default_build_dir_for_backend)"
+  fi
 fi
 
 if [[ ! -d "$LLAMA_WORKDIR/.git" ]]; then

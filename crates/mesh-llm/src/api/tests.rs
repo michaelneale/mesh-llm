@@ -1757,15 +1757,18 @@ async fn test_api_search_catalog_returns_canonical_model_refs() {
         !results.is_empty(),
         "expected at least one catalog result for Qwen3-Coder-Next"
     );
+    let catalog_ref = crate::models::find_catalog_model_exact("Qwen3-Coder-Next-Q4_K_M")
+        .map(crate::models::catalog_model_ref)
+        .expect("catalog model");
     let hit = results
         .into_iter()
-        .find(|entry| entry["ref"] == json!("Qwen3-Coder-Next-Q4_K_M"))
+        .find(|entry| entry["ref"] == json!(catalog_ref))
         .expect("canonical catalog model ref present");
     assert_eq!(hit["repo_id"], json!("Qwen/Qwen3-Coder-Next-GGUF"));
     assert_eq!(hit["type"], json!("gguf"));
     assert_eq!(
         hit["show"],
-        json!("mesh-llm models show Qwen3-Coder-Next-Q4_K_M")
+        json!(format!("mesh-llm models show {catalog_ref}"))
     );
 
     handle.abort();
@@ -2017,13 +2020,15 @@ async fn test_api_model_targets_combine_interest_demand_and_serving_visibility()
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let model_name = crate::models::catalog::MODEL_CATALOG[0].name.to_string();
+    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
+    let model_name = catalog_model.name.to_string();
+    let model_ref = crate::models::catalog_model_ref(catalog_model);
     let (interest, _) = state
-        .upsert_model_interest(model_name.clone(), Some("ui".to_string()))
+        .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
         .await;
     assert_eq!(
         node.explicit_model_interests().await,
-        vec![model_name.clone()]
+        vec![model_ref.clone()]
     );
 
     node.record_request(&model_name);
@@ -2031,8 +2036,8 @@ async fn test_api_model_targets_combine_interest_demand_and_serving_visibility()
     let mut peer = make_test_peer(
         0x44,
         mesh::NodeRole::Host { http_port: 9337 },
-        vec![model_name.as_str()],
-        vec![model_name.as_str()],
+        vec![model_ref.as_str()],
+        vec![model_ref.as_str()],
         true,
     );
     peer.explicit_model_interests = vec![interest.model_ref.clone()];
@@ -2075,11 +2080,12 @@ async fn test_api_status_and_models_surface_wanted_targets() {
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let model_name = crate::models::catalog::MODEL_CATALOG[0].name.to_string();
+    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
+    let model_ref = crate::models::catalog_model_ref(catalog_model);
     let (interest, _) = state
-        .upsert_model_interest(model_name.clone(), Some("ui".to_string()))
+        .upsert_model_interest(model_ref.clone(), Some("ui".to_string()))
         .await;
-    node.set_requested_models(vec![model_name.clone()]).await;
+    node.set_requested_models(vec![model_ref.clone()]).await;
 
     let (status_addr, status_handle) = spawn_management_test_server(state.clone()).await;
     let status_response = send_management_request(
@@ -2109,7 +2115,7 @@ async fn test_api_status_and_models_surface_wanted_targets() {
         .unwrap_or_default();
     let model = models
         .into_iter()
-        .find(|entry| entry["name"] == model_name)
+        .find(|entry| entry["name"] == model_ref)
         .expect("catalog model present");
     assert_eq!(model["target_rank"], json!(1));
     assert_eq!(model["explicit_interest_count"], json!(1));
@@ -2392,12 +2398,13 @@ async fn test_api_models_include_model_routing_metrics() {
         let inner = state.inner.lock().await;
         inner.node.clone()
     };
-    let model_name = crate::models::catalog::MODEL_CATALOG[0].name.clone();
+    let catalog_model = &crate::models::catalog::MODEL_CATALOG[0];
+    let model_ref = crate::models::catalog_model_ref(catalog_model);
     let peer_id = iroh::EndpointId::from(iroh::SecretKey::generate().public());
-    node.set_requested_models(vec![model_name.clone()]).await;
+    node.set_requested_models(vec![model_ref.clone()]).await;
 
     node.record_inference_attempt(
-        Some(&model_name),
+        Some(&model_ref),
         &election::InferenceTarget::Remote(peer_id),
         Duration::from_millis(6),
         Duration::from_millis(24),
@@ -2405,7 +2412,7 @@ async fn test_api_models_include_model_routing_metrics() {
         Some(9),
     );
     node.record_routed_request(
-        Some(&model_name),
+        Some(&model_ref),
         1,
         crate::network::metrics::RequestOutcome::Success(
             crate::network::metrics::RequestService::Remote,
@@ -2427,7 +2434,7 @@ async fn test_api_models_include_model_routing_metrics() {
         .unwrap_or_default();
     let model = models
         .into_iter()
-        .find(|entry| entry["name"] == model_name)
+        .find(|entry| entry["name"] == model_ref)
         .expect("catalog model present");
     assert_eq!(model["routing_metrics"]["request_count"], json!(1));
     assert_eq!(model["routing_metrics"]["successful_requests"], json!(1));

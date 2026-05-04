@@ -919,11 +919,12 @@ mod tests {
         assert_eq!(payload["sort"], serde_json::json!("parameters-desc"));
         assert!(payload.get("machine").is_some());
         let result = &payload["results"][0];
-        assert_eq!(result["ref"], serde_json::json!("Qwen3-Coder-Next-Q4_K_M"));
+        let model_ref = catalog_model_ref(model);
+        assert_eq!(result["ref"], serde_json::json!(model_ref));
         assert_eq!(result["type"], serde_json::json!("gguf"));
         assert_eq!(
             result["show"],
-            serde_json::json!("mesh-llm models show Qwen3-Coder-Next-Q4_K_M")
+            serde_json::json!(format!("mesh-llm models show {model_ref}"))
         );
     }
 

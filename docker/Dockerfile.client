@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:$PATH"
+ENV LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static"
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     cargo install cargo-chef --version 0.1.68 --locked

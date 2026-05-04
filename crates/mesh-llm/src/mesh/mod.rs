@@ -765,18 +765,22 @@ impl PeerInfo {
 fn public_model_id_from_identity(identity: &ServedModelIdentity) -> Option<String> {
     match identity.source_kind {
         ModelSourceKind::HuggingFace => identity
-            .canonical_ref
+            .repository
             .as_deref()
-            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
-            .map(|model_ref| model_ref.display_id())
-            .or_else(|| {
-                let repo = identity.repository.as_deref()?;
+            .map(|repo| {
                 let selector = identity
                     .artifact
                     .as_deref()
                     .and_then(model_ref::quant_selector_from_gguf_file)
                     .or_else(|| identity.artifact.clone());
-                Some(model_ref::format_model_ref(repo, None, selector.as_deref()))
+                model_ref::format_model_ref(repo, None, selector.as_deref())
+            })
+            .or_else(|| {
+                identity
+                    .canonical_ref
+                    .as_deref()
+                    .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+                    .map(|model_ref| model_ref.display_id())
             }),
         ModelSourceKind::Catalog => identity
             .canonical_ref
@@ -1803,8 +1807,9 @@ impl Node {
         outcome: crate::network::metrics::AttemptOutcome,
         completion_tokens: Option<u64>,
     ) {
+        let model_ref = model.map(canonical_demand_model_ref);
         self.routing_metrics.record_attempt(
-            model,
+            model_ref.as_deref(),
             crate::network::metrics::AttemptTarget::Endpoint(endpoint.to_string()),
             queue_wait,
             attempt_time,
@@ -1820,8 +1825,9 @@ impl Node {
         attempts: usize,
         outcome: crate::network::metrics::RequestOutcome,
     ) {
+        let model_ref = model.map(canonical_demand_model_ref);
         self.routing_metrics
-            .record_request(model, attempts, outcome);
+            .record_request(model_ref.as_deref(), attempts, outcome);
         self.publish_routing_runtime_snapshot();
     }
 

@@ -2929,14 +2929,15 @@ fn public_model_id(model_name: &str, descriptor: Option<&mesh::ServedModelDescri
 fn public_model_id_from_identity(identity: &mesh::ServedModelIdentity) -> Option<String> {
     match identity.source_kind {
         mesh::ModelSourceKind::HuggingFace => identity
-            .canonical_ref
+            .repository
             .as_deref()
-            .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
-            .map(|model_ref| model_ref.display_id())
+            .and_then(|repo| public_huggingface_model_ref(repo, identity.artifact.as_deref()))
             .or_else(|| {
-                identity.repository.as_deref().and_then(|repo| {
-                    public_huggingface_model_ref(repo, identity.artifact.as_deref())
-                })
+                identity
+                    .canonical_ref
+                    .as_deref()
+                    .and_then(|model_ref| model_ref::ModelRef::parse(model_ref).ok())
+                    .map(|model_ref| model_ref.display_id())
             }),
         mesh::ModelSourceKind::Catalog => identity
             .canonical_ref
