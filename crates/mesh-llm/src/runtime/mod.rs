@@ -3132,8 +3132,8 @@ async fn run_auto(
                                         .and_then(|m| m.cache_type_k.as_deref()),
                                     cache_type_v_override: model_overrides
                                         .and_then(|m| m.cache_type_v.as_deref()),
-                n_batch_override: model_overrides.and_then(|m| m.batch),
-                n_ubatch_override: model_overrides.and_then(|m| m.ubatch),
+                                    n_batch_override: model_overrides.and_then(|m| m.batch),
+                                    n_ubatch_override: model_overrides.and_then(|m| m.ubatch),
                                     flash_attention_override: model_overrides
                                         .and_then(|m| m.flash_attention)
                                         .unwrap_or(FlashAttentionType::Auto),

@@ -54,10 +54,6 @@ impl KvCachePolicy {
         self.v_type.as_config_value()
     }
 
-    pub(crate) fn requires_flash_attention(self) -> bool {
-        !matches!(self.v_type, KvCacheType::F16)
-    }
-
     pub(crate) fn label(self, model_bytes: u64) -> String {
         let tier = if model_bytes >= Self::LARGE_TIER_MIN_BYTES {
             "model >= 50GB"

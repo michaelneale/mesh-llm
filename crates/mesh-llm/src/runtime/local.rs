@@ -440,7 +440,7 @@ async fn load_split_runtime_generation(
         .cache_type_v_override
         .unwrap_or(kv_cache.cache_type_v())
         .to_string();
-    let effective_flash_attention =
+    let resolved_flash_attn_type =
         effective_flash_attention(spec.flash_attention_override, &effective_cache_type_v);
     tracing::info!(
         model = spec.model_ref,
@@ -473,7 +473,7 @@ async fn load_split_runtime_generation(
             n_gpu_layers: -1,
             cache_type_k: effective_cache_type_k.clone(),
             cache_type_v: effective_cache_type_v.clone(),
-            flash_attn_type: effective_flash_attention,
+            flash_attn_type: resolved_flash_attn_type,
             shutdown_generation: spec.generation.generation,
             load_mode: LoadMode::RuntimeSlice,
             upstream: None,
@@ -1231,7 +1231,7 @@ fn split_stage0_config(
     let effective_cache_type_v = cache_type_v_override
         .unwrap_or(kv_cache.cache_type_v())
         .to_string();
-    let effective_flash_attention =
+    let resolved_flash_attn_type =
         effective_flash_attention(flash_attention_override, &effective_cache_type_v);
     StageConfig {
         run_id: run_id.to_string(),
@@ -1257,7 +1257,7 @@ fn split_stage0_config(
         n_gpu_layers: -1,
         cache_type_k: effective_cache_type_k,
         cache_type_v: effective_cache_type_v,
-        flash_attn_type: effective_flash_attention,
+        flash_attn_type: resolved_flash_attn_type,
         filter_tensors_on_load: true,
         selected_device: pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
             backend_device: gpu.backend_device.clone(),
@@ -1334,7 +1334,7 @@ async fn start_runtime_skippy_model(
     let effective_cache_type_v = spec
         .cache_type_v_override
         .unwrap_or(kv_cache.cache_type_v());
-    let effective_flash_attention =
+    let resolved_flash_attn_type =
         effective_flash_attention(spec.flash_attention_override, effective_cache_type_v);
     tracing::info!(
         model = model_name,
@@ -1350,7 +1350,7 @@ async fn start_runtime_skippy_model(
         .with_ctx_size(context_length)
         .with_generation_concurrency(spec.slots)
         .with_cache_types(effective_cache_type_k, effective_cache_type_v)
-        .with_flash_attn_type(effective_flash_attention);
+        .with_flash_attn_type(resolved_flash_attn_type);
     if spec.n_batch_override.is_some() || spec.n_ubatch_override.is_some() {
         options = options.with_batch_sizes(spec.n_batch_override, spec.n_ubatch_override);
     }
