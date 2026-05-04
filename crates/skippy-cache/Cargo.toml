@@ -1,0 +1,17 @@
+[package]
+name = "skippy-cache"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "skippy_cache"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+skippy-protocol = { path = "../skippy-protocol" }
+skippy-runtime = { path = "../skippy-runtime" }

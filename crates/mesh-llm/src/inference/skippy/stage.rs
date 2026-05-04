@@ -388,6 +388,7 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         bind_addr: load.bind_addr.clone(),
         upstream: load.upstream.as_ref().map(peer_config),
         downstream: load.downstream.as_ref().map(peer_config),
+        full_state_cache: None,
     })
 }
 

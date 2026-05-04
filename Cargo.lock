@@ -7041,6 +7041,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "skippy-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "serde_json",
+ "sha2 0.10.9",
+ "skippy-protocol",
+ "skippy-runtime",
+]
+
+[[package]]
 name = "skippy-correctness"
 version = "0.1.0"
 dependencies = [

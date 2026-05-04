@@ -1183,6 +1183,7 @@ fn split_stage0_config(
             stage_index: downstream_stage_index,
             endpoint: downstream_endpoint,
         }),
+        full_state_cache: None,
     }
 }
 

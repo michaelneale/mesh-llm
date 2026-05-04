@@ -272,6 +272,7 @@ fn multimodal_stage_config(
         bind_addr: bind_addr.to_string(),
         upstream: None,
         downstream: None,
+        full_state_cache: None,
     }
 }
 

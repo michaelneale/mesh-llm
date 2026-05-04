@@ -2,11 +2,10 @@ use std::collections::HashMap;
 
 use skippy_protocol::{LoadMode, PeerConfig, StageConfig, StageDevice};
 
+use super::family_policy::FamilyPolicy;
 use super::materialization::StagePackageInfo;
 use super::topology::MeshStagePlan;
-use super::{
-    StageLoadRequest, StagePeerDescriptor, StageStatusSnapshot, StageStopRequest, StageWireDType,
-};
+use super::{StageLoadRequest, StagePeerDescriptor, StageStatusSnapshot, StageStopRequest};
 use crate::mesh;
 
 pub(crate) struct StageDeploymentContext<'a> {
@@ -14,6 +13,7 @@ pub(crate) struct StageDeploymentContext<'a> {
     pub(crate) run_id: &'a str,
     pub(crate) model_id: &'a str,
     pub(crate) package: &'a StagePackageInfo,
+    pub(crate) family_policy: &'a FamilyPolicy,
     pub(crate) activation_width: i32,
     pub(crate) ctx_size: u32,
     pub(crate) projector_path: Option<String>,
@@ -40,7 +40,7 @@ pub(crate) fn remote_stage_load_request(
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),
         activation_width: context.activation_width,
-        wire_dtype: StageWireDType::F16,
+        wire_dtype: context.family_policy.activation_wire_dtype,
         ctx_size: context.ctx_size,
         n_gpu_layers: -1,
         cache_type_k: "f16".to_string(),
@@ -90,6 +90,7 @@ pub(crate) fn stage0_config(
             stage_index: downstream_stage.stage_index,
             endpoint: downstream_endpoint,
         }),
+        full_state_cache: None,
     }
 }
 
@@ -189,6 +190,9 @@ mod tests {
             run_id: "run-a",
             model_id: "model-a",
             package: &package,
+            family_policy: &crate::inference::skippy::family_policy::family_policy_for_family_id(
+                None,
+            ),
             activation_width: 1024,
             ctx_size: 8192,
             projector_path: Some("/models/mmproj.gguf".to_string()),

@@ -674,6 +674,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".to_string(),
             upstream: None,
             downstream: None,
+            full_state_cache: None,
         };
 
         let runtime_config = runtime_config_from_stage_config(&config).unwrap();

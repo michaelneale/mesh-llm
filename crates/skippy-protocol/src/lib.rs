@@ -172,6 +172,8 @@ pub struct StageConfig {
     pub upstream: Option<PeerConfig>,
     #[serde(default)]
     pub downstream: Option<PeerConfig>,
+    #[serde(default)]
+    pub full_state_cache: Option<StageFullStateCacheConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -198,6 +200,44 @@ pub struct PeerConfig {
     pub stage_id: String,
     pub stage_index: u32,
     pub endpoint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct StageFullStateCacheConfig {
+    #[serde(default)]
+    pub mode: StageFullStateCacheMode,
+    #[serde(default)]
+    pub payload: StageFullStateCachePayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(default = "default_full_state_cache_max_entries")]
+    pub max_entries: usize,
+    #[serde(default)]
+    pub max_bytes: u64,
+    #[serde(default)]
+    pub min_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StageFullStateCacheMode {
+    #[default]
+    Disabled,
+    Record,
+    LookupRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StageFullStateCachePayload {
+    #[default]
+    FullState,
+    RecurrentOnly,
+    KvRecurrent,
+}
+
+fn default_full_state_cache_max_entries() -> usize {
+    4
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

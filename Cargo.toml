@@ -12,6 +12,7 @@ members = [
     "crates/model-hf",
     "crates/skippy-protocol",
     "crates/skippy-topology",
+    "crates/skippy-cache",
     "crates/skippy-metrics",
     "crates/openai-frontend",
     "crates/skippy-ffi",
