@@ -10,7 +10,9 @@ using `f32` activation wire format, `--prefill-chunk-size 256`,
 
 ```mermaid
 flowchart LR
-    D["benchmark driver<br/>token IDs + control<br/>~183 KiB total corpus"] --> S0["stage-0<br/>layers 0..10<br/>embeddings + first block"]
+    Client["OpenAI client / benchmark driver"] --> Mesh["mesh-llm<br/>openai-frontend + stage-0 route"]
+    Mesh --> D["token IDs + control<br/>~183 KiB total corpus"]
+    D --> S0["stage-0<br/>layers 0..10<br/>embeddings + first block"]
 
     S0 -->|"activation frames<br/>~364.7 MiB total<br/>max prefill frame ~2.0 MiB<br/>decode frame 8 KiB/token"| S1["stage-1<br/>layers 10..20"]
 
@@ -22,7 +24,10 @@ flowchart LR
     S2 -->|"small replies<br/>ACKs / predicted token"| S1
     S1 -->|"small replies<br/>ACKs / predicted token"| S0
     S0 -->|"predicted tokens<br/>~6 KiB generated token IDs"| D
+    D --> Mesh
+    Mesh --> Client
 
+    Mesh -.->|"run/topology metadata<br/>small"| M
     S0 -.->|"summary OTLP<br/>small"| M["metrics-server"]
     S1 -.->|"summary OTLP<br/>small"| M
     S2 -.->|"summary OTLP<br/>small"| M

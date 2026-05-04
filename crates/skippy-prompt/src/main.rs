@@ -91,7 +91,7 @@ pub struct PromptArgs {
     pub ngram_pool_server_bin: PathBuf,
     #[arg(long, default_value = "target/debug/skippy-server")]
     pub stage_server_bin: PathBuf,
-    #[arg(long, default_value = "target/debug/llama-model-slice")]
+    #[arg(long, default_value = "target/debug/skippy-model-package")]
     pub model_slice_bin: PathBuf,
     #[arg(long, value_delimiter = ',')]
     pub hosts: Vec<String>,
@@ -3093,10 +3093,10 @@ fn materialize_stage_artifacts(args: &PromptArgs, stages: &[LocalStage]) -> Resu
             stage.stage_id, stage.layer_start, stage.layer_end
         );
         let status = run_with_progress(command, "materializing GGUF shards", done, total, &label)
-            .with_context(|| format!("run llama-model-slice for {}", stage.stage_id))?;
+            .with_context(|| format!("run skippy-model-package for {}", stage.stage_id))?;
         if !status.success() {
             bail!(
-                "llama-model-slice failed for {} with status {status}",
+                "skippy-model-package failed for {} with status {status}",
                 stage.stage_id
             );
         }
@@ -3141,9 +3141,9 @@ fn materialize_model_package(args: &PromptArgs, package_dir: &Path) -> Result<()
         1,
         &format!("{} -> {}", args.model_path.display(), package_dir.display()),
     )
-    .with_context(|| "run llama-model-slice write-package")?;
+    .with_context(|| "run skippy-model-package write-package")?;
     if !status.success() {
-        bail!("llama-model-slice write-package failed with status {status}");
+        bail!("skippy-model-package write-package failed with status {status}");
     }
 
     fs::write(

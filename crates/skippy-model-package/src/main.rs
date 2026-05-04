@@ -18,8 +18,8 @@ use skippy_ffi::TensorRole;
 use skippy_runtime::{write_gguf_from_parts, ModelInfo, TensorInfo};
 
 #[derive(Debug, Parser)]
-#[command(name = "llama-model-slice")]
-#[command(about = "Inspect, plan, and write layer-range llama model slices")]
+#[command(name = "skippy-model-package")]
+#[command(about = "Inspect, plan, write, and validate skippy model packages")]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -1466,7 +1466,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "llama-model-slice-{name}-{}-{nanos}",
+            "skippy-model-package-{name}-{}-{nanos}",
             std::process::id()
         ))
     }

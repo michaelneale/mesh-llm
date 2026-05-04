@@ -1,5 +1,5 @@
 [package]
-name = "llama-model-slice"
+name = "skippy-model-package"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

@@ -54,7 +54,7 @@ jobs:
 
       - name: Build stage runtime crates
         if: steps.sha.outputs.changed == 'true'
-        run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p llama-model-slice -p skippy-correctness -p llama-spec-bench
+        run: cargo check -p skippy-ffi -p skippy-runtime -p skippy-server -p skippy-model-package -p skippy-correctness -p llama-spec-bench
 
       - name: Update llama.cpp upstream pin
         if: steps.sha.outputs.changed == 'true'

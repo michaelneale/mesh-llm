@@ -21,9 +21,10 @@ Model execution remains in llama.cpp behind the experimental
 `skippy.h` C ABI. The Rust workspace owns server lifecycle, protocol,
 metrics, slicing utilities, benchmark orchestration, and correctness tooling.
 
-Quick mental model: the driver sends token IDs, stage servers pass activation
-frames, the final stage returns token IDs, and local KV sidecars cache immutable
-prefix state for each stage's layer range.
+Quick mental model for the mesh integration: mesh receives OpenAI requests,
+normalizes them through `openai-frontend`, routes to stage 0, stage servers pass
+activation frames, and the final stage returns token IDs. Exact cache work is a
+future embedded-runtime feature, not a standalone `kv-server` sidecar path.
 
 ## Architecture
 
@@ -37,7 +38,8 @@ token reply.
 
 ```mermaid
 flowchart LR
-    D["driver / prompt CLI<br/>token IDs + control"] -->|PrefillEmbd / DecodeEmbd| S0["stage-0<br/>skippy-server<br/>layers 0..10"]
+    C["OpenAI client"] --> Mesh["mesh-llm<br/>openai-frontend + coordinator"]
+    Mesh -->|stage-0 route<br/>token IDs + control| S0["stage-0<br/>skippy-server<br/>layers 0..10"]
     S0 -->|activation frames| S1["stage-1<br/>skippy-server<br/>layers 10..20"]
     S1 -->|activation frames| SN["..."]
     SN -->|activation frames| SF["final stage<br/>skippy-server<br/>output/readout"]
@@ -45,21 +47,20 @@ flowchart LR
     SF -->|PredictedToken| SN
     SN -->|PredictedToken / ACK| S1
     S1 -->|PredictedToken / ACK| S0
-    S0 -->|PredictedToken / ACK| D
+    S0 -->|PredictedToken / ACK| Mesh
+    Mesh --> C
 
-    S0 <-->|UDS control<br/>shared-memory fd passing| K0["local kv-server"]
-    S1 <-->|UDS control<br/>shared-memory fd passing| K1["local kv-server"]
-    SF <-->|UDS control<br/>shared-memory fd passing| KF["local kv-server"]
-
-    K0 <-.->|QUIC peer path<br/>optional hydration/replication| K1
-    K1 <-.->|QUIC peer path<br/>optional hydration/replication| KF
+    Mesh -->|LoadStage<br/>downstream-to-upstream| S1
+    Mesh -->|LoadStage| SN
+    Mesh -->|LoadStage| SF
+    Cache["mesh materialized stage cache<br/>derived package slices"] --> S0
+    Cache --> S1
+    Cache --> SF
 
     S0 -.->|OTLP summaries| M["metrics-server"]
     S1 -.->|OTLP summaries| M
     SF -.->|OTLP summaries| M
-    K0 -.->|OTLP cache metrics| M
-    K1 -.->|OTLP cache metrics| M
-    KF -.->|OTLP cache metrics| M
+    Mesh -.->|topology + lifecycle metadata| M
 ```
 
 The stage server process owns model loading, readiness, TCP accept/connect,
@@ -70,35 +71,27 @@ messages, decode messages, activation payloads, ACKs, and predicted-token
 replies. `metrics-server` is observational only; request execution must not
 wait on telemetry export.
 
-Each stage may also have a local `kv-server` sidecar. A stage never fetches KV
-pages directly from another stage. It asks its same-host `kv-server` over a Unix
-domain socket, and that sidecar is responsible for local page lifecycle and, in
-the peer-enabled path, remote transfer or hydration from other `kv-server`
-peers. The hot local KV payload path uses anonymous POSIX shared memory plus fd
-passing. The on-disk `page_root` is mainly the manifest/debug root: it contains
-`manifests/<page_id>.pb` and a `pages/` directory, while hot page bytes are kept
-in shared memory rather than normal page files.
+Mesh intentionally does not carry the standalone `kv-server` topology. Future
+exact-cache work should live behind the embedded runtime lifecycle, use full
+model/topology/stage identity, and emit metrics without adding separate sidecar
+ownership to the serving path.
 
 Stage configs describe the chain:
 
 - `stage_id`, `stage_index`, `layer_start`, and `layer_end` identify the shard.
 - `model_path` points at the per-stage GGUF slice, usually `stage-N.gguf`.
 - `upstream` and `downstream` describe the neighboring stages.
-- `kv_server.uds_path` points to the local KV sidecar socket.
-- `kv_server.mode` controls `disabled`, `record`, `lookup-record`, or
-  `correctness` behavior.
+- cache-related fields are runtime-owned and must remain tied to exact
+  model/topology/stage identity when reintroduced.
 
-The prompt CLI launcher materializes a complete runnable topology under a
-run directory. By default:
+Historical standalone prompt runs materialized a complete runnable topology
+under a run directory. Mesh now owns materialization as derived stage cache, but
+the old local layout looked like:
 
 ```text
 /tmp/skippy-prompt/model-cache/<cache-key>/stage-N.gguf
 /tmp/skippy-prompt/<run-id>/configs/stage-N.json
-/tmp/skippy-prompt/<run-id>/configs/kv-stage-N.json
-/tmp/skippy-prompt/<run-id>/kv-stage-N.sock
-/tmp/skippy-prompt/<run-id>/kv-pages-stage-N/manifests/<page_id>.pb
 /tmp/skippy-prompt/<run-id>/stage-N.log
-/tmp/skippy-prompt/<run-id>/kv-stage-N.log
 /tmp/skippy-prompt/<run-id>/metrics.duckdb
 ```
 
@@ -108,42 +101,32 @@ remote host under:
 
 ```text
 /tmp/skippy-remote-prompt/model-cache/<cache-key>/stage-N.gguf
-/tmp/skippy-remote-prompt/binary-cache/<binary-key>/{skippy-server,kv-server}
+/tmp/skippy-remote-prompt/binary-cache/<binary-key>/skippy-server
 /tmp/skippy-remote-prompt/runs/<run-id>/stage-N/stage-N.json
-/tmp/skippy-remote-prompt/runs/<run-id>/stage-N/kv-stage-N.json
-/tmp/skippy-remote-prompt/runs/<run-id>/stage-N/kv-stage-N.sock
-/tmp/skippy-remote-prompt/runs/<run-id>/stage-N/kv-pages/manifests/<page_id>.pb
 /tmp/skippy-remote-prompt/runs/<run-id>/stage-N/stage-N.log
-/tmp/skippy-remote-prompt/runs/<run-id>/stage-N/kv-stage-N.log
 ```
 
-The `kv-server` standalone default is `/var/lib/skippy/kv` for
-`page_root` and `/tmp/skippy-kv.sock` for `uds_path`; launcher-created
-configs override both paths per stage.
+Standalone cache sidecars are not part of the mesh integration.
 
 ### Where Things Live
 
 | Artifact | Prompt CLI local path | Multi-host path | Owner |
 | --- | --- | --- | --- |
-| Stage GGUF shard | `/tmp/skippy-prompt/model-cache/<cache-key>/stage-N.gguf` | `/tmp/skippy-remote-prompt/model-cache/<cache-key>/stage-N.gguf` | `llama-model-slice`, launcher |
+| Stage GGUF shard | `/tmp/skippy-prompt/model-cache/<cache-key>/stage-N.gguf` | `/tmp/skippy-remote-prompt/model-cache/<cache-key>/stage-N.gguf` | `skippy-model-package`, launcher |
 | Stage config | `<run-root>/<run-id>/configs/stage-N.json` | `<remote-root>/runs/<run-id>/stage-N/stage-N.json` | launcher, `skippy-server` |
-| KV config | `<run-root>/<run-id>/configs/kv-stage-N.json` | `<remote-root>/runs/<run-id>/stage-N/kv-stage-N.json` | launcher, `kv-server` |
-| KV socket | `<run-root>/<run-id>/kv-stage-N.sock` | `<remote-root>/runs/<run-id>/stage-N/kv-stage-N.sock` | `kv-server` |
-| KV manifests | `<run-root>/<run-id>/kv-pages-stage-N/manifests/<page_id>.pb` | `<remote-root>/runs/<run-id>/stage-N/kv-pages/manifests/<page_id>.pb` | `kv-server` |
-| Hot KV bytes | anonymous shared memory, attached by fd | anonymous shared memory, attached by fd | `kv-server`, `skippy-server` |
-| Logs | `<run-root>/<run-id>/{stage-N,kv-stage-N}.log` | `<remote-root>/runs/<run-id>/stage-N/{stage-N,kv-stage-N}.log` | launcher |
+| Logs | `<run-root>/<run-id>/stage-N.log` | `<remote-root>/runs/<run-id>/stage-N/stage-N.log` | launcher |
 | Metrics DB | `<run-root>/<run-id>/metrics.duckdb` | launcher host run directory | `metrics-server` |
 
 ### Config Shape
 
 A generated stage config points a server at one model shard, one layer range,
-its upstream/downstream peers, and the local KV socket:
+and its upstream/downstream peers:
 
 ```json
 {
   "run_id": "prompt-...",
-  "topology_id": "local-binary-kv-repl",
-  "model_id": "unsloth/Qwen3.6-35B-A3B-GGUF",
+  "topology_id": "local-binary-repl",
+  "model_id": "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
   "model_path": "/tmp/skippy-prompt/model-cache/.../stage-1.gguf",
   "stage_id": "stage-1",
   "stage_index": 1,
@@ -163,41 +146,29 @@ its upstream/downstream peers, and the local KV socket:
     "stage_id": "stage-2",
     "stage_index": 2,
     "endpoint": "tcp://127.0.0.1:19033"
-  },
-  "kv_server": {
-    "uds_path": "/tmp/skippy-prompt/<run-id>/kv-stage-1.sock",
-    "mode": "lookup-record",
-    "page_size_tokens": 512,
-    "correctness_mode": false,
-    "shared_prefix_min_tokens": 32,
-    "shared_prefix_stride_tokens": 16,
-    "shared_prefix_record_limit": 3
   }
 }
 ```
 
-A generated KV config gives the sidecar its node identity, local socket, page
-manifest root, optional peers, and metrics endpoint:
+Exact-cache configuration will be added as embedded runtime configuration when
+that feature returns. It should identify model, topology, stage range, cache
+namespace, cap, and metrics endpoint without introducing standalone sidecar
+ownership:
 
 ```json
 {
-  "node_id": "local-stage-1",
-  "cluster_id": "local-binary-repl",
+  "cache": {
+    "mode": "lookup-record",
+    "namespace": "customer-or-workload",
+    "max_bytes": 1073741824,
+    "payload": "kv-recurrent",
+    "dedupe": "blake3"
+  },
   "run_id": "prompt-...",
-  "page_root": "/tmp/skippy-prompt/<run-id>/kv-pages-stage-1",
-  "uds_path": "/tmp/skippy-prompt/<run-id>/kv-stage-1.sock",
-  "quic_bind_addr": "127.0.0.1:19444",
-  "peers": {},
-  "cache": { "max_local_bytes": null },
   "metrics": {
     "otlp_grpc_endpoint": "http://127.0.0.1:14317",
     "export_interval_ms": 5000
-  },
-  "compression": {
-    "warm_tier_codec": "lz4-block",
-    "compress_remote_only_pages": false
-  },
-  "security": { "mtls_enabled": false }
+  }
 }
 ```
 
@@ -207,41 +178,39 @@ A typical binary-chain request moves through these phases:
 
 ```mermaid
 sequenceDiagram
-    participant C as client / prompt CLI
+    participant C as OpenAI client / diagnostic CLI
+    participant M as mesh-llm
     participant T as tokenizer model
     participant S0 as stage-0
     participant S1 as middle stages
     participant SF as final stage
-    participant K as local kv-servers
 
-    C->>T: tokenize prompt text
-    T-->>C: token IDs
-    C->>S0: ready handshake
-    S0-->>C: ready
+    M->>SF: LoadStage final range
+    SF-->>M: ready
+    M->>S1: LoadStage middle range
+    S1-->>M: ready
+    M->>S0: LoadStage stage-0 range
+    S0-->>M: ready
+    M-->>C: model route published
+
+    C->>M: OpenAI request
+    M->>T: apply template and tokenize
+    T-->>M: token IDs
 
     loop prefill chunks
-        C->>S0: PrefillEmbd(pos_start, token IDs)
-        S0->>K: LookupPrefix(stage-0 page identity)
-        K-->>S0: hit fd or miss
-        S0->>S0: import KV hit or compute layers
+        M->>S0: PrefillEmbd(pos_start, token IDs)
+        S0->>S0: execute stage layers
         S0->>S1: activation frame
-        S1->>K: LookupPrefix(stage-N page identity)
-        K-->>S1: hit fd or miss
-        S1->>S1: import KV hit or compute layers
+        S1->>S1: execute stage layers
         S1->>SF: activation frame
-        SF->>K: LookupPrefix(final-stage page identity)
-        K-->>SF: hit fd or miss
-        SF->>SF: import KV hit or compute layers
+        SF->>SF: execute final layers
         SF-->>S1: ACK
         S1-->>S0: ACK
-        S0-->>C: ACK
-        S0->>K: ReservePage / AttachPage / CommitPage
-        S1->>K: ReservePage / AttachPage / CommitPage
-        SF->>K: ReservePage / AttachPage / CommitPage
+        S0-->>M: ACK
     end
 
     loop decode tokens
-        C->>S0: DecodeEmbd(current token, pos_start)
+        M->>S0: DecodeEmbd(current token, pos_start)
         S0->>S0: embed + execute stage layers
         S0->>S1: one-token activation frame
         S1->>S1: execute stage layers
@@ -249,11 +218,12 @@ sequenceDiagram
         SF->>SF: output/readout next token
         SF-->>S1: PredictedToken
         S1-->>S0: PredictedToken
-        S0-->>C: PredictedToken
-        C->>C: detokenize, append to context
+        S0-->>M: PredictedToken
+        M->>T: detokenize, append to context
+        M-->>C: stream delta or buffered response
     end
 
-    C->>S0: Stop
+    M->>S0: Stop
     S0->>S1: Stop
     S1->>SF: Stop
     S0->>S0: reset session
@@ -261,45 +231,35 @@ sequenceDiagram
     SF->>SF: reset session
 ```
 
-1. The client opens a tokenizer model through `skippy-runtime` and
-   tokenizes the prompt text to token IDs. In the prompt CLI this is done
-   locally by `skippy-prompt`; the stage chain receives token IDs, not raw
+1. Mesh loads stages downstream-to-upstream, waits for readiness, and publishes
+   the stage-0 route only after the topology is ready.
+2. Mesh opens a tokenizer/runtime view through `skippy-runtime` and tokenizes
+   the prompt text to token IDs. The stage chain receives token IDs, not raw
    text.
-2. The client connects to `stage-0`, waits for the ready handshake, then sends
+3. Mesh connects to `stage-0`, waits for the ready handshake, then sends
    prompt tokens as `PrefillEmbd` chunks. Each message carries `pos_start`,
    `token_count`, sideband token IDs, and an empty activation payload because
    the first stage starts from embeddings.
-3. On each prefill chunk, every stage optionally asks its local `kv-server` for
-   a matching prefix page. The page identity includes model, topology, stage
-   layer range, tokenizer/chat-template identity, position config, token range,
-   and prefix hash. An exact local hit is attached via fd passing and imported
-   into the stage runtime. Otherwise the stage computes its layer range.
 4. A non-final stage emits an activation frame for the same token span and
    forwards it downstream. The receiving stage consumes that activation as its
    input, computes its own layer range, and forwards the next activation frame.
    Prefill messages usually require only ACKs; the final predicted token is not
    needed until decode.
-5. After computing a prefill chunk, a stage in `record`, `lookup-record`, or
-   `correctness` mode queues native llama.cpp KV page export for its layer
-   range. The background recorder reserves a page in local `kv-server`, writes
-   the bytes into the mapped shared memory page, commits the manifest under
-   that sidecar's `page_root`, and may warm an idle runtime session for a later
-   hit.
-6. Decode starts with the final prompt token as the current token. The client
+5. Decode starts with the final prompt token as the current token. Mesh
    sends one `DecodeEmbd` message per generated token with `token_count = 1`
    and `pos_start = prefill_tokens + decode_index`.
-7. `stage-0` embeds and executes its layers for that token, then forwards a
+6. `stage-0` embeds and executes its layers for that token, then forwards a
    one-token activation frame. Each downstream stage repeats the same pattern.
    The final stage runs the output/readout path, samples or selects the next
    token through the runtime ABI, and sends a `PredictedToken` reply upstream.
-8. Intermediate stages relay that predicted-token reply back to the previous
+7. Intermediate stages relay that predicted-token reply back to the previous
    hop. The client detokenizes the returned token for display, appends it to the
    context, and sends the next decode step until `max_new_tokens`, EOG, or an
    error.
-9. The client sends `Stop`. Each stage forwards the stop message downstream,
+8. The client sends `Stop`. Each stage forwards the stop message downstream,
    emits its request summary, resets the stage session, and drops local session
-   state. KV pages recorded as immutable prefix pages remain available to the
-   local sidecar cache according to its cache policy.
+   state. Future exact-cache state, when enabled, remains available according
+   to embedded runtime cache policy.
 
 Activation traffic dominates this path. Prompt tokens, ACKs, predicted-token
 replies, and telemetry are small compared with stage-to-stage activation frames;
@@ -392,29 +352,27 @@ pie title Reference Mixed-192 Data Volume
     "generated/decode token IDs" : 0.006
 ```
 
-### KV Page Lifecycle
+### Future Exact-Cache Lifecycle
 
-KV sidecars cache per-stage prefix state. The stage server owns the runtime
-import/export calls; `kv-server` owns lookup, attach, reservation, commit,
-manifest validation, eviction, and peer hydration.
+Exact cache support should be embedded under mesh/runtime lifecycle. The stage
+server owns runtime import/export calls, while cache lookup, dedupe, eviction,
+and telemetry stay tied to model/topology/stage identity and remain invisible to
+the OpenAI routing surface.
 
 ```mermaid
 flowchart TB
     subgraph Lookup["Lookup / import path"]
-        L0["stage computes page identity<br/>model + topology + stage range + prefix hash"] --> L1["LookupPrefix over local UDS"]
-        L1 --> L2{"local ready page?"}
-        L2 -->|yes| L3["AttachPage read-only<br/>fd passing"]
-        L3 --> L4["mmap shared page"]
-        L4 --> L5["runtime imports KV page<br/>into llama.cpp tensors"]
+        L0["stage computes page identity<br/>model + topology + stage range + prefix hash"] --> L1["LookupPrefix in embedded cache"]
+        L1 --> L2{"embedded cache hit?"}
+        L2 -->|yes| L3["reconstruct exact state<br/>deduped blocks"]
+        L3 --> L4["runtime imports state<br/>into llama.cpp tensors"]
         L2 -->|no| L6["compute prefill normally"]
     end
 
     subgraph Record["Record / export path"]
-        R0["runtime probes KV page<br/>for token range"] --> R1["ReservePage"]
-        R1 --> R2["AttachPage read-write<br/>fd passing"]
-        R2 --> R3["runtime exports KV bytes<br/>into mmap"]
-        R3 --> R4["CommitPage with checksum"]
-        R4 --> R5["manifest written under<br/>page_root/manifests/&lt;page_id&gt;.pb"]
+        R0["runtime exports exact state<br/>for token range"] --> R1["content-address blocks<br/>BLAKE3"]
+        R1 --> R2["dedupe and apply cap<br/>per model/stage"]
+        R2 --> R3["commit manifest + metrics"]
     end
 ```
 
@@ -545,32 +503,29 @@ Vulkan backend archives when they are present in `LLAMA_STAGE_BUILD_DIR`.
 - `skippy-protocol` - stage messages and load-mode types
 - `skippy-metrics` - OTEL/report naming conventions
 - `skippy-server` - stage service binary
-- `llama-model-slice` - model slicing/package CLI
+- `skippy-model-package` - model inspection and stage-package CLI
 - `skippy-correctness` - staged-vs-full validation CLI
 - `metrics-server` - benchmark telemetry service
 - `skippy-bench` - benchmark launcher
-- `skippy-prompt` - prompt CLI and KV topology launcher
+- `skippy-prompt` - diagnostic prompt CLI for mesh-managed stage chains
 - `llama-spec-bench` - local target/draft speculative pair checker
-- `ngram-pool` - model-free n-gram speculative proposal helper
-- `ngram-pool-server` - local protobuf service for shared n-gram pools
 
 ## Prompt CLI
 
 For speculative decoding modes, diagrams, usage, and current benchmark notes,
 see [`SPECULATIVE_DECODING.md`](SPECULATIVE_DECODING.md).
 
-For local prompt testing with the KV sidecar enabled:
+For local prompt diagnostics against the staged runtime:
 
 ```bash
 just prompt /path/to/model.gguf
 ```
 
-This starts `metrics-server`, local `kv-server` sidecars, and local
-`skippy-server serve-binary` processes in a temporary run directory. The
-default local topology is the current Qwen3.6 40-layer split, `0..10`,
-`10..20`, `20..30`, and `30..40`, with `kv_server.mode = lookup-record`. The
-prompt CLI is implemented in the `skippy-prompt` Rust crate and streams decode
-tokens over the binary stage protocol.
+Historically this launcher started all local sidecars itself. In mesh, normal
+topology and lifecycle are owned by `mesh-llm`; `skippy-prompt binary` is the
+diagnostic path for a running first-stage endpoint. The prompt CLI is
+implemented in the `skippy-prompt` Rust crate and streams decode tokens over
+the binary stage protocol.
 Pass extra script flags through the recipe, for example:
 
 ```bash
@@ -586,21 +541,21 @@ just prompt /path/to/model.gguf --single-stage
 That mode infers the model layer count, materializes one full-range stage
 artifact with embeddings and output tensors, and starts one binary stage server.
 
-The binary stages record KV pages through their local sidecars. First-stage or
-full-model prefill can import a local partial KV hit and compute only the
-suffix; non-final stages still compute boundary activations because downstream
-stages need the activation stream.
+Future embedded exact-cache support can let first-stage or full-model prefill
+restore a local prefix hit and compute only the suffix. Non-final stages still
+need a coherent boundary activation stream whenever an upstream stage falls
+back to recompute.
 
 Each prompt CLI process has a chain-wide `session_id`. Pass `--session-id` to
 choose it explicitly; otherwise the REPL generates one. The CLI keeps that
-human-readable ID for logs and n-gram pool keys, but hashes it to a nonzero
-`u64` for the binary stage protocol. Every binary prefill, decode, verify-span,
-and stop message carries fixed-width `u64` `session_id` and `request_id` fields;
-the wire does not carry variable-length ID strings in the prefill path. The
-binary message fixed prefix is currently 72 bytes before token sideband or
-activation payload. Binary stages use the incoming session ID for runtime stage
-sessions, KV identity, and telemetry, so concurrent prompt sessions do not
-collapse into stage-local connection identifiers.
+human-readable ID for logs, but hashes it to a nonzero `u64` for the binary
+stage protocol. Every binary prefill, decode, verify-span, and stop message
+carries fixed-width `u64` `session_id` and `request_id` fields; the wire does
+not carry variable-length ID strings in the prefill path. The binary message
+fixed prefix is currently 72 bytes before token sideband or activation payload.
+Binary stages use the incoming session ID for runtime stage sessions, future
+cache identity, and telemetry, so concurrent prompt sessions do not collapse
+into stage-local connection identifiers.
 
 ### Multi-Host Prompt CLI
 
@@ -639,7 +594,7 @@ same model shard or binary is already present:
 /tmp/skippy-prompt/model-cache      local materialized shards
 /tmp/skippy-remote-prompt/model-cache     remote shard cache
 /tmp/skippy-remote-prompt/binary-cache    remote binary cache
-/tmp/skippy-remote-prompt/runs            per-run configs, logs, KV pages
+/tmp/skippy-remote-prompt/runs            per-run configs and logs
 ```
 
 Requirements:
@@ -678,8 +633,8 @@ trims the speculative attention KV suffix and uses the native recurrent
 checkpoint slot for recurrent models.
 
 The draft model must be loadable by the runtime-slice ABI. Today that includes
-plain Llama, dense Qwen2/Qwen3, Qwen35MoE, Gemma/Gemma4, and DeepSeek2 graphs.
-Falcon-H1 has initial hybrid recurrent runtime-slice support; other hybrid
+plain Llama, dense Qwen2/Qwen3, Gemma/Gemma4, and DeepSeek2 graphs. Falcon-H1
+has initial hybrid recurrent runtime-slice support; other hybrid
 families still need family-specific validation before they can be treated as
 supported runtime-slice targets.
 
@@ -719,50 +674,10 @@ policy, checkpoint, restore, and recovery reverify timings.
 
 ### N-Gram Speculative Prompt Example
 
-The prompt CLI can also use a model-free n-gram proposal pool:
-
-```bash
-just prompt /path/to/model.gguf \
-  --ngram-speculative \
-  --spec-ngram-size-n 24 \
-  --draft-min 12 \
-  --draft-max 48
-```
-
-When `just prompt` launches with `--ngram-speculative`, it also starts
-`ngram-pool-server` in the run directory and the REPL uses that Unix-socket
-protobuf service for proposal and observe requests. Direct `skippy-prompt
-binary --ngram-speculative` runs use an in-process pool unless
-`--ngram-pool-uds-path` points at a running server.
-
-N-gram pools are keyed by `session_id`. The pool observes prompt tokens and
-target-verified output tokens, then proposes continuations when the active
-context repeats a known n-gram suffix. Rejected proposals are not recorded. This
-mode is intended for repeated edit loops and coding sessions; open-ended chat
-should not be expected to show the same acceptance rate.
-
-Within a pool, repeated suffixes keep ranked next-token candidates. The proposal
-path uses the most frequently observed continuation, breaking ties by recency,
-instead of letting the last observed transition overwrite earlier evidence. It
-only keeps extending a proposal while the winning continuation has repeated
-evidence, sufficient confidence, and a positive margin over the runner-up. The
-default confidence policy is flat: require two observations, at least 55%
-winner confidence, and a positive margin over the runner-up. Optional adaptive
-tightening can raise confidence, count, and margin requirements as the proposed
-span grows, but recent warm coding-loop sweeps showed the flat policy was more
-robust for the current verifier path.
-
-The server pool keys include model, tokenizer, project, tenant, session,
-explicit pool ID, and n-gram size fields so callers can choose whether pools are
-isolated per session or intentionally shared across a trusted project/task.
-
-Tune confidence with `--ngram-min-winner-count`, `--ngram-min-confidence`,
-`--ngram-min-margin`, `--ngram-confidence-step`,
-`--ngram-confidence-step-tokens`, `--ngram-max-confidence`,
-`--ngram-count-step-tokens`, and `--ngram-margin-step-tokens`. The defaults use
-`--ngram-min-confidence 0.55`, `--ngram-confidence-step 0`, and very large
-count/margin step intervals for a flat policy. Set non-zero step values to
-experiment with length-adaptive tightening.
+Standalone n-gram pool serving is not part of the mesh integration. Keep older
+n-gram benchmark notes as historical evidence only; new speculative work should
+enter through mesh-owned runtime hooks and be validated by
+`llama-spec-bench`, `skippy-correctness`, and `skippy-bench`.
 
 Inside the prompt CLI, `:history` shows prior prompts, `:logs [name] [lines]`
 tails process logs, `:rerun N` repeats a prompt, and `:quit` tears down the

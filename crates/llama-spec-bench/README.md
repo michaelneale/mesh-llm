@@ -11,7 +11,8 @@ projected verification costs.
 
 This crate runs both models locally through `skippy-runtime`. It is a
 preflight tool for deciding whether a draft model is safe and useful before it
-is wired into `skippy-prompt` or benchmark launchers.
+is wired into mesh-owned stage serving, `skippy-prompt` diagnostics, or
+benchmark launchers.
 The target and draft are opened as complete local models without tensor
 filtering; this keeps draft compatibility focused on tokenizer agreement and
 full-model decode behavior instead of requiring every candidate draft
@@ -27,6 +28,7 @@ flowchart LR
     Base --> Compare["token equality check"]
     Spec --> Compare
     Compare --> Report["human summary<br/>optional JSON report"]
+    Report --> Mesh["mesh/skippy plan<br/>draft opt-in evidence"]
 ```
 
 ## Verification Loop

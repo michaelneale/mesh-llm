@@ -18,7 +18,7 @@ members = [
     "crates/skippy-runtime",
     "crates/skippy-server",
     "crates/metrics-server",
-    "crates/llama-model-slice",
+    "crates/skippy-model-package",
     "crates/skippy-correctness",
     "crates/llama-spec-bench",
     "crates/skippy-bench",

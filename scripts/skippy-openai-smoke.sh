@@ -65,12 +65,12 @@ if [[ ! -f "$MODEL_PATH" ]]; then
   exit 1
 fi
 
-echo "building skippy-server and llama-model-slice"
-LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" cargo build -p skippy-server -p llama-model-slice
+echo "building skippy-server and skippy-model-package"
+LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" cargo build -p skippy-server -p skippy-model-package
 
 echo "inferring layer_end from $MODEL_PATH"
 LAYER_END="$(
-  LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" target/debug/llama-model-slice inspect "$MODEL_PATH" \
+  LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" target/debug/skippy-model-package inspect "$MODEL_PATH" \
     | jq '[.tensors[] | select(.role == "layer") | .layer_index] | max + 1'
 )"
 if [[ -z "$LAYER_END" || "$LAYER_END" == "null" ]]; then

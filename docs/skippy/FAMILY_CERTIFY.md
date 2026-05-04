@@ -81,7 +81,7 @@ separate unless the combined resident set has been intentionally budgeted.
 | Phase | Resident Model Data | Teardown Rule |
 | --- | --- | --- |
 | Full correctness lanes | Source GGUF opened by `skippy-correctness`. | The full `StageModel` is dropped before staged prompt/spec starts. |
-| Slice materialization | Source GGUF is read by `llama-model-slice` to write stage artifacts. | The slicer exits before prompt stages launch. |
+| Stage materialization | Source GGUF is read by `skippy-model-package` to write stage artifacts. | The package tool exits before prompt stages launch. |
 | Staged prompt/spec | Local stage artifacts plus optional draft model. The prompt tokenizer uses the first local stage artifact with CPU-only loading. | `skippy-prompt prompt` owns and kills stage/KV/metrics children before returning; corpus modes run one at a time. |
 
 Using the target as its own draft is allowed only when it is useful and the
@@ -147,9 +147,9 @@ prompt/spec lifecycle:
 
 ```bash
 bash -n scripts/family-certify.sh
-cargo fmt --check -p skippy-topology -p llama-model-slice -p skippy-prompt
+cargo fmt --check -p skippy-topology -p skippy-model-package -p skippy-prompt
 cargo test -p skippy-topology
 LLAMA_STAGE_BUILD_DIR=.deps/llama-stage.cpp/build-stage-abi-static \
-  cargo build -p skippy-prompt -p llama-model-slice -p skippy-topology
+  cargo build -p skippy-prompt -p skippy-model-package -p skippy-topology
 git diff --check
 ```

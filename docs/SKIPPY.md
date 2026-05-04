@@ -59,7 +59,7 @@ Bring over these skippy crates:
 | `skippy-metrics` | Runtime telemetry helpers |
 | `metrics-server` | Benchmark/debug OTLP ingest, run lifecycle, DuckDB storage, and report export |
 | `openai-frontend` | Shared OpenAI-compatible request/response, streaming, responses API compatibility, structured-output, tool-call, logprob, and backend contract |
-| `llama-model-slice` | Later package tooling for producing layer packages |
+| `skippy-model-package` | Later package tooling for producing layer packages |
 
 Keep the first mesh integration focused on staged serving, OpenAI compatibility,
 model lifecycle, topology planning, and package materialization. Prefix-cache

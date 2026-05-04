@@ -16,7 +16,9 @@ by `skippy-server`.
 ```mermaid
 flowchart LR
     P["prompt tokens"] --> Full["full model baseline"]
-    P --> Staged["staged chain<br/>stage-0 -> ... -> final"]
+    P --> Plan["skippy-topology<br/>split + dtype policy"]
+    Plan --> Staged["staged chain<br/>stage-0 -> ... -> final"]
+    Package["layer package or direct GGUF<br/>fake package materialization"] --> Staged
     Full --> Compare["token / activation comparison"]
     Staged --> Compare
     Compare --> Report["JSON report<br/>pass/fail + diagnostics"]
@@ -95,7 +97,7 @@ exit non-zero on mismatch unless `--allow-mismatch` is set.
   ref, distribution id, and selector in `model_identity`.
 - `--stage-load-mode runtime-slice` uses the full GGUF for staged execution.
 - `--stage-load-mode artifact-slice` compares the full GGUF baseline with
-  prewritten `llama-model-slice` artifacts. `--stage-model` may be a directory
+  prewritten `skippy-model-package` artifacts. `--stage-model` may be a directory
   containing `stage-000.gguf`, `stage-001.gguf`, and so on, or a
   `slice-manifest.json`.
 - `--stage-load-mode layer-package` compares the full GGUF baseline with stage

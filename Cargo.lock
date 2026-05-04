@@ -3861,23 +3861,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
-name = "llama-model-slice"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "model-artifact",
- "model-hf",
- "model-ref",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "skippy-ffi",
- "skippy-runtime",
- "tokio",
-]
-
-[[package]]
 name = "llama-spec-bench"
 version = "0.1.0"
 dependencies = [
@@ -7063,6 +7046,23 @@ version = "0.1.0"
 [[package]]
 name = "skippy-metrics"
 version = "0.1.0"
+
+[[package]]
+name = "skippy-model-package"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "model-artifact",
+ "model-hf",
+ "model-ref",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "skippy-ffi",
+ "skippy-runtime",
+ "tokio",
+]
 
 [[package]]
 name = "skippy-prompt"
