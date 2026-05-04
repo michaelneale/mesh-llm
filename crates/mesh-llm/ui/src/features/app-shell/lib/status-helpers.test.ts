@@ -8,12 +8,25 @@ import {
   meshGpuVram,
   normalizeVramGb,
   overviewVramGb,
+  modelRefLabel,
   topologyStatusTone,
   topologyStatusTooltip,
 } from "./status-helpers";
 import type { LiveNodeState, StatusPayload } from "./status-types";
 
 describe("live node state helpers", () => {
+  it("preserves model names exactly", () => {
+    expect(modelRefLabel("unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL")).toBe(
+      "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
+    );
+    expect(modelRefLabel("tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M")).toBe(
+      "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+    );
+    expect(modelRefLabel("Hermes-2-Pro-Mistral-7B-Instruct-Q4_K_M")).toBe(
+      "Hermes-2-Pro-Mistral-7B-Instruct-Q4_K_M",
+    );
+  });
+
   it("formats all supported live node states", () => {
     const cases: Array<{
       state: LiveNodeState;

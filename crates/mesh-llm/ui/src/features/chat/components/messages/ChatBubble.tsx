@@ -7,7 +7,7 @@ import {
   AccordionTrigger,
 } from "../../../../components/ui/accordion";
 import { ScrollArea } from "../../../../components/ui/scroll-area";
-import { shortName } from "../../../app-shell/lib/status-helpers";
+import { modelRefLabel } from "../../../app-shell/lib/status-helpers";
 import { cn } from "../../../../lib/utils";
 import { messageAttachments } from "../../lib/chat-attachments";
 import type { ChatMessage } from "../../lib/chat-types";
@@ -42,7 +42,7 @@ export function ChatBubble({
             <Bot className="h-3.5 w-3.5" />
           )}
           <span>{isUser ? "You" : "Assistant"}</span>
-          {message.model ? <span>· {shortName(message.model)}</span> : null}
+          {message.model ? <span>· {modelRefLabel(message.model)}</span> : null}
         </div>
 
         {isThinking ? (

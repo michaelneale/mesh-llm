@@ -21,7 +21,7 @@ import {
 import { formatShortDuration } from "../../../../../lib/format-duration";
 import { useResolvedTheme } from "../../../../../lib/resolved-theme";
 import { cn } from "../../../../../lib/utils";
-import { formatLiveNodeState, shortName } from "../../../../app-shell/lib/status-helpers";
+import { formatLiveNodeState, modelRefLabel } from "../../../../app-shell/lib/status-helpers";
 import type { LiveNodeState } from "../../../../app-shell/lib/status-types";
 import type { TopologyNode } from "../../../../app-shell/lib/topology-types";
 
@@ -645,7 +645,7 @@ export function MeshRadarField({
             scene.selectedModelClassName,
           )}
         >
-          {shortName(selectedModel)}
+          {modelRefLabel(selectedModel)}
         </div>
       ) : null}
       <div

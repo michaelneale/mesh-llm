@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 
-import { formatLatency, formatLiveNodeState, shortName } from "../../../../app-shell/lib/status-helpers";
+import { formatLatency, formatLiveNodeState, modelRefLabel } from "../../../../app-shell/lib/status-helpers";
 import type { TopologyNode } from "../../../../app-shell/lib/topology-types";
 
 import { color, hashString, nodeUpdateSignature, TAU } from "../helpers";
@@ -26,7 +26,7 @@ function computeLabel(node: TopologyNode) {
 }
 
 function modelLabel(models: string[]) {
-  return models.length > 0 ? models.map(shortName).join(", ") : "idle";
+  return models.length > 0 ? models.map(modelRefLabel).join(", ") : "idle";
 }
 
 function normalizeAngle(angle: number) {
@@ -358,7 +358,7 @@ export function useRadarFieldNodes(
       output.push({
         id: node.id,
         label: node.hostname || node.id,
-        subtitle: focusModel ? shortName(focusModel) : formatLiveNodeState(node.state),
+        subtitle: focusModel ? modelRefLabel(focusModel) : formatLiveNodeState(node.state),
         hostname: node.hostname,
         role: node.host ? "Host" : "Serving",
         latencyLabel: formatLatency(node.latencyMs),

@@ -46,7 +46,7 @@ import {
 import { validateAttachmentFile } from "../../../lib/attachments";
 import {
   modelDisplayName,
-  shortName,
+  modelRefLabel,
 } from "../../app-shell/lib/status-helpers";
 import type {
   MeshModel,
@@ -831,7 +831,7 @@ export function ChatPage(props: {
                   {selectedModelValue === "auto"
                     ? "✨ Auto (router picks best)"
                     : selectedModelValue
-                      ? shortName(
+                      ? modelRefLabel(
                           modelDisplayName(
                             meshModelByName[selectedModelValue],
                           ) || selectedModelValue,
@@ -870,7 +870,7 @@ export function ChatPage(props: {
                     >
                       <div className="flex min-w-0 flex-col gap-0.5">
                         <span className="truncate leading-5">
-                          {shortName(displayName)}
+                          {modelRefLabel(displayName)}
                           {multimodalInfo ? (
                             <span className="ml-1.5" title={multimodalInfo.title}>
                               {multimodalInfo.icon}

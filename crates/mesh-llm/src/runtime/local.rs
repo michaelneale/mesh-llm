@@ -271,9 +271,7 @@ pub(super) async fn start_runtime_split_model(
     .await?;
     let run_id = format!("mesh-split-{}", now_unix_nanos());
     let topology_id = format!("topology-{run_id}");
-    let coordinator_node = split_coordinator_node(&participants).unwrap_or_else(|| spec.node.id());
-    let planned_participants =
-        split_participants_with_stage0_first(&participants, coordinator_node);
+    let planned_participants = participants.clone();
     let stages =
         plan_runtime_slice_topology(&topology_id, model_ref, &package, &planned_participants)?;
     anyhow::ensure!(
@@ -653,8 +651,7 @@ impl SplitTopologyCoordinator {
             return;
         }
 
-        let planned_participants =
-            split_participants_with_stage0_first(&snapshot.participants, self.node.id());
+        let planned_participants = snapshot.participants.clone();
         let generation = self.active.generation.saturating_add(1);
         let run_id = format!("mesh-split-{}-g{}", now_unix_nanos(), generation);
         let topology_id = format!("topology-{run_id}");
@@ -683,6 +680,19 @@ impl SplitTopologyCoordinator {
                 return;
             }
         };
+        if candidate
+            .stages
+            .first()
+            .is_none_or(|stage0| stage0.node_id != self.node.id())
+        {
+            tracing::debug!(
+                model_ref = self.model_ref,
+                reason,
+                candidate_stages = ?split_stage_plan_labels(&candidate.stages),
+                "split topology replan skipped; stage 0 would move to another node"
+            );
+            return;
+        }
 
         match split_replan_decision(&self.active, &candidate) {
             SplitReplanDecision::Keep => {
@@ -989,38 +999,6 @@ fn split_participant_signature(participants: &[SplitParticipant]) -> Vec<(String
         .collect()
 }
 
-fn split_coordinator_node(participants: &[SplitParticipant]) -> Option<iroh::EndpointId> {
-    participants
-        .iter()
-        .min_by_key(|participant| {
-            (
-                participant.first_joined_mesh_ts.unwrap_or(u64::MAX),
-                participant.node_id.to_string(),
-            )
-        })
-        .map(|participant| participant.node_id)
-}
-
-fn split_participants_with_stage0_first(
-    participants: &[SplitParticipant],
-    stage0_node: iroh::EndpointId,
-) -> Vec<SplitParticipant> {
-    let mut ordered = Vec::with_capacity(participants.len());
-    if let Some(stage0) = participants
-        .iter()
-        .find(|participant| participant.node_id == stage0_node)
-    {
-        ordered.push(*stage0);
-    }
-    ordered.extend(
-        participants
-            .iter()
-            .copied()
-            .filter(|participant| participant.node_id != stage0_node),
-    );
-    ordered
-}
-
 fn split_participant_labels(participants: &[SplitParticipant]) -> Vec<String> {
     participants
         .iter()
@@ -1113,7 +1091,7 @@ fn plan_runtime_slice_topology(
     if !errors.is_empty() {
         anyhow::bail!("{}", errors.join("; "));
     }
-    let stages = plan
+    let mut stages = plan
         .stages
         .into_iter()
         .map(|stage| {
@@ -1129,6 +1107,7 @@ fn plan_runtime_slice_topology(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    stages.sort_by_key(|stage| stage.stage_index);
     tracing::info!(
         topology_id,
         model_ref,
@@ -1395,11 +1374,11 @@ mod tests {
         assert_eq!(stages[0].stage_index, 0);
         assert_eq!(stages[3].stage_index, 3);
         assert_eq!(
-            stages.iter().map(|stage| stage.node_id).collect::<Vec<_>>(),
-            participants
+            stages
                 .iter()
-                .map(|participant| participant.node_id)
-                .collect::<Vec<_>>()
+                .map(|stage| stage.stage_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
         );
         assert_eq!(stages.first().unwrap().layer_start, 0);
         assert_eq!(stages.last().unwrap().layer_end, 40);
@@ -1423,71 +1402,6 @@ mod tests {
             split_participant_signature(&first),
             split_participant_signature(&second)
         );
-    }
-
-    #[test]
-    fn split_replan_participant_order_pins_stage0_to_coordinator() {
-        let coordinator = make_id(9);
-        let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 24_000_000_000,
-                first_joined_mesh_ts: Some(20),
-            },
-            SplitParticipant {
-                node_id: coordinator,
-                vram_bytes: 16_000_000_000,
-                first_joined_mesh_ts: Some(10),
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 32_000_000_000,
-                first_joined_mesh_ts: Some(30),
-            },
-            SplitParticipant {
-                node_id: make_id(3),
-                vram_bytes: 48_000_000_000,
-                first_joined_mesh_ts: Some(40),
-            },
-        ];
-        let ordered = split_participants_with_stage0_first(&participants, coordinator);
-        let stages = plan_runtime_slice_topology(
-            "topology-test",
-            "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL",
-            &package(40),
-            &ordered,
-        )
-        .expect("topology plan");
-
-        assert_eq!(ordered.first().unwrap().node_id, coordinator);
-        assert_eq!(stages.len(), participants.len());
-        assert_eq!(stages.first().unwrap().stage_index, 0);
-        assert_eq!(stages.first().unwrap().node_id, coordinator);
-        assert_eq!(stages.last().unwrap().layer_end, 40);
-    }
-
-    #[test]
-    fn split_initial_coordinator_prefers_earliest_joined_participant() {
-        let earliest = make_id(9);
-        let participants = vec![
-            SplitParticipant {
-                node_id: make_id(1),
-                vram_bytes: 24_000_000_000,
-                first_joined_mesh_ts: Some(30),
-            },
-            SplitParticipant {
-                node_id: earliest,
-                vram_bytes: 16_000_000_000,
-                first_joined_mesh_ts: Some(10),
-            },
-            SplitParticipant {
-                node_id: make_id(2),
-                vram_bytes: 32_000_000_000,
-                first_joined_mesh_ts: Some(20),
-            },
-        ];
-
-        assert_eq!(split_coordinator_node(&participants), Some(earliest));
     }
 
     #[test]

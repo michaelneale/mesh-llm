@@ -16,8 +16,8 @@ export function modelDisplayName(model?: MeshModel | null) {
   return model.display_name || model.name;
 }
 
-export function shortName(name: string) {
-  return (name || "").replace(/-Q\w+$/, "").replace(/-Instruct/, "");
+export function modelRefLabel(name: string) {
+  return name || "";
 }
 
 export function peerAssignedModels(peer: Peer): string[] {

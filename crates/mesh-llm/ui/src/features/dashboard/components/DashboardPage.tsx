@@ -58,6 +58,7 @@ import {
   localRoutableModels,
   meshGpuVram,
   modelDisplayName,
+  modelRefLabel,
   normalizeVramGb,
   ownershipPrimaryLabel,
   ownershipStatusLabel,
@@ -65,7 +66,6 @@ import {
   peerAssignedModels,
   peerPrimaryModel,
   peerRoutableModels,
-  shortName,
   topologyNodeRole,
   topologyStatusTone,
   topologyStatusTooltip,
@@ -201,7 +201,7 @@ export function DashboardPage({
     return sortedPeers.map((peer) => {
       const primaryModel = peerPrimaryModel(peer);
       const modelLabel =
-        primaryModel && primaryModel !== "(idle)" ? shortName(primaryModel) : "idle";
+        primaryModel && primaryModel !== "(idle)" ? modelRefLabel(primaryModel) : "idle";
       const latencyLabel = formatLatency(peer.rtt_ms);
       const peerDisplayVramGb = displayVramGb(peer.state === "client", peer.vram_gb, peer.gpus);
       const sharePct =

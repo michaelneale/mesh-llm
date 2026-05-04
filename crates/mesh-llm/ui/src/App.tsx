@@ -25,13 +25,13 @@ import {
   displayVramGb,
   formatLiveNodeState,
   localRoutableModels,
+  modelRefLabel,
   modelDisplayName,
   overviewVramGb,
   peerAssignedModels,
   peerPrimaryModel,
   peerRoutableModels,
   readThemeMode,
-  shortName,
 } from "./features/app-shell/lib/status-helpers";
 import { useAppRouting } from "./features/app-shell/hooks/useAppRouting";
 import {
@@ -147,7 +147,7 @@ function ModelCommandBarResultItem({
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <div className="text-sm font-medium leading-5 [overflow-wrap:anywhere]">
-              {shortName(displayName)}
+              {modelRefLabel(displayName)}
             </div>
             <Badge
               className={cn(

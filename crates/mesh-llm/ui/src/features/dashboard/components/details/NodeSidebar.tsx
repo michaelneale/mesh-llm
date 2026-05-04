@@ -29,9 +29,9 @@ import {
   formatLiveNodeState,
   formatGpuMemory,
   modelDisplayName,
+  modelRefLabel,
   modelStatusTooltip,
   ownershipStatusLabel,
-  shortName,
   topologyStatusTone,
   topologyStatusTooltip,
   trimGpuVendor,
@@ -237,11 +237,11 @@ export function NodeSidebar({
                               onClick={() => onOpenModel(row.name)}
                               title={row.name}
                             >
-                              {shortName(modelDisplayName(meshModelByName[row.name]) || row.name)}
+                              {modelRefLabel(modelDisplayName(meshModelByName[row.name]) || row.name)}
                             </button>
                           ) : (
                             <span className="truncate text-sm font-medium" title={row.name}>
-                              {shortName(row.name)}
+                              {modelRefLabel(row.name)}
                             </span>
                           )}
                         </TableCell>
@@ -401,7 +401,7 @@ export function NodeSidebar({
 
         {node.availableModels.length > 0 && modelRows.length === 0 ? (
           <div className="px-1 text-xs text-muted-foreground">
-            Available locally: {node.availableModels.map(shortName).join(", ")}
+            Available locally: {node.availableModels.map(modelRefLabel).join(", ")}
           </div>
         ) : null}
       </div>

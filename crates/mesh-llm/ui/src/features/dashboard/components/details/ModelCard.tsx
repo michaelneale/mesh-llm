@@ -29,8 +29,7 @@ export function ModelCard({
   reasoning,
   onClick,
 }: ModelCardProps) {
-  const shortName = (nameOrDisplay: string) => nameOrDisplay.split("/").pop() ?? nameOrDisplay;
-  const displayText = displayName ? shortName(displayName) : shortName(name);
+  const displayText = displayName || name;
 
   return (
     <button

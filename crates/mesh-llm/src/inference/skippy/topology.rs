@@ -94,7 +94,7 @@ pub(crate) fn plan_package_topology(
         bail!("{}", errors.join("; "));
     }
 
-    let stages = plan
+    let mut stages = plan
         .stages
         .into_iter()
         .map(|stage| {
@@ -110,6 +110,7 @@ pub(crate) fn plan_package_topology(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    stages.sort_by_key(|stage| stage.stage_index);
 
     Ok(MeshTopologyPlan {
         stages,
