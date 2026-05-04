@@ -26,10 +26,10 @@ use futures_util::{stream, StreamExt};
 use openai_frontend::{
     chat_mesh_hooks_enabled, inject_text_into_chat_messages, normalize_reasoning_template_options,
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream,
-    ChatHookAction, ChatHookOutcome, ChatMessage, CompletionChunk, CompletionRequest,
-    CompletionResponse, CompletionStream, FinishReason, GenerationHookSignals, MessageContent,
-    MessageContentPart, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiErrorKind,
-    OpenAiHookPolicy, OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
+    ChatHookAction, ChatHookOutcome, CompletionChunk, CompletionRequest, CompletionResponse,
+    CompletionStream, FinishReason, GenerationHookSignals, MessageContent, MessageContentPart,
+    ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiErrorKind, OpenAiHookPolicy,
+    OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -42,7 +42,7 @@ use skippy_protocol::binary::{
 };
 use skippy_protocol::{StageConfig, StageTopology};
 use skippy_runtime::{
-    ChatTemplateMessage, ChatTemplateOptions, FlashAttentionType as RuntimeFlashAttentionType,
+    ChatTemplateJsonOptions, ChatTemplateOptions, FlashAttentionType as RuntimeFlashAttentionType,
     GenerationSignalWindow, LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig,
     RuntimeLoadMode, SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
@@ -1100,7 +1100,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let sampling = chat_sampling_config(&request)?;
         let template_options = chat_template_options(&request)?;
         let template_timer = PhaseTimer::start();
-        let prompt = self.prepare_chat_prompt(&request.messages, template_options)?;
+        let prompt = self.prepare_chat_prompt(&request, template_options)?;
         let mut template_attrs = self.openai_attrs(&ids);
         template_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -1123,6 +1123,7 @@ impl OpenAiBackend for StageOpenAiBackend {
             request.effective_max_tokens(),
             self.default_max_tokens,
         );
+        let chat_parse_metadata = prompt.chat_parse_metadata.clone();
         let output = self
             .run_generation(
                 prompt,
@@ -1134,12 +1135,10 @@ impl OpenAiBackend for StageOpenAiBackend {
             )
             .await?;
         let response_timer = PhaseTimer::start();
-        let response = ChatCompletionResponse::new_with_reason(
-            request.model,
-            output.text,
-            Usage::new(output.prompt_tokens, output.completion_tokens),
-            output.finish_reason,
-        );
+        let parsed_tool_calls =
+            self.parse_tool_call_output(&output.text, &request, chat_parse_metadata.as_deref())?;
+        let response =
+            chat_response_from_generated_text(request.model.clone(), &output, parsed_tool_calls);
         let mut response_attrs = self.openai_attrs(&ids);
         response_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -1189,7 +1188,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         let include_usage = request.include_usage();
         let template_options = chat_template_options(&request)?;
         let template_timer = PhaseTimer::start();
-        let prompt = self.prepare_chat_prompt(&request.messages, template_options)?;
+        let prompt = self.prepare_chat_prompt(&request, template_options)?;
         let mut template_attrs = self.openai_attrs(&ids);
         template_attrs.insert(
             "llama_stage.openai_operation".to_string(),
@@ -1496,8 +1495,12 @@ impl StageOpenAiBackend {
         );
         self.emit_openai_phase("stage.openai_generation_admit", admit_timer, admit_attrs);
         let backend = self.clone();
+        let tool_call_stream = hook_request.as_ref().is_some_and(tool_calls_requested)
+            && prompt.chat_parse_metadata.is_some();
+        let chat_parse_metadata = prompt.chat_parse_metadata.clone();
         let (tx, rx) = mpsc::channel(16);
         let hook_runtime = Some(tokio::runtime::Handle::current());
+        let stream_tool_request = hook_request.clone();
         task::spawn_blocking(move || {
             let _permit = permit;
             let result = backend.generate_text(
@@ -1510,6 +1513,9 @@ impl StageOpenAiBackend {
                 Some(&context.cancellation_token()),
                 ids,
                 |chunk| {
+                    if tool_call_stream {
+                        return Ok(());
+                    }
                     if context.is_cancelled() {
                         return Err(OpenAiError::backend("stream receiver cancelled"));
                     }
@@ -1525,6 +1531,58 @@ impl StageOpenAiBackend {
             }
             match result {
                 Ok(output) => {
+                    if tool_call_stream {
+                        if let (Some(request), Some(metadata)) =
+                            (stream_tool_request.as_ref(), chat_parse_metadata.as_deref())
+                        {
+                            match backend.parse_tool_call_output(
+                                &output.text,
+                                request,
+                                Some(metadata),
+                            ) {
+                                Ok(Some(tool_output)) => {
+                                    if tx
+                                        .blocking_send(Ok(GenerationStreamEvent::ToolCalls(
+                                            tool_output.tool_calls,
+                                        )))
+                                        .is_err()
+                                    {
+                                        context.cancel();
+                                        return;
+                                    }
+                                    if include_usage
+                                        && tx
+                                            .blocking_send(Ok(GenerationStreamEvent::Usage(
+                                                output.usage(),
+                                            )))
+                                            .is_err()
+                                    {
+                                        context.cancel();
+                                        return;
+                                    }
+                                    let _ = tx.blocking_send(Ok(GenerationStreamEvent::Done(
+                                        FinishReason::ToolCalls,
+                                    )));
+                                    return;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    let _ = tx.blocking_send(Err(error));
+                                    return;
+                                }
+                            }
+                        }
+                        if !output.text.is_empty()
+                            && tx
+                                .blocking_send(Ok(GenerationStreamEvent::Delta(
+                                    output.text.clone(),
+                                )))
+                                .is_err()
+                        {
+                            context.cancel();
+                            return;
+                        }
+                    }
                     if include_usage
                         && tx
                             .blocking_send(Ok(GenerationStreamEvent::Usage(output.usage())))
@@ -1547,7 +1605,7 @@ impl StageOpenAiBackend {
 
     fn prepare_chat_prompt(
         &self,
-        messages: &[ChatMessage],
+        request: &ChatCompletionRequest,
         options: ChatTemplateOptions,
     ) -> OpenAiResult<PreparedGenerationPrompt> {
         let marker = {
@@ -1558,27 +1616,75 @@ impl StageOpenAiBackend {
             runtime.media_marker()
         };
         let mut media = Vec::new();
-        let template_messages = messages
+        let template_messages = request
+            .messages
             .iter()
-            .map(|message| {
-                let content = message
-                    .content
-                    .as_ref()
-                    .map(|content| message_content_to_generation_text(content, &marker, &mut media))
-                    .transpose()?
-                    .unwrap_or_default();
-                Ok(ChatTemplateMessage::new(message.role.as_str(), content))
-            })
+            .map(|message| chat_message_generation_value(message, &marker, &mut media))
             .collect::<OpenAiResult<Vec<_>>>()?;
+        let messages_json = serde_json::to_string(&template_messages).map_err(|error| {
+            OpenAiError::invalid_request(format!("serialize messages: {error}"))
+        })?;
+        let tools_json = request
+            .tools
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| OpenAiError::invalid_request(format!("serialize tools: {error}")))?;
+        let tool_choice_json = request
+            .tool_choice
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| {
+                OpenAiError::invalid_request(format!("serialize tool_choice: {error}"))
+            })?;
         let runtime = self
             .runtime
             .lock()
             .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-        let text = runtime
+        let result = runtime
             .model
-            .apply_chat_template_with_options(&template_messages, options)
+            .apply_chat_template_json(
+                &messages_json,
+                ChatTemplateJsonOptions {
+                    add_assistant: options.add_assistant,
+                    enable_thinking: options.enable_thinking,
+                    tools_json,
+                    tool_choice_json,
+                    parallel_tool_calls: request.parallel_tool_calls.unwrap_or(true),
+                },
+            )
             .map_err(openai_backend_error)?;
-        Ok(PreparedGenerationPrompt { text, media })
+        Ok(PreparedGenerationPrompt {
+            text: result.prompt,
+            media,
+            chat_parse_metadata: Some(result.metadata_json),
+        })
+    }
+
+    fn parse_tool_call_output(
+        &self,
+        text: &str,
+        request: &ChatCompletionRequest,
+        metadata: Option<&str>,
+    ) -> OpenAiResult<Option<ParsedToolCalls>> {
+        if !tool_calls_requested(request) {
+            return Ok(None);
+        }
+        let Some(metadata) = metadata else {
+            return Ok(None);
+        };
+        let parsed_json = {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            runtime
+                .model
+                .parse_chat_response_json(text, metadata, false)
+                .map_err(openai_backend_error)?
+        };
+        Ok(parsed_tool_calls_from_message_json(&parsed_json, request))
     }
 
     fn generate_text(
@@ -3986,6 +4092,7 @@ fn attrs_insert_prefill_chunk_policy(
 struct PreparedGenerationPrompt {
     text: String,
     media: Vec<MediaInput>,
+    chat_parse_metadata: Option<String>,
 }
 
 impl PreparedGenerationPrompt {
@@ -3993,12 +4100,195 @@ impl PreparedGenerationPrompt {
         Self {
             text,
             media: Vec::new(),
+            chat_parse_metadata: None,
         }
     }
 
     fn has_media(&self) -> bool {
         !self.media.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedToolCalls {
+    content: Option<String>,
+    tool_calls: Value,
+}
+
+fn tool_calls_requested(request: &ChatCompletionRequest) -> bool {
+    request.tools.as_ref().is_some_and(has_requested_tools)
+        && !request
+            .tool_choice
+            .as_ref()
+            .is_some_and(|choice| matches!(choice.as_str(), Some("none")))
+}
+
+fn chat_response_from_generated_text(
+    model: String,
+    output: &GeneratedText,
+    parsed_tool_calls: Option<ParsedToolCalls>,
+) -> ChatCompletionResponse {
+    if let Some(parsed) = parsed_tool_calls {
+        return ChatCompletionResponse {
+            id: openai_frontend::completion_id("chatcmpl"),
+            object: "chat.completion",
+            created: openai_frontend::now_unix_secs(),
+            model,
+            choices: vec![openai_frontend::ChatCompletionChoice {
+                index: 0,
+                message: openai_frontend::AssistantMessage {
+                    role: "assistant",
+                    content: parsed.content,
+                    tool_calls: Some(parsed.tool_calls),
+                },
+                logprobs: None,
+                finish_reason: Some(FinishReason::ToolCalls),
+            }],
+            usage: output.usage(),
+        };
+    }
+
+    ChatCompletionResponse::new_with_reason(
+        model,
+        output.text.clone(),
+        output.usage(),
+        output.finish_reason,
+    )
+}
+
+fn parsed_tool_calls_from_message_json(
+    message_json: &str,
+    request: &ChatCompletionRequest,
+) -> Option<ParsedToolCalls> {
+    let value = serde_json::from_str::<Value>(message_json).ok()?;
+    let allowed_names = request_allowed_tool_names(request);
+    let mut tool_calls = value
+        .get("tool_calls")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|call| tool_call_allowed(call, &allowed_names))
+        .cloned()
+        .collect::<Vec<_>>();
+    if request.parallel_tool_calls == Some(false) {
+        tool_calls.truncate(1);
+    }
+    if tool_calls.is_empty() {
+        return None;
+    }
+    Some(ParsedToolCalls {
+        content: value
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|content| !content.is_empty())
+            .map(ToString::to_string),
+        tool_calls: Value::Array(tool_calls),
+    })
+}
+
+fn request_allowed_tool_names(request: &ChatCompletionRequest) -> Vec<String> {
+    if let Some(choice_name) = request
+        .tool_choice
+        .as_ref()
+        .and_then(tool_choice_function_name)
+    {
+        return vec![choice_name];
+    }
+    request_tool_names(request)
+}
+
+fn tool_choice_function_name(value: &Value) -> Option<String> {
+    value
+        .as_object()
+        .and_then(|object| {
+            object
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .or_else(|| object.get("name"))
+        })
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .as_str()
+                .filter(|choice| !matches!(*choice, "auto" | "none" | "required"))
+        })
+        .map(ToString::to_string)
+}
+
+fn request_tool_names(request: &ChatCompletionRequest) -> Vec<String> {
+    request
+        .tools
+        .as_ref()
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| {
+            tool.get("function")
+                .and_then(|function| function.get("name"))
+                .or_else(|| tool.get("name"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn tool_call_allowed(value: &Value, allowed_names: &[String]) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let function = object.get("function").and_then(Value::as_object);
+    let Some(name) = function
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+    else {
+        return false;
+    };
+    allowed_names.is_empty() || allowed_names.iter().any(|allowed| allowed == name)
+}
+
+fn tool_calls_stream_delta(tool_calls: Value) -> Value {
+    match tool_calls {
+        Value::Array(calls) => Value::Array(
+            calls
+                .into_iter()
+                .enumerate()
+                .map(|(index, call)| match call {
+                    Value::Object(mut object) => {
+                        object
+                            .entry("index")
+                            .or_insert_with(|| Value::from(index as u64));
+                        Value::Object(object)
+                    }
+                    other => other,
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn chat_message_generation_value(
+    message: &openai_frontend::ChatMessage,
+    marker: &str,
+    media: &mut Vec<MediaInput>,
+) -> OpenAiResult<Value> {
+    let mut value = serde_json::to_value(message)
+        .map_err(|error| OpenAiError::invalid_request(format!("serialize message: {error}")))?;
+    let content = message
+        .content
+        .as_ref()
+        .map(|content| message_content_to_generation_text(content, marker, media))
+        .transpose()?;
+    if let Some(object) = value.as_object_mut() {
+        match content {
+            Some(content) => {
+                object.insert("content".to_string(), Value::String(content));
+            }
+            None => {
+                object.insert("content".to_string(), Value::Null);
+            }
+        }
+    }
+    Ok(value)
 }
 
 struct LocalGeneration<'a> {
@@ -4385,6 +4675,7 @@ type GenerationStream =
 
 enum GenerationStreamEvent {
     Delta(String),
+    ToolCalls(Value),
     Usage(Usage),
     Done(FinishReason),
 }
@@ -4397,6 +4688,23 @@ fn generation_event_to_chat_chunk(
         GenerationStreamEvent::Delta(delta) => {
             Ok(ChatCompletionChunk::delta(model.to_string(), delta))
         }
+        GenerationStreamEvent::ToolCalls(tool_calls) => Ok(ChatCompletionChunk {
+            id: openai_frontend::completion_id("chatcmpl"),
+            object: "chat.completion.chunk",
+            created: openai_frontend::now_unix_secs(),
+            model: model.to_string(),
+            choices: vec![openai_frontend::ChatCompletionChunkChoice {
+                index: 0,
+                delta: openai_frontend::ChatCompletionDelta {
+                    role: None,
+                    content: None,
+                    tool_calls: Some(tool_calls_stream_delta(tool_calls)),
+                },
+                logprobs: None,
+                finish_reason: None,
+            }],
+            usage: None,
+        }),
         GenerationStreamEvent::Usage(usage) => {
             Ok(ChatCompletionChunk::usage(model.to_string(), usage))
         }
@@ -4413,6 +4721,7 @@ fn generation_event_to_completion_chunk(
 ) -> OpenAiResult<CompletionChunk> {
     match event? {
         GenerationStreamEvent::Delta(delta) => Ok(CompletionChunk::delta(model.to_string(), delta)),
+        GenerationStreamEvent::ToolCalls(_) => Ok(CompletionChunk::delta(model.to_string(), "")),
         GenerationStreamEvent::Usage(usage) => Ok(CompletionChunk::usage(model.to_string(), usage)),
         GenerationStreamEvent::Done(reason) => {
             Ok(CompletionChunk::done_with_reason(model.to_string(), reason))

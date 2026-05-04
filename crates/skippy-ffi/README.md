@@ -52,7 +52,7 @@ same Rust crate.
 
 ## ABI Contract
 
-The staged ABI is versioned as `0.1.10` in both this crate and the patched
+The staged ABI is versioned as `0.1.17` in both this crate and the patched
 llama.cpp header. Version `0` is still experimental, so callers should treat the
 ABI as feature-probed rather than permanently stable.
 
@@ -119,6 +119,10 @@ the patched llama.cpp library:
 | `LOGIT_BIAS` | `1 << 15` | `SamplingConfig.logit_bias` |
 | `SESSION_TRIM` | `1 << 16` | `skippy_trim_session` |
 | `SESSION_CHECKPOINT` | `1 << 17` | Native checkpoint/restore calls |
+| `PACKAGE_PART_LOAD` | `1 << 18` | Ordered GGUF package part loading |
+| `GENERATION_SIGNALS` | `1 << 19` | Generation progress and cancellation signal hooks |
+| `EXTERNAL_MEDIA_PREFILL` | `1 << 20` | Multimodal prefill from externally materialized media chunks |
+| `CHAT_TEMPLATE_TOOLS` | `1 << 21` | llama.cpp OpenAI-compatible chat templating and tool-call response parsing |
 
 ## Function Surface
 
@@ -174,6 +178,8 @@ hook currently bound by this crate.
 | `skippy_detokenize` | Converts token IDs back to text bytes. |
 | `skippy_token_is_eog` | Reports whether a token is an end-of-generation token. |
 | `skippy_apply_chat_template` | Applies the model chat template, with optional assistant prompt and thinking-mode override. |
+| `skippy_apply_chat_template_json` | Applies llama.cpp's OpenAI-compatible chat template path from JSON messages, tools, and tool-choice metadata, returning the prompt plus parser metadata. |
+| `skippy_parse_chat_response_json` | Parses generated assistant text with llama.cpp's chat parser and returns an OpenAI-compatible assistant message JSON object, including tool calls when emitted by the model. |
 
 ### Model introspection and GGUF writing
 
