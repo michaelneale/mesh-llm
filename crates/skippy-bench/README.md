@@ -8,15 +8,17 @@ remain useful while the production tool is being promoted.
 
 ## Architecture Role
 
-`skippy-bench` launches and measures the same binary stage chain used by
-the prompt CLI. It can materialize or rsync stage artifacts, start remote stage
-servers, point them at `metrics-server`, drive prompt prefill/decode against
-the first stage, drive chat-completions corpus requests against `serve-openai`,
-and collect `driver-result.json` plus `report.json`.
+`skippy-bench` launches and measures the same binary stage chain used by mesh.
+It can materialize or rsync stage artifacts, start remote stage servers, point
+them at `metrics-server`, drive prompt prefill/decode against the first stage,
+drive OpenAI corpus requests through the shared frontend, and collect
+`driver-result.json` plus `report.json`.
 
 ```mermaid
 flowchart LR
-    B["skippy-bench<br/>driver + launcher"] --> S0["stage-0"]
+    B["skippy-bench<br/>driver + launcher"] --> O["openai-frontend<br/>optional corpus path"]
+    B --> S0["stage-0"]
+    O --> S0
     S0 -->|activation frames| S1["stage-1"]
     S1 -->|activation frames| S2["stage-2"]
     S2 -->|activation frames| S3["final stage"]
@@ -56,8 +58,9 @@ skippy-bench focused-runtime --schema-smoke --hosts host-a,host-b --splits 1 --l
 ```
 
 The old standalone `kv-stage-integration` and `kv-hit-regression` commands are
-not imported into mesh-llm because they depend on the dropped `kv-server`
-sidecar path.
+intentionally absent. Mesh does not carry the legacy standalone cache sidecar
+path; exact cache work should be reintroduced through the embedded runtime and
+mesh-owned lifecycle.
 
 Benchmark reports carry `model_identity` beside the public `model_id`. The
 public id is a coordinate such as `org/repo:Q4_K_M`; when the model path comes
@@ -68,9 +71,9 @@ as identity, so pass `--model-id` for those runs.
 
 `run` and `local-single` accept `--cache-type-k` and `--cache-type-v`, defaulting
 to `f16`. These are written into generated stage configs so benchmark reports
-can compare baseline K/V cache storage against upstream-safe package candidates
+can compare baseline K/V cache storage against runtime-supported package candidates
 such as `q8_0`. The experimental TCQ/TurboQuant lane is intentionally not
-compiled into mesh-llm's current llama.cpp patch queue.
+compiled into mesh-llm.
 
 ## Benchmark Corpora
 

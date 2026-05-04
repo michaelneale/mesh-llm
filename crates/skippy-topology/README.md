@@ -9,22 +9,25 @@ GGUF writing.
 
 ## Architecture Role
 
-Prompt, benchmark, and correctness flows ask this crate whether a split plan is
+Mesh, benchmark, and correctness flows ask this crate whether a split plan is
 acceptable before slicing models or starting servers. The returned plan carries
-stage ranges, boundary decisions, wire dtype policy, and diagnostics.
+stage ranges, peer/device placement, boundary decisions, wire dtype policy, and
+diagnostics.
 
 ```mermaid
 flowchart LR
     L["LayerSpec list<br/>attention/recurrent flags"] --> P["topology planner"]
     N["NodeSpec list"] --> P
     F["FamilyCapabilityRecord<br/>reviewed or inferred"] --> P
+    I["mesh inventory<br/>peers + device capacity"] --> P
     S["requested splits"] --> P
     P --> Plan["TopologyPlan"]
     Plan --> Stages["StagePlan<br/>layer ranges + nodes"]
     Plan --> Bounds["BoundaryPlan<br/>accepted/rejected<br/>wire dtype"]
     Plan --> Diag["diagnostics<br/>reason codes"]
-    Stages --> Launch["prompt / bench launchers"]
-    Bounds --> Launch
+    Stages --> Mesh["mesh coordinator<br/>LoadStage downstream-to-upstream"]
+    Bounds --> Mesh
+    Diag --> Mesh
 ```
 
 ## Family Policy Flow
@@ -56,5 +59,8 @@ Reviewed capability records live in
 - report activation wire dtype and payload sizing
 - infer capabilities for reviewed and known dense/recurrent families
 
-Use this crate before `llama-model-slice`, `skippy-prompt`, or
-`skippy-bench` commits to a runnable stage layout.
+Use this crate before `skippy-model-package`, mesh stage deployment,
+`skippy-prompt`, or `skippy-bench` commits to a runnable stage layout. When new
+peers or devices make a better split possible, mesh replans by preparing the
+replacement topology, waiting for readiness, and only then publishing the new
+stage-0 route.

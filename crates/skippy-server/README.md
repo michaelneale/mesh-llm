@@ -8,10 +8,11 @@ entry points so mesh can host the same runtime in-process.
 
 ## Architecture Role
 
-Each server process owns one contiguous layer range. The prompt or benchmark
-driver connects only to the first stage; every non-final stage connects to its
-downstream peer and forwards activation frames. The final stage runs output
-readout and returns predicted-token replies upstream.
+Each embedded server or server process owns one contiguous layer range. Mesh
+plans peers and layer ranges, sends `LoadStage` downstream-to-upstream, waits
+for readiness, and then publishes the stage-0 route. OpenAI clients talk to
+mesh/openai-frontend; diagnostic and benchmark clients may connect directly to
+the first stage.
 
 The full request/reply path is tip-to-tip: token IDs enter at the driver-facing
 tip, flow through the stage chain, and predicted tokens return from the final
@@ -20,7 +21,9 @@ boundary activations are handed downstream while local compute advances.
 
 ```mermaid
 flowchart LR
-    D["driver tip<br/>token IDs"] --> S0["stage-0<br/>layers 0..10"]
+    C["OpenAI client"] --> Mesh["mesh-llm<br/>openai-frontend + coordinator"]
+    Mesh --> D["stage-0 route<br/>token IDs"]
+    D --> S0["stage-0<br/>layers 0..10"]
     S0 -->|activation frames| S1["stage-1<br/>layers 10..20"]
     S1 -->|activation frames| S2["..."]
     S2 -->|activation frames| SF["final tip<br/>output/readout"]
@@ -28,6 +31,8 @@ flowchart LR
     S2 -->|PredictedToken / ACK| S1
     S1 -->|PredictedToken / ACK| S0
     S0 -->|PredictedToken / ACK| D
+    D --> Mesh
+    Mesh --> C
 
     P["layer package<br/>model-package.json + GGUF parts"] --> S0
     P --> S1
@@ -35,8 +40,8 @@ flowchart LR
 
 Stage configs bind `stage_id`, `stage_index`, `layer_start`, `layer_end`,
 `model_path`, `upstream`, `downstream`, optional K/V cache type settings, and
-runtime settings into one process. Model execution flows through
-`skippy-runtime` and the patched llama.cpp ABI.
+runtime settings into one loaded stage. Model execution flows through
+`skippy-runtime` and the staged llama.cpp ABI.
 
 ## Commands
 
@@ -107,9 +112,9 @@ unload or replan.
   session-pool counts before/after execution so concurrent-depth runs can
   separate useful compute, model-lock wait, and non-runtime overhead.
 - Stage configs accept `cache_type_k` and `cache_type_v`, defaulting to `f16`.
-  The mesh-llm patch queue intentionally carries only upstream-safe cache
-  types such as `f16` and `q8_0`; the experimental TCQ/TurboQuant cache lane is
-  documented as benchmark evidence but is not built into this tree.
+  Mesh carries runtime-supported cache types such as `f16` and `q8_0`; the
+  experimental TCQ/TurboQuant cache lane is documented as benchmark evidence
+  but is not built into this tree.
 - Embedded stage-0 OpenAI serving preconnects a persistent downstream lane pool
   sized to `--openai-generation-concurrency`. Each request leases one live
   stage0-to-stage1 stream for its full prefill/decode/stop sequence, then
@@ -143,7 +148,7 @@ unload or replan.
   activation frames on a bounded background writer. It is opt-in because the
   benefit is topology dependent.
 - `runtime-slice` loads a full model and filters tensors at runtime.
-- `artifact-slice` loads GGUF slice artifacts written by `llama-model-slice`
+- `artifact-slice` loads GGUF slice artifacts written by `skippy-model-package`
   with `filter_tensors_on_load=true`.
 - `layer-package` loads a local `model-package.json` directory, validates the
   manifest and selected part files, then opens those GGUF parts directly through

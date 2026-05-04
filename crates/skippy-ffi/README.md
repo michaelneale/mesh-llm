@@ -10,7 +10,7 @@ behavior belongs here. Prefer adding safe behavior in `skippy-runtime`.
 - bind to `skippy.h`
 - expose C-compatible constants, structs, and function declarations
 - keep ABI ownership and error shapes explicit
-- link the patched llama.cpp and ggml static archives selected by
+- link the staged llama.cpp and ggml static archives selected by
   `LLAMA_STAGE_BUILD_DIR`
 
 Consumers should use `skippy-runtime` unless they are extending the ABI
@@ -23,18 +23,19 @@ patched llama.cpp ABI without owning policy:
 
 ```mermaid
 flowchart TB
+    Mesh["mesh-llm<br/>embedded runtime owner"] --> Runtime
     Server["skippy-server<br/>lifecycle + transport"] --> Runtime["skippy-runtime<br/>safe model/session API"]
     Runtime --> FFI["skippy-ffi<br/>raw ABI declarations"]
-    FFI --> Llama["patched llama.cpp<br/>stage execution"]
+    FFI --> Llama["third_party/llama.cpp<br/>skippy.h stage execution"]
 ```
 
 Keep this crate close to the C ABI. Higher-level behavior such as topology
-validation, activation wire conversion, KV sidecar integration, package
+validation, activation wire conversion, exact-cache policy, package
 materialization, telemetry, and benchmark policy belongs in the crates above it.
 
 ## Build Integration
 
-By default the build script statically links patched llama.cpp from
+By default the build script statically links the staged llama.cpp checkout from
 `.deps/llama.cpp/build-stage-abi-static`. Prepare and build it with
 `just llama-build`. Set `LLAMA_STAGE_BUILD_DIR` to point at another
 prepared build directory, for example a Linux GPU backend build:

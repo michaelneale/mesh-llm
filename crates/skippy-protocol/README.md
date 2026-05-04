@@ -8,12 +8,13 @@ bindings.
 
 ## Architecture Role
 
-`skippy-protocol` is the binary contract between the driver and stage
-chain, and between neighboring stage servers:
+`skippy-protocol` is the `skippy-stage/1` binary contract between mesh's stage
+coordinator/diagnostic clients and the stage chain, and between neighboring
+stage servers. It is separate from mesh gossip/control protocol `mesh-llm/1`.
 
 ```mermaid
 sequenceDiagram
-    participant D as driver / prompt CLI
+    participant D as mesh stage coordinator / diagnostic client
     participant S0 as stage-0
     participant S1 as stage-1
     participant SF as final stage
@@ -45,6 +46,10 @@ size without changing the stage execution contract.
 - stage config fields that must survive JSON generation, including K/V cache
   type strings consumed by the runtime layer
 - protocol compatibility constants
+
+Because skippy is new inside mesh, this protocol can evolve independently from
+the stable mixed-version mesh protocol. Keep changes explicit and versioned so
+stage nodes fail closed instead of corrupting an active topology.
 
 Run protocol tests with:
 

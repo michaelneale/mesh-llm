@@ -7,25 +7,26 @@ into typed runtime structures.
 
 ## Architecture Role
 
-`skippy-runtime` is the safe model/session layer used by servers, prompt
-drivers, benchmarks, correctness checks, and slicing tools. It does not own TCP
-transport, sidecar process lifecycle, or telemetry export.
+`skippy-runtime` is the safe model/session layer used by mesh, servers,
+diagnostic prompt clients, benchmarks, correctness checks, and slicing tools.
+It does not own TCP transport, mesh lifecycle, or telemetry export.
 
 ```mermaid
 flowchart TB
-    P["prompt / bench / correctness<br/>tokenization and local checks"] --> R["skippy-runtime"]
+    Mesh["mesh-llm<br/>embedded serving + lifecycle"] --> R["skippy-runtime"]
+    P["bench / prompt / correctness<br/>tokenization and local checks"] --> R
     S["skippy-server<br/>prefill/decode requests"] --> R
-    R --> PS["package selector<br/>manifest + selected parts"]
+    R --> PS["package selector<br/>manifest + selected parts<br/>direct GGUF fake packages"]
     PS --> R
     R --> F["skippy-ffi"]
-    F --> L["patched llama.cpp"]
+    F --> L["third_party/llama.cpp<br/>stage ABI"]
 ```
 
 For inference, the runtime opens a stage view, creates a session, runs prefill
 or decode for that stage's layer range, and returns either an activation frame
 for downstream stages or a predicted token on the final stage. KV page
-probe/export/import also passes through this crate for runtimes that expose
-native cache page movement.
+state export/import also passes through this crate for runtimes that expose
+native exact-cache movement.
 
 ## Responsibilities
 

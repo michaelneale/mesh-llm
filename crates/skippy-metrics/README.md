@@ -14,15 +14,17 @@ crates emit or consume OTLP data.
 
 ```mermaid
 flowchart LR
-    S0["stage servers<br/>request summaries"] -.-> M["metrics-server"]
-    B["bench / prompt drivers<br/>run metadata"] -.-> M
-    M --> R["report.json<br/>SQLite-backed views"]
+    Mesh["mesh-llm<br/>topology + lifecycle metadata"] -.-> M["metrics-server"]
+    S0["stage servers<br/>request summaries"] -.-> M
+    B["bench / diagnostic drivers<br/>run metadata"] -.-> M
+    M --> D["metrics.duckdb"]
+    M --> R["report.json<br/>DuckDB-backed views"]
 
     V["skippy-metrics<br/>names + attributes"] -.-> S0
     V -.-> B
     V -.-> M
 ```
 
-The hot inference path must not block on telemetry. Stage servers and KV
-runtime operations emit best-effort summaries, while `metrics-server` owns
-ingestion, storage, and report export.
+The hot inference path must not block on telemetry. Stage servers and runtime
+cache operations emit best-effort summaries, while `metrics-server` owns
+ingestion, DuckDB storage, and report export.

@@ -19,9 +19,9 @@ flowchart LR
     A --> P["primary_file"]
     A --> F["artifact file set<br/>single file or split shards"]
     A --> I["ModelIdentity<br/>canonical_ref<br/>distribution_id"]
-    P --> S["llama-model-slice<br/>write-package"]
+    P --> S["skippy-model-package<br/>write-package"]
     F --> S
-    I --> T["runtime / OpenAI metadata"]
+    I --> T["mesh status<br/>runtime + OpenAI metadata"]
 ```
 
 ## Selection Rules
@@ -43,3 +43,8 @@ flowchart LR
 
 Concrete Hugging Face behavior lives in `model-hf`; tests and other callers can
 provide small in-memory repository implementations.
+
+Callers should carry `ModelIdentity` forward instead of falling back to local
+filenames. For direct local GGUF serving, mesh synthesizes a package identity
+around the file while keeping the artifact path separate from the public model
+ref.

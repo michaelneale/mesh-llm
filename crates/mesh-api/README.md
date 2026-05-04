@@ -17,5 +17,8 @@ Layering:
 - `crates/mesh-api-ffi/` wraps `crates/mesh-api/` for Swift, Kotlin, and other native
   bindings
 
+This SDK talks to mesh's public API and OpenAI surface. It does not embed
+skippy, plan stage topology, or manage local model packages directly.
+
 If an API is meant for app integration, it should live here rather than in
 `crates/mesh-client/`.

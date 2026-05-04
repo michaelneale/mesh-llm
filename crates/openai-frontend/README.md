@@ -1,30 +1,31 @@
 # openai-frontend
 
-Reusable OpenAI-compatible HTTP frontend primitives for staged runtime entry
-points.
+Reusable OpenAI-compatible HTTP frontend primitives for mesh and staged runtime
+entry points.
 
 This crate owns the public API shapes and route machinery that should not be
 duplicated inside `skippy-server`. Stage server code should provide a thin
 backend adapter that implements the frontend trait, while this crate handles
 request/response JSON, OpenAI-style errors, `/v1/models`, chat completions, and
-streaming Server-Sent Events framing.
+streaming Server-Sent Events framing. Mesh uses this as the single OpenAI
+surface for embedded single-stage and stage-split serving.
 
-The initial target is benchmark compatibility for tools such as
-`llama-benchy`, with production-friendly HTTP behavior around the supported
-subset. This is still not full `llama-server` parity.
+The compatibility target is the mesh OpenAI surface, not llama-server process
+compatibility. Request fields such as tools, structured-output shape,
+logprobs, and `/v1/responses` are parsed and normalized here; backend support
+is advertised or rejected explicitly by the runtime adapter.
 
 For the concrete benchy command and contract, see
 [`docs/LLAMA_BENCHY.md`](../../docs/LLAMA_BENCHY.md).
 
-## Supported API Subset
-
-The first supported surface is intentionally small:
+## Supported API Surface
 
 | Surface | Status | Notes |
 |---|---|---|
 | `GET /v1/models` | Supported | Returns backend-provided model objects with opaque ids such as `org/repo:Q4_K_M`. |
 | `POST /v1/chat/completions` | Supported | Handles streaming and non-streaming response shapes. |
 | `POST /v1/completions` | Supported | Handles streaming and non-streaming response shapes. |
+| `POST /v1/responses` | Supported | Adapts OpenAI responses requests onto chat/completion backend calls and preserves response metadata where possible. |
 | `GET /health` / `GET /healthz` | Supported | Lightweight liveness probes for hosts and CI smoke tests. |
 | `GET /readyz` | Supported | Backend readiness probe that verifies model discovery through `OpenAiBackend::models`. |
 | Server-Sent Events | Supported | Emits OpenAI-style JSON chunks and `[DONE]`. |
@@ -36,9 +37,9 @@ The first supported surface is intentionally small:
 | `n` / `best_of` | Parsed | Single-choice requests are accepted; multi-choice generation is rejected until the response/backend path supports it. |
 | `temperature`, `top_p`, `seed` | Supported | Stage backend passes supported sampling controls to llama.cpp sampling. |
 | penalties / `logit_bias` | Supported | Presence/frequency/repeat penalties and token-id logit bias are passed to llama.cpp. |
-| `logprobs` / `top_logprobs` | Parsed | Rejected until logits/probability exposure exists. |
-| `tools` / `tool_choice` | Parsed | Rejected until tool-call response formatting exists. |
-| `response_format` | Parsed | Text is accepted; structured outputs are rejected until constrained decoding exists. |
+| `logprobs` / `top_logprobs` | Frontend-compatible | Parsed, validated, and preserved. Backend decides whether logits/probability data can be produced. |
+| `tools` / `tool_choice` | Frontend-compatible | Parsed, validated, and preserved. Backend decides whether tool-call generation is available. |
+| `response_format` | Frontend-compatible | Text and structured-output shapes are parsed and preserved. Backend decides whether constrained decoding is available. |
 | OpenAI-style error envelope | Supported | Includes strict `type`, `param`, and `code` fields. |
 | OpenAI-style HTTP fallbacks | Supported | Unknown routes, unsupported methods, invalid JSON, and oversized JSON return the shared error envelope. |
 | Request body limit | Supported | Configurable via `OpenAiFrontendConfig`; defaults to 4 MiB. |
@@ -50,11 +51,11 @@ The first supported surface is intentionally small:
 
 ```mermaid
 flowchart TB
-    C["llama-benchy<br/>OpenAI-compatible client"] --> R["openai-frontend<br/>Axum routes"]
-    R --> Parse["request parsing<br/>validation<br/>OpenAI errors"]
+    C["OpenAI-compatible client<br/>chat, completions, responses"] --> R["openai-frontend<br/>Axum routes"]
+    R --> Parse["request parsing<br/>validation<br/>normalization<br/>OpenAI errors"]
     Parse --> B["OpenAiBackend implementation"]
-    B --> Local["local runtime backend"]
-    B --> Chain["staged binary chain"]
+    B --> Local["embedded single-stage<br/>skippy runtime"]
+    B --> Chain["mesh stage-0 route<br/>skippy-stage/1 chain"]
     Local --> Resp["OpenAI response JSON"]
     Chain --> Resp
     Resp --> R
@@ -100,40 +101,39 @@ perform exact string matching on requests. Resolution to a concrete Hugging Face
 revision, GGUF file, split-shard distribution, local runtime, or staged binary
 chain remains backend-owned.
 
-## llama-server Gap Analysis
+## Backend Responsibility Matrix
 
-| Area | llama-server already handles | openai-frontend initial target | Gap / risk |
+| Area | Frontend responsibility | Backend responsibility | Status |
 |---|---|---|---|
-| `/v1/models` | Model metadata and aliases | One or more backend-provided `ModelObject` values | Low |
-| `/v1/chat/completions` | Broad OpenAI-compatible parsing | Parse common fields and preserve unknown JSON | Low for `llama-benchy` |
-| HTTP operations | Health/readiness, fallbacks, payload handling, content-type handling | Liveness/readiness probes plus OpenAI-shaped 404/405/413/JSON errors | Low |
-| Streaming | SSE chunks, `[DONE]`, role/content deltas | OpenAI-shaped SSE chunks plus `[DONE]`; dropped SSE bodies cancel the request context | Low |
-| Non-streaming | Complete OpenAI response and usage | Response shape and backend-provided usage | Low |
-| Chat templates | Model-aware template application | Stage backend applies the GGUF default chat template through the skippy ABI backed by `llama-common` Jinja templating | Low for text-only chat |
-| Tokenization | Model-aware llama tokenization | Backend responsibility | Low if using llama ABI |
-| Detokenization | Model-aware token text handling | Stage backend detokenizes accumulated generated tokens and emits only valid UTF-8 deltas | Low for text streaming |
-| Sampling | Temperature, top-p/top-k, penalties, grammar, seed | Stage backend supports temperature, top-p, top-k, seed, presence/frequency/repeat penalties, and token-id logit bias through the stage ABI; binary-chain requests omit the sampling extension when defaults are used | Medium; grammar/min-p/typical remain rejected |
-| Stop handling | Stop strings/tokens and EOS behavior | Backend responsibility; stage backend holds back streamed deltas enough to avoid leaking configured stop strings | Medium |
-| Context limits | Slot/window management and validation | Stage backend rejects prompt plus requested generation beyond configured `ctx_size` | Low for current stage backend |
-| Concurrency | Slots, batching, cancellation, backpressure | Stage backend runs generation on a blocking worker, gates current requests with an explicit single-generation semaphore, and cancels streaming decode on client disconnect | Medium; batching/slots remain future work |
-| Prefix cache | llama-server slot/KV prompt cache behavior | Staged KV behavior is separate and backend-owned | High |
-| Errors | OpenAI-ish error JSON | Shared `OpenAiError` response envelope | Low |
-| Usage accounting | Prompt/completion/total token counts | Backend-provided `Usage` | Low |
-| Multi-choice generation | `n`, `best_of`, multiple choices | Parsed and rejected above one choice | Medium |
-| Logprobs | Optional token probability data | Parsed and rejected until backend exposes logits/probs | High |
-| Tools/function calling | Tool request/response formatting | Parsed and rejected until backend/tool-call machinery exists | Out of scope |
-| JSON schema/grammar | Constrained decoding | `response_format` parsed; structured output rejected until backend support exists | Out of scope |
-| Embeddings/rerank/infill | Extra endpoints | Out of initial scope | Out of scope |
-| Auth/CORS/UI | API keys, CORS, browser UI | Out of initial scope | Out of scope |
-| Metrics | llama-server metrics | Backend/stage telemetry; request IDs should correlate with `metrics-server` | Medium |
+| `/v1/models` | Route shape and model-object serialization | Advertise exact full model refs accepted by the runtime | Supported |
+| `/v1/chat/completions` | Parse common and advanced fields, stream/non-stream envelopes | Tokenization, sampling, stop handling, usage, feature execution | Supported with backend feature guards |
+| `/v1/completions` | Prompt parsing and response envelopes | Token prompts, sampling, stop handling, usage | Supported with backend feature guards |
+| `/v1/responses` | Translate request/response shapes onto the backend contract | Execute the resulting chat/completion request | Supported |
+| HTTP operations | Health/readiness, fallbacks, payload limits, content-type handling | Model readiness and backend timeouts | Supported |
+| Streaming | SSE chunks, `[DONE]`, cancellation context | Produce deltas, usage, and optional logprob/tool metadata | Supported with backend feature guards |
+| Chat templates | Preserve OpenAI message shape | Apply model-aware chat templates through the skippy ABI | Backend-owned |
+| Sampling | Parse OpenAI sampling fields | Apply supported llama sampling controls and reject unsupported knobs | Backend-owned |
+| Stop handling | Preserve stop fields | Hold back streamed text enough to avoid leaking stop strings | Backend-owned |
+| Context limits | Carry requested limits | Validate prompt plus generation against `ctx_size` | Backend-owned |
+| Concurrency | Request timeout and cancellation | Runtime slots, batching, lane pools, and backpressure | Backend-owned |
+| Cache behavior | Request IDs for correlation | Prefix/state cache policy and telemetry | Backend-owned |
+| Errors | Shared OpenAI error envelope | Return precise unsupported/runtime errors | Supported |
+| Usage accounting | Response field shape | Prompt/completion/total token counts | Backend-owned |
+| Multi-choice generation | Parse `n` / `best_of` | Generate or reject multi-choice requests | Backend-owned |
+| Logprobs | Parse and preserve request/response shape | Expose logits/probabilities | Frontend ready; backend-gated |
+| Tools/function calling | Parse and preserve tool schemas and tool-call response shape | Generate tool calls | Frontend ready; backend-gated |
+| JSON schema/grammar | Parse and preserve `response_format` | Constrained decoding | Frontend ready; backend-gated |
+| Embeddings/rerank/infill/audio | Route fallback/error handling | Runtime implementation if reintroduced | Out of current scope |
+| Metrics | Request IDs and tracing context | Stage/OpenAI telemetry emitted to `metrics-server` | Supported |
 
 ## Stage-Server Integration
 
-`skippy-server` should use this crate by implementing `OpenAiBackend` for a
+`skippy-server` and mesh use this crate by implementing `OpenAiBackend` for a
 small adapter:
 
 - local text/runtime backend for single-stage smoke tests
 - staged chain backend that connects to the first `serve-binary` endpoint
 
-That keeps the `serve-openai` command thin: parse CLI config, build the backend,
-pass it to `openai_frontend::router`, and serve the Axum app.
+That keeps `serve-openai` and the embedded mesh path thin: parse or build the
+runtime config, construct the backend, pass it to `openai_frontend::router`,
+and serve the Axum app.

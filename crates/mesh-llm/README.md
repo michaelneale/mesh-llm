@@ -1,6 +1,8 @@
 # mesh-llm crate
 
-Rust implementation of mesh-llm: a peer-to-peer control plane for llama.cpp inference over QUIC, with distributed routing, model orchestration, plugin hosting, and a local management API.
+Rust implementation of mesh-llm: a peer-to-peer control plane for embedded
+skippy/llama inference over QUIC, with distributed routing, model
+orchestration, plugin hosting, and a local management API.
 
 For install and end-user usage, see the [project README](../../README.md). For deeper architecture and test flows, see [DESIGN.md](../../docs/design/DESIGN.md), [METRICS.md](../../docs/design/METRICS.md), [TESTING.md](../../docs/design/TESTING.md), [message_protocol.md](../../docs/design/message_protocol.md), and [LLAMA_STAGE_INTEGRATION_PLAN.md](../../docs/design/LLAMA_STAGE_INTEGRATION_PLAN.md).
 
@@ -14,7 +16,7 @@ src/
 ├── main.rs                binary entrypoint
 ├── api/                   management API, status shaping, HTTP routing
 ├── cli/                   clap types, subcommands, command handlers
-├── inference/             election, launch, pipeline splits, MoE orchestration
+├── inference/             embedded skippy serving, stage deployment, hooks
 ├── mesh/                  peer membership, gossip, routing tables, QUIC node behavior
 ├── models/                catalog, search, GGUF metadata, inventory, resolution
 ├── network/               proxying, tunnels, affinity, Nostr discovery, endpoint rewrite
@@ -35,14 +37,16 @@ plugins/
 
 ## Runtime model
 
-- `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by model.
+- `mesh-llm` owns the user-facing OpenAI-compatible API on `:9337`. Requests are routed by full model ref.
 - The management API and web console live on `:3131`. Pass `--headless` to disable the embedded web UI while keeping the management API (`/api/*`) available on that port.
-- Dense models that fit run locally. Dense models that do not fit can be split with pipeline parallelism.
-- MoE models are handled through expert-aware orchestration in `inference/moe.rs`.
+- Models that fit run as embedded single-stage skippy runtimes. Larger certified models can run as staged splits over the `skippy-stage/1` control plane.
+- Stage topology is planned by mesh from peer/device inventory, package metadata, and reviewed family capability records. Replans withdraw old routes before publishing replacement stage-0 routes.
 - Routing and demand tracking are mesh-wide. Nodes can serve different models at the same time.
 - Discovery is optional and Nostr-backed. Private meshes work with explicit join tokens only.
 
-The control plane uses protocol `mesh-llm/1` with protobuf framing for mesh traffic.
+The mesh control plane uses protocol `mesh-llm/1` with protobuf framing for mesh
+traffic. Staged runtime traffic uses `skippy-stage/1`, keeping the new stage
+protocol separate from mesh gossip compatibility.
 
 ## API surface
 
@@ -86,7 +90,7 @@ version = 1
 assignment = "pinned"
 
 [[models]]
-model = "Qwen3-8B-Q4_K_M"
+model = "unsloth/Qwen3-8B-GGUF:Q4_K_M"
 gpu_id = "pci:0000:65:00.0"
 
 [[models]]
@@ -117,7 +121,7 @@ When `[gpu].assignment = "pinned"`, every configured `[[models]]` entry must inc
 Opt-in Nostr discovery:
 
 ```bash
-mesh-llm serve --model Qwen2.5-3B --publish --mesh-name "Sydney Lab" --region AU
+mesh-llm serve --model Qwen/Qwen2.5-3B-Instruct-GGUF:Q4_K_M --publish --mesh-name "Sydney Lab" --region AU
 mesh-llm discover
 mesh-llm discover --model GLM --region AU
 mesh-llm serve --auto
@@ -127,7 +131,7 @@ mesh-llm gpus
 Named meshes still work as a strict discovery filter:
 
 ```bash
-mesh-llm serve --auto --model GLM-4.7-Flash-Q4_K_M --mesh-name "poker-night"
+mesh-llm serve --auto --model unsloth/GLM-4.7-Flash-GGUF:Q4_K_M --mesh-name "poker-night"
 ```
 
 No-arg behavior remains intentionally simple:

@@ -15,13 +15,14 @@ and cache path identity recovery.
 
 ```mermaid
 flowchart TB
-    C["caller<br/>llama-model-slice<br/>runtime package loader"] --> H["HfModelRepository"]
+    C["caller<br/>mesh resolver<br/>skippy-model-package<br/>runtime package loader"] --> H["HfModelRepository"]
     H --> API["Hugging Face Hub API<br/>repo info + siblings"]
     H --> Cache["local HF cache<br/>snapshots/revision/file"]
     API --> A["model-artifact<br/>resolve_model_artifact"]
     A --> H
     H --> D["downloaded artifact paths"]
     Cache --> I["HfModelIdentity<br/>repo, revision, file"]
+    I --> Mesh["mesh model status<br/>full ref ids"]
 ```
 
 ## Configuration
@@ -51,4 +52,8 @@ token explicitly in tests and embedding applications.
 
 Keep artifact ranking in `model-artifact`, public reference parsing in
 `model-ref`, and stage materialization in `skippy-runtime` or
-`llama-model-slice`.
+`skippy-model-package`.
+
+If a path is inside the Hugging Face cache, this crate recovers the repo,
+revision, and selected file so mesh can continue advertising the full model ref
+instead of a GGUF basename.

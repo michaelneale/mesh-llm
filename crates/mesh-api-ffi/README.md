@@ -12,5 +12,8 @@ Layering:
 - `crates/mesh-api/` defines the public Rust SDK
 - `crates/mesh-api-ffi/` adapts that SDK for cross-language consumers
 
+The FFI layer should expose public model ids as the same full model refs used by
+mesh and `/v1/models`; it should not derive identities from GGUF filenames.
+
 Application code should usually depend on `crates/mesh-api/` directly unless it is
 building a non-Rust binding.

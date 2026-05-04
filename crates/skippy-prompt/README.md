@@ -1,28 +1,28 @@
 # skippy-prompt
 
-Prompt REPL and local/multi-host stage topology launcher.
+Prompt REPL and diagnostics client for staged runtimes.
 
 `skippy-prompt` is the operator-facing CLI for driving interactive text
-generation against a running first stage. In mesh-llm, normal topology launch
-and lifecycle are owned by mesh, so the imported `prompt` launcher exits before
-starting sidecars. Use the `binary` subcommand against a mesh-managed first
-stage for diagnostics.
+generation against a running first stage. In mesh-llm, topology launch,
+materialization, metrics wiring, and lifecycle are owned by mesh, so the
+imported `prompt` launcher is retained only as a diagnostic planning surface.
+Use the `binary` subcommand against a mesh-managed first stage for live checks.
 
 ## Architecture Role
 
-The `prompt` subcommand builds a runnable topology from CLI inputs, starts the
-supporting processes, waits for readiness, and then drives the first stage over
-the binary protocol.
+The mesh-managed path builds a topology from model/package metadata and peer
+inventory, starts stage servers, waits for readiness, publishes the stage-0
+route, and then lets diagnostic clients attach to the first stage.
 
 ```mermaid
 flowchart TB
-    CLI["skippy-prompt prompt"] --> Plan["skippy-topology<br/>validate splits"]
-    CLI --> Slice["llama-model-slice<br/>materialize stage artifacts"]
-    CLI --> Metrics["metrics-server"]
-    CLI --> S0["stage-0<br/>skippy-server"]
+    Mesh["mesh-llm coordinator"] --> Plan["skippy-topology<br/>validate splits"]
+    Mesh --> Slice["skippy-model-package<br/>materialize derived stage cache"]
+    Mesh --> Metrics["metrics-server<br/>optional debug sink"]
+    Mesh --> S0["stage-0<br/>skippy-server"]
     S0 --> S1["stage-1"]
     S1 --> SF["final stage"]
-    CLI --> REPL["interactive REPL<br/>history, logs, interrupts"]
+    CLI["skippy-prompt binary<br/>diagnostic client"] --> REPL["interactive REPL<br/>history, interrupts"]
     REPL --> S0
     SF --> S0
 ```
@@ -63,8 +63,8 @@ Useful REPL commands include `:history`, `:logs [name] [lines]`, and `:quit`.
 - `--activation-wire-dtype q8` is accepted only when topology policy has
   validation for the requested family/split.
 - `--draft-model-path` enables draft-model speculative proposals.
-- Standalone `kv-server`, `ngram-pool`, and `ngram-pool-server` are not
-  imported into mesh-llm; topology launch exits before starting sidecars.
+- Standalone cache and n-gram sidecars are not imported into mesh-llm; topology
+  launch exits before starting sidecars.
 - Thinking controls are forwarded through the shared `openai-frontend`
   reasoning/template normalization helpers.
 

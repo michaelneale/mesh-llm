@@ -15,11 +15,12 @@ into repository, artifact, packaging, or serving code.
 ```mermaid
 flowchart LR
     U["user input<br/>org/repo[:selector]<br/>org/repo@rev[:selector]"] --> R["model-ref"]
-    R --> M["ModelRef<br/>repo, revision, selector"]
+    R --> M["ModelRef<br/>repo, revision, selector<br/>canonical display"]
     R --> Q["GGUF selector helpers"]
     M --> A["model-artifact<br/>artifact resolution"]
     Q --> A
-    A --> P["llama-model-slice<br/>package provenance"]
+    A --> P["skippy-model-package<br/>package provenance"]
+    M --> O["openai-frontend<br/>model id"]
 ```
 
 ## Supported Forms
@@ -36,6 +37,10 @@ https://huggingface.co/org/repo/tree/revision
 Selectors are artifact selectors, usually quantization-like GGUF suffixes such
 as `Q4_K_M`, `F16`, `BF16`, or `IQ4_XS`. They are not runtime backends,
 topology identifiers, or stage counts.
+
+Mesh uses the full normalized model ref as the model identity everywhere it can:
+status, demand, cold-model tracking, OpenAI `/v1/models`, and stage topology
+metadata. GGUF path stems are artifact names, not model ids.
 
 ## Responsibilities
 
