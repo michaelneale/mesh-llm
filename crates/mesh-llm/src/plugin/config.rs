@@ -615,6 +615,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
