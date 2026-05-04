@@ -2,6 +2,7 @@ use super::{PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, OPENAI_END
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
 use serde::{Deserialize, Serialize};
+use skippy_protocol::FlashAttentionType;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,16 @@ pub struct ModelConfigEntry {
     pub gpu_id: Option<String>,
     #[serde(default)]
     pub parallel: Option<usize>,
+    #[serde(default)]
+    pub cache_type_k: Option<String>,
+    #[serde(default)]
+    pub cache_type_v: Option<String>,
+    #[serde(default)]
+    pub batch: Option<u32>,
+    #[serde(default)]
+    pub ubatch: Option<u32>,
+    #[serde(default)]
+    pub flash_attention: Option<FlashAttentionType>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -128,6 +139,22 @@ pub(crate) fn validate_config(config: &MeshConfig) -> Result<()> {
             if parallel < 1 {
                 bail!("models[{index}].parallel must be at least 1, got {parallel}");
             }
+        }
+        if let Some(cache_type_k) = &model.cache_type_k {
+            if cache_type_k.trim().is_empty() {
+                bail!("models[{index}].cache_type_k must not be empty when set");
+            }
+        }
+        if let Some(cache_type_v) = &model.cache_type_v {
+            if cache_type_v.trim().is_empty() {
+                bail!("models[{index}].cache_type_v must not be empty when set");
+            }
+        }
+        if model.batch == Some(0) {
+            bail!("models[{index}].batch must be at least 1 when set");
+        }
+        if model.ubatch == Some(0) {
+            bail!("models[{index}].ubatch must be at least 1 when set");
         }
         match config.gpu.assignment {
             GpuAssignment::Auto => {
@@ -315,6 +342,11 @@ command = "/tmp/demo"
         assert_eq!(config.models[0].model, "Qwen3-8B-Q4_K_M");
         assert_eq!(config.models[0].ctx_size, Some(8192));
         assert_eq!(config.models[0].gpu_id, None);
+        assert_eq!(config.models[0].cache_type_k, None);
+        assert_eq!(config.models[0].cache_type_v, None);
+        assert_eq!(config.models[0].batch, None);
+        assert_eq!(config.models[0].ubatch, None);
+        assert_eq!(config.models[0].flash_attention, None);
         assert_eq!(
             config.models[1].mmproj.as_deref(),
             Some("bartowski/Qwen2.5-VL-7B-Instruct-GGUF/mmproj.gguf")
@@ -358,6 +390,11 @@ ctx_size = 8192
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -381,6 +418,11 @@ ctx_size = 8192
                 ctx_size: None,
                 gpu_id: Some("  \t  ".into()),
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -404,6 +446,11 @@ ctx_size = 8192
                 ctx_size: None,
                 gpu_id: Some("pci:0000:65:00.0".into()),
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -488,6 +535,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -513,6 +565,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -533,6 +590,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -581,6 +643,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: Some(8),
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -596,6 +663,11 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: Some(0),
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
@@ -616,9 +688,140 @@ model = "Qwen3-8B-Q4_K_M"
                 ctx_size: None,
                 gpu_id: None,
                 parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
             }],
             ..MeshConfig::default()
         };
         validate_config(&config).unwrap();
+    }
+
+    #[test]
+    fn model_runtime_overrides_deserialize_from_toml() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+version = 1
+
+[gpu]
+assignment = "auto"
+
+[[models]]
+model = "Qwen3-8B-Q4_K_M"
+cache_type_k = "q8_0"
+cache_type_v = "q4_0"
+batch = 2048
+ubatch = 512
+flash_attention = "enabled"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.models[0].cache_type_k.as_deref(), Some("q8_0"));
+        assert_eq!(config.models[0].cache_type_v.as_deref(), Some("q4_0"));
+        assert_eq!(config.models[0].batch, Some(2048));
+        assert_eq!(config.models[0].ubatch, Some(512));
+        assert_eq!(
+            config.models[0].flash_attention,
+            Some(FlashAttentionType::Enabled)
+        );
+    }
+
+    #[test]
+    fn model_cache_type_k_empty_rejected() {
+        let config = MeshConfig {
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None,
+                cache_type_k: Some("   ".into()),
+                cache_type_v: None,
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("models[0].cache_type_k must not be empty when set"));
+    }
+
+    #[test]
+    fn model_cache_type_v_empty_rejected() {
+        let config = MeshConfig {
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None,
+                cache_type_k: None,
+                cache_type_v: Some("   ".into()),
+                batch: None,
+                ubatch: None,
+                flash_attention: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("models[0].cache_type_v must not be empty when set"));
+    }
+
+    #[test]
+    fn model_batch_zero_rejected() {
+        let config = MeshConfig {
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: Some(0),
+                ubatch: None,
+                flash_attention: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("models[0].batch must be at least 1 when set"));
+    }
+
+    #[test]
+    fn model_ubatch_zero_rejected() {
+        let config = MeshConfig {
+            models: vec![ModelConfigEntry {
+                model: "Qwen3-8B-Q4_K_M".into(),
+                mmproj: None,
+                ctx_size: None,
+                gpu_id: None,
+                parallel: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                batch: None,
+                ubatch: Some(0),
+                flash_attention: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("models[0].ubatch must be at least 1 when set"));
     }
 }

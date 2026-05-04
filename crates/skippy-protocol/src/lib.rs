@@ -127,6 +127,15 @@ pub enum LoadMode {
     ArtifactSlice,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlashAttentionType {
+    #[default]
+    Auto,
+    Disabled,
+    Enabled,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StageConfig {
     pub run_id: String,
@@ -159,11 +168,17 @@ pub struct StageConfig {
     #[serde(default = "default_lane_count")]
     pub lane_count: u32,
     #[serde(default)]
+    pub n_batch: Option<u32>,
+    #[serde(default)]
+    pub n_ubatch: Option<u32>,
+    #[serde(default)]
     pub n_gpu_layers: i32,
     #[serde(default = "default_cache_type")]
     pub cache_type_k: String,
     #[serde(default = "default_cache_type")]
     pub cache_type_v: String,
+    #[serde(default)]
+    pub flash_attn_type: FlashAttentionType,
     #[serde(default)]
     pub filter_tensors_on_load: bool,
     #[serde(default)]

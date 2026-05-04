@@ -50,6 +50,9 @@ message LoadStage {
   optional StagePeer downstream = 23;
   optional string projector_path = 24;
   uint32 lane_count = 25;
+  optional uint32 n_batch = 26;
+  optional uint32 n_ubatch = 27;
+  StageFlashAttnType flash_attn_type = 28;
 }
 
 message StopStage {
@@ -97,6 +100,16 @@ message StageStatus {
   optional bool materialized_pinned = 23;
   optional string projector_path = 24;
   uint32 lane_count = 25;
+  optional uint32 n_batch = 26;
+  optional uint32 n_ubatch = 27;
+  StageFlashAttnType flash_attn_type = 28;
+}
+
+enum StageFlashAttnType {
+  STAGE_FLASH_ATTN_TYPE_UNSPECIFIED = 0;
+  STAGE_FLASH_ATTN_TYPE_AUTO = 1;
+  STAGE_FLASH_ATTN_TYPE_DISABLED = 2;
+  STAGE_FLASH_ATTN_TYPE_ENABLED = 3;
 }
 
 message StagePeer {

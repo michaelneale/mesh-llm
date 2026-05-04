@@ -42,9 +42,9 @@ use skippy_protocol::binary::{
 };
 use skippy_protocol::{StageConfig, StageTopology};
 use skippy_runtime::{
-    ChatTemplateMessage, ChatTemplateOptions, GenerationSignalWindow,
-    LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig, RuntimeLoadMode,
-    SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
+    ChatTemplateMessage, ChatTemplateOptions, FlashAttentionType as RuntimeFlashAttentionType,
+    GenerationSignalWindow, LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig,
+    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
 use tokio::{
     net::TcpListener,
@@ -992,6 +992,8 @@ impl DraftRunner {
                 layer_end: layer_count,
                 ctx_size: config.ctx_size,
                 lane_count: 1,
+                n_batch: None,
+                n_ubatch: None,
                 n_gpu_layers: n_gpu_layers.unwrap_or(config.n_gpu_layers),
                 selected_backend_device: config
                     .selected_device
@@ -999,6 +1001,7 @@ impl DraftRunner {
                     .map(|device| device.backend_device.clone()),
                 cache_type_k: skippy_runtime::GGML_TYPE_F16,
                 cache_type_v: skippy_runtime::GGML_TYPE_F16,
+                flash_attn_type: RuntimeFlashAttentionType::Auto,
                 load_mode: RuntimeLoadMode::RuntimeSlice,
                 projector_path: None,
                 include_embeddings: true,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use skippy_protocol::{LoadMode, PeerConfig, StageConfig, StageDevice};
+use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
 
 use super::materialization::StagePackageInfo;
 use super::topology::MeshStagePlan;
@@ -18,7 +18,10 @@ pub(crate) struct StageDeploymentContext<'a> {
     pub(crate) activation_width: i32,
     pub(crate) ctx_size: u32,
     pub(crate) lane_count: u32,
+    pub(crate) n_batch: Option<u32>,
+    pub(crate) n_ubatch: Option<u32>,
     pub(crate) kv_cache: KvCachePolicy,
+    pub(crate) flash_attn_type: FlashAttentionType,
     pub(crate) projector_path: Option<String>,
 }
 
@@ -46,9 +49,12 @@ pub(crate) fn remote_stage_load_request(
         wire_dtype: StageWireDType::F16,
         ctx_size: context.ctx_size,
         lane_count: context.lane_count,
+        n_batch: context.n_batch,
+        n_ubatch: context.n_ubatch,
         n_gpu_layers: -1,
         cache_type_k: context.kv_cache.cache_type_k().to_string(),
         cache_type_v: context.kv_cache.cache_type_v().to_string(),
+        flash_attn_type: context.flash_attn_type,
         shutdown_generation: 1,
         load_mode: LoadMode::LayerPackage,
         upstream: None,
@@ -82,9 +88,12 @@ pub(crate) fn stage0_config(
         layer_end: stage0.layer_end,
         ctx_size: context.ctx_size,
         lane_count: context.lane_count,
+        n_batch: context.n_batch,
+        n_ubatch: context.n_ubatch,
         n_gpu_layers: -1,
         cache_type_k: context.kv_cache.cache_type_k().to_string(),
         cache_type_v: context.kv_cache.cache_type_v().to_string(),
+        flash_attn_type: context.flash_attn_type,
         filter_tensors_on_load: true,
         selected_device,
         load_mode: LoadMode::LayerPackage,
@@ -197,7 +206,10 @@ mod tests {
             activation_width: 1024,
             ctx_size: 8192,
             lane_count: 2,
+            n_batch: None,
+            n_ubatch: None,
             kv_cache: KvCachePolicy::for_model_size(100),
+            flash_attn_type: FlashAttentionType::Auto,
             projector_path: Some("/models/mmproj.gguf".to_string()),
         };
         let request = remote_stage_load_request(

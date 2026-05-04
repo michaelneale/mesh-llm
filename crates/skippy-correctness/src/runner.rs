@@ -535,6 +535,9 @@ fn run_full_model_decode(args: &RuntimeArgs) -> Result<FullModelResult> {
         layer_start: 0,
         layer_end: args.layer_end,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: RuntimeLoadMode::RuntimeSlice,
@@ -544,6 +547,7 @@ fn run_full_model_decode(args: &RuntimeArgs) -> Result<FullModelResult> {
         filter_tensors_on_load: false,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let model = StageModel::open(&args.model, &config).context("failed to open full model")?;
     let tokens = model
@@ -605,6 +609,9 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         layer_start: 0,
         layer_end: args.split_layer,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -614,6 +621,7 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let stage0 = StageModel::open(&stage0_resolution.path, &stage0_config)
         .context("failed to open stage 0")?;
@@ -789,6 +797,9 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         layer_start: 0,
         layer_end: args.split_layer_1,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -798,6 +809,7 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let stage0 = StageModel::open(&stage0_resolution.path, &stage0_config)
         .context("failed to open stage 0")?;
@@ -1006,6 +1018,9 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         layer_start: 0,
         layer_end: args.layer_end,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: RuntimeLoadMode::RuntimeSlice,
@@ -1015,6 +1030,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         filter_tensors_on_load: false,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let tokenizer = StageModel::open(&args.model, &tokenizer_config)
         .context("failed to open tokenizer model")?;
@@ -1377,6 +1393,9 @@ fn run_local_state_handoff(
         layer_start: args.state_layer_start,
         layer_end: args.state_layer_end,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -1386,6 +1405,7 @@ fn run_local_state_handoff(
         filter_tensors_on_load: should_filter_state_handoff_tensors(args),
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let model = StageModel::open(&stage_resolution.path, &runtime_config)
         .context("failed to open local state handoff stage")?;
@@ -1647,6 +1667,9 @@ fn build_state_handoff_inputs(
         layer_start: 0,
         layer_end: args.state_layer_start,
         ctx_size: args.ctx_size,
+        lane_count: 1,
+        n_batch: None,
+        n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -1656,6 +1679,7 @@ fn build_state_handoff_inputs(
         filter_tensors_on_load: true,
         cache_type_k: GGML_TYPE_F16,
         cache_type_v: GGML_TYPE_F16,
+        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
     };
     let input_model = StageModel::open(&input_resolution.path, &input_config)
         .context("failed to open state handoff input producer")?;

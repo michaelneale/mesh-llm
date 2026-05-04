@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 15;
+pub const ABI_VERSION_PATCH: u32 = 16;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -70,9 +70,12 @@ pub struct RuntimeConfig {
     pub layer_end: i32,
     pub ctx_size: i32,
     pub lane_count: i32,
+    pub n_batch: i32,
+    pub n_ubatch: i32,
     pub n_gpu_layers: i32,
     pub cache_type_k: i32,
     pub cache_type_v: i32,
+    pub flash_attn_type: i32,
     pub load_mode: LoadMode,
     pub disable_repack: bool,
     pub filter_tensors_on_load: bool,
