@@ -1,7 +1,7 @@
-From af100b059ef42c3592b2b26dea4955cb5c31bc6d Mon Sep 17 00:00:00 2001
+From 8f32047f8a26dd8f185c3123d1b7564a11adfa1c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 20:52:31 +1000
-Subject: [PATCH 22/33] Add stage logit bias sampling ABI
+Subject: [PATCH 22/34] Add stage logit bias sampling ABI
 
 ---
  include/skippy.h |  8 +++++++-

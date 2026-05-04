@@ -1,7 +1,7 @@
-From 78b48b489f9deb993f420f22a10de309f3f1cafd Mon Sep 17 00:00:00 2001
+From f712f9a8b2cc23be45966ba15f6ba7e3c00c1d8d Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:33:30 +1000
-Subject: [PATCH 06/33] Execute runtime-slice activation frames
+Subject: [PATCH 06/34] Execute runtime-slice activation frames
 
 ---
  src/llama-graph.cpp  |  52 ++++---

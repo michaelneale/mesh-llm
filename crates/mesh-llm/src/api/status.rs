@@ -84,6 +84,7 @@ pub(crate) struct RuntimeStagePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) selected_device: Option<RuntimeStageDevicePayload>,
     pub(crate) ctx_size: u32,
+    pub(crate) lane_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
     pub(crate) shutdown_generation: u64,
@@ -600,6 +601,7 @@ pub(crate) fn build_runtime_stage_payloads(
                         vram_bytes: device.vram_bytes,
                     }),
                 ctx_size: status.ctx_size,
+                lane_count: status.lane_count,
                 error: status.error,
                 shutdown_generation: status.shutdown_generation,
             }

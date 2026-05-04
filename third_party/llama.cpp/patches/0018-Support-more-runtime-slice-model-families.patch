@@ -1,7 +1,7 @@
-From 8a3d492f1f77bb9a60f6295dd25f06b0b8777924 Mon Sep 17 00:00:00 2001
+From cb4f5a61c4b4baeb6534f246ff22929e44b4bf77 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 16:07:00 +1000
-Subject: [PATCH 18/33] Support more runtime-slice model families
+Subject: [PATCH 18/34] Support more runtime-slice model families
 
 ---
  include/skippy.h           |  17 +++

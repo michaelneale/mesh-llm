@@ -1,7 +1,7 @@
-From 16b52b87c1f295d96b3f4c3a51ce39dc0e388b5c Mon Sep 17 00:00:00 2001
+From a77f448b53f2fc3bdd8e9bb49faf427a7b63471e Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 18:45:00 +1000
-Subject: [PATCH 13/33] Expose stage token EOG ABI
+Subject: [PATCH 13/34] Expose stage token EOG ABI
 
 ---
  include/skippy.h |  6 ++++++

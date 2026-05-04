@@ -1,7 +1,7 @@
-From eaac6be5bec15c7e820228f4aed134f7ffe1361c Mon Sep 17 00:00:00 2001
+From d1a7e977609bc55a147f4b08cfaa0be21c48d4e1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Wed, 29 Apr 2026 11:45:50 +1000
-Subject: [PATCH 28/33] Load stage models from ordered GGUF parts
+Subject: [PATCH 28/34] Load stage models from ordered GGUF parts
 
 ---
  include/llama.h            |   7 ++

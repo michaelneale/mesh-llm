@@ -397,6 +397,12 @@ async fn load_split_runtime_generation(
 
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
+    let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
+    tracing::info!(
+        model = spec.model_ref,
+        "KV cache: {}",
+        kv_cache.label(spec.package.source_model_bytes)
+    );
 
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
@@ -417,9 +423,10 @@ async fn load_split_runtime_generation(
             activation_width: spec.package.activation_width as i32,
             wire_dtype: skippy::StageWireDType::F16,
             ctx_size: spec.ctx_size,
+            lane_count: spec.slots as u32,
             n_gpu_layers: -1,
-            cache_type_k: "f16".to_string(),
-            cache_type_v: "f16".to_string(),
+            cache_type_k: kv_cache.cache_type_k().to_string(),
+            cache_type_v: kv_cache.cache_type_v().to_string(),
             shutdown_generation: spec.generation.generation,
             load_mode: LoadMode::RuntimeSlice,
             upstream: None,
@@ -489,6 +496,8 @@ async fn load_split_runtime_generation(
         downstream_endpoint,
         spec.projector_path,
         spec.ctx_size,
+        spec.slots as u32,
+        kv_cache,
         spec.pinned_gpu,
     );
     let handle = skippy::SkippyModelHandle::load_stage0_config(
@@ -1145,6 +1154,8 @@ fn split_stage0_config(
     downstream_endpoint: String,
     projector_path: Option<String>,
     ctx_size: u32,
+    lane_count: u32,
+    kv_cache: skippy::KvCachePolicy,
     pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
 ) -> StageConfig {
     StageConfig {
@@ -1165,9 +1176,10 @@ fn split_stage0_config(
         layer_start: stage0.layer_start,
         layer_end: stage0.layer_end,
         ctx_size,
+        lane_count,
         n_gpu_layers: -1,
-        cache_type_k: "f16".to_string(),
-        cache_type_v: "f16".to_string(),
+        cache_type_k: kv_cache.cache_type_k().to_string(),
+        cache_type_v: kv_cache.cache_type_v().to_string(),
         filter_tensors_on_load: true,
         selected_device: pinned_gpu.map(|gpu| skippy_protocol::StageDevice {
             backend_device: gpu.backend_device.clone(),
@@ -1236,6 +1248,13 @@ async fn start_runtime_skippy_model(
 )> {
     let port = alloc_local_port().await?;
     let context_length = spec.ctx_size_override.unwrap_or(4096);
+    let model_bytes = election::total_model_bytes(spec.model_path);
+    let kv_cache = skippy::KvCachePolicy::for_model_size(model_bytes);
+    tracing::info!(
+        model = model_name,
+        "KV cache: {}",
+        kv_cache.label(model_bytes)
+    );
     let projector_path = spec
         .mmproj_override
         .map(Path::to_path_buf)
@@ -1243,7 +1262,8 @@ async fn start_runtime_skippy_model(
         .filter(|path| path.exists());
     let mut options = skippy::SkippyModelLoadOptions::for_direct_gguf(&model_name, spec.model_path)
         .with_ctx_size(context_length)
-        .with_generation_concurrency(spec.slots);
+        .with_generation_concurrency(spec.slots)
+        .with_cache_types(kv_cache.cache_type_k(), kv_cache.cache_type_v());
     if let Some(projector_path) = projector_path {
         options = options.with_projector_path(projector_path);
     }

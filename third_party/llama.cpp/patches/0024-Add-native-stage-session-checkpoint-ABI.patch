@@ -1,7 +1,7 @@
-From c96584f33f3d053d855f11133226d116da812861 Mon Sep 17 00:00:00 2001
+From bc63e40447b1095b1b86bb72d47fcbf6ca517a00 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:57:39 +1000
-Subject: [PATCH 24/33] Add native stage session checkpoint ABI
+Subject: [PATCH 24/34] Add native stage session checkpoint ABI
 
 ---
  include/skippy.h | 13 ++++++-

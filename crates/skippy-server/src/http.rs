@@ -3,7 +3,7 @@ use std::{
     future::Future,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -27,18 +27,11 @@ use crate::{
     cli::ServeArgs,
     config::{load_json, validate_config},
     kv_integration::KvStageIntegration,
-    runtime_state::{kv_desc_annotations, load_runtime, RuntimeState},
+    runtime_state::{load_runtime, RuntimeState},
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry, TelemetryLevel, TelemetryStats},
 };
 
-struct KvRecordCandidate {
-    attrs: BTreeMap<String, Value>,
-    session_id: String,
-    page_id: String,
-    identity: crate::kv_proto::PageIdentity,
-    token_start: u64,
-    token_count: u64,
-}
+type KvRecordCandidate = ();
 
 #[derive(Clone)]
 struct AppState {
@@ -614,61 +607,10 @@ async fn maybe_lookup_prefill(
             state.telemetry.emit("stage.kv_lookup_decision", attrs);
             return restored_tokens;
         }
-        let warmed = {
-            let mut runtime = runtime.lock().expect("runtime lock poisoned");
-            runtime.take_warm_kv_session(
-                &base.session_id,
-                &page.page_id,
-                token_start as u64,
-                restored_tokens as u64,
-            )
-        };
-        if warmed {
-            attrs.insert("skippy.kv.decision".to_string(), json!("hit_warm_session"));
-            state.telemetry.emit("stage.kv_lookup_decision", attrs);
-            return restored_tokens;
-        }
-        let attach_started = Instant::now();
-        match kv.attach_page(&page.page_id).await {
-            Ok(attached) => {
-                attrs.insert(
-                    "skippy.kv.attach_ms".to_string(),
-                    json!(attach_started.elapsed().as_secs_f64() * 1000.0),
-                );
-                attrs.insert(
-                    "skippy.kv.hit_bytes".to_string(),
-                    json!(attached.bytes().len()),
-                );
-                let import_started = Instant::now();
-                let import_result = {
-                    let mut runtime = runtime.lock().expect("runtime lock poisoned");
-                    runtime.import_kv_page(&base.session_id, &attached.manifest, attached.bytes())
-                };
-                attrs.insert(
-                    "skippy.kv.runtime_import_ms".to_string(),
-                    json!(import_started.elapsed().as_secs_f64() * 1000.0),
-                );
-                match import_result {
-                    Ok(()) => {
-                        attrs.insert("skippy.kv.decision".to_string(), json!("hit_imported"));
-                        state.telemetry.emit("stage.kv_lookup_decision", attrs);
-                        return restored_tokens;
-                    }
-                    Err(error) => {
-                        attrs.insert("skippy.kv.decision".to_string(), json!("hit_import_error"));
-                        attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
-                    }
-                }
-            }
-            Err(error) => {
-                attrs.insert(
-                    "skippy.kv.attach_ms".to_string(),
-                    json!(attach_started.elapsed().as_secs_f64() * 1000.0),
-                );
-                attrs.insert("skippy.kv.decision".to_string(), json!("hit_attach_error"));
-                attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
-            }
-        }
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("native_kv_abi_disabled"),
+        );
     } else {
         attrs.insert("skippy.kv.decision".to_string(), json!("miss"));
     }
@@ -677,255 +619,20 @@ async fn maybe_lookup_prefill(
 }
 
 fn maybe_plan_record_prefill(
-    state: &AppState,
-    base: &MessageBase,
-    token_start: u32,
-    token_ids: &[i32],
-    min_record_tokens: u64,
+    _state: &AppState,
+    _base: &MessageBase,
+    _token_start: u32,
+    _token_ids: &[i32],
+    _min_record_tokens: u64,
 ) -> Vec<KvRecordCandidate> {
-    let Some(kv) = state.kv.as_ref() else {
-        return Vec::new();
-    };
-    if !kv.should_record() || token_ids.is_empty() {
-        return Vec::new();
-    }
-    let identities = kv
-        .record_identities(&state.config, base, token_start as u64, token_ids)
-        .into_iter()
-        .filter(|identity| identity.identity.token_count > min_record_tokens)
-        .collect::<Vec<_>>();
-    let mut records = Vec::with_capacity(identities.len());
-    for identity in identities {
-        let token_count = identity.identity.token_count;
-        let mut attrs = kv_attrs(&state.config, kv);
-        attrs.insert(attr::REQUEST_ID.to_string(), json!(base.request_id.clone()));
-        attrs.insert(attr::SESSION_ID.to_string(), json!(base.session_id.clone()));
-        attrs.insert(
-            "skippy.kv.page_id".to_string(),
-            json!(identity.page_id.clone()),
-        );
-        attrs.insert("skippy.kv.token_count".to_string(), json!(token_count));
-        if !kv.try_begin_record(&identity.page_id) {
-            attrs.insert(
-                "skippy.kv.decision".to_string(),
-                json!("record_skipped_inflight"),
-            );
-            state.telemetry.emit("stage.kv_record_commit", attrs);
-            continue;
-        }
-        attrs.insert("skippy.kv.decision".to_string(), json!("record_queued"));
-        records.push(KvRecordCandidate {
-            attrs,
-            session_id: base.session_id.clone(),
-            page_id: identity.page_id,
-            identity: identity.identity,
-            token_start: token_start as u64,
-            token_count,
-        });
-    }
-    records
+    Vec::new()
 }
 
 fn spawn_record_prefill(state: AppState, records: Vec<KvRecordCandidate>) {
     if records.is_empty() {
         return;
     }
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(2));
-        let Ok(tokio) = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-        else {
-            return;
-        };
-        tokio.block_on(async move {
-            maybe_commit_record_prefill(&state, records).await;
-        });
-    });
-}
-
-async fn maybe_commit_record_prefill(state: &AppState, records: Vec<KvRecordCandidate>) {
-    if records.is_empty() {
-        return;
-    }
-    let Some(kv) = state.kv.as_ref() else {
-        return;
-    };
-    for record in records {
-        let KvRecordCandidate {
-            mut attrs,
-            session_id,
-            page_id,
-            identity,
-            token_start,
-            token_count,
-        } = record;
-        let page_id_for_finish = page_id.clone();
-        let export_started = Instant::now();
-        let page =
-            match export_kv_record_payload(state, &session_id, token_start, token_count).await {
-                Ok(page) => page,
-                Err(error) => {
-                    let error = error.to_string();
-                    let decision = if error.contains("not implemented") {
-                        "unsupported"
-                    } else if error.contains("busy") {
-                        "record_skipped_runtime_busy"
-                    } else {
-                        "record_error"
-                    };
-                    attrs.insert(
-                        "skippy.kv.runtime_export_ms".to_string(),
-                        json!(export_started.elapsed().as_secs_f64() * 1000.0),
-                    );
-                    attrs.insert("skippy.kv.decision".to_string(), json!(decision));
-                    attrs.insert("skippy.kv.error".to_string(), json!(error));
-                    state.telemetry.emit("stage.kv_runtime_export", attrs);
-                    kv.finish_record(&page_id_for_finish);
-                    continue;
-                }
-            };
-        let desc = page.desc;
-        let payload = page.payload;
-        attrs.insert(
-            "skippy.kv.runtime_export_ms".to_string(),
-            json!(export_started.elapsed().as_secs_f64() * 1000.0),
-        );
-        attrs.insert(
-            "skippy.kv.export_bytes".to_string(),
-            json!(desc.payload_bytes),
-        );
-        attrs.insert(
-            "skippy.kv.export_layers".to_string(),
-            json!(desc.layer_count),
-        );
-        let byte_size = payload.len();
-        let annotations = kv_desc_annotations(&desc);
-        let started = Instant::now();
-        match kv
-            .record_page_into(
-                page_id.clone(),
-                identity,
-                byte_size,
-                annotations,
-                |output| {
-                    output.copy_from_slice(&payload);
-                    Ok(())
-                },
-            )
-            .await
-        {
-            Ok(outcome) => {
-                attrs.insert(
-                    "skippy.kv.record_ms".to_string(),
-                    json!(started.elapsed().as_secs_f64() * 1000.0),
-                );
-                attrs.insert(
-                    "skippy.kv.record_write_ms".to_string(),
-                    json!(outcome.write_ms),
-                );
-                attrs.insert(
-                    "skippy.kv.checksum_ms".to_string(),
-                    json!(outcome.checksum_ms),
-                );
-                attrs.insert(
-                    "skippy.kv.recorded_bytes".to_string(),
-                    json!(outcome.manifest.byte_size),
-                );
-                attrs.insert("skippy.kv.decision".to_string(), json!("committed"));
-                state.telemetry.emit("stage.kv_record_commit", attrs);
-                maybe_warm_kv_session(state, page_id, &outcome.manifest, &payload).await;
-            }
-            Err(error) => {
-                attrs.insert(
-                    "skippy.kv.record_ms".to_string(),
-                    json!(started.elapsed().as_secs_f64() * 1000.0),
-                );
-                attrs.insert("skippy.kv.decision".to_string(), json!("record_error"));
-                attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
-                state.telemetry.emit("stage.kv_record_commit", attrs);
-            }
-        }
-        kv.finish_record(&page_id_for_finish);
-    }
-}
-
-async fn export_kv_record_payload(
-    state: &AppState,
-    session_id: &str,
-    token_start: u64,
-    token_count: u64,
-) -> Result<skippy_runtime::RuntimeKvPage> {
-    let runtime = state
-        .runtime
-        .as_ref()
-        .ok_or_else(|| anyhow!("runtime unavailable for KV export"))?;
-    let mut runtime = runtime
-        .lock()
-        .map_err(|_| anyhow!("runtime lock poisoned"))?;
-    runtime.export_kv_page(session_id, token_start, token_count)
-}
-
-async fn maybe_warm_kv_session(
-    state: &AppState,
-    page_id: String,
-    manifest: &crate::kv_proto::KvPageManifest,
-    payload: &[u8],
-) {
-    let Some(runtime) = state.runtime.as_ref() else {
-        return;
-    };
-    let mut attrs = lifecycle_attrs(&state.config);
-    attrs.insert("skippy.kv.page_id".to_string(), json!(page_id.clone()));
-    let started = Instant::now();
-    for _ in 0..2 {
-        match runtime.try_lock() {
-            Ok(mut runtime) => {
-                match runtime.warm_kv_session(page_id.clone(), manifest, payload) {
-                    Ok(()) => {
-                        attrs.insert(
-                            "skippy.kv.warm_ms".to_string(),
-                            json!(started.elapsed().as_secs_f64() * 1000.0),
-                        );
-                        attrs.insert("skippy.kv.decision".to_string(), json!("warmed"));
-                        state.telemetry.emit("stage.kv_warm_session", attrs);
-                    }
-                    Err(error) => {
-                        attrs.insert(
-                            "skippy.kv.warm_ms".to_string(),
-                            json!(started.elapsed().as_secs_f64() * 1000.0),
-                        );
-                        attrs.insert("skippy.kv.decision".to_string(), json!("warm_error"));
-                        attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
-                        state.telemetry.emit("stage.kv_warm_session", attrs);
-                    }
-                }
-                return;
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => {
-                attrs.insert("skippy.kv.decision".to_string(), json!("warm_error"));
-                attrs.insert(
-                    "skippy.kv.error".to_string(),
-                    json!("runtime lock poisoned"),
-                );
-                state.telemetry.emit("stage.kv_warm_session", attrs);
-                return;
-            }
-        }
-    }
-    attrs.insert(
-        "skippy.kv.warm_ms".to_string(),
-        json!(started.elapsed().as_secs_f64() * 1000.0),
-    );
-    attrs.insert(
-        "skippy.kv.decision".to_string(),
-        json!("warm_skipped_runtime_busy"),
-    );
-    state.telemetry.emit("stage.kv_warm_session", attrs);
+    let _ = state;
 }
 
 async fn maybe_drop_kv_session(state: &AppState, session_id: &str) {

@@ -1,7 +1,7 @@
-From 4368d4bbb389f43fda8457cf9ae7d0c88676e2b7 Mon Sep 17 00:00:00 2001
+From 9f726b27dd282e01b878bac0b4638e44670cf25a Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 14:51:18 +1000
-Subject: [PATCH 08/33] Add GGUF package part composer ABI
+Subject: [PATCH 08/34] Add GGUF package part composer ABI
 
 ---
  include/skippy.h |   6 +

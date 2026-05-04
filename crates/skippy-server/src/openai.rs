@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use axum::{
     body::Body,
     extract::State,
-    http::Request,
+    http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
     Router,
@@ -28,8 +28,8 @@ use openai_frontend::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, ChatCompletionStream,
     ChatHookAction, ChatHookOutcome, ChatMessage, CompletionChunk, CompletionRequest,
     CompletionResponse, CompletionStream, FinishReason, GenerationHookSignals, MessageContent,
-    MessageContentPart, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiHookPolicy,
-    OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
+    MessageContentPart, ModelId, ModelObject, OpenAiBackend, OpenAiError, OpenAiErrorKind,
+    OpenAiHookPolicy, OpenAiRequestContext, OpenAiResult, PrefillHookSignals, Usage,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -126,6 +126,11 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
     );
     telemetry.emit("stage.openai_server_start", lifecycle_attrs(&config));
     if matches!(&mode, OpenAiBackendMode::LocalRuntime) {
+        ensure_generation_concurrency_fits_lanes(
+            args.generation_concurrency,
+            config.lane_count,
+            "--generation-concurrency",
+        )?;
         prewarm_generation_sessions(
             &runtime,
             args.generation_concurrency,
@@ -243,6 +248,11 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
     if args.generation_concurrency == 0 {
         bail!("--openai-generation-concurrency must be greater than zero");
     }
+    ensure_generation_concurrency_fits_lanes(
+        args.generation_concurrency,
+        args.config.lane_count,
+        "--openai-generation-concurrency",
+    )?;
     if args.draft_model_path.is_some() && args.speculative_window == 0 {
         bail!("--openai-speculative-window must be greater than zero when a draft model is set");
     }
@@ -385,6 +395,10 @@ fn prewarm_generation_sessions(
         json!(generation_concurrency),
     );
     attrs.insert(
+        "llama_stage.lane_count".to_string(),
+        json!(sessions.lane_count),
+    );
+    attrs.insert(
         "llama_stage.runtime_sessions_active".to_string(),
         json!(sessions.active_sessions),
     );
@@ -403,6 +417,28 @@ fn prewarm_generation_sessions(
         now_unix_nanos() as u64,
     );
     Ok(())
+}
+
+fn ensure_generation_concurrency_fits_lanes(
+    generation_concurrency: usize,
+    lane_count: u32,
+    flag_name: &str,
+) -> Result<()> {
+    let lane_count = usize::try_from(lane_count).unwrap_or(usize::MAX);
+    if generation_concurrency > lane_count {
+        bail!(
+            "{flag_name} ({generation_concurrency}) cannot exceed configured lane_count ({lane_count})"
+        );
+    }
+    Ok(())
+}
+
+fn generation_lanes_busy_error() -> OpenAiError {
+    OpenAiError::from_kind(
+        StatusCode::TOO_MANY_REQUESTS,
+        OpenAiErrorKind::RateLimit,
+        "all execution lanes are busy",
+    )
 }
 
 async fn openai_http_telemetry(
@@ -955,6 +991,7 @@ impl DraftRunner {
                 layer_start: 0,
                 layer_end: layer_count,
                 ctx_size: config.ctx_size,
+                lane_count: 1,
                 n_gpu_layers: n_gpu_layers.unwrap_or(config.n_gpu_layers),
                 selected_backend_device: config
                     .selected_device
@@ -1338,10 +1375,6 @@ impl StageOpenAiBackend {
             json!(stats.idle_sessions),
         );
         attrs.insert(
-            format!("{prefix}.warm_kv_sessions"),
-            json!(stats.warm_kv_sessions),
-        );
-        attrs.insert(
             format!("{prefix}.tracked_token_counts"),
             json!(stats.tracked_token_counts),
         );
@@ -1408,9 +1441,8 @@ impl StageOpenAiBackend {
         let permit = self
             .generation_limit
             .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| OpenAiError::backend("generation limiter closed"))?;
+            .try_acquire_owned()
+            .map_err(|_| generation_lanes_busy_error())?;
         let mut admit_attrs = self.openai_attrs(&ids);
         admit_attrs.insert(
             "llama_stage.openai_phase".to_string(),
@@ -1452,9 +1484,8 @@ impl StageOpenAiBackend {
         let permit = self
             .generation_limit
             .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| OpenAiError::backend("generation limiter closed"))?;
+            .try_acquire_owned()
+            .map_err(|_| generation_lanes_busy_error())?;
         let mut admit_attrs = self.openai_attrs(&ids);
         admit_attrs.insert(
             "llama_stage.openai_phase".to_string(),

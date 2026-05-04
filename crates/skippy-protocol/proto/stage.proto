@@ -49,6 +49,7 @@ message LoadStage {
   optional StagePeer upstream = 22;
   optional StagePeer downstream = 23;
   optional string projector_path = 24;
+  uint32 lane_count = 25;
 }
 
 message StopStage {
@@ -95,6 +96,7 @@ message StageStatus {
   optional string materialized_path = 22;
   optional bool materialized_pinned = 23;
   optional string projector_path = 24;
+  uint32 lane_count = 25;
 }
 
 message StagePeer {

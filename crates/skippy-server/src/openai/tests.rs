@@ -263,6 +263,7 @@ fn multimodal_stage_config(
         layer_start,
         layer_end,
         ctx_size: fixture.ctx_size,
+        lane_count: 1,
         n_gpu_layers: 999,
         cache_type_k: "f16".to_string(),
         cache_type_v: "f16".to_string(),

@@ -1,7 +1,7 @@
-From a61f6d85caf2c50a6d2cd0ad1e87673062216466 Mon Sep 17 00:00:00 2001
+From e0a907584ffc9719ae4a9af3b7f7a48cef3673a4 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 11:57:45 +1000
-Subject: [PATCH 04/33] Implement runtime-slice tensor filtering
+Subject: [PATCH 04/34] Implement runtime-slice tensor filtering
 
 ---
  src/llama-model-loader.cpp | 44 ++++++++++++++++++++++++++++++++++++++

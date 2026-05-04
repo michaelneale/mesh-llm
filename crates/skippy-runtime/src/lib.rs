@@ -6,17 +6,17 @@ use anyhow::{anyhow, Context, Result};
 use skippy_ffi::{
     ActivationDType, ActivationDesc as RawActivationDesc, ActivationLayout,
     ChatMessage as RawChatMessage, Error as RawError,
-    GenerationSignalWindow as RawGenerationSignalWindow, KvPageDesc as RawKvPageDesc, LoadMode,
-    LogitBias as RawLogitBias, Model as RawModel, ModelInfo as RawModelInfo,
-    RuntimeConfig as RawRuntimeConfig, SamplingConfig as RawSamplingConfig, Session as RawSession,
-    SlicePlan as RawSlicePlan, Status, TensorInfo as RawTensorInfo, TensorRole,
-    TokenSignal as RawTokenSignal,
+    GenerationSignalWindow as RawGenerationSignalWindow, LoadMode, LogitBias as RawLogitBias,
+    Model as RawModel, ModelInfo as RawModelInfo, RuntimeConfig as RawRuntimeConfig,
+    SamplingConfig as RawSamplingConfig, Session as RawSession, SlicePlan as RawSlicePlan, Status,
+    TensorInfo as RawTensorInfo, TensorRole, TokenSignal as RawTokenSignal,
 };
 
 pub mod package;
 
 pub const MAX_LOGIT_BIAS: usize = 256;
 pub const GGML_TYPE_F16: u32 = 1;
+pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
 
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
@@ -49,6 +49,7 @@ pub struct RuntimeConfig {
     pub layer_start: u32,
     pub layer_end: u32,
     pub ctx_size: u32,
+    pub lane_count: u32,
     pub n_gpu_layers: i32,
     pub selected_backend_device: Option<String>,
     pub cache_type_k: u32,
@@ -98,6 +99,7 @@ impl RuntimeConfig {
                 layer_start: i32::try_from(self.layer_start).context("layer_start exceeds i32")?,
                 layer_end: i32::try_from(self.layer_end).context("layer_end exceeds i32")?,
                 ctx_size: i32::try_from(self.ctx_size).context("ctx_size exceeds i32")?,
+                lane_count: i32::try_from(self.lane_count).context("lane_count exceeds i32")?,
                 n_gpu_layers: self.n_gpu_layers,
                 cache_type_k: i32::try_from(self.cache_type_k)
                     .context("cache_type_k exceeds i32")?,
@@ -127,6 +129,7 @@ impl Default for RuntimeConfig {
             layer_start: 0,
             layer_end: 1,
             ctx_size: 512,
+            lane_count: 1,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -144,6 +147,7 @@ pub fn parse_cache_type(value: &str) -> Result<u32> {
     let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
     match normalized.as_str() {
         "" | "f16" => Ok(GGML_TYPE_F16),
+        "q4" | "q4_0" => Ok(GGML_TYPE_Q4_0),
         "q8" | "q8_0" => Ok(GGML_TYPE_Q8_0),
         _ => Err(anyhow!("unsupported KV cache type {value:?}")),
     }
@@ -210,69 +214,6 @@ impl From<RawActivationDesc> for ActivationDesc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivationFrame {
     pub desc: ActivationDesc,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeKvPageDesc {
-    pub version: u32,
-    pub layer_start: i32,
-    pub layer_end: i32,
-    pub token_start: u64,
-    pub token_count: u64,
-    pub layer_count: u32,
-    pub k_type: u32,
-    pub v_type: u32,
-    pub k_row_bytes: u32,
-    pub v_row_bytes: u32,
-    pub v_element_bytes: u32,
-    pub payload_bytes: u64,
-    pub flags: u64,
-}
-
-impl RuntimeKvPageDesc {
-    fn as_raw(&self) -> RawKvPageDesc {
-        RawKvPageDesc {
-            version: self.version,
-            layer_start: self.layer_start,
-            layer_end: self.layer_end,
-            token_start: self.token_start,
-            token_count: self.token_count,
-            layer_count: self.layer_count,
-            k_type: self.k_type,
-            v_type: self.v_type,
-            k_row_bytes: self.k_row_bytes,
-            v_row_bytes: self.v_row_bytes,
-            v_element_bytes: self.v_element_bytes,
-            payload_bytes: self.payload_bytes,
-            flags: self.flags,
-        }
-    }
-}
-
-impl From<RawKvPageDesc> for RuntimeKvPageDesc {
-    fn from(raw: RawKvPageDesc) -> Self {
-        Self {
-            version: raw.version,
-            layer_start: raw.layer_start,
-            layer_end: raw.layer_end,
-            token_start: raw.token_start,
-            token_count: raw.token_count,
-            layer_count: raw.layer_count,
-            k_type: raw.k_type,
-            v_type: raw.v_type,
-            k_row_bytes: raw.k_row_bytes,
-            v_row_bytes: raw.v_row_bytes,
-            v_element_bytes: raw.v_element_bytes,
-            payload_bytes: raw.payload_bytes,
-            flags: raw.flags,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeKvPage {
-    pub desc: RuntimeKvPageDesc,
     pub payload: Vec<u8>,
 }
 
@@ -1448,319 +1389,6 @@ impl StageSession {
         ensure_ok(status, error)?;
         Ok(predicted)
     }
-
-    pub fn export_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
-        let mut bytes = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                ptr::null_mut(),
-                0,
-                &mut bytes,
-                &mut error,
-            )
-        };
-        if status != Status::BufferTooSmall && status != Status::Ok {
-            ensure_ok(status, error)?;
-        } else {
-            free_error(error);
-        }
-
-        let mut payload = vec![0_u8; bytes];
-        let mut written = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                payload.as_mut_ptr().cast(),
-                payload.len(),
-                &mut written,
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
-        if written > payload.len() {
-            return Err(anyhow!(
-                "state export wrote {written} bytes but output capacity is {}",
-                payload.len()
-            ));
-        }
-        payload.truncate(written);
-        Ok(payload)
-    }
-
-    pub fn import_state(&mut self, layer_start: i32, layer_end: i32, payload: &[u8]) -> Result<()> {
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_import_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                payload.as_ptr().cast(),
-                payload.len(),
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)
-    }
-
-    pub fn export_full_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
-        let mut bytes = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_full_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                ptr::null_mut(),
-                0,
-                &mut bytes,
-                &mut error,
-            )
-        };
-        if status != Status::BufferTooSmall && status != Status::Ok {
-            ensure_ok(status, error)?;
-        } else {
-            free_error(error);
-        }
-
-        let mut payload = vec![0_u8; bytes];
-        let mut written = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_full_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                payload.as_mut_ptr().cast(),
-                payload.len(),
-                &mut written,
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
-        if written > payload.len() {
-            return Err(anyhow!(
-                "full state export wrote {written} bytes but output capacity is {}",
-                payload.len()
-            ));
-        }
-        payload.truncate(written);
-        Ok(payload)
-    }
-
-    pub fn import_full_state(
-        &mut self,
-        layer_start: i32,
-        layer_end: i32,
-        payload: &[u8],
-    ) -> Result<()> {
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_import_full_state(
-                self.raw,
-                layer_start,
-                layer_end,
-                payload.as_ptr().cast(),
-                payload.len(),
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)
-    }
-
-    pub fn export_kv_page(
-        &mut self,
-        layer_start: i32,
-        layer_end: i32,
-        token_start: u64,
-        token_count: u64,
-    ) -> Result<RuntimeKvPage> {
-        let desc = self.probe_kv_page(layer_start, layer_end, token_start, token_count)?;
-        let mut payload = vec![0_u8; usize::try_from(desc.payload_bytes)?];
-        let desc = self.export_kv_page_into(
-            layer_start,
-            layer_end,
-            token_start,
-            token_count,
-            &mut payload,
-        )?;
-        payload.truncate(usize::try_from(desc.payload_bytes)?);
-        Ok(RuntimeKvPage { desc, payload })
-    }
-
-    pub fn probe_kv_page(
-        &mut self,
-        layer_start: i32,
-        layer_end: i32,
-        token_start: u64,
-        token_count: u64,
-    ) -> Result<RuntimeKvPageDesc> {
-        let mut desc = RawKvPageDesc::default();
-        let mut bytes = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_kv_page(
-                self.raw,
-                layer_start,
-                layer_end,
-                token_start,
-                token_count,
-                &mut desc,
-                ptr::null_mut(),
-                0,
-                &mut bytes,
-                &mut error,
-            )
-        };
-        if status != Status::BufferTooSmall && status != Status::Ok {
-            ensure_ok(status, error)?;
-        } else {
-            free_error(error);
-        }
-        if desc.payload_bytes != bytes as u64 {
-            return Err(anyhow!(
-                "native KV page probe returned descriptor bytes {} but ABI reported {bytes}",
-                desc.payload_bytes
-            ));
-        }
-        Ok(desc.into())
-    }
-
-    pub fn export_kv_page_into(
-        &mut self,
-        layer_start: i32,
-        layer_end: i32,
-        token_start: u64,
-        token_count: u64,
-        output: &mut [u8],
-    ) -> Result<RuntimeKvPageDesc> {
-        let mut desc = RawKvPageDesc::default();
-        let mut bytes = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_kv_page(
-                self.raw,
-                layer_start,
-                layer_end,
-                token_start,
-                token_count,
-                &mut desc,
-                output.as_mut_ptr().cast(),
-                output.len(),
-                &mut bytes,
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
-        if bytes > output.len() {
-            return Err(anyhow!(
-                "native KV page export wrote {bytes} bytes but output capacity is {}",
-                output.len()
-            ));
-        }
-        if desc.payload_bytes != bytes as u64 {
-            return Err(anyhow!(
-                "native KV page export returned descriptor bytes {} but ABI wrote {bytes}",
-                desc.payload_bytes
-            ));
-        }
-        Ok(desc.into())
-    }
-
-    pub fn import_kv_page(&mut self, desc: &RuntimeKvPageDesc, payload: &[u8]) -> Result<()> {
-        let raw_desc = desc.as_raw();
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_import_kv_page(
-                self.raw,
-                &raw_desc,
-                payload.as_ptr().cast(),
-                payload.len(),
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
-        self.token_count = self
-            .token_count
-            .max(desc.token_start.saturating_add(desc.token_count));
-        Ok(())
-    }
-
-    pub fn export_recurrent_state(&mut self) -> Result<Vec<u8>> {
-        let mut bytes = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_recurrent_state(
-                self.raw,
-                ptr::null_mut(),
-                0,
-                &mut bytes,
-                &mut error,
-            )
-        };
-        if status != Status::BufferTooSmall && status != Status::Ok {
-            ensure_ok(status, error)?;
-        } else {
-            free_error(error);
-        }
-        if bytes == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut output = vec![0_u8; bytes];
-        let mut written = 0usize;
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_export_recurrent_state(
-                self.raw,
-                output.as_mut_ptr().cast(),
-                output.len(),
-                &mut written,
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)?;
-        if written > output.len() {
-            return Err(anyhow!(
-                "recurrent state export wrote {written} bytes but output capacity is {}",
-                output.len()
-            ));
-        }
-        output.truncate(written);
-        Ok(output)
-    }
-
-    pub fn import_recurrent_state(&mut self, input: &[u8]) -> Result<()> {
-        if input.is_empty() {
-            return Ok(());
-        }
-        let mut error = ptr::null_mut();
-        let status = unsafe {
-            skippy_ffi::skippy_import_recurrent_state(
-                self.raw,
-                input.as_ptr().cast(),
-                input.len(),
-                &mut error,
-            )
-        };
-        ensure_ok(status, error)
-    }
-
-    pub fn import_recurrent_state_for_token_count(
-        &mut self,
-        input: &[u8],
-        token_count: u64,
-    ) -> Result<()> {
-        self.import_recurrent_state(input)?;
-        self.token_count = self.token_count.max(token_count);
-        Ok(())
-    }
 }
 
 impl Drop for StageSession {
@@ -1993,8 +1621,8 @@ mod tests {
     use std::{env, path::PathBuf};
 
     use super::{
-        ChatTemplateMessage, ModelInfo, RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole,
-        GGML_TYPE_F16,
+        parse_cache_type, ChatTemplateMessage, ModelInfo, RuntimeConfig, RuntimeLoadMode,
+        StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
     };
 
     fn correctness_model() -> Option<PathBuf> {
@@ -2025,6 +1653,14 @@ mod tests {
             config.validate(),
             Err("selected_backend_device must not be empty")
         );
+    }
+
+    #[test]
+    fn parse_cache_type_accepts_legacy_mesh_kv_defaults() -> anyhow::Result<()> {
+        assert_eq!(parse_cache_type("f16")?, GGML_TYPE_F16);
+        assert_eq!(parse_cache_type("q8_0")?, GGML_TYPE_Q8_0);
+        assert_eq!(parse_cache_type("q4_0")?, GGML_TYPE_Q4_0);
+        Ok(())
     }
 
     #[test]
@@ -2067,6 +1703,7 @@ mod tests {
             layer_start: 0,
             layer_end,
             ctx_size: 256,
+            lane_count: 1,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -2096,129 +1733,6 @@ mod tests {
         )?;
         assert!(prompt.contains("Template smoke prompt."));
         assert!(prompt.len() >= "Template smoke prompt.".len());
-        Ok(())
-    }
-
-    #[test]
-    fn native_kv_page_round_trips_between_sessions_when_model_is_configured() -> anyhow::Result<()>
-    {
-        let Some(model_path) = correctness_model() else {
-            eprintln!("skipping native KV smoke: SKIPPY_CORRECTNESS_MODEL is not set");
-            return Ok(());
-        };
-        let layer_end = infer_layer_end(&model_path)?;
-        let model = open_correctness_model(&model_path)?;
-        let mut tokens = model.tokenize("Native KV cache smoke test prompt.", true)?;
-        if tokens.len() < 2 {
-            tokens.extend(model.tokenize("More tokens for KV.", false)?);
-        }
-        assert!(
-            tokens.len() >= 2,
-            "smoke prompt must produce at least two tokens"
-        );
-
-        let split = tokens.len() - 1;
-        let prefix = &tokens[..split];
-        let continuation = tokens[split];
-
-        let mut baseline = model.create_session()?;
-        baseline.prefill_chunk_frame(prefix, None, 0)?;
-        let desc = baseline.probe_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
-        let mut payload = vec![0_u8; usize::try_from(desc.payload_bytes)?];
-        let exported = baseline.export_kv_page_into(
-            0,
-            i32::try_from(layer_end)?,
-            0,
-            prefix.len() as u64,
-            &mut payload,
-        )?;
-        assert_eq!(exported, desc);
-        let page = baseline.export_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
-        assert_eq!(page.desc, desc);
-        assert_eq!(page.payload, payload);
-        assert_eq!(page.desc.version, 1);
-        assert_eq!(page.desc.layer_start, 0);
-        assert_eq!(page.desc.layer_end, i32::try_from(layer_end)?);
-        assert_eq!(page.desc.token_start, 0);
-        assert_eq!(page.desc.token_count, prefix.len() as u64);
-        assert_eq!(page.desc.payload_bytes, page.payload.len() as u64);
-        assert_eq!(baseline.token_count(), prefix.len() as u64);
-        let page_checkpoint = baseline.checkpoint()?;
-
-        let rewound_prediction = baseline.verify_tokens_rewound(&[continuation])?;
-        assert_eq!(rewound_prediction.len(), 1);
-        assert_eq!(baseline.token_count(), prefix.len() as u64);
-        let (framed_prediction, framed_output) =
-            baseline.verify_tokens_frame(&[continuation], None, 0)?;
-        assert_eq!(framed_prediction.len(), 1);
-        assert!(framed_output.payload.is_empty());
-        assert_eq!(baseline.token_count(), tokens.len() as u64);
-        baseline.restore_checkpoint(&page_checkpoint)?;
-        let baseline_prediction = baseline.decode_step_frame(continuation, None, 0)?.0;
-        assert_eq!(rewound_prediction[0], baseline_prediction);
-        assert_eq!(framed_prediction[0], baseline_prediction);
-        assert_eq!(baseline.token_count(), tokens.len() as u64);
-
-        let mut restored = model.create_session()?;
-        restored.import_kv_page(&page.desc, &page.payload)?;
-        assert_eq!(restored.token_count(), prefix.len() as u64);
-        let restored_prediction = restored.decode_step_frame(continuation, None, 0)?.0;
-
-        assert_eq!(restored_prediction, baseline_prediction);
-        Ok(())
-    }
-
-    #[test]
-    fn native_state_and_kv_round_trip_between_sessions_when_model_is_configured(
-    ) -> anyhow::Result<()> {
-        let Some(model_path) = correctness_model() else {
-            eprintln!("skipping native state smoke: SKIPPY_CORRECTNESS_MODEL is not set");
-            return Ok(());
-        };
-        let layer_end = infer_layer_end(&model_path)?;
-        let config = RuntimeConfig {
-            stage_index: 0,
-            layer_start: 0,
-            layer_end,
-            ctx_size: 256,
-            n_gpu_layers: 0,
-            selected_backend_device: None,
-            cache_type_k: GGML_TYPE_F16,
-            cache_type_v: GGML_TYPE_F16,
-            load_mode: RuntimeLoadMode::RuntimeSlice,
-            projector_path: None,
-            include_embeddings: true,
-            include_output: true,
-            filter_tensors_on_load: false,
-        };
-        let model = StageModel::open(&model_path, &config)?;
-        let mut tokens = model.tokenize("Native recurrent state smoke test prompt.", true)?;
-        if tokens.len() < 2 {
-            tokens.extend(model.tokenize("More tokens for state.", false)?);
-        }
-        assert!(
-            tokens.len() >= 2,
-            "smoke prompt must produce at least two tokens"
-        );
-
-        let split = tokens.len() - 1;
-        let prefix = &tokens[..split];
-        let continuation = tokens[split];
-
-        let mut baseline = model.create_session()?;
-        baseline.prefill_chunk_frame(prefix, None, 0)?;
-        let kv_page =
-            baseline.export_kv_page(0, i32::try_from(layer_end)?, 0, prefix.len() as u64)?;
-        let state = baseline.export_state(0, i32::try_from(layer_end)?)?;
-        assert!(!state.is_empty(), "state export should produce a payload");
-        let baseline_prediction = baseline.decode_step_frame(continuation, None, 0)?.0;
-
-        let mut restored = model.create_session()?;
-        restored.import_kv_page(&kv_page.desc, &kv_page.payload)?;
-        restored.import_state(0, i32::try_from(layer_end)?, &state)?;
-        let restored_prediction = restored.decode_step_frame(continuation, None, 0)?.0;
-
-        assert_eq!(restored_prediction, baseline_prediction);
         Ok(())
     }
 }

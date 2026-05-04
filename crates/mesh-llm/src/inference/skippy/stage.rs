@@ -47,6 +47,7 @@ pub(crate) struct StageLoadRequest {
     pub(crate) activation_width: i32,
     pub(crate) wire_dtype: StageWireDType,
     pub(crate) ctx_size: u32,
+    pub(crate) lane_count: u32,
     pub(crate) n_gpu_layers: i32,
     pub(crate) cache_type_k: String,
     pub(crate) cache_type_v: String,
@@ -126,6 +127,7 @@ pub(crate) struct StageStatusSnapshot {
     pub(crate) wire_dtype: StageWireDType,
     pub(crate) selected_device: Option<StageDevice>,
     pub(crate) ctx_size: u32,
+    pub(crate) lane_count: u32,
     pub(crate) error: Option<String>,
     pub(crate) shutdown_generation: u64,
 }
@@ -195,7 +197,7 @@ impl StageControlState {
             metrics_otlp_grpc: None,
             telemetry_queue_capacity: 0,
             telemetry_level: TelemetryLevel::Off,
-            max_inflight: 4,
+            max_inflight: effective_load.lane_count as usize,
             reply_credit_limit: None,
             async_prefill_forward: false,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
@@ -352,6 +354,7 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         "invalid stage layer range"
     );
     anyhow::ensure!(load.ctx_size > 0, "ctx_size must be greater than zero");
+    anyhow::ensure!(load.lane_count > 0, "lane_count must be greater than zero");
     if let Some(device) = load.selected_device.as_ref() {
         anyhow::ensure!(
             !device.backend_device.is_empty(),
@@ -376,6 +379,7 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         layer_start: load.layer_start,
         layer_end: load.layer_end,
         ctx_size: load.ctx_size,
+        lane_count: load.lane_count,
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: empty_to_default(&load.cache_type_k, "f16"),
         cache_type_v: empty_to_default(&load.cache_type_v, "f16"),
@@ -452,6 +456,7 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         wire_dtype: stage.load.wire_dtype,
         selected_device: stage.load.selected_device.clone(),
         ctx_size: stage.load.ctx_size,
+        lane_count: stage.load.lane_count,
         error: server.last_error.clone(),
         shutdown_generation: stage.load.shutdown_generation,
     }
@@ -481,6 +486,7 @@ fn stopped_status(stop: &StageStopRequest) -> StageStatusSnapshot {
         wire_dtype: StageWireDType::F32,
         selected_device: None,
         ctx_size: 0,
+        lane_count: 0,
         error: None,
         shutdown_generation: stop.shutdown_generation,
     }
@@ -525,6 +531,7 @@ mod tests {
             activation_width: 4096,
             wire_dtype: StageWireDType::F16,
             ctx_size: 8192,
+            lane_count: 3,
             n_gpu_layers: -1,
             cache_type_k: "f16".to_string(),
             cache_type_v: "q8_0".to_string(),
@@ -560,6 +567,7 @@ mod tests {
         assert_eq!(config.stage_index, 0);
         assert_eq!(config.layer_start, 0);
         assert_eq!(config.layer_end, 12);
+        assert_eq!(config.lane_count, 3);
         assert_eq!(config.model_path.as_deref(), Some("/models/model.gguf"));
         assert_eq!(
             config.projector_path.as_deref(),

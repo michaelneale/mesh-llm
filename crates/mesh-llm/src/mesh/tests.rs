@@ -4666,6 +4666,7 @@ fn test_stage_status(
         wire_dtype: crate::inference::skippy::StageWireDType::F16,
         selected_device: None,
         ctx_size: 512,
+        lane_count: 4,
         error: None,
         shutdown_generation: 1,
     }

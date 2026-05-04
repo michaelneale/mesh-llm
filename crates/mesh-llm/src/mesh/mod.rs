@@ -1268,6 +1268,7 @@ pub struct StageRuntimeStatus {
     pub wire_dtype: crate::inference::skippy::StageWireDType,
     pub selected_device: Option<skippy_protocol::StageDevice>,
     pub ctx_size: u32,
+    pub lane_count: u32,
     pub error: Option<String>,
     pub shutdown_generation: u64,
 }
@@ -4819,6 +4820,7 @@ fn stage_runtime_status_from_snapshot(
         wire_dtype: status.wire_dtype,
         selected_device: status.selected_device,
         ctx_size: status.ctx_size,
+        lane_count: status.lane_count,
         error: status.error,
         shutdown_generation: status.shutdown_generation,
     }
@@ -4852,6 +4854,7 @@ fn stage_snapshot_from_runtime_status(
         wire_dtype: status.wire_dtype,
         selected_device: status.selected_device.clone(),
         ctx_size: status.ctx_size,
+        lane_count: status.lane_count,
         error,
         shutdown_generation: status.shutdown_generation,
     }
@@ -4935,6 +4938,7 @@ fn stage_load_to_proto(
         activation_width: load.activation_width.max(0) as u32,
         wire_dtype: stage_wire_dtype_to_proto(load.wire_dtype) as i32,
         ctx_size: load.ctx_size,
+        lane_count: load.lane_count,
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: load.cache_type_k,
         cache_type_v: load.cache_type_v,
@@ -5032,6 +5036,11 @@ fn stage_load_from_proto(
             .context("stage activation_width exceeds i32")?,
         wire_dtype: stage_wire_dtype_from_proto(load.wire_dtype),
         ctx_size: load.ctx_size,
+        lane_count: if load.lane_count == 0 {
+            4
+        } else {
+            load.lane_count
+        },
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: load.cache_type_k,
         cache_type_v: load.cache_type_v,
@@ -5135,6 +5144,7 @@ fn stage_control_unavailable_response(
                 wire_dtype: crate::inference::skippy::StageWireDType::F16,
                 selected_device: None,
                 ctx_size: 0,
+                lane_count: 0,
                 error: Some("stage control is not available".to_string()),
                 shutdown_generation: stop.shutdown_generation,
             }
@@ -5179,6 +5189,7 @@ fn stage_status_from_load(
         wire_dtype: load.wire_dtype,
         selected_device: load.selected_device.clone(),
         ctx_size: load.ctx_size,
+        lane_count: load.lane_count,
         error: Some("stage control is not available".to_string()),
         shutdown_generation: load.shutdown_generation,
     }
@@ -5263,6 +5274,7 @@ fn stage_status_to_proto(
         shutdown_generation: status.shutdown_generation,
         selected_device: status.selected_device.map(stage_device_to_proto),
         ctx_size: status.ctx_size,
+        lane_count: status.lane_count,
         package_ref: status.package_ref,
         manifest_sha256: status.manifest_sha256,
         source_model_path: status.source_model_path,
@@ -5295,6 +5307,11 @@ fn stage_status_from_proto(
             .map(stage_device_from_proto)
             .transpose()?,
         ctx_size: status.ctx_size,
+        lane_count: if status.lane_count == 0 {
+            4
+        } else {
+            status.lane_count
+        },
         package_ref: status.package_ref,
         manifest_sha256: status.manifest_sha256,
         source_model_path: status.source_model_path,

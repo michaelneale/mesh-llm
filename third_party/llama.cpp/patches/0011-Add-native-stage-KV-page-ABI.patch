@@ -1,7 +1,7 @@
-From d0f2f96f18915a449ff8fd6956b49d470d95b903 Mon Sep 17 00:00:00 2001
+From c8bac3d562236f3f53d99e2b6234d49ac7a9bcf1 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sun, 26 Apr 2026 00:00:00 +1000
-Subject: [PATCH 11/33] Add native stage KV page ABI
+Subject: [PATCH 11/34] Add native stage KV page ABI
 
 ---
  include/skippy.h       |  40 +++++

@@ -1432,6 +1432,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
                 vram_bytes: Some(24_000_000_000),
             }),
             ctx_size: 8192,
+            lane_count: 2,
             error: None,
             shutdown_generation: 7,
         },

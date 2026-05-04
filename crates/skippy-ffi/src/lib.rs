@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 14;
+pub const ABI_VERSION_PATCH: u32 = 15;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -69,6 +69,7 @@ pub struct RuntimeConfig {
     pub layer_start: i32,
     pub layer_end: i32,
     pub ctx_size: i32,
+    pub lane_count: i32,
     pub n_gpu_layers: i32,
     pub cache_type_k: i32,
     pub cache_type_v: i32,
@@ -168,24 +169,6 @@ pub struct ActivationDesc {
     pub layer_end: i32,
     pub token_count: u32,
     pub sequence_count: u32,
-    pub payload_bytes: u64,
-    pub flags: u64,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct KvPageDesc {
-    pub version: u32,
-    pub layer_start: i32,
-    pub layer_end: i32,
-    pub token_start: u64,
-    pub token_count: u64,
-    pub layer_count: u32,
-    pub k_type: u32,
-    pub v_type: u32,
-    pub k_row_bytes: u32,
-    pub v_row_bytes: u32,
-    pub v_element_bytes: u32,
     pub payload_bytes: u64,
     pub flags: u64,
 }
@@ -427,80 +410,6 @@ extern "C" {
         session: *mut Session,
         window_tokens: u32,
         out_window: *mut GenerationSignalWindow,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_full_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_full_state(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_kv_page(
-        session: *mut Session,
-        layer_start: i32,
-        layer_end: i32,
-        token_start: u64,
-        token_count: u64,
-        out_desc: *mut KvPageDesc,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_kv_page(
-        session: *mut Session,
-        desc: *const KvPageDesc,
-        input: *const c_void,
-        input_bytes: usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_export_recurrent_state(
-        session: *mut Session,
-        output: *mut c_void,
-        output_capacity: usize,
-        out_bytes: *mut usize,
-        out_error: *mut *mut Error,
-    ) -> Status;
-
-    pub fn skippy_import_recurrent_state(
-        session: *mut Session,
-        input: *const c_void,
-        input_bytes: usize,
         out_error: *mut *mut Error,
     ) -> Status;
 

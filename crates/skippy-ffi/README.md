@@ -109,16 +109,13 @@ the patched llama.cpp library:
 | `ARTIFACT_SLICE` | `1 << 2` | Artifact-slice load mode |
 | `MODEL_INTROSPECTION` | `1 << 3` | `skippy_model_info_*` tensor metadata calls |
 | `GGUF_SLICE_WRITE` | `1 << 4` | `skippy_slice_plan_*`, `skippy_write_*` |
-| `STATE_IMPORT_EXPORT` | `1 << 5` | `skippy_export_state`, `skippy_import_state` |
 | `TOKENIZE_DETOKENIZE` | `1 << 6` | Tokenization, detokenization, EOG checks |
 | `ACTIVATION_FRAME` | `1 << 7` | Descriptor-plus-payload execution calls |
-| `NATIVE_KV_PAGE` | `1 << 8` | KV page import/export calls |
 | `SESSION_RESET` | `1 << 9` | `skippy_session_reset` |
 | `BATCH_VERIFY` | `1 << 10` | `skippy_verify_tokens` |
 | `CHAT_TEMPLATE` | `1 << 11` | `skippy_apply_chat_template` |
 | `SAMPLING_CONFIG` | `1 << 12` | Sampled decode calls using `SamplingConfig` |
 | `BATCH_VERIFY_FRAME` | `1 << 13` | `skippy_verify_tokens_frame` |
-| `RECURRENT_STATE` | `1 << 14` | Recurrent state import/export calls |
 | `LOGIT_BIAS` | `1 << 15` | `SamplingConfig.logit_bias` |
 | `SESSION_TRIM` | `1 << 16` | `skippy_trim_session` |
 | `SESSION_CHECKPOINT` | `1 << 17` | Native checkpoint/restore calls |
@@ -168,19 +165,6 @@ hook currently bound by this crate.
 | `skippy_decode_step_frame` | Decodes one token using activation-frame descriptors and payloads. |
 | `skippy_verify_tokens_frame` | Runs batched verification with activation-frame descriptors and payloads. |
 | `skippy_decode_step_frame_sampled` | Decodes one token with activation-frame I/O and `SamplingConfig`. |
-
-### State transfer
-
-| Function | Purpose |
-| --- | --- |
-| `skippy_export_state` | Exports stage state for a layer range into a caller-provided buffer. |
-| `skippy_import_state` | Imports state bytes for a layer range. |
-| `skippy_export_full_state` | Exports a full state payload for a layer range. |
-| `skippy_import_full_state` | Imports a full state payload for a layer range. |
-| `skippy_export_kv_page` | Exports a token window from the native KV cache and fills `KvPageDesc`. |
-| `skippy_import_kv_page` | Imports a native KV page described by `KvPageDesc`. |
-| `skippy_export_recurrent_state` | Exports recurrent model state bytes. |
-| `skippy_import_recurrent_state` | Imports recurrent model state bytes. |
 
 ### Token and chat helpers
 

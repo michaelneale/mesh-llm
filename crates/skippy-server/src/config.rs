@@ -10,6 +10,9 @@ pub fn validate_config(config: &StageConfig, topology: Option<&StageTopology>) -
     if config.layer_start >= config.layer_end {
         bail!("layer_start must be less than layer_end");
     }
+    if config.lane_count == 0 {
+        bail!("lane_count must be greater than zero");
+    }
     if config
         .selected_device
         .as_ref()
@@ -84,6 +87,7 @@ pub fn example_config() -> Value {
         "layer_start": 0,
         "layer_end": 1,
         "ctx_size": 512,
+        "lane_count": 4,
         "n_gpu_layers": 0,
         "cache_type_k": "f16",
         "cache_type_v": "f16",
