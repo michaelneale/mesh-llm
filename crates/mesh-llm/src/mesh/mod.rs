@@ -1269,6 +1269,9 @@ pub struct StageRuntimeStatus {
     pub selected_device: Option<skippy_protocol::StageDevice>,
     pub ctx_size: u32,
     pub lane_count: u32,
+    pub n_batch: Option<u32>,
+    pub n_ubatch: Option<u32>,
+    pub flash_attn_type: skippy_protocol::FlashAttentionType,
     pub error: Option<String>,
     pub shutdown_generation: u64,
 }
@@ -4821,6 +4824,9 @@ fn stage_runtime_status_from_snapshot(
         selected_device: status.selected_device,
         ctx_size: status.ctx_size,
         lane_count: status.lane_count,
+        n_batch: status.n_batch,
+        n_ubatch: status.n_ubatch,
+        flash_attn_type: status.flash_attn_type,
         error: status.error,
         shutdown_generation: status.shutdown_generation,
     }
@@ -4855,6 +4861,9 @@ fn stage_snapshot_from_runtime_status(
         selected_device: status.selected_device.clone(),
         ctx_size: status.ctx_size,
         lane_count: status.lane_count,
+        n_batch: status.n_batch,
+        n_ubatch: status.n_ubatch,
+        flash_attn_type: status.flash_attn_type,
         error,
         shutdown_generation: status.shutdown_generation,
     }
@@ -4939,9 +4948,12 @@ fn stage_load_to_proto(
         wire_dtype: stage_wire_dtype_to_proto(load.wire_dtype) as i32,
         ctx_size: load.ctx_size,
         lane_count: load.lane_count,
+        n_batch: load.n_batch,
+        n_ubatch: load.n_ubatch,
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: load.cache_type_k,
         cache_type_v: load.cache_type_v,
+        flash_attn_type: stage_flash_attn_type_to_proto(load.flash_attn_type) as i32,
         shutdown_generation: load.shutdown_generation,
         load_mode: match load.load_mode {
             skippy_protocol::LoadMode::RuntimeSlice => {
@@ -5041,9 +5053,12 @@ fn stage_load_from_proto(
         } else {
             load.lane_count
         },
+        n_batch: load.n_batch,
+        n_ubatch: load.n_ubatch,
         n_gpu_layers: load.n_gpu_layers,
         cache_type_k: load.cache_type_k,
         cache_type_v: load.cache_type_v,
+        flash_attn_type: stage_flash_attn_type_from_proto(load.flash_attn_type),
         shutdown_generation: load.shutdown_generation,
         load_mode: stage_load_mode_from_proto(load.load_mode),
         upstream: load.upstream.map(stage_peer_from_proto).transpose()?,
@@ -5145,6 +5160,9 @@ fn stage_control_unavailable_response(
                 selected_device: None,
                 ctx_size: 0,
                 lane_count: 0,
+                n_batch: None,
+                n_ubatch: None,
+                flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
                 error: Some("stage control is not available".to_string()),
                 shutdown_generation: stop.shutdown_generation,
             }
@@ -5190,6 +5208,9 @@ fn stage_status_from_load(
         selected_device: load.selected_device.clone(),
         ctx_size: load.ctx_size,
         lane_count: load.lane_count,
+        n_batch: load.n_batch,
+        n_ubatch: load.n_ubatch,
+        flash_attn_type: load.flash_attn_type,
         error: Some("stage control is not available".to_string()),
         shutdown_generation: load.shutdown_generation,
     }
@@ -5275,6 +5296,8 @@ fn stage_status_to_proto(
         selected_device: status.selected_device.map(stage_device_to_proto),
         ctx_size: status.ctx_size,
         lane_count: status.lane_count,
+        n_batch: status.n_batch,
+        n_ubatch: status.n_ubatch,
         package_ref: status.package_ref,
         manifest_sha256: status.manifest_sha256,
         source_model_path: status.source_model_path,
@@ -5283,6 +5306,7 @@ fn stage_status_to_proto(
         materialized_path: status.materialized_path,
         materialized_pinned: Some(status.materialized_pinned),
         projector_path: status.projector_path,
+        flash_attn_type: stage_flash_attn_type_to_proto(status.flash_attn_type) as i32,
     }
 }
 
@@ -5312,6 +5336,8 @@ fn stage_status_from_proto(
         } else {
             status.lane_count
         },
+        n_batch: status.n_batch,
+        n_ubatch: status.n_ubatch,
         package_ref: status.package_ref,
         manifest_sha256: status.manifest_sha256,
         source_model_path: status.source_model_path,
@@ -5320,9 +5346,39 @@ fn stage_status_from_proto(
         materialized_path: status.materialized_path,
         materialized_pinned: status.materialized_pinned.unwrap_or(false),
         projector_path: status.projector_path,
+        flash_attn_type: stage_flash_attn_type_from_proto(status.flash_attn_type),
         error: status.error,
         shutdown_generation: status.shutdown_generation,
     })
+}
+
+fn stage_flash_attn_type_to_proto(
+    value: skippy_protocol::FlashAttentionType,
+) -> skippy_stage_proto::StageFlashAttnType {
+    match value {
+        skippy_protocol::FlashAttentionType::Auto => skippy_stage_proto::StageFlashAttnType::Auto,
+        skippy_protocol::FlashAttentionType::Disabled => {
+            skippy_stage_proto::StageFlashAttnType::Disabled
+        }
+        skippy_protocol::FlashAttentionType::Enabled => {
+            skippy_stage_proto::StageFlashAttnType::Enabled
+        }
+    }
+}
+
+fn stage_flash_attn_type_from_proto(value: i32) -> skippy_protocol::FlashAttentionType {
+    match skippy_stage_proto::StageFlashAttnType::try_from(value)
+        .unwrap_or(skippy_stage_proto::StageFlashAttnType::Unspecified)
+    {
+        skippy_stage_proto::StageFlashAttnType::Unspecified
+        | skippy_stage_proto::StageFlashAttnType::Auto => skippy_protocol::FlashAttentionType::Auto,
+        skippy_stage_proto::StageFlashAttnType::Disabled => {
+            skippy_protocol::FlashAttentionType::Disabled
+        }
+        skippy_stage_proto::StageFlashAttnType::Enabled => {
+            skippy_protocol::FlashAttentionType::Enabled
+        }
+    }
 }
 
 fn stage_runtime_state_from_proto(value: i32) -> crate::inference::skippy::StageRuntimeState {

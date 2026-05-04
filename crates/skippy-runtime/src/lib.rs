@@ -19,6 +19,15 @@ pub const GGML_TYPE_F16: u32 = 1;
 pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum FlashAttentionType {
+    #[default]
+    Auto = -1,
+    Disabled = 0,
+    Enabled = 1,
+}
+
 pub use skippy_ffi::LoadMode as RuntimeLoadMode;
 pub use skippy_ffi::{
     ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,
@@ -50,10 +59,13 @@ pub struct RuntimeConfig {
     pub layer_end: u32,
     pub ctx_size: u32,
     pub lane_count: u32,
+    pub n_batch: Option<u32>,
+    pub n_ubatch: Option<u32>,
     pub n_gpu_layers: i32,
     pub selected_backend_device: Option<String>,
     pub cache_type_k: u32,
     pub cache_type_v: u32,
+    pub flash_attn_type: FlashAttentionType,
     pub load_mode: LoadMode,
     pub projector_path: Option<String>,
     pub include_embeddings: bool,
@@ -75,6 +87,12 @@ impl RuntimeConfig {
         }
         if self.projector_path.as_deref().is_some_and(str::is_empty) {
             return Err("projector_path must not be empty");
+        }
+        if self.n_batch == Some(0) {
+            return Err("n_batch must be greater than zero when provided");
+        }
+        if self.n_ubatch == Some(0) {
+            return Err("n_ubatch must be greater than zero when provided");
         }
         Ok(())
     }
@@ -100,11 +118,24 @@ impl RuntimeConfig {
                 layer_end: i32::try_from(self.layer_end).context("layer_end exceeds i32")?,
                 ctx_size: i32::try_from(self.ctx_size).context("ctx_size exceeds i32")?,
                 lane_count: i32::try_from(self.lane_count).context("lane_count exceeds i32")?,
+                n_batch: self
+                    .n_batch
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_batch exceeds i32")?
+                    .unwrap_or(0),
+                n_ubatch: self
+                    .n_ubatch
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_ubatch exceeds i32")?
+                    .unwrap_or(0),
                 n_gpu_layers: self.n_gpu_layers,
                 cache_type_k: i32::try_from(self.cache_type_k)
                     .context("cache_type_k exceeds i32")?,
                 cache_type_v: i32::try_from(self.cache_type_v)
                     .context("cache_type_v exceeds i32")?,
+                flash_attn_type: self.flash_attn_type as i32,
                 load_mode: self.load_mode,
                 disable_repack: false,
                 filter_tensors_on_load: self.filter_tensors_on_load,
@@ -130,10 +161,13 @@ impl Default for RuntimeConfig {
             layer_end: 1,
             ctx_size: 512,
             lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
+            flash_attn_type: FlashAttentionType::Auto,
             load_mode: LoadMode::RuntimeSlice,
             projector_path: None,
             include_embeddings: true,
@@ -1704,10 +1738,13 @@ mod tests {
             layer_end,
             ctx_size: 256,
             lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
             cache_type_v: GGML_TYPE_F16,
+            flash_attn_type: FlashAttentionType::Auto,
             load_mode: RuntimeLoadMode::RuntimeSlice,
             projector_path: None,
             include_embeddings: true,

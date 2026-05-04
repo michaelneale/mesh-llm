@@ -5,11 +5,11 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use skippy_protocol::{LoadMode, StageConfig};
+use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig};
 use skippy_runtime::{
-    parse_cache_type, ActivationFrame, GenerationSignalWindow, MediaInput, MediaPrefill,
-    MediaPrefillFrame, RuntimeConfig, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
-    StageSessionCheckpoint, TokenSignal,
+    parse_cache_type, ActivationFrame, FlashAttentionType as RuntimeFlashAttentionType,
+    GenerationSignalWindow, MediaInput, MediaPrefill, MediaPrefillFrame, RuntimeConfig,
+    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::materialize_layer_package;
@@ -325,6 +325,8 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
         layer_end: config.layer_end,
         ctx_size: config.ctx_size,
         lane_count: config.lane_count,
+        n_batch: config.n_batch,
+        n_ubatch: config.n_ubatch,
         n_gpu_layers: config.n_gpu_layers,
         selected_backend_device: config
             .selected_device
@@ -332,6 +334,11 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
             .map(|device| device.backend_device.clone()),
         cache_type_k,
         cache_type_v,
+        flash_attn_type: match config.flash_attn_type {
+            FlashAttentionType::Auto => RuntimeFlashAttentionType::Auto,
+            FlashAttentionType::Disabled => RuntimeFlashAttentionType::Disabled,
+            FlashAttentionType::Enabled => RuntimeFlashAttentionType::Enabled,
+        },
         load_mode: match config.load_mode {
             LoadMode::RuntimeSlice => RuntimeLoadMode::RuntimeSlice,
             LoadMode::LayerPackage => RuntimeLoadMode::LayerPackage,
@@ -350,7 +357,8 @@ fn open_stage_model(path: &std::path::Path, runtime_config: &RuntimeConfig) -> R
 
 #[cfg(test)]
 mod tests {
-    use skippy_protocol::{LoadMode, StageConfig, StageDevice};
+    use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig, StageDevice};
+    use skippy_runtime::FlashAttentionType as RuntimeFlashAttentionType;
 
     use super::runtime_config_from_stage_config;
 
@@ -375,9 +383,12 @@ mod tests {
             layer_end: 24,
             ctx_size: 512,
             lane_count: 2,
+            n_batch: Some(1024),
+            n_ubatch: Some(256),
             n_gpu_layers: -1,
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Enabled,
             filter_tensors_on_load: true,
             selected_device: Some(StageDevice {
                 backend_device: "Vulkan1".into(),
@@ -398,5 +409,11 @@ mod tests {
             Some("Vulkan1")
         );
         assert_eq!(runtime_config.lane_count, 2);
+        assert_eq!(runtime_config.n_batch, Some(1024));
+        assert_eq!(runtime_config.n_ubatch, Some(256));
+        assert_eq!(
+            runtime_config.flash_attn_type,
+            RuntimeFlashAttentionType::Enabled
+        );
     }
 }
