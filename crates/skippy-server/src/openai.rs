@@ -1735,6 +1735,7 @@ impl StageOpenAiBackend {
             return Err(OpenAiError::invalid_request("prompt produced no tokens"));
         }
         let max_tokens = max_tokens.resolve(prompt_token_ids.len(), self.ctx_size)?;
+        let chat_sampling_metadata = prompt.chat_parse_metadata.as_deref();
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
@@ -1744,6 +1745,7 @@ impl StageOpenAiBackend {
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
+                    chat_sampling_metadata,
                     hook_request: hook_request.clone(),
                     hook_runtime: hook_runtime.clone(),
                     cancellation,
@@ -1765,6 +1767,7 @@ impl StageOpenAiBackend {
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
+                    chat_sampling_metadata,
                     cancellation,
                     ids: &ids,
                 },
@@ -1791,6 +1794,7 @@ impl StageOpenAiBackend {
                     prompt_token_ids: &prompt_token_ids,
                     max_tokens,
                     sampling: &sampling,
+                    chat_sampling_metadata,
                     hook_request,
                     hook_runtime,
                     cancellation,
@@ -2197,6 +2201,30 @@ impl StageOpenAiBackend {
             let max_tokens = request
                 .max_tokens
                 .resolve(prefill.position as usize, self.ctx_size)?;
+
+            if let Some(message) = generation_config_message(
+                request.wire_dtype,
+                request_id,
+                session_id,
+                prefill.token_count,
+                wire_sampling.clone(),
+                request.prompt.chat_parse_metadata.as_deref(),
+            )? {
+                write_stage_message_conditioned(
+                    &mut lane.stream,
+                    &message,
+                    request.wire_dtype,
+                    request.downstream_wire_condition,
+                )
+                .map_err(openai_io_error)?;
+                let reply = recv_reply(&mut lane.stream).map_err(openai_io_error)?;
+                if reply.kind != WireReplyKind::Ack {
+                    return Err(OpenAiError::backend(format!(
+                        "expected multimodal generation config ACK from downstream, got {:?}",
+                        reply.kind
+                    )));
+                }
+            }
 
             let final_prefill = multimodal_final_prefill_message(
                 request.wire_dtype,
@@ -2630,6 +2658,20 @@ impl StageOpenAiBackend {
                 );
                 self.emit_openai_phase("stage.openai_prefill", prefill_timer, attrs);
             }
+            if let Some(metadata) = request.chat_sampling_metadata {
+                let mut runtime = self
+                    .runtime
+                    .lock()
+                    .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                runtime
+                    .configure_chat_sampling(
+                        &session_id,
+                        metadata,
+                        request.prompt_token_ids.len() as u64,
+                        request.sampling.enabled.then_some(request.sampling),
+                    )
+                    .map_err(openai_backend_error)?;
+            }
             let decode_timer = PhaseTimer::start();
             let mut decoded_tokens = 0usize;
             let mut runtime_lock_wait_ms = 0.0;
@@ -2884,6 +2926,25 @@ impl StageOpenAiBackend {
             );
             self.emit_openai_phase("stage.openai_prefill", prefill_timer, prefill_attrs);
 
+            if let Some(message) = generation_config_message(
+                request.wire_dtype,
+                request_id,
+                session_id,
+                request.prompt_token_ids.len(),
+                wire_sampling.clone(),
+                request.chat_sampling_metadata,
+            )? {
+                write_stage_message(&mut stream, &message, request.wire_dtype)
+                    .map_err(openai_io_error)?;
+                let reply = recv_reply(&mut stream).map_err(openai_io_error)?;
+                if reply.kind != WireReplyKind::Ack {
+                    return Err(OpenAiError::backend(format!(
+                        "expected generation config ACK, got {:?}",
+                        reply.kind
+                    )));
+                }
+            }
+
             let decode_timer = PhaseTimer::start();
             let mut decoded_tokens = 0usize;
             let mut current = *request
@@ -2915,6 +2976,7 @@ impl StageOpenAiBackend {
                     request_id,
                     session_id,
                     sampling: wire_sampling.clone(),
+                    chat_sampling_metadata: None,
                     tokens: vec![current],
                     activation: Vec::new(),
                     raw_bytes: Vec::new(),
@@ -2975,6 +3037,7 @@ impl StageOpenAiBackend {
                     prompt_token_ids: request.prompt_token_ids,
                     max_tokens: request.max_tokens,
                     sampling: request.sampling,
+                    chat_sampling_metadata: request.chat_sampling_metadata,
                     hook_request: request.hook_request,
                     hook_runtime: request.hook_runtime,
                     cancellation: request.cancellation,
@@ -3189,6 +3252,30 @@ impl StageOpenAiBackend {
                 json!(prefill_downstream_wait_ms),
             );
             self.emit_openai_phase("stage.openai_prefill", prefill_timer, prefill_attrs);
+
+            if let Some(message) = generation_config_message(
+                request.wire_dtype,
+                request_id,
+                session_id,
+                request.prompt_token_ids.len(),
+                wire_sampling.clone(),
+                request.chat_sampling_metadata,
+            )? {
+                write_stage_message_conditioned(
+                    &mut *downstream,
+                    &message,
+                    request.wire_dtype,
+                    request.downstream_wire_condition,
+                )
+                .map_err(openai_io_error)?;
+                let reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+                if reply.kind != WireReplyKind::Ack {
+                    return Err(OpenAiError::backend(format!(
+                        "expected generation config ACK from downstream, got {:?}",
+                        reply.kind
+                    )));
+                }
+            }
 
             let decode_timer = PhaseTimer::start();
             let mut decoded_tokens = 0usize;
@@ -3593,6 +3680,7 @@ impl StageOpenAiBackend {
                     request_id,
                     session_id,
                     sampling: wire_sampling.clone(),
+                    chat_sampling_metadata: None,
                     tokens: vec![current],
                     activation: Vec::new(),
                     raw_bytes: Vec::new(),
@@ -4295,6 +4383,7 @@ struct LocalGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
+    chat_sampling_metadata: Option<&'a str>,
     hook_request: Option<ChatCompletionRequest>,
     hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
@@ -4309,6 +4398,7 @@ struct BinaryChainGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
+    chat_sampling_metadata: Option<&'a str>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
     ids: &'a OpenAiGenerationIds,
 }
@@ -4326,6 +4416,7 @@ struct EmbeddedStageZeroGeneration<'a> {
     prompt_token_ids: &'a [i32],
     max_tokens: u32,
     sampling: &'a SamplingConfig,
+    chat_sampling_metadata: Option<&'a str>,
     hook_request: Option<ChatCompletionRequest>,
     hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
@@ -4963,6 +5054,7 @@ fn embedded_decode_message(
         request_id: args.request_id,
         session_id: args.session_id,
         sampling: args.sampling,
+        chat_sampling_metadata: None,
         tokens: vec![args.current],
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -5009,6 +5101,7 @@ fn embedded_verify_message(
         request_id: args.request_id,
         session_id: args.session_id,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: args.tokens.to_vec(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -5029,6 +5122,7 @@ fn embedded_session_control_message(
         request_id,
         session_id,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -5247,6 +5341,7 @@ fn send_prefill_chunk(
         request_id: chunk.request_id,
         session_id: chunk.session_id,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -5257,6 +5352,29 @@ fn send_prefill_chunk(
         bail!("expected prefill ACK, got {:?}", reply.kind);
     }
     Ok(())
+}
+
+fn generation_config_message(
+    wire_dtype: WireActivationDType,
+    request_id: u64,
+    session_id: u64,
+    prompt_token_count: usize,
+    sampling: Option<WireSamplingConfig>,
+    chat_sampling_metadata: Option<&str>,
+) -> OpenAiResult<Option<StageWireMessage>> {
+    let Some(metadata) = chat_sampling_metadata else {
+        return Ok(None);
+    };
+    let prompt_token_count = i32::try_from(prompt_token_count)
+        .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+    Ok(Some(StageWireMessage::configure_generation(
+        wire_dtype,
+        request_id,
+        session_id,
+        prompt_token_count,
+        sampling,
+        Some(metadata.to_string()),
+    )))
 }
 
 fn embedded_prefill_message(
@@ -5283,6 +5401,7 @@ fn embedded_prefill_message(
         request_id: chunk.request_id,
         session_id: chunk.session_id,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: chunk.tokens.to_vec(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -5315,6 +5434,7 @@ fn multimodal_final_prefill_message(
         request_id: args.request_id,
         session_id: args.session_id,
         sampling: args.sampling,
+        chat_sampling_metadata: None,
         tokens: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),

@@ -85,6 +85,7 @@ mod tests {
                 }],
                 ..StageSamplingConfig::default()
             }),
+            chat_sampling_metadata: None,
             tokens: vec![11],
             activation: activation.clone(),
             raw_bytes: Vec::new(),
@@ -99,12 +100,52 @@ mod tests {
         assert_eq!(decoded.request_id, 7);
         assert_eq!(decoded.session_id, 11);
         assert_ne!(decoded.state.flags & state_flags::SAMPLING, 0);
+        assert_eq!(decoded.state.flags & state_flags::CHAT_SAMPLING_METADATA, 0);
+        assert_eq!(decoded.chat_sampling_metadata, None);
         let sampling = decoded.sampling.expect("sampling extension round-tripped");
         assert_eq!(sampling.seed, 42);
         assert_eq!(sampling.top_k, 40);
         assert_eq!(sampling.logit_bias.len(), 1);
         assert_eq!(sampling.logit_bias[0].token_id, 123);
         assert_eq!(sampling.logit_bias[0].bias, -50.0);
+    }
+
+    #[test]
+    fn generation_config_round_trips_sampling_metadata() {
+        let message = StageWireMessage::configure_generation(
+            WireActivationDType::F32,
+            7,
+            11,
+            123,
+            Some(StageSamplingConfig {
+                flags: 1,
+                seed: 42,
+                temperature: 0.8,
+                top_p: 0.9,
+                top_k: 40,
+                ..StageSamplingConfig::default()
+            }),
+            Some("{\"grammar\":\"root ::= \\\"x\\\"\"}".to_string()),
+        );
+        let mut bytes = Vec::new();
+        write_stage_message(&mut bytes, &message, WireActivationDType::F32).unwrap();
+        let decoded = read_stage_message(Cursor::new(bytes), 2).unwrap();
+        assert_eq!(decoded.kind, WireMessageKind::ConfigureGeneration);
+        assert_eq!(decoded.token_count, 0);
+        assert_eq!(decoded.tokens, Vec::<i32>::new());
+        assert_eq!(decoded.activation, Vec::<u8>::new());
+        assert_eq!(decoded.request_id, 7);
+        assert_eq!(decoded.session_id, 11);
+        assert_eq!(decoded.state.prompt_token_count, 123);
+        assert_ne!(decoded.state.flags & state_flags::SAMPLING, 0);
+        assert_ne!(decoded.state.flags & state_flags::CHAT_SAMPLING_METADATA, 0);
+        assert_eq!(
+            decoded.chat_sampling_metadata.as_deref(),
+            Some("{\"grammar\":\"root ::= \\\"x\\\"\"}")
+        );
+        let sampling = decoded.sampling.expect("sampling extension round-tripped");
+        assert_eq!(sampling.seed, 42);
+        assert_eq!(sampling.top_k, 40);
     }
 
     #[test]
@@ -122,6 +163,7 @@ mod tests {
             request_id: 13,
             session_id: 17,
             sampling: None,
+            chat_sampling_metadata: None,
             tokens: vec![11, 22],
             activation: Vec::new(),
             raw_bytes: Vec::new(),
@@ -154,6 +196,7 @@ mod tests {
             request_id: u64::MAX - 1,
             session_id: u64::MAX,
             sampling: None,
+            chat_sampling_metadata: None,
             tokens,
             activation: Vec::new(),
             raw_bytes: Vec::new(),
@@ -185,6 +228,7 @@ mod tests {
                 request_id: 23,
                 session_id: 29,
                 sampling: None,
+                chat_sampling_metadata: None,
                 tokens: Vec::new(),
                 activation: Vec::new(),
                 raw_bytes: Vec::new(),
@@ -212,6 +256,7 @@ mod tests {
             request_id: 31,
             session_id: 37,
             sampling: None,
+            chat_sampling_metadata: None,
             tokens: Vec::new(),
             activation: Vec::new(),
             raw_bytes: vec![1, 2, 3, 4],
@@ -236,6 +281,7 @@ mod tests {
             request_id: 41,
             session_id: 43,
             sampling: None,
+            chat_sampling_metadata: None,
             tokens: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),

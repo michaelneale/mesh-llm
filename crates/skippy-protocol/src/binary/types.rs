@@ -51,6 +51,7 @@ pub enum WireMessageKind {
     CheckpointSession = 11,
     RestoreSession = 12,
     StateExport = 13,
+    ConfigureGeneration = 14,
 }
 
 impl WireMessageKind {
@@ -81,6 +82,10 @@ impl WireMessageKind {
     pub fn is_session_control(self) -> bool {
         matches!(self, Self::CheckpointSession | Self::RestoreSession)
     }
+
+    pub fn is_generation_control(self) -> bool {
+        matches!(self, Self::ConfigureGeneration)
+    }
 }
 
 impl TryFrom<i32> for WireMessageKind {
@@ -101,6 +106,7 @@ impl TryFrom<i32> for WireMessageKind {
             11 => Ok(Self::CheckpointSession),
             12 => Ok(Self::RestoreSession),
             13 => Ok(Self::StateExport),
+            14 => Ok(Self::ConfigureGeneration),
             _ => Err(invalid_data("unknown stage message kind")),
         }
     }
@@ -142,6 +148,7 @@ pub mod state_flags {
     pub const SKIP_VERIFY_CHECKPOINT: i32 = 1 << 2;
     pub const SAMPLING: i32 = 1 << 3;
     pub const FULL_STATE: i32 = 1 << 4;
+    pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +252,7 @@ impl StageStateHeader {
             kind,
             WireMessageKind::StateImport | WireMessageKind::StateExport
         ) || kind.is_session_control()
+            || kind.is_generation_control()
         {
             return true;
         }
@@ -277,6 +285,7 @@ pub struct StageWireMessage {
     pub request_id: u64,
     pub session_id: u64,
     pub sampling: Option<StageSamplingConfig>,
+    pub chat_sampling_metadata: Option<String>,
     pub tokens: Vec<i32>,
     pub activation: Vec<u8>,
     pub raw_bytes: Vec<u8>,
@@ -300,6 +309,32 @@ impl StageWireMessage {
             request_id,
             session_id,
             sampling: None,
+            chat_sampling_metadata: None,
+            tokens: Vec::new(),
+            activation: Vec::new(),
+            raw_bytes: Vec::new(),
+        }
+    }
+
+    pub fn configure_generation(
+        dtype: WireActivationDType,
+        request_id: u64,
+        session_id: u64,
+        prompt_token_count: i32,
+        sampling: Option<StageSamplingConfig>,
+        chat_sampling_metadata: Option<String>,
+    ) -> Self {
+        let mut state = StageStateHeader::new(WireMessageKind::ConfigureGeneration, dtype);
+        state.prompt_token_count = prompt_token_count;
+        Self {
+            kind: WireMessageKind::ConfigureGeneration,
+            pos_start: 0,
+            token_count: 0,
+            state,
+            request_id,
+            session_id,
+            sampling,
+            chat_sampling_metadata,
             tokens: Vec::new(),
             activation: Vec::new(),
             raw_bytes: Vec::new(),
@@ -448,6 +483,7 @@ fn expected_phase(kind: WireMessageKind) -> WireStagePhase {
             WireMessageKind::StateImport | WireMessageKind::StateExport
         )
         || kind.is_session_control()
+        || kind.is_generation_control()
     {
         WireStagePhase::Prefill
     } else if kind.is_decode_replay() {

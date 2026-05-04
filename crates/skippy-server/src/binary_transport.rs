@@ -554,6 +554,50 @@ fn handle_binary_connection(
             continue;
         }
 
+        if message.kind.is_generation_control() {
+            let mut generation_stats = std::mem::take(&mut pending_reply_stats);
+            if let Some(forwarder) = async_forwarder.as_mut() {
+                forwarder
+                    .flush()
+                    .context("flush async forwards before generation config")?;
+            }
+            drain_deferred_prefill_replies(
+                downstream.as_mut(),
+                &mut pending_prefill_replies,
+                &mut generation_stats,
+            )
+            .context("drain deferred replies before generation config")?;
+            if let Some(downstream) = downstream.as_mut() {
+                write_stage_message_conditioned(
+                    &mut *downstream,
+                    &message,
+                    wire_dtype,
+                    downstream_wire_condition,
+                )
+                .context("forward generation config")?;
+                let reply =
+                    recv_reply(&mut *downstream).context("generation config downstream ACK")?;
+                if reply.kind != WireReplyKind::Ack {
+                    bail!("generation config expected downstream ACK");
+                }
+                generation_stats.merge(reply.stats);
+            } else if let Some(metadata) = message.chat_sampling_metadata.as_deref() {
+                let sampling = runtime_sampling_config(message.sampling.as_ref());
+                let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                runtime
+                    .configure_chat_sampling(
+                        &session_key,
+                        metadata,
+                        message.state.prompt_token_count.max(0) as u64,
+                        sampling.as_ref(),
+                    )
+                    .context("configure binary stage generation")?;
+            }
+            send_reply_ack_with_stats(&mut *upstream, generation_stats)
+                .context("generation config ack")?;
+            continue;
+        }
+
         if message.kind == WireMessageKind::StateImport {
             bail!("binary state import is no longer supported by the skippy runtime ABI");
         }
@@ -2032,6 +2076,7 @@ pub(crate) fn run_binary_stage_message(
         WireMessageKind::Stop
         | WireMessageKind::StateImport
         | WireMessageKind::StateExport
+        | WireMessageKind::ConfigureGeneration
         | WireMessageKind::CheckpointSession
         | WireMessageKind::RestoreSession => {
             bail!("message kind is not executable")
@@ -2195,6 +2240,7 @@ pub(crate) fn forwarded_stage_message_timed(
             request_id: incoming.request_id,
             session_id: incoming.session_id,
             sampling: incoming.sampling.clone(),
+            chat_sampling_metadata: None,
             tokens: incoming.tokens.clone(),
             activation,
             raw_bytes: Vec::new(),

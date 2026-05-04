@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 17;
+pub const ABI_VERSION_PATCH: u32 = 18;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -271,6 +271,14 @@ extern "C" {
         session: *mut Session,
         sampling: *const SamplingConfig,
         out_predicted_token: *mut i32,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_configure_chat_sampling(
+        session: *mut Session,
+        sampling: *const SamplingConfig,
+        metadata_json: *const c_char,
+        prompt_token_count: u64,
         out_error: *mut *mut Error,
     ) -> Status;
 

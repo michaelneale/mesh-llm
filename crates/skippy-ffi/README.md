@@ -52,7 +52,7 @@ same Rust crate.
 
 ## ABI Contract
 
-The staged ABI is versioned as `0.1.17` in both this crate and the patched
+The staged ABI is versioned as `0.1.18` in both this crate and the patched
 llama.cpp header. Version `0` is still experimental, so callers should treat the
 ABI as feature-probed rather than permanently stable.
 
@@ -123,6 +123,7 @@ the patched llama.cpp library:
 | `GENERATION_SIGNALS` | `1 << 19` | Generation progress and cancellation signal hooks |
 | `EXTERNAL_MEDIA_PREFILL` | `1 << 20` | Multimodal prefill from externally materialized media chunks |
 | `CHAT_TEMPLATE_TOOLS` | `1 << 21` | llama.cpp OpenAI-compatible chat templating and tool-call response parsing |
+| `CHAT_SAMPLING_GRAMMAR` | `1 << 22` | Session-local llama.cpp grammar-constrained sampling from chat template metadata |
 
 ## Function Surface
 
@@ -154,6 +155,7 @@ hook currently bound by this crate.
 | `skippy_session_reset` | Clears session state so the session can be reused. |
 | `skippy_checkpoint_session` | Records a native session checkpoint and returns the checkpoint token count. |
 | `skippy_restore_session_checkpoint` | Restores the native checkpoint when the requested token count matches. |
+| `skippy_session_configure_chat_sampling` | Configures session-local sampling with llama.cpp chat metadata so tool-call grammars constrain generated tokens. |
 | `skippy_session_free` | Releases a session handle. |
 | `skippy_trim_session` | Trims session state to a token count. |
 

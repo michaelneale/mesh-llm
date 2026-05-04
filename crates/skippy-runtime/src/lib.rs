@@ -1137,6 +1137,31 @@ impl StageSession {
         Ok(())
     }
 
+    pub fn configure_chat_sampling(
+        &mut self,
+        metadata_json: &str,
+        prompt_token_count: u64,
+        sampling: Option<&SamplingConfig>,
+    ) -> Result<()> {
+        let metadata_json = CString::new(metadata_json)
+            .context("chat sampling metadata contains an interior NUL byte")?;
+        let raw_sampling = sampling.map(SamplingConfig::as_raw);
+        let sampling_ptr = raw_sampling
+            .as_ref()
+            .map_or(ptr::null(), |sampling| sampling as *const RawSamplingConfig);
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_configure_chat_sampling(
+                self.raw,
+                sampling_ptr,
+                metadata_json.as_ptr(),
+                prompt_token_count,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)
+    }
+
     pub fn trim_session(&mut self, token_count: u64) -> Result<()> {
         let mut error = ptr::null_mut();
         let status = unsafe { skippy_ffi::skippy_trim_session(self.raw, token_count, &mut error) };

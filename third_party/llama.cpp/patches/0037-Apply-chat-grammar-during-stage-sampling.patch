@@ -1,0 +1,391 @@
+From 9d307ce762c8946fa7ead88a88812712e71a92f5 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 07:11:33 +1000
+Subject: [PATCH] Apply chat grammar during stage sampling
+
+---
+ include/skippy.h |  10 +-
+ src/skippy.cpp   | 273 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 282 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 384c7e406..3ffdb879d 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 17
++#define SKIPPY_ABI_VERSION_PATCH 18
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -50,6 +50,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_GENERATION_SIGNALS     = 1 << 19,
+     SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL = 1 << 20,
+     SKIPPY_FEATURE_CHAT_TEMPLATE_TOOLS    = 1 << 21,
++    SKIPPY_FEATURE_CHAT_SAMPLING_GRAMMAR  = 1 << 22,
+ };
+ 
+ enum skippy_status {
+@@ -224,6 +225,13 @@ LLAMA_API enum skippy_status skippy_session_sample_current(
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_session_configure_chat_sampling(
++        struct skippy_session * session,
++        const struct skippy_sampling_config * sampling,
++        const char * metadata_json,
++        uint64_t prompt_token_count,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_session_reset(
+         struct skippy_session * session,
+         struct skippy_error ** out_error);
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index fd2cd3d06..ae18f5fce 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -11,6 +11,7 @@
+ #include "llama-memory-recurrent.h"
+ #include "llama-model.h"
+ #include "llama-model-loader.h"
++#include "../vendor/nlohmann/json.hpp"
+ 
+ #include <algorithm>
+ #include <cerrno>
+@@ -27,6 +28,8 @@
+ #include <utility>
+ #include <vector>
+ 
++using json = nlohmann::ordered_json;
++
+ struct skippy_model {
+     llama_model * model = nullptr;
+     llama_context * ctx = nullptr;
+@@ -48,6 +51,11 @@ struct skippy_session {
+     size_t checkpoint_signal_history_size = 0;
+     std::vector<llama_token> token_history;
+     std::vector<skippy_token_signal> signal_history;
++    llama_sampler * sampling_chain = nullptr;
++    llama_sampler * grammar_sampler = nullptr;
++    std::string chat_sampling_metadata;
++    uint64_t grammar_generated_start = 0;
++    size_t sampling_accepted_token_count = 0;
+ };
+ 
+ struct skippy_tensor_meta {
+@@ -915,6 +923,45 @@ static void skippy_record_signal(skippy_session * session, int32_t logits_index)
+     }
+ }
+ 
++static void skippy_clear_chat_sampling(skippy_session * session) {
++    if (session == nullptr) {
++        return;
++    }
++    llama_sampler_free(session->sampling_chain);
++    llama_sampler_free(session->grammar_sampler);
++    session->sampling_chain = nullptr;
++    session->grammar_sampler = nullptr;
++    session->chat_sampling_metadata.clear();
++    session->grammar_generated_start = 0;
++    session->sampling_accepted_token_count = 0;
++}
++
++static std::string skippy_regex_escape(const std::string & value) {
++    static const std::regex special_chars(R"([-[\]{}()*+?.,\^$|#\s])");
++    return std::regex_replace(value, special_chars, R"(\$&)");
++}
++
++static std::vector<llama_token> skippy_tokenize_text(
++        const llama_vocab * vocab,
++        const std::string & text,
++        bool add_special,
++        bool parse_special) {
++    if (vocab == nullptr || text.empty()) {
++        return {};
++    }
++    const int32_t count = -llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), nullptr, 0, add_special, parse_special);
++    if (count <= 0) {
++        return {};
++    }
++    std::vector<llama_token> tokens(static_cast<size_t>(count));
++    const int32_t written = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), tokens.data(), count, add_special, parse_special);
++    if (written < 0) {
++        return {};
++    }
++    tokens.resize(static_cast<size_t>(written));
++    return tokens;
++}
++
+ static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {
+     if (sampling == nullptr || sampling->version == 0 || sampling->flags == 0) {
+         return false;
+@@ -922,9 +969,190 @@ static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {
+     return true;
+ }
+ 
++static llama_sampler * skippy_build_sampling_chain(
++        skippy_session * session,
++        const skippy_sampling_config * sampling) {
++    llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();
++    llama_sampler * sampler = llama_sampler_chain_init(chain_params);
++    if (sampler == nullptr) {
++        return nullptr;
++    }
++
++    if (!skippy_sampling_enabled(sampling)) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
++        return sampler;
++    }
++
++    const int32_t penalty_last_n = sampling->penalty_last_n == 0 ? -1 : sampling->penalty_last_n;
++    const float repeat_penalty = sampling->repeat_penalty == 0.0f ? 1.0f : sampling->repeat_penalty;
++    if (repeat_penalty != 1.0f || sampling->frequency_penalty != 0.0f || sampling->presence_penalty != 0.0f) {
++        llama_sampler_chain_add(
++                sampler,
++                llama_sampler_init_penalties(
++                        penalty_last_n,
++                        repeat_penalty,
++                        sampling->frequency_penalty,
++                        sampling->presence_penalty));
++    }
++    const uint32_t logit_bias_count = std::min<uint32_t>(sampling->logit_bias_count, SKIPPY_MAX_LOGIT_BIAS);
++    if (logit_bias_count > 0) {
++        const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++        llama_sampler_chain_add(
++                sampler,
++                llama_sampler_init_logit_bias(
++                        llama_vocab_n_tokens(vocab),
++                        static_cast<int32_t>(logit_bias_count),
++                        sampling->logit_bias));
++    }
++    if (sampling->top_k > 0) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(sampling->top_k));
++    }
++    if (sampling->top_p > 0.0f && sampling->top_p < 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(sampling->top_p, 1));
++    }
++    if (sampling->temperature != 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_temp(sampling->temperature));
++    }
++    if (sampling->temperature <= 0.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
++    } else {
++        const uint32_t seed = sampling->seed == 0 ? LLAMA_DEFAULT_SEED : sampling->seed + static_cast<uint32_t>(session->n_past);
++        llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
++    }
++    return sampler;
++}
++
++static bool skippy_init_chat_grammar_sampler(
++        skippy_session * session,
++        const json & metadata,
++        struct skippy_error ** out_error) {
++    const std::string grammar = metadata.value("grammar", std::string());
++    if (grammar.empty()) {
++        return true;
++    }
++
++    const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++    const bool grammar_lazy = metadata.value("grammar_lazy", false);
++    std::vector<std::string> trigger_patterns_storage;
++    std::vector<const char *> trigger_patterns;
++    std::vector<llama_token> trigger_tokens;
++    if (const auto triggers = metadata.find("grammar_triggers"); triggers != metadata.end() && triggers->is_array()) {
++        for (const auto & trigger : *triggers) {
++            const int type = trigger.value("type", -1);
++            switch (type) {
++                case 0:
++                    if (trigger.contains("token")) {
++                        trigger_tokens.push_back(static_cast<llama_token>(trigger.value("token", 0)));
++                    }
++                    break;
++                case 1:
++                    trigger_patterns_storage.push_back(skippy_regex_escape(trigger.value("value", std::string())));
++                    break;
++                case 2:
++                    trigger_patterns_storage.push_back(trigger.value("value", std::string()));
++                    break;
++                case 3:
++                {
++                    std::string pattern = trigger.value("value", std::string());
++                    if (pattern.empty()) {
++                        pattern = "^$";
++                    } else {
++                        if (pattern.front() != '^') {
++                            pattern.insert(pattern.begin(), '^');
++                        }
++                        if (pattern.back() != '$') {
++                            pattern.push_back('$');
++                        }
++                    }
++                    trigger_patterns_storage.push_back(std::move(pattern));
++                    break;
++                }
++                default:
++                    break;
++            }
++        }
++    }
++    trigger_patterns.reserve(trigger_patterns_storage.size());
++    for (const auto & pattern : trigger_patterns_storage) {
++        trigger_patterns.push_back(pattern.c_str());
++    }
++
++    session->grammar_sampler = grammar_lazy ?
++            llama_sampler_init_grammar_lazy_patterns(
++                    vocab,
++                    grammar.c_str(),
++                    "root",
++                    trigger_patterns.data(),
++                    trigger_patterns.size(),
++                    trigger_tokens.data(),
++                    trigger_tokens.size()) :
++            llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
++    if (session->grammar_sampler == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to initialize chat grammar sampler");
++        return false;
++    }
++
++    if (!grammar_lazy) {
++        const std::string generation_prompt = metadata.value("generation_prompt", std::string());
++        for (const llama_token token : skippy_tokenize_text(vocab, generation_prompt, false, true)) {
++            llama_sampler_accept(session->grammar_sampler, token);
++        }
++    }
++    return true;
++}
++
++static void skippy_sync_chat_sampling_history(skippy_session * session) {
++    if (session == nullptr || session->sampling_chain == nullptr) {
++        return;
++    }
++    while (session->sampling_accepted_token_count < session->token_history.size()) {
++        const size_t index = session->sampling_accepted_token_count;
++        const llama_token token = session->token_history[index];
++        llama_sampler_accept(session->sampling_chain, token);
++        if (session->grammar_sampler != nullptr && index >= session->grammar_generated_start) {
++            llama_sampler_accept(session->grammar_sampler, token);
++        }
++        session->sampling_accepted_token_count++;
++    }
++}
++
++static llama_token skippy_chat_sample_token(skippy_session * session) {
++    skippy_sync_chat_sampling_history(session);
++
++    const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
++    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
++    const float * logits = llama_get_logits_ith(session->ctx, -1);
++    if (logits == nullptr) {
++        return skippy_greedy_sample(session);
++    }
++
++    std::vector<llama_token_data> candidates;
++    candidates.reserve(static_cast<size_t>(n_vocab));
++    for (llama_token token = 0; token < n_vocab; ++token) {
++        candidates.push_back({ token, logits[token], 0.0f });
++    }
++    llama_token_data_array cur = {
++        candidates.data(),
++        candidates.size(),
++        -1,
++        false,
++    };
++    if (session->grammar_sampler != nullptr) {
++        llama_sampler_apply(session->grammar_sampler, &cur);
++    }
++    llama_sampler_apply(session->sampling_chain, &cur);
++    if (cur.selected < 0 || static_cast<size_t>(cur.selected) >= cur.size) {
++        return skippy_greedy_sample(session);
++    }
++    return cur.data[cur.selected].id;
++}
++
+ static llama_token skippy_sample_token(
+         skippy_session * session,
+         const skippy_sampling_config * sampling) {
++    if (session != nullptr && session->sampling_chain != nullptr) {
++        return skippy_chat_sample_token(session);
++    }
+     if (!skippy_sampling_enabled(sampling)) {
+         return skippy_greedy_sample(session);
+     }
+@@ -1431,6 +1659,7 @@ enum skippy_status skippy_session_set_position(
+     session->n_past = n_past;
+     if (session->token_history.size() > static_cast<size_t>(n_past)) {
+         session->token_history.resize(static_cast<size_t>(n_past));
++        skippy_clear_chat_sampling(session);
+     }
+     if (session->signal_history.size() > static_cast<size_t>(n_past)) {
+         session->signal_history.resize(static_cast<size_t>(n_past));
+@@ -1451,6 +1680,48 @@ enum skippy_status skippy_session_sample_current(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_session_configure_chat_sampling(
++        struct skippy_session * session,
++        const struct skippy_sampling_config * sampling,
++        const char * metadata_json,
++        uint64_t prompt_token_count,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (metadata_json == nullptr || metadata_json[0] == '\0') {
++        skippy_clear_chat_sampling(session);
++        return skippy_success(out_error);
++    }
++
++    try {
++        json metadata = json::parse(metadata_json);
++        skippy_clear_chat_sampling(session);
++        session->sampling_chain = skippy_build_sampling_chain(session, sampling);
++        if (session->sampling_chain == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to initialize chat sampling chain");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++        session->chat_sampling_metadata = metadata_json;
++        session->grammar_generated_start = prompt_token_count;
++        session->sampling_accepted_token_count = 0;
++        if (!skippy_init_chat_grammar_sampler(session, metadata, out_error)) {
++            skippy_clear_chat_sampling(session);
++            return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++    } catch (const std::exception & e) {
++        skippy_clear_chat_sampling(session);
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, e.what());
++        return SKIPPY_STATUS_UNSUPPORTED;
++    } catch (...) {
++        skippy_clear_chat_sampling(session);
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "failed to configure chat sampling");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_session_reset(
+         struct skippy_session * session,
+         struct skippy_error ** out_error) {
+@@ -1476,6 +1747,7 @@ enum skippy_status skippy_session_reset(
+     session->checkpoint_n_past = 0;
+     session->token_history.clear();
+     session->signal_history.clear();
++    skippy_clear_chat_sampling(session);
+     session->ctx->synchronize();
+     return skippy_success(out_error);
+ }
+@@ -2010,6 +2282,7 @@ enum skippy_status skippy_trim_session(
+     session->n_past = static_cast<int32_t>(token_count);
+     if (session->token_history.size() > token_count) {
+         session->token_history.resize(static_cast<size_t>(token_count));
++        skippy_clear_chat_sampling(session);
+     }
+     if (session->signal_history.size() > token_count) {
+         session->signal_history.resize(static_cast<size_t>(token_count));
+-- 
+2.50.1 (Apple Git-155)
+
