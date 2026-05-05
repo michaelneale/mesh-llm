@@ -39,8 +39,8 @@ are updated.
 
 ```text
 Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, GPT-NeoX,
-GPT2, Granite, InternLM2, LFM2, Mamba, Mamba2, Mistral3, MPT, OLMo2, OLMoE, Phi3,
-Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
+GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT, OLMo2,
+OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
 ```
 
 ## Exceptions
@@ -48,8 +48,10 @@ Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
 | Family | What To Watch |
 | --- | --- |
 | Falcon-H1 | Recurrent state is too large to move. Keep recurrent range `0..24` sticky and transfer activation frames only. |
+| Jamba | Hybrid attention/SSM text lane passed with recurrent range `0..28`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba2 | Recurrent text lane passed with recurrent range `0..64`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
+| RWKV7 | Later layers depend on layer-0 `v_first`, so arbitrary stage splits need an activation-frame sideband beyond the boundary hidden state. |
 | Qwen3Next | Same policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. |
 | DeepSeek3 | Package evidence uses selected stage parts only. The local gate covered real-input `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late layers `30..31` and `60..61`; full llama-server baseline requires a full GGUF and is intentionally not part of this package-only gate. |
 | Gemma4 E4B | Use split `21`. Avoid `12`, `14`, `24`, and `28`. Downstream slices need token-id sideband. |

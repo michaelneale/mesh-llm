@@ -129,6 +129,7 @@ or a blocker is discovered.
 | `exaone4` | `exaone4` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
+| `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `falcon` | `falcon` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `internlm2` | `internlm2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `stablelm` | `stablelm` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
@@ -147,8 +148,8 @@ implementation.
 
 ## Next Batch
 
-1. Add runtime-slice execution support for the remaining unsupported sampled
-   families: `jamba` and `rwkv7`.
+1. Add RWKV7 activation-frame sideband support for the layer-0 `v_first`
+   value, then rerun the sampled RWKV7 text lane.
 2. Debug `gemma`: runtime-slice opens, but split output predicts token `0`
    where the full model predicts token `1106`.
 3. Finish the missing downloads and run the same sweep for `bert`, `t5`,
@@ -175,9 +176,10 @@ themselves until the reviewed topology records are updated.
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
+| `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba2` | see `target/family-certify/llama-parity-mamba2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `jamba`, `rwkv7` | see `target/family-certify/llama-parity-external-available` | blocked before split execution | untested | accepted | blocked until per-family runtime-slice support lands |
+| `rwkv7` | see `target/family-certify/llama-parity-external-available` | blocked before split execution | untested | accepted | needs activation-frame sideband for layer-0 `v_first` |
 | `gemma` | `ggml-org/gemma-3-270m-it-GGUF` | runtime-slice opens but split token mismatches | passed | accepted | blocked until split output parity is fixed |
 
 Raw run directories:
@@ -198,6 +200,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`
 - `target/family-certify/llama-parity-decoder-tranche-3e`
+- `target/family-certify/llama-parity-jamba-runtime-slice-2`
 - `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
@@ -207,13 +210,14 @@ Raw run directories:
 
 - Runtime-slice expansion now passes for `baichuan`, `bloom`, `command_r`,
   `cohere2`, `exaone`, `exaone4`, `falcon`, `gpt2`, `gptneox`, `granite`,
-  `internlm2`, `lfm2`, `mamba`, `mamba2`, `mistral3`, `mpt`, `olmo2`,
+  `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`, `mistral3`, `mpt`, `olmo2`,
   `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl` text, `stablelm`, and
   `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
-- Remaining sampled families that still reject runtime-slice execution include
-  `jamba` and `rwkv7`.
+- `rwkv7` needs a wider activation-frame contract. Later RWKV7 layers depend
+  on the layer-0 `v_first` tensor, so a downstream stage cannot be correct with
+  boundary hidden state alone.
 - `gemma` is different: runtime-slice execution opens, but split output parity
   fails. In the cheap run, the full model predicted token `1106` after token
   `2`, while the split path predicted token `0`.
