@@ -241,6 +241,9 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
         )?;
     }
 
+    // Download only the layer files needed for this stage (selective fetch).
+    ensure_layer_files(&request.package_ref, &package_dir, &parts)?;
+
     if env_flag("SKIPPY_VERIFY_PACKAGE_SHA") {
         for part in &parts {
             let absolute = package_dir.join(&part.path);
@@ -318,13 +321,15 @@ pub fn is_hf_package_ref(value: &str) -> bool {
 
 fn resolve_package_dir(package_ref: &str) -> Result<PathBuf> {
     if is_hf_package_ref(package_ref) {
-        download_hf_package(package_ref)
+        download_hf_package_manifest(package_ref)
     } else {
         Ok(PathBuf::from(package_ref))
     }
 }
 
-fn download_hf_package(package_ref: &str) -> Result<PathBuf> {
+/// Download only the manifest from an HF layer package repo.
+/// Layer files are fetched on-demand by `ensure_layer_files`.
+fn download_hf_package_manifest(package_ref: &str) -> Result<PathBuf> {
     let reference = parse_hf_package_ref(package_ref)?;
     let package_dir = hf_cache_root().join(sanitize(&format!(
         "{}-{}",
@@ -337,6 +342,66 @@ fn download_hf_package(package_ref: &str) -> Result<PathBuf> {
 
     fs::create_dir_all(&package_dir)
         .with_context(|| format!("create HF package cache {}", package_dir.display()))?;
+
+    // Download only the manifest initially
+    let mut args = vec![
+        OsString::from("download"),
+        OsString::from(reference.repo_id.as_str()),
+        OsString::from("--local-dir"),
+        package_dir.as_os_str().to_os_string(),
+        OsString::from("--quiet"),
+        OsString::from("--include"),
+        OsString::from("model-package.json"),
+    ];
+    if let Some(revision) = reference.revision.as_ref() {
+        args.push(OsString::from("--revision"));
+        args.push(OsString::from(revision));
+    }
+
+    let status = Command::new("hf")
+        .args(&args)
+        .status()
+        .context("run hf download for layer package manifest")?;
+    if !status.success() {
+        bail!("hf download failed for {}", reference.repo_id);
+    }
+    if !package_dir.join("model-package.json").is_file() {
+        bail!(
+            "downloaded HF package is missing model-package.json: {}",
+            package_dir.display()
+        );
+    }
+    Ok(package_dir)
+}
+
+/// Download specific layer files and shared artifacts for a stage assignment.
+/// Only fetches files that aren't already present on disk.
+fn ensure_layer_files(
+    package_ref: &str,
+    package_dir: &Path,
+    parts: &[PackagePart],
+) -> Result<()> {
+    if !is_hf_package_ref(package_ref) {
+        return Ok(()); // local package, files already present
+    }
+
+    // Check which files are missing
+    let missing: Vec<&PackagePart> = parts
+        .iter()
+        .filter(|part| {
+            let path = package_dir.join(&part.path);
+            !path.is_file()
+                || fs::metadata(&path)
+                    .map(|m| m.len() != part.artifact_bytes)
+                    .unwrap_or(true)
+        })
+        .collect();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let reference = parse_hf_package_ref(package_ref)?;
     let mut args = vec![
         OsString::from("download"),
         OsString::from(reference.repo_id.as_str()),
@@ -349,20 +414,29 @@ fn download_hf_package(package_ref: &str) -> Result<PathBuf> {
         args.push(OsString::from(revision));
     }
 
-    let status = Command::new("hf")
-        .args(args)
-        .status()
-        .context("run hf download for layer package")?;
-    if !status.success() {
-        bail!("hf download failed for {}", reference.repo_id);
+    // Add --include for each missing file
+    for part in &missing {
+        args.push(OsString::from("--include"));
+        args.push(OsString::from(part.path.to_string_lossy().as_ref()));
     }
-    if !package_dir.join("model-package.json").is_file() {
+
+    eprintln!(
+        "skippy: downloading {} layer files from {}",
+        missing.len(),
+        reference.repo_id
+    );
+
+    let status = Command::new("hf")
+        .args(&args)
+        .status()
+        .context("run hf download for layer package files")?;
+    if !status.success() {
         bail!(
-            "downloaded HF package is missing model-package.json: {}",
-            package_dir.display()
+            "hf download failed for layer files from {}",
+            reference.repo_id
         );
     }
-    Ok(package_dir)
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]

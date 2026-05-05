@@ -1780,7 +1780,7 @@ pub(crate) async fn run() -> Result<()> {
         write_stderr_newline();
         return Ok(());
     }
-    let mut startup_models = resolve_startup_models(&startup_specs).await?;
+    let mut startup_models = resolve_startup_models(&startup_specs, cli.split).await?;
     let bin_dir = match &cli.bin_dir {
         Some(d) => d.clone(),
         None => detect_bin_dir()?,
@@ -1908,15 +1908,33 @@ fn build_startup_model_specs(
     Ok(specs)
 }
 
-async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<StartupModelPlan>> {
+async fn resolve_startup_models(
+    specs: &[StartupModelSpec],
+    split: bool,
+) -> Result<Vec<StartupModelPlan>> {
     let mut plans = Vec::with_capacity(specs.len());
     for spec in specs {
-        let resolved_path = resolve_model(&spec.model_ref).await?;
+        let requested_ref = spec.model_ref.to_string_lossy();
+
+        // In split mode, check the remote catalog for a pre-split layer package
+        // before downloading the full monolithic GGUF. This avoids downloading
+        // hundreds of GB that won't be used — each node only needs its layers.
+        let resolved_path = if split {
+            if let Some(package_ref) =
+                resolve_split_layer_package(&requested_ref, &spec.model_ref)
+            {
+                PathBuf::from(package_ref)
+            } else {
+                resolve_model(&spec.model_ref).await?
+            }
+        } else {
+            resolve_model(&spec.model_ref).await?
+        };
+
         let mmproj_path = match spec.mmproj_ref.as_ref() {
             Some(mmproj) => Some(resolve_model(mmproj).await?),
             None => None,
         };
-        let requested_ref = spec.model_ref.to_string_lossy();
         let declared_ref = models::find_catalog_model_exact(&requested_ref)
             .map(models::catalog_model_ref)
             .unwrap_or_else(|| models::model_ref_for_path(&resolved_path));
@@ -1936,6 +1954,23 @@ async fn resolve_startup_models(specs: &[StartupModelSpec]) -> Result<Vec<Startu
         });
     }
     Ok(plans)
+}
+
+/// Check the remote catalog for a layer package matching the model.
+/// Returns `Some("hf://meshllm/...")` if found, None otherwise.
+fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<String> {
+    // Already an hf:// ref — use as-is
+    let path_str = model_path.to_string_lossy();
+    if path_str.starts_with("hf://") {
+        return Some(path_str.to_string());
+    }
+
+    // Try remote catalog
+    if let Err(err) = models::remote_catalog::ensure_catalog() {
+        tracing::debug!("remote catalog unavailable: {err:#}");
+        return None;
+    }
+    models::remote_catalog::find_layer_package(model_query)
 }
 
 fn preflight_config_owned_startup_models(
