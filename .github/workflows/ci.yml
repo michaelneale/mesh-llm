@@ -407,6 +407,8 @@ jobs:
       LLAMA_STAGE_BACKEND: cuda
       LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
       MESH_LLM_SKIP_UI: "1"
+      # CI containers have no GPU driver (libcuda.so.1). Disable VMM to avoid
+      # linking the CUDA driver library, which isn't needed for validation builds.
       GGML_CUDA_NO_VMM: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
@@ -449,16 +451,7 @@ jobs:
         if: steps.llama_cache.outputs.cache-hit == 'true'
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        run: |
-          # The CUDA devel container has libcuda.so stub but not libcuda.so.1.
-          # Find the stubs directory and create the .so.1 symlink for the dynamic linker.
-          CUDA_STUB="$(find -L /usr/local/cuda /usr/local/cuda-* -path '*/stubs/libcuda.so' -print -quit 2>/dev/null || true)"
-          if [ -n "$CUDA_STUB" ]; then
-            mkdir -p /tmp/cuda-stubs
-            ln -sf "$CUDA_STUB" /tmp/cuda-stubs/libcuda.so.1
-            export LD_LIBRARY_PATH="/tmp/cuda-stubs:$(dirname "$CUDA_STUB"):${LD_LIBRARY_PATH:-}"
-          fi
-          target/release/mesh-llm --version
+        run: target/release/mesh-llm --version
       - name: Build CUDA benchmark binary
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         run: nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu
