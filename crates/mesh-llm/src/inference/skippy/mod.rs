@@ -301,6 +301,8 @@ impl SkippyModelHandle {
             config.materialized_pinned = true;
             pin
         });
+        let family_policy = family_policy_for_stage_config(&config);
+        config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: config.clone(),
             topology: None,
@@ -315,7 +317,6 @@ impl SkippyModelHandle {
             )
         })?;
         let telemetry = Telemetry::new(None, 0, config.clone(), TelemetryLevel::Off);
-        let family_policy = family_policy_for_stage_config(&config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
@@ -454,7 +455,7 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
     );
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
     let family_policy = family_policy_for_model_path(&options.model_path, Some(&options.model_id));
-    Ok(StageConfig {
+    let mut config = StageConfig {
         run_id: run_id.clone(),
         topology_id: format!("topology-{run_id}"),
         model_id: options.model_id.clone(),
@@ -489,12 +490,14 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         flash_attn_type: options.flash_attn_type,
         filter_tensors_on_load: false,
         selected_device: options.selected_device.clone().map(Into::into),
-        kv_cache: family_policy.stage_kv_cache_config(),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: None,
-    })
+    };
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 impl From<SkippyDeviceDescriptor> for StageDevice {

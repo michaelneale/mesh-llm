@@ -193,7 +193,10 @@ impl StageControlState {
         effective_load.bind_addr = bind_addr.to_string();
         super::configure_materialized_stage_cache();
         let materialized = super::materialize_stage_load(&effective_load)?;
-        let config = stage_config(&effective_load)?;
+        let config = stage_config(
+            &effective_load,
+            materialized.as_ref().map(|(artifact, _)| artifact),
+        )?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -350,7 +353,10 @@ fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<
         .unwrap_or_else(|| anyhow!("timed out waiting for binary stage ready at {bind_addr}")))
 }
 
-fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
+fn stage_config(
+    load: &StageLoadRequest,
+    materialized: Option<&super::materialization::MaterializedStageArtifact>,
+) -> Result<StageConfig> {
     anyhow::ensure!(!load.topology_id.is_empty(), "topology_id is required");
     anyhow::ensure!(!load.run_id.is_empty(), "run_id is required");
     anyhow::ensure!(!load.model_id.is_empty(), "model_id is required");
@@ -367,17 +373,19 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             "selected backend device must not be empty"
         );
     }
-    Ok(StageConfig {
+    let mut config = StageConfig {
         run_id: load.run_id.clone(),
         topology_id: load.topology_id.clone(),
         model_id: load.model_id.clone(),
         package_ref: Some(load.package_ref.clone()),
         manifest_sha256: Some(load.manifest_sha256.clone()),
-        source_model_path: load.model_path.clone(),
-        source_model_sha256: None,
-        source_model_bytes: None,
-        materialized_path: None,
-        materialized_pinned: false,
+        source_model_path: materialized
+            .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| load.model_path.clone()),
+        source_model_sha256: materialized.map(|artifact| artifact.source_model_sha256.clone()),
+        source_model_bytes: materialized.and_then(|artifact| artifact.source_model_bytes),
+        materialized_path: materialized.map(|artifact| artifact.path.to_string_lossy().to_string()),
+        materialized_pinned: materialized.is_some(),
         model_path: load.model_path.clone(),
         projector_path: load.projector_path.clone(),
         stage_id: load.stage_id.clone(),
@@ -402,7 +410,10 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
         bind_addr: load.bind_addr.clone(),
         upstream: load.upstream.as_ref().map(peer_config),
         downstream: load.downstream.as_ref().map(peer_config),
-    })
+    };
+    let family_policy = super::family_policy_for_stage_config(&config);
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 fn peer_config(peer: &StagePeerDescriptor) -> PeerConfig {
@@ -569,7 +580,7 @@ mod tests {
     #[test]
     fn stage_config_preserves_backend_neutral_load_fields() {
         let request = load_request();
-        let config = stage_config(&request).unwrap();
+        let config = stage_config(&request, None).unwrap();
 
         assert_eq!(config.topology_id, "topology-a");
         assert_eq!(config.run_id, "run-a");
@@ -619,7 +630,7 @@ mod tests {
             vram_bytes: Some(24_000_000_000),
         });
 
-        let err = stage_config(&request).unwrap_err().to_string();
+        let err = stage_config(&request, None).unwrap_err().to_string();
 
         assert!(err.contains("selected backend device"));
     }

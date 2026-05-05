@@ -228,6 +228,7 @@ pub struct GgufCompactMeta {
     pub vocab_size: u32,
     pub embedding_size: u32,
     pub head_count: u32,
+    pub kv_head_count: u32,
     pub layer_count: u32,
     pub feed_forward_length: u32,
     pub key_length: u32,
@@ -298,6 +299,7 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
         } else if key.ends_with(".attention.head_count_kv") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
                 kv_head_count = v;
+                meta.kv_head_count = v;
             }
         } else if key.ends_with(".block_count") {
             if let Ok(Some(v)) = read_gguf_value_as_u32(&mut f, vtype) {
@@ -340,18 +342,18 @@ pub fn scan_gguf_compact_meta(path: &Path) -> Option<GgufCompactMeta> {
         }
     }
 
-    if meta.head_count > 0 {
-        if meta.key_length == 0 {
-            if let Some(key_length) = meta.embedding_size.checked_div(meta.head_count) {
-                meta.key_length = key_length;
-            }
+    if meta.key_length == 0 && meta.head_count > 0 {
+        if let Some(key_length) = meta.embedding_size.checked_div(meta.head_count) {
+            meta.key_length = key_length;
         }
-        if meta.value_length == 0 {
-            let effective_kv = if kv_head_count > 0 {
-                kv_head_count
-            } else {
-                meta.head_count
-            };
+    }
+    if meta.value_length == 0 {
+        let effective_kv = if kv_head_count > 0 {
+            kv_head_count
+        } else {
+            meta.head_count
+        };
+        if effective_kv > 0 {
             if let Some(value_length) = meta.embedding_size.checked_div(effective_kv) {
                 meta.value_length = value_length;
             }
@@ -623,6 +625,7 @@ mod tests {
         let path = write_bytes("mesh-client-gguf-kv-heads", &bytes);
         let meta = scan_gguf_compact_meta(&path).expect("should parse GGUF");
         assert_eq!(meta.head_count, 0);
+        assert_eq!(meta.kv_head_count, 8);
         assert_eq!(meta.key_length, 0);
         assert_eq!(meta.value_length, 512);
         let _ = std::fs::remove_file(path);

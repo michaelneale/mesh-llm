@@ -1234,7 +1234,8 @@ fn split_stage0_config(
         .to_string();
     let resolved_flash_attn_type =
         effective_flash_attention(flash_attention_override, &effective_cache_type_v);
-    StageConfig {
+    let family_policy = skippy::family_policy_for_model_path(model_path, Some(model_ref));
+    let mut config = StageConfig {
         run_id: run_id.to_string(),
         topology_id: topology_id.to_string(),
         model_id: model_ref.to_string(),
@@ -1266,8 +1267,7 @@ fn split_stage0_config(
             index: Some(gpu.index),
             vram_bytes: Some(gpu.vram_bytes),
         }),
-        kv_cache: skippy::family_policy_for_model_path(model_path, Some(model_ref))
-            .stage_kv_cache_config(),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
@@ -1276,7 +1276,9 @@ fn split_stage0_config(
             stage_index: downstream_stage_index,
             endpoint: downstream_endpoint,
         }),
-    }
+    };
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    config
 }
 
 fn split_stage_topology_instance(

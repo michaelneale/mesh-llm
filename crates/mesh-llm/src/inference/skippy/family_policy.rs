@@ -47,23 +47,28 @@ impl FamilyPrefixCachePayload {
 }
 
 impl FamilyPolicy {
-    pub(crate) fn stage_kv_cache_config(&self) -> Option<StageKvCacheConfig> {
-        const DEFAULT_EXACT_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+    pub(crate) fn stage_kv_cache_config_for_stage(
+        &self,
+        config: &StageConfig,
+    ) -> Option<StageKvCacheConfig> {
         match self.prefix_cache {
             FamilyPrefixCachePolicy::Disabled { .. } => None,
             FamilyPrefixCachePolicy::Auto {
                 payload,
                 min_tokens,
                 max_entries,
-            } => Some(StageKvCacheConfig {
-                mode: StageKvCacheMode::LookupRecord,
-                payload: payload.as_stage_payload(),
-                max_entries,
-                max_bytes: DEFAULT_EXACT_CACHE_MAX_BYTES,
-                min_tokens,
-                shared_prefix_stride_tokens: 128,
-                shared_prefix_record_limit: 2,
-            }),
+            } => {
+                let max_bytes = derive_stage_cache_max_bytes(config)?;
+                Some(StageKvCacheConfig {
+                    mode: StageKvCacheMode::LookupRecord,
+                    payload: payload.as_stage_payload(),
+                    max_entries,
+                    max_bytes,
+                    min_tokens,
+                    shared_prefix_stride_tokens: 128,
+                    shared_prefix_record_limit: 2,
+                })
+            }
         }
     }
 }
@@ -206,9 +211,77 @@ fn wire_dtype_from_capability(dtype: WireDType) -> StageWireDType {
     }
 }
 
+fn derive_stage_cache_max_bytes(config: &StageConfig) -> Option<u64> {
+    [
+        config.materialized_path.as_deref(),
+        config.source_model_path.as_deref(),
+        config.model_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|path| scan_gguf_compact_meta(Path::new(path)))
+    .and_then(|meta| estimate_stage_cache_max_bytes(config, &meta))
+}
+
+fn estimate_stage_cache_max_bytes(config: &StageConfig, meta: &GgufCompactMeta) -> Option<u64> {
+    let stage_layers = config.layer_end.checked_sub(config.layer_start)?;
+    if stage_layers == 0 {
+        return None;
+    }
+
+    let kv_heads = if meta.kv_head_count > 0 {
+        meta.kv_head_count
+    } else {
+        meta.head_count
+    };
+    let key_width = if meta.key_length > 0 {
+        meta.key_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+    let value_width = if meta.value_length > 0 {
+        meta.value_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+
+    let key_elems_per_token = u64::from(key_width).checked_mul(u64::from(kv_heads))?;
+    let value_elems_per_token = u64::from(value_width).checked_mul(u64::from(kv_heads))?;
+    let key_bytes_per_token = dtype_bytes(key_elems_per_token, &config.cache_type_k)?;
+    let value_bytes_per_token = dtype_bytes(value_elems_per_token, &config.cache_type_v)?;
+    let bytes_per_token_layer = key_bytes_per_token.checked_add(value_bytes_per_token)?;
+
+    bytes_per_token_layer
+        .checked_mul(u64::from(stage_layers))?
+        .checked_mul(u64::from(config.ctx_size.max(1)))?
+        .checked_mul(u64::from(config.lane_count.max(1)))
+        .filter(|bytes| *bytes > 0)
+}
+
+fn dtype_bytes(elements: u64, dtype: &str) -> Option<u64> {
+    match dtype.trim().to_ascii_lowercase().as_str() {
+        "f32" => elements.checked_mul(4),
+        "f16" | "bf16" => elements.checked_mul(2),
+        "q8" | "q8_0" => ggml_block_bytes(elements, 32, 34),
+        "q8_1" => ggml_block_bytes(elements, 32, 36),
+        "q4" | "q4_0" | "iq4_nl" => ggml_block_bytes(elements, 32, 18),
+        "q4_1" => ggml_block_bytes(elements, 32, 20),
+        _ => None,
+    }
+}
+
+fn ggml_block_bytes(elements: u64, block_size: u64, type_size: u64) -> Option<u64> {
+    elements.div_ceil(block_size).checked_mul(type_size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skippy_protocol::{FlashAttentionType, LoadMode};
     use skippy_topology::reviewed_capability_records;
 
     fn meta(architecture: &str) -> GgufCompactMeta {
@@ -216,6 +289,55 @@ mod tests {
             architecture: architecture.to_string(),
             layer_count: 28,
             embedding_size: 1024,
+            ..Default::default()
+        }
+    }
+
+    fn stage_config() -> StageConfig {
+        StageConfig {
+            run_id: "run".to_string(),
+            topology_id: "topology".to_string(),
+            model_id: "test/model:Q4_K_M".to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: None,
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 2,
+            ctx_size: 1024,
+            lane_count: 2,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "q8_0".to_string(),
+            flash_attn_type: FlashAttentionType::Disabled,
+            filter_tensors_on_load: false,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
+        }
+    }
+
+    fn kv_meta() -> GgufCompactMeta {
+        GgufCompactMeta {
+            architecture: "llama".to_string(),
+            layer_count: 32,
+            embedding_size: 4096,
+            head_count: 32,
+            kv_head_count: 8,
+            key_length: 128,
+            value_length: 128,
             ..Default::default()
         }
     }
@@ -342,5 +464,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn stage_cache_cap_tracks_ctx_lanes_layers_and_kv_types() {
+        let config = stage_config();
+
+        let bytes = estimate_stage_cache_max_bytes(&config, &kv_meta()).unwrap();
+
+        assert_eq!(bytes, 12_845_056);
+    }
+
+    #[test]
+    fn stage_cache_cap_tracks_quantized_kv_types() {
+        let mut config = stage_config();
+        config.cache_type_k = "q4_0".to_string();
+        config.cache_type_v = "q4_0".to_string();
+
+        let bytes = estimate_stage_cache_max_bytes(&config, &kv_meta()).unwrap();
+
+        assert_eq!(bytes, 4_718_592);
+    }
+
+    #[test]
+    fn stage_cache_cap_rejects_unknown_kv_type() {
+        let mut config = stage_config();
+        config.cache_type_k = "mystery".to_string();
+
+        assert!(estimate_stage_cache_max_bytes(&config, &kv_meta()).is_none());
     }
 }

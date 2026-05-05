@@ -70,7 +70,7 @@ pub(crate) fn stage0_config(
     downstream_endpoint: String,
     selected_device: Option<StageDevice>,
 ) -> StageConfig {
-    StageConfig {
+    let mut config = StageConfig {
         run_id: context.run_id.to_string(),
         topology_id: context.topology_id.to_string(),
         model_id: context.model_id.to_string(),
@@ -97,7 +97,7 @@ pub(crate) fn stage0_config(
         flash_attn_type: context.flash_attn_type,
         filter_tensors_on_load: true,
         selected_device,
-        kv_cache: context.family_policy.stage_kv_cache_config(),
+        kv_cache: None,
         load_mode: LoadMode::LayerPackage,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
@@ -106,7 +106,11 @@ pub(crate) fn stage0_config(
             stage_index: downstream_stage.stage_index,
             endpoint: downstream_endpoint,
         }),
-    }
+    };
+    config.kv_cache = context
+        .family_policy
+        .stage_kv_cache_config_for_stage(&config);
+    config
 }
 
 pub(crate) fn stage_stop_request(
