@@ -341,7 +341,7 @@
       "repo": "meshllm/lfm2-350m-parity-q4_k_m-gguf",
       "include": "*.gguf",
       "recurrent": "all",
-      "notes": "blocked: native runtime-slice execution is not supported for lfm2 yet; exact state handoff passed"
+      "notes": "text lane passed in llama-parity-lfm2-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
     },
     {
       "llama_model": "hunyuan-dense",

@@ -39,8 +39,8 @@ are updated.
 
 ```text
 Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, GPT-NeoX,
-GPT2, Granite, InternLM2, Mistral3, MPT, OLMo2, OLMoE, Phi3, Qwen2-VL text,
-Qwen3-VL text, StableLM, StarCoder2
+GPT2, Granite, InternLM2, LFM2, Mistral3, MPT, OLMo2, OLMoE, Phi3,
+Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
 ```
 
 ## Exceptions

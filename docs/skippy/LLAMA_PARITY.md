@@ -114,7 +114,7 @@ or a blocker is discovered.
 | `qwen2` | `qwen2` | selected | yes | pass | pass | `ResidentKv` | pass | ready for reviewed promotion |
 | `deepseek` | `deepseek` | selected | yes | pass | pass | `ResidentKv` | pass | promoted |
 | `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `lfm2` | `lfm2` | selected | yes | blocked: runtime-slice unsupported | pass | `KvRecurrent` target | pending after split support | blocked |
+| `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
@@ -147,7 +147,7 @@ implementation.
 ## Next Batch
 
 1. Add runtime-slice execution support for the remaining unsupported sampled
-   families: `jamba`, `lfm2`, `mamba`, `mamba2`, and `rwkv7`.
+   families: `jamba`, `mamba`, `mamba2`, and `rwkv7`.
 2. Debug `gemma`: runtime-slice opens, but split output predicts token `0`
    where the full model predicts token `1106`.
 3. Finish the missing downloads and run the same sweep for `bert`, `t5`,
@@ -173,10 +173,10 @@ themselves until the reviewed topology records are updated.
 | `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; fixed mid-stage position input registration |
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
+| `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba` | see `target/family-certify/llama-parity-cheap-available` | blocked before split execution | untested | accepted | blocked until recurrent runtime-slice support lands |
 | `jamba`, `mamba2`, `rwkv7` | see `target/family-certify/llama-parity-external-available` | blocked before split execution | untested | accepted | blocked until per-family runtime-slice support lands |
 | `gemma` | `ggml-org/gemma-3-270m-it-GGUF` | runtime-slice opens but split token mismatches | passed | accepted | blocked until split output parity is fixed |
-| `lfm2` | `meshllm/lfm2-350m-parity-q4_k_m-gguf` | blocked before split execution | untested | accepted | blocked until lfm2 runtime-slice support lands |
 
 Raw run directories:
 
@@ -196,18 +196,19 @@ Raw run directories:
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`
 - `target/family-certify/llama-parity-decoder-tranche-3e`
+- `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/cache-smoke/reports`
 
 ## Current Blockers
 
 - Runtime-slice expansion now passes for `baichuan`, `bloom`, `command_r`,
   `cohere2`, `exaone`, `exaone4`, `falcon`, `gpt2`, `gptneox`, `granite`,
-  `internlm2`, `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`, `qwen2vl` text,
-  `qwen3vl` text, `stablelm`, and `starcoder2`.
+  `internlm2`, `lfm2`, `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`,
+  `qwen2vl` text, `qwen3vl` text, `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
 - Remaining sampled families that still reject runtime-slice execution include
-  `jamba`, `lfm2`, `mamba`, `mamba2`, and `rwkv7`.
+  `jamba`, `mamba`, `mamba2`, and `rwkv7`.
 - `gemma` is different: runtime-slice execution opens, but split output parity
   fails. In the cheap run, the full model predicted token `1106` after token
   `2`, while the split path predicted token `0`.
