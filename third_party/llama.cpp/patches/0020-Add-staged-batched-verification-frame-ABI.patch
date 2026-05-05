@@ -1,7 +1,7 @@
-From adccdedeeb5ec555a85877334285202b059855ca Mon Sep 17 00:00:00 2001
+From ee7069532ddab30e349d510b555ca0d0b063be04 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:47:51 +1000
-Subject: [PATCH 20/34] Add staged batched verification frame ABI
+Subject: [PATCH 20/37] Add staged batched verification frame ABI
 
 ---
  include/skippy.h |  18 ++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 20/34] Add staged batched verification frame ABI
  2 files changed, 180 insertions(+), 15 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 79027cd08..f461ee51d 100644
+index 79027cd0..f461ee51 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -52,7 +52,7 @@ index 79027cd08..f461ee51d 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 894ad0934..e3c1f4a7d 100644
+index 894ad093..e3c1f4a7 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -709,6 +709,40 @@ static enum skippy_status skippy_decode_tokens(

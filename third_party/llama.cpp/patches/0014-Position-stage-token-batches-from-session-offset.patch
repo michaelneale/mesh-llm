@@ -1,14 +1,14 @@
-From 7c3eef2cc0cf8ec3495eae9968f9d001ee86f94e Mon Sep 17 00:00:00 2001
+From 6cae0e52d05901bec13e0bd65c546abb17f49ead Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:05:00 +1000
-Subject: [PATCH 14/34] Position stage token batches from session offset
+Subject: [PATCH 14/37] Position stage token batches from session offset
 
 ---
  src/skippy.cpp | 17 +++++++++++++----
  1 file changed, 13 insertions(+), 4 deletions(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 12c1f6468..16d77e256 100644
+index 12c1f646..16d77e25 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -660,11 +660,20 @@ static enum skippy_status skippy_decode_tokens(

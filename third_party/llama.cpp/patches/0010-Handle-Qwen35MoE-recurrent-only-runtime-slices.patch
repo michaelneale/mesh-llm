@@ -1,7 +1,7 @@
-From dd6c01b798667bfb5984b32c94c24127e750ad8b Mon Sep 17 00:00:00 2001
+From 38547a13109151a964a151eba563be875396cc9b Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 15:44:46 +1000
-Subject: [PATCH 10/34] Handle Qwen35MoE recurrent-only runtime slices
+Subject: [PATCH 10/37] Handle Qwen35MoE recurrent-only runtime slices
 
 ---
  src/llama-graph.cpp      | 24 +++++++++++++++++-------
@@ -9,10 +9,10 @@ Subject: [PATCH 10/34] Handle Qwen35MoE recurrent-only runtime slices
  2 files changed, 25 insertions(+), 8 deletions(-)
 
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 6b4f1caf6..8e4ad86ea 100644
+index d289d6fb..627064b7 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
-@@ -585,17 +585,22 @@ void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
+@@ -590,17 +590,22 @@ void llm_graph_input_attn_cross::set_input(const llama_ubatch * ubatch) {
  }
  
  void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
@@ -40,7 +40,7 @@ index 6b4f1caf6..8e4ad86ea 100644
      }
  
      const int64_t n_rs = mctx->get_recr()->get_n_rs();
-@@ -638,9 +643,14 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
+@@ -643,9 +648,14 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
  // Instead of creating a hybrid input, the graph can simply create 2 separate inputs.
  // Refactoring is required in the future.
  void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
@@ -58,10 +58,10 @@ index 6b4f1caf6..8e4ad86ea 100644
      const int64_t n_rs = mctx->get_recr()->get_n_rs();
  
 diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
-index e27483110..8feab1fca 100644
+index 6dcd3aec..dda3ec90 100644
 --- a/src/models/qwen35moe.cpp
 +++ b/src/models/qwen35moe.cpp
-@@ -18,6 +18,13 @@ llm_build_qwen35moe::llm_build_qwen35moe(const llama_model & model, const llm_gr
+@@ -119,6 +119,13 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
      const bool stage_filtered = stage_filter.enabled;
      const int il_start = stage_filtered ? stage_filter.layer_start : 0;
      const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
@@ -75,7 +75,7 @@ index e27483110..8feab1fca 100644
  
      inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
  
-@@ -25,7 +32,7 @@ llm_build_qwen35moe::llm_build_qwen35moe(const llama_model & model, const llm_gr
+@@ -126,7 +133,7 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
  
      auto * inp = build_inp_mem_hybrid();
  

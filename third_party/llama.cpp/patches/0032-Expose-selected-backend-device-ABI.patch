@@ -1,7 +1,7 @@
-From 4e957b92aa0b494f9fb881f1538d05fa736c402d Mon Sep 17 00:00:00 2001
+From d46c9f2293580617f6285ddb6c781ef07a8190d6 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sat, 2 May 2026 14:14:40 +1000
-Subject: [PATCH 32/34] Expose selected backend device ABI
+Subject: [PATCH 32/37] Expose selected backend device ABI
 
 ---
  include/skippy.h |  5 +++++
@@ -9,7 +9,7 @@ Subject: [PATCH 32/34] Expose selected backend device ABI
  2 files changed, 50 insertions(+)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 4f1c8805d..2f8f84669 100644
+index 4f1c8805..2f8f8466 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -121,6 +121,11 @@ struct skippy_runtime_config {
@@ -25,7 +25,7 @@ index 4f1c8805d..2f8f84669 100644
  
  struct skippy_tensor_info {
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4b4bf8ebd..26209b450 100644
+index 4b4bf8eb..26209b45 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -471,6 +471,41 @@ static bool skippy_is_full_model_config(const struct skippy_runtime_config * con

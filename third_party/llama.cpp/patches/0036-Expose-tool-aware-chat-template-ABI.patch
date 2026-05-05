@@ -1,7 +1,7 @@
-From f1d39c53031aedfa21a5c3585022695f100b1457 Mon Sep 17 00:00:00 2001
+From 64b624caf5f2380acbc949629aee610f2029bc21 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 06:10:28 +1000
-Subject: [PATCH] Expose tool-aware chat template ABI
+Subject: [PATCH 36/37] Expose tool-aware chat template ABI
 
 ---
  common/stage-chat.cpp | 222 ++++++++++++++++++++++++++++++++++++++++++
@@ -9,7 +9,7 @@ Subject: [PATCH] Expose tool-aware chat template ABI
  2 files changed, 250 insertions(+), 1 deletion(-)
 
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
-index 60d53fc49..77d8fc8ef 100644
+index 60d53fc4..77d8fc8e 100644
 --- a/common/stage-chat.cpp
 +++ b/common/stage-chat.cpp
 @@ -1,11 +1,16 @@
@@ -258,7 +258,7 @@ index 60d53fc49..77d8fc8ef 100644
 +    return skippy_common_success(out_error);
 +}
 diff --git a/include/skippy.h b/include/skippy.h
-index 2b95ccc81..384c7e406 100644
+index 2b95ccc8..384c7e40 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {

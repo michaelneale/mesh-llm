@@ -1,7 +1,7 @@
-From baa90ff0d885acc671f450489bdbc8133df744b1 Mon Sep 17 00:00:00 2001
+From aec18acfb3e60b5ff4a751ab94d2ffec7e802d39 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Sun, 26 Apr 2026 13:20:03 +1000
-Subject: [PATCH 12/34] Add stage session reset ABI
+Subject: [PATCH 12/37] Add stage session reset ABI
 
 ---
  include/skippy.h |  7 ++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 12/34] Add stage session reset ABI
  2 files changed, 29 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index b049150cf..c355b8442 100644
+index b049150c..c355b844 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -41,7 +41,7 @@ index b049150cf..c355b8442 100644
          struct skippy_session * session,
          struct skippy_error ** out_error);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 820f37b49..fcd8576a6 100644
+index 820f37b4..fcd8576a 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -788,7 +788,8 @@ uint64_t skippy_abi_features(void) {

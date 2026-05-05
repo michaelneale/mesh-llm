@@ -1,20 +1,20 @@
-From cb4f5a61c4b4baeb6534f246ff22929e44b4bf77 Mon Sep 17 00:00:00 2001
+From 70603b6140d1963bbdfd11bfb073f6192ce17904 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 16:07:00 +1000
-Subject: [PATCH 18/34] Support more runtime-slice model families
+Subject: [PATCH 18/37] Support more runtime-slice model families
 
 ---
  include/skippy.h           |  17 +++
  src/llama-graph.cpp        |  25 ++++
  src/llama-graph.h          |  20 +++
  src/llama-model-loader.cpp |   7 ++
- src/llama-model.cpp        |   9 +-
+ src/llama-model.cpp        |   6 +-
  src/models/deepseek2.cpp   |  22 +++-
  src/models/falcon-h1.cpp   |  20 ++-
  src/models/gemma.cpp       |  26 +++-
- src/models/gemma2-iswa.cpp |  26 +++-
+ src/models/gemma2.cpp      |  26 +++-
  src/models/gemma3.cpp      |  26 +++-
- src/models/gemma4-iswa.cpp |  58 +++++++--
+ src/models/gemma4.cpp      |  67 ++++++++--
  src/models/glm4.cpp        |  32 +++--
  src/models/minimax-m2.cpp  |  20 ++-
  src/models/olmo.cpp        |  20 ++-
@@ -22,10 +22,10 @@ Subject: [PATCH 18/34] Support more runtime-slice model families
  src/models/qwen3.cpp       |  20 ++-
  src/models/qwen3next.cpp   |  29 ++++-
  src/skippy.cpp             | 250 ++++++++++++++++++++++++++++++++++---
- 18 files changed, 560 insertions(+), 87 deletions(-)
+ 18 files changed, 564 insertions(+), 89 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 6dc5af7b1..23a46e0f2 100644
+index 6dc5af7b..23a46e0f 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -258,6 +258,23 @@ LLAMA_API enum skippy_status skippy_import_state(
@@ -53,7 +53,7 @@ index 6dc5af7b1..23a46e0f2 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
-index 8e4ad86ea..00260b97c 100644
+index 627064b7..784e0726 100644
 --- a/src/llama-graph.cpp
 +++ b/src/llama-graph.cpp
 @@ -19,6 +19,7 @@
@@ -83,7 +83,7 @@ index 8e4ad86ea..00260b97c 100644
  // dedup helpers
  
  static ggml_tensor * build_attn_inp_kq_mask(
-@@ -111,6 +124,18 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
+@@ -116,6 +129,18 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
      return res;
  }
  
@@ -103,7 +103,7 @@ index 8e4ad86ea..00260b97c 100644
      if (ubatch->pos && pos) {
          const int64_t n_tokens = ubatch->n_tokens;
 diff --git a/src/llama-graph.h b/src/llama-graph.h
-index e7fd09fd6..d2ba21881 100644
+index e7fd09fd..d2ba2188 100644
 --- a/src/llama-graph.h
 +++ b/src/llama-graph.h
 @@ -35,9 +35,17 @@ struct skippy_graph_filter {
@@ -144,7 +144,7 @@ index e7fd09fd6..d2ba21881 100644
  public:
      llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index ee44dd00c..d15de1c42 100644
+index ee44dd00..d15de1c4 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -1119,6 +1119,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
@@ -162,21 +162,10 @@ index ee44dd00c..d15de1c42 100644
                  if (t_meta) {
                      const size_t nbytes = ggml_nbytes(t_meta);
 diff --git a/src/llama-model.cpp b/src/llama-model.cpp
-index 9e2a13cbd..256124b0e 100644
+index 9a5802e3..9365db5e 100644
 --- a/src/llama-model.cpp
 +++ b/src/llama-model.cpp
-@@ -4618,8 +4618,9 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
-                         layer.ffn_post_norm = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM, "weight", i), {n_embd}, 0);
- 
-                         // MoE router
-+                        const std::string ffn_gate_inp_name = tn(LLM_TENSOR_FFN_GATE_INP, "weight", i).str();
-                         layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED);
--                        bool has_expert = layer.ffn_gate_inp != nullptr;
-+                        bool has_expert = layer.ffn_gate_inp != nullptr || ml.get_tensor_meta(ffn_gate_inp_name.c_str()) != nullptr;
- 
-                         // norm
-                         if (has_expert) {
-@@ -7833,13 +7834,13 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
+@@ -1315,13 +1315,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
              }
  
              // MoE expert weight scales (per-expert, shape {n_expert})
@@ -194,10 +183,10 @@ index 9e2a13cbd..256124b0e 100644
              }
  
 diff --git a/src/models/deepseek2.cpp b/src/models/deepseek2.cpp
-index 303fc72c6..5f6ba1237 100644
+index 53574df4..a539f94d 100644
 --- a/src/models/deepseek2.cpp
 +++ b/src/models/deepseek2.cpp
-@@ -31,8 +31,14 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+@@ -173,8 +173,14 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -213,7 +202,7 @@ index 303fc72c6..5f6ba1237 100644
  
      // (optional) temperature tuning - used by mistral-large
      ggml_tensor * inp_attn_scale = nullptr;
-@@ -46,10 +52,9 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+@@ -188,10 +194,9 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
      auto * inp_attn_kv = !is_mla ? build_attn_inp_kv() : nullptr;
      auto * inp_attn_k  =  is_mla ? build_attn_inp_k()  : nullptr;
  
@@ -226,7 +215,7 @@ index 303fc72c6..5f6ba1237 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -223,7 +228,7 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+@@ -365,7 +370,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
                              Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
              }
          }
@@ -235,7 +224,7 @@ index 303fc72c6..5f6ba1237 100644
              cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -281,6 +286,13 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
+@@ -423,6 +428,13 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
      }
      cur = inpL;
  
@@ -250,10 +239,10 @@ index 303fc72c6..5f6ba1237 100644
  
      cb(cur, "result_norm", -1);
 diff --git a/src/models/falcon-h1.cpp b/src/models/falcon-h1.cpp
-index 05accf90f..743c0eacc 100644
+index d353befd..472f40b3 100644
 --- a/src/models/falcon-h1.cpp
 +++ b/src/models/falcon-h1.cpp
-@@ -7,7 +7,12 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+@@ -116,7 +116,12 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -267,7 +256,7 @@ index 05accf90f..743c0eacc 100644
  
      // inp_pos - contains the positions
      ggml_tensor * inp_pos = build_inp_pos();
-@@ -18,9 +23,9 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+@@ -127,9 +132,9 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
      const float kq_scale =
          hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
  
@@ -279,7 +268,7 @@ index 05accf90f..743c0eacc 100644
          ggml_tensor * inpSA = inpL;
  
          cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
-@@ -57,7 +62,7 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+@@ -166,7 +171,7 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
          inpSA = ggml_add(ctx0, cur, inpSA);
          cb(cur, "layer_out", il);
  
@@ -288,7 +277,7 @@ index 05accf90f..743c0eacc 100644
              cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -85,6 +90,13 @@ llm_build_falcon_h1::llm_build_falcon_h1(const llama_model & model, const llm_gr
+@@ -194,6 +199,13 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
      }
      cur = inpL;
  
@@ -303,10 +292,10 @@ index 05accf90f..743c0eacc 100644
  
      cb(cur, "result_norm", -1);
 diff --git a/src/models/gemma.cpp b/src/models/gemma.cpp
-index 09d2ff8ba..0357e45e2 100644
+index 06731670..48b16c74 100644
 --- a/src/models/gemma.cpp
 +++ b/src/models/gemma.cpp
-@@ -6,19 +6,26 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+@@ -44,19 +44,26 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -338,7 +327,7 @@ index 09d2ff8ba..0357e45e2 100644
          // norm
          cur = build_norm(inpL,
                  model.layers[il].attn_norm, NULL,
-@@ -52,7 +59,7 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+@@ -90,7 +97,7 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
                      model.layers[il].wo, NULL, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
          }
@@ -347,7 +336,7 @@ index 09d2ff8ba..0357e45e2 100644
              cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
              inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
          }
-@@ -84,6 +91,13 @@ llm_build_gemma::llm_build_gemma(const llama_model & model, const llm_graph_para
+@@ -122,6 +129,13 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
      }
      cur = inpL;
  
@@ -361,11 +350,11 @@ index 09d2ff8ba..0357e45e2 100644
      cur = build_norm(cur,
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
-diff --git a/src/models/gemma2-iswa.cpp b/src/models/gemma2-iswa.cpp
-index 0ef07df8d..0a9fb8366 100644
---- a/src/models/gemma2-iswa.cpp
-+++ b/src/models/gemma2-iswa.cpp
-@@ -6,19 +6,26 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+diff --git a/src/models/gemma2.cpp b/src/models/gemma2.cpp
+index 6255bf74..2b18e46c 100644
+--- a/src/models/gemma2.cpp
++++ b/src/models/gemma2.cpp
+@@ -65,19 +65,26 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -397,7 +386,7 @@ index 0ef07df8d..0a9fb8366 100644
          const float freq_base_l  = model.get_rope_freq_base (cparams, il);
          const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
  
-@@ -54,7 +61,7 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+@@ -113,7 +120,7 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
                      model.layers[il].wo, NULL, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
          }
@@ -406,7 +395,7 @@ index 0ef07df8d..0a9fb8366 100644
              cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
              inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
          }
-@@ -96,6 +103,13 @@ llm_build_gemma2_iswa::llm_build_gemma2_iswa(const llama_model & model, const ll
+@@ -155,6 +162,13 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
      }
      cur = inpL;
  
@@ -421,10 +410,10 @@ index 0ef07df8d..0a9fb8366 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/models/gemma3.cpp b/src/models/gemma3.cpp
-index 0da4af21c..387148dde 100644
+index ee510fe3..15d27e6d 100644
 --- a/src/models/gemma3.cpp
 +++ b/src/models/gemma3.cpp
-@@ -7,11 +7,18 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+@@ -87,11 +87,18 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -446,7 +435,7 @@ index 0da4af21c..387148dde 100644
  
      // inp_pos - contains the positions
      ggml_tensor * inp_pos = build_inp_pos();
-@@ -26,9 +33,9 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+@@ -106,9 +113,9 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
          inp_attn = build_attn_inp_kv();
      }
  
@@ -458,7 +447,7 @@ index 0da4af21c..387148dde 100644
          float freq_base_l  = 0.0f;
          float freq_scale_l = 0.0f;
  
-@@ -77,7 +84,7 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+@@ -157,7 +164,7 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
                      model.layers[il].wo, NULL, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
          }
@@ -467,7 +456,7 @@ index 0da4af21c..387148dde 100644
              cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
              inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
          }
-@@ -119,6 +126,13 @@ llm_build_gemma3<iswa>::llm_build_gemma3(const llama_model & model, const llm_gr
+@@ -199,6 +206,13 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
      }
      cur = inpL;
  
@@ -481,11 +470,22 @@ index 0da4af21c..387148dde 100644
      cur = build_norm(cur,
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
-diff --git a/src/models/gemma4-iswa.cpp b/src/models/gemma4-iswa.cpp
-index c7fb77474..c38f4b437 100644
---- a/src/models/gemma4-iswa.cpp
-+++ b/src/models/gemma4-iswa.cpp
-@@ -14,7 +14,12 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+diff --git a/src/models/gemma4.cpp b/src/models/gemma4.cpp
+index 5026b0ac..543f6c15 100644
+--- a/src/models/gemma4.cpp
++++ b/src/models/gemma4.cpp
+@@ -98,8 +98,9 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
+         layer.ffn_post_norm = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM, "weight", i), {n_embd}, 0);
+ 
+         // MoE router
++        const std::string ffn_gate_inp_name = tn(LLM_TENSOR_FFN_GATE_INP, "weight", i).str();
+         layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED);
+-        bool has_expert = layer.ffn_gate_inp != nullptr;
++        bool has_expert = layer.ffn_gate_inp != nullptr || ml->get_tensor_meta(ffn_gate_inp_name.c_str()) != nullptr;
+ 
+         // norm
+         if (has_expert) {
+@@ -143,11 +144,18 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -498,8 +498,16 @@ index c7fb77474..c38f4b437 100644
 +    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
  
      // important: do not normalize weights for raw embeddings input (i.e. encoded image emdeddings)
-     inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
-@@ -26,18 +31,39 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+-    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+-    cb(inpL, "inp_scaled", -1);
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -155,18 +163,39 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
      // TODO: is causal == true correct? might need some changes
      auto * inp_attn = build_attn_inp_kv_iswa();
  
@@ -542,7 +550,7 @@ index c7fb77474..c38f4b437 100644
          const int64_t n_embd_head = hparams.n_embd_head_k(il);
          GGML_ASSERT(n_embd_head == hparams.n_embd_head_v(il));
  
-@@ -110,7 +136,7 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+@@ -239,7 +268,7 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
          }
  
          // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing
@@ -551,7 +559,7 @@ index c7fb77474..c38f4b437 100644
              cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
              inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
          }
-@@ -237,6 +263,13 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
+@@ -366,6 +395,13 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
      }
      cur = inpL;
  
@@ -565,7 +573,7 @@ index c7fb77474..c38f4b437 100644
      cur = build_norm(cur,
              model.output_norm, nullptr,
              LLM_NORM_RMS, -1);
-@@ -266,7 +299,12 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
+@@ -395,7 +431,12 @@ ggml_tensor * llama_model_gemma4::graph::build_inp_per_layer() {
  
      ggml_tensor * inp_per_layer;
      float tok_embd_scale = sqrtf((float) n_embd_per_layer);
@@ -579,7 +587,7 @@ index c7fb77474..c38f4b437 100644
          inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
          ggml_set_input(inp->tokens);
          res->t_inp_tokens = inp->tokens;
-@@ -276,7 +314,13 @@ ggml_tensor * llm_build_gemma4_iswa::build_inp_per_layer() {
+@@ -405,7 +446,13 @@ ggml_tensor * llama_model_gemma4::graph::build_inp_per_layer() {
          inp_per_layer = ggml_scale     (ctx0, inp_per_layer, tok_embd_scale);
          cb(inp_per_layer, "inp_per_layer_selected", -1);
  
@@ -595,10 +603,10 @@ index c7fb77474..c38f4b437 100644
          // Multimodal embedding path: use padding token (ID=0) embedding
          // TODO: verify if this is the correct behavior in transformers implementation
 diff --git a/src/models/glm4.cpp b/src/models/glm4.cpp
-index f0bfda393..da598cf65 100644
+index d6ef76e2..627e1a21 100644
 --- a/src/models/glm4.cpp
 +++ b/src/models/glm4.cpp
-@@ -11,10 +11,18 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+@@ -83,10 +83,18 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -619,7 +627,7 @@ index f0bfda393..da598cf65 100644
          // unfortunately, we need to forcefully stop here, to avoid users complaining about wrong results
          GGML_ABORT("This GGUF does not support multimodal. Please reconvert it.");
      }
-@@ -24,12 +32,9 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+@@ -96,12 +104,9 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
  
      auto * inp_attn = build_attn_inp_kv();
  
@@ -634,7 +642,7 @@ index f0bfda393..da598cf65 100644
          ggml_tensor * inpSA = inpL;
  
          // Pre-attention norm
-@@ -68,7 +73,7 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+@@ -140,7 +145,7 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
                      model.layers[il].wo, NULL, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f / sqrtf(float(n_embd_head)), il);
          }
@@ -643,7 +651,7 @@ index f0bfda393..da598cf65 100644
              cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -106,8 +111,17 @@ llm_build_glm4::llm_build_glm4(const llama_model & model, const llm_graph_params
+@@ -178,8 +183,17 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
          // input for next layer
          inpL = cur;
      }
@@ -663,10 +671,10 @@ index f0bfda393..da598cf65 100644
      cb(cur, "result_norm", -1);
      res->t_embd = cur;
 diff --git a/src/models/minimax-m2.cpp b/src/models/minimax-m2.cpp
-index b809b79f2..958c29954 100644
+index 0dee8934..e35ac258 100644
 --- a/src/models/minimax-m2.cpp
 +++ b/src/models/minimax-m2.cpp
-@@ -9,13 +9,18 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+@@ -53,13 +53,18 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -688,7 +696,7 @@ index b809b79f2..958c29954 100644
          ggml_tensor * inpSA = inpL;
  
          cur = inpL;
-@@ -68,7 +73,7 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+@@ -112,7 +117,7 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
          }
  
@@ -697,7 +705,7 @@ index b809b79f2..958c29954 100644
              cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -106,6 +111,13 @@ llm_build_minimax_m2::llm_build_minimax_m2(const llama_model & model, const llm_
+@@ -150,6 +155,13 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
  
      cur = inpL;
  
@@ -712,10 +720,10 @@ index b809b79f2..958c29954 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/models/olmo.cpp b/src/models/olmo.cpp
-index a9974025f..48759d1a3 100644
+index 161035e7..2f3d6760 100644
 --- a/src/models/olmo.cpp
 +++ b/src/models/olmo.cpp
-@@ -9,16 +9,21 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+@@ -49,16 +49,21 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -740,7 +748,7 @@ index a9974025f..48759d1a3 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -53,7 +58,7 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+@@ -93,7 +98,7 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
                      model.layers[il].wo, nullptr, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
          }
@@ -749,7 +757,7 @@ index a9974025f..48759d1a3 100644
              cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -85,6 +90,13 @@ llm_build_olmo::llm_build_olmo(const llama_model & model, const llm_graph_params
+@@ -125,6 +130,13 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
      }
      cur = inpL;
  
@@ -764,10 +772,10 @@ index a9974025f..48759d1a3 100644
              NULL, NULL,
              LLM_NORM, -1);
 diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
-index 2892dd750..2b451a661 100644
+index 6320458a..245b99dc 100644
 --- a/src/models/qwen2.cpp
 +++ b/src/models/qwen2.cpp
-@@ -9,16 +9,21 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+@@ -58,16 +58,21 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -792,7 +800,7 @@ index 2892dd750..2b451a661 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -53,7 +58,7 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+@@ -102,7 +107,7 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
                      model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
          }
@@ -801,7 +809,7 @@ index 2892dd750..2b451a661 100644
              cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -84,6 +89,13 @@ llm_build_qwen2::llm_build_qwen2(const llama_model & model, const llm_graph_para
+@@ -133,6 +138,13 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
      }
      cur = inpL;
  
@@ -816,10 +824,10 @@ index 2892dd750..2b451a661 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
-index 883dd5f9a..a8e33349b 100644
+index fa656c84..eaf5fb5c 100644
 --- a/src/models/qwen3.cpp
 +++ b/src/models/qwen3.cpp
-@@ -9,16 +9,21 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+@@ -58,16 +58,21 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -844,7 +852,7 @@ index 883dd5f9a..a8e33349b 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -59,7 +64,7 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+@@ -108,7 +113,7 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
                      model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
                      Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
          }
@@ -853,7 +861,7 @@ index 883dd5f9a..a8e33349b 100644
              cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -90,6 +95,13 @@ llm_build_qwen3::llm_build_qwen3(const llama_model & model, const llm_graph_para
+@@ -139,6 +144,13 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
      }
      cur = inpL;
  
@@ -868,10 +876,10 @@ index 883dd5f9a..a8e33349b 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/models/qwen3next.cpp b/src/models/qwen3next.cpp
-index 1beda70b7..5b7475f95 100644
+index cb1b4814..97a14e15 100644
 --- a/src/models/qwen3next.cpp
 +++ b/src/models/qwen3next.cpp
-@@ -7,15 +7,27 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+@@ -112,15 +112,27 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -903,7 +911,7 @@ index 1beda70b7..5b7475f95 100644
          ggml_tensor * inpSA = inpL;
  
          cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-@@ -32,7 +44,7 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+@@ -137,7 +149,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
              cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
          }
  
@@ -912,7 +920,7 @@ index 1beda70b7..5b7475f95 100644
              cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
              inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
          }
-@@ -64,6 +76,13 @@ llm_build_qwen3next::llm_build_qwen3next(const llama_model & model, const llm_gr
+@@ -169,6 +181,13 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
      }
      cur = inpL;
  
@@ -927,7 +935,7 @@ index 1beda70b7..5b7475f95 100644
      cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index f0b70b962..50e25c8f5 100644
+index f0b70b96..50e25c8f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -500,6 +500,26 @@ struct skippy_graph_filter_scope {

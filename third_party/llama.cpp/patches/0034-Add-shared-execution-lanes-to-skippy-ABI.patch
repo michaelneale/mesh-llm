@@ -1,7 +1,7 @@
-From 988c07b9ae2afaaccdd13749b00ddad0e7bf728f Mon Sep 17 00:00:00 2001
+From cd67b1ce9aba05867a56a351daa215199ee766c8 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 4 May 2026 17:49:03 +1000
-Subject: [PATCH 34/34] Add shared execution lanes to skippy ABI
+Subject: [PATCH 34/37] Add shared execution lanes to skippy ABI
 
 ---
  include/skippy.h       |  92 +-------
@@ -11,18 +11,18 @@ Subject: [PATCH 34/34] Add shared execution lanes to skippy ABI
  4 files changed, 73 insertions(+), 897 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 1db835d5f..9e91519d1 100644
+index 1db835d5..9e91519d 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
-
+ 
  #define SKIPPY_ABI_VERSION_MAJOR 0
  #define SKIPPY_ABI_VERSION_MINOR 1
 -#define SKIPPY_ABI_VERSION_PATCH 14
 +#define SKIPPY_ABI_VERSION_PATCH 15
-
+ 
  #define SKIPPY_MAX_LOGIT_BIAS 256
-
+ 
 @@ -36,16 +36,13 @@ enum skippy_feature {
      SKIPPY_FEATURE_ARTIFACT_SLICE         = 1 << 2,
      SKIPPY_FEATURE_MODEL_INTROSPECTION    = 1 << 3,
@@ -43,7 +43,7 @@ index 1db835d5f..9e91519d1 100644
 @@ -54,10 +51,6 @@ enum skippy_feature {
      SKIPPY_FEATURE_EXTERNAL_MEDIA_PREFILL = 1 << 20,
  };
-
+ 
 -enum skippy_kv_page_flag {
 -    SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED      = 1 << 0,
 -};
@@ -62,7 +62,7 @@ index 1db835d5f..9e91519d1 100644
 @@ -167,22 +161,6 @@ struct skippy_sampling_config {
      llama_logit_bias logit_bias[SKIPPY_MAX_LOGIT_BIAS];
  };
-
+ 
 -struct skippy_kv_page_desc {
 -    uint32_t version;
 -    int32_t layer_start;
@@ -85,7 +85,7 @@ index 1db835d5f..9e91519d1 100644
 @@ -364,77 +342,11 @@ LLAMA_API enum skippy_status skippy_session_copy_output_activation_frame(
          size_t * out_output_payload_bytes,
          struct skippy_error ** out_error);
-
+ 
 -LLAMA_API enum skippy_status skippy_export_state(
 -        struct skippy_session * session,
 -        int32_t layer_start,
@@ -137,7 +137,7 @@ index 1db835d5f..9e91519d1 100644
          struct skippy_session * session,
          uint64_t token_count,
          struct skippy_error ** out_error);
-
+ 
 -LLAMA_API enum skippy_status skippy_export_kv_page(
 -        struct skippy_session * session,
 -        int32_t layer_start,
@@ -161,13 +161,13 @@ index 1db835d5f..9e91519d1 100644
          struct skippy_model * model,
          const char * text,
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 1b19f7e2b..e8a1a4ce7 100644
+index b59e7c3f..90b701a9 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -1126,352 +1126,6 @@ ggml_type llama_kv_cache::type_v() const {
+@@ -1127,352 +1127,6 @@ ggml_type llama_kv_cache::type_v() const {
      return layers[0].v->type;
  }
-
+ 
 -bool llama_kv_cache::stage_export_kv_page(
 -        int32_t layer_start,
 -        int32_t layer_end,
@@ -516,9 +516,9 @@ index 1b19f7e2b..e8a1a4ce7 100644
 -
  uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
      uint32_t result = 0;
-
+ 
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 555cfc2c2..2c54cec5c 100644
+index 555cfc2c..2c54cec5 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -13,8 +13,6 @@ struct llama_cparams;
@@ -533,7 +533,7 @@ index 555cfc2c2..2c54cec5c 100644
 @@ -157,23 +155,6 @@ public:
      ggml_type type_k() const;
      ggml_type type_v() const;
-
+ 
 -    bool stage_export_kv_page(
 -            int32_t layer_start,
 -            int32_t layer_end,
@@ -555,11 +555,11 @@ index 555cfc2c2..2c54cec5c 100644
      // graph_build API
      //
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index a9ea04461..0d128fc8a 100644
+index a9ea0446..0d128fc8 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -29,13 +29,18 @@
-
+ 
  struct skippy_model {
      llama_model * model = nullptr;
 +    llama_context * ctx = nullptr;
@@ -568,7 +568,7 @@ index a9ea04461..0d128fc8a 100644
 +    uint32_t lane_count = 1;
 +    std::vector<bool> lane_in_use;
  };
-
+ 
  struct skippy_session {
      skippy_model * stage_model = nullptr;
      llama_context * ctx = nullptr;
@@ -585,7 +585,7 @@ index a9ea04461..0d128fc8a 100644
 +        batch.seq_id[i][0] = session->seq_id;
          batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
      }
-
+ 
 @@ -790,7 +795,7 @@ static enum skippy_status skippy_verify_token_batch(
          batch.token[i] = token_ids[i];
          batch.pos[i] = session->n_past + i;
@@ -594,7 +594,7 @@ index a9ea04461..0d128fc8a 100644
 +        batch.seq_id[i][0] = session->seq_id;
          batch.logits[i] = 1;
      }
-
+ 
 @@ -1055,7 +1060,7 @@ static enum skippy_status skippy_decode_activation_frame(
      for (int32_t i = 0; i < n_tokens; ++i) {
          batch.pos[i] = session->n_past + i;
@@ -603,7 +603,7 @@ index a9ea04461..0d128fc8a 100644
 +        batch.seq_id[i][0] = session->seq_id;
          batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
      }
-
+ 
 @@ -1089,7 +1094,7 @@ static enum skippy_status skippy_verify_activation_frame(
      for (int32_t i = 0; i < n_tokens; ++i) {
          batch.pos[i] = session->n_past + i;
@@ -612,7 +612,7 @@ index a9ea04461..0d128fc8a 100644
 +        batch.seq_id[i][0] = session->seq_id;
          batch.logits[i] = 1;
      }
-
+ 
 @@ -1112,16 +1117,13 @@ uint64_t skippy_abi_features(void) {
      return SKIPPY_FEATURE_RUNTIME_SLICE |
             SKIPPY_FEATURE_MODEL_INTROSPECTION |
@@ -660,7 +660,7 @@ index a9ea04461..0d128fc8a 100644
 +        return SKIPPY_STATUS_RUNTIME_ERROR;
 +    }
 +    stage_model->lane_in_use.assign(stage_model->lane_count, false);
-
+ 
      *out_model = stage_model;
      return skippy_success(out_error);
 @@ -1322,6 +1350,9 @@ enum skippy_status skippy_model_free(
@@ -683,7 +683,7 @@ index a9ea04461..0d128fc8a 100644
          return SKIPPY_STATUS_INVALID_ARGUMENT;
      }
      *out_session = nullptr;
-
+ 
 -    llama_context_params params = llama_context_default_params();
 -    params.n_ctx = model->config.ctx_size > 0 ? static_cast<uint32_t>(model->config.ctx_size) : 512;
 -    params.n_batch = params.n_ctx;
@@ -710,7 +710,7 @@ index a9ea04461..0d128fc8a 100644
 +        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "no skippy execution lane is available");
          return SKIPPY_STATUS_RUNTIME_ERROR;
      }
-
+ 
      skippy_session * session = new skippy_session{};
      session->stage_model = model;
 -    session->ctx = ctx;
@@ -723,7 +723,7 @@ index a9ea04461..0d128fc8a 100644
 @@ -1436,7 +1464,11 @@ enum skippy_status skippy_session_reset(
          return SKIPPY_STATUS_RUNTIME_ERROR;
      }
-
+ 
 -    llama_memory_clear(memory, true);
 +    if (!llama_memory_seq_rm(memory, session->seq_id, -1, -1)) {
 +        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to reset execution lane");
@@ -753,7 +753,7 @@ index a9ea04461..0d128fc8a 100644
 @@ -1893,216 +1933,6 @@ enum skippy_status skippy_session_copy_output_activation_frame(
      return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
  }
-
+ 
 -enum skippy_status skippy_export_state(
 -        struct skippy_session * session,
 -        int32_t layer_start,
@@ -970,7 +970,7 @@ index a9ea04461..0d128fc8a 100644
 @@ -2130,105 +1960,6 @@ static llama_memory_recurrent * skippy_get_recurrent_memory(
      return nullptr;
  }
-
+ 
 -enum skippy_status skippy_export_recurrent_state(
 -        struct skippy_session * session,
 -        void * output,
@@ -1102,7 +1102,7 @@ index a9ea04461..0d128fc8a 100644
 -        recurrent->seq_cp(0, 1, -1, -1);
 +        recurrent->seq_cp(session->seq_id, session->checkpoint_seq_id, -1, -1);
      }
-
+ 
      session->checkpoint_valid = true;
 @@ -2362,8 +2093,8 @@ enum skippy_status skippy_restore_session_checkpoint(
              skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "native recurrent checkpoint requires n_seq_max >= 2");
@@ -1114,11 +1114,11 @@ index a9ea04461..0d128fc8a 100644
 +        recurrent->seq_rm(session->checkpoint_seq_id, -1, -1);
          session->ctx->synchronize();
      }
-
+ 
 @@ -2378,108 +2109,6 @@ enum skippy_status skippy_restore_session_checkpoint(
      return skippy_success(out_error);
  }
-
+ 
 -static llama_kv_cache * skippy_get_kv_cache(
 -        skippy_session * session,
 -        skippy_error ** out_error) {
@@ -1224,5 +1224,6 @@ index a9ea04461..0d128fc8a 100644
  enum skippy_status skippy_tokenize(
          struct skippy_model * model,
          const char * text,
---
+-- 
 2.50.1 (Apple Git-155)
+

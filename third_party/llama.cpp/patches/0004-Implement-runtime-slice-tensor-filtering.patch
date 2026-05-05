@@ -1,7 +1,7 @@
-From e0a907584ffc9719ae4a9af3b7f7a48cef3673a4 Mon Sep 17 00:00:00 2001
+From a9b0bdb86c60ac245a0991d75d20c27cc66335ae Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 11:57:45 +1000
-Subject: [PATCH 04/34] Implement runtime-slice tensor filtering
+Subject: [PATCH 04/37] Implement runtime-slice tensor filtering
 
 ---
  src/llama-model-loader.cpp | 44 ++++++++++++++++++++++++++++++++++++++
@@ -10,7 +10,7 @@ Subject: [PATCH 04/34] Implement runtime-slice tensor filtering
  3 files changed, 95 insertions(+), 1 deletion(-)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 4e65a45a5..66ddf6c0f 100644
+index 4e65a45a..66ddf6c0 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -17,6 +17,16 @@ static const size_t kiB = 1024;
@@ -72,7 +72,7 @@ index 4e65a45a5..66ddf6c0f 100644
          if (info.op == GGML_OP_NONE || (flags & TENSOR_SKIP)) {
              const size_t nbytes = ggml_nbytes(t_meta);
 diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
-index 7b3d6703c..be15e32b4 100644
+index 7b3d6703..be15e32b 100644
 --- a/src/llama-model-loader.h
 +++ b/src/llama-model-loader.h
 @@ -20,6 +20,17 @@ using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
@@ -94,7 +94,7 @@ index 7b3d6703c..be15e32b4 100644
      GGUF_FILE_VERSION_V1 = 1,
      GGUF_FILE_VERSION_V2 = 2,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 4feca3b8f..10876ee50 100644
+index 4feca3b8..10876ee5 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,6 +1,7 @@

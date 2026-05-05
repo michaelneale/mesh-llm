@@ -1,7 +1,7 @@
-From f7f769e780d8f91298a02ada6c47765bce05cf4e Mon Sep 17 00:00:00 2001
+From 37fec45569c407d4b1c35c4207392ca6cbbdbbcb Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 13:30:00 +1000
-Subject: [PATCH 16/34] Add batched token verification ABI
+Subject: [PATCH 16/37] Add batched token verification ABI
 
 ---
  include/skippy.h | 12 +++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 16/34] Add batched token verification ABI
  2 files changed, 82 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index df8bcb4c1..97ce352f7 100644
+index df8bcb4c..97ce352f 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -46,7 +46,7 @@ index df8bcb4c1..97ce352f7 100644
          struct skippy_session * session,
          const llama_token * token_ids,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 16d77e256..712aec9fa 100644
+index 16d77e25..712aec9f 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -693,6 +693,26 @@ static llama_token skippy_greedy_sample(skippy_session * session) {

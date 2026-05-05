@@ -1,7 +1,7 @@
-From 7c4020304e1dd28184a31abd80e6dc3f1853df29 Mon Sep 17 00:00:00 2001
+From cfcb30500feabf245eaa184581bd713b373fbfc5 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 19:14:50 +1000
-Subject: [PATCH 17/34] Expose stage chat template ABI
+Subject: [PATCH 17/37] Expose stage chat template ABI
 
 ---
  common/CMakeLists.txt |   1 +
@@ -12,7 +12,7 @@ Subject: [PATCH 17/34] Expose stage chat template ABI
  create mode 100644 common/stage-chat.cpp
 
 diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
-index 1a56c2585..b51b6f555 100644
+index 1a56c258..b51b6f55 100644
 --- a/common/CMakeLists.txt
 +++ b/common/CMakeLists.txt
 @@ -100,6 +100,7 @@ add_library(${TARGET}
@@ -25,7 +25,7 @@ index 1a56c2585..b51b6f555 100644
      unicode.cpp
 diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
 new file mode 100644
-index 000000000..39d6331ac
+index 00000000..39d6331a
 --- /dev/null
 +++ b/common/stage-chat.cpp
 @@ -0,0 +1,122 @@
@@ -152,7 +152,7 @@ index 000000000..39d6331ac
 +    return skippy_common_success(out_error);
 +}
 diff --git a/include/skippy.h b/include/skippy.h
-index 97ce352f7..6dc5af7b1 100644
+index 97ce352f..6dc5af7b 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -40,6 +40,7 @@ enum skippy_feature {
@@ -184,7 +184,7 @@ index 97ce352f7..6dc5af7b1 100644
          const char * path,
          struct skippy_model_info ** out_info,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 712aec9fa..f0b70b962 100644
+index 712aec9f..f0b70b96 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1427,6 +1427,14 @@ enum skippy_status skippy_token_is_eog(

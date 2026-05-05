@@ -1,7 +1,7 @@
-From 09a35bbd88d8923fcf5012f6f6ba14192b6e1b95 Mon Sep 17 00:00:00 2001
+From 3e4bb8310e1368eb76fa005e4bc5dc2997f53c78 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 15:29:59 +1000
-Subject: [PATCH 09/34] Support Qwen35MoE runtime slice packages
+Subject: [PATCH 09/37] Support Qwen35MoE runtime slice packages
 
 ---
  src/llama-model-loader.cpp | 34 ++++++++++++++++++----------------
@@ -10,7 +10,7 @@ Subject: [PATCH 09/34] Support Qwen35MoE runtime slice packages
  3 files changed, 35 insertions(+), 21 deletions(-)
 
 diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
-index 66ddf6c0f..ee44dd00c 100644
+index 66ddf6c0..ee44dd00 100644
 --- a/src/llama-model-loader.cpp
 +++ b/src/llama-model-loader.cpp
 @@ -1086,13 +1086,6 @@ struct ggml_tensor * llama_model_loader::create_tensor(
@@ -68,10 +68,10 @@ index 66ddf6c0f..ee44dd00c 100644
          if (info.op == GGML_OP_NONE || (flags & TENSOR_SKIP)) {
              const size_t nbytes = ggml_nbytes(t_meta);
 diff --git a/src/models/qwen35moe.cpp b/src/models/qwen35moe.cpp
-index 7dc6a23c7..e27483110 100644
+index cf05dc9d..6dcd3aec 100644
 --- a/src/models/qwen35moe.cpp
 +++ b/src/models/qwen35moe.cpp
-@@ -14,16 +14,21 @@ llm_build_qwen35moe::llm_build_qwen35moe(const llama_model & model, const llm_gr
+@@ -115,16 +115,21 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -96,7 +96,7 @@ index 7dc6a23c7..e27483110 100644
          ggml_tensor * inpSA = inpL;
  
          cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-@@ -72,6 +77,13 @@ llm_build_qwen35moe::llm_build_qwen35moe(const llama_model & model, const llm_gr
+@@ -173,6 +178,13 @@ llama_model_qwen35moe::graph::graph(const llama_model & model, const llm_graph_p
      }
      cur = inpL;
  
@@ -111,7 +111,7 @@ index 7dc6a23c7..e27483110 100644
      cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
  
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 261693203..f85da9640 100644
+index 26169320..f85da964 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -854,9 +854,9 @@ enum skippy_status skippy_model_open(
