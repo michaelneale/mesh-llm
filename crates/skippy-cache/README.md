@@ -11,6 +11,10 @@ The crate answers cache questions:
 - which resident cache entry should be evicted?
 - how should exact state payload bytes be represented and deduplicated?
 
+The cache is deliberately exact. It does not guess that two prompts are
+"similar enough"; it reuses runtime state only when the model, topology, stage,
+layer range, runtime layout, position, and token prefix all match.
+
 ## Boundaries
 
 ```mermaid
@@ -90,6 +94,13 @@ Activation frames are cached separately by `act:{page_id}:w{activation_width}`.
 In a split topology, an upstream stage may reuse both its resident prefix and
 the activation frame it would have forwarded downstream.
 
+For dense models this is the production fast path. It is intentionally close to
+the llama-server slot contract: keep usable KV resident in the runtime and
+continue from it. The difference is that Skippy gives the resident state a
+backend-neutral prefix identity, keeps hot lane prefixes borrowed in place when
+possible, and can reuse the same prefix across Rust-owned serving, staged
+execution, and activation forwarding.
+
 ## Exact State Payloads
 
 The payload module models the portable exact-cache path we need for
@@ -104,6 +115,12 @@ recurrent/stateful families:
 Large payloads are split into 1 MiB BLAKE3-addressed blocks. Repeated blocks are
 stored once, so capacity is accounted by physical bytes as well as logical
 payload bytes.
+
+`KvRecurrent` is the production method for hybrid/recurrent families. It moves
+attention KV together with recurrent/SSM state, because KV alone is not the full
+continuation state for those models. That is where the largest wins come from:
+llama-server warm slots still have to reprocess the recurrent prefix in many
+request shapes, while Skippy can restore the exact compact state and decode.
 
 ```mermaid
 flowchart LR
@@ -153,6 +170,45 @@ selects one payload shape:
 `FullState` is intentionally not selected by the production family policy. It is
 kept as a correctness/certification tool so a family can first prove exact
 restore behavior before we design and promote a compact serving payload.
+
+## Why Skippy Cache Beats llama-server
+
+llama-server slots are very good at one thing: keeping a prompt prefix warm
+inside a server slot. Skippy preserves that behavior for dense single-stage
+serving, then extends it in several important ways.
+
+| Method | Where it wins | Why |
+| --- | --- | --- |
+| Exact prefix identity | all cache modes | Prefixes are keyed by model ref, topology, stage, layer range, ABI/layout, position, and token ids, so state can be reused safely outside a single llama-server slot. |
+| `ResidentKv` | dense attention families | KV stays resident in the live runtime. Hot-lane hits borrow the existing prefix instead of paying serialize/restore costs, matching llama-server's slot model while using Skippy's lower-overhead Rust serving path. |
+| `KvRecurrent` | Qwen3Next, Falcon-H1, and other hybrid/recurrent families | Attention KV and recurrent/SSM state move together. llama-server has no equivalent production cache for this exact state shape, so repeated prefixes avoid expensive recurrent-prefix reprocessing. |
+| Activation-frame cache | split serving | A stage can reuse the activation it would have forwarded downstream, so cache hits can remove work from both the local stage and the next stage boundary. |
+| BLAKE3 deduped exact payloads | portable exact-state cache | Large exported states are chunked into content-addressed blocks. Repeated blocks are stored once, making exact payload caching practical under a real capacity cap. |
+| Package-backed stage cache | giant staged models | A materialized stage can cache only the state for the layer range it owns, without loading or merging a monolithic full GGUF. |
+
+The headline pattern in the benchmark table follows from those methods:
+
+- Hybrid/recurrent families show the largest wins because `KvRecurrent`
+  restores state llama-server otherwise has to regenerate.
+- Dense families show parity to moderate wins because `ResidentKv` keeps the
+  same warm-slot advantage while avoiding extra serving-path overhead.
+- DeepSeek3 is package-only evidence: it proves the selected cache method for a
+  materialized stage, not a full-GGUF llama-server comparison.
+
+The cache does not claim fuzzy semantic reuse, approximate prefix matching, or
+`FullState` production speedups. `FullState` remains a certification tool only.
+
+```mermaid
+flowchart LR
+    Request["request tokens"] --> Identity["exact prefix identity"]
+    Identity --> Hit{"cache hit?"}
+    Hit -- dense --> Resident["ResidentKv: borrow resident runtime KV"]
+    Hit -- recurrent --> Recurrent["KvRecurrent: restore KV + recurrent state"]
+    Hit -- split --> Activation["activation frame reuse"]
+    Hit -- miss --> Prefill["normal prefill"]
+    Prefill --> Record["record exact state"]
+    Record --> Dedupe["BLAKE3 block dedupe + capacity accounting"]
+```
 
 ```mermaid
 sequenceDiagram
@@ -303,70 +359,12 @@ locally available family in the normalized single-stage matrix:
 | Full-state diagnostics | Not a production target | `FullState` can prove restore exactness, but it is not selected by serving policy and should not be benchmarked as a cache win/loss. |
 | Split serving | Still needs its own benchmark | Single-stage numbers do not prove end-to-end split wins because activation transfer, stage scheduling, and upstream/downstream cache hits change the cost model. |
 
-### Exact Result Cache
-
-Resident KV now preserves hot lane prefixes, so single-stage warm hits no longer
-pay a copy/restore penalty versus llama-server slots. Both systems still
-evaluate the final prompt token on a warm hit. The next optimization for
-repeated identical prompts is an exact decoded-result cache:
-
-1. keep or restore the runtime state after the full prompt has been evaluated
-2. reuse the already-computed logits / first sampled token for an exact prompt
-   hit
-3. continue normal decode only if the request asks for more tokens
-
-The correctness harness can model this with `--borrow-resident-hits
---cache-decoded-result-hits`. That mode is a prompt-result cache win, separate
-from the resident KV slot-parity path shown in the table above.
-
-Example:
-
-```bash
-LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
-  python3 evals/skippy-cache-production-bench.py \
-    --case llama \
-    --output-dir /tmp/skippy-cache-production-bench-llama-result-cache \
-    --runtime-lane-count 1 \
-    --borrow-resident-hits \
-    --cache-decoded-result-hits \
-    --llama-parallel 1 \
-    --prefix-tokens 128
-```
-
-Before claiming a family is faster than llama-server, run a matched benchmark
-with the same GGUF, backend, context size, prompt tokens, generated tokens,
-slot/parallel settings, and warm-cache policy. The README table above is a
-serving-correctness table first; performance wins are only claimed for the rows
-whose matched speedup is above 1.0x.
-
-Reproduce the local production-payload table with:
-
-```bash
-LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
-  python3 evals/skippy-cache-production-bench.py \
-    --output-dir /tmp/skippy-cache-production-bench \
-    --runtime-lane-count 1 \
-    --llama-parallel 1 \
-    --prefix-tokens 128
-```
-
-Reproduce the HF use-case matrix with:
-
-```bash
-LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
-  python3 evals/skippy-cache-production-bench.py \
-    --output-dir /tmp/skippy-cache-usecase-matrix-p128 \
-    --use-case all \
-    --case qwen3_dense --case llama --case deepseek2 \
-    --case glm47_flash --case glm4 \
-    --case gemma4_a4b --case gemma4_e4b \
-    --case gemma3 --case gemma2 --case falcon_h1 \
-    --case olmo --case minimax_m27 --case qwen3next \
-    --runtime-lane-count 1 \
-    --llama-parallel 1 \
-    --borrow-resident-hits \
-    --prefix-tokens 128
-```
+Before claiming a new family is faster than llama-server, run the reproducible
+benchmark wrapper and keep the matched conditions fixed: same GGUF, backend,
+context size, prompt tokens, generated tokens, slot/parallel settings, and
+warm-cache policy. The README table is a serving-correctness table first;
+performance wins are only promoted for rows whose matched speedup is above
+1.0x.
 
 ## Module Map
 
