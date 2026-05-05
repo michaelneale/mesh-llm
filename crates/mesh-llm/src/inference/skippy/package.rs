@@ -292,16 +292,15 @@ fn hex_lower(bytes: &[u8]) -> String {
 /// The actual layer files are downloaded later by each node for its assigned stage.
 pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPackageIdentity> {
     // Resolve hf:// to local dir (downloads manifest only for inspection)
-    let local_ref = super::materialization::resolve_hf_package_to_local(
-        package_ref, 0, 0, false, false,
-    )?;
+    let local_ref =
+        super::materialization::resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
     let info = skippy_runtime::package::inspect_layer_package(&local_ref)
         .with_context(|| format!("inspect layer package {package_ref}"))?;
 
     let activation_width = info.activation_width.unwrap_or(4096);
-    let source_model_bytes = info.source_model_bytes.unwrap_or_else(|| {
-        info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>()
-    });
+    let source_model_bytes = info
+        .source_model_bytes
+        .unwrap_or_else(|| info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>());
 
     Ok(SkippyPackageIdentity {
         package_ref: package_ref.to_string(),

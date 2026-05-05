@@ -239,8 +239,6 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
         )?;
     }
 
-
-
     if env_flag("SKIPPY_VERIFY_PACKAGE_SHA") {
         for part in &parts {
             let absolute = package_dir.join(&part.path);
@@ -326,16 +324,14 @@ fn resolve_package_dir(package_ref: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(package_ref))
 }
 
-
-
-
-
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 struct HfPackageRef {
     repo_id: String,
     revision: Option<String>,
 }
 
+#[cfg(test)]
 fn parse_hf_package_ref(value: &str) -> Result<HfPackageRef> {
     let Some(rest) = value.strip_prefix("hf://") else {
         bail!("HF package references must start with hf://");
@@ -366,8 +362,6 @@ fn parse_hf_package_ref(value: &str) -> Result<HfPackageRef> {
         revision: revision.map(ToString::to_string),
     })
 }
-
-
 
 fn load_manifest(path: &Path, contents: &[u8]) -> Result<PackageManifest> {
     serde_json::from_slice(contents)

@@ -1920,8 +1920,7 @@ async fn resolve_startup_models(
         // before downloading the full monolithic GGUF. This avoids downloading
         // hundreds of GB that won't be used — each node only needs its layers.
         let resolved_path = if split {
-            if let Some(package_ref) =
-                resolve_split_layer_package(&requested_ref, &spec.model_ref)
+            if let Some(package_ref) = resolve_split_layer_package(&requested_ref, &spec.model_ref)
             {
                 PathBuf::from(package_ref)
             } else {

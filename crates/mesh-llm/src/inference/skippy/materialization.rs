@@ -149,9 +149,10 @@ pub(crate) fn resolve_hf_package_to_local(
 ) -> Result<String> {
     let parsed = StagePackageRef::parse(package_ref)?;
     let (repo, revision) = match &parsed {
-        StagePackageRef::HuggingFacePackage { repo, revision } => {
-            (repo.clone(), revision.clone().unwrap_or_else(|| "main".to_string()))
-        }
+        StagePackageRef::HuggingFacePackage { repo, revision } => (
+            repo.clone(),
+            revision.clone().unwrap_or_else(|| "main".to_string()),
+        ),
         _ => return Ok(package_ref.to_string()),
     };
 
@@ -175,10 +176,9 @@ pub(crate) fn resolve_hf_package_to_local(
         .to_path_buf();
 
     // Read manifest to determine which files we need
-    let manifest_contents = fs::read(&manifest_path)
-        .context("read package manifest")?;
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest_contents)
-        .context("parse package manifest")?;
+    let manifest_contents = fs::read(&manifest_path).context("read package manifest")?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_contents).context("parse package manifest")?;
 
     // Collect the files we need to download
     let mut needed_files: Vec<String> = Vec::new();
@@ -680,5 +680,66 @@ mod tests {
         assert!(!index_path.exists());
 
         restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    /// Integration test: downloads only the manifest from a real layer package on HF.
+    /// Run with: cargo test -p mesh-llm resolve_hf_downloads_manifest_only -- --ignored
+    #[test]
+    #[ignore]
+    fn resolve_hf_downloads_manifest_only() {
+        let package_ref = "hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers";
+        // Request 0 layers — should only download the manifest
+        let local_path = resolve_hf_package_to_local(package_ref, 0, 0, false, false).unwrap();
+        let manifest = std::path::Path::new(&local_path).join("model-package.json");
+        assert!(
+            manifest.is_file(),
+            "manifest should exist at {}",
+            manifest.display()
+        );
+
+        // Verify manifest is valid JSON with expected fields
+        let contents = std::fs::read_to_string(&manifest).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert_eq!(parsed["schema_version"], 1);
+        assert!(parsed["layers"].as_array().unwrap().len() > 50);
+
+        // Verify no layer files were downloaded
+        let layers_dir = std::path::Path::new(&local_path).join("layers");
+        if layers_dir.is_dir() {
+            let layer_files: Vec<_> = std::fs::read_dir(&layers_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map(|x| x == "gguf").unwrap_or(false))
+                .collect();
+            assert_eq!(layer_files.len(), 0, "no layer files should be downloaded");
+        }
+    }
+
+    /// Integration test: downloads manifest + a single layer file.
+    /// Run with: cargo test -p mesh-llm resolve_hf_downloads_single_layer -- --ignored
+    #[test]
+    #[ignore]
+    fn resolve_hf_downloads_single_layer() {
+        let package_ref = "hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers";
+        // Request just layer 0
+        let local_path = resolve_hf_package_to_local(package_ref, 0, 1, false, false).unwrap();
+        let manifest = std::path::Path::new(&local_path).join("model-package.json");
+        assert!(manifest.is_file());
+
+        // Read manifest to find layer 0's artifact path
+        let contents = std::fs::read_to_string(&manifest).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let layer0_artifact = parsed["layers"][0]["artifact"].as_str().unwrap();
+
+        // Verify that specific layer file was downloaded
+        let layer0_path = std::path::Path::new(&local_path).join(layer0_artifact);
+        assert!(
+            layer0_path.is_file(),
+            "layer 0 should be downloaded at {}",
+            layer0_path.display()
+        );
+        // Should be non-trivial size (layer files are typically > 1 MB)
+        let size = std::fs::metadata(&layer0_path).unwrap().len();
+        assert!(size > 1_000_000, "layer file should be > 1MB, got {size}");
     }
 }
