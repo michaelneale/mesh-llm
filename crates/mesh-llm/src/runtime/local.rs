@@ -411,6 +411,15 @@ async fn load_split_runtime_generation(
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
 
+    // Use LayerPackage mode when we have an hf:// distributable package ref,
+    // otherwise fall back to RuntimeSlice (requires full GGUF on each node).
+    let use_layer_package = skippy::is_layer_package_ref(&spec.package.package_ref);
+    let load_mode = if use_layer_package {
+        LoadMode::LayerPackage
+    } else {
+        LoadMode::RuntimeSlice
+    };
+
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
             topology_id: spec.generation.topology_id.clone(),
@@ -423,7 +432,7 @@ async fn load_split_runtime_generation(
             stage_index: stage.stage_index,
             layer_start: stage.layer_start,
             layer_end: stage.layer_end,
-            model_path: Some(spec.model_ref.to_string()),
+            model_path: Some(spec.package.package_ref.clone()),
             projector_path: spec.projector_path.clone(),
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
@@ -434,7 +443,7 @@ async fn load_split_runtime_generation(
             cache_type_k: "f16".to_string(),
             cache_type_v: "f16".to_string(),
             shutdown_generation: spec.generation.generation,
-            load_mode: LoadMode::RuntimeSlice,
+            load_mode: load_mode.clone(),
             upstream: None,
             downstream: downstream.clone(),
         };
@@ -503,6 +512,7 @@ async fn load_split_runtime_generation(
         spec.projector_path,
         spec.ctx_size,
         spec.pinned_gpu,
+        load_mode.clone(),
     );
     let handle = skippy::SkippyModelHandle::load_stage0_config(
         config,
@@ -1159,19 +1169,25 @@ fn split_stage0_config(
     projector_path: Option<String>,
     ctx_size: u32,
     pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+    load_mode: LoadMode,
 ) -> StageConfig {
+    let effective_model_path = if load_mode == LoadMode::LayerPackage {
+        package.package_ref.clone()
+    } else {
+        model_path.to_string_lossy().to_string()
+    };
     StageConfig {
         run_id: run_id.to_string(),
         topology_id: topology_id.to_string(),
         model_id: model_ref.to_string(),
         package_ref: Some(package.package_ref.clone()),
         manifest_sha256: Some(package.manifest_sha256.clone()),
-        source_model_path: Some(model_path.to_string_lossy().to_string()),
+        source_model_path: Some(effective_model_path.clone()),
         source_model_sha256: Some(package.source_model_sha256.clone()),
         source_model_bytes: Some(package.source_model_bytes),
         materialized_path: None,
         materialized_pinned: false,
-        model_path: Some(model_path.to_string_lossy().to_string()),
+        model_path: Some(effective_model_path),
         projector_path,
         stage_id: stage0.stage_id.clone(),
         stage_index: stage0.stage_index,
@@ -1188,7 +1204,7 @@ fn split_stage0_config(
             index: Some(gpu.index),
             vram_bytes: Some(gpu.vram_bytes),
         }),
-        load_mode: LoadMode::RuntimeSlice,
+        load_mode,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: Some(PeerConfig {

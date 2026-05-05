@@ -30,8 +30,8 @@ use skippy_server::{
 
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use materialization::{
-    configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
-    materialized_stage_cache_dir, prune_unpinned_materialized_stages,
+    configure_materialized_stage_cache, is_layer_package_ref, materialize_stage_config,
+    materialize_stage_load, materialized_stage_cache_dir, prune_unpinned_materialized_stages,
     remove_materialized_stages_for_sources, MaterializedStagePin,
 };
 pub(crate) use package::{
