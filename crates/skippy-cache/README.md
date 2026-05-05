@@ -185,6 +185,18 @@ README performance claims must be backed by correctness runs and comparable
 llama-server baselines. Rows marked `untested` are intentionally not promoted as
 default evidence yet.
 
+Reproduce the family evidence and README tables with:
+
+```bash
+evals/skippy-cache-family-bench.sh /tmp/skippy-cache-family-bench
+```
+
+For a faster rerun after building locally:
+
+```bash
+SKIPPY_CACHE_SKIP_BUILD=1 evals/skippy-cache-family-bench.sh /tmp/skippy-cache-family-bench
+```
+
 Local correctness evidence below was collected on the same machine with
 `n_predict = 1`, `n_gpu_layers = -1`, Skippy `--runtime-lane-count 1`, and
 llama-server `--parallel 1`. The payload column is the production serving
