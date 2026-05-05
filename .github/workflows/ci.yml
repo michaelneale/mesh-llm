@@ -365,7 +365,9 @@ jobs:
           target/debug/mesh-llm --help | head -5
       - name: Build Swift benchmark binary
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
-        run: swiftc -O crates/mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
+        run: |
+          mkdir -p target/release
+          swiftc -O crates/mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
       - name: Upload Swift benchmark artifact
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         uses: actions/upload-artifact@v6
@@ -499,7 +501,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install Vulkan build packages
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9

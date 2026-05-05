@@ -115,10 +115,10 @@ jobs:
         if: ${{ inputs.validate_entrypoint_modes }}
         run: |
           set -euo pipefail
-          grep -qE '^\s*console\)' docker/entrypoint.sh
-          grep -qE '^\s*worker\)' docker/entrypoint.sh
-          grep -qE '^\s*\*\)' docker/entrypoint.sh
-          if grep -qE '^\s*api\)' docker/entrypoint.sh; then
+          grep -qE '^[[:space:]]*console([|)])' docker/entrypoint.sh
+          grep -qE '^[[:space:]]*worker\)' docker/entrypoint.sh
+          grep -qE '^[[:space:]]*\*\)' docker/entrypoint.sh
+          if grep -qE '^[[:space:]]*api\)' docker/entrypoint.sh; then
             echo "api mode should not be a separate entrypoint mode" >&2
             exit 1
           fi
