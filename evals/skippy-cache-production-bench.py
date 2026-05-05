@@ -47,6 +47,38 @@ class Case:
     skip_llama_server_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class UseCase:
+    key: str
+    label: str
+    prompt: str
+    prefix_tokens: int = 128
+    source_dataset: str | None = None
+    source_config: str | None = None
+    source_split: str | None = None
+    source_row: int | None = None
+
+
+def load_use_cases(path: Path) -> list[UseCase]:
+    data = json.loads(path.read_text())
+    use_cases = []
+    for item in data.get("use_cases", []):
+        source = item.get("source", {})
+        use_cases.append(
+            UseCase(
+                key=item["key"],
+                label=item["label"],
+                prompt=item["prompt"],
+                prefix_tokens=int(item.get("prefix_tokens", 128)),
+                source_dataset=source.get("dataset"),
+                source_config=source.get("config"),
+                source_split=source.get("split"),
+                source_row=source.get("row_idx"),
+            )
+        )
+    return use_cases
+
+
 CASES = [
     Case(
         "qwen3_dense",
@@ -285,7 +317,7 @@ def skippy_hit_median_ms(skippy: dict[str, Any]) -> float | None:
     return median_ms(values)
 
 
-def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path) -> dict[str, Any]:
+def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path, prompt: str | None = None) -> dict[str, Any]:
     report_path = case_dir / "skippy-state-handoff.json"
     cache_hit_repeats = args.cache_hit_repeats or case.cache_hit_repeats
     cmd = [
@@ -313,6 +345,8 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path) -> dic
         "--report-out",
         str(report_path),
     ]
+    if prompt is not None:
+        cmd.extend(["--prompt", prompt])
     if case.state_layer_start:
         cmd.extend(["--state-layer-start", str(case.state_layer_start)])
     if case.state_stage_index is not None:
@@ -464,10 +498,17 @@ def cache_storage_method(row: dict[str, Any]) -> str:
 
 
 def markdown_table(results: list[dict[str, Any]]) -> str:
-    lines = [
-        "| Family | Payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Speedup | Cache bytes | Size method | Notes |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
-    ]
+    include_use_case = any(row.get("use_case") for row in results)
+    if include_use_case:
+        lines = [
+            "| Use case | Family | Payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Speedup | Cache bytes | Size method | Notes |",
+            "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        ]
+    else:
+        lines = [
+            "| Family | Payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Speedup | Cache bytes | Size method | Notes |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        ]
     for row in results:
         correctness = row.get("skippy", {}).get("status", "missing")
         llama_warm = row.get("llama_server", {}).get("warm_median_ms")
@@ -480,21 +521,32 @@ def markdown_table(results: list[dict[str, Any]]) -> str:
         if isinstance(llama_warm, (int, float)) and isinstance(skippy_hit, (int, float)) and skippy_hit > 0:
             speedup = llama_warm / skippy_hit
         notes = row.get("notes", "")
-        lines.append(
-            "| {family} | `{payload}` | {correctness} | {prefix} | {tokens} | {llama} | {skippy} | {speedup} | {bytes} | {method} | {notes} |".format(
-                family=row["family"],
-                payload=row["payload"],
-                correctness=correctness,
-                prefix=row.get("prefix_tokens", "n/a"),
-                tokens=row.get("benchmark_prompt_token_count", "n/a"),
-                llama=format_ms(llama_warm),
-                skippy=format_ms(skippy_hit),
-                speedup=f"{speedup:.2f}x" if speedup is not None else "n/a",
-                bytes=format_bytes(cache_storage_bytes(row)),
-                method=cache_storage_method(row),
-                notes=notes.replace("|", "/"),
+        cells = {
+            "use_case": row.get("use_case_label", "n/a").replace("|", "/"),
+            "family": row["family"],
+            "payload": row["payload"],
+            "correctness": correctness,
+            "prefix": row.get("prefix_tokens", "n/a"),
+            "tokens": row.get("benchmark_prompt_token_count", "n/a"),
+            "llama": format_ms(llama_warm),
+            "skippy": format_ms(skippy_hit),
+            "speedup": f"{speedup:.2f}x" if speedup is not None else "n/a",
+            "bytes": format_bytes(cache_storage_bytes(row)),
+            "method": cache_storage_method(row),
+            "notes": notes.replace("|", "/"),
+        }
+        if include_use_case:
+            lines.append(
+                "| {use_case} | {family} | `{payload}` | {correctness} | {prefix} | {tokens} | {llama} | {skippy} | {speedup} | {bytes} | {method} | {notes} |".format(
+                    **cells
+                )
             )
-        )
+        else:
+            lines.append(
+                "| {family} | `{payload}` | {correctness} | {prefix} | {tokens} | {llama} | {skippy} | {speedup} | {bytes} | {method} | {notes} |".format(
+                    **cells
+                )
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -515,9 +567,11 @@ def parse_prefix_sweep(value: str | None) -> list[int | None]:
     return sizes
 
 
-def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
+def run_case(case: Case, args: argparse.Namespace, use_case: UseCase | None = None) -> dict[str, Any]:
     cache_hit_repeats = args.cache_hit_repeats or case.cache_hit_repeats
     prefix_tokens = args.prefix_tokens
+    if prefix_tokens is None and use_case is not None:
+        prefix_tokens = use_case.prefix_tokens
     n_gpu_layers = args.n_gpu_layers if args.n_gpu_layers is not None else case.n_gpu_layers
     if prefix_tokens is not None or n_gpu_layers != case.n_gpu_layers or cache_hit_repeats != case.cache_hit_repeats:
         case = Case(
@@ -540,6 +594,8 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
             skip_llama_server_reason=case.skip_llama_server_reason,
         )
     case_dir = args.output_dir / f"{case.key}-p{case.prefix_tokens}"
+    if use_case is not None:
+        case_dir = args.output_dir / use_case.key / f"{case.key}-p{case.prefix_tokens}"
     case_dir.mkdir(parents=True, exist_ok=True)
     row: dict[str, Any] = {
         "key": case.key,
@@ -553,6 +609,15 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
         "state_layer_end": case.state_layer_end or case.layer_end,
         "case": asdict(case) | {"model_path": str(case.model_path) if case.model_path else None},
     }
+    if use_case is not None:
+        row["use_case"] = use_case.key
+        row["use_case_label"] = use_case.label
+        row["use_case_source"] = {
+            "dataset": use_case.source_dataset,
+            "config": use_case.source_config,
+            "split": use_case.source_split,
+            "row_idx": use_case.source_row,
+        }
     if case.model_path is None or not case.model_path.exists():
         row["skippy"] = {"status": "missing-model"}
         row["llama_server"] = {"status": "missing-model"}
@@ -561,7 +626,7 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
 
     print(f"==> {case.key}: Skippy {case.payload}", flush=True)
     try:
-        skippy = run_correctness(case, args, case_dir)
+        skippy = run_correctness(case, args, case_dir, use_case.prompt if use_case is not None else None)
     except subprocess.TimeoutExpired as exc:
         skippy = {"status": "timeout", "timeout_secs": args.correctness_timeout_secs, "cmd": exc.cmd}
     except Exception as exc:  # noqa: BLE001 - benchmark continues across families.
@@ -618,6 +683,13 @@ def main() -> int:
     parser.add_argument("--borrow-resident-hits", action="store_true")
     parser.add_argument("--cache-decoded-result-hits", action="store_true")
     parser.add_argument("--prefix-tokens", type=int, help="Override the production prefix-token count for every selected case.")
+    parser.add_argument("--use-case", action="append", help="Run one named use case from the corpus; use 'all' for every use case.")
+    parser.add_argument(
+        "--use-case-corpus",
+        type=Path,
+        default=REPO / "evals/skippy-usecase-corpus.json",
+        help="JSON corpus with HF-derived benchmark use-case prompts.",
+    )
     parser.add_argument(
         "--prefix-token-sweep",
         help="Comma-separated prefix-token sizes to run as one benchmark sweep, for example 512,2048,8192.",
@@ -633,17 +705,30 @@ def main() -> int:
         if missing:
             raise SystemExit(f"unknown case(s): {', '.join(sorted(missing))}")
 
+    selected_use_cases: list[UseCase | None] = [None]
+    if args.use_case:
+        use_cases = load_use_cases(args.use_case_corpus)
+        wanted_use_cases = set(args.use_case)
+        if "all" in wanted_use_cases:
+            selected_use_cases = use_cases
+        else:
+            selected_use_cases = [use_case for use_case in use_cases if use_case.key in wanted_use_cases]
+            missing = wanted_use_cases - {use_case.key for use_case in selected_use_cases}
+            if missing:
+                raise SystemExit(f"unknown use case(s): {', '.join(sorted(missing))}")
+
     prefix_sweep = parse_prefix_sweep(args.prefix_token_sweep)
     if args.prefix_tokens is not None:
         prefix_sweep = [args.prefix_tokens]
     results = []
     for prefix_tokens in prefix_sweep:
         args.prefix_tokens = prefix_tokens
-        for case in selected:
-            row = run_case(case, args)
-            results.append(row)
-            (args.output_dir / "production-cache-bench.json").write_text(json.dumps(results, indent=2))
-            (args.output_dir / "production-cache-bench.md").write_text(markdown_table(results))
+        for use_case in selected_use_cases:
+            for case in selected:
+                row = run_case(case, args, use_case)
+                results.append(row)
+                (args.output_dir / "production-cache-bench.json").write_text(json.dumps(results, indent=2))
+                (args.output_dir / "production-cache-bench.md").write_text(markdown_table(results))
 
     print(markdown_table(results))
     print(f"Wrote {args.output_dir / 'production-cache-bench.json'}")

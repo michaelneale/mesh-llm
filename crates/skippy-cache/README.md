@@ -217,6 +217,41 @@ layers, token count, and f16 KV element size.
 | OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 128 | 129 | 28.9 | 24.0 | **1.20x faster** | 64.0 MiB | measured | Correct and faster. |
 | Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 128 | 129 | 7.4 | 6.8 | **1.08x faster** | 14.0 MiB | measured | Correct and faster; this is the narrowest win in the normalized matrix. |
 
+### HF Use-Case Matrix
+
+This matrix uses one Hugging Face-sourced representative prompt per use case,
+the same `128` requested prefix tokens, one generated token, Skippy
+`--runtime-lane-count 1`, llama-server `--parallel 1`, and the same full-GGUF
+family set as the table above. Values are Skippy warm-hit latency speedup over
+llama-server warm-cache latency. DeepSeek3 stays in the package-only section
+because there is no practical local full-GGUF llama-server baseline for that
+artifact.
+
+| Use case | Qwen3 dense | Llama | DeepSeek2 | GLM-4.7 Flash | GLM4 | Gemma4 A4B | Gemma4 E4B | Gemma3 | Gemma2 | Falcon-H1 | OLMo | MiniMax M2.7 | Qwen3Next |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tool calling | 1.32x | 1.33x | 1.60x | 1.30x | 1.27x | 1.04x | 1.33x | 1.58x | 1.40x | 8.53x | 1.21x | 1.19x | 15.23x |
+| Text-to-SQL | 1.35x | 1.69x | 1.52x | 1.19x | 1.13x | 1.30x | 1.26x | 1.64x | 1.41x | 8.58x | 1.08x | 1.14x | 15.42x |
+| Coding agent loop | 1.68x | 1.56x | 1.47x | 1.24x | 1.28x | 1.32x | 1.25x | 1.54x | 1.52x | 8.24x | 1.24x | 1.26x | 14.62x |
+| Issue fixing | 1.68x | 1.74x | 1.56x | 1.24x | 1.30x | 1.28x | 1.29x | 1.65x | 1.49x | 8.84x | 1.12x | 1.28x | 14.45x |
+| Code refinement | 1.43x | 1.98x | 1.53x | 1.25x | 1.23x | 1.27x | 1.43x | 1.76x | 1.47x | 8.65x | 1.25x | 1.21x | 14.55x |
+| Few-shot reasoning | 1.64x | 1.73x | 1.56x | 1.26x | 1.21x | 1.08x | 1.33x | 1.61x | 1.52x | 8.55x | 1.20x | 1.18x | 14.44x |
+| Open chat | 1.35x | 1.62x | 1.60x | 1.30x | 1.23x | 1.36x | 1.31x | 1.58x | 1.28x | 9.15x | 1.06x | 1.27x | 13.74x |
+| Summarization/RAG | 1.41x | 1.81x | 1.67x | 1.26x | 1.13x | 1.27x | 1.32x | 1.55x | 1.61x | 8.94x | 1.20x | 1.19x | 13.89x |
+
+Prompt sources are checked in at `evals/skippy-usecase-corpus.json` with source
+dataset metadata:
+
+| Use case | Dataset | Config | Split | Row |
+| --- | --- | --- | --- | ---: |
+| Tool calling | `glaiveai/glaive-function-calling-v2` | `default` | `train` | 1 |
+| Text-to-SQL | `gretelai/synthetic_text_to_sql` | `default` | `test` | 0 |
+| Coding agent loop | `SWE-bench/SWE-smith-trajectories` | `default` | `tool` | 0 |
+| Issue fixing | `SWE-bench/SWE-bench` | `default` | `dev` | 0 |
+| Code refinement | `google/code_x_glue_cc_code_refinement` | `small` | `test` | 0 |
+| Few-shot reasoning | `openai/gsm8k` | `main` | `test` | 0 |
+| Open chat | `HuggingFaceH4/mt_bench_prompts` | `default` | `train` | 0 |
+| Summarization/RAG | `nvidia/ChatRAG-Bench` | `doc2dial` | `test` | 0 |
+
 ### Package-Only Giant Models
 
 These rows validate cache strategy for models where a full llama-server
@@ -298,6 +333,24 @@ LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
     --output-dir /tmp/skippy-cache-production-bench \
     --runtime-lane-count 1 \
     --llama-parallel 1 \
+    --prefix-tokens 128
+```
+
+Reproduce the HF use-case matrix with:
+
+```bash
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
+  python3 evals/skippy-cache-production-bench.py \
+    --output-dir /tmp/skippy-cache-usecase-matrix-p128 \
+    --use-case all \
+    --case qwen3_dense --case llama --case deepseek2 \
+    --case glm47_flash --case glm4 \
+    --case gemma4_a4b --case gemma4_e4b \
+    --case gemma3 --case gemma2 --case falcon_h1 \
+    --case olmo --case minimax_m27 --case qwen3next \
+    --runtime-lane-count 1 \
+    --llama-parallel 1 \
+    --borrow-resident-hits \
     --prefix-tokens 128
 ```
 
