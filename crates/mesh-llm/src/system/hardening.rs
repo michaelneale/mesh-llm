@@ -30,11 +30,26 @@ impl SecurityPosture {
     }
 }
 
+/// Scrub environment variables that could be used for code injection (e.g.
+/// `DYLD_INSERT_LIBRARIES`, `LD_PRELOAD`).
+///
+/// **Must be called before any worker threads are spawned** — `std::env::remove_var`
+/// is `unsafe` because it mutates global process state and is UB when another
+/// thread may be reading the environment concurrently.
+///
+/// In practice this means calling it from `main()` before `#[tokio::main]`
+/// enters the async runtime.
+pub fn scrub_env_pre_thread() {
+    scrub_dangerous_env();
+}
+
 /// Apply all runtime hardening and return the security posture.
+///
+/// Env scrubbing is intentionally **not** included here — it must happen
+/// before threads exist (see [`scrub_env_pre_thread`]).
 pub fn harden_runtime() -> SecurityPosture {
     let debugger_blocked = deny_debugger_attachment();
     let core_dumps_disabled = disable_core_dumps();
-    scrub_dangerous_env();
     let sip_enabled = check_sip_enabled();
     let rdma_disabled = check_rdma_disabled();
     let binary_hash = self_binary_hash();
@@ -103,8 +118,11 @@ const DANGEROUS_ENV_VARS: &[&str] = &[
 fn scrub_dangerous_env() {
     for var in DANGEROUS_ENV_VARS {
         if std::env::var_os(var).is_some() {
+            // Note: tracing may not be initialized yet (called pre-tokio),
+            // so this warn may go to stderr via the default subscriber.
             tracing::warn!("security: scrubbing {var}");
-            // SAFETY: called early in startup before worker threads.
+            // SAFETY: called from main() before #[tokio::main] spawns threads.
+            // The caller (scrub_env_pre_thread / main.rs) guarantees single-threaded context.
             unsafe { std::env::remove_var(var) };
         }
     }

@@ -91,6 +91,9 @@ async fn make_test_node(role: super::NodeRole) -> Result<Node> {
         ),
         local_security_posture: Arc::new(Mutex::new(None)),
         local_hardware_attestation: Arc::new(Mutex::new(None)),
+        se_identity_handle: Arc::new(Mutex::new(
+            crate::crypto::attestation::SeIdentityHandle::empty(),
+        )),
         require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         enumerate_host: false,
         gpu_name: None,
@@ -3271,6 +3274,9 @@ async fn make_test_node_with_owner(
         ),
         local_security_posture: Arc::new(Mutex::new(None)),
         local_hardware_attestation: Arc::new(Mutex::new(None)),
+        se_identity_handle: Arc::new(Mutex::new(
+            crate::crypto::attestation::SeIdentityHandle::empty(),
+        )),
         require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         enumerate_host: false,
         gpu_name: None,

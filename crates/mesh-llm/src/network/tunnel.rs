@@ -1,6 +1,7 @@
 //! QUIC tunnel management for forwarding OpenAI HTTP traffic to the local
 //! model-aware API proxy.
 
+use crate::crypto::inference_encryption::ENCRYPTED_TUNNEL_MAGIC;
 use crate::mesh::Node;
 use crate::protocol::read_len_prefixed;
 use anyhow::Result;
@@ -98,8 +99,6 @@ impl Manager {
 }
 
 /// Handle an inbound HTTP tunnel bi-stream: connect to the local API proxy and relay.
-use crate::crypto::inference_encryption::ENCRYPTED_TUNNEL_MAGIC;
-
 async fn handle_inbound_http_stream(
     node: Node,
     mut quic_send: iroh::endpoint::SendStream,

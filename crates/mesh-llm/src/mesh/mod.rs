@@ -994,10 +994,11 @@ pub struct Node {
     owner_summary: Arc<Mutex<OwnershipSummary>>,
     trust_store: Arc<Mutex<TrustStore>>,
     trust_policy: TrustPolicy,
-    pub inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
+    pub(crate) inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
     pub local_security_posture: Arc<Mutex<Option<crate::system::hardening::SecurityPosture>>>,
     pub local_hardware_attestation:
         Arc<Mutex<Option<crate::crypto::attestation::SignedHardwareAttestation>>>,
+    pub(crate) se_identity_handle: Arc<Mutex<crate::crypto::attestation::SeIdentityHandle>>,
     pub require_attested_hosts: Arc<std::sync::atomic::AtomicBool>,
     pub enumerate_host: bool,
     pub gpu_name: Option<String>,
@@ -2113,6 +2114,9 @@ impl Node {
             ),
             local_security_posture: Arc::new(Mutex::new(None)),
             local_hardware_attestation: Arc::new(Mutex::new(None)),
+            se_identity_handle: Arc::new(Mutex::new(
+                crate::crypto::attestation::SeIdentityHandle::empty(),
+            )),
             require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             enumerate_host,
             gpu_name,
@@ -2237,6 +2241,9 @@ impl Node {
             ),
             local_security_posture: Arc::new(Mutex::new(None)),
             local_hardware_attestation: Arc::new(Mutex::new(None)),
+            se_identity_handle: Arc::new(Mutex::new(
+                crate::crypto::attestation::SeIdentityHandle::empty(),
+            )),
             require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             enumerate_host: true,
             gpu_name: None,
@@ -2296,6 +2303,8 @@ impl Node {
 
     /// Re-sign the local hardware attestation with a fresh timestamp.
     /// Called periodically so peers always see a non-expired attestation.
+    /// Reuses the same Secure Enclave key across refreshes so that the SE
+    /// public key remains stable for TOFU pinning.
     pub async fn refresh_attestation(&self) {
         let posture = self.local_security_posture.lock().await.clone();
         let Some(posture) = posture else {
@@ -2303,10 +2312,12 @@ impl Node {
         };
         let node_id = hex::encode(self.id().as_bytes());
         let inference_pub_key = self.inference_keypair.public_key_base64();
+        let mut handle = self.se_identity_handle.lock().await;
         let attestation = crate::crypto::attestation::try_create_attestation(
             &node_id,
             &inference_pub_key,
             &posture,
+            &mut handle,
         );
         if attestation.is_some() {
             tracing::debug!("Refreshed hardware attestation");

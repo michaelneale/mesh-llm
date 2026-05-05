@@ -388,14 +388,45 @@ pub fn public_key_base64_from_signing_key(signing_key: &p256::ecdsa::SigningKey)
     base64::engine::general_purpose::STANDARD.encode(point.as_bytes())
 }
 
+// ── Persistent SE handle ──────────────────────────────────────────
+
+/// Opaque handle to a Secure Enclave identity that can be stored in a `Node`
+/// and reused across attestation refreshes. This avoids creating a new
+/// ephemeral SE key every refresh cycle, which would prevent peers from
+/// pinning (TOFU) the SE public key.
+///
+/// On non-macOS platforms this is a zero-sized type that is always empty.
+#[derive(Clone)]
+pub struct SeIdentityHandle {
+    #[cfg(target_os = "macos")]
+    inner: Option<std::sync::Arc<SecureEnclaveIdentity>>,
+}
+
+impl SeIdentityHandle {
+    /// Create an empty handle (no SE key yet).
+    pub fn empty() -> Self {
+        Self {
+            #[cfg(target_os = "macos")]
+            inner: None,
+        }
+    }
+}
+
 // ── Convenience: attempt attestation at startup ───────────────────
 
-/// Attempt to create a signed hardware attestation. Returns `None` if SE
-/// is unavailable (non-macOS, Intel Mac, or SE access denied).
+/// Attempt to create a signed hardware attestation, **reusing** the SE
+/// identity from `handle` when available. If the handle is empty (first
+/// call), a new SE key is created and the handle is populated so that
+/// subsequent calls reuse the same key — preserving SE public-key
+/// continuity for TOFU pinning.
+///
+/// Returns `None` if SE is unavailable (non-macOS, Intel Mac, or SE access
+/// denied).
 pub fn try_create_attestation(
     node_endpoint_id: &str,
     inference_public_key: &str,
     posture: &crate::system::hardening::SecurityPosture,
+    handle: &mut SeIdentityHandle,
 ) -> Option<SignedHardwareAttestation> {
     if !secure_enclave_available() {
         tracing::debug!("Secure Enclave not available, skipping hardware attestation");
@@ -404,11 +435,19 @@ pub fn try_create_attestation(
 
     #[cfg(target_os = "macos")]
     {
-        let se = match SecureEnclaveIdentity::create() {
-            Ok(se) => se,
-            Err(e) => {
-                tracing::warn!("Failed to create SE identity: {e}");
-                return None;
+        // Reuse the existing SE identity or create one on first call.
+        let se = match &handle.inner {
+            Some(existing) => existing.clone(),
+            None => {
+                let new_se = match SecureEnclaveIdentity::create() {
+                    Ok(se) => std::sync::Arc::new(se),
+                    Err(e) => {
+                        tracing::warn!("Failed to create SE identity: {e}");
+                        return None;
+                    }
+                };
+                handle.inner = Some(new_se.clone());
+                new_se
             }
         };
 
@@ -464,7 +503,7 @@ pub fn try_create_attestation(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (node_endpoint_id, inference_public_key, posture);
+        let _ = (node_endpoint_id, inference_public_key, posture, handle);
         None
     }
 }

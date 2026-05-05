@@ -2330,8 +2330,8 @@ async fn run_auto(
     .await?;
     node.set_stage_control_sender(skippy::spawn_stage_control_loop())
         .await;
-    // Harden runtime BEFORE spawning worker threads (start_accepting).
-    // scrub_dangerous_env uses unsafe env mutation which is UB after threads spawn.
+    // Harden runtime (debugger denial, core dump disable, posture checks).
+    // Env scrubbing is handled earlier in main.rs before the tokio runtime starts.
     if cli.require_attested_hosts {
         node.require_attested_hosts
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2350,14 +2350,19 @@ async fn run_auto(
             posture.binary_hash.as_deref().unwrap_or("?"),
         );
 
-        // Attempt SE attestation (macOS Apple Silicon only)
+        // Attempt SE attestation (macOS Apple Silicon only).
+        // The SE identity handle is stored on the node so that refresh_attestation()
+        // reuses the same Secure Enclave key (preserving SE public-key continuity).
         let node_id = hex::encode(node.id().as_bytes());
         let inference_pub_key = node.inference_keypair.public_key_base64();
+        let mut se_handle = node.se_identity_handle.lock().await;
         let attestation = crate::crypto::attestation::try_create_attestation(
             &node_id,
             &inference_pub_key,
             &posture,
+            &mut se_handle,
         );
+        drop(se_handle);
         if let Some(ref att) = attestation {
             tracing::info!(
                 "hardware attestation: SE key bound to node {} (chip={})",
