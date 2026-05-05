@@ -226,6 +226,13 @@ baseline is not operationally useful because monolithic residency is too large.
 | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |
 | DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` | `ResidentKv` | pass | 4 | 5 | Skippy stage recompute | 3.4 | **4.40x faster** | 8.5 KiB | metadata-derived | Package-only proof on expert slice `3..4`; selected 7.47 GB stage part plus upstream `0..3`, no full 406.8 GB layer set loaded or merged. |
 
+DeepSeek3 uses `ResidentKv` for package-backed serving. The local gate verifies
+the package stage cache without requiring a monolithic full-GGUF baseline:
+`0..1` passed with real token input, `3..4` passed with a real upstream `0..3`
+activation producer, and late layers `30..31` plus `60..61` passed with
+deterministic synthetic upstream activations so only the owned stage range had
+to be materialized.
+
 `state-handoff` reports distinguish behavioral exactness from byte-stable state
 re-export. `status = pass` means the restored cache state produced the same next
 token/output and repeat hits matched. `roundtrip_state_matches = false` means a

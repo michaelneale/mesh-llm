@@ -434,6 +434,9 @@ def format_bytes(value: Any) -> str:
         return "n/a"
     if value == 0:
         return "0"
+    if value < 1024 * 1024:
+        kib = value / 1024
+        return f"{kib:.1f} KiB"
     mib = value / (1024 * 1024)
     return f"{mib:.1f} MiB"
 

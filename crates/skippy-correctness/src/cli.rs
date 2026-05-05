@@ -175,6 +175,8 @@ pub struct StateHandoffArgs {
     #[arg(long)]
     pub cache_decoded_result_hits: bool,
     #[arg(long)]
+    pub synthetic_input_activation: bool,
+    #[arg(long)]
     pub binary_control: bool,
     #[arg(long)]
     pub allow_mismatch: bool,

@@ -132,6 +132,7 @@ struct BinaryStateHandoffConfig {
     runtime_lane_count: Option<u32>,
     borrow_resident_hits: bool,
     cache_decoded_result_hits: bool,
+    synthetic_input_activation: bool,
     binary_control: bool,
     child_logs: bool,
     startup_timeout_secs: u64,
@@ -474,6 +475,7 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         runtime_lane_count: args.runtime_lane_count,
         borrow_resident_hits: args.borrow_resident_hits,
         cache_decoded_result_hits: args.cache_decoded_result_hits,
+        synthetic_input_activation: args.synthetic_input_activation,
         binary_control: args.binary_control,
         child_logs: args.server.child_logs,
         startup_timeout_secs: args.server.startup_timeout_secs,
@@ -1092,7 +1094,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     drop(tokenizer);
     let tokenize_ms = elapsed_ms(tokenize_started);
     let input_started = Instant::now();
-    let input_resolution = if args.state_layer_start == 0 {
+    let input_resolution = if args.state_layer_start == 0 || args.synthetic_input_activation {
         None
     } else {
         Some(stage_model_resolution(
@@ -2074,6 +2076,18 @@ fn build_state_handoff_inputs(
     prefix: &[i32],
     continuation: i32,
 ) -> Result<(Option<ActivationFrame>, Option<ActivationFrame>, i32)> {
+    if args.synthetic_input_activation {
+        if args.state_layer_start == 0 {
+            bail!("--synthetic-input-activation requires --state-layer-start greater than zero");
+        }
+        let prefill_input = synthetic_activation_frame(args, prefix.len() as u32, 0);
+        let decode_input = synthetic_activation_frame(args, 1, continuation);
+        return Ok((
+            Some(prefill_input),
+            Some(decode_input),
+            args.activation_width,
+        ));
+    }
     let Some(input_resolution) = input_resolution else {
         return Ok((None, None, args.activation_width));
     };
@@ -2117,6 +2131,42 @@ fn build_state_handoff_inputs(
         );
     }
     Ok((Some(prefill_input), Some(decode_input), prefill_width))
+}
+
+fn synthetic_activation_frame(
+    args: &BinaryStateHandoffConfig,
+    token_count: u32,
+    token_seed: i32,
+) -> ActivationFrame {
+    let width = args.activation_width.max(0) as usize;
+    let token_count_usize = token_count as usize;
+    let mut payload = Vec::with_capacity(token_count_usize * width * std::mem::size_of::<f32>());
+    for token_index in 0..token_count_usize {
+        for column in 0..width {
+            let raw = (token_index as i32 * 31
+                + column as i32 * 17
+                + token_seed
+                + args.state_layer_start as i32 * 13)
+                .rem_euclid(2048);
+            let value = (raw as f32 / 2048.0) - 0.5;
+            payload.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    ActivationFrame {
+        desc: skippy_runtime::ActivationDesc {
+            version: 1,
+            dtype: skippy_runtime::RuntimeActivationDType::F32,
+            layout: skippy_runtime::RuntimeActivationLayout::TokenMajor,
+            producer_stage_index: args.state_stage_index.saturating_sub(1) as i32,
+            layer_start: 0,
+            layer_end: args.state_layer_start as i32,
+            token_count,
+            sequence_count: if token_count > 0 { 1 } else { 0 },
+            payload_bytes: payload.len() as u64,
+            flags: 0,
+        },
+        payload,
+    }
 }
 
 fn send_prefill_for_state_handoff(

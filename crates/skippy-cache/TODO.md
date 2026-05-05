@@ -13,34 +13,40 @@
   performance evidence.
 - Benchmark evidence now uses matched single-request settings:
   Skippy `--runtime-lane-count 1` and llama-server `--parallel 1`. Resident KV
-  rows report measured cache footprint when native KV-page export is available;
-  hybrid/SWA layouts that can resident-copy but cannot export KV pages for
-  sizing are marked `TBD` instead of failing correctness.
+  rows report measured cache footprint when native KV-page export is available
+  and metadata-derived native KV footprint otherwise. The benchmark table has no
+  missing cache-size cells.
+- DeepSeek3 package-backed cache strategy is certified for `ResidentKv` without
+  loading or merging the full 406.8 GB source GGUF. The gate covers real-input
+  `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late-layer
+  package stages `30..31` and `60..61`.
 
 ## DeepSeek3 Exact-State Certification
 
-DeepSeek3 is classified as its own topology family, but exact-state mobility is
-still `Untested`. Before promoting it to accepted cache policy, run a real GGUF
-state-handoff certification:
+DeepSeek3 is classified as its own topology family and uses package-backed
+`ResidentKv` as the accepted serving cache policy. We do not require a full GGUF
+llama-server baseline for this family because the full layer set is too large
+for the local baseline target.
 
-1. Run `skippy-correctness state-handoff` with `--state-payload-kind full-state`
-   on a DeepSeek3 GGUF.
-2. If full-state matches, run the same prompt with `--state-payload-kind
-   resident-kv` or `kv-recurrent`, depending on the certified compact payload.
-3. Record `matches`, payload size, import/export timings, and cache-hit timing
-   in the cache benchmark table.
-4. Promote only the tested model/ref, or the family if multiple representative
-   refs pass.
+Completed local package gates:
 
-Keep `q8_wire_validation` and `exact_state_mobility` as untested until this
-evidence exists.
+1. `0..1` with real token input: pass, `5.18x` vs stage recompute.
+2. `3..4` with a real upstream `0..3` activation producer: pass, `3.76x` vs
+   stage recompute.
+3. `30..31` with deterministic synthetic upstream activation: pass, `4.51x` vs
+   stage recompute.
+4. `60..61` with deterministic synthetic upstream activation and output head:
+   pass, `2.03x` vs stage recompute.
+
+Keep `q8_wire_validation` as untested until the exact package ref is certified
+with q8 activation wire.
 
 ## Follow-Up Certification
 
-- DeepSeek3 needs a local full GGUF before it can be benchmarked against
-  llama-server. The local layer-shard package is enough for staged serving work
-  but not for the matched llama-server baseline in
-  `evals/skippy-cache-production-bench.py`.
+- DeepSeek3 remains package-only for benchmark evidence. If a machine with
+  enough memory can run the monolithic full GGUF under llama-server, add that as
+  a separate baseline, but do not block package-backed serving or cache strategy
+  on that baseline.
 - MiniMax M2.7 passes `ResidentKv`, and the exported recurrent component is
   zero bytes for the tested GGUF. Add a multi-token continuation certification
   and a compact recurrent-payload review before treating that as proof for every
