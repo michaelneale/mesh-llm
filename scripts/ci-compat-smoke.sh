@@ -25,6 +25,11 @@ if [[ ! -x "$MESH_LLM" ]]; then
     exit 1
 fi
 
+if [[ ! -f "$MODEL" ]]; then
+    echo "Missing model file: $MODEL" >&2
+    exit 1
+fi
+
 "$MESH_LLM" \
     serve \
     --model "$MODEL" \
