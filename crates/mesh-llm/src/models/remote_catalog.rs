@@ -7,13 +7,13 @@
 #![allow(dead_code)]
 
 use std::{
-    ffi::OsString,
     fs,
     path::PathBuf,
-    process::Command,
     sync::OnceLock,
     time::{Duration, SystemTime},
 };
+
+use hf_hub::RepoDownloadFileParams;
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -112,32 +112,57 @@ pub fn is_catalog_stale() -> bool {
     elapsed > Duration::from_secs(24 * 60 * 60)
 }
 
+/// Known catalog entry paths in the meshllm/catalog dataset.
+/// These are the models we have pre-split layer packages for.
+const CATALOG_ENTRIES_FILES: &[&str] = &[
+    "entries/unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF.json",
+    "entries/unsloth/DeepSeek-V3.2-GGUF.json",
+    "entries/unsloth/Qwen3-235B-A22B-GGUF.json",
+    "entries/Qwen/Qwen3-8B-GGUF.json",
+    "entries/Qwen/Qwen3-4B-GGUF.json",
+    "entries/Qwen/Qwen3-30B-A3B-GGUF.json",
+    "entries/Qwen/Qwen3-14B-GGUF.json",
+    "entries/Qwen/Qwen3-32B-GGUF.json",
+    "entries/bartowski/Qwen3-235B-A22B-GGUF.json",
+];
+
 /// Downloads/refreshes the catalog dataset from HuggingFace and loads entries into memory.
 ///
-/// Uses the `hf` CLI to download `meshllm/catalog` as a dataset, then parses all
-/// JSON files under `entries/**/*.json`.
+/// Uses the `hf_hub` Rust library to download catalog entry files from the
+/// `meshllm/catalog` dataset repo.
 pub fn refresh_catalog() -> Result<()> {
+    let api = super::build_hf_api(false)?;
+    let dataset = api.dataset("meshllm", "catalog");
+
     let cache_dir = catalog_cache_dir();
-    fs::create_dir_all(&cache_dir)
-        .with_context(|| format!("create catalog cache dir {}", cache_dir.display()))?;
+    let entries_dir = cache_dir.join("entries");
+    fs::create_dir_all(&entries_dir)
+        .with_context(|| format!("create catalog cache dir {}", entries_dir.display()))?;
 
-    let args: Vec<OsString> = vec![
-        OsString::from("download"),
-        OsString::from("meshllm/catalog"),
-        OsString::from("--repo-type"),
-        OsString::from("dataset"),
-        OsString::from("--local-dir"),
-        cache_dir.as_os_str().to_os_string(),
-        OsString::from("--quiet"),
-    ];
+    // Download each known catalog entry
+    for entry_file in CATALOG_ENTRIES_FILES {
+        let downloaded = dataset
+            .download_file(
+                &RepoDownloadFileParams::builder()
+                    .filename(entry_file.to_string())
+                    .revision("main".to_string())
+                    .build(),
+            )
+            .with_context(|| format!("download catalog entry {entry_file}"))?;
 
-    let status = Command::new("hf")
-        .args(&args)
-        .status()
-        .context("run hf download for meshllm/catalog dataset")?;
-    if !status.success() {
-        bail!("hf download failed for meshllm/catalog dataset");
+        // Copy to our cache dir structure if needed
+        let dest = cache_dir.join(entry_file);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if downloaded != dest {
+            fs::copy(&downloaded, &dest)
+                .with_context(|| format!("copy catalog entry to cache: {entry_file}"))?;
+        }
     }
+
+    // Touch to update mtime for staleness check
+    let _ = fs::File::create(entries_dir.join(".last_refresh"));
 
     load_catalog_from_disk()
 }

@@ -135,8 +135,110 @@ pub(crate) fn is_layer_package_ref(value: &str) -> bool {
     StagePackageRef::parse(value).is_ok_and(|package_ref| package_ref.is_distributable_package())
 }
 
+/// Resolve an `hf://` package ref to a local directory, downloading the manifest
+/// and required layer files using the `hf_hub` Rust library.
+///
+/// Returns the local directory path containing the package files.
+/// If `package_ref` is already a local path, returns it as-is.
+pub(crate) fn resolve_hf_package_to_local(
+    package_ref: &str,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<String> {
+    let parsed = StagePackageRef::parse(package_ref)?;
+    let (repo, revision) = match &parsed {
+        StagePackageRef::HuggingFacePackage { repo, revision } => {
+            (repo.clone(), revision.clone().unwrap_or_else(|| "main".to_string()))
+        }
+        _ => return Ok(package_ref.to_string()),
+    };
+
+    let api = crate::models::build_hf_api(false)?;
+    let (owner, name) = repo.split_once('/').context("invalid HF repo format")?;
+    let model_api = api.model(owner, name);
+
+    // Download manifest first
+    let manifest_path = model_api
+        .download_file(
+            &hf_hub::RepoDownloadFileParams::builder()
+                .filename("model-package.json".to_string())
+                .revision(revision.clone())
+                .build(),
+        )
+        .context("download layer package manifest")?;
+
+    let package_dir = manifest_path
+        .parent()
+        .context("manifest has no parent directory")?
+        .to_path_buf();
+
+    // Read manifest to determine which files we need
+    let manifest_contents = fs::read(&manifest_path)
+        .context("read package manifest")?;
+    let manifest: serde_json::Value = serde_json::from_slice(&manifest_contents)
+        .context("parse package manifest")?;
+
+    // Collect the files we need to download
+    let mut needed_files: Vec<String> = Vec::new();
+
+    // Always need shared/metadata.gguf
+    if let Some(metadata) = manifest.pointer("/shared/metadata/artifact") {
+        if let Some(path) = metadata.as_str() {
+            needed_files.push(path.to_string());
+        }
+    }
+    if include_embeddings {
+        if let Some(emb) = manifest.pointer("/shared/embeddings/artifact") {
+            if let Some(path) = emb.as_str() {
+                needed_files.push(path.to_string());
+            }
+        }
+    }
+    if include_output {
+        if let Some(out) = manifest.pointer("/shared/output/artifact") {
+            if let Some(path) = out.as_str() {
+                needed_files.push(path.to_string());
+            }
+        }
+    }
+
+    // Layer files for assigned range
+    if let Some(layers) = manifest.get("layers").and_then(|l| l.as_array()) {
+        for (i, layer) in layers.iter().enumerate() {
+            let idx = i as u32;
+            if idx >= layer_start && idx < layer_end {
+                if let Some(artifact) = layer.get("artifact").and_then(|a| a.as_str()) {
+                    needed_files.push(artifact.to_string());
+                }
+            }
+        }
+    }
+
+    // Download each needed file
+    for file in &needed_files {
+        let local_path = package_dir.join(file);
+        if local_path.is_file() {
+            continue; // already cached
+        }
+        model_api
+            .download_file(
+                &hf_hub::RepoDownloadFileParams::builder()
+                    .filename(file.clone())
+                    .revision(revision.clone())
+                    .build(),
+            )
+            .with_context(|| format!("download layer package file: {file}"))?;
+    }
+
+    Ok(package_dir.to_string_lossy().to_string())
+}
+
 pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInfo> {
-    let info = package::inspect_layer_package(package_ref)
+    // Resolve hf:// to local (only downloads manifest for inspection)
+    let local_ref = resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
+    let info = package::inspect_layer_package(&local_ref)
         .with_context(|| format!("inspect skippy layer package {package_ref}"))?;
     stage_package_info(package_ref, info)
 }
@@ -147,14 +249,24 @@ pub(crate) fn materialize_stage_load(
     if load.load_mode != LoadMode::LayerPackage {
         return Ok(None);
     }
+    let is_final = load.downstream.is_none();
+    let include_embeddings = load.layer_start == 0 || is_final;
+    // Resolve hf:// to local dir with needed files downloaded
+    let local_ref = resolve_hf_package_to_local(
+        &load.package_ref,
+        load.layer_start,
+        load.layer_end,
+        include_embeddings,
+        is_final,
+    )?;
     let request = package_stage_request(
         &load.model_id,
         &load.topology_id,
-        &load.package_ref,
+        &local_ref,
         &load.stage_id,
         load.layer_start,
         load.layer_end,
-        load.downstream.is_none(),
+        is_final,
     );
     let materialized = package::materialize_layer_package_details(&request).with_context(|| {
         format!(
@@ -162,7 +274,7 @@ pub(crate) fn materialize_stage_load(
             load.stage_id, load.layer_start, load.layer_end
         )
     })?;
-    let info = package::inspect_layer_package(&load.package_ref)?;
+    let info = package::inspect_layer_package(&local_ref)?;
     let artifact = MaterializedStageArtifact {
         path: materialized.output_path,
         manifest_sha256: materialized.manifest_sha256,
@@ -191,14 +303,24 @@ pub(crate) fn materialize_stage_config(
         .as_deref()
         .or(config.package_ref.as_deref())
         .context("layer-package config is missing package ref")?;
+    let is_final = config.downstream.is_none();
+    let include_embeddings = config.layer_start == 0 || is_final;
+    // Resolve hf:// to local dir with needed files downloaded
+    let local_ref = resolve_hf_package_to_local(
+        package_ref,
+        config.layer_start,
+        config.layer_end,
+        include_embeddings,
+        is_final,
+    )?;
     let request = package_stage_request(
         &config.model_id,
         &config.topology_id,
-        package_ref,
+        &local_ref,
         &config.stage_id,
         config.layer_start,
         config.layer_end,
-        config.downstream.is_none(),
+        is_final,
     );
     let materialized = package::materialize_layer_package_details(&request).with_context(|| {
         format!(
@@ -206,7 +328,7 @@ pub(crate) fn materialize_stage_config(
             config.stage_id, config.layer_start, config.layer_end
         )
     })?;
-    let info = package::inspect_layer_package(package_ref)?;
+    let info = package::inspect_layer_package(&local_ref)?;
     let artifact = MaterializedStageArtifact {
         path: materialized.output_path,
         manifest_sha256: materialized.manifest_sha256,
