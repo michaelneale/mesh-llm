@@ -1,0 +1,87 @@
+From 24c2be84af60c3ff6dcefcd2898d20fcbae593e2 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 22:34:00 +1000
+Subject: [PATCH] Allow borrowing resident prefix cache sequences
+
+---
+ src/skippy.cpp | 40 +++++++++++++++++++++++++++++++---------
+ 1 file changed, 31 insertions(+), 9 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 8b6a5503..4c65dbc4 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2949,9 +2949,18 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cache sequence id overlaps execution lanes");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+-    if (static_cast<uint32_t>(cache_seq_id) >= llama_n_seq_max(model->ctx)) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "resident sequence id cannot be decoded by this context");
+-        return SKIPPY_STATUS_UNSUPPORTED;
++
++    int32_t seq_id = -1;
++    for (uint32_t i = 0; i < model->lane_in_use.size(); ++i) {
++        if (!model->lane_in_use[i]) {
++            model->lane_in_use[i] = true;
++            seq_id = static_cast<int32_t>(i);
++            break;
++        }
++    }
++    if (seq_id < 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "no skippy execution lane is available");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+ 
+     skippy_session temp{};
+@@ -2960,6 +2969,7 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+     llama_memory_t memory = nullptr;
+     enum skippy_status status = skippy_get_resident_prefix_memory(&temp, &memory, out_error);
+     if (status != SKIPPY_STATUS_OK) {
++        model->lane_in_use[static_cast<size_t>(seq_id)] = false;
+         return status;
+     }
+ 
+@@ -2968,22 +2978,34 @@ enum skippy_status skippy_session_create_from_resident_prefix(
+         const llama_pos max_pos = llama_memory_seq_pos_max(memory, cache_seq_id);
+         if (max_pos < static_cast<llama_pos>(token_count - 1)) {
+             skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "resident prefix sequence is incomplete");
++            model->lane_in_use[static_cast<size_t>(seq_id)] = false;
+             return SKIPPY_STATUS_INVALID_ARGUMENT;
+         }
+     }
+-    if (!llama_memory_seq_rm(memory, cache_seq_id, static_cast<llama_pos>(token_count), -1)) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim borrowed resident sequence");
++    if (!llama_memory_seq_rm(memory, seq_id, -1, -1)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to clear borrowed execution lane");
++        model->lane_in_use[static_cast<size_t>(seq_id)] = false;
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    if (token_count > 0) {
++        llama_memory_seq_cp(memory, cache_seq_id, seq_id, 0, static_cast<llama_pos>(token_count));
++    }
++    if (!llama_memory_seq_rm(memory, seq_id, static_cast<llama_pos>(token_count), -1)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim borrowed execution lane");
++        model->lane_in_use[static_cast<size_t>(seq_id)] = false;
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+ 
+     skippy_session * session = new skippy_session{};
+     session->stage_model = model;
+     session->ctx = model->ctx;
+-    session->seq_id = cache_seq_id;
+-    session->checkpoint_seq_id = -1;
++    session->seq_id = seq_id;
++    session->checkpoint_seq_id = seq_id + static_cast<int32_t>(model->lane_count);
+     session->n_past = static_cast<int32_t>(token_count);
+-    session->borrowed_sequence = true;
+-    session->borrowed_prefix_tokens = static_cast<int32_t>(token_count);
++    session->borrowed_sequence = false;
++    session->borrowed_prefix_tokens = 0;
++    session->checkpoint_valid = false;
++    session->checkpoint_n_past = 0;
+     if (token_count > 0) {
+         session->token_history.assign(token_ids, token_ids + token_count);
+     }
+-- 
+2.50.1 (Apple Git-155)
+

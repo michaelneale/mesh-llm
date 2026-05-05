@@ -27,8 +27,8 @@ use skippy_protocol::{
     binary::{
         read_stage_message, recv_reply, send_ready, send_reply_ack, send_reply_ack_with_stats,
         send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, state_flags,
-        StageReplyStats, StageSamplingConfig, StageWireMessage, WireActivationDType,
-        WireMessageKind, WireReplyKind,
+        StageReplyStats, StageSamplingConfig, StageStateHeader, StageWireMessage,
+        WireActivationDType, WireMessageKind, WireReplyKind,
     },
     LoadMode, MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -68,6 +68,12 @@ struct BinaryKvRecordResult {
     recorded_activation_bytes: u64,
     evicted_activation_entries: usize,
     evicted_activation_bytes: u64,
+}
+
+#[derive(Default)]
+struct BinaryPrefixCacheControlResult {
+    hit: bool,
+    stats: StageReplyStats,
 }
 
 pub async fn serve_binary(args: ServeBinaryArgs) -> Result<()> {
@@ -298,6 +304,7 @@ fn handle_binary_connection(
     let mut pending_prefill_replies = 0usize;
     let mut pending_reply_stats = StageReplyStats::default();
     let mut request_summary = BinaryRequestSummary::default();
+    let mut accumulated_prefill_tokens: BTreeMap<String, Vec<i32>> = BTreeMap::new();
     let mut async_forwarder = if async_prefill_forward {
         downstream
             .as_ref()
@@ -362,6 +369,21 @@ fn handle_binary_connection(
             let lock_timer = Instant::now();
             let mut runtime = runtime.lock().expect("runtime lock poisoned");
             let runtime_lock_wait_ms = elapsed_ms(lock_timer);
+            if let Some(tokens) = accumulated_prefill_tokens.remove(&session_key) {
+                let record = maybe_record_binary_full_prefill(
+                    config,
+                    &mut runtime,
+                    kv,
+                    telemetry,
+                    &session_key,
+                    &message,
+                    &tokens,
+                );
+                if record.recorded_pages > 0 {
+                    stop_stats.kv_recorded_pages += record.recorded_pages as i64;
+                    stop_stats.kv_record_stage_mask |= stage_mask(config.stage_index);
+                }
+            }
             let drop_stats = runtime
                 .drop_session_timed(&session_key)
                 .context("reset binary stage session")?;
@@ -517,6 +539,90 @@ fn handle_binary_connection(
             continue;
         }
 
+        if message.kind.is_prefix_cache_control() {
+            let control_started = Instant::now();
+            let mut control_stats = std::mem::take(&mut pending_reply_stats);
+            if let Some(forwarder) = async_forwarder.as_mut() {
+                forwarder
+                    .flush()
+                    .context("flush async forwards before prefix cache control")?;
+            }
+            drain_deferred_prefill_replies(
+                downstream.as_mut(),
+                &mut pending_prefill_replies,
+                &mut control_stats,
+            )
+            .context("drain deferred replies before prefix cache control")?;
+            if message.kind == WireMessageKind::TryRestorePrefillDecode {
+                handle_binary_restore_prefill_decode_control(
+                    config,
+                    topology,
+                    runtime,
+                    kv,
+                    telemetry,
+                    &session_key,
+                    session_id,
+                    &message,
+                    downstream.as_mut(),
+                    upstream,
+                    wire_dtype,
+                    downstream_wire_condition,
+                    activation_width,
+                    control_started,
+                    control_stats,
+                )
+                .context("handle restore-prefill-decode control")?;
+                continue;
+            }
+            let token_ids = token_sideband_or_fill(&message)
+                .context("read prefix cache control token sideband")?;
+            let local = maybe_prefix_cache_control(
+                config,
+                runtime,
+                kv,
+                telemetry,
+                &session_key,
+                &message,
+                &token_ids,
+            );
+            control_stats.merge(local.stats);
+            if local.hit {
+                if let Some(downstream) = downstream.as_mut() {
+                    write_stage_message_conditioned(
+                        &mut *downstream,
+                        &message,
+                        wire_dtype,
+                        downstream_wire_condition,
+                    )
+                    .context("forward prefix cache control")?;
+                    let reply =
+                        recv_reply(&mut *downstream).context("prefix cache downstream ACK")?;
+                    if reply.kind != WireReplyKind::Ack {
+                        bail!("prefix cache control expected downstream ACK");
+                    }
+                    let downstream_missed = message.kind == WireMessageKind::TryRestorePrefill
+                        && (reply.stats.kv_lookup_misses > 0
+                            || reply.stats.kv_lookup_errors > 0
+                            || reply.stats.kv_lookup_hits == 0);
+                    control_stats.merge(reply.stats);
+                    if downstream_missed {
+                        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                        let _ = runtime.drop_session_timed(&session_key);
+                    }
+                }
+            }
+            let mut attrs = binary_message_attrs(config, session_id, &message);
+            attrs.insert("skippy.kv.control_hit".to_string(), json!(local.hit));
+            attrs.insert(
+                "llama_stage.elapsed_ms".to_string(),
+                json!(elapsed_ms(control_started)),
+            );
+            telemetry.emit_debug("stage.binary_prefix_cache_control", attrs);
+            send_reply_ack_with_stats(&mut *upstream, control_stats)
+                .context("prefix cache control ack")?;
+            continue;
+        }
+
         if message.kind == WireMessageKind::StateImport {
             bail!("binary state import is no longer supported by the skippy runtime ABI");
         }
@@ -543,14 +649,15 @@ fn handle_binary_connection(
             early_reply_ms = elapsed_ms(reply_started);
         }
 
-        let input_decode_started = Instant::now();
-        let input = input_activation_frame(config, topology, &message, activation_width)?;
-        let input_activation_decode_ms = if message.activation.is_empty() {
-            0.0
-        } else {
-            elapsed_ms(input_decode_started)
-        };
         let token_ids = token_sideband_or_fill(&message)?;
+        if message.kind.is_prefill() && !message.kind.requires_predicted_reply() {
+            accumulate_prefill_tokens(
+                &mut accumulated_prefill_tokens,
+                &session_key,
+                message.pos_start.max(0) as usize,
+                &token_ids,
+            );
+        }
         let mut message_reply_stats = StageReplyStats::default();
         let lookup_result = maybe_lookup_binary_prefill(
             config,
@@ -576,6 +683,7 @@ fn handle_binary_connection(
         };
         let compute_start_unix_nanos: u64;
         let compute_end_unix_nanos: u64;
+        let mut input_activation_decode_ms = 0.0;
         let mut runtime_lock_wait_ms = 0.0;
         let mut runtime_lock_hold_ms = 0.0;
         let mut runtime_lock_acquires = 0usize;
@@ -595,6 +703,13 @@ fn handle_binary_connection(
                 0.0,
             )
         } else {
+            let input_decode_started = Instant::now();
+            let input = input_activation_frame(config, topology, &message, activation_width)?;
+            input_activation_decode_ms = if message.activation.is_empty() {
+                0.0
+            } else {
+                elapsed_ms(input_decode_started)
+            };
             if message.kind == WireMessageKind::VerifySpan
                 && (message.state.flags & state_flags::SKIP_VERIFY_CHECKPOINT) == 0
             {
@@ -1152,6 +1267,10 @@ fn insert_runtime_session_stats(
         json!(stats.idle_sessions),
     );
     attrs.insert(
+        format!("{prefix}.idle_resident_prefixes"),
+        json!(stats.idle_resident_prefixes),
+    );
+    attrs.insert(
         format!("{prefix}.tracked_token_counts"),
         json!(stats.tracked_token_counts),
     );
@@ -1377,6 +1496,352 @@ fn binary_message_kv_attrs(
     attrs
 }
 
+fn maybe_prefix_cache_control(
+    config: &StageConfig,
+    runtime: &Arc<Mutex<RuntimeState>>,
+    kv: Option<&Arc<KvStageIntegration>>,
+    telemetry: &Telemetry,
+    session_id: &str,
+    message: &StageWireMessage,
+    token_ids: &[i32],
+) -> BinaryPrefixCacheControlResult {
+    let mut result = BinaryPrefixCacheControlResult::default();
+    let Some(kv) = kv else {
+        return result;
+    };
+    if !kv.should_lookup() || token_ids.is_empty() {
+        return result;
+    }
+    let token_start = if message.kind == WireMessageKind::TryRestorePrefillDecode {
+        0
+    } else {
+        message.pos_start.max(0) as u64
+    };
+    let base = binary_message_base(config, session_id, message);
+    let identity = kv.prefill_identity(config, &base, token_start, token_ids);
+    let mut attrs = binary_message_kv_attrs(config, kv, session_id, message, token_ids.len());
+    attrs.insert("skippy.kv.lookup_candidates".to_string(), json!(1));
+    let started = Instant::now();
+    if token_start != 0 {
+        result.stats.kv_lookup_misses += 1;
+        attrs.insert(
+            "skippy.kv.lookup_ms".to_string(),
+            json!(elapsed_ms(started)),
+        );
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("nonzero_token_start_unsupported"),
+        );
+        telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+        return result;
+    }
+    match message.kind {
+        WireMessageKind::ProbePrefill => {
+            if let Some(probed) = kv.probe_resident_prefix(&identity) {
+                result.hit = probed.token_count >= token_ids.len();
+                if result.hit {
+                    result.stats.kv_lookup_hits += 1;
+                    result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
+                    attrs.insert("skippy.kv.decision".to_string(), json!("probe_hit"));
+                    attrs.insert("skippy.kv.hit_page_id".to_string(), json!(probed.page_id));
+                    attrs.insert(
+                        "skippy.kv.restored_tokens".to_string(),
+                        json!(probed.token_count),
+                    );
+                    attrs.insert(
+                        "skippy.kv.resident_seq_id".to_string(),
+                        json!(probed.seq_id),
+                    );
+                    attrs.insert(
+                        "skippy.kv.resident_entries".to_string(),
+                        json!(probed.entries),
+                    );
+                } else {
+                    result.stats.kv_lookup_misses += 1;
+                    attrs.insert("skippy.kv.decision".to_string(), json!("probe_short"));
+                    attrs.insert(
+                        "skippy.kv.restored_tokens".to_string(),
+                        json!(probed.token_count),
+                    );
+                }
+            } else {
+                result.stats.kv_lookup_misses += 1;
+                attrs.insert("skippy.kv.decision".to_string(), json!("probe_miss"));
+            }
+        }
+        WireMessageKind::RestorePrefill
+        | WireMessageKind::TryRestorePrefill
+        | WireMessageKind::TryRestorePrefillDecode => {
+            let restore = {
+                let mut runtime = runtime.lock().expect("runtime lock poisoned");
+                kv.restore_resident_prefix(
+                    &mut runtime,
+                    session_id,
+                    std::slice::from_ref(&identity),
+                    token_ids,
+                )
+            };
+            match restore {
+                Ok(Some(restored)) if restored.token_count >= token_ids.len() => {
+                    result.hit = true;
+                    result.stats.kv_lookup_hits += 1;
+                    result.stats.kv_imported_tokens += restored.token_count as i64;
+                    result.stats.kv_imported_pages += 1;
+                    result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
+                    let decision = match message.kind {
+                        WireMessageKind::TryRestorePrefill => "try_restore_hit",
+                        WireMessageKind::TryRestorePrefillDecode => "try_restore_decode_hit",
+                        _ => "restore_hit",
+                    };
+                    attrs.insert("skippy.kv.decision".to_string(), json!(decision));
+                    attrs.insert("skippy.kv.hit_page_id".to_string(), json!(restored.page_id));
+                    attrs.insert(
+                        "skippy.kv.restored_tokens".to_string(),
+                        json!(restored.token_count),
+                    );
+                    attrs.insert(
+                        "skippy.kv.resident_seq_id".to_string(),
+                        json!(restored.seq_id),
+                    );
+                    attrs.insert(
+                        "skippy.kv.resident_lane_hit".to_string(),
+                        json!(restored.borrowed),
+                    );
+                    attrs.insert(
+                        "skippy.kv.resident_entries".to_string(),
+                        json!(restored.entries),
+                    );
+                }
+                Ok(Some(restored)) => {
+                    result.stats.kv_lookup_misses += 1;
+                    let decision = match message.kind {
+                        WireMessageKind::TryRestorePrefill => "try_restore_short",
+                        WireMessageKind::TryRestorePrefillDecode => "try_restore_decode_short",
+                        _ => "restore_short",
+                    };
+                    attrs.insert("skippy.kv.decision".to_string(), json!(decision));
+                    attrs.insert(
+                        "skippy.kv.restored_tokens".to_string(),
+                        json!(restored.token_count),
+                    );
+                }
+                Ok(None) => {
+                    result.stats.kv_lookup_misses += 1;
+                    let decision = match message.kind {
+                        WireMessageKind::TryRestorePrefill => "try_restore_miss",
+                        WireMessageKind::TryRestorePrefillDecode => "try_restore_decode_miss",
+                        _ => "restore_miss",
+                    };
+                    attrs.insert("skippy.kv.decision".to_string(), json!(decision));
+                }
+                Err(error) => {
+                    result.stats.kv_lookup_errors += 1;
+                    let decision = match message.kind {
+                        WireMessageKind::TryRestorePrefill => "try_restore_error",
+                        WireMessageKind::TryRestorePrefillDecode => "try_restore_decode_error",
+                        _ => "restore_error",
+                    };
+                    attrs.insert("skippy.kv.decision".to_string(), json!(decision));
+                    attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
+                }
+            }
+        }
+        _ => return result,
+    }
+    attrs.insert(
+        "skippy.kv.lookup_ms".to_string(),
+        json!(elapsed_ms(started)),
+    );
+    telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_binary_restore_prefill_decode_control(
+    config: &StageConfig,
+    topology: Option<&StageTopology>,
+    runtime: &Arc<Mutex<RuntimeState>>,
+    kv: Option<&Arc<KvStageIntegration>>,
+    telemetry: &Telemetry,
+    session_id: &str,
+    wire_session_id: u64,
+    message: &StageWireMessage,
+    downstream: Option<&mut TcpStream>,
+    upstream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    downstream_wire_condition: WireCondition,
+    activation_width: i32,
+    control_started: Instant,
+    mut control_stats: StageReplyStats,
+) -> Result<()> {
+    let (prefix_tokens, current_token) = restore_decode_sideband(message)?;
+    let local = maybe_prefix_cache_control(
+        config,
+        runtime,
+        kv,
+        telemetry,
+        session_id,
+        message,
+        prefix_tokens,
+    );
+    control_stats.merge(local.stats);
+    if !local.hit {
+        let mut attrs = binary_message_attrs(config, wire_session_id, message);
+        attrs.insert("skippy.kv.control_hit".to_string(), json!(false));
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(elapsed_ms(control_started)),
+        );
+        telemetry.emit_debug("stage.binary_prefix_cache_decode_control", attrs);
+        send_reply_ack_with_stats(upstream, control_stats).context("restore-decode miss ACK")?;
+        return Ok(());
+    }
+
+    let input = input_activation_frame(config, topology, message, activation_width)?;
+    let decode_message = restore_prefill_decode_as_decode_message(message, current_token);
+    let compute_started = Instant::now();
+    let (predicted_token, output, runtime_lock_wait_ms, runtime_lock_hold_ms) = {
+        let lock_started = Instant::now();
+        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+        let runtime_lock_wait_ms = elapsed_ms(lock_started);
+        let lock_hold_started = Instant::now();
+        let (predicted, _, output) = run_binary_stage_message(
+            &mut runtime,
+            session_id,
+            &decode_message,
+            &[current_token],
+            input.as_ref(),
+            downstream.is_none(),
+        )
+        .context("execute restore-decode stage message")?;
+        (
+            predicted,
+            output,
+            runtime_lock_wait_ms,
+            elapsed_ms(lock_hold_started),
+        )
+    };
+    let compute_ms = elapsed_ms(compute_started);
+
+    if let Some(downstream) = downstream {
+        let forwarded =
+            forwarded_stage_message_timed(config, message, &output, wire_dtype, activation_width)
+                .context("forward restore-decode activation")?;
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &forwarded.message,
+            wire_dtype,
+            downstream_wire_condition,
+        )
+        .context("forward restore-decode downstream")?;
+        let reply = recv_reply(&mut *downstream).context("restore-decode downstream reply")?;
+        let downstream_missed = reply.kind != WireReplyKind::PredictedToken
+            || reply.stats.kv_lookup_misses > 0
+            || reply.stats.kv_lookup_errors > 0
+            || reply.stats.kv_lookup_hits == 0;
+        control_stats.merge(reply.stats);
+        if downstream_missed {
+            let mut runtime = runtime.lock().expect("runtime lock poisoned");
+            let _ = runtime.drop_session_timed(session_id);
+            let mut attrs = binary_message_attrs(config, wire_session_id, message);
+            attrs.insert("skippy.kv.control_hit".to_string(), json!(false));
+            attrs.insert(
+                "llama_stage.elapsed_ms".to_string(),
+                json!(elapsed_ms(control_started)),
+            );
+            attrs.insert("llama_stage.compute_ms".to_string(), json!(compute_ms));
+            attrs.insert(
+                "llama_stage.runtime_lock_wait_ms".to_string(),
+                json!(runtime_lock_wait_ms),
+            );
+            attrs.insert(
+                "llama_stage.runtime_lock_hold_ms".to_string(),
+                json!(runtime_lock_hold_ms),
+            );
+            telemetry.emit_debug("stage.binary_prefix_cache_decode_control", attrs);
+            send_reply_ack_with_stats(upstream, control_stats)
+                .context("restore-decode downstream miss ACK")?;
+            return Ok(());
+        }
+        let mut attrs = binary_message_attrs(config, wire_session_id, message);
+        attrs.insert("skippy.kv.control_hit".to_string(), json!(true));
+        attrs.insert(
+            "llama_stage.elapsed_ms".to_string(),
+            json!(elapsed_ms(control_started)),
+        );
+        attrs.insert("llama_stage.compute_ms".to_string(), json!(compute_ms));
+        attrs.insert(
+            "llama_stage.runtime_lock_wait_ms".to_string(),
+            json!(runtime_lock_wait_ms),
+        );
+        attrs.insert(
+            "llama_stage.runtime_lock_hold_ms".to_string(),
+            json!(runtime_lock_hold_ms),
+        );
+        attrs.insert(
+            "llama_stage.forward_activation_bytes".to_string(),
+            json!(forwarded.message.activation.len()),
+        );
+        attrs.insert(
+            "llama_stage.activation_encode_ms".to_string(),
+            json!(forwarded.activation_encode_ms),
+        );
+        telemetry.emit_debug("stage.binary_prefix_cache_decode_control", attrs);
+        send_reply_predicted_with_stats(upstream, reply.predicted, control_stats)
+            .context("restore-decode predicted-token reply")?;
+        return Ok(());
+    }
+
+    let mut attrs = binary_message_attrs(config, wire_session_id, message);
+    attrs.insert("skippy.kv.control_hit".to_string(), json!(true));
+    attrs.insert(
+        "llama_stage.elapsed_ms".to_string(),
+        json!(elapsed_ms(control_started)),
+    );
+    attrs.insert("llama_stage.compute_ms".to_string(), json!(compute_ms));
+    attrs.insert(
+        "llama_stage.runtime_lock_wait_ms".to_string(),
+        json!(runtime_lock_wait_ms),
+    );
+    attrs.insert(
+        "llama_stage.runtime_lock_hold_ms".to_string(),
+        json!(runtime_lock_hold_ms),
+    );
+    telemetry.emit_debug("stage.binary_prefix_cache_decode_control", attrs);
+    send_reply_predicted_with_stats(upstream, predicted_token, control_stats)
+        .context("restore-decode final predicted-token reply")?;
+    Ok(())
+}
+
+fn restore_decode_sideband(message: &StageWireMessage) -> Result<(&[i32], i32)> {
+    let Some((&current, prefix_tokens)) = message.tokens.split_last() else {
+        bail!("restore-decode message requires prefix tokens plus current token");
+    };
+    if prefix_tokens.is_empty() {
+        bail!("restore-decode message requires non-empty prefix tokens");
+    }
+    Ok((prefix_tokens, current))
+}
+
+fn restore_prefill_decode_as_decode_message(
+    message: &StageWireMessage,
+    current_token: i32,
+) -> StageWireMessage {
+    let mut decode = message.clone();
+    decode.kind = WireMessageKind::DecodeEmbd;
+    decode.token_count = 1;
+    decode.tokens = vec![current_token];
+    decode.activation.clear();
+    decode.raw_bytes.clear();
+    decode.state.phase = StageStateHeader::new(
+        WireMessageKind::DecodeEmbd,
+        message.state.dtype().unwrap_or(WireActivationDType::F32),
+    )
+    .phase;
+    decode.state.current_token = current_token;
+    decode
+}
+
 fn maybe_lookup_binary_prefill(
     config: &StageConfig,
     runtime: &Arc<Mutex<RuntimeState>>,
@@ -1407,6 +1872,19 @@ fn maybe_lookup_binary_prefill(
         json!(identities.len()),
     );
     let started = Instant::now();
+    if token_start != 0 {
+        result.stats.kv_lookup_misses += 1;
+        attrs.insert(
+            "skippy.kv.lookup_ms".to_string(),
+            json!(elapsed_ms(started)),
+        );
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("nonzero_token_start_unsupported"),
+        );
+        telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+        return result;
+    }
     if config.downstream.is_some() {
         let Some(activation) =
             kv.restore_resident_activation(config, &base, token_start, token_ids, activation_width)
@@ -1543,6 +2021,10 @@ fn maybe_lookup_binary_prefill(
                 json!(restored.seq_id),
             );
             attrs.insert(
+                "skippy.kv.resident_lane_hit".to_string(),
+                json!(restored.borrowed),
+            );
+            attrs.insert(
                 "skippy.kv.resident_entries".to_string(),
                 json!(restored.entries),
             );
@@ -1604,38 +2086,53 @@ fn maybe_record_binary_prefill(
         json!(identities.len()),
     );
     let started = Instant::now();
-    let mut runtime = runtime.lock().expect("runtime lock poisoned");
-    for identity in identities {
-        let token_count = identity.identity.token_count;
-        if token_count <= min_record_tokens {
-            continue;
-        }
-        let token_count_usize = usize::try_from(token_count)
-            .unwrap_or(usize::MAX)
-            .min(token_ids.len());
-        match kv.record_resident_prefix(
-            &mut runtime,
-            session_id,
-            &identity,
-            &token_ids[..token_count_usize],
-        ) {
-            Ok(Some(record)) => {
-                result.recorded_pages = result.recorded_pages.saturating_add(1);
-                result.recorded_tokens = result
-                    .recorded_tokens
-                    .saturating_add(record.token_count as u64);
-                result.evicted_entries = result
-                    .evicted_entries
-                    .saturating_add(record.evicted_entries);
-                result.evicted_tokens = result.evicted_tokens.saturating_add(record.evicted_tokens);
+    if token_start != 0 {
+        attrs.insert(
+            "skippy.kv.record_ms".to_string(),
+            json!(elapsed_ms(started)),
+        );
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("nonzero_token_start_unsupported"),
+        );
+        telemetry.emit("stage.binary_kv_record_decision", attrs);
+        return result;
+    }
+    {
+        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+        for identity in identities {
+            let token_count = identity.identity.token_count;
+            if token_count <= min_record_tokens {
+                continue;
             }
-            Ok(None) => {}
-            Err(error) => {
-                attrs.insert(
-                    "skippy.kv.record_error".to_string(),
-                    json!(error.to_string()),
-                );
-                break;
+            let token_count_usize = usize::try_from(token_count)
+                .unwrap_or(usize::MAX)
+                .min(token_ids.len());
+            match kv.record_resident_prefix(
+                &mut runtime,
+                session_id,
+                &identity,
+                &token_ids[..token_count_usize],
+            ) {
+                Ok(Some(record)) => {
+                    result.recorded_pages = result.recorded_pages.saturating_add(1);
+                    result.recorded_tokens = result
+                        .recorded_tokens
+                        .saturating_add(record.token_count as u64);
+                    result.evicted_entries = result
+                        .evicted_entries
+                        .saturating_add(record.evicted_entries);
+                    result.evicted_tokens =
+                        result.evicted_tokens.saturating_add(record.evicted_tokens);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    attrs.insert(
+                        "skippy.kv.record_error".to_string(),
+                        json!(error.to_string()),
+                    );
+                    break;
+                }
             }
         }
     }
@@ -1709,6 +2206,88 @@ fn maybe_record_binary_prefill(
     attrs.insert(
         "skippy.activation_cache.evicted_bytes".to_string(),
         json!(result.evicted_activation_bytes),
+    );
+    telemetry.emit("stage.binary_kv_record_decision", attrs);
+    result
+}
+
+fn accumulate_prefill_tokens(
+    accumulated: &mut BTreeMap<String, Vec<i32>>,
+    session_id: &str,
+    token_start: usize,
+    token_ids: &[i32],
+) {
+    if token_ids.is_empty() {
+        return;
+    }
+    let tokens = accumulated.entry(session_id.to_string()).or_default();
+    if token_start == 0 {
+        tokens.clear();
+    }
+    if token_start == tokens.len() {
+        tokens.extend_from_slice(token_ids);
+    }
+}
+
+fn maybe_record_binary_full_prefill(
+    config: &StageConfig,
+    runtime: &mut RuntimeState,
+    kv: Option<&Arc<KvStageIntegration>>,
+    telemetry: &Telemetry,
+    session_id: &str,
+    message: &StageWireMessage,
+    token_ids: &[i32],
+) -> BinaryKvRecordResult {
+    let mut result = BinaryKvRecordResult::default();
+    let Some(kv) = kv else {
+        return result;
+    };
+    if !kv.should_record() || token_ids.is_empty() {
+        return result;
+    }
+    let base = binary_message_base(config, session_id, message);
+    let identity = kv.prefill_identity(config, &base, 0, token_ids);
+    let mut attrs = binary_message_kv_attrs(config, kv, session_id, message, token_ids.len());
+    attrs.insert("skippy.kv.record_candidates".to_string(), json!(1));
+    attrs.insert(
+        "skippy.kv.decision".to_string(),
+        json!("full_prefill_record"),
+    );
+    let started = Instant::now();
+    match kv.record_resident_prefix(runtime, session_id, &identity, token_ids) {
+        Ok(Some(record)) => {
+            result.recorded_pages = 1;
+            result.recorded_tokens = record.token_count as u64;
+            result.evicted_entries = record.evicted_entries;
+            result.evicted_tokens = record.evicted_tokens;
+            attrs.insert(
+                "skippy.kv.recorded_page_id".to_string(),
+                json!(record.page_id),
+            );
+            attrs.insert(
+                "skippy.kv.resident_seq_id".to_string(),
+                json!(record.seq_id),
+            );
+        }
+        Ok(None) => {}
+        Err(error) => {
+            attrs.insert(
+                "skippy.kv.record_error".to_string(),
+                json!(error.to_string()),
+            );
+        }
+    }
+    attrs.insert(
+        "skippy.kv.record_ms".to_string(),
+        json!(elapsed_ms(started)),
+    );
+    attrs.insert(
+        "skippy.kv.recorded_pages".to_string(),
+        json!(result.recorded_pages),
+    );
+    attrs.insert(
+        "skippy.kv.recorded_tokens".to_string(),
+        json!(result.recorded_tokens),
     );
     telemetry.emit("stage.binary_kv_record_decision", attrs);
     result
@@ -2136,7 +2715,11 @@ pub(crate) fn run_binary_stage_message(
         | WireMessageKind::StateExport
         | WireMessageKind::ConfigureGeneration
         | WireMessageKind::CheckpointSession
-        | WireMessageKind::RestoreSession => {
+        | WireMessageKind::RestoreSession
+        | WireMessageKind::ProbePrefill
+        | WireMessageKind::RestorePrefill
+        | WireMessageKind::TryRestorePrefill
+        | WireMessageKind::TryRestorePrefillDecode => {
             bail!("message kind is not executable")
         }
     }

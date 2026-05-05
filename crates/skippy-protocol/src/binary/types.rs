@@ -52,6 +52,10 @@ pub enum WireMessageKind {
     RestoreSession = 12,
     StateExport = 13,
     ConfigureGeneration = 14,
+    ProbePrefill = 15,
+    RestorePrefill = 16,
+    TryRestorePrefill = 17,
+    TryRestorePrefillDecode = 18,
 }
 
 impl WireMessageKind {
@@ -86,6 +90,23 @@ impl WireMessageKind {
     pub fn is_generation_control(self) -> bool {
         matches!(self, Self::ConfigureGeneration)
     }
+
+    pub fn is_prefix_cache_control(self) -> bool {
+        matches!(
+            self,
+            Self::ProbePrefill
+                | Self::RestorePrefill
+                | Self::TryRestorePrefill
+                | Self::TryRestorePrefillDecode
+        )
+    }
+
+    pub fn is_activationless_prefix_cache_control(self) -> bool {
+        matches!(
+            self,
+            Self::ProbePrefill | Self::RestorePrefill | Self::TryRestorePrefill
+        )
+    }
 }
 
 impl TryFrom<i32> for WireMessageKind {
@@ -107,6 +128,10 @@ impl TryFrom<i32> for WireMessageKind {
             12 => Ok(Self::RestoreSession),
             13 => Ok(Self::StateExport),
             14 => Ok(Self::ConfigureGeneration),
+            15 => Ok(Self::ProbePrefill),
+            16 => Ok(Self::RestorePrefill),
+            17 => Ok(Self::TryRestorePrefill),
+            18 => Ok(Self::TryRestorePrefillDecode),
             _ => Err(invalid_data("unknown stage message kind")),
         }
     }
@@ -484,6 +509,7 @@ fn expected_phase(kind: WireMessageKind) -> WireStagePhase {
         )
         || kind.is_session_control()
         || kind.is_generation_control()
+        || kind.is_prefix_cache_control()
     {
         WireStagePhase::Prefill
     } else if kind.is_decode_replay() {

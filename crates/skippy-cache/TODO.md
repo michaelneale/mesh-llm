@@ -3,12 +3,19 @@
 ## Completed In This PR
 
 - Serving-path exact prefix cache is wired into local OpenAI serving:
-  `ResidentKv`, `KvRecurrent`, and `FullState` policies restore before decode,
-  record after prefill, dedupe exact payloads, evict by entry/byte caps, and
-  emit cache telemetry.
-- README benchmark evidence now has an explicit table. Falcon-H1 is the only
-  accepted measured row; unmeasured families remain marked `untested` instead
-  of being promoted by architecture alone.
+  `ResidentKv` and `KvRecurrent` policies restore before decode, record after
+  prefill, dedupe exact payloads, evict by entry/byte caps, and emit cache
+  telemetry. `FullState` remains a correctness/certification payload only; it
+  is not selected by production family policy.
+- README benchmark evidence now has an explicit production-payload table.
+  Every reviewed family with a local full GGUF is benchmarked with either
+  `ResidentKv` or `KvRecurrent`; `FullState` rows are excluded from production
+  performance evidence.
+- Benchmark evidence now uses matched single-request settings:
+  Skippy `--runtime-lane-count 1` and llama-server `--parallel 1`. Resident KV
+  rows report measured cache footprint when native KV-page export is available;
+  hybrid/SWA layouts that can resident-copy but cannot export KV pages for
+  sizing are marked `TBD` instead of failing correctness.
 
 ## DeepSeek3 Exact-State Certification
 
@@ -19,7 +26,7 @@ state-handoff certification:
 1. Run `skippy-correctness state-handoff` with `--state-payload-kind full-state`
    on a DeepSeek3 GGUF.
 2. If full-state matches, run the same prompt with `--state-payload-kind
-   kv-recurrent`.
+   resident-kv` or `kv-recurrent`, depending on the certified compact payload.
 3. Record `matches`, payload size, import/export timings, and cache-hit timing
    in the cache benchmark table.
 4. Promote only the tested model/ref, or the family if multiple representative
@@ -27,6 +34,25 @@ state-handoff certification:
 
 Keep `q8_wire_validation` and `exact_state_mobility` as untested until this
 evidence exists.
+
+## Follow-Up Certification
+
+- DeepSeek3 needs a local full GGUF before it can be benchmarked against
+  llama-server. The local layer-shard package is enough for staged serving work
+  but not for the matched llama-server baseline in
+  `evals/skippy-cache-production-bench.py`.
+- MiniMax M2.7 passes `ResidentKv`, and the exported recurrent component is
+  zero bytes for the tested GGUF. Add a multi-token continuation certification
+  and a compact recurrent-payload review before treating that as proof for every
+  MiniMax-style recurrent variant.
+- Extend the production benchmark to longer prompts and multi-token generation.
+  The current smoke matrix shows dense-family parity/wins against llama-server
+  warm slots, but longer prompts and generation lengths should be tracked before
+  making release-level claims.
+- Promote exact decoded-result caching from the correctness harness into serving:
+  cache full-prompt state/logits for exact repeated prompts, return the cached
+  first token without re-running the final prompt-token decode, and continue
+  normal decode only when `max_tokens > 1`.
 
 ## Cache Optimizations To Try
 

@@ -19,6 +19,8 @@ pub const MAX_LOGIT_BIAS: usize = 256;
 pub const GGML_TYPE_F16: u32 = 1;
 pub const GGML_TYPE_Q4_0: u32 = 2;
 pub const GGML_TYPE_Q8_0: u32 = 8;
+pub const LLAMA_SERVER_DEFAULT_N_BATCH: u32 = 2048;
+pub const LLAMA_SERVER_DEFAULT_N_UBATCH: u32 = 512;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[repr(i32)]
@@ -62,6 +64,8 @@ pub struct RuntimeConfig {
     pub lane_count: u32,
     pub n_batch: Option<u32>,
     pub n_ubatch: Option<u32>,
+    pub n_threads: Option<u32>,
+    pub n_threads_batch: Option<u32>,
     pub n_gpu_layers: i32,
     pub selected_backend_device: Option<String>,
     pub cache_type_k: u32,
@@ -95,6 +99,12 @@ impl RuntimeConfig {
         if self.n_ubatch == Some(0) {
             return Err("n_ubatch must be greater than zero when provided");
         }
+        if self.n_threads == Some(0) {
+            return Err("n_threads must be greater than zero when provided");
+        }
+        if self.n_threads_batch == Some(0) {
+            return Err("n_threads_batch must be greater than zero when provided");
+        }
         Ok(())
     }
 
@@ -121,15 +131,30 @@ impl RuntimeConfig {
                 lane_count: i32::try_from(self.lane_count).context("lane_count exceeds i32")?,
                 n_batch: self
                     .n_batch
+                    .or(Some(LLAMA_SERVER_DEFAULT_N_BATCH))
                     .map(i32::try_from)
                     .transpose()
                     .context("n_batch exceeds i32")?
                     .unwrap_or(0),
                 n_ubatch: self
                     .n_ubatch
+                    .or(Some(LLAMA_SERVER_DEFAULT_N_UBATCH))
                     .map(i32::try_from)
                     .transpose()
                     .context("n_ubatch exceeds i32")?
+                    .unwrap_or(0),
+                n_threads: self
+                    .n_threads
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_threads exceeds i32")?
+                    .unwrap_or(0),
+                n_threads_batch: self
+                    .n_threads_batch
+                    .or(self.n_threads)
+                    .map(i32::try_from)
+                    .transpose()
+                    .context("n_threads_batch exceeds i32")?
                     .unwrap_or(0),
                 n_gpu_layers: self.n_gpu_layers,
                 cache_type_k: i32::try_from(self.cache_type_k)
@@ -162,8 +187,10 @@ impl Default for RuntimeConfig {
             layer_end: 1,
             ctx_size: 512,
             lane_count: 1,
-            n_batch: None,
-            n_ubatch: None,
+            n_batch: Some(LLAMA_SERVER_DEFAULT_N_BATCH),
+            n_ubatch: Some(LLAMA_SERVER_DEFAULT_N_UBATCH),
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -654,6 +681,35 @@ impl StageModel {
         Ok(StageSession {
             raw,
             token_count: 0,
+        })
+    }
+
+    pub fn create_session_from_resident_prefix(
+        &self,
+        cache_seq_id: i32,
+        token_ids: &[i32],
+    ) -> Result<StageSession> {
+        let mut raw = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        let status = unsafe {
+            skippy_ffi::skippy_session_create_from_resident_prefix(
+                self.raw,
+                cache_seq_id,
+                token_ids.as_ptr(),
+                token_ids.len(),
+                &mut raw,
+                &mut error,
+            )
+        };
+        ensure_ok(status, error)?;
+        if raw.is_null() {
+            return Err(anyhow!(
+                "skippy_session_create_from_resident_prefix returned a null handle"
+            ));
+        }
+        Ok(StageSession {
+            raw,
+            token_count: u64::try_from(token_ids.len()).context("token count exceeds u64")?,
         })
     }
 
@@ -1165,6 +1221,14 @@ impl StageSession {
         self.token_count
     }
 
+    pub fn batch_size(&self) -> Result<usize> {
+        let n_batch = unsafe { skippy_ffi::skippy_session_batch_size(self.raw) };
+        if n_batch <= 0 {
+            return Err(anyhow!("skippy session has no valid batch size"));
+        }
+        usize::try_from(n_batch).context("session batch size exceeds usize")
+    }
+
     /// Captures the current position and asks the native runtime to keep an
     /// in-session recurrent checkpoint. Attention KV is restored by trimming
     /// the speculative suffix back to this position.
@@ -1286,6 +1350,17 @@ impl StageSession {
             .token_count
             .checked_add(u64::try_from(token_ids.len()).context("token count exceeds u64")?)
             .context("session token count overflow")?;
+        Ok(())
+    }
+
+    pub fn prefill_chunked(&mut self, token_ids: &[i32]) -> Result<()> {
+        if token_ids.is_empty() {
+            return Ok(());
+        }
+        let batch_size = self.batch_size()?.max(1);
+        for chunk in token_ids.chunks(batch_size) {
+            self.prefill_chunk(chunk)?;
+        }
         Ok(())
     }
 
@@ -2242,8 +2317,8 @@ mod tests {
     use std::{env, path::PathBuf};
 
     use super::{
-        parse_cache_type, ChatTemplateMessage, ModelInfo, RuntimeConfig, RuntimeLoadMode,
-        StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
+        parse_cache_type, ChatTemplateMessage, FlashAttentionType, ModelInfo, RuntimeConfig,
+        RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
     };
 
     fn correctness_model() -> Option<PathBuf> {
@@ -2327,6 +2402,8 @@ mod tests {
             lane_count: 1,
             n_batch: None,
             n_ubatch: None,
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: 0,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,

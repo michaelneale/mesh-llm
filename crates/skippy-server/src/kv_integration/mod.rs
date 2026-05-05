@@ -244,10 +244,6 @@ impl KvStageIntegration {
             .stats()
     }
 
-    fn candidate_token_counts(&self, token_count: u64) -> Vec<u64> {
-        self.candidate_policy.candidate_token_counts(token_count)
-    }
-
     fn record_candidate_token_counts(&self, token_count: u64) -> Vec<u64> {
         self.candidate_policy
             .record_candidate_token_counts(token_count)

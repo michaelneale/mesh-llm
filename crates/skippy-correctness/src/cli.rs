@@ -16,6 +16,7 @@ pub enum CommandKind {
     Chain(ChainArgs),
     SplitScan(SplitScanArgs),
     DtypeMatrix(DtypeMatrixArgs),
+    StateHandoff(StateHandoffArgs),
 }
 
 #[derive(Args, Clone)]
@@ -137,4 +138,53 @@ pub struct DtypeMatrixArgs {
     pub dtypes: String,
     #[arg(long)]
     pub allow_mismatch: bool,
+}
+
+#[derive(Args)]
+pub struct StateHandoffArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+    #[command(flatten)]
+    pub server: ServerArgs,
+    #[command(flatten)]
+    pub output: OutputArgs,
+    #[arg(long, default_value = "127.0.0.1:19061")]
+    pub source_bind_addr: SocketAddr,
+    #[arg(long, default_value = "127.0.0.1:19062")]
+    pub restore_bind_addr: SocketAddr,
+    #[arg(long, default_value_t = 2048)]
+    pub activation_width: i32,
+    #[arg(long, default_value = "f16")]
+    pub activation_wire_dtype: String,
+    #[arg(long, default_value_t = 0)]
+    pub state_layer_start: u32,
+    #[arg(long)]
+    pub state_layer_end: Option<u32>,
+    #[arg(long)]
+    pub state_stage_index: Option<u32>,
+    #[arg(long, value_enum, default_value = "full-state")]
+    pub state_payload_kind: StatePayloadKind,
+    #[arg(long)]
+    pub prefix_token_count: Option<usize>,
+    #[arg(long, default_value_t = 1)]
+    pub cache_hit_repeats: usize,
+    #[arg(long)]
+    pub runtime_lane_count: Option<u32>,
+    #[arg(long)]
+    pub borrow_resident_hits: bool,
+    #[arg(long)]
+    pub cache_decoded_result_hits: bool,
+    #[arg(long)]
+    pub binary_control: bool,
+    #[arg(long)]
+    pub allow_mismatch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum StatePayloadKind {
+    ResidentKv,
+    FullState,
+    RecurrentOnly,
+    KvRecurrent,
 }

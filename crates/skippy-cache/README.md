@@ -97,7 +97,7 @@ recurrent/stateful families:
 
 | Payload | Contents | Use |
 | --- | --- | --- |
-| `FullState` | whole exported sequence state | fallback/reference when smaller payloads are not certified |
+| `FullState` | whole exported sequence state | diagnostic/reference only; not selected by production serving policy |
 | `RecurrentOnly` | recurrent/SSM state only | diagnostic; not generally exact for non-final stages |
 | `KvRecurrent` | attention KV plus recurrent/SSM state | preferred exact payload for hybrid/recurrent repeated-prefix cache |
 
@@ -124,9 +124,8 @@ different continuation state.
 
 | Family shape | Safe cache shape | Notes |
 | --- | --- | --- |
-| Attention-only dense models | resident KV prefix + optional activation replay | KV-only reuse is valid because attention KV is the continuation state. |
-| Dense attention models such as Llama, Qwen3 dense, DeepSeek2, DeepSeek3, GLM4, OLMo, MiniMax-M2.7 | resident KV prefix or exact KV-backed prefix payload | Attention KV is the continuation state; family policy keeps this separate from unknown families. |
-| Hybrid/recurrent models such as Qwen3.6, Qwen3Next, Falcon-H1, RWKV/Mamba-like tensors | `KvRecurrent` or `FullState` only | KV-only reuse is disabled; recurrent/SSM state must be restored with KV for exact continuation. |
+| Dense attention models such as Llama, Qwen3 dense, DeepSeek2, DeepSeek3, GLM4, GLM-4.7 Flash, OLMo, Gemma, MiniMax-M2.7 | `ResidentKv` | Attention KV is the continuation state for the certified prompt-continuation path. The cache entry is resident in the live runtime, so serving reuses llama.cpp sequence state without serializing bytes. |
+| Hybrid/recurrent models such as Qwen3Next, Falcon-H1, RWKV/Mamba-like tensors | `KvRecurrent` only | KV-only reuse is disabled; recurrent/SSM state must be restored with KV for exact continuation. |
 | Families with uncertain state layout | disabled until certified | Unknown families should not silently reuse state. |
 | Diagnostic/correctness runs | `FullState`, `RecurrentOnly`, or `KvRecurrent` | Used to prove exactness and payload economics before enabling serving policy. |
 
@@ -139,7 +138,7 @@ changes the next token.
 The intended recurrent/stateful serving path is:
 
 1. lookup exact prefix identity
-2. import/restore `KvRecurrent` or `FullState`
+2. import/restore `KvRecurrent`
 3. recompute safely on any miss or incompatible payload
 4. record a new exact payload after successful prefill
 
@@ -150,8 +149,10 @@ selects one payload shape:
   copy is enough
 - `KvRecurrent` for hybrid/recurrent families where attention KV and recurrent
   state must move together
-- `FullState` for families where full sequence state is the only certified
-  exact payload
+
+`FullState` is intentionally not selected by the production family policy. It is
+kept as a correctness/certification tool so a family can first prove exact
+restore behavior before we design and promote a compact serving payload.
 
 ```mermaid
 sequenceDiagram
@@ -163,7 +164,7 @@ sequenceDiagram
     O->>S: request
     S->>C: longest-prefix identities
     alt exact hit
-        C-->>S: FullState or KvRecurrent payload
+        C-->>S: KvRecurrent payload
         S->>R: import state into lane
         S->>R: decode next token
     else resident hit
@@ -184,21 +185,99 @@ README performance claims must be backed by correctness runs and comparable
 llama-server baselines. Rows marked `untested` are intentionally not promoted as
 default evidence yet.
 
-| Family | Representative model ref | Payload | llama-server warm repeat | skippy cache hit | Speedup | Payload size | Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | 304.17 ms | 14.76 ms | 20.6x | 89.1 MB | accepted | 512-token prefix, one-token decode, `matches = true`; llama-server repeated prompt reprocessed recurrent-backed state. |
-| Qwen3Next | TBD | `KvRecurrent` | TBD | TBD | TBD | TBD | untested | Needs state-handoff certification before README speedup claims. |
-| Llama | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Dense-family row needs same-prompt baseline because llama-server prompt cache may already reuse well. |
-| Qwen3 dense | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Certify representative GGUF at 512/2k/8k prefix lengths. |
-| DeepSeek2 | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Needs dense-family correctness and baseline row. |
-| DeepSeek3 | TBD | `ResidentKv` / MLA-specific exact state TBD | TBD | TBD | TBD | TBD | untested | Exact-state mobility remains unpromoted until real DeepSeek3 GGUF evidence exists. |
-| Gemma / GLM full-state | TBD | `FullState` | TBD | TBD | TBD | TBD | untested | Needs full-state correctness and payload-economics measurement. |
+Local correctness evidence below was collected on the same machine with
+`n_predict = 1`, `n_gpu_layers = -1`, Skippy `--runtime-lane-count 1`, and
+llama-server `--parallel 1`. The payload column is the production serving
+payload, not an experimental fallback. Results use median warm-hit latency from
+matched repeated prompts. DeepSeek3 remains untested until a real local GGUF is
+available.
 
-Current accepted Falcon-H1 numbers came from
-`skippy-correctness state-handoff` with `--state-payload-kind kv-recurrent`,
-`--prefix-token-count 512`, and `--cache-hit-repeats 10`, compared against a
-same-GGUF llama-server repeated-prompt baseline. Raw reports were kept under
-`/tmp` during measurement and are not committed.
+`Cache bytes` is serialized payload size for `KvRecurrent` and measured native
+KV-page footprint for `ResidentKv` when the runtime can expose it. `TBD` means
+the resident sequence copy is correct, but this model's native memory layout
+does not currently support the KV-page export API used only for sizing.
+
+| Family | Representative model ref | Production payload | Correctness | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Skippy win | Cache bytes | Notes |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | pass | 129 | 108.2 | 12.3 | **8.78x faster** | 76.0 MiB | Recurrent-backed state reuse makes llama-server reprocess work Skippy skips. |
+| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | pass | 17 | 150.1 | 25.4 | **5.91x faster** | 75.8 MiB | Same recurrent-state advantage, even on a tiny smoke prompt. |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 9.5 | 6.6 | **1.43x faster** | TBD | Hot-lane resident prefix reuse beats llama-server warm slots. |
+| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 5.8 | 4.2 | **1.36x faster** | 4.0 MiB | Matches the llama-server slot contract, then wins on overhead. |
+| DeepSeek2 | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `ResidentKv` | pass | 65 | 12.5 | 9.6 | **1.31x faster** | 16.9 MiB | Correct and faster on the resident prefix path. |
+| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 65 | 29.0 | 24.1 | **1.20x faster** | 32.0 MiB | Correct and faster. |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 129 | 7.8 | 6.6 | **1.19x faster** | 14.0 MiB | Hot-lane resident prefix reuse beats llama-server warm slots. |
+| Gemma2 | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 9.7 | 8.5 | **1.15x faster** | TBD | Correct and faster. |
+| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | pass | 33 | 21.0 | 18.5 | **1.14x faster** | 1.2 MiB | Correct and faster. |
+| Gemma4 A4B | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `ResidentKv` | pass | 17 | 18.7 | 16.9 | **1.11x faster** | TBD | Correct and faster. |
+| GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 33 | 21.7 | 20.7 | **1.05x faster** | TBD | Correct and faster on the short-prefix smoke. |
+| Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 17 | 17.2 | 16.4 | **1.05x faster** | TBD | Correct and faster. |
+| MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 17 | 33.0 | 32.7 | **1.01x faster** | 3.9 MiB | Parity/slight win on a giant model with all layers on-device. |
+| DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:Q4_K_M` | `ResidentKv` | missing model | TBD | TBD | TBD | TBD | TBD | This machine has layer shards, not a full GGUF usable for llama-server baseline. |
+
+`state-handoff` reports distinguish behavioral exactness from byte-stable state
+re-export. `status = pass` means the restored cache state produced the same next
+token/output and repeat hits matched. `roundtrip_state_matches = false` means a
+state exported after import was not byte-for-byte identical; that is a
+canonicalization/deduplication diagnostic, not a serving correctness failure.
+Raw reports from this run are under `/tmp/skippy-cache-production-bench*`.
+
+### Current Performance Read
+
+With llama-server-compatible thread defaults, hot-lane resident prefix reuse,
+and the production borrowed-prefix path, Skippy is at parity or ahead for every
+locally available family in the smoke matrix:
+
+| Scenario | Current read | Why |
+| --- | --- | --- |
+| Recurrent/hybrid families | Strong wins where compact recurrent state is exported | Falcon-H1 and Qwen3Next avoid llama-server reprocessing by restoring `KvRecurrent` state. |
+| Dense attention families | Parity to moderate wins | Hot-lane resident prefix reuse preserves the same lane-local slot behavior that made llama-server fast, while the resident cache still supports later exact-prefix reuse. |
+| Full-state diagnostics | Not a production target | `FullState` can prove restore exactness, but it is not selected by serving policy and should not be benchmarked as a cache win/loss. |
+| Split serving | Still needs its own benchmark | Single-stage numbers do not prove end-to-end split wins because activation transfer, stage scheduling, and upstream/downstream cache hits change the cost model. |
+
+### Exact Result Cache
+
+Resident KV now preserves hot lane prefixes, so single-stage warm hits no longer
+pay a copy/restore penalty versus llama-server slots. Both systems still
+evaluate the final prompt token on a warm hit. The next optimization for
+repeated identical prompts is an exact decoded-result cache:
+
+1. keep or restore the runtime state after the full prompt has been evaluated
+2. reuse the already-computed logits / first sampled token for an exact prompt
+   hit
+3. continue normal decode only if the request asks for more tokens
+
+The correctness harness can model this with `--borrow-resident-hits
+--cache-decoded-result-hits`. That mode is a prompt-result cache win, separate
+from the resident KV slot-parity path shown in the table above.
+
+Example:
+
+```bash
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
+  python3 evals/skippy-cache-production-bench.py \
+    --case llama \
+    --output-dir /tmp/skippy-cache-production-bench-llama-result-cache \
+    --runtime-lane-count 1 \
+    --borrow-resident-hits \
+    --cache-decoded-result-hits \
+    --llama-parallel 1
+```
+
+Before claiming a family is faster than llama-server, run a matched benchmark
+with the same GGUF, backend, context size, prompt tokens, generated tokens,
+slot/parallel settings, and warm-cache policy. The README table above is a
+serving-correctness table first; performance wins are only claimed for the rows
+whose matched speedup is above 1.0x.
+
+Reproduce the local production-payload table with:
+
+```bash
+LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
+  python3 evals/skippy-cache-production-bench.py \
+    --output-dir /tmp/skippy-cache-production-bench \
+    --runtime-lane-count 1 \
+    --llama-parallel 1
+```
 
 ## Module Map
 

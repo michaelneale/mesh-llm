@@ -1,8 +1,10 @@
 use std::{
+    collections::HashSet,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    time::Instant,
 };
 
 use anyhow::{bail, Context, Result};
@@ -12,24 +14,27 @@ use model_ref::ModelRef;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use skippy_protocol::binary::{
-    recv_reply, write_stage_message, StageStateHeader, StageWireMessage, WireMessageKind,
-    WireReplyKind,
+    read_stage_message, recv_reply, state_flags, write_stage_message, StageStateHeader,
+    StageWireMessage, WireMessageKind, WireReplyKind,
 };
 use skippy_runtime::{
     package::{materialize_layer_package_details, MaterializedPackage, PackageStageRequest},
-    RuntimeConfig, RuntimeLoadMode, StageModel, GGML_TYPE_F16,
+    ActivationFrame, RuntimeConfig, RuntimeKvPageDesc, RuntimeLoadMode, StageModel, StageSession,
+    GGML_TYPE_F16,
 };
 
 use crate::{
     cli::{
         ChainArgs, DtypeMatrixArgs, RuntimeArgs, ServerArgs, SingleStepArgs, SplitScanArgs,
-        StageLoadMode,
+        StageLoadMode, StateHandoffArgs, StatePayloadKind,
     },
     report::{
         BaselineReport, BoundaryReport, ChainReport, ChainStageReport, DtypeMatrixReport,
         PackagePartReport, PackageStageReport, SingleStepReport, SplitReport, SplitScanReport,
-        StageModelReport,
+        StageModelReport, StateHandoffReport, StatePayloadBlockDigestReport,
+        StatePayloadDigestReport,
     },
     support::{
         activation_width, connect_ready, generate_run_id, parse_wire_dtype, temp_config_path_for,
@@ -103,6 +108,169 @@ struct BinaryChainResult {
     split_layer_2: u32,
     layer_end: u32,
     stage_models: Vec<StageModelReport>,
+}
+
+struct BinaryStateHandoffConfig {
+    stage_server_bin: PathBuf,
+    model: PathBuf,
+    stage_model: Option<PathBuf>,
+    stage_load_mode: StageLoadMode,
+    state_layer_start: u32,
+    state_layer_end: u32,
+    state_stage_index: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    n_gpu_layers: i32,
+    prompt: String,
+    source_bind_addr: SocketAddr,
+    restore_bind_addr: SocketAddr,
+    activation_width: i32,
+    activation_wire_dtype: String,
+    state_payload_kind: StatePayloadKind,
+    prefix_token_count: Option<usize>,
+    cache_hit_repeats: usize,
+    runtime_lane_count: Option<u32>,
+    borrow_resident_hits: bool,
+    cache_decoded_result_hits: bool,
+    binary_control: bool,
+    child_logs: bool,
+    startup_timeout_secs: u64,
+    model_identity: ModelIdentity,
+}
+
+struct BinaryStateHandoffResult {
+    prompt_token_count: usize,
+    benchmark_prompt_token_count: usize,
+    benchmark_prompt_text: String,
+    requested_prefix_token_count: Option<usize>,
+    stage_index: u32,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+    handoff_transport: &'static str,
+    state_payload_kind: StatePayloadKind,
+    borrowed_resident_hits: bool,
+    cached_decoded_result_hits: bool,
+    activation_width: i32,
+    source_predicted_token: i32,
+    restored_predicted_token: i32,
+    state_bytes: usize,
+    cache_storage_bytes: Option<usize>,
+    resident_state_bytes: Option<usize>,
+    roundtrip_state_bytes: usize,
+    payload_digest: StatePayloadDigestReport,
+    tokenize_ms: f64,
+    source_prefill_ms: f64,
+    source_export_ms: f64,
+    source_decode_ms: f64,
+    restore_import_ms: f64,
+    restore_export_ms: f64,
+    restore_decode_ms: f64,
+    cache_hit_import_ms: Vec<f64>,
+    cache_hit_decode_ms: Vec<f64>,
+    matches: bool,
+    predicted_token_matches: bool,
+    roundtrip_state_matches: bool,
+    restored_output_matches: Option<bool>,
+    cache_hit_matches: bool,
+    stage_models: Vec<StageModelReport>,
+}
+
+#[derive(Clone)]
+enum LocalStatePayload {
+    ResidentKv {
+        cache_seq_id: i32,
+        token_count: u64,
+    },
+    FullState(Vec<u8>),
+    RecurrentOnly(Vec<u8>),
+    KvRecurrent {
+        kv_desc: RuntimeKvPageDesc,
+        kv: Vec<u8>,
+        recurrent: Vec<u8>,
+    },
+}
+
+impl LocalStatePayload {
+    fn byte_len(&self) -> usize {
+        match self {
+            Self::ResidentKv { .. } => 0,
+            Self::FullState(bytes) | Self::RecurrentOnly(bytes) => bytes.len(),
+            Self::KvRecurrent { kv, recurrent, .. } => kv.len().saturating_add(recurrent.len()),
+        }
+    }
+
+    fn same_payload(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::ResidentKv {
+                    token_count: a_count,
+                    ..
+                },
+                Self::ResidentKv {
+                    token_count: b_count,
+                    ..
+                },
+            ) => a_count == b_count,
+            (Self::FullState(a), Self::FullState(b))
+            | (Self::RecurrentOnly(a), Self::RecurrentOnly(b)) => a == b,
+            (
+                Self::KvRecurrent {
+                    kv_desc: a_desc,
+                    kv: a_kv,
+                    recurrent: a_recurrent,
+                },
+                Self::KvRecurrent {
+                    kv_desc: b_desc,
+                    kv: b_kv,
+                    recurrent: b_recurrent,
+                },
+            ) => a_desc == b_desc && a_kv == b_kv && a_recurrent == b_recurrent,
+            _ => false,
+        }
+    }
+
+    fn digest_report(&self) -> StatePayloadDigestReport {
+        match self {
+            Self::ResidentKv { .. } => payload_digest_report(
+                state_payload_kind_name(StatePayloadKind::ResidentKv),
+                &[],
+                None,
+                None,
+            ),
+            Self::FullState(bytes) => payload_digest_report(
+                state_payload_kind_name(StatePayloadKind::FullState),
+                bytes,
+                None,
+                None,
+            ),
+            Self::RecurrentOnly(recurrent) => payload_digest_report(
+                state_payload_kind_name(StatePayloadKind::RecurrentOnly),
+                recurrent,
+                None,
+                Some(recurrent.as_slice()),
+            ),
+            Self::KvRecurrent { kv, recurrent, .. } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"kv-recurrent:kv:");
+                hasher.update((kv.len() as u64).to_le_bytes());
+                hasher.update(kv);
+                hasher.update(b":recurrent:");
+                hasher.update((recurrent.len() as u64).to_le_bytes());
+                hasher.update(recurrent);
+                let mut report = payload_digest_report(
+                    state_payload_kind_name(StatePayloadKind::KvRecurrent),
+                    &[],
+                    Some(kv.as_slice()),
+                    Some(recurrent.as_slice()),
+                );
+                report.payload_sha256 = hex_sha256_finish(hasher);
+                report.total_bytes = kv.len().saturating_add(recurrent.len());
+                report
+            }
+        }
+    }
 }
 
 pub fn single_step(args: SingleStepArgs) -> Result<()> {
@@ -271,6 +439,107 @@ pub fn dtype_matrix(args: DtypeMatrixArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
+    let report_out = args.output.report_out;
+    let model_identity = runtime_model_identity(&args.runtime)?;
+    let state_layer_end = args.state_layer_end.unwrap_or(args.runtime.layer_end);
+    let state_stage_index = args.state_stage_index.unwrap_or({
+        if args.state_layer_start == 0 {
+            0
+        } else if state_layer_end == args.runtime.layer_end {
+            2
+        } else {
+            1
+        }
+    });
+    let handoff = run_binary_state_handoff(BinaryStateHandoffConfig {
+        stage_server_bin: args.server.stage_server_bin,
+        model: args.runtime.model,
+        stage_model: args.runtime.stage_model,
+        stage_load_mode: args.runtime.stage_load_mode,
+        state_layer_start: args.state_layer_start,
+        state_layer_end,
+        state_stage_index,
+        layer_end: args.runtime.layer_end,
+        ctx_size: args.runtime.ctx_size,
+        n_gpu_layers: args.runtime.n_gpu_layers,
+        prompt: args.runtime.prompt,
+        source_bind_addr: args.source_bind_addr,
+        restore_bind_addr: args.restore_bind_addr,
+        activation_width: args.activation_width,
+        activation_wire_dtype: args.activation_wire_dtype,
+        state_payload_kind: args.state_payload_kind,
+        prefix_token_count: args.prefix_token_count,
+        cache_hit_repeats: args.cache_hit_repeats,
+        runtime_lane_count: args.runtime_lane_count,
+        borrow_resident_hits: args.borrow_resident_hits,
+        cache_decoded_result_hits: args.cache_decoded_result_hits,
+        binary_control: args.binary_control,
+        child_logs: args.server.child_logs,
+        startup_timeout_secs: args.server.startup_timeout_secs,
+        model_identity: model_identity.clone(),
+    })?;
+    let report = StateHandoffReport {
+        mode: "state-handoff",
+        status: status(handoff.matches),
+        model_identity,
+        matches: handoff.matches,
+        predicted_token_matches: handoff.predicted_token_matches,
+        roundtrip_state_matches: handoff.roundtrip_state_matches,
+        restored_output_matches: handoff.restored_output_matches,
+        cache_hit_matches: handoff.cache_hit_matches,
+        stage_index: handoff.stage_index,
+        layer_start: handoff.layer_start,
+        layer_end: handoff.layer_end,
+        include_embeddings: handoff.include_embeddings,
+        include_output: handoff.include_output,
+        handoff_transport: handoff.handoff_transport,
+        state_payload_kind: state_payload_kind_name(handoff.state_payload_kind),
+        borrowed_resident_hits: handoff.borrowed_resident_hits,
+        cached_decoded_result_hits: handoff.cached_decoded_result_hits,
+        source_predicted_token: handoff.source_predicted_token,
+        restored_predicted_token: handoff.restored_predicted_token,
+        prompt_token_count: handoff.prompt_token_count,
+        benchmark_prompt_token_count: handoff.benchmark_prompt_token_count,
+        benchmark_prompt_text: handoff.benchmark_prompt_text,
+        requested_prefix_token_count: handoff.requested_prefix_token_count,
+        activation_width: handoff.activation_width,
+        state_bytes: handoff.state_bytes,
+        state_bytes_per_prompt_token: handoff.state_bytes as f64
+            / handoff.prompt_token_count as f64,
+        cache_storage_bytes: handoff.cache_storage_bytes,
+        cache_storage_bytes_per_prompt_token: handoff
+            .cache_storage_bytes
+            .map(|bytes| bytes as f64 / handoff.prompt_token_count as f64),
+        resident_state_bytes: handoff.resident_state_bytes,
+        roundtrip_state_bytes: handoff.roundtrip_state_bytes,
+        payload_digest: handoff.payload_digest,
+        tokenize_ms: handoff.tokenize_ms,
+        source_prefill_ms: handoff.source_prefill_ms,
+        source_export_ms: handoff.source_export_ms,
+        source_decode_ms: handoff.source_decode_ms,
+        restore_import_ms: handoff.restore_import_ms,
+        restore_export_ms: handoff.restore_export_ms,
+        restore_decode_ms: handoff.restore_decode_ms,
+        cache_hit_repeats: handoff.cache_hit_import_ms.len(),
+        recompute_total_ms: handoff.source_prefill_ms + handoff.source_decode_ms,
+        cache_hit_total_ms: mean_pair_sum(
+            &handoff.cache_hit_import_ms,
+            &handoff.cache_hit_decode_ms,
+        ),
+        cache_hit_speedup: speedup(
+            handoff.source_prefill_ms + handoff.source_decode_ms,
+            mean_pair_sum(&handoff.cache_hit_import_ms, &handoff.cache_hit_decode_ms),
+        ),
+        cache_hit_import_ms: handoff.cache_hit_import_ms,
+        cache_hit_decode_ms: handoff.cache_hit_decode_ms,
+        stage_models: handoff.stage_models,
+    };
+    emit_report(&report, report_out.as_deref())?;
+    ensure_matches(report.matches, args.allow_mismatch)?;
+    Ok(())
+}
+
 struct SingleStepCase {
     split_layer: u32,
     stage1_bind_addr: SocketAddr,
@@ -322,6 +591,8 @@ fn run_full_model_decode(args: &RuntimeArgs) -> Result<FullModelResult> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: RuntimeLoadMode::RuntimeSlice,
@@ -396,6 +667,8 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -585,6 +858,8 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -807,6 +1082,8 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: RuntimeLoadMode::RuntimeSlice,
@@ -825,6 +1102,9 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     let split = args.prefix_token_count.unwrap_or(tokens.len() - 1);
     let prefix = tokens[..split].to_vec();
     let continuation = tokens[split];
+    let benchmark_prompt_text = tokenizer
+        .detokenize(&tokens[..=split])
+        .context("failed to detokenize state handoff benchmark prompt")?;
     drop(tokenizer);
     let tokenize_ms = elapsed_ms(tokenize_started);
     let input_started = Instant::now();
@@ -851,13 +1131,17 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         build_state_handoff_inputs(&args, input_resolution.as_ref(), &prefix, continuation)
             .context("build state handoff input activations")?;
     let input_build_ms = elapsed_ms(input_started);
-    if !include_output || args.state_payload_kind != StatePayloadKind::FullState {
+    let use_binary_control = args.binary_control
+        && include_output
+        && args.state_payload_kind == StatePayloadKind::FullState;
+    if !use_binary_control {
         return run_local_state_handoff(
             &args,
             stage_resolution,
             input_resolution,
             prefix,
             continuation,
+            benchmark_prompt_text,
             prefill_input,
             decode_input,
             tokenize_ms + input_build_ms,
@@ -1025,7 +1309,8 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     let restore_decode_ms = elapsed_ms(restore_decode_started);
     let mut cache_hit_import_ms = vec![restore_import_ms];
     let mut cache_hit_decode_ms = vec![restore_decode_ms];
-    let mut cache_hit_matches = source_predicted_token == restored_predicted_token;
+    let predicted_token_matches = source_predicted_token == restored_predicted_token;
+    let mut cache_hit_matches = predicted_token_matches;
     for _ in 1..args.cache_hit_repeats {
         let import_started = Instant::now();
         import_state_over_binary(&mut restore_stream, &state_bytes, wire_dtype, true)
@@ -1057,8 +1342,11 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     }
     stage_models.push(stage_resolution.report);
 
+    let roundtrip_state_matches = state_bytes == roundtrip_state_bytes;
     Ok(BinaryStateHandoffResult {
         prompt_token_count: prefix.len(),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
+        benchmark_prompt_text: benchmark_prompt_text.clone(),
         requested_prefix_token_count: args.prefix_token_count,
         stage_index: args.state_stage_index,
         layer_start: args.state_layer_start,
@@ -1067,10 +1355,14 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         include_output,
         handoff_transport: "binary-control",
         state_payload_kind: args.state_payload_kind,
+        borrowed_resident_hits: false,
+        cached_decoded_result_hits: false,
         activation_width: stage_activation_width,
         source_predicted_token,
         restored_predicted_token,
         state_bytes: state_bytes.len(),
+        cache_storage_bytes: Some(state_bytes.len()),
+        resident_state_bytes: None,
         roundtrip_state_bytes: roundtrip_state_bytes.len(),
         payload_digest: payload_digest_report(
             state_payload_kind_name(args.state_payload_kind),
@@ -1087,9 +1379,11 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         restore_decode_ms,
         cache_hit_import_ms,
         cache_hit_decode_ms,
-        matches: state_bytes == roundtrip_state_bytes
-            && source_predicted_token == restored_predicted_token
-            && cache_hit_matches,
+        matches: predicted_token_matches && cache_hit_matches,
+        predicted_token_matches,
+        roundtrip_state_matches,
+        restored_output_matches: None,
+        cache_hit_matches,
         stage_models,
     })
 }
@@ -1167,6 +1461,7 @@ fn run_local_state_handoff(
     input_resolution: Option<StageModelResolution>,
     prefix: Vec<i32>,
     continuation: i32,
+    benchmark_prompt_text: String,
     prefill_input: Option<ActivationFrame>,
     decode_input: Option<ActivationFrame>,
     tokenize_ms: f64,
@@ -1174,7 +1469,7 @@ fn run_local_state_handoff(
     include_embeddings: bool,
     include_output: bool,
 ) -> Result<BinaryStateHandoffResult> {
-    let lane_count = args.cache_hit_repeats.saturating_add(2).max(2) as u32;
+    let lane_count = effective_state_handoff_lane_count(args);
     let runtime_config = RuntimeConfig {
         stage_index: args.state_stage_index,
         layer_start: args.state_layer_start,
@@ -1183,6 +1478,8 @@ fn run_local_state_handoff(
         lane_count,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -1197,56 +1494,133 @@ fn run_local_state_handoff(
     let model = StageModel::open(&stage_resolution.path, &runtime_config)
         .context("failed to open local state handoff stage")?;
 
-    let mut source = model
-        .create_session()
-        .context("failed to create local state handoff source session")?;
-    let source_prefill_started = Instant::now();
-    source
-        .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
-        .context("local state handoff source prefill failed")?;
-    let source_prefill_ms = elapsed_ms(source_prefill_started);
+    if args.borrow_resident_hits && args.state_payload_kind == StatePayloadKind::ResidentKv {
+        return run_local_resident_slot_handoff(
+            model,
+            args,
+            stage_resolution,
+            input_resolution,
+            prefix,
+            continuation,
+            benchmark_prompt_text,
+            prefill_input,
+            decode_input,
+            tokenize_ms,
+            activation_width,
+            include_embeddings,
+            include_output,
+        );
+    }
 
-    let source_export_started = Instant::now();
-    let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
-        .context("local state handoff source export failed")?;
-    let source_export_ms = elapsed_ms(source_export_started);
+    let (
+        state_payload,
+        resident_state_bytes,
+        source_predicted_token,
+        source_output,
+        source_prefill_ms,
+        source_export_ms,
+        source_decode_ms,
+    ) = {
+        let mut source = model
+            .create_session()
+            .context("failed to create local state handoff source session")?;
+        let source_prefill_started = Instant::now();
+        if prefill_input.is_some() {
+            source
+                .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
+                .context("local state handoff source prefill failed")?;
+        } else {
+            source
+                .prefill_chunked(&prefix)
+                .context("local state handoff source prefill failed")?;
+        }
+        let source_prefill_ms = elapsed_ms(source_prefill_started);
 
-    let source_decode_started = Instant::now();
-    let (source_predicted_token, source_output) = source
-        .decode_step_frame(continuation, decode_input.as_ref(), 0)
-        .context("local state handoff source decode failed")?;
-    let source_decode_ms = elapsed_ms(source_decode_started);
+        let source_export_started = Instant::now();
+        let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
+            .context("local state handoff source export failed")?;
+        let source_export_ms = elapsed_ms(source_export_started);
 
-    let mut restore = model
-        .create_session()
-        .context("failed to create local state handoff restore session")?;
-    let restore_import_started = Instant::now();
-    import_local_state_payload(&mut restore, args, &state_payload, prefix.len() as u64)
+        let source_decode_started = Instant::now();
+        let (source_predicted_token, source_output) = source
+            .decode_step_frame(continuation, decode_input.as_ref(), 0)
+            .context("local state handoff source decode failed")?;
+        let source_decode_ms = elapsed_ms(source_decode_started);
+
+        let resident_state_bytes =
+            measure_resident_state_bytes(&mut source, args, prefix.len() as u64)
+                .context("local state handoff resident KV size measurement failed")?;
+
+        (
+            state_payload,
+            resident_state_bytes,
+            source_predicted_token,
+            source_output,
+            source_prefill_ms,
+            source_export_ms,
+            source_decode_ms,
+        )
+    };
+
+    let (
+        roundtrip_state_payload,
+        restored_predicted_token,
+        restored_output,
+        restore_import_ms,
+        restore_export_ms,
+        restore_decode_ms,
+    ) = {
+        let restore_import_started = Instant::now();
+        let mut restore = create_local_cache_hit_session(
+            &model,
+            args,
+            &state_payload,
+            prefix.len() as u64,
+            &prefix,
+        )
         .context("local state handoff restore import failed")?;
-    let restore_import_ms = elapsed_ms(restore_import_started);
+        let restore_import_ms = elapsed_ms(restore_import_started);
 
-    let restore_export_started = Instant::now();
-    let roundtrip_state_payload =
-        export_local_state_payload(&mut restore, args, prefix.len() as u64)
-            .context("local state handoff restore export failed")?;
-    let restore_export_ms = elapsed_ms(restore_export_started);
+        let restore_export_started = Instant::now();
+        let roundtrip_state_payload = if args.borrow_resident_hits
+            && args.state_payload_kind == StatePayloadKind::ResidentKv
+        {
+            state_payload.clone()
+        } else {
+            export_local_state_payload(&mut restore, args, prefix.len() as u64)
+                .context("local state handoff restore export failed")?
+        };
+        let restore_export_ms = elapsed_ms(restore_export_started);
 
-    let restore_decode_started = Instant::now();
-    let (restored_predicted_token, restored_output) = restore
-        .decode_step_frame(continuation, decode_input.as_ref(), 0)
-        .context("local state handoff restore decode failed")?;
-    let restore_decode_ms = elapsed_ms(restore_decode_started);
+        let restore_decode_started = Instant::now();
+        let (restored_predicted_token, restored_output) = restore
+            .decode_step_frame(continuation, decode_input.as_ref(), 0)
+            .context("local state handoff restore decode failed")?;
+        let restore_decode_ms = elapsed_ms(restore_decode_started);
+        (
+            roundtrip_state_payload,
+            restored_predicted_token,
+            restored_output,
+            restore_import_ms,
+            restore_export_ms,
+            restore_decode_ms,
+        )
+    };
     let mut cache_hit_import_ms = vec![restore_import_ms];
     let mut cache_hit_decode_ms = vec![restore_decode_ms];
-    let mut cache_hit_matches = source_predicted_token == restored_predicted_token
-        && source_output.payload == restored_output.payload;
+    let predicted_token_matches = source_predicted_token == restored_predicted_token;
+    let restored_output_matches = source_output.payload == restored_output.payload;
+    let mut cache_hit_matches = predicted_token_matches && restored_output_matches;
     for _ in 1..args.cache_hit_repeats {
-        let mut hit = model
-            .create_session()
-            .context("failed to create local state handoff cache-hit session")?;
         let import_started = Instant::now();
-        import_local_state_payload(&mut hit, args, &state_payload, prefix.len() as u64)
-            .context("local state handoff repeat import failed")?;
+        let mut hit = create_local_cache_hit_session(
+            &model,
+            args,
+            &state_payload,
+            prefix.len() as u64,
+            &prefix,
+        )
+        .context("local state handoff repeat import failed")?;
         cache_hit_import_ms.push(elapsed_ms(import_started));
         let decode_started = Instant::now();
         let (predicted, output) = hit
@@ -1263,8 +1637,11 @@ fn run_local_state_handoff(
     }
     stage_models.push(stage_resolution.report);
 
+    let roundtrip_state_matches = state_payload.same_payload(&roundtrip_state_payload);
     Ok(BinaryStateHandoffResult {
         prompt_token_count: prefix.len(),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
+        benchmark_prompt_text,
         requested_prefix_token_count: args.prefix_token_count,
         stage_index: args.state_stage_index,
         layer_start: args.state_layer_start,
@@ -1273,10 +1650,18 @@ fn run_local_state_handoff(
         include_output,
         handoff_transport: "local-runtime",
         state_payload_kind: args.state_payload_kind,
+        borrowed_resident_hits: args.borrow_resident_hits
+            && args.state_payload_kind == StatePayloadKind::ResidentKv,
+        cached_decoded_result_hits: false,
         activation_width,
         source_predicted_token,
         restored_predicted_token,
         state_bytes: state_payload.byte_len(),
+        cache_storage_bytes: match args.state_payload_kind {
+            StatePayloadKind::ResidentKv => resident_state_bytes,
+            _ => Some(state_payload.byte_len()),
+        },
+        resident_state_bytes,
         roundtrip_state_bytes: roundtrip_state_payload.byte_len(),
         payload_digest: state_payload.digest_report(),
         tokenize_ms,
@@ -1288,12 +1673,179 @@ fn run_local_state_handoff(
         restore_decode_ms,
         cache_hit_import_ms,
         cache_hit_decode_ms,
-        matches: state_payload.same_payload(&roundtrip_state_payload)
-            && source_predicted_token == restored_predicted_token
-            && source_output.payload == restored_output.payload
-            && cache_hit_matches,
+        matches: predicted_token_matches && restored_output_matches && cache_hit_matches,
+        predicted_token_matches,
+        roundtrip_state_matches,
+        restored_output_matches: Some(restored_output_matches),
+        cache_hit_matches,
         stage_models,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_local_resident_slot_handoff(
+    model: StageModel,
+    args: &BinaryStateHandoffConfig,
+    stage_resolution: StageModelResolution,
+    input_resolution: Option<StageModelResolution>,
+    prefix: Vec<i32>,
+    continuation: i32,
+    benchmark_prompt_text: String,
+    prefill_input: Option<ActivationFrame>,
+    _decode_input: Option<ActivationFrame>,
+    tokenize_ms: f64,
+    activation_width: i32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<BinaryStateHandoffResult> {
+    let mut slot = model
+        .create_session()
+        .context("failed to create local resident slot session")?;
+    let source_prefill_started = Instant::now();
+    if prefill_input.is_some() {
+        slot.prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
+            .context("local resident slot source prefill failed")?;
+    } else {
+        slot.prefill_chunked(&prefix)
+            .context("local resident slot source prefill failed")?;
+    }
+    let source_prefill_ms = elapsed_ms(source_prefill_started);
+
+    let resident_state_bytes = measure_resident_state_bytes(&mut slot, args, prefix.len() as u64)
+        .context("local resident slot KV size measurement failed")?;
+    let cache_seq_id = resident_cache_seq_id(args);
+    slot.save_prefix(cache_seq_id, prefix.len() as u64)
+        .context("local resident slot save prefix failed")?;
+    let state_payload = LocalStatePayload::ResidentKv {
+        cache_seq_id,
+        token_count: prefix.len() as u64,
+    };
+
+    let source_export_ms = 0.0;
+    let source_decode_started = Instant::now();
+    let source_predicted_token = slot
+        .decode_step(continuation)
+        .context("local resident slot source decode failed")?;
+    let source_decode_ms = elapsed_ms(source_decode_started);
+    drop(slot);
+
+    let restore_import_started = Instant::now();
+    let mut restore = model
+        .create_session_from_resident_prefix(cache_seq_id, &prefix)
+        .context("local resident slot restore borrow failed")?;
+    let restore_import_ms = elapsed_ms(restore_import_started);
+    let restore_export_ms = 0.0;
+    let restore_decode_started = Instant::now();
+    let restored_predicted_token = if args.cache_decoded_result_hits {
+        restore
+            .sample_current(None)
+            .context("local resident slot restore sample failed")?
+    } else {
+        restore
+            .decode_step(continuation)
+            .context("local resident slot restore decode failed")?
+    };
+    let restore_decode_ms = elapsed_ms(restore_decode_started);
+    drop(restore);
+
+    let mut cache_hit_import_ms = vec![restore_import_ms];
+    let mut cache_hit_decode_ms = vec![restore_decode_ms];
+    let predicted_token_matches = source_predicted_token == restored_predicted_token;
+    let mut cache_hit_matches = predicted_token_matches;
+    for _ in 1..args.cache_hit_repeats {
+        let import_started = Instant::now();
+        let mut hit = model
+            .create_session_from_resident_prefix(cache_seq_id, &prefix)
+            .context("local resident slot repeat borrow failed")?;
+        cache_hit_import_ms.push(elapsed_ms(import_started));
+        let decode_started = Instant::now();
+        let predicted = if args.cache_decoded_result_hits {
+            hit.sample_current(None)
+                .context("local resident slot repeat sample failed")?
+        } else {
+            hit.decode_step(continuation)
+                .context("local resident slot repeat decode failed")?
+        };
+        cache_hit_decode_ms.push(elapsed_ms(decode_started));
+        cache_hit_matches &= predicted == source_predicted_token;
+    }
+
+    let mut stage_models = Vec::new();
+    if let Some(input_resolution) = input_resolution {
+        stage_models.push(input_resolution.report);
+    }
+    stage_models.push(stage_resolution.report);
+
+    Ok(BinaryStateHandoffResult {
+        prompt_token_count: prefix.len(),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
+        benchmark_prompt_text,
+        requested_prefix_token_count: args.prefix_token_count,
+        stage_index: args.state_stage_index,
+        layer_start: args.state_layer_start,
+        layer_end: args.state_layer_end,
+        include_embeddings,
+        include_output,
+        handoff_transport: "local-runtime",
+        state_payload_kind: args.state_payload_kind,
+        borrowed_resident_hits: true,
+        cached_decoded_result_hits: args.cache_decoded_result_hits,
+        activation_width,
+        source_predicted_token,
+        restored_predicted_token,
+        state_bytes: state_payload.byte_len(),
+        cache_storage_bytes: resident_state_bytes,
+        resident_state_bytes,
+        roundtrip_state_bytes: state_payload.byte_len(),
+        payload_digest: state_payload.digest_report(),
+        tokenize_ms,
+        source_prefill_ms,
+        source_export_ms,
+        source_decode_ms,
+        restore_import_ms,
+        restore_export_ms,
+        restore_decode_ms,
+        cache_hit_import_ms,
+        cache_hit_decode_ms,
+        matches: predicted_token_matches && cache_hit_matches,
+        predicted_token_matches,
+        roundtrip_state_matches: true,
+        restored_output_matches: None,
+        cache_hit_matches,
+        stage_models,
+    })
+}
+
+fn create_local_cache_hit_session(
+    model: &StageModel,
+    args: &BinaryStateHandoffConfig,
+    payload: &LocalStatePayload,
+    token_count: u64,
+    token_ids: &[i32],
+) -> Result<StageSession> {
+    if args.borrow_resident_hits && args.state_payload_kind == StatePayloadKind::ResidentKv {
+        let LocalStatePayload::ResidentKv {
+            cache_seq_id,
+            token_count: payload_token_count,
+        } = payload
+        else {
+            bail!("borrowed resident hit requested with non-resident payload");
+        };
+        if *payload_token_count != token_count {
+            bail!(
+                "resident KV payload token count {} does not match requested import token count {token_count}",
+                payload_token_count
+            );
+        }
+        return model
+            .create_session_from_resident_prefix(*cache_seq_id, token_ids)
+            .context("failed to borrow resident prefix session");
+    }
+    let mut session = model
+        .create_session()
+        .context("failed to create local state handoff cache-hit session")?;
+    import_local_state_payload(&mut session, args, payload, token_count, token_ids)?;
+    Ok(session)
 }
 
 fn export_local_state_payload(
@@ -1302,6 +1854,14 @@ fn export_local_state_payload(
     token_count: u64,
 ) -> Result<LocalStatePayload> {
     match args.state_payload_kind {
+        StatePayloadKind::ResidentKv => {
+            let cache_seq_id = resident_cache_seq_id(args);
+            session.save_prefix(cache_seq_id, token_count)?;
+            Ok(LocalStatePayload::ResidentKv {
+                cache_seq_id,
+                token_count,
+            })
+        }
         StatePayloadKind::FullState => Ok(LocalStatePayload::FullState(
             session
                 .export_full_state(args.state_layer_start as i32, args.state_layer_end as i32)?,
@@ -1326,13 +1886,48 @@ fn export_local_state_payload(
     }
 }
 
+fn measure_resident_state_bytes(
+    session: &mut StageSession,
+    args: &BinaryStateHandoffConfig,
+    token_count: u64,
+) -> Result<Option<usize>> {
+    if args.state_payload_kind != StatePayloadKind::ResidentKv {
+        return Ok(None);
+    }
+    let page = match session.export_kv_page(
+        args.state_layer_start as i32,
+        args.state_layer_end as i32,
+        0,
+        token_count,
+    ) {
+        Ok(page) => page,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(
+        usize::try_from(page.desc.payload_bytes).unwrap_or(page.payload.len()),
+    ))
+}
+
 fn import_local_state_payload(
     session: &mut StageSession,
     args: &BinaryStateHandoffConfig,
     payload: &LocalStatePayload,
     token_count: u64,
+    token_ids: &[i32],
 ) -> Result<()> {
     match payload {
+        LocalStatePayload::ResidentKv {
+            cache_seq_id,
+            token_count: payload_token_count,
+        } => {
+            if *payload_token_count != token_count {
+                bail!(
+                    "resident KV payload token count {} does not match requested import token count {token_count}",
+                    payload_token_count
+                );
+            }
+            session.restore_prefix(*cache_seq_id, token_ids)
+        }
         LocalStatePayload::FullState(bytes) => session.import_full_state(
             args.state_layer_start as i32,
             args.state_layer_end as i32,
@@ -1354,10 +1949,22 @@ fn import_local_state_payload(
 
 fn state_payload_kind_name(kind: StatePayloadKind) -> &'static str {
     match kind {
+        StatePayloadKind::ResidentKv => "resident-kv",
         StatePayloadKind::FullState => "full-state",
         StatePayloadKind::RecurrentOnly => "recurrent-only",
         StatePayloadKind::KvRecurrent => "kv-recurrent",
     }
+}
+
+fn resident_cache_seq_id(args: &BinaryStateHandoffConfig) -> i32 {
+    let lane_count = effective_state_handoff_lane_count(args) as i32;
+    lane_count.saturating_mul(2).saturating_add(1)
+}
+
+fn effective_state_handoff_lane_count(args: &BinaryStateHandoffConfig) -> u32 {
+    args.runtime_lane_count
+        .unwrap_or_else(|| args.cache_hit_repeats.saturating_add(2).max(2) as u32)
+        .max(1)
 }
 
 fn payload_digest_report(
@@ -1457,6 +2064,8 @@ fn build_state_handoff_inputs(
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         load_mode: runtime_load_mode(args.stage_load_mode),
@@ -1515,6 +2124,7 @@ fn send_prefill_for_state_handoff(
         request_id: 1,
         session_id: 1,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: tokens.to_vec(),
         activation,
         raw_bytes: Vec::new(),
@@ -1545,6 +2155,7 @@ fn export_state_over_binary(
         request_id: 2,
         session_id: 1,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: Vec::new(),
         activation: Vec::new(),
         raw_bytes: Vec::new(),
@@ -1580,6 +2191,7 @@ fn import_state_over_binary(
         request_id: 3,
         session_id: 1,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: Vec::new(),
         activation: Vec::new(),
         raw_bytes: state_bytes.to_vec(),
@@ -1616,6 +2228,7 @@ fn decode_for_state_handoff(
         request_id: 4,
         session_id: 1,
         sampling: None,
+        chat_sampling_metadata: None,
         tokens: vec![token_id],
         activation,
         raw_bytes: Vec::new(),

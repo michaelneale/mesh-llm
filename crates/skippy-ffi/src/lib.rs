@@ -1,6 +1,6 @@
 pub const ABI_VERSION_MAJOR: u32 = 0;
 pub const ABI_VERSION_MINOR: u32 = 1;
-pub const ABI_VERSION_PATCH: u32 = 20;
+pub const ABI_VERSION_PATCH: u32 = 22;
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -72,6 +72,8 @@ pub struct RuntimeConfig {
     pub lane_count: i32,
     pub n_batch: i32,
     pub n_ubatch: i32,
+    pub n_threads: i32,
+    pub n_threads_batch: i32,
     pub n_gpu_layers: i32,
     pub cache_type_k: i32,
     pub cache_type_v: i32,
@@ -269,6 +271,15 @@ extern "C" {
 
     pub fn skippy_session_create(
         model: *mut Model,
+        out_session: *mut *mut Session,
+        out_error: *mut *mut Error,
+    ) -> Status;
+
+    pub fn skippy_session_create_from_resident_prefix(
+        model: *mut Model,
+        cache_seq_id: i32,
+        token_ids: *const i32,
+        token_count: usize,
         out_session: *mut *mut Session,
         out_error: *mut *mut Error,
     ) -> Status;

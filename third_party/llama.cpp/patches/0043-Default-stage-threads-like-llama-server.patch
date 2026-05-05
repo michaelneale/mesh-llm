@@ -1,0 +1,109 @@
+From 8d3c15b1cce31d1d3d7e7c4dcbf86d6f9e3e06e8 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 22:20:00 +1000
+Subject: [PATCH 43/43] Default stage threads like llama-server
+
+---
+ include/skippy.h |  5 ++++-
+ src/skippy.cpp   | 43 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 793998b8..20f3f8ae 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 21
++#define SKIPPY_ABI_VERSION_PATCH 22
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -117,6 +117,8 @@ struct skippy_runtime_config {
+     int32_t lane_count;
+     int32_t n_batch;
+     int32_t n_ubatch;
++    int32_t n_threads;
++    int32_t n_threads_batch;
+     int32_t n_gpu_layers;
+     int32_t cache_type_k;
+     int32_t cache_type_v;
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 8b6a5503..01b3b25e 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -20,14 +20,23 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <exception>
++#include <fstream>
+ #include <cstdio>
+ #include <limits>
+ #include <regex>
+ #include <set>
+ #include <string>
++#include <thread>
++#include <unordered_set>
+ #include <utility>
+ #include <vector>
+ 
++#if defined(__APPLE__) && defined(__MACH__)
++#include <sys/sysctl.h>
++#elif defined(__linux__)
++#include <unistd.h>
++#endif
++
+ using json = nlohmann::ordered_json;
+ 
+ struct skippy_model {
+@@ -495,6 +504,37 @@ static bool skippy_is_full_model_config(const struct skippy_runtime_config * con
+     return !config->filter_tensors_on_load && config->layer_start == 0;
+ }
+ 
++static int32_t skippy_default_thread_count() {
++#ifdef __linux__
++    std::unordered_set<std::string> siblings;
++    for (uint32_t cpu = 0; cpu < UINT32_MAX; ++cpu) {
++        std::ifstream thread_siblings(
++                "/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings");
++        if (!thread_siblings.is_open()) {
++            break;
++        }
++        std::string line;
++        if (std::getline(thread_siblings, line)) {
++            siblings.insert(line);
++        }
++    }
++    if (!siblings.empty()) {
++        return static_cast<int32_t>(siblings.size());
++    }
++#elif defined(__APPLE__) && defined(__MACH__)
++    int32_t physical_cores = 0;
++    size_t len = sizeof(physical_cores);
++    if (sysctlbyname("hw.perflevel0.physicalcpu", &physical_cores, &len, NULL, 0) == 0 && physical_cores > 0) {
++        return physical_cores;
++    }
++    if (sysctlbyname("hw.physicalcpu", &physical_cores, &len, NULL, 0) == 0 && physical_cores > 0) {
++        return physical_cores;
++    }
++#endif
++    const unsigned int n_threads = std::thread::hardware_concurrency();
++    return n_threads > 0 ? static_cast<int32_t>(n_threads <= 4 ? n_threads : n_threads / 2) : 4;
++}
++
+ static enum skippy_status skippy_apply_selected_backend_device(
+         const struct skippy_runtime_config * config,
+         llama_model_params & params,
+@@ -1511,6 +1551,8 @@ static enum skippy_status skippy_finish_model_open(
+     params.n_ctx = config != nullptr && config->ctx_size > 0 ? static_cast<uint32_t>(config->ctx_size) : 512;
+     params.n_batch = config != nullptr && config->n_batch > 0 ? static_cast<uint32_t>(config->n_batch) : params.n_ctx;
+     params.n_ubatch = config != nullptr && config->n_ubatch > 0 ? static_cast<uint32_t>(config->n_ubatch) : 0u;
++    params.n_threads = config != nullptr && config->n_threads > 0 ? config->n_threads : skippy_default_thread_count();
++    params.n_threads_batch = config != nullptr && config->n_threads_batch > 0 ? config->n_threads_batch : params.n_threads;
+     params.n_seq_max = stage_model->lane_count;
+     params.kv_unified = stage_model->lane_count > 1;
+     params.type_k = config != nullptr && config->cache_type_k > 0 ? static_cast<ggml_type>(config->cache_type_k) : GGML_TYPE_F16;
+-- 
+2.50.1 (Apple Git-155)

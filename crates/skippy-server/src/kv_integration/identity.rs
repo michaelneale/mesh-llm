@@ -51,7 +51,7 @@ impl KvStageIntegration {
         token_start: u64,
         token_ids: &[i32],
     ) -> Vec<PrefillKvIdentity> {
-        self.candidate_token_counts(token_ids.len() as u64)
+        self.record_candidate_token_counts(token_ids.len() as u64)
             .into_iter()
             .map(|token_count| {
                 self.prefill_identity(

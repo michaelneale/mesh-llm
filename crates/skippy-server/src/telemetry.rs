@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    env,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -153,6 +154,15 @@ impl Telemetry {
         start_time_unix_nanos: u64,
         end_time_unix_nanos: u64,
     ) {
+        if env::var_os("SKIPPY_TELEMETRY_STDERR").is_some() {
+            let line = json!({
+                "event": name,
+                "attributes": attributes,
+                "start_time_unix_nanos": start_time_unix_nanos,
+                "end_time_unix_nanos": end_time_unix_nanos,
+            });
+            eprintln!("{line}");
+        }
         let Some(tx) = self.tx.as_ref() else {
             return;
         };

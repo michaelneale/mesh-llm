@@ -24,6 +24,7 @@ struct ResidentPrefixEntry {
     token_count: u64,
     estimated_bytes: u64,
     last_used: u64,
+    borrowed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,7 @@ pub struct ResidentPrefixEviction {
 pub struct ResidentPrefixAllocation {
     pub seq_id: i32,
     pub evictions: Vec<ResidentPrefixEviction>,
+    pub should_save: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -74,11 +76,37 @@ impl ResidentPrefixCache {
         self.clock = self.clock.saturating_add(1);
         let entries = self.entries.len();
         let entry = self.entries.get_mut(page_id)?;
+        if entry.borrowed {
+            return None;
+        }
         entry.last_used = self.clock;
         Some(ResidentPrefixLookup {
             seq_id: entry.seq_id,
             entries,
         })
+    }
+
+    pub fn acquire(&mut self, page_id: &str) -> Option<ResidentPrefixLookup> {
+        self.clock = self.clock.saturating_add(1);
+        let entries = self.entries.len();
+        let entry = self.entries.get_mut(page_id)?;
+        if entry.borrowed {
+            return None;
+        }
+        entry.borrowed = true;
+        entry.last_used = self.clock;
+        Some(ResidentPrefixLookup {
+            seq_id: entry.seq_id,
+            entries,
+        })
+    }
+
+    pub fn release(&mut self, page_id: &str) {
+        if let Some(entry) = self.entries.get_mut(page_id) {
+            entry.borrowed = false;
+            self.clock = self.clock.saturating_add(1);
+            entry.last_used = self.clock;
+        }
     }
 
     pub fn allocate_for_record(
@@ -96,12 +124,17 @@ impl ResidentPrefixCache {
             return Ok(ResidentPrefixAllocation {
                 seq_id: entry.seq_id,
                 evictions: Vec::new(),
+                should_save: false,
             });
         }
 
         let evictions = self.evict_until_room_for(estimated_bytes, &mut drop_evicted)?;
         let seq_id = self.next_sequence_id()?;
-        Ok(ResidentPrefixAllocation { seq_id, evictions })
+        Ok(ResidentPrefixAllocation {
+            seq_id,
+            evictions,
+            should_save: true,
+        })
     }
 
     pub fn commit_record(
@@ -127,6 +160,7 @@ impl ResidentPrefixCache {
                 token_count,
                 estimated_bytes,
                 last_used: self.clock,
+                borrowed: false,
             },
         );
     }
@@ -157,10 +191,11 @@ impl ResidentPrefixCache {
             let Some(victim) = self
                 .entries
                 .iter()
+                .filter(|(_, entry)| !entry.borrowed)
                 .min_by_key(|(_, entry)| entry.last_used)
                 .map(|(key, _)| key.clone())
             else {
-                break;
+                bail!("resident prefix cache has no releasable entries");
             };
             if let Some(entry) = self.entries.remove(&victim) {
                 drop_evicted(entry.seq_id)?;

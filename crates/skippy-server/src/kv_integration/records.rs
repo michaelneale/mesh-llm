@@ -34,6 +34,7 @@ pub struct ResidentPrefixRestore {
     pub token_count: usize,
     pub seq_id: i32,
     pub entries: usize,
+    pub borrowed: bool,
 }
 
 #[derive(Debug, Clone)]

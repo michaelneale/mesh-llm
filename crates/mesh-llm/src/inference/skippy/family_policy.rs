@@ -28,7 +28,6 @@ pub(crate) enum FamilyPrefixCachePolicy {
 pub(crate) enum FamilyPrefixCachePayload {
     ResidentKv,
     KvRecurrent,
-    FullState,
 }
 
 impl FamilyPrefixCachePayload {
@@ -36,7 +35,6 @@ impl FamilyPrefixCachePayload {
         match self {
             Self::ResidentKv => "resident-kv",
             Self::KvRecurrent => "kv-recurrent",
-            Self::FullState => "full-state",
         }
     }
 
@@ -44,7 +42,6 @@ impl FamilyPrefixCachePayload {
         match self {
             Self::ResidentKv => StageKvCachePayload::ResidentKv,
             Self::KvRecurrent => StageKvCachePayload::KvRecurrent,
-            Self::FullState => StageKvCachePayload::FullState,
         }
     }
 }
@@ -149,13 +146,11 @@ fn family_policy_for_normalized_family_id(
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
     match family_id {
-        "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" => {
+        "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" | "gemma2"
+        | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" => {
             resident_kv_policy(activation_wire_dtype)
         }
-        "qwen3next" | "falcon_h1" | "minimax_m27" => kv_recurrent_policy(activation_wire_dtype),
-        "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" => {
-            full_state_policy(activation_wire_dtype)
-        }
+        "qwen3next" | "falcon_h1" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -182,27 +177,24 @@ fn kv_recurrent_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
     }
 }
 
-fn full_state_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
-    FamilyPolicy {
-        activation_wire_dtype,
-        prefix_cache: FamilyPrefixCachePolicy::Auto {
-            payload: FamilyPrefixCachePayload::FullState,
-            min_tokens: 256,
-            max_entries: 128,
-        },
-    }
-}
-
 fn unknown_family_policy() -> FamilyPolicy {
     unknown_family_policy_with_wire_dtype(StageWireDType::F16)
 }
 
 fn unknown_family_policy_with_wire_dtype(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
+    disabled_family_policy(
+        activation_wire_dtype,
+        "family cache policy is not certified",
+    )
+}
+
+fn disabled_family_policy(
+    activation_wire_dtype: StageWireDType,
+    reason: &'static str,
+) -> FamilyPolicy {
     FamilyPolicy {
         activation_wire_dtype,
-        prefix_cache: FamilyPrefixCachePolicy::Disabled {
-            reason: "family cache policy is not certified",
-        },
+        prefix_cache: FamilyPrefixCachePolicy::Disabled { reason },
     }
 }
 
@@ -286,14 +278,14 @@ mod tests {
     }
 
     #[test]
-    fn gemma_family_uses_full_state_cache_for_now() {
+    fn gemma_family_uses_resident_kv_cache_shape() {
         let policy = family_policy_for_gguf_meta(&meta("gemma3"), None);
 
         assert_eq!(policy.activation_wire_dtype, StageWireDType::F16);
         assert!(matches!(
             policy.prefix_cache,
             FamilyPrefixCachePolicy::Auto {
-                payload: FamilyPrefixCachePayload::FullState,
+                payload: FamilyPrefixCachePayload::ResidentKv,
                 ..
             }
         ));
@@ -306,7 +298,9 @@ mod tests {
             let family_id = record.capability.family_id.as_str();
 
             match family_id {
-                "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" => {
+                "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo"
+                | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
+                | "minimax_m27" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -317,7 +311,7 @@ mod tests {
                         "{family_id}"
                     )
                 }
-                "qwen3next" | "falcon_h1" | "minimax_m27" => assert_eq!(
+                "qwen3next" | "falcon_h1" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
@@ -326,18 +320,26 @@ mod tests {
                     },
                     "{family_id}"
                 ),
-                "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" => {
-                    assert_eq!(
-                        policy.prefix_cache,
-                        FamilyPrefixCachePolicy::Auto {
-                            payload: FamilyPrefixCachePayload::FullState,
-                            min_tokens: 256,
-                            max_entries: 128,
-                        },
-                        "{family_id}"
-                    )
-                }
                 other => panic!("reviewed family {other} has no explicit policy assertion"),
+            }
+        }
+    }
+
+    #[test]
+    fn production_cache_policy_never_selects_full_state() {
+        for record in reviewed_capability_records() {
+            let policy = family_policy_for_capability(&record.capability);
+
+            if let FamilyPrefixCachePolicy::Auto { payload, .. } = policy.prefix_cache {
+                assert!(
+                    matches!(
+                        payload,
+                        FamilyPrefixCachePayload::ResidentKv
+                            | FamilyPrefixCachePayload::KvRecurrent
+                    ),
+                    "{}",
+                    record.capability.family_id
+                );
             }
         }
     }

@@ -21,9 +21,10 @@ pub struct RuntimeState {
     layer_end: u32,
     lane_count: u32,
     sessions: BTreeMap<String, StageSession>,
-    idle_sessions: Vec<StageSession>,
+    idle_sessions: Vec<IdleStageSession>,
     session_token_counts: BTreeMap<String, u64>,
     session_checkpoints: BTreeMap<String, StageSessionCheckpoint>,
+    session_resident_prefixes: BTreeMap<String, ResidentLanePrefix>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -31,6 +32,7 @@ pub struct RuntimeSessionStats {
     pub lane_count: usize,
     pub active_sessions: usize,
     pub idle_sessions: usize,
+    pub idle_resident_prefixes: usize,
     pub tracked_token_counts: usize,
     pub checkpoints: usize,
 }
@@ -39,15 +41,25 @@ pub struct RuntimeSessionStats {
 pub struct RuntimeSessionDropStats {
     pub reset_session: bool,
     pub reset_ms: f64,
+    pub preserved_resident_prefix: bool,
     pub stats_after: RuntimeSessionStats,
+}
+
+struct IdleStageSession {
+    session: StageSession,
+    resident_prefix: Option<ResidentLanePrefix>,
+}
+
+#[derive(Debug, Clone)]
+struct ResidentLanePrefix {
+    page_id: String,
+    token_count: u64,
 }
 
 impl RuntimeState {
     pub fn prefill(&mut self, session_id: &str, token_ids: &[i32]) -> Result<()> {
         let session = self.session(session_id)?;
-        session
-            .prefill_chunk_frame(token_ids, None, 0)
-            .map(|_| ())?;
+        session.prefill_chunked(token_ids)?;
         self.add_session_tokens(session_id, token_ids.len() as u64);
         Ok(())
     }
@@ -106,9 +118,7 @@ impl RuntimeState {
         sampling: Option<&SamplingConfig>,
     ) -> Result<i32> {
         let session = self.session(session_id)?;
-        let token = session
-            .decode_step_frame_sampled(token_id, sampling, None, 0)
-            .map(|(predicted_token, _)| predicted_token)?;
+        let token = session.decode_step_sampled(token_id, sampling)?;
         self.add_session_tokens(session_id, 1);
         Ok(token)
     }
@@ -225,7 +235,7 @@ impl RuntimeState {
 
     fn session(&mut self, session_id: &str) -> Result<&mut StageSession> {
         if !self.sessions.contains_key(session_id) {
-            let session = self.idle_sessions.pop().map(Ok).unwrap_or_else(|| {
+            let session = self.take_idle_session().map(Ok).unwrap_or_else(|| {
                 if self.sessions.len() >= self.lane_count as usize {
                     bail!("all execution lanes are busy");
                 }
@@ -247,7 +257,10 @@ impl RuntimeState {
             if self.sessions.len() + self.idle_sessions.len() >= self.lane_count as usize {
                 break;
             }
-            self.idle_sessions.push(self.model.create_session()?);
+            self.idle_sessions.push(IdleStageSession {
+                session: self.model.create_session()?,
+                resident_prefix: None,
+            });
         }
         Ok(self.session_stats())
     }
@@ -255,16 +268,41 @@ impl RuntimeState {
     pub fn drop_session_timed(&mut self, session_id: &str) -> Result<RuntimeSessionDropStats> {
         let reset_started = Instant::now();
         let mut reset_session = false;
+        let mut preserved_resident_prefix = false;
         if let Some(mut session) = self.sessions.remove(session_id) {
-            reset_session = true;
-            session.reset()?;
-            self.idle_sessions.push(session);
+            if let Some(prefix) = self.session_resident_prefixes.remove(session_id) {
+                match session.trim_session(prefix.token_count) {
+                    Ok(()) => {
+                        preserved_resident_prefix = true;
+                        self.idle_sessions.push(IdleStageSession {
+                            session,
+                            resident_prefix: Some(prefix),
+                        });
+                    }
+                    Err(_) => {
+                        reset_session = true;
+                        session.reset()?;
+                        self.idle_sessions.push(IdleStageSession {
+                            session,
+                            resident_prefix: None,
+                        });
+                    }
+                }
+            } else {
+                reset_session = true;
+                session.reset()?;
+                self.idle_sessions.push(IdleStageSession {
+                    session,
+                    resident_prefix: None,
+                });
+            }
         }
         self.session_token_counts.remove(session_id);
         self.session_checkpoints.remove(session_id);
         Ok(RuntimeSessionDropStats {
             reset_session,
             reset_ms: reset_started.elapsed().as_secs_f64() * 1000.0,
+            preserved_resident_prefix,
             stats_after: self.session_stats(),
         })
     }
@@ -274,9 +312,81 @@ impl RuntimeState {
             lane_count: self.lane_count as usize,
             active_sessions: self.sessions.len(),
             idle_sessions: self.idle_sessions.len(),
+            idle_resident_prefixes: self
+                .idle_sessions
+                .iter()
+                .filter(|idle| idle.resident_prefix.is_some())
+                .count(),
             tracked_token_counts: self.session_token_counts.len(),
             checkpoints: self.session_checkpoints.len(),
         }
+    }
+
+    fn take_idle_session(&mut self) -> Option<StageSession> {
+        if let Some(index) = self
+            .idle_sessions
+            .iter()
+            .position(|idle| idle.resident_prefix.is_none())
+        {
+            return Some(self.idle_sessions.swap_remove(index).session);
+        }
+        self.idle_sessions.pop().map(|idle| idle.session)
+    }
+
+    pub fn retain_resident_prefix_on_drop(
+        &mut self,
+        session_id: &str,
+        page_id: String,
+        token_count: u64,
+    ) -> Result<()> {
+        if !self.sessions.contains_key(session_id) {
+            bail!("session {session_id} does not exist");
+        }
+        if self
+            .session_resident_prefixes
+            .get(session_id)
+            .is_some_and(|current| current.token_count >= token_count)
+        {
+            return Ok(());
+        }
+        self.session_resident_prefixes.insert(
+            session_id.to_string(),
+            ResidentLanePrefix {
+                page_id,
+                token_count,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn acquire_resident_prefix_lane(
+        &mut self,
+        session_id: &str,
+        page_id: &str,
+        token_count: u64,
+    ) -> Result<bool> {
+        if self.sessions.contains_key(session_id) {
+            bail!("session {session_id} already exists");
+        }
+        let Some(index) = self.idle_sessions.iter().position(|idle| {
+            idle.resident_prefix.as_ref().is_some_and(|prefix| {
+                prefix.page_id == page_id && prefix.token_count == token_count
+            })
+        }) else {
+            return Ok(false);
+        };
+        let idle = self.idle_sessions.swap_remove(index);
+        self.sessions.insert(session_id.to_string(), idle.session);
+        self.session_token_counts
+            .insert(session_id.to_string(), token_count);
+        self.session_resident_prefixes.insert(
+            session_id.to_string(),
+            ResidentLanePrefix {
+                page_id: page_id.to_string(),
+                token_count,
+            },
+        );
+        Ok(true)
     }
 
     pub fn has_session_range(&self, session_id: &str, token_start: u64, token_count: u64) -> bool {
@@ -442,6 +552,24 @@ impl RuntimeState {
         Ok(())
     }
 
+    pub fn borrow_resident_prefix_session(
+        &mut self,
+        session_id: &str,
+        cache_seq_id: i32,
+        token_ids: &[i32],
+    ) -> Result<()> {
+        if self.sessions.contains_key(session_id) {
+            bail!("session {session_id} already exists");
+        }
+        let session = self
+            .model
+            .create_session_from_resident_prefix(cache_seq_id, token_ids)?;
+        self.sessions.insert(session_id.to_string(), session);
+        self.session_token_counts
+            .insert(session_id.to_string(), token_ids.len() as u64);
+        Ok(())
+    }
+
     pub fn drop_resident_prefix_sequence(
         &mut self,
         session_id: &str,
@@ -521,6 +649,7 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
         idle_sessions: Vec::new(),
         session_token_counts: BTreeMap::new(),
         session_checkpoints: BTreeMap::new(),
+        session_resident_prefixes: BTreeMap::new(),
     }))))
 }
 
@@ -537,6 +666,8 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
         lane_count: config.lane_count,
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: config.n_gpu_layers,
         selected_backend_device: config
             .selected_device
