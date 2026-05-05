@@ -1,0 +1,441 @@
+{
+  "schema_version": 1,
+  "goal": "cheap llama.cpp parity: one small GGUF representative per llama.cpp model implementation where certification is meaningful",
+  "defaults": {
+    "ctx_size": 128,
+    "n_gpu_layers": 999,
+    "wire_dtype": "f16",
+    "wire_dtypes": "f32,f16,q8",
+    "prompt": "Hello"
+  },
+  "candidates": [
+    {
+      "llama_model": "llama",
+      "family": "llama",
+      "status": "certified",
+      "repo": "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF",
+      "include": "*.gguf"
+    },
+    {
+      "llama_model": "qwen2",
+      "family": "qwen2",
+      "status": "certified",
+      "repo": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf",
+      "include": "*.gguf",
+      "notes": "Metal cheap lane passed text split, exact state, and ResidentKv borrowed-hit cache smoke"
+    },
+    {
+      "llama_model": "qwen3",
+      "family": "qwen3_dense",
+      "status": "certified",
+      "repo": "meshllm/qwen3-0.6b-parity-q8_0-gguf",
+      "include": "*.gguf"
+    },
+    {
+      "llama_model": "qwen3next",
+      "family": "qwen3next",
+      "status": "certified",
+      "repo": "bartowski/Qwen_Qwen3-Coder-Next-GGUF",
+      "include": "*IQ2_XS.gguf",
+      "recurrent": "all"
+    },
+    {
+      "llama_model": "qwen2vl",
+      "family": "qwen2vl",
+      "status": "candidate_multimodal",
+      "repo": "bartowski/Qwen2-VL-2B-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c; projector/image-token lane must pass before multimodal support is promoted"
+    },
+    {
+      "llama_model": "qwen3vl",
+      "family": "qwen3vl",
+      "status": "candidate_multimodal",
+      "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c; projector/image-token lane must pass before multimodal support is promoted"
+    },
+    {
+      "llama_model": "qwen2moe",
+      "family": "qwen2moe",
+      "status": "needs_candidate",
+      "search": "Qwen2MoE GGUF small Q4_K_M"
+    },
+    {
+      "llama_model": "qwen3moe",
+      "family": "qwen3moe",
+      "status": "needs_candidate",
+      "search": "Qwen3 MoE GGUF small Q4_K_M"
+    },
+    {
+      "llama_model": "mistral3",
+      "family": "mistral",
+      "status": "candidate",
+      "repo": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "candidate is 2.1 GB; download and verify GGUF architecture before certification"
+    },
+    {
+      "llama_model": "mistral4",
+      "family": "mistral4",
+      "status": "needs_candidate",
+      "search": "Ministral 3 3B Instruct GGUF Q4_K_M"
+    },
+    {
+      "llama_model": "phi3",
+      "family": "phi",
+      "status": "candidate",
+      "repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "phi2",
+      "family": "phi2",
+      "status": "candidate",
+      "repo": "TheBloke/phi-2-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "phimoe",
+      "family": "phimoe",
+      "status": "needs_candidate",
+      "search": "Phi MoE GGUF Q4_K_M"
+    },
+    {
+      "llama_model": "gemma",
+      "family": "gemma",
+      "status": "candidate",
+      "repo": "ggml-org/gemma-3-270m-it-GGUF",
+      "include": "*.gguf",
+      "notes": "repo currently provides Q8_0 only"
+    },
+    {
+      "llama_model": "gemma2",
+      "family": "gemma2",
+      "status": "certified",
+      "repo": "bartowski/gemma-2-2b-it-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "gemma3",
+      "family": "gemma3",
+      "status": "certified",
+      "repo": "ggml-org/gemma-3-1b-it-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "gemma4",
+      "family": "gemma4_a4b",
+      "status": "certified",
+      "repo": "batiai/Gemma-4-26B-A4B-it-GGUF",
+      "include": "*Q6_K.gguf"
+    },
+    {
+      "llama_model": "gemma4",
+      "family": "gemma4_e4b",
+      "status": "certified",
+      "repo": "unsloth/gemma-4-E4B-it-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "gemma3n",
+      "family": "gemma3n",
+      "status": "candidate_multimodal",
+      "repo": "lmstudio-community/gemma-3n-E2B-it-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "audio/vision side lanes must be checked before promoting multimodal support"
+    },
+    {
+      "llama_model": "deepseek",
+      "family": "deepseek",
+      "status": "candidate",
+      "repo": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces stale legraphista/DeepSeek-LLM-7B-Chat-GGUF; dry-run shows deepseek-llm-7b-chat-q4_k_m-imat.gguf at 4.2GB"
+    },
+    {
+      "llama_model": "deepseek2",
+      "family": "deepseek2",
+      "status": "certified",
+      "repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "deepseek2",
+      "family": "deepseek3",
+      "status": "certified_package_only",
+      "repo": "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+      "include": "model-package.json",
+      "notes": "package-backed evidence only; full llama-server baseline is intentionally not required"
+    },
+    {
+      "llama_model": "glm4",
+      "family": "glm4",
+      "status": "certified",
+      "repo": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf",
+      "include": "*.gguf"
+    },
+    {
+      "llama_model": "glm4",
+      "family": "glm47_flash",
+      "status": "certified",
+      "repo": "unsloth/GLM-4.7-Flash-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "glm4-moe",
+      "family": "glm4_moe",
+      "status": "needs_candidate",
+      "search": "GLM4 MoE GGUF Q4_K_M"
+    },
+    {
+      "llama_model": "granite",
+      "family": "granite",
+      "status": "candidate",
+      "repo": "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "granite-hybrid",
+      "family": "granite_hybrid",
+      "status": "needs_candidate",
+      "search": "Granite hybrid GGUF small"
+    },
+    {
+      "llama_model": "granite-moe",
+      "family": "granite_moe",
+      "status": "needs_candidate",
+      "search": "Granite MoE GGUF small"
+    },
+    {
+      "llama_model": "gptneox",
+      "family": "gptneox",
+      "status": "candidate",
+      "repo": "warriorknight3/pythia-70m-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces stale QuantFactory/pythia-70m-GGUF; dry-run shows pythia-70m-q4_k_m.gguf at 49.3MB"
+    },
+    {
+      "llama_model": "bloom",
+      "family": "bloom",
+      "status": "candidate",
+      "repo": "QuantFactory/bloomz-560m-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "baichuan",
+      "family": "baichuan",
+      "status": "candidate",
+      "repo": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF",
+      "include": "*.gguf"
+    },
+    {
+      "llama_model": "command-r",
+      "family": "command_r",
+      "status": "candidate",
+      "repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces non-GGUF source repo"
+    },
+    {
+      "llama_model": "cohere2",
+      "family": "cohere2",
+      "status": "candidate",
+      "repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces stale lmstudio-community/c4ai-command-r7b-12-2024-GGUF"
+    },
+    {
+      "llama_model": "jamba",
+      "family": "jamba",
+      "status": "candidate_stateful",
+      "repo": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "recurrent": "all",
+      "notes": "replaces gated/non-GGUF AI21-Jamba-1.5-Mini source"
+    },
+    {
+      "llama_model": "mamba",
+      "family": "mamba",
+      "status": "candidate_stateful",
+      "repo": "mradermacher/mamba-130m-hf-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "recurrent": "all"
+    },
+    {
+      "llama_model": "mamba2",
+      "family": "mamba2",
+      "status": "candidate_stateful",
+      "repo": "mradermacher/mamba-2.8b-hf-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "recurrent": "all",
+      "notes": "replaces stale mradermacher/mamba2-130m-GGUF; no small mamba2-130m GGUF candidate found"
+    },
+    {
+      "llama_model": "rwkv6",
+      "family": "rwkv6",
+      "status": "candidate_stateful",
+      "repo": "jpodivin/rwkv-4-pile-169m-GGUF",
+      "include": "*.gguf",
+      "recurrent": "all"
+    },
+    {
+      "llama_model": "rwkv7",
+      "family": "rwkv7",
+      "status": "candidate_stateful",
+      "repo": "Mungert/rwkv7-191M-world-GGUF",
+      "include": "*q4_k.gguf",
+      "recurrent": "all",
+      "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF"
+    },
+    {
+      "llama_model": "falcon-h1",
+      "family": "falcon_h1",
+      "status": "certified",
+      "repo": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "recurrent": "all"
+    },
+    {
+      "llama_model": "falcon",
+      "family": "falcon",
+      "status": "candidate",
+      "repo": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces stale TheBloke/falcon-7b-instruct-GGUF; dry-run shows falcon-7b-instruct-q4_k_m.gguf at 5.0GB"
+    },
+    {
+      "llama_model": "olmo",
+      "family": "olmo",
+      "status": "certified",
+      "repo": "meshllm/olmo-7b-instruct-hf-parity-f16-gguf",
+      "include": "*.gguf"
+    },
+    {
+      "llama_model": "olmo2",
+      "family": "olmo2",
+      "status": "candidate",
+      "repo": "allenai/OLMo-2-1124-7B-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c"
+    },
+    {
+      "llama_model": "olmoe",
+      "family": "olmoe",
+      "status": "candidate",
+      "repo": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c; MoE-specific serving/cache smoke still required"
+    },
+    {
+      "llama_model": "minimax-m2",
+      "family": "minimax_m27",
+      "status": "certified",
+      "repo": "unsloth/MiniMax-M2.7-GGUF",
+      "include": "UD-Q2_K_XL/*.gguf"
+    },
+    {
+      "llama_model": "lfm2",
+      "family": "lfm2",
+      "status": "candidate",
+      "repo": "meshllm/lfm2-350m-parity-q4_k_m-gguf",
+      "include": "*.gguf",
+      "recurrent": "all",
+      "notes": "blocked: native runtime-slice execution is not supported for lfm2 yet; exact state handoff passed"
+    },
+    {
+      "llama_model": "hunyuan-dense",
+      "family": "hunyuan_dense",
+      "status": "needs_candidate",
+      "search": "Hunyuan dense GGUF small Q4_K_M"
+    },
+    {
+      "llama_model": "hunyuan-moe",
+      "family": "hunyuan_moe",
+      "status": "needs_candidate",
+      "search": "Hunyuan MoE GGUF small Q4_K_M"
+    },
+  {
+    "llama_model": "hunyuan-vl",
+    "family": "hunyuan_vl",
+    "status": "needs_candidate",
+    "notes": "Previous candidate mradermacher/Hunyuan-Vision-GGUF is unavailable/not visible via HF search or download. Re-select a public Hunyuan-VL GGUF before adding this family to the local certification queue."
+  },
+    {
+      "llama_model": "internlm2",
+      "family": "internlm2",
+      "status": "candidate",
+      "repo": "lmstudio-community/internlm2_5-1_8b-chat-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "exaone",
+      "family": "exaone",
+      "status": "candidate",
+      "repo": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "exaone4",
+      "family": "exaone4",
+      "status": "candidate",
+      "repo": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "bert",
+      "family": "bert",
+      "status": "non_causal_aux",
+      "repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "embedding/encoder support is not stage-split causal decode certification"
+    },
+    {
+      "llama_model": "t5",
+      "family": "t5",
+      "status": "non_causal_aux",
+      "repo": "cyanic-selkie/flan-t5-small-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "encoder-decoder support needs its own lane"
+    },
+    {
+      "llama_model": "starcoder2",
+      "family": "starcoder2",
+      "status": "candidate",
+      "repo": "combos/starcoder2-3b-Q4_K_M-GGUF",
+      "include": "*.gguf",
+      "notes": "replaces stale bigcode/starcoder2-3b-GGUF"
+    },
+    {
+      "llama_model": "stablelm",
+      "family": "stablelm",
+      "status": "candidate",
+      "repo": "TheBloke/stablelm-zephyr-3b-GGUF",
+      "include": "*Q4_K_M.gguf"
+    },
+    {
+      "llama_model": "gpt2",
+      "family": "gpt2",
+      "status": "candidate",
+      "repo": "QuantFactory/gpt2-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3e"
+    },
+    {
+      "llama_model": "mpt",
+      "family": "mpt",
+      "status": "candidate",
+      "repo": "mradermacher/mpt-7b-chat-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c"
+    },
+    {
+      "llama_model": "llama4",
+      "family": "llama4",
+      "status": "package_or_remote_only",
+      "repo": "glogwa68/Llama-4-scout-GGUF",
+      "include": "*Q4_K_M.gguf",
+      "notes": "too large for cheap full baseline on the local Mac; use package/materialized stage evidence"
+    }
+  ]
+}

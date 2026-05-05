@@ -1951,10 +1951,11 @@ fn import_local_state_payload(
             }
             session.restore_prefix(*cache_seq_id, token_ids)
         }
-        LocalStatePayload::FullState(bytes) => session.import_full_state(
+        LocalStatePayload::FullState(bytes) => session.import_full_state_for_token_count(
             args.state_layer_start as i32,
             args.state_layer_end as i32,
             bytes,
+            token_count,
         ),
         LocalStatePayload::RecurrentOnly(bytes) => {
             session.import_recurrent_state_for_token_count(bytes, token_count)

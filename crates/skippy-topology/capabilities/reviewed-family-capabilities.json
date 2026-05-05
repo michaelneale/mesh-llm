@@ -16,6 +16,26 @@
     }
   },
   {
+    "model_id": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf:Q8_0",
+    "source_repo": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf",
+    "source_revision": "ba673b0fcc82c6f247864338366cdf58e10fc8fa",
+    "source_file": "qwen2.5-0.5b-instruct-q8_0.gguf",
+    "canonical_ref": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf@ba673b0fcc82c6f247864338366cdf58e10fc8fa/qwen2.5-0.5b-instruct-q8_0.gguf",
+    "distribution_id": "qwen2.5-0.5b-instruct-q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "qwen2",
+      "layer_count": 24,
+      "activation_width": 896,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M",
     "distribution_id": "Llama-3.2-1B-Instruct-Q4_K_M",
     "selector": "Q4_K_M",
@@ -43,6 +63,26 @@
       "family_id": "deepseek2",
       "layer_count": 27,
       "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF",
+    "source_revision": "8f007de7920d36e28a917817014c356b4557a6be",
+    "source_file": "deepseek-llm-7b-chat-q4_k_m-imat.gguf",
+    "canonical_ref": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF@8f007de7920d36e28a917817014c356b4557a6be/deepseek-llm-7b-chat-q4_k_m-imat.gguf",
+    "distribution_id": "deepseek-llm-7b-chat-q4_k_m-imat",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "deepseek",
+      "layer_count": 30,
+      "activation_width": 4096,
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
       "exact_state_mobility": "accepted",
@@ -150,8 +190,16 @@
       "split_constraints": [
         {
           "kind": "shared_kv_producer_consumer",
-          "range": { "start": 0, "end": 0 },
-          "forbidden_boundaries": [12, 14, 24, 28],
+          "range": {
+            "start": 0,
+            "end": 0
+          },
+          "forbidden_boundaries": [
+            12,
+            14,
+            24,
+            28
+          ],
           "reject_boundary_inside": false,
           "reason": "known-bad Gemma4 E4B shared-KV producer/consumer boundary; keep this cut rejected unless KV replay or KV transfer is added"
         }
@@ -220,7 +268,12 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
       "exact_state_mobility": "rejected_too_large",
-      "recurrent_ranges": [{ "start": 0, "end": 24 }],
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
       "split_constraints": [],
       "sidebands": []
     }
@@ -280,7 +333,12 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "rejected",
       "exact_state_mobility": "rejected_too_large",
-      "recurrent_ranges": [{ "start": 0, "end": 48 }],
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 48
+        }
+      ],
       "split_constraints": [],
       "sidebands": []
     }

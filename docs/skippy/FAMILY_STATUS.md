@@ -15,8 +15,10 @@ Last updated: 2026-05-06.
 | Family | Support Level | Recommended Artifact | Stage Plan | Wire | Speculative | Topology Constraint | Other Required Policy |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Qwen3 dense | Supported | `Qwen/Qwen3-0.6B:Q8_0` | `layer_end=28`, `splits=9,18`, activation width `1024` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; this is the state-size baseline. |
+| Qwen2 | Supported | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf:Q8_0` | `layer_end=24`, `splits=8,16`, activation width `896` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
 | Llama | Supported | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | DeepSeek2 | Supported | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `layer_end=27`, `splits=7,14`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
+| DeepSeek LLM | Supported | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=30`, `splits=10,20`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
 | DeepSeek3 | Supported for package-backed stages | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` via `meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers` | `layer_end=61`, activation width `7168`; materialize only the owned stage range | `f16`; q8 untested | `baseline,ngram,ngram-adaptive` | None | Use layer-package materialization and `ResidentKv`; do not require the full 406.8 GB layer set to be resident or merged. |
 | GLM-4.7 Flash | Supported | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | GGUF uses the DeepSeek2/MLA runtime path. |
 | GLM4 9B | Supported | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `layer_end=40`, `splits=13,27`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
@@ -28,6 +30,18 @@ Last updated: 2026-05-06.
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
 | Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky until exact recurrent layer metadata is available. | Do not transfer recurrent state during normal decode. Exact state mobility rejected. |
+
+## Text-Split Candidates
+
+These families now pass the cheap runtime-slice text lane, but are not promoted
+to the customer support matrix until cache smoke and reviewed topology records
+are updated.
+
+```text
+Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, GPT-NeoX,
+GPT2, Granite, InternLM2, Mistral3, MPT, OLMo2, OLMoE, Phi3, Qwen2-VL text,
+Qwen3-VL text, StableLM, StarCoder2
+```
 
 ## Exceptions
 
@@ -62,8 +76,10 @@ activation handoff sizes for the recommended split.
 | Family | f16 Activation Payload | Exact State Mobility |
 | --- | ---: | --- |
 | Qwen3 dense | 2,048 | Accepted, 115,388 bytes baseline |
+| Qwen2 | 1,792 | Accepted, 0.11x Qwen; `ResidentKv` 64-token smoke passed |
 | Llama | 4,096 | Accepted, 0.29x Qwen |
 | DeepSeek2 | 4,096 | Accepted, 2.40x Qwen |
+| DeepSeek LLM | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 1.58x cache-hit speedup |
 | DeepSeek3 | 14,336 | Accepted for package-backed `ResidentKv`; full-GGUF llama-server baseline not required |
 | GLM-4.7 Flash | 4,096 | Accepted, 0.47x Qwen |
 | GLM4 9B | 8,192 | Accepted, 0.36x Qwen |

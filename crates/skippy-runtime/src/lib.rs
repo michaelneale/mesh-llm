@@ -1221,6 +1221,16 @@ impl StageSession {
         self.token_count
     }
 
+    fn set_position(&mut self, token_count: u64) -> Result<()> {
+        let n_past = i32::try_from(token_count).context("session token count exceeds i32")?;
+        let mut error = ptr::null_mut();
+        let status =
+            unsafe { skippy_ffi::skippy_session_set_position(self.raw, n_past, &mut error) };
+        ensure_ok(status, error)?;
+        self.token_count = token_count;
+        Ok(())
+    }
+
     pub fn batch_size(&self) -> Result<usize> {
         let n_batch = unsafe { skippy_ffi::skippy_session_batch_size(self.raw) };
         if n_batch <= 0 {
@@ -1844,8 +1854,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_state(layer_start, layer_end, input)?;
-        self.token_count = self.token_count.max(token_count);
-        Ok(())
+        self.set_position(token_count)
     }
 
     pub fn export_full_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
@@ -1915,8 +1924,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_full_state(layer_start, layer_end, input)?;
-        self.token_count = self.token_count.max(token_count);
-        Ok(())
+        self.set_position(token_count)
     }
 
     pub fn export_kv_page(
@@ -2082,8 +2090,7 @@ impl StageSession {
         token_count: u64,
     ) -> Result<()> {
         self.import_recurrent_state(input)?;
-        self.token_count = self.token_count.max(token_count);
-        Ok(())
+        self.set_position(token_count)
     }
 }
 

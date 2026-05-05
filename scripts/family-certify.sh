@@ -47,6 +47,11 @@ Speculative options:
   --decode-timeout N          decode timeout seconds; default: 120
   --qwen-state-baseline BYTES Qwen dense state baseline; default: 115388
   --state-reject-ratio N      reject exact state mobility over Nx baseline; default: 100
+  --state-payload-kind KIND   state payload for handoff; default: full-state
+  --prefix-token-count N      prefix length for state/cache smoke
+  --cache-hit-repeats N       repeated cache hits for state/cache smoke; default: 1
+  --borrow-resident-hits      borrow resident KV sessions for ResidentKv hits
+  --cache-decoded-result-hits reuse decoded-result hits where supported
   --recurrent-ranges CSV      recurrent ranges, for example 0..12,16..24
   --recurrent-all             mark the whole certified layer range recurrent
 
@@ -123,6 +128,11 @@ MAX_TOKENS="24"
 DECODE_TIMEOUT="120"
 QWEN_STATE_BASELINE_BYTES="115388"
 STATE_REJECT_RATIO="100"
+STATE_PAYLOAD_KIND="full-state"
+PREFIX_TOKEN_COUNT=""
+CACHE_HIT_REPEATS="1"
+BORROW_RESIDENT_HITS=0
+CACHE_DECODED_RESULT_HITS=0
 RECURRENT_RANGES=""
 RECURRENT_ALL=0
 CERT_ROOT="target/family-certify"
@@ -161,6 +171,11 @@ while [[ $# -gt 0 ]]; do
     --decode-timeout) DECODE_TIMEOUT="$2"; shift 2 ;;
     --qwen-state-baseline) QWEN_STATE_BASELINE_BYTES="$2"; shift 2 ;;
     --state-reject-ratio) STATE_REJECT_RATIO="$2"; shift 2 ;;
+    --state-payload-kind) STATE_PAYLOAD_KIND="$2"; shift 2 ;;
+    --prefix-token-count) PREFIX_TOKEN_COUNT="$2"; shift 2 ;;
+    --cache-hit-repeats) CACHE_HIT_REPEATS="$2"; shift 2 ;;
+    --borrow-resident-hits) BORROW_RESIDENT_HITS=1; shift ;;
+    --cache-decoded-result-hits) CACHE_DECODED_RESULT_HITS=1; shift ;;
     --recurrent-ranges) RECURRENT_RANGES="$2"; shift 2 ;;
     --recurrent-all) RECURRENT_ALL=1; shift ;;
     --cert-root) CERT_ROOT="$2"; shift 2 ;;
@@ -405,8 +420,19 @@ else
       --source-bind-addr "127.0.0.1:$((PORT_BASE + 31))"
       --restore-bind-addr "127.0.0.1:$((PORT_BASE + 32))"
       --activation-wire-dtype "$WIRE_DTYPE"
+      --state-payload-kind "$STATE_PAYLOAD_KIND"
+      --cache-hit-repeats "$CACHE_HIT_REPEATS"
       --report-out "$REPORT_DIR/state-handoff.json"
     )
+    if [[ -n "$PREFIX_TOKEN_COUNT" ]]; then
+      state_args+=(--prefix-token-count "$PREFIX_TOKEN_COUNT")
+    fi
+    if (( BORROW_RESIDENT_HITS != 0 )); then
+      state_args+=(--borrow-resident-hits)
+    fi
+    if (( CACHE_DECODED_RESULT_HITS != 0 )); then
+      state_args+=(--cache-decoded-result-hits)
+    fi
     run_logged "state-handoff" "$REPORT_DIR/state-handoff.json" "${state_args[@]}"
   else
     record_event "state-handoff" "skipped" 0 "" "" "requires --activation-width and --layer-end"
@@ -619,6 +645,9 @@ jq -n \
   --arg n_gpu_layers "$N_GPU_LAYERS" \
   --arg wire_dtype "$WIRE_DTYPE" \
   --arg wire_dtypes "$WIRE_DTYPES" \
+  --arg state_payload_kind "$STATE_PAYLOAD_KIND" \
+  --arg prefix_token_count "$PREFIX_TOKEN_COUNT" \
+  --arg cache_hit_repeats "$CACHE_HIT_REPEATS" \
   --arg corpus "$(abs_path "$CORPUS")" \
   --arg spec_modes "$SPEC_MODES" \
   --arg capability_draft "$CAPABILITY_DRAFT_JSON" \
@@ -640,7 +669,10 @@ jq -n \
       ctx_size:$ctx_size,
       n_gpu_layers:$n_gpu_layers,
       wire_dtype:$wire_dtype,
-      wire_dtypes:$wire_dtypes
+      wire_dtypes:$wire_dtypes,
+      state_payload_kind:$state_payload_kind,
+      prefix_token_count:($prefix_token_count | if length > 0 then . else null end),
+      cache_hit_repeats:$cache_hit_repeats
     },
     speculative:{
       corpus:$corpus,
