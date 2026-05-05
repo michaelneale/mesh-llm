@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use skippy_protocol::StageConfig;
+use skippy_protocol::{StageConfig, StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload};
 use skippy_topology::{infer_family_capability, FamilyCapabilityRecord, WireDType};
 
 use super::StageWireDType;
@@ -26,6 +26,7 @@ pub(crate) enum FamilyPrefixCachePolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FamilyPrefixCachePayload {
+    ResidentKv,
     KvRecurrent,
     FullState,
 }
@@ -33,8 +34,39 @@ pub(crate) enum FamilyPrefixCachePayload {
 impl FamilyPrefixCachePayload {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::ResidentKv => "resident-kv",
             Self::KvRecurrent => "kv-recurrent",
             Self::FullState => "full-state",
+        }
+    }
+
+    fn as_stage_payload(self) -> StageKvCachePayload {
+        match self {
+            Self::ResidentKv => StageKvCachePayload::ResidentKv,
+            Self::KvRecurrent => StageKvCachePayload::KvRecurrent,
+            Self::FullState => StageKvCachePayload::FullState,
+        }
+    }
+}
+
+impl FamilyPolicy {
+    pub(crate) fn stage_kv_cache_config(&self) -> Option<StageKvCacheConfig> {
+        const DEFAULT_EXACT_CACHE_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+        match self.prefix_cache {
+            FamilyPrefixCachePolicy::Disabled { .. } => None,
+            FamilyPrefixCachePolicy::Auto {
+                payload,
+                min_tokens,
+                max_entries,
+            } => Some(StageKvCacheConfig {
+                mode: StageKvCacheMode::LookupRecord,
+                payload: payload.as_stage_payload(),
+                max_entries,
+                max_bytes: DEFAULT_EXACT_CACHE_MAX_BYTES,
+                min_tokens,
+                shared_prefix_stride_tokens: 128,
+                shared_prefix_record_limit: 2,
+            }),
         }
     }
 }
@@ -117,12 +149,25 @@ fn family_policy_for_normalized_family_id(
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
     match family_id {
-        "qwen3_dense" | "qwen3next" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo"
-        | "falcon_h1" | "minimax_m27" => kv_recurrent_policy(activation_wire_dtype),
+        "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" => {
+            resident_kv_policy(activation_wire_dtype)
+        }
+        "qwen3next" | "falcon_h1" | "minimax_m27" => kv_recurrent_policy(activation_wire_dtype),
         "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" => {
             full_state_policy(activation_wire_dtype)
         }
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
+    }
+}
+
+fn resident_kv_policy(activation_wire_dtype: StageWireDType) -> FamilyPolicy {
+    FamilyPolicy {
+        activation_wire_dtype,
+        prefix_cache: FamilyPrefixCachePolicy::Auto {
+            payload: FamilyPrefixCachePayload::ResidentKv,
+            min_tokens: 256,
+            max_entries: 128,
+        },
     }
 }
 
@@ -191,7 +236,7 @@ mod tests {
         assert_eq!(
             policy.prefix_cache,
             FamilyPrefixCachePolicy::Auto {
-                payload: FamilyPrefixCachePayload::KvRecurrent,
+                payload: FamilyPrefixCachePayload::ResidentKv,
                 min_tokens: 256,
                 max_entries: 128,
             }
@@ -206,7 +251,7 @@ mod tests {
         assert!(matches!(
             policy.prefix_cache,
             FamilyPrefixCachePolicy::Auto {
-                payload: FamilyPrefixCachePayload::KvRecurrent,
+                payload: FamilyPrefixCachePayload::ResidentKv,
                 ..
             }
         ));
@@ -227,14 +272,14 @@ mod tests {
     }
 
     #[test]
-    fn deepseek3_uses_kv_recurrent_cache_shape() {
+    fn deepseek3_uses_resident_kv_cache_shape_until_mla_is_certified() {
         let policy = family_policy_for_model_id("unsloth/DeepSeek-V3.2-GGUF:Q4_K_M");
 
         assert_eq!(policy.activation_wire_dtype, StageWireDType::F16);
         assert!(matches!(
             policy.prefix_cache,
             FamilyPrefixCachePolicy::Auto {
-                payload: FamilyPrefixCachePayload::KvRecurrent,
+                payload: FamilyPrefixCachePayload::ResidentKv,
                 ..
             }
         ));
@@ -261,8 +306,18 @@ mod tests {
             let family_id = record.capability.family_id.as_str();
 
             match family_id {
-                "qwen3_dense" | "qwen3next" | "llama" | "deepseek2" | "deepseek3" | "glm4"
-                | "olmo" | "falcon_h1" | "minimax_m27" => assert_eq!(
+                "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" => {
+                    assert_eq!(
+                        policy.prefix_cache,
+                        FamilyPrefixCachePolicy::Auto {
+                            payload: FamilyPrefixCachePayload::ResidentKv,
+                            min_tokens: 256,
+                            max_entries: 128,
+                        },
+                        "{family_id}"
+                    )
+                }
+                "qwen3next" | "falcon_h1" | "minimax_m27" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,

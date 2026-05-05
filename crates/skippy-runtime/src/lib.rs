@@ -1761,6 +1761,18 @@ impl StageSession {
         ensure_ok(status, error)
     }
 
+    pub fn import_state_for_token_count(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_state(layer_start, layer_end, input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
+    }
+
     pub fn export_full_state(&mut self, layer_start: i32, layer_end: i32) -> Result<Vec<u8>> {
         let mut bytes = 0usize;
         let mut error = ptr::null_mut();
@@ -1818,6 +1830,18 @@ impl StageSession {
             )
         };
         ensure_ok(status, error)
+    }
+
+    pub fn import_full_state_for_token_count(
+        &mut self,
+        layer_start: i32,
+        layer_end: i32,
+        input: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.import_full_state(layer_start, layer_end, input)?;
+        self.token_count = self.token_count.max(token_count);
+        Ok(())
     }
 
     pub fn export_kv_page(

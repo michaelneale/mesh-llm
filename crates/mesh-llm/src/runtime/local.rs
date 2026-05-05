@@ -1266,7 +1266,8 @@ fn split_stage0_config(
             index: Some(gpu.index),
             vram_bytes: Some(gpu.vram_bytes),
         }),
-        kv_cache: None,
+        kv_cache: skippy::family_policy_for_model_path(model_path, Some(model_ref))
+            .stage_kv_cache_config(),
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,

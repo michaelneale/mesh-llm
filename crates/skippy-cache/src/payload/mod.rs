@@ -74,9 +74,34 @@ impl ExactStatePayload {
         }
     }
 
+    pub fn recurrent_state_bytes_timed(
+        &self,
+    ) -> Result<(Cow<'_, [u8]>, CacheBytesReconstructStats)> {
+        match self {
+            Self::RecurrentOnly { recurrent } | Self::KvRecurrent { recurrent, .. } => {
+                recurrent.as_cow_timed()
+            }
+            _ => Err(anyhow!("cache payload has no recurrent component")),
+        }
+    }
+
+    pub fn full_state_bytes_timed(&self) -> Result<(Cow<'_, [u8]>, CacheBytesReconstructStats)> {
+        match self {
+            Self::FullState { bytes } => bytes.as_cow_timed(),
+            _ => Err(anyhow!("cache payload is not full-state")),
+        }
+    }
+
     pub fn kv_bytes(&self) -> Result<Option<Cow<'_, [u8]>>> {
         match self {
             Self::KvRecurrent { kv, .. } => Ok(Some(kv.as_cow()?)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn kv_bytes_timed(&self) -> Result<Option<(Cow<'_, [u8]>, CacheBytesReconstructStats)>> {
+        match self {
+            Self::KvRecurrent { kv, .. } => Ok(Some(kv.as_cow_timed()?)),
             _ => Ok(None),
         }
     }
@@ -98,6 +123,17 @@ impl ExactStatePayload {
                     Self::KvRecurrent { kv, recurrent },
                     kv_stats.saturating_add(recurrent_stats),
                 )
+            }
+        }
+    }
+
+    pub fn release_from(&self, blobs: &mut CacheBlobStore) {
+        match self {
+            Self::FullState { bytes } => blobs.release_bytes(bytes),
+            Self::RecurrentOnly { recurrent } => blobs.release_bytes(recurrent),
+            Self::KvRecurrent { kv, recurrent } => {
+                blobs.release_bytes(kv);
+                blobs.release_bytes(recurrent);
             }
         }
     }

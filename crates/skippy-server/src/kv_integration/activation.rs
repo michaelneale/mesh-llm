@@ -2,7 +2,10 @@ use skippy_cache::activation_page_id;
 use skippy_protocol::{MessageBase, StageConfig};
 use skippy_runtime::ActivationFrame;
 
-use super::{KvStageIntegration, ResidentActivationRecord, ResidentActivationRestore};
+use super::{
+    KvStageIntegration, ResidentActivationRecord, ResidentActivationRestore,
+    StagePrefixCachePayload,
+};
 
 impl KvStageIntegration {
     pub fn restore_resident_activation(
@@ -13,7 +16,10 @@ impl KvStageIntegration {
         token_ids: &[i32],
         activation_width: i32,
     ) -> Option<ResidentActivationRestore> {
-        if !self.should_lookup() || token_ids.is_empty() {
+        if !self.should_lookup()
+            || self.payload != StagePrefixCachePayload::ResidentKv
+            || token_ids.is_empty()
+        {
             return None;
         }
         let identity = self.prefill_identity(config, base, token_start, token_ids);
@@ -42,7 +48,10 @@ impl KvStageIntegration {
         activation_width: i32,
         frame: &ActivationFrame,
     ) -> Option<ResidentActivationRecord> {
-        if !self.should_record() || token_ids.is_empty() {
+        if !self.should_record()
+            || self.payload != StagePrefixCachePayload::ResidentKv
+            || token_ids.is_empty()
+        {
             return None;
         }
         let token_count = token_ids.len() as u64;

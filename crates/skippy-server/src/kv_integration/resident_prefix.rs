@@ -2,7 +2,10 @@ use anyhow::Result;
 
 use crate::runtime_state::RuntimeState;
 
-use super::{KvStageIntegration, PrefillKvIdentity, ResidentPrefixRecord, ResidentPrefixRestore};
+use super::{
+    KvStageIntegration, PrefillKvIdentity, ResidentPrefixRecord, ResidentPrefixRestore,
+    StagePrefixCachePayload,
+};
 
 impl KvStageIntegration {
     pub fn restore_resident_prefix(
@@ -12,7 +15,7 @@ impl KvStageIntegration {
         identities: &[PrefillKvIdentity],
         token_ids: &[i32],
     ) -> Result<Option<ResidentPrefixRestore>> {
-        if !self.should_lookup() {
+        if !self.should_lookup() || self.payload != StagePrefixCachePayload::ResidentKv {
             return Ok(None);
         }
         for identity in identities {
@@ -56,7 +59,7 @@ impl KvStageIntegration {
         identity: &PrefillKvIdentity,
         token_ids: &[i32],
     ) -> Result<Option<ResidentPrefixRecord>> {
-        if !self.should_record() {
+        if !self.should_record() || self.payload != StagePrefixCachePayload::ResidentKv {
             return Ok(None);
         }
         let token_count = identity

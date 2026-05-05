@@ -50,7 +50,7 @@ impl CacheBlobStore {
         for chunk in bytes.chunks(self.block_size) {
             stats.block_count = stats.block_count.saturating_add(1);
             let hash = blake3::hash(chunk).to_hex().to_string();
-            let entry = self.blocks.entry(hash).or_insert_with(|| {
+            let entry = self.blocks.entry(hash.clone()).or_insert_with(|| {
                 self.physical_bytes = self.physical_bytes.saturating_add(chunk.len() as u64);
                 stats.new_block_count = stats.new_block_count.saturating_add(1);
                 CacheBlob {
@@ -62,10 +62,28 @@ impl CacheBlobStore {
                 stats.reused_block_count = stats.reused_block_count.saturating_add(1);
             }
             entry.ref_count = entry.ref_count.saturating_add(1);
-            blocks.push(CacheBlockRef::new(entry.bytes.clone()));
+            blocks.push(CacheBlockRef::new(hash, entry.bytes.clone()));
         }
         stats.hash_ms = started.elapsed().as_secs_f64() * 1000.0;
         (CacheBytes::blocks(bytes.len() as u64, blocks), stats)
+    }
+
+    pub fn release_bytes(&mut self, bytes: &CacheBytes) {
+        let hashes = bytes.block_hashes().map(str::to_string).collect::<Vec<_>>();
+        for hash in hashes {
+            let mut remove = false;
+            if let Some(entry) = self.blocks.get_mut(&hash) {
+                entry.ref_count = entry.ref_count.saturating_sub(1);
+                if entry.ref_count == 0 {
+                    self.physical_bytes =
+                        self.physical_bytes.saturating_sub(entry.bytes.len() as u64);
+                    remove = true;
+                }
+            }
+            if remove {
+                self.blocks.remove(&hash);
+            }
+        }
     }
 
     pub fn physical_bytes(&self) -> u64 {

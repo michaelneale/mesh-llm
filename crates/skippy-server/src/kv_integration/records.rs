@@ -1,6 +1,7 @@
 use skippy_runtime::ActivationFrame;
 
 use crate::kv_proto::{KvPageManifest, PageIdentity};
+use skippy_cache::{CacheBytesReconstructStats, CacheDedupeStats, ExactStatePayloadKind};
 
 #[derive(Debug, Clone)]
 pub struct PrefillKvIdentity {
@@ -68,8 +69,45 @@ pub struct ResidentActivationRecord {
     pub resident_bytes: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExactStateRestore {
+    pub page_id: String,
+    pub token_count: usize,
+    pub payload_kind: ExactStatePayloadKind,
+    pub logical_bytes: u64,
+    pub entries: usize,
+    pub reconstruct_ms: f64,
+    pub reconstruct_bytes: u64,
+    pub reconstruct_blocks: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExactStateRecord {
+    pub page_id: String,
+    pub token_count: usize,
+    pub payload_kind: ExactStatePayloadKind,
+    pub stored: bool,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub entries: usize,
+    pub evicted_entries: usize,
+    pub evicted_logical_bytes: u64,
+    pub dedupe: CacheDedupeStats,
+}
+
 impl AttachedPage {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+}
+
+pub(crate) fn add_reconstruct_stats(
+    total_ms: &mut f64,
+    total_bytes: &mut u64,
+    total_blocks: &mut usize,
+    stats: CacheBytesReconstructStats,
+) {
+    *total_ms += stats.reconstruct_ms;
+    *total_bytes = total_bytes.saturating_add(stats.reconstruct_bytes);
+    *total_blocks = total_blocks.saturating_add(stats.reconstruct_blocks);
 }

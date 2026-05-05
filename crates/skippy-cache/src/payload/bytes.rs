@@ -16,12 +16,13 @@ pub(super) enum CacheBytesRepr {
 
 #[derive(Debug, Clone)]
 pub(super) struct CacheBlockRef {
+    pub(super) hash: String,
     pub(super) bytes: Arc<Vec<u8>>,
 }
 
 impl CacheBlockRef {
-    pub(super) fn new(bytes: Arc<Vec<u8>>) -> Self {
-        Self { bytes }
+    pub(super) fn new(hash: String, bytes: Arc<Vec<u8>>) -> Self {
+        Self { hash, bytes }
     }
 }
 
@@ -84,6 +85,33 @@ impl CacheBytes {
         match &self.repr {
             CacheBytesRepr::Inline(_) => 0,
             CacheBytesRepr::Blocks(blocks) => blocks.len(),
+        }
+    }
+
+    pub(super) fn block_hashes(&self) -> impl Iterator<Item = &str> {
+        match &self.repr {
+            CacheBytesRepr::Inline(_) => CacheBlockHashIter::Empty,
+            CacheBytesRepr::Blocks(blocks) => CacheBlockHashIter::Blocks {
+                iter: blocks.iter(),
+            },
+        }
+    }
+}
+
+enum CacheBlockHashIter<'a> {
+    Empty,
+    Blocks {
+        iter: std::slice::Iter<'a, CacheBlockRef>,
+    },
+}
+
+impl<'a> Iterator for CacheBlockHashIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Empty => None,
+            Self::Blocks { iter } => iter.next().map(|block| block.hash.as_str()),
         }
     }
 }

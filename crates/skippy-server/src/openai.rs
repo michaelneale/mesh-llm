@@ -2652,46 +2652,103 @@ impl StageOpenAiBackend {
                 if let Some(kv) = self.kv.as_ref() {
                     let base = self.local_kv_message_base(&session_id, request.ids);
                     let identities = kv.lookup_identities(&self.config, &base, 0, prefill_tokens);
-                    match kv.restore_resident_prefix(
-                        &mut runtime,
-                        &session_id,
-                        &identities,
-                        prefill_tokens,
-                    ) {
+                    match kv.restore_exact_state(&mut runtime, &session_id, &identities) {
                         Ok(Some(restored)) => {
                             restored_prefill = true;
                             let mut attrs = self.openai_attrs(request.ids);
-                            attrs.insert("skippy.kv.decision".to_string(), json!("resident_hit"));
+                            attrs.insert("skippy.kv.decision".to_string(), json!("exact_hit"));
                             attrs.insert(
-                                "skippy.kv.hit_page_id".to_string(),
+                                "skippy.exact_cache.hit_page_id".to_string(),
                                 json!(restored.page_id),
                             );
                             attrs.insert(
-                                "skippy.kv.restored_tokens".to_string(),
+                                "skippy.exact_cache.payload_kind".to_string(),
+                                json!(restored.payload_kind.to_string()),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.restored_tokens".to_string(),
                                 json!(restored.token_count),
                             );
                             attrs.insert(
-                                "skippy.kv.resident_seq_id".to_string(),
-                                json!(restored.seq_id),
+                                "skippy.exact_cache.logical_bytes".to_string(),
+                                json!(restored.logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.entries".to_string(),
+                                json!(restored.entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_ms".to_string(),
+                                json!(restored.reconstruct_ms),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_bytes".to_string(),
+                                json!(restored.reconstruct_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_blocks".to_string(),
+                                json!(restored.reconstruct_blocks),
                             );
                             self.telemetry
                                 .emit("stage.openai_kv_lookup_decision", attrs);
                         }
-                        Ok(None) => {
-                            self.telemetry.emit(
-                                "stage.openai_kv_lookup_decision",
-                                BTreeMap::from([
-                                    ("skippy.kv.decision".to_string(), json!("miss")),
-                                    (
-                                        "llama_stage.request_id".to_string(),
-                                        json!(request.ids.request_id_string()),
-                                    ),
-                                ]),
-                            );
-                        }
+                        Ok(None) => match kv.restore_resident_prefix(
+                            &mut runtime,
+                            &session_id,
+                            &identities,
+                            prefill_tokens,
+                        ) {
+                            Ok(Some(restored)) => {
+                                restored_prefill = true;
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.decision".to_string(),
+                                    json!("resident_hit"),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.hit_page_id".to_string(),
+                                    json!(restored.page_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.restored_tokens".to_string(),
+                                    json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_seq_id".to_string(),
+                                    json!(restored.seq_id),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_lookup_decision", attrs);
+                            }
+                            Ok(None) => {
+                                self.telemetry.emit(
+                                    "stage.openai_kv_lookup_decision",
+                                    BTreeMap::from([
+                                        ("skippy.kv.decision".to_string(), json!("miss")),
+                                        (
+                                            "llama_stage.request_id".to_string(),
+                                            json!(request.ids.request_id_string()),
+                                        ),
+                                    ]),
+                                );
+                            }
+                            Err(error) => {
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.decision".to_string(),
+                                    json!("resident_error"),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.error".to_string(),
+                                    json!(error.to_string()),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_lookup_decision", attrs);
+                            }
+                        },
                         Err(error) => {
                             let mut attrs = self.openai_attrs(request.ids);
-                            attrs.insert("skippy.kv.decision".to_string(), json!("resident_error"));
+                            attrs.insert("skippy.kv.decision".to_string(), json!("exact_error"));
                             attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
                             self.telemetry
                                 .emit("stage.openai_kv_lookup_decision", attrs);
@@ -2704,6 +2761,68 @@ impl StageOpenAiBackend {
                         .map_err(openai_backend_error)?;
                     if let Some(kv) = self.kv.as_ref() {
                         let base = self.local_kv_message_base(&session_id, request.ids);
+                        let exact_identity =
+                            kv.prefill_identity(&self.config, &base, 0, prefill_tokens);
+                        if let Ok(Some(record)) =
+                            kv.record_exact_state(&mut runtime, &session_id, &exact_identity)
+                        {
+                            resident_recorded_pages = resident_recorded_pages.saturating_add(1);
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert(
+                                "skippy.exact_cache.recorded_page_id".to_string(),
+                                json!(record.page_id),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.payload_kind".to_string(),
+                                json!(record.payload_kind.to_string()),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.recorded_tokens".to_string(),
+                                json!(record.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.stored".to_string(),
+                                json!(record.stored),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.logical_bytes".to_string(),
+                                json!(record.logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.physical_bytes".to_string(),
+                                json!(record.physical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.entries".to_string(),
+                                json!(record.entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.evicted_entries".to_string(),
+                                json!(record.evicted_entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.evicted_logical_bytes".to_string(),
+                                json!(record.evicted_logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_hash_ms".to_string(),
+                                json!(record.dedupe.hash_ms),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_block_count".to_string(),
+                                json!(record.dedupe.block_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_new_block_count".to_string(),
+                                json!(record.dedupe.new_block_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_reused_block_count".to_string(),
+                                json!(record.dedupe.reused_block_count),
+                            );
+                            self.telemetry
+                                .emit("stage.openai_kv_record_decision", attrs);
+                        }
                         for identity in kv.record_identities(&self.config, &base, 0, prefill_tokens)
                         {
                             if let Ok(Some(record)) = kv.record_resident_prefix(

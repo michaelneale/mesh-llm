@@ -213,10 +213,21 @@ pub enum StageKvCacheMode {
     LookupRecord,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StageKvCachePayload {
+    Auto,
+    ResidentKv,
+    KvRecurrent,
+    FullState,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StageKvCacheConfig {
     #[serde(default = "default_kv_cache_mode")]
     pub mode: StageKvCacheMode,
+    #[serde(default = "default_kv_cache_payload")]
+    pub payload: StageKvCachePayload,
     #[serde(default = "default_kv_cache_max_entries")]
     pub max_entries: usize,
     #[serde(default)]
@@ -231,6 +242,10 @@ pub struct StageKvCacheConfig {
 
 fn default_kv_cache_mode() -> StageKvCacheMode {
     StageKvCacheMode::Auto
+}
+
+fn default_kv_cache_payload() -> StageKvCachePayload {
+    StageKvCachePayload::Auto
 }
 
 fn default_kv_cache_max_entries() -> usize {

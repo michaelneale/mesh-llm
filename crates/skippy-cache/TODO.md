@@ -1,98 +1,14 @@
 # skippy-cache TODO
 
-## Serving-Path Exact Prefix Cache
+## Completed In This PR
 
-The exact-state ABI and runtime wrappers exist, and Falcon-H1 has a passing
-`KvRecurrent` handoff benchmark. The production OpenAI serving path still needs
-to use those pieces instead of limiting exact-state cache work to correctness
-tools.
-
-Implement in `skippy-server`:
-
-1. Build an exact prefix identity from model id, tokenizer/template, topology,
-   stage/layer range, runtime ABI, KV dtype/layout, ctx/position config, token
-   start, and token ids.
-2. Use family policy to decide whether cache is disabled, resident KV,
-   `KvRecurrent`, or `FullState`.
-3. On lookup hit, import the cached payload into the request lane:
-   - `FullState` -> `import_full_state`
-   - `KvRecurrent` -> `import_kv_page` then `import_recurrent_state`
-   - resident KV -> existing resident prefix restore path
-4. Decode from the restored prefix state without recomputing the prefix.
-5. On miss, prefill normally, export the selected payload, dedupe/store it, and
-   record telemetry for bytes, import/export time, hit/miss, and evictions.
-6. Keep unknown or uncertified families disabled until correctness evidence
-   exists.
-
-Add per-model caps for entries and bytes, and make cache policy visible in
-runtime status/telemetry so we can debug live deployments.
-
-## README Benchmark Table Evidence
-
-The `skippy-cache` README table must be evidence-backed across model families,
-not inferred from architecture alone. Build the table from repeatable
-single-stage cache tests first, then add split-stage results separately.
-DeepSeek3 is only one open certification item; every family bucket we claim in
-the README or enable by default needs its own correctness and benchmark
-evidence.
-
-Benchmark protocol:
-
-1. Pick one reviewed GGUF per family bucket:
-   - dense attention: Llama, Qwen3 dense, DeepSeek2, GLM4, OLMo, MiniMax-M2.7
-   - full-state bucket: Gemma2, Gemma3, Gemma4 A4B/E4B, GLM-4.7-Flash
-   - recurrent/hybrid: Falcon-H1, Qwen3Next
-   - newly classified/untested: DeepSeek3
-2. For each family bucket, record the certification state before benchmarking:
-   - already proven: Falcon-H1 `KvRecurrent` on
-     `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M`
-   - needs certification: Qwen3Next recurrent/hybrid
-   - needs certification: DeepSeek3
-   - needs certification: Gemma2/3/4 and GLM-4.7-Flash `FullState`
-   - needs certification for README speedup claims: Llama, Qwen3 dense,
-     DeepSeek2, GLM4, OLMo, MiniMax-M2.7
-   - disabled: unknown families until explicitly certified
-3. For each model, create a deterministic prompt that tokenizes to the same
-   prefix length in llama-server and skippy. Start with 512 prefix tokens and
-   repeat at 2k/8k where the model and hardware fit.
-4. Run llama-server baseline:
-   - same GGUF, ctx size, GPU layers/device, KV dtype, flash-attention setting,
-     and one generated token
-   - send the same prompt repeatedly with prompt cache enabled
-   - record cold wall time, warm wall time, prompt eval tokens, prompt eval ms,
-     and whether llama-server reused or reprocessed the prefix
-5. Run `skippy-correctness state-handoff`:
-   - `full-state` for every family as the reference exact payload
-   - `kv-recurrent` for dense and hybrid families where policy wants
-     KV-backed replay
-   - `recurrent-only` only as a diagnostic; do not use it as the README success
-     path unless the model is genuinely recurrent-only and proven exact
-6. Verify pass/fail:
-   - `matches = true`
-   - source/restored predicted token match
-   - activation/output payloads match when available
-   - repeated cache-hit imports remain stable
-7. Record cache economics:
-   - total payload bytes
-   - KV bytes and recurrent bytes where applicable
-   - BLAKE3 block count, unique block count, duplicate block count
-   - export time, import time, decode time, hit total time
-8. Produce the README table with columns:
-   - family
-   - representative model ref
-   - payload used
-   - llama-server warm repeat
-   - skippy cache hit
-   - speedup
-   - payload size
-   - status: accepted / untested / rejected
-   - notes
-9. Only promote `exact_state_mobility` or family cache defaults after at least
-   one representative model passes. Prefer model-ref-level promotion first when
-   evidence is thin.
-
-Keep raw JSON reports under `/tmp` while iterating, then copy summarized numbers
-into README/docs only. Do not commit large benchmark artifacts.
+- Serving-path exact prefix cache is wired into local OpenAI serving:
+  `ResidentKv`, `KvRecurrent`, and `FullState` policies restore before decode,
+  record after prefill, dedupe exact payloads, evict by entry/byte caps, and
+  emit cache telemetry.
+- README benchmark evidence now has an explicit table. Falcon-H1 is the only
+  accepted measured row; unmeasured families remain marked `untested` instead
+  of being promoted by architecture alone.
 
 ## DeepSeek3 Exact-State Certification
 

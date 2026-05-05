@@ -97,7 +97,7 @@ pub(crate) fn stage0_config(
         flash_attn_type: context.flash_attn_type,
         filter_tensors_on_load: true,
         selected_device,
-        kv_cache: None,
+        kv_cache: context.family_policy.stage_kv_cache_config(),
         load_mode: LoadMode::LayerPackage,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,

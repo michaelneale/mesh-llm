@@ -6,8 +6,10 @@ use std::{
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use skippy_cache::{PrefixCandidatePolicy, ResidentActivationCache, ResidentPrefixCache};
-use skippy_runtime::ActivationFrame;
+use skippy_cache::{
+    ExactStateCache, PrefixCandidatePolicy, ResidentActivationCache, ResidentPrefixCache,
+};
+use skippy_runtime::{ActivationFrame, RuntimeKvPageDesc};
 
 use crate::kv_proto::{
     Checksum, ChecksumAlgorithm, KvPageManifest, PageIdentity, PageState, MANIFEST_SCHEMA_VERSION,
@@ -15,13 +17,14 @@ use crate::kv_proto::{
 
 mod activation;
 mod config;
+mod exact_state;
 mod identity;
 mod records;
 mod resident_prefix;
 
 pub use records::{
-    AttachedPage, LookupBatchOutcome, PrefillKvIdentity, RecordPageOutcome,
-    ResidentActivationRecord, ResidentActivationRestore, ResidentPrefixRecord,
+    AttachedPage, ExactStateRecord, ExactStateRestore, LookupBatchOutcome, PrefillKvIdentity,
+    RecordPageOutcome, ResidentActivationRecord, ResidentActivationRestore, ResidentPrefixRecord,
     ResidentPrefixRestore,
 };
 
@@ -36,12 +39,27 @@ pub enum StageKvMode {
 #[derive(Clone)]
 pub struct KvStageIntegration {
     pub(crate) mode: StageKvMode,
+    pub(crate) payload: StagePrefixCachePayload,
     pub(crate) correctness_mode: bool,
     pub(crate) trust_local_writes: bool,
     pub(crate) candidate_policy: PrefixCandidatePolicy,
     pub(crate) inflight_records: Arc<Mutex<BTreeSet<String>>>,
     pub(crate) resident: Arc<Mutex<ResidentPrefixCache>>,
     pub(crate) activations: Arc<Mutex<ResidentActivationCache<ActivationFrame>>>,
+    pub(crate) exact_states: Arc<Mutex<ExactStateCache<ExactStateExtra>>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StagePrefixCachePayload {
+    Disabled,
+    ResidentKv,
+    KvRecurrent,
+    FullState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ExactStateExtra {
+    pub(crate) kv_desc: Option<RuntimeKvPageDesc>,
 }
 
 impl KvStageIntegration {
@@ -162,6 +180,7 @@ impl KvStageIntegration {
         let activations = activations.stats();
         vec![
             ("skippy.kv.mode", json!(format!("{:?}", self.mode))),
+            ("skippy.kv.payload", json!(format!("{:?}", self.payload))),
             (
                 "skippy.kv.page_size_tokens",
                 json!(self.candidate_policy.page_size_tokens),
@@ -182,6 +201,22 @@ impl KvStageIntegration {
                 "skippy.activation_cache.resident_bytes",
                 json!(activations.resident_bytes),
             ),
+            (
+                "skippy.exact_cache.entries",
+                json!(self.exact_state_stats().entries),
+            ),
+            (
+                "skippy.exact_cache.logical_bytes",
+                json!(self.exact_state_stats().logical_bytes),
+            ),
+            (
+                "skippy.exact_cache.physical_bytes",
+                json!(self.exact_state_stats().physical_bytes),
+            ),
+            (
+                "skippy.exact_cache.max_bytes",
+                json!(self.exact_state_stats().max_bytes),
+            ),
             ("skippy.kv.correctness_mode", json!(self.correctness_mode)),
             (
                 "skippy.kv.trust_local_writes",
@@ -200,6 +235,13 @@ impl KvStageIntegration {
                 json!(self.candidate_policy.record_limit),
             ),
         ]
+    }
+
+    fn exact_state_stats(&self) -> skippy_cache::ExactStateCacheStats {
+        self.exact_states
+            .lock()
+            .expect("exact state cache lock poisoned")
+            .stats()
     }
 
     fn candidate_token_counts(&self, token_count: u64) -> Vec<u64> {

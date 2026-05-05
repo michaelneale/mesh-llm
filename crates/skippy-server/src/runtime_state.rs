@@ -352,6 +352,23 @@ impl RuntimeState {
         session.import_state(layer_start, layer_end, bytes)
     }
 
+    pub fn import_state_for_token_count(
+        &mut self,
+        session_id: &str,
+        bytes: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.import_state_for_token_count(layer_start, layer_end, bytes, token_count)?;
+        self.session_token_counts
+            .entry(session_id.to_string())
+            .and_modify(|current| *current = (*current).max(token_count))
+            .or_insert(token_count);
+        Ok(())
+    }
+
     pub fn export_full_state(&mut self, session_id: &str) -> Result<Vec<u8>> {
         let layer_start = i32::try_from(self.model_layer_start())?;
         let layer_end = i32::try_from(self.model_layer_end())?;
@@ -364,6 +381,42 @@ impl RuntimeState {
         let layer_end = i32::try_from(self.model_layer_end())?;
         let session = self.session(session_id)?;
         session.import_full_state(layer_start, layer_end, bytes)
+    }
+
+    pub fn import_full_state_for_token_count(
+        &mut self,
+        session_id: &str,
+        bytes: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.import_full_state_for_token_count(layer_start, layer_end, bytes, token_count)?;
+        self.session_token_counts
+            .entry(session_id.to_string())
+            .and_modify(|current| *current = (*current).max(token_count))
+            .or_insert(token_count);
+        Ok(())
+    }
+
+    pub fn export_recurrent_state(&mut self, session_id: &str) -> Result<Vec<u8>> {
+        self.session(session_id)?.export_recurrent_state()
+    }
+
+    pub fn import_recurrent_state_for_token_count(
+        &mut self,
+        session_id: &str,
+        bytes: &[u8],
+        token_count: u64,
+    ) -> Result<()> {
+        self.session(session_id)?
+            .import_recurrent_state_for_token_count(bytes, token_count)?;
+        self.session_token_counts
+            .entry(session_id.to_string())
+            .and_modify(|current| *current = (*current).max(token_count))
+            .or_insert(token_count);
+        Ok(())
     }
 
     pub fn save_resident_prefix(

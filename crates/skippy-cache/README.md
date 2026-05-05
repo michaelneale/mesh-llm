@@ -143,6 +143,63 @@ The intended recurrent/stateful serving path is:
 3. recompute safely on any miss or incompatible payload
 4. record a new exact payload after successful prefill
 
+The OpenAI serving path now uses the same cache policy. A cache-enabled stage
+selects one payload shape:
+
+- `ResidentKv` for certified dense families where resident llama.cpp sequence
+  copy is enough
+- `KvRecurrent` for hybrid/recurrent families where attention KV and recurrent
+  state must move together
+- `FullState` for families where full sequence state is the only certified
+  exact payload
+
+```mermaid
+sequenceDiagram
+    participant O as openai-frontend
+    participant S as skippy-server
+    participant C as skippy-cache
+    participant R as skippy-runtime
+
+    O->>S: request
+    S->>C: longest-prefix identities
+    alt exact hit
+        C-->>S: FullState or KvRecurrent payload
+        S->>R: import state into lane
+        S->>R: decode next token
+    else resident hit
+        C-->>S: resident seq id
+        S->>R: restore resident prefix
+        S->>R: decode next token
+    else miss
+        S->>R: prefill
+        S->>R: export selected payload
+        S->>C: dedupe/store and evict by cap
+        S->>R: decode next token
+    end
+```
+
+## Benchmark Evidence
+
+README performance claims must be backed by correctness runs and comparable
+llama-server baselines. Rows marked `untested` are intentionally not promoted as
+default evidence yet.
+
+| Family | Representative model ref | Payload | llama-server warm repeat | skippy cache hit | Speedup | Payload size | Status | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | 304.17 ms | 14.76 ms | 20.6x | 89.1 MB | accepted | 512-token prefix, one-token decode, `matches = true`; llama-server repeated prompt reprocessed recurrent-backed state. |
+| Qwen3Next | TBD | `KvRecurrent` | TBD | TBD | TBD | TBD | untested | Needs state-handoff certification before README speedup claims. |
+| Llama | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Dense-family row needs same-prompt baseline because llama-server prompt cache may already reuse well. |
+| Qwen3 dense | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Certify representative GGUF at 512/2k/8k prefix lengths. |
+| DeepSeek2 | TBD | `ResidentKv` / exact KV-backed | TBD | TBD | TBD | TBD | untested | Needs dense-family correctness and baseline row. |
+| DeepSeek3 | TBD | `ResidentKv` / MLA-specific exact state TBD | TBD | TBD | TBD | TBD | untested | Exact-state mobility remains unpromoted until real DeepSeek3 GGUF evidence exists. |
+| Gemma / GLM full-state | TBD | `FullState` | TBD | TBD | TBD | TBD | untested | Needs full-state correctness and payload-economics measurement. |
+
+Current accepted Falcon-H1 numbers came from
+`skippy-correctness state-handoff` with `--state-payload-kind kv-recurrent`,
+`--prefix-token-count 512`, and `--cache-hit-repeats 10`, compared against a
+same-GGUF llama-server repeated-prompt baseline. Raw reports were kept under
+`/tmp` during measurement and are not committed.
+
 ## Module Map
 
 | Module | Responsibility |

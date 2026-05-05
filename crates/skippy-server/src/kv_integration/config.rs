@@ -5,11 +5,12 @@ use std::{
 
 use anyhow::Result;
 use skippy_cache::{
-    PrefixCandidatePolicy, ResidentActivationCache, ResidentCacheConfig, ResidentPrefixCache,
+    ExactStateCache, PrefixCandidatePolicy, ResidentActivationCache, ResidentCacheConfig,
+    ResidentPrefixCache,
 };
-use skippy_protocol::{StageConfig, StageKvCacheConfig, StageKvCacheMode};
+use skippy_protocol::{StageConfig, StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload};
 
-use super::{KvStageIntegration, StageKvMode};
+use super::{ExactStateExtra, KvStageIntegration, StageKvMode, StagePrefixCachePayload};
 
 impl KvStageIntegration {
     pub fn from_config(config: &StageConfig) -> Result<Option<Self>> {
@@ -24,18 +25,74 @@ impl KvStageIntegration {
         if mode == StageKvMode::Disabled {
             return Ok(None);
         }
+        let payload = effective_cache_payload(config, cache_config.payload);
+        if payload == StagePrefixCachePayload::Disabled {
+            return Ok(None);
+        }
         let candidate_policy = PrefixCandidatePolicy::from_cache(&cache_config);
         let resident_config = ResidentCacheConfig::from_stage(config, &cache_config);
         Ok(Some(Self {
             mode,
+            payload,
             correctness_mode: false,
             trust_local_writes: true,
             candidate_policy,
             inflight_records: Arc::new(Mutex::new(BTreeSet::new())),
             resident: Arc::new(Mutex::new(ResidentPrefixCache::new(resident_config))),
             activations: Arc::new(Mutex::new(ResidentActivationCache::new(resident_config))),
+            exact_states: Arc::new(Mutex::new(ExactStateCache::<ExactStateExtra>::new(
+                cache_config.max_entries.max(1).min(512),
+                cache_config.max_bytes,
+            ))),
         }))
     }
+}
+
+fn effective_cache_payload(
+    config: &StageConfig,
+    requested: StageKvCachePayload,
+) -> StagePrefixCachePayload {
+    match requested {
+        StageKvCachePayload::ResidentKv => StagePrefixCachePayload::ResidentKv,
+        StageKvCachePayload::KvRecurrent => StagePrefixCachePayload::KvRecurrent,
+        StageKvCachePayload::FullState => StagePrefixCachePayload::FullState,
+        StageKvCachePayload::Auto => infer_cache_payload(config),
+    }
+}
+
+fn infer_cache_payload(config: &StageConfig) -> StagePrefixCachePayload {
+    let identity = format!(
+        "{} {}",
+        config.model_id,
+        config.model_path.as_deref().unwrap_or_default()
+    )
+    .to_ascii_lowercase();
+
+    if identity.contains("falcon-h1")
+        || identity.contains("qwen3next")
+        || identity.contains("qwen3-next")
+        || identity.contains("qwen3.6")
+        || identity.contains("qwen3_6")
+    {
+        return StagePrefixCachePayload::KvRecurrent;
+    }
+    if identity.contains("gemma")
+        || identity.contains("glm-4.7")
+        || identity.contains("glm47")
+        || identity.contains("glm4.7")
+    {
+        return StagePrefixCachePayload::FullState;
+    }
+    if identity.contains("llama")
+        || identity.contains("qwen3")
+        || identity.contains("deepseek")
+        || identity.contains("glm4")
+        || identity.contains("olmo")
+        || identity.contains("minimax")
+    {
+        return StagePrefixCachePayload::ResidentKv;
+    }
+    StagePrefixCachePayload::Disabled
 }
 
 fn effective_cache_config(config: &StageConfig) -> Option<StageKvCacheConfig> {
@@ -67,14 +124,29 @@ fn effective_cache_config(config: &StageConfig) -> Option<StageKvCacheConfig> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(2);
+    let payload = std::env::var("SKIPPY_KV_CACHE_PAYLOAD")
+        .ok()
+        .and_then(|value| parse_cache_payload(&value))
+        .unwrap_or(StageKvCachePayload::Auto);
     Some(StageKvCacheConfig {
         mode,
+        payload,
         max_entries,
         max_bytes,
         min_tokens,
         shared_prefix_stride_tokens,
         shared_prefix_record_limit,
     })
+}
+
+fn parse_cache_payload(value: &str) -> Option<StageKvCachePayload> {
+    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "" | "auto" => Some(StageKvCachePayload::Auto),
+        "resident" | "resident-kv" | "kv" => Some(StageKvCachePayload::ResidentKv),
+        "kv-recurrent" | "kvrecurrent" => Some(StageKvCachePayload::KvRecurrent),
+        "full" | "full-state" | "fullstate" => Some(StageKvCachePayload::FullState),
+        _ => None,
+    }
 }
 
 fn parse_cache_mode(value: &str) -> Option<StageKvCacheMode> {
