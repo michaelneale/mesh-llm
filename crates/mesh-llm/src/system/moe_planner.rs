@@ -29,6 +29,9 @@ pub(crate) struct MoePlanArgs {
     pub nodes: Option<usize>,
     pub dataset_repo: String,
     pub progress: bool,
+    /// Override the planner's `min_experts_per_node` (= shared-core size).
+    /// Default `None` → use catalog entry or `default_required_experts_per_node()` (50%).
+    pub min_experts_per_node_override: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +188,9 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
         }
     }
     let mut model = resolve_model_context_with_progress(&args.model, args.progress).await?;
+    if let Some(override_value) = args.min_experts_per_node_override {
+        model.min_experts_per_node = override_value;
+    }
     let ranking = resolve_best_ranking(&model, &args).await?;
     let target_vram_bytes = resolve_target_vram_bytes(args.max_vram_gb);
     if target_vram_bytes == 0 {
@@ -216,7 +222,9 @@ pub(crate) async fn plan_moe(args: MoePlanArgs) -> Result<MoePlanReport> {
             &ranking.analyzer_id,
             ranking.source.label(),
         )?;
-        let required_experts_per_node = fit.required_experts_per_node;
+        let required_experts_per_node = args
+            .min_experts_per_node_override
+            .unwrap_or(fit.required_experts_per_node);
         model.min_experts_per_node = required_experts_per_node;
         let max_supported_nodes =
             (model.expert_count / required_experts_per_node.max(1)).max(1) as usize;

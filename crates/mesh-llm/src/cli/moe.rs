@@ -61,6 +61,12 @@ pub(crate) enum MoeCommand {
         /// replication; 2 = shared core doubled across every node, etc.
         #[arg(long, default_value = "2")]
         overlap: u32,
+        /// Override planner's `min_experts_per_node` (= shared-core size).
+        /// Useful for large MoE on smaller-VRAM clusters where the default
+        /// 50%-of-experts floor produces shards that exceed per-node VRAM.
+        /// Lower values mean smaller shards but more cross-node routing.
+        #[arg(long)]
+        min_experts_per_node: Option<u32>,
         /// Override the ranking CSV instead of resolving it via cache / HF.
         #[arg(long)]
         ranking_file: Option<PathBuf>,

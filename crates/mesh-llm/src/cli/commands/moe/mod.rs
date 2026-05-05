@@ -102,6 +102,7 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
             nas_root,
             n_nodes,
             overlap,
+            min_experts_per_node,
             ranking_file,
             dry_run,
             bin_dir,
@@ -111,6 +112,7 @@ pub(crate) async fn dispatch_moe_command(command: &MoeCommand, cli: &Cli) -> Res
                 nas_root: nas_root.clone(),
                 n_nodes: *n_nodes,
                 overlap: *overlap,
+                min_experts_per_node: *min_experts_per_node,
                 ranking_file: ranking_file.clone(),
                 dry_run: *dry_run,
                 bin_dir: bin_dir.clone(),
@@ -125,6 +127,7 @@ struct MigrateArgs {
     nas_root: Option<PathBuf>,
     n_nodes: usize,
     overlap: u32,
+    min_experts_per_node: Option<u32>,
     ranking_file: Option<PathBuf>,
     dry_run: bool,
     bin_dir: Option<PathBuf>,
@@ -210,6 +213,7 @@ async fn run_migrate(args: MigrateArgs) -> Result<()> {
         nodes: Some(args.n_nodes),
         dataset_repo: "meshllm/moe-rankings".to_string(),
         progress: true,
+        min_experts_per_node_override: args.min_experts_per_node,
     })
     .await
     .with_context(|| "planning migration")?;
@@ -404,6 +408,7 @@ async fn run_plan(
         nodes,
         dataset_repo: dataset_repo.to_string(),
         progress: !json_output,
+        min_experts_per_node_override: None,
     })
     .await?;
     moe_plan_formatter(json_output).render(&report)
