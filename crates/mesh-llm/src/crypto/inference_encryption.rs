@@ -224,6 +224,96 @@ pub fn decrypt_response(
         .map_err(|_| CryptoError::DecryptionFailed)
 }
 
+// ── Chunked streaming encryption ───────────────────────────────────
+//
+// Wire format for streamed encrypted responses:
+//   MAGIC (0xE1) + sender_pub (32 bytes) + chunks...
+//   Each chunk: [4-byte LE length] [24-byte nonce] [ciphertext]
+//   End sentinel: [4-byte LE 0]
+//
+// This allows incremental decryption of SSE streaming responses.
+
+/// Write a single encrypted chunk to a writer.
+/// Format: [4-byte LE payload_len] [24-byte nonce] [ciphertext]
+pub async fn write_encrypted_chunk<W: tokio::io::AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    salsa_box: &SalsaBox,
+    plaintext: &[u8],
+) -> Result<(), CryptoError> {
+    let nonce = crypto_box::SalsaBox::generate_nonce(&mut OsRng);
+    let ciphertext = salsa_box
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| CryptoError::EncryptionFailed)?;
+    let payload_len = (24 + ciphertext.len()) as u32;
+    writer
+        .write_all(&payload_len.to_le_bytes())
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    writer
+        .write_all(&nonce)
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    writer
+        .write_all(&ciphertext)
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    Ok(())
+}
+
+/// Write the end sentinel (length = 0).
+pub async fn write_encrypted_end<W: tokio::io::AsyncWriteExt + Unpin>(
+    writer: &mut W,
+) -> Result<(), CryptoError> {
+    writer
+        .write_all(&0u32.to_le_bytes())
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    Ok(())
+}
+
+/// Read and decrypt a single chunk from a reader.
+/// Returns `None` on end sentinel (length = 0).
+pub async fn read_encrypted_chunk<R: tokio::io::AsyncReadExt + Unpin>(
+    reader: &mut R,
+    salsa_box: &SalsaBox,
+) -> Result<Option<Vec<u8>>, CryptoError> {
+    let mut len_buf = [0u8; 4];
+    reader
+        .read_exact(&mut len_buf)
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    if payload_len == 0 {
+        return Ok(None); // end sentinel
+    }
+    if payload_len < 24 {
+        return Err(CryptoError::DecryptionFailed);
+    }
+    // Sanity cap: 16 MB per chunk
+    if payload_len > 16 * 1024 * 1024 {
+        return Err(CryptoError::DecryptionFailed);
+    }
+    let mut payload = vec![0u8; payload_len];
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(|e| CryptoError::Io(e))?;
+    let (nonce_bytes, ciphertext) = payload.split_at(24);
+    let nonce = crypto_box::Nonce::from_slice(nonce_bytes);
+    let plaintext = salsa_box
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| CryptoError::DecryptionFailed)?;
+    Ok(Some(plaintext))
+}
+
+/// Build a SalsaBox from our secret key and the peer's public key.
+pub fn make_salsa_box(
+    own_secret: &crypto_box::SecretKey,
+    peer_pub: &crypto_box::PublicKey,
+) -> SalsaBox {
+    SalsaBox::new(peer_pub, own_secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +371,68 @@ mod tests {
 
         let encrypted = encrypt_response(b"data", &fake, &session.public).unwrap();
         assert!(decrypt_response(&encrypted, &session, host.public_key()).is_err());
+    }
+
+    #[tokio::test]
+    async fn chunked_streaming_roundtrip() {
+        let host = InferenceKeypair::generate();
+        let client = EphemeralSession::new();
+
+        // Host encrypts chunks to client's ephemeral key
+        let encrypt_box = make_salsa_box(host.secret_key(), &client.public);
+        let decrypt_box = make_salsa_box(&client.secret, host.public_key());
+
+        let chunks = vec![
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n".to_vec(),
+            b"data: [DONE]\n\n".to_vec(),
+        ];
+
+        // Write to buffer
+        let mut wire = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut wire);
+        for chunk in &chunks {
+            write_encrypted_chunk(&mut cursor, &encrypt_box, chunk)
+                .await
+                .unwrap();
+        }
+        write_encrypted_end(&mut cursor).await.unwrap();
+
+        // Read back
+        let mut reader = std::io::Cursor::new(&wire);
+        let mut decoded = Vec::new();
+        loop {
+            match read_encrypted_chunk(&mut reader, &decrypt_box)
+                .await
+                .unwrap()
+            {
+                None => break,
+                Some(plaintext) => decoded.push(plaintext),
+            }
+        }
+        assert_eq!(decoded, chunks);
+    }
+
+    #[tokio::test]
+    async fn chunked_wrong_key_fails() {
+        let host = InferenceKeypair::generate();
+        let wrong = InferenceKeypair::generate();
+        let client = EphemeralSession::new();
+
+        let encrypt_box = make_salsa_box(host.secret_key(), &client.public);
+        let wrong_box = make_salsa_box(wrong.secret_key(), &client.public);
+
+        let mut wire = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut wire);
+        write_encrypted_chunk(&mut cursor, &encrypt_box, b"secret data")
+            .await
+            .unwrap();
+        write_encrypted_end(&mut cursor).await.unwrap();
+
+        let mut reader = std::io::Cursor::new(&wire);
+        // Try to decrypt with wrong box — should fail
+        let result = read_encrypted_chunk(&mut reader, &wrong_box).await;
+        assert!(result.is_err());
     }
 }

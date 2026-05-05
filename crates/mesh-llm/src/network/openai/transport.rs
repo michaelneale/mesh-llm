@@ -1660,8 +1660,24 @@ async fn route_remote_attempt(
     }
 
     // Encrypt if the host has an inference public key.
-    let (wire_payload, encryption_session) =
+    let (wire_payload, encryption_session, known_host_pub) =
         maybe_encrypt_for_host(node, host_id, prefetched).await;
+
+    // Fail closed: if --require-attested-hosts is set, we must encrypt.
+    // A missing encryption session here means encryption setup failed after
+    // the attestation gate passed — don't silently fall back to plaintext.
+    if node
+        .require_attested_hosts
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && encryption_session.is_none()
+    {
+        tracing::warn!(
+            "API proxy: encryption required but setup failed for host {}, refusing plaintext fallback",
+            host_id.fmt_short()
+        );
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+
     let wire_bytes = if wire_payload.is_empty() {
         prefetched
     } else {
@@ -1686,8 +1702,20 @@ async fn route_remote_attempt(
                     tracing::warn!("API proxy: failed to finish encrypted send stream: {err}");
                     return RouteAttemptResult::RetryableUnavailable;
                 }
-                return handle_encrypted_response(&mut quic_recv, tcp_stream, session, host_id)
-                    .await;
+                // Use the gossiped host public key (known_host_pub) — not the
+                // self-declared key in the response — so a MITM can't substitute
+                // their own key and ciphertext.
+                let host_pub = known_host_pub
+                    .as_ref()
+                    .expect("encryption_session implies known_host_pub");
+                return handle_encrypted_response(
+                    &mut quic_recv,
+                    tcp_stream,
+                    session,
+                    host_pub,
+                    host_id,
+                )
+                .await;
             }
 
             match probe_http_response(&mut quic_recv).await {
@@ -3221,15 +3249,19 @@ pub async fn pipeline_proxy_local(
 
 /// Handle an encrypted response from a remote host tunnel.
 /// Reads the 0xE1 magic + JSON, decrypts, writes plaintext HTTP response to client.
+///
+/// `known_host_pub` is the host's gossiped inference public key — we use it to
+/// verify the response sender, NOT the self-declared key in the response payload.
 async fn handle_encrypted_response(
     quic_recv: &mut iroh::endpoint::RecvStream,
     tcp_stream: &mut TcpStream,
     session: &crate::crypto::inference_encryption::EphemeralSession,
+    known_host_pub: &crypto_box::PublicKey,
     host_id: iroh::EndpointId,
 ) -> RouteAttemptResult {
     use tokio::io::AsyncWriteExt;
 
-    // Read first byte (should be ENCRYPTED_TUNNEL_MAGIC)
+    // Read header: MAGIC (1 byte) + sender public key (32 bytes raw)
     let mut magic = [0u8; 1];
     if let Err(e) = quic_recv.read_exact(&mut magic).await {
         tracing::warn!(
@@ -3246,75 +3278,100 @@ async fn handle_encrypted_response(
         return RouteAttemptResult::RetryableUnavailable;
     }
 
-    // Read encrypted JSON payload
-    let encrypted_json = match quic_recv.read_to_end(64 * 1024 * 1024).await {
-        Ok(data) => data,
-        Err(e) => {
-            tracing::warn!(
-                "API proxy: failed to read encrypted response from {}: {e}",
-                host_id.fmt_short()
-            );
-            return RouteAttemptResult::RetryableUnavailable;
-        }
-    };
-
-    let payload: crate::crypto::inference_encryption::EncryptedResponse =
-        match serde_json::from_slice(&encrypted_json) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(
-                    "API proxy: invalid encrypted response JSON from {}: {e}",
-                    host_id.fmt_short()
-                );
-                return RouteAttemptResult::RetryableUnavailable;
-            }
-        };
-
-    // Decrypt using our ephemeral session
-    let host_pub =
-        match crate::crypto::inference_encryption::parse_public_key(&payload.sender_public_key) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!("API proxy: invalid sender key in encrypted response: {e}");
-                return RouteAttemptResult::RetryableUnavailable;
-            }
-        };
-
-    let plaintext =
-        match crate::crypto::inference_encryption::decrypt_response(&payload, session, &host_pub) {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::warn!(
-                    "API proxy: failed to decrypt response from {}: {e}",
-                    host_id.fmt_short()
-                );
-                return RouteAttemptResult::RetryableUnavailable;
-            }
-        };
-
-    tracing::debug!(
-        "Decrypted response from {} ({} bytes)",
-        host_id.fmt_short(),
-        plaintext.len()
-    );
-
-    // Write plaintext HTTP response to client
-    if let Err(e) = tcp_stream.write_all(&plaintext).await {
-        if is_client_disconnect_error(&anyhow::Error::from(e)) {
-            return RouteAttemptResult::ClientDisconnected;
-        }
-        tracing::warn!("API proxy: failed to write decrypted response to client");
+    // Read sender's public key and verify it matches the gossiped key.
+    let mut sender_key_bytes = [0u8; 32];
+    if let Err(e) = quic_recv.read_exact(&mut sender_key_bytes).await {
+        tracing::warn!(
+            "API proxy: failed to read sender key from {}: {e}",
+            host_id.fmt_short()
+        );
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+    let sender_pub = crypto_box::PublicKey::from(sender_key_bytes);
+    if sender_pub.as_bytes() != known_host_pub.as_bytes() {
+        tracing::warn!(
+            "API proxy: encrypted response sender key mismatch from {}",
+            host_id.fmt_short()
+        );
         return RouteAttemptResult::RetryableUnavailable;
     }
 
+    // Build decryption box: our ephemeral secret + host's public key.
+    let resp_box =
+        crate::crypto::inference_encryption::make_salsa_box(&session.secret, known_host_pub);
+
+    // Decrypt and forward chunks to the client as they arrive (streaming).
+    let mut total: u64 = 0;
+    let mut status_code: u16 = 200;
+    let mut is_first_chunk = true;
+    loop {
+        match crate::crypto::inference_encryption::read_encrypted_chunk(quic_recv, &resp_box).await
+        {
+            Ok(None) => break, // end sentinel
+            Ok(Some(plaintext)) => {
+                total += plaintext.len() as u64;
+                // Parse HTTP status from the first chunk (e.g. "HTTP/1.1 200 OK\r\n").
+                if is_first_chunk {
+                    is_first_chunk = false;
+                    status_code = parse_http_status_from_chunk(&plaintext);
+                }
+                if let Err(e) = tcp_stream.write_all(&plaintext).await {
+                    if is_client_disconnect_error(&anyhow::Error::from(e)) {
+                        return RouteAttemptResult::ClientDisconnected;
+                    }
+                    tracing::warn!("API proxy: failed to write decrypted chunk to client");
+                    return RouteAttemptResult::RetryableUnavailable;
+                }
+                // Flush after each chunk so SSE events reach the client immediately.
+                if let Err(e) = tcp_stream.flush().await {
+                    if is_client_disconnect_error(&anyhow::Error::from(e)) {
+                        return RouteAttemptResult::ClientDisconnected;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "API proxy: failed to decrypt chunk from {}: {e}",
+                    host_id.fmt_short()
+                );
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+        }
+    }
+
+    tracing::debug!(
+        "Decrypted streaming response from {} ({total} bytes, status={status_code})",
+        host_id.fmt_short(),
+    );
+
     RouteAttemptResult::Delivered {
-        status_code: 200, // We can't easily parse status from the decrypted bytes without re-parsing HTTP
+        status_code,
         completion_tokens: None,
     }
 }
 
+/// Parse the HTTP status code from the first chunk of a raw HTTP response.
+/// Returns 200 if parsing fails (best-effort).
+fn parse_http_status_from_chunk(chunk: &[u8]) -> u16 {
+    // Look for "HTTP/1.1 NNN" or "HTTP/1.0 NNN"
+    if chunk.len() < 12 {
+        return 200;
+    }
+    if !chunk.starts_with(b"HTTP/") {
+        return 200;
+    }
+    // Status code starts at byte 9 in "HTTP/1.1 200 ..."
+    let status_str = match std::str::from_utf8(&chunk[9..12]) {
+        Ok(s) => s,
+        Err(_) => return 200,
+    };
+    status_str.parse().unwrap_or(200)
+}
+
 /// Encrypt prefetched HTTP request bytes for a remote host if they have an inference key.
-/// Returns (wire_payload, session). If wire_payload is empty, use plaintext.
+/// Returns (wire_payload, session, host_public_key). If wire_payload is empty, use plaintext.
+/// The returned host public key is the gossiped key we looked up — callers must use it
+/// (not the self-declared key in the response) when verifying response authenticity.
 async fn maybe_encrypt_for_host(
     node: &mesh::Node,
     host_id: iroh::EndpointId,
@@ -3322,10 +3379,11 @@ async fn maybe_encrypt_for_host(
 ) -> (
     Vec<u8>,
     Option<crate::crypto::inference_encryption::EphemeralSession>,
+    Option<crypto_box::PublicKey>,
 ) {
     let host_pub = match node.peer_inference_public_key(host_id).await {
         Some(k) => k,
-        None => return (Vec::new(), None), // no key → plaintext
+        None => return (Vec::new(), None, None), // no key → plaintext
     };
 
     // Extract model name from the HTTP body for routing (best-effort parse).
@@ -3346,11 +3404,11 @@ async fn maybe_encrypt_for_host(
                 wire.len(),
                 host_id.fmt_short()
             );
-            (wire, Some(session))
+            (wire, Some(session), Some(host_pub))
         }
         Err(e) => {
             tracing::warn!("Failed to encrypt inference request: {e}, falling back to plaintext");
-            (Vec::new(), None)
+            (Vec::new(), None, None)
         }
     }
 }
@@ -4144,5 +4202,50 @@ mod tests {
         let declared: usize = cl_line.split(':').nth(1).unwrap().trim().parse().unwrap();
         assert_eq!(declared, request.raw.len() - body_start);
         assert_eq!(declared, request.body_len_bytes);
+    }
+
+    #[test]
+    fn extract_model_from_http_valid() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 42\r\n\r\n{\"model\":\"gpt-4\",\"messages\":[]}";
+        assert_eq!(extract_model_from_http(raw), Some("gpt-4".to_string()));
+    }
+
+    #[test]
+    fn extract_model_from_http_no_body() {
+        let raw = b"GET /v1/models HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        assert_eq!(extract_model_from_http(raw), None);
+    }
+
+    #[test]
+    fn extract_model_from_http_no_model_field() {
+        let raw = b"POST /v1/chat/completions HTTP/1.1\r\n\r\n{\"messages\":[]}";
+        assert_eq!(extract_model_from_http(raw), None);
+    }
+
+    #[test]
+    fn extract_model_from_http_no_header_separator() {
+        assert_eq!(extract_model_from_http(b"just garbage"), None);
+    }
+
+    #[test]
+    fn parse_http_status_200() {
+        let chunk = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+        assert_eq!(parse_http_status_from_chunk(chunk), 200);
+    }
+
+    #[test]
+    fn parse_http_status_500() {
+        let chunk = b"HTTP/1.1 500 Internal Server Error\r\n\r\n";
+        assert_eq!(parse_http_status_from_chunk(chunk), 500);
+    }
+
+    #[test]
+    fn parse_http_status_too_short() {
+        assert_eq!(parse_http_status_from_chunk(b"HTTP/1"), 200);
+    }
+
+    #[test]
+    fn parse_http_status_not_http() {
+        assert_eq!(parse_http_status_from_chunk(b"data: {\"choices\":[]}"), 200);
     }
 }

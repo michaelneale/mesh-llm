@@ -2330,15 +2330,18 @@ async fn run_auto(
     .await?;
     node.set_stage_control_sender(skippy::spawn_stage_control_loop())
         .await;
-    node.start_accepting();
-    let token = node.invite_token();
-    // E2E encryption / attestation setup
+    // Harden runtime BEFORE spawning worker threads (start_accepting).
+    // scrub_dangerous_env uses unsafe env mutation which is UB after threads spawn.
     if cli.require_attested_hosts {
         node.require_attested_hosts
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    let security_posture = crate::system::hardening::harden_runtime();
+    node.start_accepting();
+    let token = node.invite_token();
+    // E2E encryption / attestation setup
     {
-        let posture = crate::system::hardening::harden_runtime();
+        let posture = security_posture;
         tracing::info!(
             "security posture: sip={} rdma_off={} debugger_blocked={} hash={}",
             posture.sip_enabled,
@@ -2368,6 +2371,20 @@ async fn run_auto(
         }
         *node.local_hardware_attestation.lock().await = attestation;
         *node.local_security_posture.lock().await = Some(posture);
+    }
+
+    // Re-sign hardware attestation every 5 minutes so peers always see a
+    // non-expired blob. The verifier allows 660 s (5 min refresh + 6 min grace).
+    {
+        let node_ref = node.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                node_ref.refresh_attestation().await;
+            }
+        });
     }
 
     node.set_display_name(node_display_name(&cli, &node)).await;

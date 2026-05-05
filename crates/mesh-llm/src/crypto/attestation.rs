@@ -132,6 +132,15 @@ fn parse_signature(b64: &str) -> Result<p256::ecdsa::DerSignature, CryptoError> 
 }
 
 /// Verify a signed hardware attestation.
+///
+/// **Trust model limitation:** This verifies cryptographic self-consistency
+/// (the blob was signed by the embedded SE key) but does NOT verify a
+/// hardware root of trust chain. Any node can forge an attestation using a
+/// software P-256 key. To make this meaningful, callers should combine
+/// attestation with one of:
+///   - TOFU: pin the SE public key on first observation
+///   - Operator-managed blessed SE key fingerprints
+///   - Apple DeviceCheck attestation chain (future)
 pub fn verify_attestation(
     signed: &SignedHardwareAttestation,
     expected_node_id: &str,

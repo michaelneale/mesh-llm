@@ -2286,14 +2286,32 @@ impl Node {
             return false;
         };
         let node_id = hex::encode(peer_id.as_bytes());
-        let status = crate::crypto::attestation::verify_attestation(
-            att,
-            &node_id,
-            inference_key,
-            600, // 10 minute max age
-            None,
-        );
+        // Allow up to 10 minutes of clock skew / gossip delay beyond the
+        // refresh interval.  Attestations are re-signed every 5 minutes,
+        // so 660 s = 5 min refresh + 6 min grace.
+        let status =
+            crate::crypto::attestation::verify_attestation(att, &node_id, inference_key, 660, None);
         status.is_verified()
+    }
+
+    /// Re-sign the local hardware attestation with a fresh timestamp.
+    /// Called periodically so peers always see a non-expired attestation.
+    pub async fn refresh_attestation(&self) {
+        let posture = self.local_security_posture.lock().await.clone();
+        let Some(posture) = posture else {
+            return;
+        };
+        let node_id = hex::encode(self.id().as_bytes());
+        let inference_pub_key = self.inference_keypair.public_key_base64();
+        let attestation = crate::crypto::attestation::try_create_attestation(
+            &node_id,
+            &inference_pub_key,
+            &posture,
+        );
+        if attestation.is_some() {
+            tracing::debug!("Refreshed hardware attestation");
+        }
+        *self.local_hardware_attestation.lock().await = attestation;
     }
 
     pub fn invite_token(&self) -> String {

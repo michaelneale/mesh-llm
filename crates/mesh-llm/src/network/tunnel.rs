@@ -114,7 +114,8 @@ async fn handle_inbound_http_stream(
     quic_recv.read_exact(&mut first).await?;
 
     if first[0] == ENCRYPTED_TUNNEL_MAGIC {
-        // Encrypted path: read full payload, decrypt, forward to backend, encrypt response.
+        // Encrypted path: read full payload, decrypt, forward to backend,
+        // stream encrypted response chunks back.
         let encrypted_json = quic_recv
             .read_to_end(16 * 1024 * 1024)
             .await
@@ -135,38 +136,52 @@ async fn handle_inbound_http_stream(
             plaintext.len()
         );
 
-        // Forward decrypted plaintext to local backend and relay response back.
+        // Forward decrypted plaintext to local backend.
         let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
         tcp_stream.set_nodelay(true)?;
         let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
         tcp_write.write_all(&plaintext).await?;
         tcp_write.shutdown().await?;
 
-        // Read full response from backend.
-        let mut response_bytes = Vec::new();
-        tcp_read.read_to_end(&mut response_bytes).await?;
-
-        // Encrypt response back to sender.
+        // Build the encryption box for streaming response chunks.
         let ephemeral_pub =
             crate::crypto::inference_encryption::parse_public_key(&payload.ephemeral_public_key)
                 .map_err(|e| anyhow::anyhow!("failed to parse ephemeral public key: {e}"))?;
-        let encrypted_resp = crate::crypto::inference_encryption::encrypt_response(
-            &response_bytes,
-            &node.inference_keypair,
+        let resp_box = crate::crypto::inference_encryption::make_salsa_box(
+            node.inference_keypair.secret_key(),
             &ephemeral_pub,
-        )
-        .map_err(|e| anyhow::anyhow!("tunnel response encryption failed: {e}"))?;
+        );
 
-        let json = serde_json::to_vec(&encrypted_resp).expect("serialize encrypted response");
+        // Write header: MAGIC + our 32-byte public key (raw, not base64)
         quic_send.write_all(&[ENCRYPTED_TUNNEL_MAGIC]).await?;
-        quic_send.write_all(&json).await?;
+        quic_send
+            .write_all(node.inference_keypair.public_key().as_bytes())
+            .await?;
+
+        // Stream encrypted chunks as they arrive from the backend.
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total: u64 = 0;
+        loop {
+            let n = tcp_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            crate::crypto::inference_encryption::write_encrypted_chunk(
+                &mut quic_send,
+                &resp_box,
+                &buf[..n],
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("tunnel chunk encryption failed: {e}"))?;
+            total += n as u64;
+        }
+        // End sentinel
+        crate::crypto::inference_encryption::write_encrypted_end(&mut quic_send)
+            .await
+            .map_err(|e| anyhow::anyhow!("tunnel end sentinel failed: {e}"))?;
         quic_send.finish()?;
 
-        tracing::debug!(
-            "Encrypted response ({} → {} bytes) sent back",
-            response_bytes.len(),
-            json.len() + 1,
-        );
+        tracing::debug!("Encrypted streaming response ({total} bytes plaintext) sent back",);
         Ok(())
     } else {
         // Plaintext path: prepend the byte we consumed, relay normally.
