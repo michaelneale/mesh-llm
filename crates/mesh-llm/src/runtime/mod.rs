@@ -1936,7 +1936,16 @@ async fn resolve_startup_models(
         };
         let declared_ref = models::find_catalog_model_exact(&requested_ref)
             .map(models::catalog_model_ref)
-            .unwrap_or_else(|| models::model_ref_for_path(&resolved_path));
+            .unwrap_or_else(|| {
+                // For hf:// layer package refs, use the requested ref as the model ref
+                // rather than trying to parse the hf:// URL as a filesystem path.
+                let path_str = resolved_path.to_string_lossy();
+                if path_str.starts_with("hf://") {
+                    requested_ref.to_string()
+                } else {
+                    models::model_ref_for_path(&resolved_path)
+                }
+            });
         plans.push(StartupModelPlan {
             declared_ref,
             resolved_path,

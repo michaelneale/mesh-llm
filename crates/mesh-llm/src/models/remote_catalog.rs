@@ -397,8 +397,13 @@ mod tests {
 
     #[test]
     fn stale_check_returns_true_for_nonexistent() {
+        let prev = std::env::var_os("HF_HOME");
         std::env::set_var("HF_HOME", "/tmp/meshllm-test-nonexistent-dir-xyz");
-        assert!(is_catalog_stale());
-        std::env::remove_var("HF_HOME");
+        let result = is_catalog_stale();
+        match prev {
+            Some(val) => std::env::set_var("HF_HOME", val),
+            None => std::env::remove_var("HF_HOME"),
+        }
+        assert!(result);
     }
 }

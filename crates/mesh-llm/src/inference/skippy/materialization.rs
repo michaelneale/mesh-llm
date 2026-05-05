@@ -184,13 +184,12 @@ pub(crate) fn resolve_hf_package_to_local(
     // Collect the files we need to download
     let mut needed_files: Vec<String> = Vec::new();
 
-    // Always need shared/metadata.gguf
-    if let Some(path) = manifest
+    // Always need shared/metadata.gguf — required for materialization
+    let metadata_path = manifest
         .pointer("/shared/metadata/path")
         .and_then(|v| v.as_str())
-    {
-        needed_files.push(path.to_string());
-    }
+        .context("manifest missing required /shared/metadata/path")?;
+    needed_files.push(metadata_path.to_string());
     if include_embeddings {
         if let Some(path) = manifest
             .pointer("/shared/embeddings/path")

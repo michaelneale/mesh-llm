@@ -287,11 +287,11 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 /// Build a `SkippyPackageIdentity` from a remote HF layer package.
 ///
-/// This inspects the package manifest (downloading only the manifest JSON, not the
-/// full model) and constructs the identity needed for topology planning and deployment.
-/// The actual layer files are downloaded later by each node for its assigned stage.
+/// Downloads the manifest and shared metadata (needed by `inspect_layer_package` to
+/// read model parameters), but not layer files. The actual layer files are downloaded
+/// later by each node for its assigned stage.
 pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPackageIdentity> {
-    // Resolve hf:// to local dir (downloads manifest only for inspection)
+    // Resolve hf:// to local dir (downloads manifest + shared metadata for inspection)
     let local_ref =
         super::materialization::resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
     let info = skippy_runtime::package::inspect_layer_package(&local_ref)
