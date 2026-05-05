@@ -189,8 +189,9 @@ Local correctness evidence below was collected on the same machine with
 `n_predict = 1`, `n_gpu_layers = -1`, Skippy `--runtime-lane-count 1`, and
 llama-server `--parallel 1`. The payload column is the production serving
 payload, not an experimental fallback. Results use median warm-hit latency from
-matched repeated prompts. DeepSeek3 remains untested until a real local GGUF is
-available.
+matched repeated prompts. DeepSeek3 is package-backed evidence: it validates
+selected layer-package stages without loading or merging the full source GGUF,
+so it does not have a llama-server baseline in this table.
 
 `Cache bytes` is serialized payload size for `KvRecurrent` and measured native
 KV-page footprint for `ResidentKv` when the runtime can expose it. `TBD` means
@@ -212,7 +213,7 @@ does not currently support the KV-page export API used only for sizing.
 | GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 33 | 21.7 | 20.7 | **1.05x faster** | TBD | Correct and faster on the short-prefix smoke. |
 | Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 17 | 17.2 | 16.4 | **1.05x faster** | TBD | Correct and faster. |
 | MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 17 | 33.0 | 32.7 | **1.01x faster** | 3.9 MiB | Parity/slight win on a giant model with all layers on-device. |
-| DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:Q4_K_M` | `ResidentKv` | missing model | TBD | TBD | TBD | TBD | TBD | This machine has layer shards, not a full GGUF usable for llama-server baseline. |
+| DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` | `ResidentKv` | pass | 5 | N/A | 3.4 | **4.40x vs Skippy recompute** | TBD | Package-only proof on expert slice `3..4`; selected 7.47 GB stage part plus upstream `0..3`, no full 406.8 GB layer set loaded or merged. |
 
 `state-handoff` reports distinguish behavioral exactness from byte-stable state
 re-export. `status = pass` means the restored cache state produced the same next

@@ -17,6 +17,7 @@ Last updated: 2026-04-28.
 | Qwen3 dense | Supported | `Qwen/Qwen3-0.6B:Q8_0` | `layer_end=28`, `splits=9,18`, activation width `1024` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; this is the state-size baseline. |
 | Llama | Supported | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | DeepSeek2 | Supported | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `layer_end=27`, `splits=7,14`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
+| DeepSeek3 | Supported for package-backed stages | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` via `meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers` | `layer_end=61`, activation width `7168`; materialize only the owned stage range | `f16`; q8 untested | `baseline,ngram,ngram-adaptive` | None | Use layer-package materialization; do not require the full 406.8 GB layer set to be resident or merged. |
 | GLM-4.7 Flash | Supported | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | GGUF uses the DeepSeek2/MLA runtime path. |
 | GLM4 9B | Supported | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `layer_end=40`, `splits=13,27`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Gemma4 A4B | Supported | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `layer_end=30`, `splits=8,15`, activation width `2816` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
@@ -34,6 +35,7 @@ Last updated: 2026-04-28.
 | --- | --- |
 | Falcon-H1 | Recurrent state is too large to move. Keep recurrent range `0..24` sticky and transfer activation frames only. |
 | Qwen3Next | Same policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. |
+| DeepSeek3 | Package evidence uses selected stage parts only. The local gate covered `0..1` and expert layer `3..4`; full llama-server baseline requires a full GGUF and is intentionally not part of this package-only gate. |
 | Gemma4 E4B | Use split `21`. Avoid `12`, `14`, `24`, and `28`. Downstream slices need token-id sideband. |
 | MiniMax M2.7 | Sharded GGUF is supported. Materialize stage artifacts first; prompt tokenizer uses `stage-0.gguf` CPU-only. Do not keep full-model and staged-server residency alive together unless memory has been budgeted. |
 
@@ -62,6 +64,7 @@ activation handoff sizes for the recommended split.
 | Qwen3 dense | 2,048 | Accepted, 115,388 bytes baseline |
 | Llama | 4,096 | Accepted, 0.29x Qwen |
 | DeepSeek2 | 4,096 | Accepted, 2.40x Qwen |
+| DeepSeek3 | 14,336 | Accepted for package-backed resident KV; full-GGUF baseline not required |
 | GLM-4.7 Flash | 4,096 | Accepted, 0.47x Qwen |
 | GLM4 9B | 8,192 | Accepted, 0.36x Qwen |
 | Gemma4 A4B | 5,632 | Accepted, 1.96x Qwen |

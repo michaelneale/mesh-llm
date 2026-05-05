@@ -1074,29 +1074,13 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         &args.model_identity,
         stage_spec,
     )?;
-    let tokenizer_config = RuntimeConfig {
-        stage_index: 0,
-        layer_start: 0,
-        layer_end: args.layer_end,
-        ctx_size: args.ctx_size,
-        lane_count: 1,
-        n_batch: None,
-        n_ubatch: None,
-        n_threads: None,
-        n_threads_batch: None,
-        n_gpu_layers: args.n_gpu_layers,
-        selected_backend_device: None,
-        load_mode: RuntimeLoadMode::RuntimeSlice,
-        projector_path: None,
-        include_embeddings: true,
-        include_output: true,
-        filter_tensors_on_load: false,
-        cache_type_k: GGML_TYPE_F16,
-        cache_type_v: GGML_TYPE_F16,
-        flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
-    };
-    let tokenizer = StageModel::open(&args.model, &tokenizer_config)
-        .context("failed to open tokenizer model")?;
+    let (tokenizer_path, tokenizer_config) = tokenizer_model_for_state_handoff(&args)?;
+    let tokenizer = StageModel::open(&tokenizer_path, &tokenizer_config).with_context(|| {
+        format!(
+            "failed to open tokenizer model {}",
+            tokenizer_path.display()
+        )
+    })?;
     let tokens = state_handoff_tokens(&tokenizer, &args.prompt, args.prefix_token_count)
         .context("failed to tokenize state handoff prompt")?;
     let split = args.prefix_token_count.unwrap_or(tokens.len() - 1);
@@ -1692,7 +1676,7 @@ fn run_local_resident_slot_handoff(
     continuation: i32,
     benchmark_prompt_text: String,
     prefill_input: Option<ActivationFrame>,
-    _decode_input: Option<ActivationFrame>,
+    decode_input: Option<ActivationFrame>,
     tokenize_ms: f64,
     activation_width: i32,
     include_embeddings: bool,
@@ -1723,8 +1707,8 @@ fn run_local_resident_slot_handoff(
 
     let source_export_ms = 0.0;
     let source_decode_started = Instant::now();
-    let source_predicted_token = slot
-        .decode_step(continuation)
+    let (source_predicted_token, source_output) = slot
+        .decode_step_frame(continuation, decode_input.as_ref(), 0)
         .context("local resident slot source decode failed")?;
     let source_decode_ms = elapsed_ms(source_decode_started);
     drop(slot);
@@ -1736,22 +1720,41 @@ fn run_local_resident_slot_handoff(
     let restore_import_ms = elapsed_ms(restore_import_started);
     let restore_export_ms = 0.0;
     let restore_decode_started = Instant::now();
-    let restored_predicted_token = if args.cache_decoded_result_hits {
-        restore
-            .sample_current(None)
-            .context("local resident slot restore sample failed")?
-    } else {
-        restore
-            .decode_step(continuation)
-            .context("local resident slot restore decode failed")?
-    };
+    let (restored_predicted_token, restored_output) =
+        if args.cache_decoded_result_hits && decode_input.is_none() {
+            (
+                restore
+                    .sample_current(None)
+                    .context("local resident slot restore sample failed")?,
+                ActivationFrame {
+                    desc: skippy_runtime::ActivationDesc {
+                        version: 0,
+                        dtype: skippy_runtime::RuntimeActivationDType::Unknown,
+                        layout: skippy_runtime::RuntimeActivationLayout::Opaque,
+                        producer_stage_index: args.state_stage_index as i32,
+                        layer_start: args.state_layer_start as i32,
+                        layer_end: args.state_layer_end as i32,
+                        token_count: 0,
+                        sequence_count: 0,
+                        payload_bytes: 0,
+                        flags: 0,
+                    },
+                    payload: Vec::new(),
+                },
+            )
+        } else {
+            restore
+                .decode_step_frame(continuation, decode_input.as_ref(), 0)
+                .context("local resident slot restore decode failed")?
+        };
     let restore_decode_ms = elapsed_ms(restore_decode_started);
     drop(restore);
 
     let mut cache_hit_import_ms = vec![restore_import_ms];
     let mut cache_hit_decode_ms = vec![restore_decode_ms];
     let predicted_token_matches = source_predicted_token == restored_predicted_token;
-    let mut cache_hit_matches = predicted_token_matches;
+    let restored_output_matches = source_output.payload == restored_output.payload;
+    let mut cache_hit_matches = predicted_token_matches && restored_output_matches;
     for _ in 1..args.cache_hit_repeats {
         let import_started = Instant::now();
         let mut hit = model
@@ -1759,15 +1762,33 @@ fn run_local_resident_slot_handoff(
             .context("local resident slot repeat borrow failed")?;
         cache_hit_import_ms.push(elapsed_ms(import_started));
         let decode_started = Instant::now();
-        let predicted = if args.cache_decoded_result_hits {
-            hit.sample_current(None)
-                .context("local resident slot repeat sample failed")?
+        let (predicted, output) = if args.cache_decoded_result_hits && decode_input.is_none() {
+            (
+                hit.sample_current(None)
+                    .context("local resident slot repeat sample failed")?,
+                ActivationFrame {
+                    desc: skippy_runtime::ActivationDesc {
+                        version: 0,
+                        dtype: skippy_runtime::RuntimeActivationDType::Unknown,
+                        layout: skippy_runtime::RuntimeActivationLayout::Opaque,
+                        producer_stage_index: args.state_stage_index as i32,
+                        layer_start: args.state_layer_start as i32,
+                        layer_end: args.state_layer_end as i32,
+                        token_count: 0,
+                        sequence_count: 0,
+                        payload_bytes: 0,
+                        flags: 0,
+                    },
+                    payload: Vec::new(),
+                },
+            )
         } else {
-            hit.decode_step(continuation)
+            hit.decode_step_frame(continuation, decode_input.as_ref(), 0)
                 .context("local resident slot repeat decode failed")?
         };
         cache_hit_decode_ms.push(elapsed_ms(decode_started));
-        cache_hit_matches &= predicted == source_predicted_token;
+        cache_hit_matches &=
+            predicted == source_predicted_token && output.payload == source_output.payload;
     }
 
     let mut stage_models = Vec::new();
@@ -1807,10 +1828,10 @@ fn run_local_resident_slot_handoff(
         restore_decode_ms,
         cache_hit_import_ms,
         cache_hit_decode_ms,
-        matches: predicted_token_matches && cache_hit_matches,
+        matches: predicted_token_matches && restored_output_matches && cache_hit_matches,
         predicted_token_matches,
         roundtrip_state_matches: true,
-        restored_output_matches: None,
+        restored_output_matches: Some(restored_output_matches),
         cache_hit_matches,
         stage_models,
     })
@@ -2337,8 +2358,7 @@ fn stage_model_resolution(
         StageLoadMode::RuntimeSlice => (baseline_model.to_path_buf(), None),
         StageLoadMode::ArtifactSlice => (artifact_stage_path(stage_model, spec.stage_index)?, None),
         StageLoadMode::LayerPackage => {
-            let package_ref = stage_model
-                .context("--stage-model is required when --stage-load-mode layer-package")?;
+            let package_ref = layer_package_ref(baseline_model, stage_model);
             let package_ref = package_ref.to_string_lossy().into_owned();
             let materialized = materialize_layer_package_details(&PackageStageRequest {
                 model_id: model_identity.model_id.clone(),
@@ -2400,11 +2420,76 @@ fn stage_server_model_path(
         StageLoadMode::ArtifactSlice => Ok(artifact_stage_path(stage_model, spec.stage_index)?
             .to_string_lossy()
             .into_owned()),
-        StageLoadMode::LayerPackage => Ok(stage_model
-            .context("--stage-model is required when --stage-load-mode layer-package")?
+        StageLoadMode::LayerPackage => Ok(layer_package_ref(baseline_model, stage_model)
             .to_string_lossy()
             .into_owned()),
     }
+}
+
+fn tokenizer_model_for_state_handoff(
+    args: &BinaryStateHandoffConfig,
+) -> Result<(PathBuf, RuntimeConfig)> {
+    let (path, layer_end, load_mode, filter_tensors_on_load) = match args.stage_load_mode {
+        StageLoadMode::LayerPackage => {
+            let package_ref = layer_package_ref(&args.model, args.stage_model.as_ref());
+            let package_ref_string = package_ref.to_string_lossy().into_owned();
+            let materialized = materialize_layer_package_details(&PackageStageRequest {
+                model_id: args.model_identity.model_id.clone(),
+                topology_id: "correctness-tokenizer".to_string(),
+                package_ref: package_ref_string,
+                stage_id: "tokenizer".to_string(),
+                layer_start: 0,
+                layer_end: 1,
+                include_embeddings: true,
+                include_output: false,
+            })?;
+            (
+                materialized.output_path,
+                1,
+                RuntimeLoadMode::LayerPackage,
+                true,
+            )
+        }
+        StageLoadMode::ArtifactSlice => {
+            let path = artifact_stage_path(args.stage_model.as_ref(), 0)?;
+            (path, args.layer_end, RuntimeLoadMode::ArtifactSlice, true)
+        }
+        StageLoadMode::RuntimeSlice => (
+            args.model.clone(),
+            args.layer_end,
+            RuntimeLoadMode::RuntimeSlice,
+            false,
+        ),
+    };
+
+    Ok((
+        path,
+        RuntimeConfig {
+            stage_index: 0,
+            layer_start: 0,
+            layer_end,
+            ctx_size: args.ctx_size,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_threads: None,
+            n_threads_batch: None,
+            n_gpu_layers: args.n_gpu_layers,
+            selected_backend_device: None,
+            load_mode,
+            projector_path: None,
+            include_embeddings: true,
+            include_output: false,
+            filter_tensors_on_load,
+            cache_type_k: GGML_TYPE_F16,
+            cache_type_v: GGML_TYPE_F16,
+            flash_attn_type: skippy_runtime::FlashAttentionType::Auto,
+        },
+    ))
+}
+
+fn layer_package_ref<'a>(baseline_model: &'a Path, stage_model: Option<&'a PathBuf>) -> &'a Path {
+    stage_model.map(PathBuf::as_path).unwrap_or(baseline_model)
 }
 
 fn runtime_load_mode(stage_load_mode: StageLoadMode) -> RuntimeLoadMode {

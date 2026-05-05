@@ -480,11 +480,18 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "deepseek2"
     );
-    let deepseek3 =
-        infer_family_capability("unsloth/DeepSeek-V3.2-GGUF:Q4_K_M", 61, 7168).expect("deepseek3");
+    let deepseek3 = infer_family_capability("unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL", 61, 7168)
+        .expect("reviewed deepseek3");
     assert_eq!(deepseek3.family_id, "deepseek3");
     assert_eq!(deepseek3.q8_wire_validation, WireValidation::Untested);
-    assert_eq!(deepseek3.exact_state_mobility, ExactStateMobility::Untested);
+    assert_eq!(deepseek3.exact_state_mobility, ExactStateMobility::Accepted);
+    let generic_deepseek3 = infer_family_capability("unsloth/DeepSeek-V3.2-GGUF:Q4_K_M", 61, 7168)
+        .expect("generic deepseek3");
+    assert_eq!(generic_deepseek3.family_id, "deepseek3");
+    assert_eq!(
+        generic_deepseek3.exact_state_mobility,
+        ExactStateMobility::Untested
+    );
     assert_eq!(
         infer_family_capability("unsloth/GLM-4.7-Flash-GGUF", 47, 2048)
             .expect("glm47")

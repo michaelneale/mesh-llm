@@ -39,6 +39,11 @@ class Case:
     n_gpu_layers: int = 0
     prefix_tokens: int = 128
     cache_hit_repeats: int = 3
+    stage_load_mode: str = "runtime-slice"
+    state_layer_start: int = 0
+    state_layer_end: int | None = None
+    state_stage_index: int | None = None
+    skip_llama_server_reason: str | None = None
 
 
 CASES = [
@@ -76,12 +81,19 @@ CASES = [
     Case(
         "deepseek3",
         "DeepSeek3",
-        "unsloth/DeepSeek-V3.2-GGUF:Q4_K_M",
-        None,
+        "unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL",
+        HOME
+        / ".cache/huggingface/hub/models--meshllm--DeepSeek-V3.2-UD-Q4_K_XL-layers/snapshots/c7d74031a7201334b4550da6537d0b8734b81fe2",
         "resident-kv",
         61,
         7168,
-        prefix_tokens=16,
+        ctx_size=32,
+        prefix_tokens=4,
+        stage_load_mode="layer-package",
+        state_layer_start=3,
+        state_layer_end=4,
+        state_stage_index=1,
+        skip_llama_server_reason="Layer-package evidence only; no full GGUF is loaded for this DeepSeek3 gate.",
     ),
     Case(
         "glm47_flash",
@@ -275,8 +287,10 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path) -> dic
         "--ctx-size",
         str(case.ctx_size),
         f"--n-gpu-layers={case.n_gpu_layers}",
+        "--stage-load-mode",
+        case.stage_load_mode,
         "--state-layer-end",
-        str(case.layer_end),
+        str(case.state_layer_end or case.layer_end),
         "--state-payload-kind",
         case.payload,
         "--prefix-token-count",
@@ -286,6 +300,10 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path) -> dic
         "--report-out",
         str(report_path),
     ]
+    if case.state_layer_start:
+        cmd.extend(["--state-layer-start", str(case.state_layer_start)])
+    if case.state_stage_index is not None:
+        cmd.extend(["--state-stage-index", str(case.state_stage_index)])
     if args.runtime_lane_count is not None:
         cmd.extend(["--runtime-lane-count", str(args.runtime_lane_count)])
     if args.borrow_resident_hits:
@@ -300,6 +318,7 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path) -> dic
         cwd=REPO,
         env=env,
         text=True,
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=args.correctness_timeout_secs,
@@ -474,6 +493,11 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
             n_gpu_layers=n_gpu_layers,
             prefix_tokens=prefix_tokens if prefix_tokens is not None else case.prefix_tokens,
             cache_hit_repeats=cache_hit_repeats,
+            stage_load_mode=case.stage_load_mode,
+            state_layer_start=case.state_layer_start,
+            state_layer_end=case.state_layer_end,
+            state_stage_index=case.state_stage_index,
+            skip_llama_server_reason=case.skip_llama_server_reason,
         )
     case_dir = args.output_dir / f"{case.key}-p{case.prefix_tokens}"
     case_dir.mkdir(parents=True, exist_ok=True)
@@ -484,6 +508,9 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
         "model_path": str(case.model_path) if case.model_path else None,
         "payload": case.payload,
         "prefix_tokens": case.prefix_tokens,
+        "stage_load_mode": case.stage_load_mode,
+        "state_layer_start": case.state_layer_start,
+        "state_layer_end": case.state_layer_end or case.layer_end,
         "case": asdict(case) | {"model_path": str(case.model_path) if case.model_path else None},
     }
     if case.model_path is None or not case.model_path.exists():
@@ -505,6 +532,14 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
     if skippy.get("status") != "pass":
         row["llama_server"] = {"status": "skipped"}
         row["notes"] = "Skipped llama-server baseline because production cache correctness did not pass."
+        return row
+    if case.skip_llama_server_reason:
+        row["llama_server"] = {"status": "skipped", "reason": case.skip_llama_server_reason}
+        row["notes"] = case.skip_llama_server_reason
+        return row
+    if case.stage_load_mode != "runtime-slice":
+        row["llama_server"] = {"status": "skipped", "reason": "llama-server requires a full GGUF"}
+        row["notes"] = "llama-server baseline skipped because this case uses a layer package."
         return row
     if args.skip_llama_server:
         row["llama_server"] = {"status": "skipped"}
