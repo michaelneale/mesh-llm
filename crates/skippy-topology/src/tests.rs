@@ -516,6 +516,11 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "gemma3"
     );
+    let gemma =
+        infer_family_capability("ggml-org/gemma-3-270m-it-GGUF:Q8_0", 18, 640).expect("gemma");
+    assert_eq!(gemma.family_id, "gemma");
+    assert_eq!(gemma.default_wire_dtype, WireDType::F32);
+    assert_eq!(gemma.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         infer_family_capability("google-gemma-4-26B-A4B-it", 30, 2816)
             .expect("gemma4a4b")
@@ -591,16 +596,17 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
             "unexpected boundary count for {identity}"
         );
         assert_eq!(
-            plan.boundaries[0].wire_dtype,
-            WireDType::F16,
-            "supported families default to f16 wire for serving smoke: {identity}"
+            plan.boundaries[0].wire_dtype, family.default_wire_dtype,
+            "supported family default wire mismatch for {identity}"
         );
-        assert!(
-            plan.boundaries[0]
-                .reason_codes
-                .contains(&PlanReasonCode::DefaultWireDtypeF16),
-            "missing f16 reason for {identity}"
-        );
+        if family.default_wire_dtype == WireDType::F16 {
+            assert!(
+                plan.boundaries[0]
+                    .reason_codes
+                    .contains(&PlanReasonCode::DefaultWireDtypeF16),
+                "missing f16 reason for {identity}"
+            );
+        }
 
         match family.q8_wire_validation {
             WireValidation::Validated => assert!(

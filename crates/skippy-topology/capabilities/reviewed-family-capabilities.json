@@ -234,6 +234,26 @@
     }
   },
   {
+    "model_id": "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
+    "source_repo": "ggml-org/gemma-3-270m-it-GGUF",
+    "source_revision": "e7647be17ae1108f2f605ed061ca0608b171afff",
+    "source_file": "gemma-3-270m-it-Q8_0.gguf",
+    "canonical_ref": "ggml-org/gemma-3-270m-it-GGUF@e7647be17ae1108f2f605ed061ca0608b171afff/gemma-3-270m-it-Q8_0.gguf",
+    "distribution_id": "gemma-3-270m-it-Q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "gemma",
+      "layer_count": 18,
+      "activation_width": 640,
+      "default_wire_dtype": "f32",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "bartowski/gemma-2-2b-it-GGUF:Q4_K_M",
     "source_repo": "bartowski/gemma-2-2b-it-GGUF",
     "source_revision": "855f67caed130e1befc571b52bd181be2e858883",

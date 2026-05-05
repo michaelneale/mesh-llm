@@ -151,10 +151,9 @@ fn family_policy_for_normalized_family_id(
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
     match family_id {
-        "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" | "gemma2"
-        | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" => {
-            resident_kv_policy(activation_wire_dtype)
-        }
+        "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
+        | "olmo" | "gemma2" | "gemma" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
+        | "minimax_m27" => resident_kv_policy(activation_wire_dtype),
         "qwen3next" | "falcon_h1" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
@@ -414,15 +413,29 @@ mod tests {
     }
 
     #[test]
+    fn gemma_small_reviewed_policy_uses_f32_activation_wire() {
+        let policy = family_policy_for_model_id("ggml-org/gemma-3-270m-it-GGUF:Q8_0");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F32);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn every_reviewed_family_has_an_explicit_cache_policy() {
         for record in reviewed_capability_records() {
             let policy = family_policy_for_capability(&record.capability);
             let family_id = record.capability.family_id.as_str();
 
             match family_id {
-                "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo"
-                | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
-                | "minimax_m27" => {
+                "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
+                | "glm4" | "olmo" | "gemma" | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b"
+                | "glm47_flash" | "minimax_m27" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {

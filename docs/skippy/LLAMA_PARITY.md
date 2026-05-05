@@ -116,6 +116,7 @@ or a blocker is discovered.
 | `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
+| `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` target | pending cache smoke | text split ready with `f32`; `f16`/`q8` rejected |
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
@@ -150,8 +151,8 @@ implementation.
 
 1. Add RWKV7 activation-frame sideband support for the layer-0 `v_first`
    value, then rerun the sampled RWKV7 text lane.
-2. Debug `gemma`: runtime-slice opens, but split output predicts token `0`
-   where the full model predicts token `1106`.
+2. Promote per-family activation-wire policy into topology selection so Gemma
+   can use `f32` while the default remains `f16`.
 3. Finish the missing downloads and run the same sweep for `bert`, `t5`,
    `qwen2moe`, `qwen3moe`, and `llama4` where applicable.
 4. Promote multimodal only after projector/media sideband evidence, even when
@@ -173,6 +174,7 @@ themselves until the reviewed topology records are updated.
 | `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; fixed staged activation rescaling |
 | `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
 | `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; fixed mid-stage position input registration |
+| `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke pending; `f16` predicted token `0`, `q8` predicted token `107` |
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
@@ -200,6 +202,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`
 - `target/family-certify/llama-parity-decoder-tranche-3e`
+- `target/family-certify/llama-parity-gemma-f32-wire-1`
 - `target/family-certify/llama-parity-jamba-runtime-slice-2`
 - `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba-runtime-slice-2`
@@ -209,18 +212,18 @@ Raw run directories:
 ## Current Blockers
 
 - Runtime-slice expansion now passes for `baichuan`, `bloom`, `command_r`,
-  `cohere2`, `exaone`, `exaone4`, `falcon`, `gpt2`, `gptneox`, `granite`,
-  `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`, `mistral3`, `mpt`, `olmo2`,
-  `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl` text, `stablelm`, and
-  `starcoder2`.
+  `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32` wire, `gpt2`,
+  `gptneox`, `granite`, `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`,
+  `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl`
+  text, `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
 - `rwkv7` needs a wider activation-frame contract. Later RWKV7 layers depend
   on the layer-0 `v_first` tensor, so a downstream stage cannot be correct with
   boundary hidden state alone.
-- `gemma` is different: runtime-slice execution opens, but split output parity
-  fails. In the cheap run, the full model predicted token `1106` after token
-  `2`, while the split path predicted token `0`.
+- `gemma` is stage-correct only with `f32` activation wire for the sampled
+  artifact. The earlier default-`f16` cheap run predicted token `0`, and `q8`
+  predicted token `107`, while `f32` matched token `1106`.
 - The old `mistral3` candidate was not a `mistral3` GGUF. It reports
   `general.architecture = llama`, so it cannot be used for llama.cpp family
   parity even though the run itself passed. The replacement candidate is

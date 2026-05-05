@@ -38,9 +38,9 @@ to the customer support matrix until cache smoke and reviewed topology records
 are updated.
 
 ```text
-Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, GPT-NeoX,
-GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT, OLMo2,
-OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
+Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
+GPT-NeoX, GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT,
+OLMo2, OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
 ```
 
 ## Exceptions
@@ -48,6 +48,7 @@ OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, StableLM, StarCoder2
 | Family | What To Watch |
 | --- | --- |
 | Falcon-H1 | Recurrent state is too large to move. Keep recurrent range `0..24` sticky and transfer activation frames only. |
+| Gemma text | The sampled `gemma` architecture artifact only passed stage parity with `f32` activation wire. `f16` and `q8` changed the next-token argmax. |
 | Jamba | Hybrid attention/SSM text lane passed with recurrent range `0..28`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba2 | Recurrent text lane passed with recurrent range `0..64`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |

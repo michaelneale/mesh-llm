@@ -107,7 +107,7 @@
       "status": "candidate",
       "repo": "ggml-org/gemma-3-270m-it-GGUF",
       "include": "*.gguf",
-      "notes": "repo currently provides Q8_0 only"
+      "notes": "repo currently provides Q8_0 only; text lane passed in llama-parity-gemma-f32-wire-1 with f32 activation wire; f16 and q8 activation wire changed the next-token argmax"
     },
     {
       "llama_model": "gemma2",
