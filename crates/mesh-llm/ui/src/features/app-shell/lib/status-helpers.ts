@@ -33,7 +33,7 @@ export function peerRoutableModels(peer: Peer): string[] {
 }
 
 export function localRoutableModels(status: StatusPayload | null): string[] {
-  if (!status || status.node_state === "client") return [];
+  if (!status || status.is_client || status.node_state === "client") return [];
   const hosted = status.hosted_models?.filter(Boolean) ?? [];
   if (hosted.length > 0) return hosted;
   const serving = status.serving_models?.filter(Boolean) ?? [];

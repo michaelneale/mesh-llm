@@ -490,7 +490,7 @@ fn split_layer_for_fixture(fixture: &MultimodalSmokeFixture) -> Result<Option<u3
         eprintln!("skipping split multimodal smoke: model has fewer than two layers");
         return Ok(None);
     }
-    let split = env_u32(MM_SPLIT_LAYER_ENV)?.unwrap_or_else(|| fixture.layer_end / 2);
+    let split = env_u32(MM_SPLIT_LAYER_ENV)?.unwrap_or(fixture.layer_end / 2);
     if split == 0 || split >= fixture.layer_end {
         bail!(
             "{MM_SPLIT_LAYER_ENV} must be in 1..{} for this model",
