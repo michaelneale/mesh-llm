@@ -266,6 +266,21 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         if let Some(entry) = find_catalog_model_exact(&raw).or_else(|| catalog::find_model(&raw)) {
             return catalog::download_model_with_progress(entry, progress).await;
         }
+        // Fallback: check the remote meshllm/catalog on HuggingFace for models
+        // not in the baked-in catalog (e.g. newly added models).
+        if let Some(hf_ref) = super::remote_catalog::resolve_model_download(&raw) {
+            if progress {
+                eprintln!("📥 Found in remote catalog: {}", hf_ref.name);
+            }
+            return catalog::download_hf_repo_file_with_progress_label(
+                &hf_ref.repo,
+                hf_ref.revision.as_deref(),
+                &hf_ref.file,
+                &hf_ref.name,
+                progress,
+            )
+            .await;
+        }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {
                 return download_exact_ref_with_progress(&canonical, progress)

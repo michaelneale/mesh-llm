@@ -203,6 +203,51 @@ pub fn find_layer_package(model_query: &str) -> Option<String> {
     None
 }
 
+/// A resolved model download reference from the remote catalog.
+pub struct RemoteModelRef {
+    pub name: String,
+    pub repo: String,
+    pub revision: Option<String>,
+    pub file: String,
+}
+
+/// Searches the remote catalog for a model matching `query` and returns
+/// download coordinates (repo, revision, file) if found.
+///
+/// This enables models not in the baked-in catalog to be resolved and
+/// downloaded from HuggingFace when they exist in the remote catalog.
+pub fn resolve_model_download(query: &str) -> Option<RemoteModelRef> {
+    if ensure_catalog().is_err() {
+        return None;
+    }
+    let entries = CATALOG_ENTRIES.get()?;
+    let query_lower = query.to_lowercase();
+
+    for entry in entries {
+        for (variant_name, variant) in &entry.variants {
+            let matches = variant_name.to_lowercase().contains(&query_lower)
+                || variant.curated.name.to_lowercase().contains(&query_lower)
+                || entry.source_repo.to_lowercase().contains(&query_lower);
+
+            if matches {
+                let repo = variant.source.repo.clone();
+                let file = variant.source.file.clone().unwrap_or_else(|| {
+                    // Default: use variant name as filename
+                    format!("{variant_name}.gguf")
+                });
+                return Some(RemoteModelRef {
+                    name: variant.curated.name.clone(),
+                    repo,
+                    revision: variant.source.revision.clone(),
+                    file,
+                });
+            }
+        }
+    }
+
+    None
+}
+
 /// Returns all loaded catalog entries (if any).
 pub fn catalog_entries() -> Option<&'static Vec<CatalogEntry>> {
     CATALOG_ENTRIES.get()
