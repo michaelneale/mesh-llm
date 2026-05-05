@@ -9,14 +9,15 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::OnceLock,
+    sync::RwLock,
     time::{Duration, SystemTime},
 };
 
-use hf_hub::RepoDownloadFileParams;
+use hf_hub::{RepoDownloadFileParams, RepoInfo, RepoInfoParams};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Schema types
@@ -78,7 +79,7 @@ pub struct CatalogPackage {
 // Static catalog cache
 // ---------------------------------------------------------------------------
 
-static CATALOG_ENTRIES: OnceLock<Vec<CatalogEntry>> = OnceLock::new();
+static CATALOG_ENTRIES: RwLock<Option<Vec<CatalogEntry>>> = RwLock::new(None);
 
 /// Returns the directory where the catalog dataset is cached locally.
 pub fn catalog_cache_dir() -> PathBuf {
@@ -112,35 +113,49 @@ pub fn is_catalog_stale() -> bool {
     elapsed > Duration::from_secs(24 * 60 * 60)
 }
 
-/// Known catalog entry paths in the meshllm/catalog dataset.
-/// These are the models we have pre-split layer packages for.
-const CATALOG_ENTRIES_FILES: &[&str] = &[
-    "entries/unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF.json",
-    "entries/unsloth/DeepSeek-V3.2-GGUF.json",
-    "entries/unsloth/Qwen3-235B-A22B-GGUF.json",
-    "entries/Qwen/Qwen3-8B-GGUF.json",
-    "entries/Qwen/Qwen3-4B-GGUF.json",
-    "entries/Qwen/Qwen3-30B-A3B-GGUF.json",
-    "entries/Qwen/Qwen3-14B-GGUF.json",
-    "entries/Qwen/Qwen3-32B-GGUF.json",
-    "entries/bartowski/Qwen3-235B-A22B-GGUF.json",
-];
-
 /// Downloads/refreshes the catalog dataset from HuggingFace and loads entries into memory.
 ///
-/// Uses the `hf_hub` Rust library to download catalog entry files from the
-/// `meshllm/catalog` dataset repo.
+/// Lists all files in the `meshllm/catalog` dataset via the HF API, then downloads
+/// every `entries/**/*.json` file. No hardcoded file list — new models added to the
+/// catalog are discovered automatically.
 pub fn refresh_catalog() -> Result<()> {
     let api = super::build_hf_api(false)?;
     let dataset = api.dataset("meshllm", "catalog");
+
+    // List all files in the dataset repo
+    let info = dataset
+        .info(
+            &RepoInfoParams::builder()
+                .revision("main".to_string())
+                .build(),
+        )
+        .context("fetch meshllm/catalog dataset info")?;
+
+    let siblings = match info {
+        RepoInfo::Dataset(ref d) => d.siblings.as_ref(),
+        _ => None,
+    };
+    let Some(siblings) = siblings else {
+        bail!("meshllm/catalog dataset info has no file listing");
+    };
+
+    let entry_files: Vec<&str> = siblings
+        .iter()
+        .map(|s| s.rfilename.as_str())
+        .filter(|f| f.starts_with("entries/") && f.ends_with(".json"))
+        .collect();
+
+    if entry_files.is_empty() {
+        bail!("meshllm/catalog has no entry files");
+    }
 
     let cache_dir = catalog_cache_dir();
     let entries_dir = cache_dir.join("entries");
     fs::create_dir_all(&entries_dir)
         .with_context(|| format!("create catalog cache dir {}", entries_dir.display()))?;
 
-    // Download each known catalog entry
-    for entry_file in CATALOG_ENTRIES_FILES {
+    // Download each entry file
+    for entry_file in &entry_files {
         let downloaded = dataset
             .download_file(
                 &RepoDownloadFileParams::builder()
@@ -180,15 +195,18 @@ pub fn load_catalog_from_disk() -> Result<()> {
     }
 
     let entries = parse_entries_recursive(&entries_dir)?;
-    // Set the static; if already set (race), ignore.
-    let _ = CATALOG_ENTRIES.set(entries);
+    let mut lock = CATALOG_ENTRIES.write().map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
+    *lock = Some(entries);
     Ok(())
 }
 
 /// Ensures the catalog is loaded — refreshes if stale, otherwise loads from disk.
 pub fn ensure_catalog() -> Result<()> {
-    if CATALOG_ENTRIES.get().is_some() {
-        return Ok(());
+    {
+        let lock = CATALOG_ENTRIES.read().map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
+        if lock.is_some() && !is_catalog_stale() {
+            return Ok(());
+        }
     }
     if is_catalog_stale() {
         refresh_catalog()
@@ -206,7 +224,8 @@ pub fn ensure_catalog() -> Result<()> {
 ///
 /// Returns the first matching layer-package repo as an `hf://` reference.
 pub fn find_layer_package(model_query: &str) -> Option<String> {
-    let entries = CATALOG_ENTRIES.get()?;
+    let lock = CATALOG_ENTRIES.read().ok()?;
+    let entries = lock.as_ref()?;
     let query_lower = model_query.to_lowercase();
 
     for entry in entries {
@@ -245,7 +264,8 @@ pub fn resolve_model_download(query: &str) -> Option<RemoteModelRef> {
     if ensure_catalog().is_err() {
         return None;
     }
-    let entries = CATALOG_ENTRIES.get()?;
+    let lock = CATALOG_ENTRIES.read().ok()?;
+    let entries = lock.as_ref()?;
     let query_lower = query.to_lowercase();
 
     for entry in entries {
@@ -274,8 +294,9 @@ pub fn resolve_model_download(query: &str) -> Option<RemoteModelRef> {
 }
 
 /// Returns all loaded catalog entries (if any).
-pub fn catalog_entries() -> Option<&'static Vec<CatalogEntry>> {
-    CATALOG_ENTRIES.get()
+pub fn catalog_entries() -> Option<Vec<CatalogEntry>> {
+    let lock = CATALOG_ENTRIES.read().ok()?;
+    lock.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -301,10 +322,10 @@ fn visit_json_files(dir: &std::path::Path, entries: &mut Vec<CatalogEntry>) -> R
             match parse_catalog_entry(&path) {
                 Ok(entry) => entries.push(entry),
                 Err(err) => {
-                    // Log but don't fail on individual malformed entries
-                    eprintln!(
-                        "warning: skipping malformed catalog entry {}: {err}",
-                        path.display()
+                    warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "skipping malformed catalog entry"
                     );
                 }
             }

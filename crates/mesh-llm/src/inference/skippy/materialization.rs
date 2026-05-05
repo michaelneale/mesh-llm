@@ -135,8 +135,9 @@ pub(crate) fn is_layer_package_ref(value: &str) -> bool {
     StagePackageRef::parse(value).is_ok_and(|package_ref| package_ref.is_distributable_package())
 }
 
-/// Resolve an `hf://` package ref to a local directory, downloading the manifest
-/// and required layer files using the `hf_hub` Rust library.
+/// Resolve an `hf://` package ref to a local directory, downloading the manifest,
+/// shared components (metadata, embeddings, output head), and assigned layer files
+/// using the `hf_hub` Rust library.
 ///
 /// Returns the local directory path containing the package files.
 /// If `package_ref` is already a local path, returns it as-is.
@@ -207,10 +208,14 @@ pub(crate) fn resolve_hf_package_to_local(
         }
     }
 
-    // Layer files for assigned range
+    // Layer files for assigned range — use explicit layer_index if present,
+    // fall back to array position.
     if let Some(layers) = manifest.get("layers").and_then(|l| l.as_array()) {
         for (i, layer) in layers.iter().enumerate() {
-            let idx = i as u32;
+            let idx = layer
+                .get("layer_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(i as u64) as u32;
             if idx >= layer_start && idx < layer_end {
                 if let Some(path) = layer.get("path").and_then(|a| a.as_str()) {
                     needed_files.push(path.to_string());
@@ -252,15 +257,17 @@ pub(crate) fn materialize_stage_load(
     if load.load_mode != LoadMode::LayerPackage {
         return Ok(None);
     }
+    let is_first = load.layer_start == 0;
     let is_final = load.downstream.is_none();
-    let include_embeddings = load.layer_start == 0 || is_final;
+    let include_embeddings = is_first;
+    let include_output = is_final;
     // Resolve hf:// to local dir with needed files downloaded
     let local_ref = resolve_hf_package_to_local(
         &load.package_ref,
         load.layer_start,
         load.layer_end,
         include_embeddings,
-        is_final,
+        include_output,
     )?;
     let request = package_stage_request(
         &load.model_id,
@@ -306,15 +313,17 @@ pub(crate) fn materialize_stage_config(
         .as_deref()
         .or(config.package_ref.as_deref())
         .context("layer-package config is missing package ref")?;
+    let is_first = config.layer_start == 0;
     let is_final = config.downstream.is_none();
-    let include_embeddings = config.layer_start == 0 || is_final;
+    let include_embeddings = is_first;
+    let include_output = is_final;
     // Resolve hf:// to local dir with needed files downloaded
     let local_ref = resolve_hf_package_to_local(
         package_ref,
         config.layer_start,
         config.layer_end,
         include_embeddings,
-        is_final,
+        include_output,
     )?;
     let request = package_stage_request(
         &config.model_id,
