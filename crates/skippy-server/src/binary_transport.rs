@@ -468,7 +468,7 @@ fn handle_binary_connection(
             insert_runtime_session_stats(
                 &mut reset_attrs,
                 "llama_stage.runtime_sessions_after",
-                drop_stats.stats_after,
+                &drop_stats.stats_after,
             );
             telemetry.emit_debug_span(
                 "stage.binary_session_stop",
@@ -745,14 +745,14 @@ fn handle_binary_connection(
             "llama_stage.runtime_lock_acquires".to_string(),
             json!(runtime_lock_acquires),
         );
-        if let Some(stats) = runtime_sessions_before {
+        if let Some(stats) = runtime_sessions_before.as_ref() {
             insert_runtime_session_stats(
                 &mut decode_attrs,
                 "llama_stage.runtime_sessions_before",
                 stats,
             );
         }
-        if let Some(stats) = runtime_sessions_after {
+        if let Some(stats) = runtime_sessions_after.as_ref() {
             insert_runtime_session_stats(
                 &mut decode_attrs,
                 "llama_stage.runtime_sessions_after",
@@ -1096,14 +1096,14 @@ fn handle_binary_connection(
             "llama_stage.runtime_lock_acquires".to_string(),
             json!(runtime_lock_acquires),
         );
-        if let Some(stats) = runtime_sessions_before {
+        if let Some(stats) = runtime_sessions_before.as_ref() {
             insert_runtime_session_stats(
                 &mut timing_attrs,
                 "llama_stage.runtime_sessions_before",
                 stats,
             );
         }
-        if let Some(stats) = runtime_sessions_after {
+        if let Some(stats) = runtime_sessions_after.as_ref() {
             insert_runtime_session_stats(
                 &mut timing_attrs,
                 "llama_stage.runtime_sessions_after",
@@ -1216,7 +1216,7 @@ fn insert_optional_unix_nanos(attrs: &mut BTreeMap<String, Value>, key: &str, va
 fn insert_runtime_session_stats(
     attrs: &mut BTreeMap<String, Value>,
     prefix: &str,
-    stats: RuntimeSessionStats,
+    stats: &RuntimeSessionStats,
 ) {
     attrs.insert(
         format!("{prefix}.active_sessions"),

@@ -41,7 +41,7 @@ mod server;
 mod state;
 pub(crate) mod status;
 
-pub use self::server::start;
+pub(crate) use self::server::start_with_listener;
 #[cfg(test)]
 pub(crate) use self::server::{handle_request, is_ui_only_route};
 pub use self::state::{

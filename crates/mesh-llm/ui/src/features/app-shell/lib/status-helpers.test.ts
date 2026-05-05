@@ -78,14 +78,14 @@ describe("live node state helpers", () => {
     expect(topologyStatusTooltip(null as any)).toBe("Node state unavailable");
   });
 
-  it("uses node_state as the local routable-model source of truth", () => {
+  it("excludes client nodes from local routable models", () => {
     const baseStatus: StatusPayload = {
       node_id: "local-node",
       node_status: "Serving",
       node_state: "serving",
       token: "token",
       is_host: false,
-      is_client: true,
+      is_client: false,
       llama_ready: true,
       peers: [],
       model_name: "fallback-model",
@@ -103,6 +103,7 @@ describe("live node state helpers", () => {
     };
 
     expect(localRoutableModels(baseStatus)).toEqual(["hosted-model"]);
+    expect(localRoutableModels({ ...baseStatus, is_client: true })).toEqual([]);
     expect(localRoutableModels({ ...baseStatus, node_state: "client", is_client: false })).toEqual(
       [],
     );

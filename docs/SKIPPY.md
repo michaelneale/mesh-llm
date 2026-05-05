@@ -929,6 +929,11 @@ struct SkippyModelRuntime {
 }
 ```
 
+Current embedded skippy/llama.cpp native logs are process-global because
+`llama_log_set` installs one callback for the process. Mesh redirects those logs
+to `<runtime-root>/<pid>/logs/skippy-native.log`; per-stage `log_path` fields
+should only be populated when a backend has a stage-scoped log sink.
+
 This should be additive to existing gossip. Older nodes must continue to
 operate using the existing protocol.
 

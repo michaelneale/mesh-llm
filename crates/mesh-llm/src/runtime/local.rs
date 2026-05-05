@@ -3,6 +3,9 @@ use crate::inference::{election, skippy};
 use crate::mesh::{self, NodeRole};
 use crate::models;
 use crate::network::router;
+use crate::runtime_data::{
+    RuntimeLlamaEndpointStatus, RuntimeLlamaSlotSnapshot, RuntimeLlamaSlotsSnapshot,
+};
 use anyhow::{Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
 use skippy_topology::{
@@ -45,6 +48,54 @@ impl LocalRuntimeModelHandle {
         }
     }
 
+    pub(super) fn ctx_used_tokens(&self) -> Option<u64> {
+        match &self.inner {
+            LocalRuntimeBackendHandle::Skippy { model, .. } => {
+                Some(model.status().max_session_tokens)
+            }
+        }
+    }
+
+    pub(super) fn llama_slots_snapshot(
+        &self,
+        model_name: &str,
+    ) -> Option<RuntimeLlamaSlotsSnapshot> {
+        match &self.inner {
+            LocalRuntimeBackendHandle::Skippy { model, .. } => {
+                let status = model.status();
+                let ctx_size = status.ctx_size as u64;
+                let now = current_time_unix_ms();
+                Some(RuntimeLlamaSlotsSnapshot {
+                    status: RuntimeLlamaEndpointStatus::Ready,
+                    model: Some(model_name.to_string()),
+                    last_attempt_unix_ms: Some(now),
+                    last_success_unix_ms: Some(now),
+                    error: None,
+                    slots: status
+                        .lanes
+                        .into_iter()
+                        .map(|lane| RuntimeLlamaSlotSnapshot {
+                            id: Some(lane.index as u64),
+                            id_task: None,
+                            n_ctx: Some(ctx_size),
+                            speculative: None,
+                            is_processing: Some(lane.active),
+                            next_token: None,
+                            params: None,
+                            extra: serde_json::json!({
+                                "model": model_name,
+                                "lane_index": lane.index,
+                                "active": lane.active,
+                                "session_id": lane.session_id,
+                                "token_count": lane.token_count,
+                            }),
+                        })
+                        .collect(),
+                })
+            }
+        }
+    }
+
     pub(super) async fn shutdown(self) {
         match self.inner {
             LocalRuntimeBackendHandle::Skippy { model, http, .. } => {
@@ -53,6 +104,13 @@ impl LocalRuntimeModelHandle {
             }
         }
     }
+}
+
+fn current_time_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 pub(super) struct ManagedModelController {
