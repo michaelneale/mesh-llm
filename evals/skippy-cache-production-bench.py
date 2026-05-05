@@ -43,6 +43,7 @@ class Case:
     state_layer_start: int = 0
     state_layer_end: int | None = None
     state_stage_index: int | None = None
+    resident_kv_bytes_per_token: int | None = None
     skip_llama_server_reason: str | None = None
 
 
@@ -56,6 +57,7 @@ CASES = [
         "resident-kv",
         28,
         1024,
+        resident_kv_bytes_per_token=114_688,
     ),
     Case(
         "llama",
@@ -66,6 +68,7 @@ CASES = [
         "resident-kv",
         16,
         2048,
+        resident_kv_bytes_per_token=32_768,
     ),
     Case(
         "deepseek2",
@@ -77,6 +80,7 @@ CASES = [
         27,
         2048,
         prefix_tokens=64,
+        resident_kv_bytes_per_token=276_480,
     ),
     Case(
         "deepseek3",
@@ -94,6 +98,7 @@ CASES = [
         state_layer_end=4,
         state_stage_index=1,
         skip_llama_server_reason="Layer-package evidence only; no full GGUF is loaded for this DeepSeek3 gate.",
+        resident_kv_bytes_per_token=2_176,
     ),
     Case(
         "glm47_flash",
@@ -105,6 +110,7 @@ CASES = [
         47,
         2048,
         prefix_tokens=32,
+        resident_kv_bytes_per_token=102_272,
     ),
     Case(
         "glm4",
@@ -116,6 +122,7 @@ CASES = [
         40,
         4096,
         prefix_tokens=32,
+        resident_kv_bytes_per_token=40_960,
     ),
     Case(
         "gemma4_a4b",
@@ -127,6 +134,7 @@ CASES = [
         30,
         2816,
         prefix_tokens=16,
+        resident_kv_bytes_per_token=225_280,
     ),
     Case(
         "gemma4_e4b",
@@ -138,6 +146,7 @@ CASES = [
         42,
         2560,
         prefix_tokens=16,
+        resident_kv_bytes_per_token=57_344,
     ),
     Case(
         "gemma3",
@@ -148,6 +157,7 @@ CASES = [
         "resident-kv",
         26,
         1152,
+        resident_kv_bytes_per_token=26_624,
     ),
     Case(
         "gemma2",
@@ -158,6 +168,7 @@ CASES = [
         "resident-kv",
         26,
         2304,
+        resident_kv_bytes_per_token=106_496,
     ),
     Case(
         "falcon_h1",
@@ -179,6 +190,7 @@ CASES = [
         32,
         4096,
         prefix_tokens=64,
+        resident_kv_bytes_per_token=524_288,
     ),
     Case(
         "minimax_m27",
@@ -190,6 +202,7 @@ CASES = [
         62,
         3072,
         prefix_tokens=16,
+        resident_kv_bytes_per_token=253_952,
     ),
     Case(
         "qwen3next",
@@ -413,22 +426,44 @@ def run_llama_server(case: Case, prompt: str, args: argparse.Namespace, case_dir
 def format_ms(value: Any) -> str:
     if isinstance(value, (int, float)):
         return f"{value:.1f}"
-    return "TBD"
+    return "n/a"
 
 
 def format_bytes(value: Any) -> str:
     if not isinstance(value, (int, float)):
-        return "TBD"
+        return "n/a"
     if value == 0:
         return "0"
     mib = value / (1024 * 1024)
     return f"{mib:.1f} MiB"
 
 
+def cache_storage_bytes(row: dict[str, Any]) -> int | None:
+    skippy = row.get("skippy", {})
+    measured = skippy.get("cache_storage_bytes")
+    if isinstance(measured, (int, float)):
+        return int(measured)
+    case = row.get("case", {})
+    bytes_per_token = case.get("resident_kv_bytes_per_token")
+    prefix_tokens = row.get("prefix_tokens")
+    if row.get("payload") == "resident-kv" and isinstance(bytes_per_token, int) and isinstance(prefix_tokens, int):
+        return bytes_per_token * prefix_tokens
+    return None
+
+
+def cache_storage_method(row: dict[str, Any]) -> str:
+    skippy = row.get("skippy", {})
+    if isinstance(skippy.get("cache_storage_bytes"), (int, float)):
+        return "measured"
+    if cache_storage_bytes(row) is not None:
+        return "metadata-derived"
+    return "n/a"
+
+
 def markdown_table(results: list[dict[str, Any]]) -> str:
     lines = [
-        "| Family | Payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Speedup | Cache bytes | Notes |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Family | Payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Speedup | Cache bytes | Size method | Notes |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for row in results:
         correctness = row.get("skippy", {}).get("status", "missing")
@@ -443,16 +478,17 @@ def markdown_table(results: list[dict[str, Any]]) -> str:
             speedup = llama_warm / skippy_hit
         notes = row.get("notes", "")
         lines.append(
-            "| {family} | `{payload}` | {correctness} | {prefix} | {tokens} | {llama} | {skippy} | {speedup} | {bytes} | {notes} |".format(
+            "| {family} | `{payload}` | {correctness} | {prefix} | {tokens} | {llama} | {skippy} | {speedup} | {bytes} | {method} | {notes} |".format(
                 family=row["family"],
                 payload=row["payload"],
                 correctness=correctness,
-                prefix=row.get("prefix_tokens", "TBD"),
-                tokens=row.get("benchmark_prompt_token_count", "TBD"),
+                prefix=row.get("prefix_tokens", "n/a"),
+                tokens=row.get("benchmark_prompt_token_count", "n/a"),
                 llama=format_ms(llama_warm),
                 skippy=format_ms(skippy_hit),
-                speedup=f"{speedup:.2f}x" if speedup is not None else "TBD",
-                bytes=format_bytes(row.get("skippy", {}).get("cache_storage_bytes")),
+                speedup=f"{speedup:.2f}x" if speedup is not None else "n/a",
+                bytes=format_bytes(cache_storage_bytes(row)),
+                method=cache_storage_method(row),
                 notes=notes.replace("|", "/"),
             )
         )
@@ -497,6 +533,7 @@ def run_case(case: Case, args: argparse.Namespace) -> dict[str, Any]:
             state_layer_start=case.state_layer_start,
             state_layer_end=case.state_layer_end,
             state_stage_index=case.state_stage_index,
+            resident_kv_bytes_per_token=case.resident_kv_bytes_per_token,
             skip_llama_server_reason=case.skip_llama_server_reason,
         )
     case_dir = args.output_dir / f"{case.key}-p{case.prefix_tokens}"
@@ -594,6 +631,8 @@ def main() -> int:
             raise SystemExit(f"unknown case(s): {', '.join(sorted(missing))}")
 
     prefix_sweep = parse_prefix_sweep(args.prefix_token_sweep)
+    if args.prefix_tokens is not None:
+        prefix_sweep = [args.prefix_tokens]
     results = []
     for prefix_tokens in prefix_sweep:
         args.prefix_tokens = prefix_tokens

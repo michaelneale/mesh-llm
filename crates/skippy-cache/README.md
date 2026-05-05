@@ -189,44 +189,56 @@ Local correctness evidence below was collected on the same machine with
 `n_predict = 1`, `n_gpu_layers = -1`, Skippy `--runtime-lane-count 1`, and
 llama-server `--parallel 1`. The payload column is the production serving
 payload, not an experimental fallback. Results use median warm-hit latency from
-matched repeated prompts. DeepSeek3 is package-backed evidence: it validates
-selected layer-package stages without loading or merging the full source GGUF,
-so it does not have a llama-server baseline in this table.
+matched repeated prompts. The full-GGUF table uses the same 128-token requested
+prefix and one generated token for every row so each Skippy result is compared
+against the matching llama-server workload.
 
 `Cache bytes` is serialized payload size for `KvRecurrent` and measured native
-KV-page footprint for `ResidentKv` when the runtime can expose it. `TBD` means
-the resident sequence copy is correct, but this model's native memory layout
-does not currently support the KV-page export API used only for sizing.
+KV-page footprint for `ResidentKv` when the runtime can expose it. Rows marked
+`metadata-derived` use the same llama.cpp KV dimensions from GGUF metadata:
+active KV layers, KV heads, key/value head lengths, SWA pattern, shared-KV
+layers, token count, and f16 KV element size.
 
-| Family | Representative model ref | Production payload | Correctness | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Skippy win | Cache bytes | Notes |
-| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | pass | 129 | 108.2 | 12.3 | **8.78x faster** | 76.0 MiB | Recurrent-backed state reuse makes llama-server reprocess work Skippy skips. |
-| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | pass | 17 | 150.1 | 25.4 | **5.91x faster** | 75.8 MiB | Same recurrent-state advantage, even on a tiny smoke prompt. |
-| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 9.5 | 6.6 | **1.43x faster** | TBD | Hot-lane resident prefix reuse beats llama-server warm slots. |
-| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 5.8 | 4.2 | **1.36x faster** | 4.0 MiB | Matches the llama-server slot contract, then wins on overhead. |
-| DeepSeek2 | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `ResidentKv` | pass | 65 | 12.5 | 9.6 | **1.31x faster** | 16.9 MiB | Correct and faster on the resident prefix path. |
-| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 65 | 29.0 | 24.1 | **1.20x faster** | 32.0 MiB | Correct and faster. |
-| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 129 | 7.8 | 6.6 | **1.19x faster** | 14.0 MiB | Hot-lane resident prefix reuse beats llama-server warm slots. |
-| Gemma2 | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 129 | 9.7 | 8.5 | **1.15x faster** | TBD | Correct and faster. |
-| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | pass | 33 | 21.0 | 18.5 | **1.14x faster** | 1.2 MiB | Correct and faster. |
-| Gemma4 A4B | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `ResidentKv` | pass | 17 | 18.7 | 16.9 | **1.11x faster** | TBD | Correct and faster. |
-| GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 33 | 21.7 | 20.7 | **1.05x faster** | TBD | Correct and faster on the short-prefix smoke. |
-| Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 17 | 17.2 | 16.4 | **1.05x faster** | TBD | Correct and faster. |
-| MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 17 | 33.0 | 32.7 | **1.01x faster** | 3.9 MiB | Parity/slight win on a giant model with all layers on-device. |
-| DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` | `ResidentKv` | pass | 5 | N/A | 3.4 | **4.40x vs Skippy recompute** | TBD | Package-only proof on expert slice `3..4`; selected 7.47 GB stage part plus upstream `0..3`, no full 406.8 GB layer set loaded or merged. |
+### Full-GGUF llama-server vs Skippy
+
+| Family | Representative model ref | Production payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Skippy win | Cache bytes | Size method | Notes |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | pass | 128 | 129 | 318.0 | 26.4 | **12.06x faster** | 78.4 MiB | measured | Recurrent-backed state reuse makes llama-server reprocess work Skippy skips. |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | pass | 128 | 129 | 105.2 | 12.0 | **8.73x faster** | 76.0 MiB | measured | Same recurrent-state advantage on the Falcon-H1 cache payload. |
+| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 8.8 | 4.5 | **1.95x faster** | 4.0 MiB | measured | Matches the llama-server slot contract, then wins on overhead. |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 10.1 | 7.0 | **1.45x faster** | 3.2 MiB | metadata-derived | Hot-lane resident prefix reuse beats llama-server warm slots. |
+| Gemma2 | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 12.1 | 8.5 | **1.43x faster** | 13.0 MiB | metadata-derived | Correct and faster. |
+| GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 26.0 | 18.9 | **1.38x faster** | 12.5 MiB | metadata-derived | Correct and faster under the normalized 128-token workload. |
+| DeepSeek2 | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 12.6 | 9.6 | **1.32x faster** | 33.8 MiB | measured | Correct and faster on the resident prefix path. |
+| Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 20.7 | 16.1 | **1.29x faster** | 7.0 MiB | metadata-derived | Correct and faster with shared-KV layers accounted for in sizing. |
+| MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 128 | 129 | 39.5 | 31.9 | **1.24x faster** | 31.0 MiB | measured | Correct and faster on the large sharded GGUF. |
+| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 23.2 | 18.9 | **1.23x faster** | 5.0 MiB | measured | Correct and faster. |
+| Gemma4 A4B | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `ResidentKv` | pass | 128 | 129 | 21.0 | 17.6 | **1.20x faster** | 27.5 MiB | metadata-derived | Correct and faster with SWA KV dimensions accounted for in sizing. |
+| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 128 | 129 | 28.9 | 24.0 | **1.20x faster** | 64.0 MiB | measured | Correct and faster. |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 128 | 129 | 7.4 | 6.8 | **1.08x faster** | 14.0 MiB | measured | Correct and faster; this is the narrowest win in the normalized matrix. |
+
+### Package-Only Giant Models
+
+These rows validate cache strategy for models where a full llama-server
+baseline is not operationally useful because monolithic residency is too large.
+
+| Family | Representative model ref | Production payload | Correctness | Prefix tokens | Prompt tokens | Baseline | Skippy hit median ms | Skippy win | Cache bytes | Size method | Notes |
+| --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | --- | --- |
+| DeepSeek3 | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` | `ResidentKv` | pass | 4 | 5 | Skippy stage recompute | 3.4 | **4.40x faster** | 8.5 KiB | metadata-derived | Package-only proof on expert slice `3..4`; selected 7.47 GB stage part plus upstream `0..3`, no full 406.8 GB layer set loaded or merged. |
 
 `state-handoff` reports distinguish behavioral exactness from byte-stable state
 re-export. `status = pass` means the restored cache state produced the same next
 token/output and repeat hits matched. `roundtrip_state_matches = false` means a
 state exported after import was not byte-for-byte identical; that is a
 canonicalization/deduplication diagnostic, not a serving correctness failure.
-Raw reports from this run are under `/tmp/skippy-cache-production-bench*`.
+Raw reports from this run are under
+`/tmp/skippy-cache-production-bench-track1-apples-p128`.
 
 ### Current Performance Read
 
 With llama-server-compatible thread defaults, hot-lane resident prefix reuse,
 and the production borrowed-prefix path, Skippy is at parity or ahead for every
-locally available family in the smoke matrix:
+locally available family in the normalized single-stage matrix:
 
 | Scenario | Current read | Why |
 | --- | --- | --- |
@@ -261,7 +273,8 @@ LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
     --runtime-lane-count 1 \
     --borrow-resident-hits \
     --cache-decoded-result-hits \
-    --llama-parallel 1
+    --llama-parallel 1 \
+    --prefix-tokens 128
 ```
 
 Before claiming a family is faster than llama-server, run a matched benchmark
@@ -277,7 +290,8 @@ LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \
   python3 evals/skippy-cache-production-bench.py \
     --output-dir /tmp/skippy-cache-production-bench \
     --runtime-lane-count 1 \
-    --llama-parallel 1
+    --llama-parallel 1 \
+    --prefix-tokens 128
 ```
 
 ## Module Map
