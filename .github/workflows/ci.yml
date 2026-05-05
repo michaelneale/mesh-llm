@@ -387,6 +387,7 @@ jobs:
       LLAMA_STAGE_BACKEND: cuda
       LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
       MESH_LLM_SKIP_UI: "1"
+      GGML_CUDA_NO_VMM: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
@@ -492,7 +493,9 @@ jobs:
         if: steps.llama_cache.outputs.cache-hit == 'true'
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        run: target/release/mesh-llm --version
+        run: |
+          export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
+          target/release/mesh-llm --version
       - name: Build ROCm benchmark binary
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         run: hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip crates/mesh-llm/benchmarks/membench-fingerprint.hip
