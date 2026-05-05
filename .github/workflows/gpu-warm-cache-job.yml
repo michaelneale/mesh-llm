@@ -1,0 +1,113 @@
+name: GPU warm cache job
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        required: true
+        type: string
+      cache_label:
+        required: true
+        type: string
+      container_image:
+        required: true
+        type: string
+      llama_sha:
+        required: true
+        type: string
+      cache_key:
+        required: true
+        type: string
+      build_recipe:
+        required: true
+        type: string
+      build_args:
+        required: false
+        type: string
+        default: ''
+      cache_path:
+        required: true
+        type: string
+      backend:
+        required: true
+        type: string
+      runs_on:
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+
+jobs:
+  warm_cache:
+    name: ${{ inputs.job_name }}
+    runs-on: ${{ fromJson(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.container_image }}
+    env:
+      LLAMA_STAGE_BUILD_DIR: ${{ inputs.cache_path }}
+      LLAMA_STAGE_BACKEND: ${{ inputs.backend }}
+      MESH_LLM_SKIP_UI: "1"
+
+    steps:
+      - name: Install base packages
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v5
+
+      - uses: taiki-e/install-action@just
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
+
+      - name: Prepare UI placeholder
+        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+
+      - name: Restore skippy ABI ${{ inputs.cache_label }} build
+        id: llama_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ inputs.cache_path }}
+          key: ${{ inputs.cache_key }}
+
+      - name: Build ${{ inputs.cache_label }} ABI cache
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        env:
+          MESH_LLM_LLAMA_PIN_SHA: ${{ inputs.llama_sha }}
+          BUILD_RECIPE: ${{ inputs.build_recipe }}
+          BUILD_ARGS: ${{ inputs.build_args }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$BUILD_ARGS" ]]; then
+            read -r -a build_args <<< "$BUILD_ARGS"
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE" "${build_args[@]}"
+          else
+            just --shell bash --shell-arg -lc "$BUILD_RECIPE"
+          fi
+
+      - name: Verify ${{ inputs.cache_label }} ABI build
+        run: |
+          set -euo pipefail
+          test -d "${{ inputs.cache_path }}"
+          find "${{ inputs.cache_path }}" -maxdepth 3 -type f \( -name '*.a' -o -name 'libllama*' \) | head -20
+
+      - name: Save skippy ABI ${{ inputs.cache_label }} build
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ inputs.cache_path }}
+          key: ${{ steps.llama_cache.outputs.cache-primary-key }}
