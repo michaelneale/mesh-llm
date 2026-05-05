@@ -1646,9 +1646,31 @@ async fn route_remote_attempt(
     retry_context_overflow: bool,
     response_adapter: ResponseAdapter,
 ) -> RouteAttemptResult {
+    // Gate: refuse to route to unattested peers when required.
+    if node
+        .require_attested_hosts
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && !node.peer_is_attested(host_id).await
+    {
+        tracing::warn!(
+            "API proxy: refusing to route to unattested host {} (--require-attested-hosts)",
+            host_id.fmt_short()
+        );
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+
+    // Encrypt if the host has an inference public key.
+    let (wire_payload, _encryption_session) =
+        maybe_encrypt_for_host(node, host_id, prefetched).await;
+    let wire_bytes = if wire_payload.is_empty() {
+        prefetched
+    } else {
+        &wire_payload
+    };
+
     match node.open_http_tunnel(host_id).await {
         Ok((mut quic_send, mut quic_recv)) => {
-            if let Err(err) = quic_send.write_all(prefetched).await {
+            if let Err(err) = quic_send.write_all(wire_bytes).await {
                 tracing::warn!(
                     "API proxy: failed to forward buffered request to host {}: {err}",
                     host_id.fmt_short()
@@ -3182,6 +3204,57 @@ pub async fn pipeline_proxy_local(
             }
         }
     }
+}
+
+/// Encrypt prefetched HTTP request bytes for a remote host if they have an inference key.
+/// Returns (wire_payload, session). If wire_payload is empty, use plaintext.
+async fn maybe_encrypt_for_host(
+    node: &mesh::Node,
+    host_id: iroh::EndpointId,
+    prefetched: &[u8],
+) -> (
+    Vec<u8>,
+    Option<crate::crypto::inference_encryption::EphemeralSession>,
+) {
+    let host_pub = match node.peer_inference_public_key(host_id).await {
+        Some(k) => k,
+        None => return (Vec::new(), None), // no key → plaintext
+    };
+
+    // Extract model name from the HTTP body for routing (best-effort parse).
+    let model = extract_model_from_http(prefetched).unwrap_or_default();
+
+    match crate::crypto::inference_encryption::encrypt_inference_request(
+        prefetched, &model, &host_pub,
+    ) {
+        Ok((payload, session)) => {
+            // Wire format: MAGIC byte + JSON payload
+            let json = serde_json::to_vec(&payload).expect("serialize encrypted payload");
+            let mut wire = Vec::with_capacity(1 + json.len());
+            wire.push(crate::crypto::inference_encryption::ENCRYPTED_TUNNEL_MAGIC);
+            wire.extend_from_slice(&json);
+            tracing::debug!(
+                "Encrypted inference request ({} → {} bytes) for {}",
+                prefetched.len(),
+                wire.len(),
+                host_id.fmt_short()
+            );
+            (wire, Some(session))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to encrypt inference request: {e}, falling back to plaintext");
+            (Vec::new(), None)
+        }
+    }
+}
+
+/// Best-effort extraction of the model name from raw HTTP request bytes.
+fn extract_model_from_http(raw: &[u8]) -> Option<String> {
+    // Find the body after \r\n\r\n
+    let body_start = raw.windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+    let body = &raw[body_start..];
+    let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+    json.get("model")?.as_str().map(|s| s.to_string())
 }
 
 #[cfg(test)]

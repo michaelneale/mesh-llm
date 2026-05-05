@@ -542,6 +542,9 @@ fn make_test_state_peer(seed: u8, role: mesh::NodeRole) -> mesh::PeerInfo {
         served_model_runtime: vec![],
         owner_attestation: None,
         owner_summary: crate::crypto::OwnershipSummary::default(),
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
         first_joined_mesh_ts: None,
     }
 }
@@ -811,6 +814,9 @@ fn make_test_peer(
         served_model_runtime: Vec::new(),
         owner_attestation: None,
         owner_summary: crate::crypto::OwnershipSummary::default(),
+        inference_public_key: None,
+        security_posture: None,
+        hardware_attestation: None,
     }
 }
 

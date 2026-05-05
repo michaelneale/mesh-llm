@@ -98,19 +98,84 @@ impl Manager {
 }
 
 /// Handle an inbound HTTP tunnel bi-stream: connect to the local API proxy and relay.
+use crate::crypto::inference_encryption::ENCRYPTED_TUNNEL_MAGIC;
+
 async fn handle_inbound_http_stream(
     node: Node,
-    quic_send: iroh::endpoint::SendStream,
-    quic_recv: iroh::endpoint::RecvStream,
+    mut quic_send: iroh::endpoint::SendStream,
+    mut quic_recv: iroh::endpoint::RecvStream,
     http_port: u16,
 ) -> Result<()> {
     tracing::info!("Inbound HTTP tunnel stream -> API proxy :{http_port}");
-    let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
-    tcp_stream.set_nodelay(true)?;
     let _inflight = node.begin_inflight_request();
 
-    let (tcp_read, tcp_write) = tokio::io::split(tcp_stream);
-    relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
+    // Peek first byte to detect encrypted payload.
+    let mut first = [0u8; 1];
+    quic_recv.read_exact(&mut first).await?;
+
+    if first[0] == ENCRYPTED_TUNNEL_MAGIC {
+        // Encrypted path: read full payload, decrypt, forward to backend, encrypt response.
+        let encrypted_json = quic_recv
+            .read_to_end(16 * 1024 * 1024)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read encrypted tunnel payload: {e}"))?;
+
+        let payload: crate::crypto::inference_encryption::EncryptedInferencePayload =
+            serde_json::from_slice(&encrypted_json)
+                .map_err(|e| anyhow::anyhow!("invalid encrypted tunnel payload JSON: {e}"))?;
+
+        let plaintext = crate::crypto::inference_encryption::decrypt_inference_request(
+            &payload,
+            node.inference_keypair.secret_key(),
+        )
+        .map_err(|e| anyhow::anyhow!("tunnel decryption failed: {e}"))?;
+
+        tracing::debug!(
+            "Decrypted inbound HTTP tunnel ({} bytes plaintext)",
+            plaintext.len()
+        );
+
+        // Forward decrypted plaintext to local backend and relay response back.
+        let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
+        tcp_stream.set_nodelay(true)?;
+        let (mut tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+        tcp_write.write_all(&plaintext).await?;
+        tcp_write.shutdown().await?;
+
+        // Read full response from backend.
+        let mut response_bytes = Vec::new();
+        tcp_read.read_to_end(&mut response_bytes).await?;
+
+        // Encrypt response back to sender.
+        let ephemeral_pub =
+            crate::crypto::inference_encryption::parse_public_key(&payload.ephemeral_public_key)
+                .map_err(|e| anyhow::anyhow!("failed to parse ephemeral public key: {e}"))?;
+        let encrypted_resp = crate::crypto::inference_encryption::encrypt_response(
+            &response_bytes,
+            &node.inference_keypair,
+            &ephemeral_pub,
+        )
+        .map_err(|e| anyhow::anyhow!("tunnel response encryption failed: {e}"))?;
+
+        let json = serde_json::to_vec(&encrypted_resp).expect("serialize encrypted response");
+        quic_send.write_all(&[ENCRYPTED_TUNNEL_MAGIC]).await?;
+        quic_send.write_all(&json).await?;
+        quic_send.finish()?;
+
+        tracing::debug!(
+            "Encrypted response ({} → {} bytes) sent back",
+            response_bytes.len(),
+            json.len() + 1,
+        );
+        Ok(())
+    } else {
+        // Plaintext path: prepend the byte we consumed, relay normally.
+        let tcp_stream = TcpStream::connect(format!("127.0.0.1:{http_port}")).await?;
+        tcp_stream.set_nodelay(true)?;
+        let (tcp_read, mut tcp_write) = tokio::io::split(tcp_stream);
+        tcp_write.write_all(&first).await?;
+        relay_bidirectional(tcp_read, tcp_write, quic_send, quic_recv).await
+    }
 }
 
 async fn handle_inbound_stage_transport(

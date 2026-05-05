@@ -101,6 +101,9 @@ pub(super) fn apply_transitive_ann(
     existing.requested_models = ann.requested_models.clone();
     existing.explicit_model_interests = ann.explicit_model_interests.clone();
     existing.owner_attestation = ann.owner_attestation.clone();
+    existing.inference_public_key = ann.inference_public_key.clone();
+    existing.security_posture = ann.security_posture.clone();
+    existing.hardware_attestation = ann.hardware_attestation.clone();
     if ann.model_source.is_some() {
         existing.model_source = ann.model_source.clone();
     }
@@ -455,6 +458,9 @@ impl Node {
             existing.last_seen = now;
             existing.owner_attestation = ann.owner_attestation.clone();
             existing.owner_summary = owner_summary.clone();
+            existing.inference_public_key = ann.inference_public_key.clone();
+            existing.security_posture = ann.security_posture.clone();
+            existing.hardware_attestation = ann.hardware_attestation.clone();
             existing.served_model_descriptors = ann.served_model_descriptors.clone();
             existing.served_model_runtime = ann.served_model_runtime.clone();
             if ann.version.is_some() {
@@ -678,6 +684,9 @@ impl Node {
                     served_model_descriptors: p.served_model_descriptors.clone(),
                     served_model_runtime: p.served_model_runtime.clone(),
                     owner_attestation: p.owner_attestation.clone(),
+                    inference_public_key: p.inference_public_key.clone(),
+                    security_posture: p.security_posture.clone(),
+                    hardware_attestation: p.hardware_attestation.clone(),
                 })
                 .collect()
         };
@@ -742,6 +751,9 @@ impl Node {
             served_model_descriptors: my_served_model_descriptors,
             served_model_runtime: my_model_runtime_descriptors,
             owner_attestation: my_owner_attestation,
+            inference_public_key: Some(self.inference_keypair.public_key_base64()),
+            security_posture: self.local_security_posture.lock().await.clone(),
+            hardware_attestation: self.local_hardware_attestation.lock().await.clone(),
         });
         announcements
     }
@@ -795,6 +807,9 @@ mod tests {
             served_model_descriptors: vec![],
             served_model_runtime: vec![],
             owner_attestation: None,
+            inference_public_key: None,
+            security_posture: None,
+            hardware_attestation: None,
         }
     }
 

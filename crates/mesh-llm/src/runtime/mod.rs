@@ -2332,6 +2332,23 @@ async fn run_auto(
         .await;
     node.start_accepting();
     let token = node.invite_token();
+    // E2E encryption / attestation setup
+    if cli.require_attested_hosts {
+        node.require_attested_hosts
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    {
+        let posture = crate::system::hardening::harden_runtime();
+        tracing::info!(
+            "security posture: sip={} rdma_off={} debugger_blocked={} hash={}",
+            posture.sip_enabled,
+            posture.rdma_disabled,
+            posture.debugger_blocked,
+            posture.binary_hash.as_deref().unwrap_or("?"),
+        );
+        *node.local_security_posture.lock().await = Some(posture);
+    }
+
     node.set_display_name(node_display_name(&cli, &node)).await;
     let (plugin_mesh_tx, plugin_mesh_rx) = tokio::sync::mpsc::channel(256);
     let plugin_manager =
