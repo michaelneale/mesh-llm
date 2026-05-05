@@ -1,4 +1,6 @@
-use skippy_cache::{prefix_identity, NATIVE_KV_DTYPE, NATIVE_KV_RUNTIME_ABI_VERSION};
+use skippy_cache::{
+    prefix_identity_with_namespace, NATIVE_KV_DTYPE, NATIVE_KV_RUNTIME_ABI_VERSION,
+};
 use skippy_protocol::{MessageBase, StageConfig};
 
 use crate::kv_proto::{KvCodec, PageIdentity, PageLayout};
@@ -13,7 +15,12 @@ impl KvStageIntegration {
         token_start: u64,
         token_ids: &[i32],
     ) -> PrefillKvIdentity {
-        let prefix = prefix_identity(config, token_start, token_ids);
+        let prefix = prefix_identity_with_namespace(
+            config,
+            token_start,
+            token_ids,
+            base.chat_template_id.as_deref(),
+        );
         let identity = PageIdentity {
             model_id: config.model_id.clone(),
             model_revision: "unknown".to_string(),

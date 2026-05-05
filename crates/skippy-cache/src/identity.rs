@@ -17,8 +17,17 @@ pub fn prefix_identity(
     token_start: u64,
     token_ids: &[i32],
 ) -> PrefixIdentity {
+    prefix_identity_with_namespace(config, token_start, token_ids, None)
+}
+
+pub fn prefix_identity_with_namespace(
+    config: &StageConfig,
+    token_start: u64,
+    token_ids: &[i32],
+    cache_namespace: Option<&str>,
+) -> PrefixIdentity {
     let token_count = token_ids.len() as u64;
-    let prefix_hash = prefix_hash(config, token_start, token_ids);
+    let prefix_hash = prefix_hash_with_namespace(config, token_start, token_ids, cache_namespace);
     let page_id = page_id(config, token_start, token_count, &prefix_hash);
     PrefixIdentity {
         prefix_hash,
@@ -29,6 +38,15 @@ pub fn prefix_identity(
 }
 
 pub fn prefix_hash(config: &StageConfig, token_start: u64, token_ids: &[i32]) -> String {
+    prefix_hash_with_namespace(config, token_start, token_ids, None)
+}
+
+pub fn prefix_hash_with_namespace(
+    config: &StageConfig,
+    token_start: u64,
+    token_ids: &[i32],
+    cache_namespace: Option<&str>,
+) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(config.model_id.as_bytes());
     hasher.update(config.topology_id.as_bytes());
@@ -40,6 +58,10 @@ pub fn prefix_hash(config: &StageConfig, token_start: u64, token_ids: &[i32]) ->
     hasher.update(&NATIVE_KV_LAYER_CONTIGUOUS_LAYOUT.to_le_bytes());
     hasher.update(NATIVE_KV_DTYPE.as_bytes());
     hasher.update(format!("ctx:{}", config.ctx_size).as_bytes());
+    if let Some(cache_namespace) = cache_namespace {
+        hasher.update(b"openai-cache-namespace-v1");
+        hasher.update(cache_namespace.as_bytes());
+    }
     hasher.update(&token_start.to_le_bytes());
     for token_id in token_ids {
         hasher.update(token_id.to_le_bytes().as_slice());

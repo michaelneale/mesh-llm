@@ -22,8 +22,17 @@ jobs:
 
       - uses: taiki-e/install-action@just
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev curl glslc libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev curl glslc libvulkan-dev jq
+
+      - name: Install Hugging Face CLI
+        run: |
+          python3 -m pip install --user --upgrade "huggingface_hub[cli]"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Prepare patched llama.cpp ABI checkout
         run: scripts/prepare-llama.sh pinned
@@ -39,3 +48,8 @@ jobs:
 
       - name: Unit tests
         run: cargo test -p mesh-llm --lib
+
+      - name: Skippy smoke tests
+        env:
+          WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
+        run: scripts/skippy-ci-smoke.sh

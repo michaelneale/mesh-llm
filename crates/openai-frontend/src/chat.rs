@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::{
     common::{
-        completion_id, now_unix_secs, FinishReason, ReasoningConfig, ReasoningEffort, StopSequence,
-        StreamOptions, Usage,
+        completion_id, now_unix_secs, FinishReason, PromptCacheRetention, ReasoningConfig,
+        ReasoningEffort, StopSequence, StreamOptions, Usage,
     },
     errors::OpenAiError,
 };
@@ -37,6 +37,8 @@ pub struct ChatCompletionRequest {
     pub seed: Option<u64>,
     pub reasoning: Option<ReasoningConfig>,
     pub reasoning_effort: Option<ReasoningEffort>,
+    pub prompt_cache_key: Option<String>,
+    pub prompt_cache_retention: Option<PromptCacheRetention>,
     pub stream_options: Option<StreamOptions>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,

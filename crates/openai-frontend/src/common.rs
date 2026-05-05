@@ -162,6 +162,8 @@ pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 impl Usage {
@@ -170,8 +172,27 @@ impl Usage {
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens.saturating_add(completion_tokens),
+            prompt_tokens_details: None,
         }
     }
+
+    pub fn with_cached_tokens(mut self, cached_tokens: u32) -> Self {
+        self.prompt_tokens_details = Some(PromptTokensDetails { cached_tokens });
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptCacheRetention {
+    InMemory,
+    #[serde(rename = "24h")]
+    TwentyFourHours,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

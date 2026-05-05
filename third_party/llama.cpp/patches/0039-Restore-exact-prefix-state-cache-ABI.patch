@@ -774,12 +774,19 @@ index 3002b720..56ab40d7 100644
 +        std::memcpy(&imported_cells, static_cast<const uint8_t *>(input) + sizeof(uint32_t), sizeof(imported_cells));
 +    }
 +
++    std::vector<uint8_t> remapped(input_bytes);
++    std::memcpy(remapped.data(), input, input_bytes);
++    if (input_bytes >= sizeof(uint32_t) + sizeof(session->seq_id)) {
++        std::memcpy(remapped.data() + sizeof(uint32_t), &session->seq_id, sizeof(session->seq_id));
++    }
++
 +    session->ctx->synchronize();
-+    const size_t read = llama_state_seq_set_data(
++    const size_t read = llama_state_seq_set_data_ext(
 +            session->ctx,
-+            static_cast<const uint8_t *>(input),
-+            input_bytes,
-+            session->seq_id);
++            remapped.data(),
++            remapped.size(),
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 +    if (read != input_bytes) {
 +        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import full sequence state");
 +        return SKIPPY_STATUS_RUNTIME_ERROR;
@@ -880,12 +887,11 @@ index 3002b720..56ab40d7 100644
 +    }
 +
 +    session->ctx->synchronize();
-+    const size_t read = llama_state_seq_set_data_ext(
++    const size_t read = llama_state_seq_set_data(
 +            session->ctx,
 +            static_cast<const uint8_t *>(input),
 +            input_bytes,
-+            session->seq_id,
-+            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++            session->seq_id);
 +    if (read != input_bytes) {
 +        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import recurrent state");
 +        return SKIPPY_STATUS_RUNTIME_ERROR;
@@ -1003,4 +1009,3 @@ index 3002b720..56ab40d7 100644
          uint64_t token_count,
 -- 
 2.50.1 (Apple Git-155)
-

@@ -233,6 +233,14 @@ impl RuntimeState {
         Ok(())
     }
 
+    pub fn trim_session(&mut self, session_id: &str, token_count: u64) -> Result<()> {
+        let session = self.session(session_id)?;
+        session.trim_session(token_count)?;
+        self.session_token_counts
+            .insert(session_id.to_string(), token_count);
+        Ok(())
+    }
+
     fn session(&mut self, session_id: &str) -> Result<&mut StageSession> {
         if !self.sessions.contains_key(session_id) {
             let session = self.take_idle_session().map(Ok).unwrap_or_else(|| {

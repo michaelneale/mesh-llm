@@ -918,16 +918,18 @@ struct OpenAiGenerationIds {
     session_label: String,
     session_id: u64,
     request_id: u64,
+    cache: OpenAiCacheHints,
 }
 
 impl OpenAiGenerationIds {
-    fn new() -> Self {
+    fn new(cache: OpenAiCacheHints) -> Self {
         let sequence = OPENAI_GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let session_label = format!("openai-session-{}-{sequence}", now_unix_millis());
         Self {
             session_id: stable_wire_id(&[session_label.as_bytes()]),
             request_id: stable_wire_id(&[session_label.as_bytes(), b"request"]),
             session_label,
+            cache,
         }
     }
 
@@ -938,6 +940,62 @@ impl OpenAiGenerationIds {
     fn request_id_string(&self) -> String {
         self.request_id.to_string()
     }
+}
+
+#[derive(Clone, Default)]
+struct OpenAiCacheHints {
+    prompt_cache_key: Option<String>,
+    prompt_cache_retention: Option<String>,
+}
+
+impl OpenAiCacheHints {
+    fn from_chat_request(request: &ChatCompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn from_completion_request(request: &CompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn namespace(&self) -> Option<String> {
+        self.prompt_cache_key
+            .as_ref()
+            .map(|key| format!("openai:prompt_cache_key:{key}"))
+    }
+}
+
+fn prompt_cache_retention_label(retention: openai_frontend::PromptCacheRetention) -> &'static str {
+    match retention {
+        openai_frontend::PromptCacheRetention::InMemory => "in_memory",
+        openai_frontend::PromptCacheRetention::TwentyFourHours => "24h",
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct GenerationCacheStats {
+    cached_prompt_tokens: u32,
 }
 
 struct PhaseTimer {
@@ -1101,7 +1159,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         &self,
         mut request: ChatCompletionRequest,
     ) -> OpenAiResult<ChatCompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         let request_timer = PhaseTimer::start();
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
@@ -1189,7 +1247,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         mut request: ChatCompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<ChatCompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
         ensure_chat_runtime_features_supported(&request)?;
@@ -1239,7 +1297,7 @@ impl OpenAiBackend for StageOpenAiBackend {
     }
 
     async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         let request_timer = PhaseTimer::start();
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
@@ -1271,8 +1329,8 @@ impl OpenAiBackend for StageOpenAiBackend {
         let response_timer = PhaseTimer::start();
         let response = CompletionResponse::new_with_reason(
             request.model,
-            output.text,
-            Usage::new(output.prompt_tokens, output.completion_tokens),
+            output.text.clone(),
+            output.usage(),
             output.finish_reason,
         );
         let mut response_attrs = self.openai_attrs(&ids);
@@ -1316,7 +1374,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         request: CompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<CompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
@@ -1369,6 +1427,15 @@ impl StageOpenAiBackend {
             "llama_stage.openai_backend".to_string(),
             json!(self.mode.label()),
         );
+        if let Some(cache_key) = ids.cache.prompt_cache_key.as_deref() {
+            attrs.insert("openai.prompt_cache_key".to_string(), json!(cache_key));
+        }
+        if let Some(retention) = ids.cache.prompt_cache_retention.as_deref() {
+            attrs.insert(
+                "openai.prompt_cache_retention".to_string(),
+                json!(retention),
+            );
+        }
         attrs
     }
 
@@ -1383,7 +1450,7 @@ impl StageOpenAiBackend {
             topology_id: self.config.topology_id.clone(),
             model_id: Some(self.config.model_id.clone()),
             tokenizer_id: None,
-            chat_template_id: None,
+            chat_template_id: ids.cache.namespace(),
             seq: Some(ids.session_id),
         }
     }
@@ -2256,7 +2323,7 @@ impl StageOpenAiBackend {
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
-        match self.mode.clone() {
+        let cache_stats = match self.mode.clone() {
             OpenAiBackendMode::LocalRuntime => self.generate_local_tokens(
                 LocalGeneration {
                     prompt_token_ids: &prompt_token_ids,
@@ -2321,7 +2388,7 @@ impl StageOpenAiBackend {
             )?,
         };
 
-        let output = collector.finish(prompt_token_ids.len())?;
+        let output = collector.finish(prompt_token_ids.len(), cache_stats)?;
         let mut summary_attrs = self.openai_attrs(&ids);
         summary_attrs.insert(
             "llama_stage.prompt_token_count".to_string(),
@@ -2636,7 +2703,7 @@ impl StageOpenAiBackend {
             }
         }
         result?;
-        collector.finish(prefill.token_count)
+        collector.finish(prefill.token_count, GenerationCacheStats::default())
     }
 
     fn generate_split_multimodal_text(
@@ -3013,7 +3080,7 @@ impl StageOpenAiBackend {
             stop_result?;
         }
         result?;
-        collector.finish(prompt_tokens)
+        collector.finish(prompt_tokens, GenerationCacheStats::default())
     }
 
     fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
@@ -3127,8 +3194,9 @@ impl StageOpenAiBackend {
         &self,
         request: LocalGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let session_id = request.ids.session_label.clone();
+        let mut cache_stats = GenerationCacheStats::default();
         let result = (|| {
             if request.prompt_token_ids.len() > 1 {
                 let prefill_timer = PhaseTimer::start();
@@ -3169,6 +3237,8 @@ impl StageOpenAiBackend {
                                 json!(restored.token_count),
                             );
                             restored_prefill_tokens = restored.token_count;
+                            cache_stats.cached_prompt_tokens =
+                                saturating_u32(restored_prefill_tokens);
                             attrs.insert(
                                 "skippy.exact_cache.logical_bytes".to_string(),
                                 json!(restored.logical_bytes),
@@ -3214,6 +3284,8 @@ impl StageOpenAiBackend {
                                     json!(restored.token_count),
                                 );
                                 restored_prefill_tokens = restored.token_count;
+                                cache_stats.cached_prompt_tokens =
+                                    saturating_u32(restored_prefill_tokens);
                                 attrs.insert(
                                     "skippy.kv.resident_seq_id".to_string(),
                                     json!(restored.seq_id),
@@ -3617,14 +3689,15 @@ impl StageOpenAiBackend {
                     .emit_debug("stage.openai_session_stop", attrs);
             }
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn generate_binary_chain_tokens(
         &self,
         request: BinaryChainGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let wire_sampling = wire_sampling_config(request.sampling);
         let session_id = request.ids.session_id;
         let request_id = request.ids.request_id;
@@ -3800,14 +3873,15 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result.map_err(openai_io_error)?;
         }
-        result
+        result?;
+        Ok(GenerationCacheStats::default())
     }
 
     fn generate_embedded_stage_zero_tokens(
         &self,
         request: EmbeddedStageZeroGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         if request.config.downstream.is_none() {
             return self.generate_local_tokens(
                 LocalGeneration {
@@ -3833,6 +3907,7 @@ impl StageOpenAiBackend {
             .as_ref()
             .ok_or_else(|| OpenAiError::backend("embedded stage 0 has no downstream lane pool"))?;
         let mut lane = lane_pool.checkout(&request.ids)?;
+        let mut cache_stats = GenerationCacheStats::default();
 
         let result = (|| {
             let downstream = &mut lane.stream;
@@ -3881,6 +3956,7 @@ impl StageOpenAiBackend {
                     )? {
                         prefill_chain_cache_restored = true;
                         prefill_chain_cache_stats = fused.reply_stats;
+                        cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
                         fused_first_decode = Some(fused);
                     }
                 }
@@ -3893,6 +3969,7 @@ impl StageOpenAiBackend {
                     )? {
                         prefill_chain_cache_restored = true;
                         prefill_chain_cache_stats = stats;
+                        cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
                     }
                 }
                 let mut pos_start = 0usize;
@@ -4887,7 +4964,8 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result?;
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn execute_embedded_stage_message(
@@ -5904,11 +5982,16 @@ where
         Ok(())
     }
 
-    fn finish(mut self, prompt_token_count: usize) -> OpenAiResult<GeneratedText> {
+    fn finish(
+        mut self,
+        prompt_token_count: usize,
+        cache_stats: GenerationCacheStats,
+    ) -> OpenAiResult<GeneratedText> {
         self.emit_safe_delta(true)?;
         Ok(GeneratedText {
             prompt_tokens: saturating_u32(prompt_token_count),
             completion_tokens: saturating_u32(self.completion_tokens),
+            cached_prompt_tokens: cache_stats.cached_prompt_tokens,
             text: self.text,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
@@ -5921,6 +6004,7 @@ where
 struct GeneratedText {
     prompt_tokens: u32,
     completion_tokens: u32,
+    cached_prompt_tokens: u32,
     text: String,
     finish_reason: FinishReason,
     detokenize_ms: f64,
@@ -5931,6 +6015,7 @@ struct GeneratedText {
 impl GeneratedText {
     fn usage(&self) -> Usage {
         Usage::new(self.prompt_tokens, self.completion_tokens)
+            .with_cached_tokens(self.cached_prompt_tokens)
     }
 }
 

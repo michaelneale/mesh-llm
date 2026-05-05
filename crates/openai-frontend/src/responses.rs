@@ -74,6 +74,16 @@ pub struct StreamUsage {
     pub completion_tokens: Option<u64>,
     #[serde(default)]
     pub total_tokens: Option<u64>,
+    #[serde(default)]
+    pub prompt_tokens_details: Option<StreamPromptTokensDetails>,
+    #[serde(flatten)]
+    _extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StreamPromptTokensDetails {
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
     #[serde(flatten)]
     _extra: Map<String, Value>,
 }
@@ -307,6 +317,7 @@ fn translate_responses_input_to_messages(input: &Value) -> Result<Vec<Value>, Op
 fn translate_openai_responses_input(object: &mut Map<String, Value>) -> Result<bool, OpenAiError> {
     let mut changed = false;
     let mut messages = Vec::new();
+    let mut state_cache_key = None;
 
     if let Some(instructions_value) = object.remove("instructions") {
         if let Some(instructions) = instructions_value.as_str().map(str::trim) {
@@ -332,7 +343,22 @@ fn translate_openai_responses_input(object: &mut Map<String, Value>) -> Result<b
         object.insert("messages".to_string(), Value::Array(messages));
     }
 
+    if let Some(value) = object.get("previous_response_id") {
+        state_cache_key = value.as_str().map(ToString::to_string);
+    }
+    if state_cache_key.is_none() {
+        if let Some(value) = object.get("conversation") {
+            state_cache_key = responses_conversation_cache_key(value);
+        }
+    }
+    if let Some(cache_key) = state_cache_key {
+        object
+            .entry("prompt_cache_key".to_string())
+            .or_insert(Value::String(cache_key));
+    }
+
     for key in [
+        "conversation",
         "include",
         "output",
         "output_text",
@@ -347,6 +373,19 @@ fn translate_openai_responses_input(object: &mut Map<String, Value>) -> Result<b
     }
 
     Ok(changed)
+}
+
+fn responses_conversation_cache_key(value: &Value) -> Option<String> {
+    if let Some(id) = value.as_str() {
+        return Some(id.to_string());
+    }
+    let object = value.as_object()?;
+    for key in ["id", "conversation_id"] {
+        if let Some(id) = object.get(key).and_then(Value::as_str) {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 pub fn normalize_openai_compat_request(
@@ -637,26 +676,51 @@ pub fn responses_stream_completed_event(
 }
 
 pub fn chat_usage_to_responses_usage(usage: &Value) -> Value {
+    let cached_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .cloned()
+        .unwrap_or(Value::Null);
     serde_json::json!({
         "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or(Value::Null),
         "output_tokens": usage.get("completion_tokens").cloned().unwrap_or(Value::Null),
         "total_tokens": usage.get("total_tokens").cloned().unwrap_or(Value::Null),
+        "input_tokens_details": {
+            "cached_tokens": cached_tokens,
+        },
     })
 }
 
 pub fn stream_usage_to_responses_usage(usage: &StreamUsage) -> Value {
+    let cached_tokens = usage
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|details| details.cached_tokens)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
     serde_json::json!({
         "input_tokens": usage.prompt_tokens.map(Value::from).unwrap_or(Value::Null),
         "output_tokens": usage.completion_tokens.map(Value::from).unwrap_or(Value::Null),
         "total_tokens": usage.total_tokens.map(Value::from).unwrap_or(Value::Null),
+        "input_tokens_details": {
+            "cached_tokens": cached_tokens,
+        },
     })
 }
 
 pub fn usage_to_responses_usage(usage: &Usage) -> Value {
+    let cached_tokens = usage
+        .prompt_tokens_details
+        .as_ref()
+        .map(|details| Value::from(details.cached_tokens))
+        .unwrap_or(Value::Null);
     serde_json::json!({
         "input_tokens": usage.prompt_tokens,
         "output_tokens": usage.completion_tokens,
         "total_tokens": usage.total_tokens,
+        "input_tokens_details": {
+            "cached_tokens": cached_tokens,
+        },
     })
 }
 
@@ -760,6 +824,33 @@ mod tests {
     }
 
     #[test]
+    fn normalize_responses_maps_state_to_prompt_cache_key() {
+        let mut body = json!({
+            "model": "qwen",
+            "input": "continue",
+            "previous_response_id": "resp_abc"
+        });
+        normalize_openai_compat_request("/v1/responses", &mut body).unwrap();
+
+        assert_eq!(body["prompt_cache_key"], "resp_abc");
+        assert!(body.get("previous_response_id").is_none());
+    }
+
+    #[test]
+    fn normalize_responses_keeps_explicit_prompt_cache_key() {
+        let mut body = json!({
+            "model": "qwen",
+            "input": "continue",
+            "conversation": {"id": "conv_abc"},
+            "prompt_cache_key": "caller-key"
+        });
+        normalize_openai_compat_request("/v1/responses", &mut body).unwrap();
+
+        assert_eq!(body["prompt_cache_key"], "caller-key");
+        assert!(body.get("conversation").is_none());
+    }
+
+    #[test]
     fn translate_chat_completion_to_responses_maps_core_fields() {
         let translated = translate_chat_completion_to_responses(
             json!({
@@ -772,7 +863,10 @@ mod tests {
                 "usage": {
                     "prompt_tokens": 1,
                     "completion_tokens": 2,
-                    "total_tokens": 3
+                    "total_tokens": 3,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 1
+                    }
                 }
             })
             .to_string()
@@ -786,6 +880,7 @@ mod tests {
         assert_eq!(parsed["usage"]["input_tokens"], 1);
         assert_eq!(parsed["usage"]["output_tokens"], 2);
         assert_eq!(parsed["usage"]["total_tokens"], 3);
+        assert_eq!(parsed["usage"]["input_tokens_details"]["cached_tokens"], 1);
     }
 
     #[test]
@@ -848,5 +943,15 @@ mod tests {
         assert_eq!(mapped["input_tokens"], 11);
         assert!(mapped["output_tokens"].is_null());
         assert_eq!(mapped["total_tokens"], 14);
+        assert!(mapped["input_tokens_details"]["cached_tokens"].is_null());
+    }
+
+    #[test]
+    fn usage_to_responses_usage_maps_cached_tokens() {
+        let usage = Usage::new(128, 8).with_cached_tokens(96);
+        let mapped = usage_to_responses_usage(&usage);
+
+        assert_eq!(mapped["input_tokens"], 128);
+        assert_eq!(mapped["input_tokens_details"]["cached_tokens"], 96);
     }
 }

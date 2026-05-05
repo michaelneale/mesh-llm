@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -8,7 +9,10 @@ use skippy_cache::{
     ExactStateCache, PrefixCandidatePolicy, ResidentActivationCache, ResidentCacheConfig,
     ResidentPrefixCache,
 };
-use skippy_protocol::{StageConfig, StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload};
+use skippy_protocol::{
+    LoadMode, StageConfig, StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload,
+};
+use skippy_runtime::ModelInfo;
 
 use super::{ExactStateExtra, KvStageIntegration, StageKvMode, StagePrefixCachePayload};
 
@@ -27,6 +31,11 @@ impl KvStageIntegration {
         }
         let payload = effective_cache_payload(config, cache_config.payload);
         if payload == StagePrefixCachePayload::Disabled {
+            return Ok(None);
+        }
+        if model_requires_recurrent_state(config)
+            && matches!(payload, StagePrefixCachePayload::ResidentKv)
+        {
             return Ok(None);
         }
         let candidate_policy = PrefixCandidatePolicy::from_cache(&cache_config);
@@ -52,12 +61,47 @@ fn effective_cache_payload(
     config: &StageConfig,
     requested: StageKvCachePayload,
 ) -> StagePrefixCachePayload {
+    if matches!(requested, StageKvCachePayload::Auto) && model_requires_recurrent_state(config) {
+        return StagePrefixCachePayload::KvRecurrent;
+    }
     match requested {
         StageKvCachePayload::ResidentKv => StagePrefixCachePayload::ResidentKv,
         StageKvCachePayload::KvRecurrent => StagePrefixCachePayload::KvRecurrent,
         StageKvCachePayload::FullState => StagePrefixCachePayload::FullState,
         StageKvCachePayload::Auto => infer_cache_payload(config),
     }
+}
+
+fn model_requires_recurrent_state(config: &StageConfig) -> bool {
+    let Some(path) = kv_cache_inspection_path(config) else {
+        return false;
+    };
+    let Ok(info) = ModelInfo::open(path) else {
+        return false;
+    };
+    let Ok(tensors) = info.tensors() else {
+        return false;
+    };
+    tensors
+        .iter()
+        .any(|tensor| tensor_name_requires_recurrent_state(&tensor.name))
+}
+
+fn kv_cache_inspection_path(config: &StageConfig) -> Option<PathBuf> {
+    let path = config.model_path.as_deref()?;
+    match config.load_mode {
+        LoadMode::LayerPackage => crate::package::materialize_layer_package(config).ok(),
+        LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => Some(PathBuf::from(path)),
+    }
+}
+
+fn tensor_name_requires_recurrent_state(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains(".ssm")
+        || lower.contains("ssm_")
+        || lower.contains("time_mix")
+        || lower.contains("recurrent")
+        || lower.contains("rwkv")
 }
 
 fn infer_cache_payload(config: &StageConfig) -> StagePrefixCachePayload {
@@ -158,5 +202,123 @@ fn parse_cache_mode(value: &str) -> Option<StageKvCacheMode> {
             Some(StageKvCacheMode::LookupRecord)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skippy_protocol::FlashAttentionType;
+
+    #[test]
+    fn recurrent_tensor_names_require_exact_state_cache() {
+        assert!(tensor_name_requires_recurrent_state("blk.0.ssm_a"));
+        assert!(tensor_name_requires_recurrent_state(
+            "blk.0.ssm_conv1d.weight"
+        ));
+        assert!(tensor_name_requires_recurrent_state(
+            "blk.0.time_mix_k.weight"
+        ));
+        assert!(tensor_name_requires_recurrent_state(
+            "blk.0.rwkv_gate.weight"
+        ));
+        assert!(!tensor_name_requires_recurrent_state("blk.0.attn_q.weight"));
+        assert!(!tensor_name_requires_recurrent_state(
+            "blk.0.ffn_down.weight"
+        ));
+    }
+
+    #[test]
+    fn cache_payload_inference_selects_recurrent_and_dense_families() {
+        assert_eq!(
+            infer_cache_payload(&test_config("tiiuae/Falcon-H1-0.5B-Instruct-GGUF:Q4_K_M")),
+            StagePrefixCachePayload::KvRecurrent
+        );
+        assert_eq!(
+            infer_cache_payload(&test_config(
+                "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M"
+            )),
+            StagePrefixCachePayload::ResidentKv
+        );
+        assert_eq!(
+            infer_cache_payload(&test_config("unsloth/gemma-4-E4B-it-GGUF:Q4_K_M")),
+            StagePrefixCachePayload::FullState
+        );
+        assert_eq!(
+            infer_cache_payload(&test_config("example/unknown-model:Q4_K_M")),
+            StagePrefixCachePayload::Disabled
+        );
+    }
+
+    #[test]
+    fn explicit_cache_payload_overrides_identity_inference() {
+        let config = test_config("tiiuae/Falcon-H1-0.5B-Instruct-GGUF:Q4_K_M");
+
+        assert_eq!(
+            effective_cache_payload(&config, StageKvCachePayload::ResidentKv),
+            StagePrefixCachePayload::ResidentKv
+        );
+        assert_eq!(
+            effective_cache_payload(&config, StageKvCachePayload::KvRecurrent),
+            StagePrefixCachePayload::KvRecurrent
+        );
+    }
+
+    #[test]
+    fn parses_cache_mode_and_payload_aliases() {
+        assert_eq!(
+            parse_cache_mode("lookup_record"),
+            Some(StageKvCacheMode::LookupRecord)
+        );
+        assert_eq!(
+            parse_cache_mode("exact"),
+            Some(StageKvCacheMode::LookupRecord)
+        );
+        assert_eq!(parse_cache_mode("off"), Some(StageKvCacheMode::Disabled));
+        assert_eq!(
+            parse_cache_payload("kv_recurrent"),
+            Some(StageKvCachePayload::KvRecurrent)
+        );
+        assert_eq!(
+            parse_cache_payload("resident"),
+            Some(StageKvCachePayload::ResidentKv)
+        );
+        assert_eq!(parse_cache_payload("nope"), None);
+    }
+
+    fn test_config(model_id: &str) -> StageConfig {
+        StageConfig {
+            run_id: "test-run".to_string(),
+            topology_id: "test-topology".to_string(),
+            model_id: model_id.to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: None,
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 1,
+            ctx_size: 256,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: 0,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: false,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
+        }
     }
 }
