@@ -450,6 +450,8 @@ jobs:
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: |
+          # The CUDA devel container has libcuda.so stub but not libcuda.so.1.
+          # Find the stubs directory and create the .so.1 symlink for the dynamic linker.
           CUDA_STUB="$(find -L /usr/local/cuda /usr/local/cuda-* -path '*/stubs/libcuda.so' -print -quit 2>/dev/null || true)"
           if [ -n "$CUDA_STUB" ]; then
             mkdir -p /tmp/cuda-stubs
