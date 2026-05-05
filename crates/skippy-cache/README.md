@@ -201,21 +201,23 @@ layers, token count, and f16 KV element size.
 
 ### Full-GGUF llama-server vs Skippy
 
+Rows are ordered so related runtime/cache families appear next to each other.
+
 | Family | Representative model ref | Production payload | Correctness | Prefix tokens | Prompt tokens | llama-server warm median ms | Skippy hit median ms | Skippy win | Cache bytes | Size method | Notes |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | pass | 128 | 129 | 318.0 | 26.4 | **12.06x faster** | 78.4 MiB | measured | Recurrent-backed state reuse makes llama-server reprocess work Skippy skips. |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | pass | 128 | 129 | 105.2 | 12.0 | **8.73x faster** | 76.0 MiB | measured | Same recurrent-state advantage on the Falcon-H1 cache payload. |
 | Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 8.8 | 4.5 | **1.95x faster** | 4.0 MiB | measured | Matches the llama-server slot contract, then wins on overhead. |
-| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 10.1 | 7.0 | **1.45x faster** | 3.2 MiB | metadata-derived | Hot-lane resident prefix reuse beats llama-server warm slots. |
-| Gemma2 | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 12.1 | 8.5 | **1.43x faster** | 13.0 MiB | metadata-derived | Correct and faster. |
-| GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 26.0 | 18.9 | **1.38x faster** | 12.5 MiB | metadata-derived | Correct and faster under the normalized 128-token workload. |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 128 | 129 | 7.4 | 6.8 | **1.08x faster** | 14.0 MiB | measured | Correct and faster; this is the narrowest win in the normalized matrix. |
 | DeepSeek2 | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 12.6 | 9.6 | **1.32x faster** | 33.8 MiB | measured | Correct and faster on the resident prefix path. |
-| Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 20.7 | 16.1 | **1.29x faster** | 7.0 MiB | metadata-derived | Correct and faster with shared-KV layers accounted for in sizing. |
-| MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 128 | 129 | 39.5 | 31.9 | **1.24x faster** | 31.0 MiB | measured | Correct and faster on the large sharded GGUF. |
+| GLM-4.7 Flash | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 26.0 | 18.9 | **1.38x faster** | 12.5 MiB | metadata-derived | Correct and faster under the normalized 128-token workload. |
 | GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 23.2 | 18.9 | **1.23x faster** | 5.0 MiB | measured | Correct and faster. |
 | Gemma4 A4B | `batiai/Gemma-4-26B-A4B-it-GGUF:Q6_K` | `ResidentKv` | pass | 128 | 129 | 21.0 | 17.6 | **1.20x faster** | 27.5 MiB | metadata-derived | Correct and faster with SWA KV dimensions accounted for in sizing. |
+| Gemma4 E4B | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 20.7 | 16.1 | **1.29x faster** | 7.0 MiB | metadata-derived | Correct and faster with shared-KV layers accounted for in sizing. |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 10.1 | 7.0 | **1.45x faster** | 3.2 MiB | metadata-derived | Hot-lane resident prefix reuse beats llama-server warm slots. |
+| Gemma2 | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `ResidentKv` | pass | 128 | 129 | 12.1 | 8.5 | **1.43x faster** | 13.0 MiB | metadata-derived | Correct and faster. |
 | OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 128 | 129 | 28.9 | 24.0 | **1.20x faster** | 64.0 MiB | measured | Correct and faster. |
-| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | pass | 128 | 129 | 7.4 | 6.8 | **1.08x faster** | 14.0 MiB | measured | Correct and faster; this is the narrowest win in the normalized matrix. |
+| MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 128 | 129 | 39.5 | 31.9 | **1.24x faster** | 31.0 MiB | measured | Correct and faster on the large sharded GGUF. |
 
 ### HF Use-Case Matrix
 
@@ -227,16 +229,16 @@ llama-server warm-cache latency. DeepSeek3 stays in the package-only section
 because there is no practical local full-GGUF llama-server baseline for that
 artifact.
 
-| Use case | Qwen3 dense | Llama | DeepSeek2 | GLM-4.7 Flash | GLM4 | Gemma4 A4B | Gemma4 E4B | Gemma3 | Gemma2 | Falcon-H1 | OLMo | MiniMax M2.7 | Qwen3Next |
+| Use case | Qwen3Next | Falcon-H1 | Llama | Qwen3 dense | DeepSeek2 | GLM-4.7 Flash | GLM4 | Gemma4 A4B | Gemma4 E4B | Gemma3 | Gemma2 | OLMo | MiniMax M2.7 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Tool calling | 1.32x | 1.33x | 1.60x | 1.30x | 1.27x | 1.04x | 1.33x | 1.58x | 1.40x | 8.53x | 1.21x | 1.19x | 15.23x |
-| Text-to-SQL | 1.35x | 1.69x | 1.52x | 1.19x | 1.13x | 1.30x | 1.26x | 1.64x | 1.41x | 8.58x | 1.08x | 1.14x | 15.42x |
-| Coding agent loop | 1.68x | 1.56x | 1.47x | 1.24x | 1.28x | 1.32x | 1.25x | 1.54x | 1.52x | 8.24x | 1.24x | 1.26x | 14.62x |
-| Issue fixing | 1.68x | 1.74x | 1.56x | 1.24x | 1.30x | 1.28x | 1.29x | 1.65x | 1.49x | 8.84x | 1.12x | 1.28x | 14.45x |
-| Code refinement | 1.43x | 1.98x | 1.53x | 1.25x | 1.23x | 1.27x | 1.43x | 1.76x | 1.47x | 8.65x | 1.25x | 1.21x | 14.55x |
-| Few-shot reasoning | 1.64x | 1.73x | 1.56x | 1.26x | 1.21x | 1.08x | 1.33x | 1.61x | 1.52x | 8.55x | 1.20x | 1.18x | 14.44x |
-| Open chat | 1.35x | 1.62x | 1.60x | 1.30x | 1.23x | 1.36x | 1.31x | 1.58x | 1.28x | 9.15x | 1.06x | 1.27x | 13.74x |
-| Summarization/RAG | 1.41x | 1.81x | 1.67x | 1.26x | 1.13x | 1.27x | 1.32x | 1.55x | 1.61x | 8.94x | 1.20x | 1.19x | 13.89x |
+| Tool calling | 15.23x | 8.53x | 1.33x | 1.32x | 1.60x | 1.30x | 1.27x | 1.04x | 1.33x | 1.58x | 1.40x | 1.21x | 1.19x |
+| Text-to-SQL | 15.42x | 8.58x | 1.69x | 1.35x | 1.52x | 1.19x | 1.13x | 1.30x | 1.26x | 1.64x | 1.41x | 1.08x | 1.14x |
+| Coding agent loop | 14.62x | 8.24x | 1.56x | 1.68x | 1.47x | 1.24x | 1.28x | 1.32x | 1.25x | 1.54x | 1.52x | 1.24x | 1.26x |
+| Issue fixing | 14.45x | 8.84x | 1.74x | 1.68x | 1.56x | 1.24x | 1.30x | 1.28x | 1.29x | 1.65x | 1.49x | 1.12x | 1.28x |
+| Code refinement | 14.55x | 8.65x | 1.98x | 1.43x | 1.53x | 1.25x | 1.23x | 1.27x | 1.43x | 1.76x | 1.47x | 1.25x | 1.21x |
+| Few-shot reasoning | 14.44x | 8.55x | 1.73x | 1.64x | 1.56x | 1.26x | 1.21x | 1.08x | 1.33x | 1.61x | 1.52x | 1.20x | 1.18x |
+| Open chat | 13.74x | 9.15x | 1.62x | 1.35x | 1.60x | 1.30x | 1.23x | 1.36x | 1.31x | 1.58x | 1.28x | 1.06x | 1.27x |
+| Summarization/RAG | 13.89x | 8.94x | 1.81x | 1.41x | 1.67x | 1.26x | 1.13x | 1.27x | 1.32x | 1.55x | 1.61x | 1.20x | 1.19x |
 
 Prompt sources are checked in at `evals/skippy-usecase-corpus.json` with source
 dataset metadata:
