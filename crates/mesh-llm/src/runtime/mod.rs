@@ -2346,6 +2346,27 @@ async fn run_auto(
             posture.debugger_blocked,
             posture.binary_hash.as_deref().unwrap_or("?"),
         );
+
+        // Attempt SE attestation (macOS Apple Silicon only)
+        let node_id = hex::encode(node.id().as_bytes());
+        let inference_pub_key = node.inference_keypair.public_key_base64();
+        let attestation = crate::crypto::attestation::try_create_attestation(
+            &node_id,
+            &inference_pub_key,
+            &posture,
+        );
+        if let Some(ref att) = attestation {
+            tracing::info!(
+                "hardware attestation: SE key bound to node {} (chip={})",
+                &node_id[..8],
+                if att.attestation.chip_name.is_empty() {
+                    "?"
+                } else {
+                    &att.attestation.chip_name
+                },
+            );
+        }
+        *node.local_hardware_attestation.lock().await = attestation;
         *node.local_security_posture.lock().await = Some(posture);
     }
 

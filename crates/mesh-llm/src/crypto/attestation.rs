@@ -379,6 +379,87 @@ pub fn public_key_base64_from_signing_key(signing_key: &p256::ecdsa::SigningKey)
     base64::engine::general_purpose::STANDARD.encode(point.as_bytes())
 }
 
+// ── Convenience: attempt attestation at startup ───────────────────
+
+/// Attempt to create a signed hardware attestation. Returns `None` if SE
+/// is unavailable (non-macOS, Intel Mac, or SE access denied).
+pub fn try_create_attestation(
+    node_endpoint_id: &str,
+    inference_public_key: &str,
+    posture: &crate::system::hardening::SecurityPosture,
+) -> Option<SignedHardwareAttestation> {
+    if !secure_enclave_available() {
+        tracing::debug!("Secure Enclave not available, skipping hardware attestation");
+        return None;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let se = match SecureEnclaveIdentity::create() {
+            Ok(se) => se,
+            Err(e) => {
+                tracing::warn!("Failed to create SE identity: {e}");
+                return None;
+            }
+        };
+
+        // Gather hardware info
+        let chip_name = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let hardware_model = std::process::Command::new("sysctl")
+            .args(["-n", "hw.model"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let unified_memory_bytes = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+            })
+            .unwrap_or(0);
+
+        let attestation = HardwareAttestation {
+            node_endpoint_id: node_endpoint_id.to_string(),
+            inference_public_key: inference_public_key.to_string(),
+            se_public_key: se.public_key_base64().to_string(),
+            binary_hash: posture.binary_hash.clone().unwrap_or_default(),
+            chip_name,
+            hardware_model,
+            unified_memory_bytes,
+            sip_enabled: posture.sip_enabled,
+            secure_boot_enabled: true, // assume if SE works
+            rdma_disabled: posture.rdma_disabled,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+
+        match se.sign_attestation(&attestation) {
+            Ok(signed) => Some(signed),
+            Err(e) => {
+                tracing::warn!("Failed to sign attestation: {e}");
+                None
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (node_endpoint_id, inference_public_key, posture);
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

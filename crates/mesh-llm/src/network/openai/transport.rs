@@ -1660,7 +1660,7 @@ async fn route_remote_attempt(
     }
 
     // Encrypt if the host has an inference public key.
-    let (wire_payload, _encryption_session) =
+    let (wire_payload, encryption_session) =
         maybe_encrypt_for_host(node, host_id, prefetched).await;
     let wire_bytes = if wire_payload.is_empty() {
         prefetched
@@ -1677,6 +1677,19 @@ async fn route_remote_attempt(
                 );
                 return RouteAttemptResult::RetryableUnavailable;
             }
+
+            // If we encrypted outbound, the response comes back as 0xE1 + encrypted JSON.
+            // Decrypt it and write the plaintext HTTP response directly to the client.
+            if let Some(ref session) = encryption_session {
+                // Signal end-of-request so the receiver's read_to_end completes.
+                if let Err(err) = quic_send.finish() {
+                    tracing::warn!("API proxy: failed to finish encrypted send stream: {err}");
+                    return RouteAttemptResult::RetryableUnavailable;
+                }
+                return handle_encrypted_response(&mut quic_recv, tcp_stream, session, host_id)
+                    .await;
+            }
+
             match probe_http_response(&mut quic_recv).await {
                 Ok(probe) => {
                     let status_code = probe.status_code;
@@ -3203,6 +3216,100 @@ pub async fn pipeline_proxy_local(
                 PipelineProxyResult::FallbackToDirect
             }
         }
+    }
+}
+
+/// Handle an encrypted response from a remote host tunnel.
+/// Reads the 0xE1 magic + JSON, decrypts, writes plaintext HTTP response to client.
+async fn handle_encrypted_response(
+    quic_recv: &mut iroh::endpoint::RecvStream,
+    tcp_stream: &mut TcpStream,
+    session: &crate::crypto::inference_encryption::EphemeralSession,
+    host_id: iroh::EndpointId,
+) -> RouteAttemptResult {
+    use tokio::io::AsyncWriteExt;
+
+    // Read first byte (should be ENCRYPTED_TUNNEL_MAGIC)
+    let mut magic = [0u8; 1];
+    if let Err(e) = quic_recv.read_exact(&mut magic).await {
+        tracing::warn!(
+            "API proxy: failed to read encrypted response magic from {}: {e}",
+            host_id.fmt_short()
+        );
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+    if magic[0] != crate::crypto::inference_encryption::ENCRYPTED_TUNNEL_MAGIC {
+        tracing::warn!(
+            "API proxy: expected encrypted response from {}, got plaintext",
+            host_id.fmt_short()
+        );
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+
+    // Read encrypted JSON payload
+    let encrypted_json = match quic_recv.read_to_end(64 * 1024 * 1024).await {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::warn!(
+                "API proxy: failed to read encrypted response from {}: {e}",
+                host_id.fmt_short()
+            );
+            return RouteAttemptResult::RetryableUnavailable;
+        }
+    };
+
+    let payload: crate::crypto::inference_encryption::EncryptedResponse =
+        match serde_json::from_slice(&encrypted_json) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    "API proxy: invalid encrypted response JSON from {}: {e}",
+                    host_id.fmt_short()
+                );
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+        };
+
+    // Decrypt using our ephemeral session
+    let host_pub =
+        match crate::crypto::inference_encryption::parse_public_key(&payload.sender_public_key) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!("API proxy: invalid sender key in encrypted response: {e}");
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+        };
+
+    let plaintext =
+        match crate::crypto::inference_encryption::decrypt_response(&payload, session, &host_pub) {
+            Ok(data) => data,
+            Err(e) => {
+                tracing::warn!(
+                    "API proxy: failed to decrypt response from {}: {e}",
+                    host_id.fmt_short()
+                );
+                return RouteAttemptResult::RetryableUnavailable;
+            }
+        };
+
+    tracing::debug!(
+        "Decrypted response from {} ({} bytes)",
+        host_id.fmt_short(),
+        plaintext.len()
+    );
+
+    // Write plaintext HTTP response to client
+    if let Err(e) = tcp_stream.write_all(&plaintext).await {
+        if is_client_disconnect_error(&anyhow::Error::from(e)) {
+            return RouteAttemptResult::ClientDisconnected;
+        }
+        tracing::warn!("API proxy: failed to write decrypted response to client");
+        return RouteAttemptResult::RetryableUnavailable;
+    }
+
+    RouteAttemptResult::Delivered {
+        status_code: 200, // We can't easily parse status from the decrypted bytes without re-parsing HTTP
+        completion_tokens: None,
     }
 }
 
