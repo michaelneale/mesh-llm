@@ -13,5 +13,6 @@ skippy-protocol = { path = "../skippy-protocol" }
 skippy-runtime = { path = "../skippy-runtime" }
 skippy-topology = { path = "../skippy-topology" }
 openai-frontend = { path = "../openai-frontend" }
+mesh-client = { package = "mesh-llm-client", path = "../mesh-client" }
 rustyline = "18"
 serde_json.workspace = true

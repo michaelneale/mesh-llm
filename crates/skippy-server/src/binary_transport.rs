@@ -22,7 +22,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use skippy_metrics::attr;
+use skippy_metrics::{attr, metric};
 use skippy_protocol::{
     binary::{
         read_stage_message, recv_reply, send_ready, send_reply_ack, send_reply_ack_with_stats,
@@ -1085,6 +1085,7 @@ fn handle_binary_connection(
         request_summary.observe(BinaryMessageObservation {
             config,
             message: &message,
+            reply_stats: message_reply_stats,
             compute_ms,
             forward_write_ms,
             downstream_wait_ms,
@@ -2321,11 +2322,13 @@ struct BinaryRequestSummary {
     prefill_credit_wait_count: usize,
     prefill_deferred_replies_drained: usize,
     prefill_pending_replies_max: usize,
+    reply_stats: StageReplyStats,
 }
 
 struct BinaryMessageObservation<'a> {
     config: &'a StageConfig,
     message: &'a StageWireMessage,
+    reply_stats: StageReplyStats,
     compute_ms: f64,
     forward_write_ms: f64,
     downstream_wait_ms: f64,
@@ -2489,6 +2492,7 @@ impl BinaryRequestSummary {
             .prefill_pending_replies_max
             .max(observation.pending_prefill_replies_before)
             .max(observation.pending_prefill_replies_after);
+        self.reply_stats.merge(observation.reply_stats);
     }
 
     fn emit(&self, telemetry: &Telemetry, config: &StageConfig, session_id: u64) {
@@ -2593,6 +2597,53 @@ impl BinaryRequestSummary {
         attrs.insert(
             "skippy.prefill_pending_replies_max".to_string(),
             json!(self.prefill_pending_replies_max),
+        );
+        let lookups = self.reply_stats.kv_lookup_hits + self.reply_stats.kv_lookup_misses;
+        let hit_rate = if lookups > 0 {
+            self.reply_stats.kv_lookup_hits as f64 / lookups as f64
+        } else {
+            0.0
+        };
+        attrs.insert(
+            metric::KV_LOOKUP_REQUESTS.to_string(),
+            json!(lookups.max(0)),
+        );
+        attrs.insert(
+            metric::KV_LOOKUP_HITS.to_string(),
+            json!(self.reply_stats.kv_lookup_hits),
+        );
+        attrs.insert(
+            metric::KV_LOOKUP_MISSES.to_string(),
+            json!(self.reply_stats.kv_lookup_misses),
+        );
+        attrs.insert("skippy.kv.lookup_hit_rate".to_string(), json!(hit_rate));
+        attrs.insert(
+            "skippy.kv.lookup_errors".to_string(),
+            json!(self.reply_stats.kv_lookup_errors),
+        );
+        attrs.insert(
+            metric::KV_IMPORTED_PAGES.to_string(),
+            json!(self.reply_stats.kv_imported_pages),
+        );
+        attrs.insert(
+            "skippy.kv.imported_tokens".to_string(),
+            json!(self.reply_stats.kv_imported_tokens),
+        );
+        attrs.insert(
+            metric::KV_COMMITTED_PAGES.to_string(),
+            json!(self.reply_stats.kv_recorded_pages),
+        );
+        attrs.insert(
+            "skippy.kv.recorded_bytes".to_string(),
+            json!(self.reply_stats.kv_recorded_bytes),
+        );
+        attrs.insert(
+            "skippy.kv.hit_stage_mask".to_string(),
+            json!(self.reply_stats.kv_hit_stage_mask),
+        );
+        attrs.insert(
+            "skippy.kv.record_stage_mask".to_string(),
+            json!(self.reply_stats.kv_record_stage_mask),
         );
         telemetry.emit("stage.binary_request_summary", attrs);
     }

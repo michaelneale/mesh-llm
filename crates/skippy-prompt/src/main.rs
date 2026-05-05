@@ -16,15 +16,20 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use mesh_client::models::gguf::{scan_gguf_compact_meta, GgufCompactMeta};
 use openai_frontend::{normalize_reasoning_template_options, ReasoningConfig};
 use rustyline::{error::ReadlineError, DefaultEditor};
-use serde_json::{json, Value};
+use serde_json::Value;
 use skippy_protocol::binary::{
     recv_reply, state_flags, write_stage_message, StageReplyStats, StageStateHeader,
     StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, READY_MAGIC,
 };
+use skippy_protocol::{
+    FlashAttentionType as StageFlashAttentionType, LoadMode, PeerConfig, StageConfig,
+    StageKvCacheConfig, StageKvCacheMode, StageKvCachePayload,
+};
 use skippy_runtime::{
-    package::{materialize_layer_package, PackageStageRequest},
+    package::{inspect_layer_package, materialize_layer_package, PackageStageRequest},
     restore_native_logs, suppress_native_logs, ChatTemplateMessage, ChatTemplateOptions, ModelInfo,
     RuntimeConfig, RuntimeLoadMode, StageModel, StageSession, GGML_TYPE_F16,
 };
@@ -41,6 +46,8 @@ const DEFAULT_CONFIDENCE_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MAX_CONFIDENCE: f32 = 0.95;
 const DEFAULT_COUNT_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MARGIN_STEP_TOKENS: usize = usize::MAX;
+const DEFAULT_MESH_CTX_SIZE: u32 = 4096;
+const DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS: usize = 0;
 
 #[derive(Parser)]
 #[command(about = "Prompt CLI for skippy binary servers")]
@@ -85,8 +92,6 @@ pub enum NgramProposalMode {
 pub struct PromptArgs {
     #[arg(long, default_value = "target/debug/metrics-server")]
     pub metrics_server_bin: PathBuf,
-    #[arg(long, default_value = "target/debug/kv-server")]
-    pub kv_server_bin: PathBuf,
     #[arg(long, default_value = "target/debug/ngram-pool-server")]
     pub ngram_pool_server_bin: PathBuf,
     #[arg(long, default_value = "target/debug/skippy-server")]
@@ -119,7 +124,7 @@ pub struct PromptArgs {
     pub single_stage: bool,
     #[arg(long, default_value_t = 40)]
     pub layer_end: u32,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = DEFAULT_MESH_CTX_SIZE)]
     pub ctx_size: u32,
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     pub n_gpu_layers: i32,
@@ -129,7 +134,11 @@ pub struct PromptArgs {
     pub activation_wire_dtype: String,
     #[arg(long, default_value_t = 128)]
     pub prefill_chunk_size: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS,
+        help = "Maximum generated tokens; 0 matches mesh/OpenAI default behavior by using the remaining context budget."
+    )]
     pub max_new_tokens: usize,
     #[arg(long)]
     pub draft_model_path: Option<PathBuf>,
@@ -169,6 +178,10 @@ pub struct PromptArgs {
     pub kv_mode: String,
     #[arg(long, default_value_t = 512)]
     pub kv_page_size_tokens: u64,
+    #[arg(long, default_value = "f16")]
+    pub cache_type_k: String,
+    #[arg(long, default_value = "f16")]
+    pub cache_type_v: String,
     #[arg(long, default_value = "127.0.0.1:18080")]
     pub metrics_http_addr: SocketAddr,
     #[arg(long, default_value = "127.0.0.1:14317")]
@@ -228,7 +241,7 @@ pub struct BinaryReplArgs {
     pub tokenizer_layer_start: u32,
     #[arg(long, default_value_t = 10)]
     pub tokenizer_layer_end: u32,
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = DEFAULT_MESH_CTX_SIZE)]
     pub ctx_size: u32,
     #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
     pub n_gpu_layers: i32,
@@ -238,7 +251,11 @@ pub struct BinaryReplArgs {
     pub activation_wire_dtype: String,
     #[arg(long, default_value_t = 128)]
     pub prefill_chunk_size: usize,
-    #[arg(long, default_value_t = 64)]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS,
+        help = "Maximum generated tokens; 0 matches mesh/OpenAI default behavior by using the remaining context budget."
+    )]
     pub max_new_tokens: usize,
     #[arg(long)]
     pub draft_model_path: Option<PathBuf>,
@@ -420,8 +437,6 @@ struct LocalStage {
     bind_addr: String,
     endpoint_addr: String,
     config_path: PathBuf,
-    kv_config_path: PathBuf,
-    kv_uds_path: PathBuf,
     model_path: PathBuf,
     remote: Option<RemoteStage>,
 }
@@ -430,14 +445,9 @@ struct RemoteStage {
     host: String,
     stage_dir: String,
     stage_server_bin: String,
-    kv_server_bin: String,
     model_path: String,
     config_path: String,
-    kv_config_path: String,
-    kv_uds_path: String,
-    kv_page_root: String,
     stage_log_path: String,
-    kv_log_path: String,
     stage_exit_path: String,
 }
 
@@ -505,10 +515,7 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
             ranges.len()
         );
     }
-    let kv_mode = match args.kv_mode.as_str() {
-        "disabled" | "record" | "lookup-record" | "correctness" => args.kv_mode.as_str(),
-        other => bail!("unsupported kv mode {other}"),
-    };
+    let kv_mode = parse_stage_kv_mode(&args.kv_mode)?;
 
     let run_id = format!("prompt-{}", unix_millis());
     let run_dir = args.run_root.join(&run_id);
@@ -532,7 +539,7 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         .run_root
         .join("model-package-cache")
         .join(&model_package_cache_key);
-    let binary_cache_key = binary_cache_key(&args.stage_server_bin, &args.kv_server_bin)?;
+    let binary_cache_key = binary_cache_key(&args.stage_server_bin)?;
 
     let mut stages = Vec::with_capacity(ranges.len());
     for (index, (layer_start, layer_end)) in ranges.iter().copied().enumerate() {
@@ -562,14 +569,9 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
                 Some(RemoteStage {
                     host,
                     stage_server_bin: format!("{remote_binary_cache_dir}/skippy-server"),
-                    kv_server_bin: format!("{remote_binary_cache_dir}/kv-server"),
                     model_path: remote_model_package_dir,
                     config_path: format!("{stage_dir}/stage-{index}.json"),
-                    kv_config_path: format!("{stage_dir}/kv-stage-{index}.json"),
-                    kv_uds_path: format!("{stage_dir}/kv-stage-{index}.sock"),
-                    kv_page_root: format!("{stage_dir}/kv-pages"),
                     stage_log_path: format!("{stage_dir}/stage-{index}.log"),
-                    kv_log_path: format!("{stage_dir}/kv-stage-{index}.log"),
                     stage_exit_path: format!("{stage_dir}/stage.exit"),
                     stage_dir,
                 }),
@@ -590,8 +592,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
             bind_addr,
             endpoint_addr,
             config_path: config_dir.join(format!("stage-{index}.json")),
-            kv_config_path: config_dir.join(format!("kv-stage-{index}.json")),
-            kv_uds_path: run_dir.join(format!("kv-stage-{index}.sock")),
             model_path: model_cache_dir.join(format!("stage-{index}.gguf")),
             remote: remote_stage,
         });
@@ -685,19 +685,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         );
         start_remote_stages(&args, &stages, &metrics_otlp_url, &mut children)?;
     } else {
-        eprintln!("launch: starting {} local KV sidecars", stages.len());
-        for stage in &stages {
-            let mut kv = Command::new(&args.kv_server_bin);
-            kv.args(["serve", "--config", path_str(&stage.kv_config_path)?]);
-            configure_process_log(
-                &mut kv,
-                &run_dir.join(format!("kv-stage-{}.log", stage.stage_index)),
-            )?;
-            children.push(ChildGuard::spawn(kv)?);
-        }
-        eprintln!("launch: waiting for local KV sockets");
-        wait_for_kv_sockets(&stages, args.startup_timeout_secs)?;
-
         eprintln!("launch: starting {} local stage servers", stages.len());
         for stage in stages.iter().rev() {
             let mut server = Command::new(&args.stage_server_bin);
@@ -839,6 +826,8 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             lane_count: 1,
             n_batch: None,
             n_ubatch: None,
+            n_threads: None,
+            n_threads_batch: None,
             n_gpu_layers: args.tokenizer_n_gpu_layers,
             selected_backend_device: None,
             cache_type_k: GGML_TYPE_F16,
@@ -880,6 +869,8 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers: 0,
                 selected_backend_device: None,
                 cache_type_k: GGML_TYPE_F16,
@@ -914,7 +905,9 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
 
     eprintln!(
         "binary REPL connected to first stage at {}; max_new_tokens={} prefill_chunk_size={}",
-        args.first_stage_addr, args.max_new_tokens, args.prefill_chunk_size
+        args.first_stage_addr,
+        format_prompt_max_new_tokens(args.max_new_tokens),
+        args.prefill_chunk_size
     );
     if let Some(draft) = draft.as_ref() {
         eprintln!(
@@ -1149,13 +1142,6 @@ fn prompt_log_context(
     for stage in stages {
         if let Some(remote) = stage.remote.as_ref() {
             entries.push(PromptLogEntry {
-                label: format!("kv-stage-{}", stage.stage_index),
-                target: PromptLogTarget::Remote {
-                    host: remote.host.clone(),
-                    path: remote.kv_log_path.clone(),
-                },
-            });
-            entries.push(PromptLogEntry {
                 label: format!("stage-{}", stage.stage_index),
                 target: PromptLogTarget::Remote {
                     host: remote.host.clone(),
@@ -1163,12 +1149,6 @@ fn prompt_log_context(
                 },
             });
         } else {
-            entries.push(PromptLogEntry {
-                label: format!("kv-stage-{}", stage.stage_index),
-                target: PromptLogTarget::Local(
-                    run_dir.join(format!("kv-stage-{}.log", stage.stage_index)),
-                ),
-            });
             entries.push(PromptLogEntry {
                 label: format!("stage-{}", stage.stage_index),
                 target: PromptLogTarget::Local(
@@ -1486,6 +1466,29 @@ fn prompt_openai_reasoning_config(
     }))
 }
 
+fn effective_prompt_max_new_tokens(
+    configured: usize,
+    ctx_size: u32,
+    prompt_token_count: usize,
+) -> Result<usize> {
+    if configured > 0 {
+        return Ok(configured);
+    }
+    let ctx_size = usize::try_from(ctx_size).context("ctx_size exceeds usize")?;
+    if prompt_token_count >= ctx_size {
+        bail!("prompt tokens exceed context window (n_ctx={ctx_size})");
+    }
+    Ok(ctx_size - prompt_token_count)
+}
+
+fn format_prompt_max_new_tokens(value: usize) -> String {
+    if value == DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS {
+        "context-budget".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
 struct PromptRun<'a> {
     args: &'a BinaryReplArgs,
     tokenizer: &'a StageModel,
@@ -1529,6 +1532,8 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     if token_ids.is_empty() {
         bail!("prompt produced no tokens");
     }
+    let max_new_tokens =
+        effective_prompt_max_new_tokens(args.max_new_tokens, args.ctx_size, token_ids.len())?;
 
     let prefill_token_count = if token_ids.len() == 1 {
         1
@@ -1539,7 +1544,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         "request {prompt_index}: prompt_tokens={} prefill_tokens={} max_new_tokens={}",
         token_ids.len(),
         prefill_token_count,
-        args.max_new_tokens
+        max_new_tokens
     );
     let prompt_index_bytes = prompt_index.to_le_bytes();
     let request_id = stable_wire_id(&[session_id.as_bytes(), &prompt_index_bytes]);
@@ -1592,7 +1597,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     );
 
     let mut current = *token_ids.last().expect("checked non-empty tokens");
-    let mut generated = Vec::with_capacity(args.max_new_tokens);
+    let mut generated = Vec::with_capacity(max_new_tokens);
     let mut decode_ms = 0.0;
     let mut first_decode_ms = None;
     let mut first_time_to_token_ms = None;
@@ -1620,7 +1625,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         speculative_stats.adaptive_window_enabled = args.adaptive_speculative_window;
     }
 
-    while generated.len() < args.max_new_tokens {
+    while generated.len() < max_new_tokens {
         if interrupt.interrupt_requested() {
             bail!("prompt interrupted");
         }
@@ -1628,7 +1633,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             eprintln!("request {prompt_index}: waiting for first decode token");
         }
 
-        let remaining = args.max_new_tokens - generated.len();
+        let remaining = max_new_tokens - generated.len();
         let proposal_limit = remaining.min(adaptive_window);
         let draft_tokens = match ngram.as_deref_mut() {
             Some(ngram) => ngram.propose(session_id, &context_tokens, proposal_limit)?,
@@ -1717,7 +1722,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             &draft_tokens,
             &reply.predicted_tokens,
             generated.len(),
-            args.max_new_tokens,
+            max_new_tokens,
             |token| tokenizer.token_is_eog(token),
         )?;
         speculative_stats.observe_verify_decision(
@@ -1826,7 +1831,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             }
             print!("{}", filtered.text);
             io::stdout().flush().ok();
-            if reached_eog || generated.len() >= args.max_new_tokens {
+            if reached_eog || generated.len() >= max_new_tokens {
                 break;
             }
         }
@@ -2251,10 +2256,17 @@ fn print_stats(stats: Stats) {
     );
     eprintln!("  latency  ttft={:.2}ms", stats.first_time_to_token_ms);
     if !stats.reply_stats.is_empty() {
+        let lookups = stats.reply_stats.kv_lookup_hits + stats.reply_stats.kv_lookup_misses;
+        let hit_rate = if lookups > 0 {
+            100.0 * stats.reply_stats.kv_lookup_hits as f64 / lookups as f64
+        } else {
+            0.0
+        };
         eprintln!(
-            "  kv       lookup hit={} miss={} error={} imported_pages={} imported_tokens={}",
+            "  kv       lookup hit={} miss={} hit_rate={:.1}% error={} imported_pages={} imported_tokens={}",
             stats.reply_stats.kv_lookup_hits,
             stats.reply_stats.kv_lookup_misses,
+            hit_rate,
             stats.reply_stats.kv_lookup_errors,
             stats.reply_stats.kv_imported_pages,
             stats.reply_stats.kv_imported_tokens
@@ -2266,6 +2278,30 @@ fn print_stats(stats: Stats) {
             format_stage_mask(stats.reply_stats.kv_hit_stage_mask),
             format_stage_mask(stats.reply_stats.kv_record_stage_mask)
         );
+        if stats.reply_stats.restore_total_us > 0 {
+            eprintln!(
+                "  kv       restore_ms total={:.2} flush={:.2} prefill_drain={:.2} local={:.2} downstream_write={:.2} downstream_wait={:.2} drained_replies={}",
+                us_to_ms(stats.reply_stats.restore_total_us),
+                us_to_ms(stats.reply_stats.restore_flush_us),
+                us_to_ms(stats.reply_stats.restore_prefill_drain_us),
+                us_to_ms(stats.reply_stats.restore_local_us),
+                us_to_ms(stats.reply_stats.restore_downstream_write_us),
+                us_to_ms(stats.reply_stats.restore_downstream_wait_us),
+                stats.reply_stats.restore_prefill_drained_replies
+            );
+        }
+        if stats.reply_stats.checkpoint_total_us > 0 {
+            eprintln!(
+                "  kv       checkpoint_ms total={:.2} flush={:.2} prefill_drain={:.2} local={:.2} downstream_write={:.2} downstream_wait={:.2} drained_replies={}",
+                us_to_ms(stats.reply_stats.checkpoint_total_us),
+                us_to_ms(stats.reply_stats.checkpoint_flush_us),
+                us_to_ms(stats.reply_stats.checkpoint_prefill_drain_us),
+                us_to_ms(stats.reply_stats.checkpoint_local_us),
+                us_to_ms(stats.reply_stats.checkpoint_downstream_write_us),
+                us_to_ms(stats.reply_stats.checkpoint_downstream_wait_us),
+                stats.reply_stats.checkpoint_prefill_drained_replies
+            );
+        }
     } else {
         eprintln!("  kv       no lookup/record events reported");
     }
@@ -2770,6 +2806,8 @@ impl DraftRunner {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers,
                 selected_backend_device: None,
                 cache_type_k: GGML_TYPE_F16,
@@ -2945,118 +2983,327 @@ mod prompt_json_tests {
         assert!(parse_prompt_json_command("plain prompt")?.is_none());
         Ok(())
     }
+
+    #[test]
+    fn default_max_new_tokens_uses_remaining_context_budget() -> Result<()> {
+        assert_eq!(effective_prompt_max_new_tokens(0, 4096, 1024)?, 3072);
+        assert_eq!(format_prompt_max_new_tokens(0), "context-budget");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_max_new_tokens_is_preserved() -> Result<()> {
+        assert_eq!(effective_prompt_max_new_tokens(128, 4096, 1024)?, 128);
+        assert_eq!(format_prompt_max_new_tokens(128), "128");
+        Ok(())
+    }
 }
 
 fn write_local_configs(
     args: &PromptArgs,
     run_id: &str,
-    run_dir: &Path,
-    kv_mode: &str,
+    _run_dir: &Path,
+    kv_mode: StageKvCacheMode,
     stages: &[LocalStage],
-    metrics_otlp_url: &str,
+    _metrics_otlp_url: &str,
     hf_package_ref: bool,
 ) -> Result<()> {
     for stage in stages {
-        let local_kv_page_root = run_dir.join(format!("kv-pages-stage-{}", stage.stage_index));
-        let kv_page_root = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_page_root.clone()))
-            .unwrap_or_else(|| json!(local_kv_page_root));
-        let kv_uds_path = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_uds_path.clone()))
-            .unwrap_or_else(|| json!(stage.kv_uds_path));
-        if stage.remote.is_none() {
-            fs::create_dir_all(&local_kv_page_root)
-                .with_context(|| format!("create {}", local_kv_page_root.display()))?;
-        }
-        let kv_config = json!({
-            "node_id": format!("local-stage-{}", stage.stage_index),
-            "cluster_id": "local-binary-repl",
-            "run_id": run_id,
-            "page_root": kv_page_root,
-            "uds_path": kv_uds_path,
-            "quic_bind_addr": format!("127.0.0.1:{}", 19443 + stage.stage_index),
-            "peers": {},
-            "cache": { "max_local_bytes": null },
-            "metrics": {
-                "otlp_grpc_endpoint": metrics_otlp_url,
-                "export_interval_ms": 5000
-            },
-            "compression": {
-                "warm_tier_codec": "lz4-block",
-                "compress_remote_only_pages": false
-            },
-            "security": { "mtls_enabled": false }
-        });
-        write_json(&stage.kv_config_path, &kv_config)?;
-
         let upstream = if stage.stage_index == 0 {
-            json!({
-                "stage_id": "driver",
-                "stage_index": 0,
-                "endpoint": "driver"
+            Some(PeerConfig {
+                stage_id: "driver".to_string(),
+                stage_index: 0,
+                endpoint: "driver".to_string(),
             })
         } else {
             let previous = &stages[stage.stage_index - 1];
-            json!({
-                "stage_id": previous.stage_id,
-                "stage_index": previous.stage_index,
-                "endpoint": format!("tcp://{}", previous.endpoint_addr)
+            Some(PeerConfig {
+                stage_id: previous.stage_id.clone(),
+                stage_index: previous.stage_index as u32,
+                endpoint: format!("tcp://{}", previous.endpoint_addr),
             })
         };
-        let downstream = stages
-            .get(stage.stage_index + 1)
-            .map(|next| {
-                json!({
-                    "stage_id": next.stage_id,
-                    "stage_index": next.stage_index,
-                    "endpoint": format!("tcp://{}", next.endpoint_addr)
-                })
-            })
-            .unwrap_or_else(|| json!(null));
+        let downstream = stages.get(stage.stage_index + 1).map(|next| PeerConfig {
+            stage_id: next.stage_id.clone(),
+            stage_index: next.stage_index as u32,
+            endpoint: format!("tcp://{}", next.endpoint_addr),
+        });
         let stage_model_path = if hf_package_ref {
-            json!(args.model_path.to_str().unwrap_or(""))
+            args.model_path.to_string_lossy().to_string()
         } else {
             stage
                 .remote
                 .as_ref()
-                .map(|remote| json!(remote.model_path.clone()))
-                .unwrap_or_else(|| json!(stage.model_path))
+                .map(|remote| remote.model_path.clone())
+                .unwrap_or_else(|| stage.model_path.to_string_lossy().to_string())
         };
-        let stage_kv_uds_path = stage
-            .remote
-            .as_ref()
-            .map(|remote| json!(remote.kv_uds_path.clone()))
-            .unwrap_or_else(|| json!(stage.kv_uds_path));
-        let stage_config = json!({
-            "run_id": run_id,
-            "topology_id": "local-binary-kv-repl",
-            "model_id": args.model_id,
-            "model_path": stage_model_path,
-            "stage_id": stage.stage_id,
-            "stage_index": stage.stage_index,
-            "layer_start": stage.layer_start,
-            "layer_end": stage.layer_end,
-            "ctx_size": args.ctx_size,
-            "n_gpu_layers": args.n_gpu_layers,
-            "filter_tensors_on_load": true,
-            "load_mode": if hf_package_ref || stage.remote.is_some() { "layer-package" } else { "artifact-slice" },
-            "bind_addr": stage.bind_addr,
-            "upstream": upstream,
-            "downstream": downstream,
-            "kv_server": {
-                "uds_path": stage_kv_uds_path,
-                "mode": kv_mode,
-                "page_size_tokens": args.kv_page_size_tokens,
-                "correctness_mode": kv_mode == "correctness"
-            }
-        });
-        write_json(&stage.config_path, &stage_config)?;
+        let load_mode = if hf_package_ref || stage.remote.is_some() {
+            LoadMode::LayerPackage
+        } else {
+            LoadMode::ArtifactSlice
+        };
+        let kv_cache = prompt_stage_kv_cache_config(args, stage, kv_mode.clone(), hf_package_ref)?;
+        let stage_config = StageConfig {
+            run_id: run_id.to_string(),
+            topology_id: "local-binary-kv-repl".to_string(),
+            model_id: args.model_id.clone(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: prompt_source_model_path(args, hf_package_ref)?,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some(stage_model_path),
+            projector_path: None,
+            stage_id: stage.stage_id.clone(),
+            stage_index: stage.stage_index as u32,
+            layer_start: stage.layer_start,
+            layer_end: stage.layer_end,
+            ctx_size: args.ctx_size,
+            lane_count: args.stage_max_inflight.max(1) as u32,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: args.n_gpu_layers,
+            cache_type_k: args.cache_type_k.clone(),
+            cache_type_v: args.cache_type_v.clone(),
+            flash_attn_type: StageFlashAttentionType::Auto,
+            filter_tensors_on_load: true,
+            selected_device: None,
+            kv_cache,
+            load_mode,
+            bind_addr: stage.bind_addr.clone(),
+            upstream,
+            downstream,
+        };
+        write_json(&stage.config_path, &serde_json::to_value(stage_config)?)?;
     }
     Ok(())
+}
+
+fn parse_stage_kv_mode(value: &str) -> Result<StageKvCacheMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disabled" | "disable" | "off" | "false" => Ok(StageKvCacheMode::Disabled),
+        "record" => Ok(StageKvCacheMode::Record),
+        "lookup-record" | "lookup_record" | "lookuprecord" | "lookup" | "on" | "true" => {
+            Ok(StageKvCacheMode::LookupRecord)
+        }
+        "correctness" => Ok(StageKvCacheMode::LookupRecord),
+        other => bail!("unsupported kv mode {other}"),
+    }
+}
+
+fn prompt_stage_kv_cache_config(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    mode: StageKvCacheMode,
+    hf_package_ref: bool,
+) -> Result<Option<StageKvCacheConfig>> {
+    if mode == StageKvCacheMode::Disabled {
+        return Ok(Some(StageKvCacheConfig {
+            mode,
+            payload: StageKvCachePayload::Auto,
+            max_entries: 1,
+            max_bytes: 0,
+            min_tokens: args.kv_page_size_tokens.max(1),
+            shared_prefix_stride_tokens: 128,
+            shared_prefix_record_limit: 2,
+        }));
+    }
+
+    let max_bytes = prompt_stage_cache_max_bytes(args, stage, hf_package_ref)?;
+    let payload = prompt_stage_cache_payload(args, stage);
+    Ok(Some(StageKvCacheConfig {
+        mode,
+        payload,
+        max_entries: 128,
+        max_bytes,
+        min_tokens: args.kv_page_size_tokens.max(1),
+        shared_prefix_stride_tokens: 128,
+        shared_prefix_record_limit: 2,
+    }))
+}
+
+fn prompt_stage_cache_payload(args: &PromptArgs, stage: &LocalStage) -> StageKvCachePayload {
+    let identity = format!("{} {}", args.model_id, args.model_path.display());
+    let activation_width = u32::try_from(args.activation_width).unwrap_or_default();
+    match infer_family_capability(&identity, stage.layer_end, activation_width)
+        .map(|capability| capability.family_id)
+        .as_deref()
+    {
+        Some("qwen3next" | "falcon_h1") => StageKvCachePayload::KvRecurrent,
+        Some(
+            "qwen3_dense" | "llama" | "deepseek2" | "deepseek3" | "glm4" | "olmo" | "gemma2"
+            | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27",
+        ) => StageKvCachePayload::ResidentKv,
+        _ => StageKvCachePayload::Auto,
+    }
+}
+
+fn prompt_stage_cache_max_bytes(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    hf_package_ref: bool,
+) -> Result<u64> {
+    if let Some(meta) = prompt_cache_meta(args, stage, hf_package_ref)? {
+        if let Some(bytes) = estimate_prompt_stage_cache_max_bytes(
+            stage.layer_start,
+            stage.layer_end,
+            args.ctx_size,
+            args.stage_max_inflight.max(1) as u32,
+            &args.cache_type_k,
+            &args.cache_type_v,
+            &meta,
+        ) {
+            return Ok(bytes);
+        }
+    }
+
+    estimate_prompt_stage_cache_max_bytes_from_width(
+        stage.layer_start,
+        stage.layer_end,
+        args.ctx_size,
+        args.stage_max_inflight.max(1) as u32,
+        &args.cache_type_k,
+        &args.cache_type_v,
+        u32::try_from(args.activation_width).context("activation_width must be non-negative")?,
+    )
+    .context("derive prompt stage cache max bytes")
+}
+
+fn prompt_cache_meta(
+    args: &PromptArgs,
+    stage: &LocalStage,
+    hf_package_ref: bool,
+) -> Result<Option<GgufCompactMeta>> {
+    if args.model_path.is_file() {
+        return Ok(scan_gguf_compact_meta(&args.model_path));
+    }
+    if args.model_path.join("model-package.json").is_file() {
+        let info = inspect_layer_package(path_str(&args.model_path)?)
+            .with_context(|| format!("inspect package {}", args.model_path.display()))?;
+        return Ok(scan_gguf_compact_meta(Path::new(&info.source_model_path)));
+    }
+    if !hf_package_ref && stage.remote.is_none() {
+        return Ok(scan_gguf_compact_meta(&stage.model_path));
+    }
+    Ok(None)
+}
+
+fn prompt_source_model_path(args: &PromptArgs, _hf_package_ref: bool) -> Result<Option<String>> {
+    if args.model_path.is_file() {
+        return Ok(Some(args.model_path.to_string_lossy().to_string()));
+    }
+    if args.model_path.join("model-package.json").is_file() {
+        let info = inspect_layer_package(path_str(&args.model_path)?)
+            .with_context(|| format!("inspect package {}", args.model_path.display()))?;
+        return Ok(Some(info.source_model_path));
+    }
+    Ok(None)
+}
+
+fn estimate_prompt_stage_cache_max_bytes(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    meta: &GgufCompactMeta,
+) -> Option<u64> {
+    let kv_heads = if meta.kv_head_count > 0 {
+        meta.kv_head_count
+    } else {
+        meta.head_count
+    };
+    let key_width = if meta.key_length > 0 {
+        meta.key_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+    let value_width = if meta.value_length > 0 {
+        meta.value_length
+    } else if meta.embedding_size > 0 && kv_heads > 0 {
+        meta.embedding_size.checked_div(kv_heads)?
+    } else {
+        return None;
+    };
+    let key_elems = u64::from(key_width).checked_mul(u64::from(kv_heads))?;
+    let value_elems = u64::from(value_width).checked_mul(u64::from(kv_heads))?;
+    estimate_prompt_stage_cache_max_bytes_for_elements(
+        layer_start,
+        layer_end,
+        ctx_size,
+        lane_count,
+        cache_type_k,
+        cache_type_v,
+        key_elems,
+        value_elems,
+    )
+}
+
+fn estimate_prompt_stage_cache_max_bytes_from_width(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    activation_width: u32,
+) -> Option<u64> {
+    let elements = u64::from(activation_width);
+    estimate_prompt_stage_cache_max_bytes_for_elements(
+        layer_start,
+        layer_end,
+        ctx_size,
+        lane_count,
+        cache_type_k,
+        cache_type_v,
+        elements,
+        elements,
+    )
+}
+
+fn estimate_prompt_stage_cache_max_bytes_for_elements(
+    layer_start: u32,
+    layer_end: u32,
+    ctx_size: u32,
+    lane_count: u32,
+    cache_type_k: &str,
+    cache_type_v: &str,
+    key_elems_per_token: u64,
+    value_elems_per_token: u64,
+) -> Option<u64> {
+    let stage_layers = layer_end.checked_sub(layer_start)?;
+    if stage_layers == 0 {
+        return None;
+    }
+    let key_bytes = prompt_dtype_bytes(key_elems_per_token, cache_type_k)?;
+    let value_bytes = prompt_dtype_bytes(value_elems_per_token, cache_type_v)?;
+    key_bytes
+        .checked_add(value_bytes)?
+        .checked_mul(u64::from(stage_layers))?
+        .checked_mul(u64::from(ctx_size.max(1)))?
+        .checked_mul(u64::from(lane_count.max(1)))
+        .filter(|bytes| *bytes > 0)
+}
+
+fn prompt_dtype_bytes(elements: u64, dtype: &str) -> Option<u64> {
+    match dtype.trim().to_ascii_lowercase().as_str() {
+        "f32" => elements.checked_mul(4),
+        "f16" | "bf16" => elements.checked_mul(2),
+        "q8" | "q8_0" => prompt_ggml_block_bytes(elements, 32, 34),
+        "q8_1" => prompt_ggml_block_bytes(elements, 32, 36),
+        "q4" | "q4_0" | "iq4_nl" => prompt_ggml_block_bytes(elements, 32, 18),
+        "q4_1" => prompt_ggml_block_bytes(elements, 32, 20),
+        _ => None,
+    }
+}
+
+fn prompt_ggml_block_bytes(elements: u64, block_size: u64, type_size: u64) -> Option<u64> {
+    elements.div_ceil(block_size).checked_mul(type_size)
 }
 
 fn materialize_stage_artifacts(args: &PromptArgs, stages: &[LocalStage]) -> Result<()> {
@@ -3448,13 +3695,6 @@ fn sync_remote_host_inputs(
         &args.remote_root,
         tx,
     )?;
-    rsync_to_host_cached(
-        &args.kv_server_bin,
-        host,
-        &first_remote.kv_server_bin,
-        &args.remote_root,
-        tx,
-    )?;
     if !hf_package_ref {
         rsync_dir_to_host_cached(model_package_dir, host, &first_remote.model_path, tx)?;
     }
@@ -3469,13 +3709,6 @@ fn sync_remote_host_inputs(
             host,
             &remote.config_path,
             &format!("{} config", stage.stage_id),
-            tx,
-        )?;
-        rsync_to_host_with_progress(
-            &stage.kv_config_path,
-            host,
-            &remote.kv_config_path,
-            &format!("kv-stage-{} config", stage.stage_index),
             tx,
         )?;
     }
@@ -3615,7 +3848,6 @@ fn remote_stage_command(
     remote: &RemoteStage,
     metrics_otlp_url: &str,
 ) -> Result<String> {
-    let wait_attempts = args.startup_timeout_secs.saturating_mul(5).max(1);
     let mut stage_args = vec![
         shell_quote(&remote.stage_server_bin),
         "serve-binary".to_string(),
@@ -3644,31 +3876,21 @@ fn remote_stage_command(
         concat!(
             "set -e; ",
             "cd {stage_dir}; ",
-            "chmod +x {kv_bin} {stage_bin}; ",
-            "rm -f {kv_sock} kv.pid stage.pid {stage_exit}; ",
-            "{kv_bin} serve --config {kv_config} > {kv_log} 2>&1 & ",
-            "kv_pid=$!; echo $kv_pid > kv.pid; ",
-            "i=0; while [ ! -S {kv_sock} ] && [ $i -lt {wait_attempts} ]; do sleep 0.2; i=$((i + 1)); done; ",
-            "[ -S {kv_sock} ]; ",
+            "chmod +x {stage_bin}; ",
+            "rm -f stage.pid {stage_exit}; ",
             "{stage_command} > {stage_log} 2>&1 & ",
             "stage_pid=$!; echo $stage_pid > stage.pid; ",
-            "trap 'kill $stage_pid $kv_pid 2>/dev/null || true; wait $stage_pid 2>/dev/null || true; wait $kv_pid 2>/dev/null || true' INT TERM HUP EXIT; ",
+            "trap 'kill $stage_pid 2>/dev/null || true; wait $stage_pid 2>/dev/null || true' INT TERM HUP EXIT; ",
             "set +e; ",
             "wait $stage_pid; stage_status=$?; ",
             "echo $stage_status > {stage_exit}; ",
-            "kill $kv_pid 2>/dev/null || true; wait $kv_pid 2>/dev/null || true; ",
             "exit $stage_status"
         ),
         stage_dir = shell_quote(&remote.stage_dir),
-        kv_bin = shell_quote(&remote.kv_server_bin),
         stage_bin = shell_quote(&remote.stage_server_bin),
-        kv_sock = shell_quote(&remote.kv_uds_path),
-        kv_config = shell_quote(&remote.kv_config_path),
-        kv_log = shell_quote(&remote.kv_log_path),
         stage_command = stage_args.join(" "),
         stage_log = shell_quote(&remote.stage_log_path),
         stage_exit = shell_quote(&remote.stage_exit_path),
-        wait_attempts = wait_attempts,
     ))
 }
 
@@ -4244,10 +4466,9 @@ fn model_package_cache_key(model_path: &Path) -> Result<String> {
     Ok(format!("{stem}-package-{:016x}", hasher.finish()))
 }
 
-fn binary_cache_key(stage_server_bin: &Path, kv_server_bin: &Path) -> Result<String> {
+fn binary_cache_key(stage_server_bin: &Path) -> Result<String> {
     let mut hasher = DefaultHasher::new();
     hash_file_identity(stage_server_bin, &mut hasher)?;
-    hash_file_identity(kv_server_bin, &mut hasher)?;
     Ok(format!("{:016x}", hasher.finish()))
 }
 
@@ -4441,25 +4662,6 @@ fn even_stage_ranges(stage_count: usize, layer_end: u32) -> Result<Vec<(u32, u32
         start = end;
     }
     Ok(ranges)
-}
-
-fn wait_for_kv_sockets(stages: &[LocalStage], timeout_secs: u64) -> Result<()> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
-    loop {
-        if stages.iter().all(|stage| stage.kv_uds_path.exists()) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            let missing = stages
-                .iter()
-                .filter(|stage| !stage.kv_uds_path.exists())
-                .map(|stage| stage.kv_uds_path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!("timed out waiting for kv-server sockets: {missing}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
 }
 
 fn wait_for_socket(socket_path: &Path, timeout_secs: u64) -> Result<()> {
@@ -4886,7 +5088,7 @@ mod package_tests {
             unix_millis()
         ));
         fs::create_dir_all(&package_dir)?;
-        let manifest = json!({
+        let manifest = serde_json::json!({
             "shared": {
                 "metadata": {"path": "shared/metadata.gguf", "artifact_bytes": 11},
                 "embeddings": {"path": "shared/embeddings.gguf", "artifact_bytes": 22},
@@ -4921,7 +5123,7 @@ mod package_tests {
             unix_millis()
         ));
         fs::create_dir_all(&package_dir)?;
-        let manifest = json!({
+        let manifest = serde_json::json!({
             "shared": {
                 "metadata": {"path": "../metadata.gguf", "artifact_bytes": 11},
                 "embeddings": {"path": "shared/embeddings.gguf", "artifact_bytes": 22},
