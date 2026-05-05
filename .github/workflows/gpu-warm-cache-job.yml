@@ -57,8 +57,19 @@ jobs:
     steps:
       - name: Install base packages
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if apt-get update -o Acquire::Retries=3 && \
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -o Acquire::Retries=3 ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential; then
+              break
+            fi
+
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+
+            sleep $((attempt * 5))
+          done
           rm -rf /var/lib/apt/lists/*
 
       - uses: actions/checkout@v5
