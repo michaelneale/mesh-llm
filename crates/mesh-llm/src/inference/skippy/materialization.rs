@@ -293,7 +293,7 @@ pub(crate) fn materialize_stage_load(
     };
     let pin = pin_materialized_stage(
         &artifact.path,
-        &load.package_ref,
+        &local_ref,
         &load.topology_id,
         &load.run_id,
         &load.stage_id,
@@ -349,7 +349,7 @@ pub(crate) fn materialize_stage_config(
     };
     let pin = pin_materialized_stage(
         &artifact.path,
-        package_ref,
+        &local_ref,
         &config.topology_id,
         &config.run_id,
         &config.stage_id,
