@@ -16,6 +16,7 @@ pub(crate) struct StageControlCommand {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StageControlRequest {
     Load(StageLoadRequest),
     Stop(StageStopRequest),
@@ -23,6 +24,7 @@ pub(crate) enum StageControlRequest {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StageControlResponse {
     Ready(StageReadyResponse),
     Status(Vec<StageStatusSnapshot>),

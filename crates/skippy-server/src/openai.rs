@@ -469,6 +469,7 @@ async fn openai_http_telemetry(
     response
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum OpenAiBackendMode {
     LocalRuntime,
@@ -1471,6 +1472,7 @@ impl StageOpenAiBackend {
         .map_err(|error| OpenAiError::backend(format!("generation task failed: {error}")))?
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_generation_stream(
         &self,
         prompt: PreparedGenerationPrompt,
@@ -1687,6 +1689,7 @@ impl StageOpenAiBackend {
         Ok(parsed_tool_calls_from_message_json(&parsed_json, request))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_text(
         &self,
         prompt: PreparedGenerationPrompt,
@@ -2631,7 +2634,7 @@ impl StageOpenAiBackend {
                     .map_err(openai_backend_error)?;
                 let runtime_sessions_after = runtime.session_stats();
                 let runtime_lock_hold_ms = runtime_lock_hold_timer.elapsed_ms();
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.prefill_token_count".to_string(),
                     json!(request.prompt_token_ids.len() - 1),
@@ -2745,7 +2748,7 @@ impl StageOpenAiBackend {
                     continue;
                 }
                 decoded_tokens += 1;
-                let mut token_attrs = self.openai_attrs(&request.ids);
+                let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -2772,7 +2775,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut attrs = self.openai_attrs(&request.ids);
+            let mut attrs = self.openai_attrs(request.ids);
             attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -2818,7 +2821,7 @@ impl StageOpenAiBackend {
         if let Ok(mut runtime) = self.runtime.lock() {
             let runtime_lock_wait_ms = lock_timer.elapsed_ms();
             if let Ok(drop_stats) = runtime.drop_session_timed(&session_id) {
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),
@@ -2855,7 +2858,7 @@ impl StageOpenAiBackend {
         let mut stream =
             connect_endpoint_ready(request.first_stage_addr, request.startup_timeout_secs)
                 .map_err(openai_backend_error)?;
-        let mut connect_attrs = self.openai_attrs(&request.ids);
+        let mut connect_attrs = self.openai_attrs(request.ids);
         connect_attrs.insert(
             "llama_stage.first_stage_addr".to_string(),
             json!(request.first_stage_addr),
@@ -2909,7 +2912,7 @@ impl StageOpenAiBackend {
                     chunk_index += 1;
                 }
             }
-            let mut prefill_attrs = self.openai_attrs(&request.ids);
+            let mut prefill_attrs = self.openai_attrs(request.ids);
             prefill_attrs.insert(
                 "llama_stage.prefill_token_count".to_string(),
                 json!(prefill_token_count),
@@ -2996,7 +2999,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut decode_attrs = self.openai_attrs(&request.ids);
+            let mut decode_attrs = self.openai_attrs(request.ids);
             decode_attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -3055,7 +3058,7 @@ impl StageOpenAiBackend {
             .lane_pool
             .as_ref()
             .ok_or_else(|| OpenAiError::backend("embedded stage 0 has no downstream lane pool"))?;
-        let mut lane = lane_pool.checkout(&request.ids)?;
+        let mut lane = lane_pool.checkout(request.ids)?;
 
         let result = (|| {
             let downstream = &mut lane.stream;
@@ -3182,7 +3185,7 @@ impl StageOpenAiBackend {
                     chunk_index += 1;
                 }
             }
-            let mut prefill_attrs = self.openai_attrs(&request.ids);
+            let mut prefill_attrs = self.openai_attrs(request.ids);
             prefill_attrs.insert(
                 "llama_stage.prefill_token_count".to_string(),
                 json!(prefill_token_count),
@@ -3326,7 +3329,7 @@ impl StageOpenAiBackend {
                         .reset_to_context(&context_tokens)
                         .map_err(openai_backend_error)?;
                     speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
-                    let mut attrs = self.openai_attrs(&request.ids);
+                    let mut attrs = self.openai_attrs(request.ids);
                     attrs.insert(
                         "llama_stage.draft_model_path".to_string(),
                         json!(draft.path.display().to_string()),
@@ -3586,7 +3589,7 @@ impl StageOpenAiBackend {
                                 speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
                             }
                         }
-                        let mut token_attrs = self.openai_attrs(&request.ids);
+                        let mut token_attrs = self.openai_attrs(request.ids);
                         token_attrs
                             .insert("llama_stage.decode_step".to_string(), json!(decode_step));
                         token_attrs
@@ -3757,7 +3760,7 @@ impl StageOpenAiBackend {
                 current = reply.predicted;
                 decoded_tokens += 1;
                 context_tokens.push(current);
-                let mut token_attrs = self.openai_attrs(&request.ids);
+                let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -3802,7 +3805,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut decode_attrs = self.openai_attrs(&request.ids);
+            let mut decode_attrs = self.openai_attrs(request.ids);
             decode_attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -3890,7 +3893,7 @@ impl StageOpenAiBackend {
         if let Ok(mut runtime) = self.runtime.lock() {
             let runtime_lock_wait_ms = lock_timer.elapsed_ms();
             if let Ok(drop_stats) = runtime.drop_session_timed(&session_key) {
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),

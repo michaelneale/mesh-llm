@@ -392,8 +392,15 @@ jobs:
     steps:
       - name: Install base packages
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
       - name: Benchmark gate
@@ -449,8 +456,15 @@ jobs:
     steps:
       - name: Install base packages
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           rm -rf /var/lib/apt/lists/*
       - uses: actions/checkout@v5
       - name: Benchmark gate

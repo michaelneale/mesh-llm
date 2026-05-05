@@ -45,6 +45,16 @@ jobs:
           TMP_STDERR=$(mktemp)
           trap 'rm -f "$TMP_OUTPUT" "$TMP_STDERR"' EXIT
           if ! "$BIN" --json >"$TMP_OUTPUT" 2>"$TMP_STDERR"; then
+            if grep -q '"error":"Metal device not available"' "$TMP_OUTPUT" "$TMP_STDERR"; then
+              if [ -s "$TMP_OUTPUT" ]; then
+                cat "$TMP_OUTPUT"
+              fi
+              if [ -s "$TMP_STDERR" ]; then
+                cat "$TMP_STDERR" >&2
+              fi
+              echo "::warning::Metal device not available on this runner; skipping benchmark smoke."
+              exit 0
+            fi
             if [ -s "$TMP_OUTPUT" ]; then
               cat "$TMP_OUTPUT"
             fi
