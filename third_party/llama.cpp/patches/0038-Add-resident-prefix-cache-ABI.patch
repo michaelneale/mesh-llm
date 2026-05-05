@@ -1,7 +1,7 @@
-From b786fc39097d7927509c137a88210fe2572a10ac Mon Sep 17 00:00:00 2001
+From 2b57a6e3028cc0da193aa3cdbf3c684a742d42f1 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 4 May 2026 21:58:07 +1000
-Subject: [PATCH 38/39] Add resident prefix cache ABI
+Subject: [PATCH 38/45] Add resident prefix cache ABI
 
 ---
  include/skippy.h |  20 ++++++-

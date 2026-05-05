@@ -1,7 +1,7 @@
-From 1ae674e0a7eac925f396cf7361fe59a3bb922c5a Mon Sep 17 00:00:00 2001
+From 8f5deafaefac5cecfc8c544b46fbd3f4566229ff Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 20:15:33 +1000
-Subject: [PATCH 19/34] Add stage sampling config ABI
+Subject: [PATCH 19/45] Add stage sampling config ABI
 
 ---
  include/skippy.h |  41 +++++++++++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 19/34] Add stage sampling config ABI
  2 files changed, 157 insertions(+), 3 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 23a46e0f2..79027cd08 100644
+index 23a46e0f..79027cd0 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -89,7 +89,7 @@ index 23a46e0f2..79027cd08 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 50e25c8f5..894ad0934 100644
+index 50e25c8f..894ad093 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -32,6 +32,7 @@ struct skippy_session {

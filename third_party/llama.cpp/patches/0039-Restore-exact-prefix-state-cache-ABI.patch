@@ -1,7 +1,7 @@
-From dded48d036903770b8932e022be17e247be9a939 Mon Sep 17 00:00:00 2001
+From ddb83f59574bbbe866793ae433aa1b5f73057a8c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 08:21:34 +1000
-Subject: [PATCH 39/39] Restore exact prefix state cache ABI
+Subject: [PATCH 39/45] Restore exact prefix state cache ABI
 
 ---
  include/skippy.h       |  91 ++++++++-
@@ -153,10 +153,10 @@ index d8dba876..b051b66c 100644
          struct skippy_session * session,
          int32_t cache_seq_id,
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index e8a1a4ce..00fc6fee 100644
+index 90b701a9..6bdbf42c 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -1126,6 +1126,363 @@ ggml_type llama_kv_cache::type_v() const {
+@@ -1127,6 +1127,363 @@ ggml_type llama_kv_cache::type_v() const {
      return layers[0].v->type;
  }
  

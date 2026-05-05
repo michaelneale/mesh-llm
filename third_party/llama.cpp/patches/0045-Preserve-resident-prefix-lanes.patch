@@ -1,7 +1,7 @@
-From 007542a6e629bf52ac9521524dfbd4a13c76eed4 Mon Sep 17 00:00:00 2001
+From f4132e9af752c80ceb4fb215e3b5b0a55f60c1e5 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 22:05:49 +1000
-Subject: [PATCH] Preserve resident prefix lanes
+Subject: [PATCH 45/45] Preserve resident prefix lanes
 
 ---
  src/skippy.cpp | 65 ++++++++++++++++++++++++++++++++++++++++++++------

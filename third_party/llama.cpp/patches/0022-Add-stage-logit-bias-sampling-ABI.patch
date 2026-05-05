@@ -1,7 +1,7 @@
-From 8f32047f8a26dd8f185c3123d1b7564a11adfa1c Mon Sep 17 00:00:00 2001
+From 19242b7ce5dc17d8f56cba1655c2ea9915ea067d Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 20:52:31 +1000
-Subject: [PATCH 22/34] Add stage logit bias sampling ABI
+Subject: [PATCH 22/45] Add stage logit bias sampling ABI
 
 ---
  include/skippy.h |  8 +++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 22/34] Add stage logit bias sampling ABI
  2 files changed, 24 insertions(+), 4 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index c5c22b5d8..bf54c23ea 100644
+index c5c22b5d..bf54c23e 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,9 @@ extern "C" {
@@ -42,7 +42,7 @@ index c5c22b5d8..bf54c23ea 100644
  
  struct skippy_kv_page_desc {
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index ce454d6c3..b7188fb4b 100644
+index ce454d6c..b7188fb4 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -786,7 +786,7 @@ static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {

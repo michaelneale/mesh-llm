@@ -1,7 +1,7 @@
-From 7d3756d1a686b73776034f155a7ea48e2bcbc7ac Mon Sep 17 00:00:00 2001
+From 01d1d880fe04aadcb21abcdc5ae6b2843b1695c6 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Thu, 30 Apr 2026 18:55:00 +1000
-Subject: [PATCH 29/34] Support Qwen3MoE runtime-slice execution
+Subject: [PATCH 29/45] Support Qwen3MoE runtime-slice execution
 
 Add LLM_ARCH_QWEN3MOE to the supported architecture list in the stage
 filter gate and add stage filter hooks to the qwen3moe.cpp graph builder
@@ -12,10 +12,10 @@ so that runtime-slice execution works for Qwen3MoE models.
  2 files changed, 16 insertions(+), 3 deletions(-)
 
 diff --git a/src/models/qwen3moe.cpp b/src/models/qwen3moe.cpp
-index 16bedba99..cdd818497 100644
+index 4440b83a..69135dfc 100644
 --- a/src/models/qwen3moe.cpp
 +++ b/src/models/qwen3moe.cpp
-@@ -9,16 +9,21 @@ llm_build_qwen3moe::llm_build_qwen3moe(const llama_model & model, const llm_grap
+@@ -68,16 +68,21 @@ llama_model_qwen3moe::graph::graph(const llama_model & model, const llm_graph_pa
      ggml_tensor * cur;
      ggml_tensor * inpL;
  
@@ -40,7 +40,7 @@ index 16bedba99..cdd818497 100644
          ggml_tensor * inpSA = inpL;
  
          // norm
-@@ -101,6 +106,13 @@ llm_build_qwen3moe::llm_build_qwen3moe(const llama_model & model, const llm_grap
+@@ -160,6 +165,13 @@ llama_model_qwen3moe::graph::graph(const llama_model & model, const llm_graph_pa
      }
      cur = inpL;
  
@@ -55,7 +55,7 @@ index 16bedba99..cdd818497 100644
              model.output_norm, NULL,
              LLM_NORM_RMS, -1);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index ab5a147c0..1139464ab 100644
+index ab5a147c..1139464a 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1045,6 +1045,7 @@ static enum skippy_status skippy_finish_model_open(

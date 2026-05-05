@@ -1,7 +1,7 @@
-From c8bac3d562236f3f53d99e2b6234d49ac7a9bcf1 Mon Sep 17 00:00:00 2001
+From 3a2dbfeba6e7f1f22194799c869dae0ac9d15299 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sun, 26 Apr 2026 00:00:00 +1000
-Subject: [PATCH 11/34] Add native stage KV page ABI
+Subject: [PATCH 11/45] Add native stage KV page ABI
 
 ---
  include/skippy.h       |  40 +++++
@@ -11,7 +11,7 @@ Subject: [PATCH 11/34] Add native stage KV page ABI
  4 files changed, 512 insertions(+), 1 deletion(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index 7ab93d353..b049150cf 100644
+index 7ab93d35..b049150c 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -37,6 +37,11 @@ enum skippy_feature {
@@ -76,7 +76,7 @@ index 7ab93d353..b049150cf 100644
          struct skippy_model * model,
          const char * text,
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 666cca12f..9c8bdaaa4 100644
+index a49a055a..d03ca789 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
 @@ -4,6 +4,7 @@
@@ -87,7 +87,7 @@ index 666cca12f..9c8bdaaa4 100644
  
  #include <algorithm>
  #include <cassert>
-@@ -1125,6 +1126,351 @@ ggml_type llama_kv_cache::type_v() const {
+@@ -1126,6 +1127,351 @@ ggml_type llama_kv_cache::type_v() const {
      return layers[0].v->type;
  }
  
@@ -440,7 +440,7 @@ index 666cca12f..9c8bdaaa4 100644
      uint32_t result = 0;
  
 diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 0b62dc7b2..555cfc2c2 100644
+index 0b62dc7b..555cfc2c 100644
 --- a/src/llama-kv-cache.h
 +++ b/src/llama-kv-cache.h
 @@ -6,12 +6,14 @@
@@ -483,7 +483,7 @@ index 0b62dc7b2..555cfc2c2 100644
      // graph_build API
      //
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index f85da9640..820f37b49 100644
+index f85da964..820f37b4 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,7 +1,10 @@

@@ -1,7 +1,7 @@
-From 9f726b27dd282e01b878bac0b4638e44670cf25a Mon Sep 17 00:00:00 2001
+From 06767dc644a6a2858ddeb6c86e0ace84b1ba5883 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 14:51:18 +1000
-Subject: [PATCH 08/34] Add GGUF package part composer ABI
+Subject: [PATCH 08/45] Add GGUF package part composer ABI
 
 ---
  include/skippy.h |   6 +
@@ -9,7 +9,7 @@ Subject: [PATCH 08/34] Add GGUF package part composer ABI
  2 files changed, 230 insertions(+), 94 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index cd72379df..7ab93d353 100644
+index cd72379d..7ab93d35 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -284,6 +284,12 @@ LLAMA_API enum skippy_status skippy_write_slice_gguf(
@@ -26,7 +26,7 @@ index cd72379df..7ab93d353 100644
  }
  #endif
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 2b54a7db7..261693203 100644
+index 2b54a7db..26169320 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -14,6 +14,7 @@

@@ -1,7 +1,7 @@
-From bc63e40447b1095b1b86bb72d47fcbf6ca517a00 Mon Sep 17 00:00:00 2001
+From 89fefe08c52d539c8ad44f082fd63412e5796663 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:57:39 +1000
-Subject: [PATCH 24/34] Add native stage session checkpoint ABI
+Subject: [PATCH 24/45] Add native stage session checkpoint ABI
 
 ---
  include/skippy.h | 13 ++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 24/34] Add native stage session checkpoint ABI
  2 files changed, 109 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index ef4022b95..302ad3b46 100644
+index ef4022b9..302ad3b4 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -47,7 +47,7 @@ index ef4022b95..302ad3b46 100644
          struct skippy_session * session,
          struct skippy_error ** out_error);
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 5f5d33b4f..5abd16aaf 100644
+index 5f5d33b4..5abd16aa 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -1,6 +1,7 @@

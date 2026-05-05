@@ -1,14 +1,14 @@
-From 3adf6ca13807d57a93acaab7410f3dc82fa34147 Mon Sep 17 00:00:00 2001
+From c38cc1e3e29b3fd164a6b2af18308623483e1dbe Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Tue, 5 May 2026 19:45:00 +1000
-Subject: [PATCH 42/42] Avoid heap batch allocation for single-token decode
+Subject: [PATCH 42/45] Avoid heap batch allocation for single-token decode
 
 ---
  src/skippy.cpp | 23 +++++++++++++++++++++++
  1 file changed, 23 insertions(+)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index 26495587..8e321900 100644
+index 4c9592fe..8c431715 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -759,6 +759,29 @@ static enum skippy_status skippy_decode_tokens(
@@ -43,3 +43,4 @@ index 26495587..8e321900 100644
      for (int32_t i = 0; i < n_tokens; ++i) {
 -- 
 2.50.1 (Apple Git-155)
+
