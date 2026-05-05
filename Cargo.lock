@@ -7024,6 +7024,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skippy-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "skippy-protocol",
+]
+
+[[package]]
 name = "skippy-correctness"
 version = "0.1.0"
 dependencies = [
@@ -7110,6 +7119,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "blake3",
  "clap",
  "futures-util",
  "libc",
@@ -7118,6 +7128,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "skippy-cache",
  "skippy-metrics",
  "skippy-protocol",
  "skippy-runtime",

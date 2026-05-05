@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     cli::ServeBinaryArgs,
-    config::{load_json, validate_config},
+    config::validate_config,
     kv_integration::KvStageIntegration,
     openai::{self, EmbeddedOpenAiArgs},
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
@@ -27,8 +27,8 @@ use skippy_protocol::{
     binary::{
         read_stage_message, recv_reply, send_ready, send_reply_ack, send_reply_ack_with_stats,
         send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, state_flags,
-        write_stage_message, StageReplyStats, StageSamplingConfig, StageWireMessage,
-        WireActivationDType, WireMessageKind, WireReplyKind,
+        StageReplyStats, StageSamplingConfig, StageWireMessage, WireActivationDType,
+        WireMessageKind, WireReplyKind,
     },
     LoadMode, MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -38,115 +38,36 @@ use skippy_runtime::{
 };
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+pub(crate) mod forwarding;
+mod options;
 mod socket;
+mod wire;
 
+pub(crate) use self::forwarding::{forwarded_stage_message, forwarded_stage_message_timed};
+pub use self::options::{parse_wire_dtype, BinaryStageOptions, EmbeddedOpenAiStageOptions};
 use self::socket::*;
+pub(crate) use self::wire::write_stage_message_conditioned;
+pub use self::wire::WireCondition;
 
 static BINARY_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-type BinaryKvRecordCandidate = ();
 
 #[derive(Default)]
 struct BinaryKvLookupResult {
     restored_tokens: usize,
+    activation: Option<ActivationFrame>,
     stats: StageReplyStats,
 }
 
-#[derive(Clone)]
-pub struct BinaryStageOptions {
-    pub config: StageConfig,
-    pub topology: Option<StageTopology>,
-    pub bind_addr: SocketAddr,
-    pub activation_width: i32,
-    pub wire_dtype: WireActivationDType,
-    pub metrics_otlp_grpc: Option<String>,
-    pub telemetry_queue_capacity: usize,
-    pub telemetry_level: crate::telemetry::TelemetryLevel,
-    pub max_inflight: usize,
-    pub reply_credit_limit: Option<usize>,
-    pub async_prefill_forward: bool,
-    pub downstream_wire_condition: WireCondition,
-    pub downstream_connect_timeout_secs: u64,
-    pub openai: Option<EmbeddedOpenAiStageOptions>,
-}
-
-#[derive(Clone)]
-pub struct EmbeddedOpenAiStageOptions {
-    pub bind_addr: SocketAddr,
-    pub model_id: Option<String>,
-    pub default_max_tokens: u32,
-    pub generation_concurrency: usize,
-    pub prefill_chunk_size: usize,
-    pub prefill_chunk_policy: String,
-    pub prefill_chunk_schedule: Option<String>,
-    pub prefill_adaptive_start: usize,
-    pub prefill_adaptive_step: usize,
-    pub prefill_adaptive_max: usize,
-    pub draft_model_path: Option<PathBuf>,
-    pub speculative_window: usize,
-    pub adaptive_speculative_window: bool,
-    pub draft_n_gpu_layers: Option<i32>,
-}
-
-impl BinaryStageOptions {
-    pub fn from_cli_args(args: ServeBinaryArgs) -> Result<Self> {
-        if args.activation_width <= 0 {
-            bail!("activation_width must be greater than zero");
-        }
-        if args.openai_generation_concurrency == 0 {
-            bail!("--openai-generation-concurrency must be greater than zero");
-        }
-        if args.openai_prefill_chunk_size == 0 {
-            bail!("--openai-prefill-chunk-size must be greater than zero");
-        }
-        let wire_dtype = parse_wire_dtype(&args.activation_wire_dtype)?;
-        let downstream_wire_condition =
-            WireCondition::new(args.downstream_wire_delay_ms, args.downstream_wire_mbps)?;
-        let config = load_json::<StageConfig>(&args.config)
-            .with_context(|| format!("load stage config {}", args.config.display()))?;
-        let topology = match args.topology.as_ref() {
-            Some(path) => Some(
-                load_json::<StageTopology>(path)
-                    .with_context(|| format!("load topology {}", path.display()))?,
-            ),
-            None => None,
-        };
-        let bind_addr = args.bind_addr.unwrap_or(config.bind_addr.parse()?);
-        let openai = args
-            .openai_bind_addr
-            .map(|bind_addr| EmbeddedOpenAiStageOptions {
-                bind_addr,
-                model_id: args.openai_model_id,
-                default_max_tokens: args.openai_default_max_tokens,
-                generation_concurrency: args.openai_generation_concurrency,
-                prefill_chunk_size: args.openai_prefill_chunk_size,
-                prefill_chunk_policy: args.openai_prefill_chunk_policy,
-                prefill_chunk_schedule: args.openai_prefill_chunk_schedule,
-                prefill_adaptive_start: args.openai_prefill_adaptive_start,
-                prefill_adaptive_step: args.openai_prefill_adaptive_step,
-                prefill_adaptive_max: args.openai_prefill_adaptive_max,
-                draft_model_path: args.openai_draft_model_path,
-                speculative_window: args.openai_speculative_window,
-                adaptive_speculative_window: args.openai_adaptive_speculative_window,
-                draft_n_gpu_layers: args.openai_draft_n_gpu_layers,
-            });
-        Ok(Self {
-            config,
-            topology,
-            bind_addr,
-            activation_width: args.activation_width,
-            wire_dtype,
-            metrics_otlp_grpc: args.metrics_otlp_grpc,
-            telemetry_queue_capacity: args.telemetry_queue_capacity,
-            telemetry_level: args.telemetry_level,
-            max_inflight: args.max_inflight,
-            reply_credit_limit: args.reply_credit_limit,
-            async_prefill_forward: args.async_prefill_forward,
-            downstream_wire_condition,
-            downstream_connect_timeout_secs: args.downstream_connect_timeout_secs,
-            openai,
-        })
-    }
+#[derive(Default)]
+struct BinaryKvRecordResult {
+    recorded_pages: usize,
+    recorded_tokens: u64,
+    evicted_entries: usize,
+    evicted_tokens: u64,
+    recorded_activations: usize,
+    recorded_activation_bytes: u64,
+    evicted_activation_entries: usize,
+    evicted_activation_bytes: u64,
 }
 
 pub async fn serve_binary(args: ServeBinaryArgs) -> Result<()> {
@@ -377,7 +298,6 @@ fn handle_binary_connection(
     let mut pending_prefill_replies = 0usize;
     let mut pending_reply_stats = StageReplyStats::default();
     let mut request_summary = BinaryRequestSummary::default();
-    let mut record_workers = Vec::new();
     let mut async_forwarder = if async_prefill_forward {
         downstream
             .as_ref()
@@ -416,7 +336,6 @@ fn handle_binary_connection(
                 bail!("cannot stop with {pending_prefill_replies} deferred prefill replies");
             }
             let mut stop_stats = std::mem::take(&mut pending_reply_stats);
-            drain_record_workers(&mut record_workers);
             request_summary.emit(telemetry, config, session_id);
             request_summary = BinaryRequestSummary::default();
             if let Some(downstream) = downstream.as_mut() {
@@ -641,6 +560,7 @@ fn handle_binary_connection(
             &session_key,
             &message,
             &token_ids,
+            activation_width,
         );
         message_reply_stats.merge(lookup_result.stats);
         let restored_prefill =
@@ -668,7 +588,10 @@ fn handle_binary_connection(
             (
                 message.state.current_token,
                 Vec::new(),
-                empty_activation_frame(config, &message),
+                lookup_result
+                    .activation
+                    .clone()
+                    .unwrap_or_else(|| empty_activation_frame(config, &message)),
                 0.0,
             )
         } else {
@@ -779,24 +702,26 @@ fn handle_binary_connection(
         );
 
         if message.kind.is_prefill() && !restored_prefill {
-            let records = maybe_plan_record_binary_prefill(
+            let record = maybe_record_binary_prefill(
                 config,
+                runtime,
                 kv,
                 telemetry,
                 &session_key,
                 &message,
                 &token_ids,
                 lookup_result.restored_tokens as u64,
+                activation_width,
+                Some(&output),
             );
-            if !records.is_empty() {
-                message_reply_stats.kv_recorded_pages += records.len() as i64;
+            if record.recorded_pages > 0 {
+                message_reply_stats.kv_recorded_pages += record.recorded_pages as i64;
                 message_reply_stats.kv_record_stage_mask |= stage_mask(config.stage_index);
-                record_workers.push(spawn_commit_record_binary_prefill(
-                    runtime.clone(),
-                    kv.cloned(),
-                    telemetry.clone(),
-                    records,
-                ));
+            }
+            if record.recorded_activations > 0 {
+                message_reply_stats.kv_recorded_bytes = message_reply_stats
+                    .kv_recorded_bytes
+                    .saturating_add(record.recorded_activation_bytes as i64);
             }
         }
 
@@ -1383,10 +1308,6 @@ fn stage_mask(stage_index: u32) -> i64 {
     }
 }
 
-fn block_on_kv<F: Future>(future: F) -> F::Output {
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
-}
-
 fn binary_message_base(
     config: &StageConfig,
     session_id: &str,
@@ -1464,6 +1385,7 @@ fn maybe_lookup_binary_prefill(
     session_id: &str,
     message: &StageWireMessage,
     token_ids: &[i32],
+    activation_width: i32,
 ) -> BinaryKvLookupResult {
     let mut result = BinaryKvLookupResult::default();
     let Some(kv) = kv else {
@@ -1472,7 +1394,6 @@ fn maybe_lookup_binary_prefill(
     if !message.kind.is_prefill()
         || message.kind.requires_predicted_reply()
         || !kv.should_lookup()
-        || config.downstream.is_some()
         || token_ids.is_empty()
     {
         return result;
@@ -1486,122 +1407,311 @@ fn maybe_lookup_binary_prefill(
         json!(identities.len()),
     );
     let started = Instant::now();
-    match block_on_kv(
-        kv.lookup_prefixes(
-            identities
-                .into_iter()
-                .map(|candidate| candidate.identity)
-                .collect(),
-        ),
-    ) {
-        Ok(outcome) => {
+    if config.downstream.is_some() {
+        let Some(activation) =
+            kv.restore_resident_activation(config, &base, token_start, token_ids, activation_width)
+        else {
+            result.stats.kv_lookup_misses += 1;
             attrs.insert(
                 "skippy.kv.lookup_ms".to_string(),
                 json!(elapsed_ms(started)),
             );
             attrs.insert(
-                "skippy.kv.lookup_hits".to_string(),
-                json!(outcome.pages.len()),
+                "skippy.kv.decision".to_string(),
+                json!("activation_resident_miss"),
             );
-            if !outcome.errors.is_empty() {
-                attrs.insert("skippy.kv.lookup_errors".to_string(), json!(outcome.errors));
-            }
-            if let Some(page) = outcome
-                .pages
-                .into_iter()
-                .max_by_key(|page| page.identity.as_ref().map(|identity| identity.token_count))
-            {
-                let restored_tokens = page
-                    .identity
-                    .as_ref()
-                    .map(|identity| identity.token_count as usize)
-                    .unwrap_or(0)
-                    .min(token_ids.len());
+            telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+            return result;
+        };
+        let resident_restore = {
+            let mut runtime = runtime.lock().expect("runtime lock poisoned");
+            kv.restore_resident_prefix(
+                &mut runtime,
+                session_id,
+                std::slice::from_ref(&activation.identity),
+                token_ids,
+            )
+        };
+        match resident_restore {
+            Ok(Some(restored)) if restored.token_count >= token_ids.len() => {
+                result.restored_tokens = restored.token_count;
+                result.activation = Some(activation.frame);
+                result.stats.kv_lookup_hits += 1;
+                result.stats.kv_imported_tokens += restored.token_count as i64;
+                result.stats.kv_imported_pages += 1;
+                result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
                 attrs.insert(
-                    "skippy.kv.hit_page_id".to_string(),
-                    json!(page.page_id.clone()),
+                    "skippy.kv.lookup_ms".to_string(),
+                    json!(elapsed_ms(started)),
+                );
+                attrs.insert(
+                    "skippy.kv.decision".to_string(),
+                    json!("activation_resident_hit"),
+                );
+                attrs.insert("skippy.kv.hit_page_id".to_string(), json!(restored.page_id));
+                attrs.insert(
+                    "skippy.activation_cache.hit_page_id".to_string(),
+                    json!(activation.page_id),
                 );
                 attrs.insert(
                     "skippy.kv.restored_tokens".to_string(),
-                    json!(restored_tokens),
+                    json!(restored.token_count),
                 );
-                if restored_tokens < token_ids.len() && config.layer_start != 0 {
-                    result.restored_tokens = restored_tokens;
-                    result.stats.kv_lookup_hits += 1;
-                    attrs.insert(
-                        "skippy.kv.decision".to_string(),
-                        json!("partial_hit_deferred"),
-                    );
-                    telemetry.emit("stage.binary_kv_lookup_decision", attrs);
-                    return result;
-                }
-                let already_loaded = {
-                    let runtime = runtime.lock().expect("runtime lock poisoned");
-                    runtime.has_session_range(session_id, token_start, restored_tokens as u64)
-                };
-                if already_loaded {
-                    result.restored_tokens = restored_tokens;
-                    result.stats.kv_lookup_hits += 1;
-                    result.stats.kv_imported_tokens += restored_tokens as i64;
-                    result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
-                    attrs.insert(
-                        "skippy.kv.decision".to_string(),
-                        json!("hit_already_loaded"),
-                    );
-                    telemetry.emit("stage.binary_kv_lookup_decision", attrs);
-                    return result;
-                }
+                attrs.insert(
+                    "skippy.activation_cache.payload_bytes".to_string(),
+                    json!(activation.payload_bytes),
+                );
+                attrs.insert(
+                    "skippy.activation_cache.entries".to_string(),
+                    json!(activation.entries),
+                );
+                telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+                return result;
+            }
+            Ok(Some(restored)) => {
                 result.stats.kv_lookup_misses += 1;
                 attrs.insert(
-                    "skippy.kv.decision".to_string(),
-                    json!("native_kv_abi_disabled"),
+                    "skippy.kv.lookup_ms".to_string(),
+                    json!(elapsed_ms(started)),
                 );
-            } else {
-                result.stats.kv_lookup_misses += 1;
-                attrs.insert("skippy.kv.decision".to_string(), json!("miss"));
+                attrs.insert(
+                    "skippy.kv.decision".to_string(),
+                    json!("activation_hit_prefix_short"),
+                );
+                attrs.insert(
+                    "skippy.kv.restored_tokens".to_string(),
+                    json!(restored.token_count),
+                );
+                telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+                return result;
             }
-            telemetry.emit("stage.binary_kv_lookup_decision", attrs);
-            result
+            Ok(None) => {
+                result.stats.kv_lookup_misses += 1;
+                attrs.insert(
+                    "skippy.kv.lookup_ms".to_string(),
+                    json!(elapsed_ms(started)),
+                );
+                attrs.insert(
+                    "skippy.kv.decision".to_string(),
+                    json!("activation_hit_kv_miss"),
+                );
+                attrs.insert(
+                    "skippy.activation_cache.hit_page_id".to_string(),
+                    json!(activation.page_id),
+                );
+                telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+                return result;
+            }
+            Err(error) => {
+                result.stats.kv_lookup_errors += 1;
+                attrs.insert(
+                    "skippy.kv.lookup_ms".to_string(),
+                    json!(elapsed_ms(started)),
+                );
+                attrs.insert(
+                    "skippy.kv.decision".to_string(),
+                    json!("activation_hit_kv_error"),
+                );
+                attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
+                telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+                return result;
+            }
         }
+    }
+    let resident_restore = {
+        let mut runtime = runtime.lock().expect("runtime lock poisoned");
+        kv.restore_resident_prefix(&mut runtime, session_id, &identities, token_ids)
+    };
+    match resident_restore {
+        Ok(Some(restored)) => {
+            result.restored_tokens = restored.token_count;
+            result.stats.kv_lookup_hits += 1;
+            result.stats.kv_imported_tokens += restored.token_count as i64;
+            result.stats.kv_hit_stage_mask |= stage_mask(config.stage_index);
+            attrs.insert(
+                "skippy.kv.lookup_ms".to_string(),
+                json!(elapsed_ms(started)),
+            );
+            attrs.insert("skippy.kv.decision".to_string(), json!("resident_hit"));
+            attrs.insert("skippy.kv.hit_page_id".to_string(), json!(restored.page_id));
+            attrs.insert(
+                "skippy.kv.restored_tokens".to_string(),
+                json!(restored.token_count),
+            );
+            attrs.insert(
+                "skippy.kv.resident_seq_id".to_string(),
+                json!(restored.seq_id),
+            );
+            attrs.insert(
+                "skippy.kv.resident_entries".to_string(),
+                json!(restored.entries),
+            );
+            telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+            return result;
+        }
+        Ok(None) => {}
         Err(error) => {
             result.stats.kv_lookup_errors += 1;
             attrs.insert(
                 "skippy.kv.lookup_ms".to_string(),
                 json!(elapsed_ms(started)),
             );
-            attrs.insert("skippy.kv.decision".to_string(), json!("error"));
+            attrs.insert("skippy.kv.decision".to_string(), json!("resident_error"));
             attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
             telemetry.emit("stage.binary_kv_lookup_decision", attrs);
-            result
+            return result;
         }
     }
+    result.stats.kv_lookup_misses += 1;
+    attrs.insert(
+        "skippy.kv.lookup_ms".to_string(),
+        json!(elapsed_ms(started)),
+    );
+    attrs.insert("skippy.kv.decision".to_string(), json!("resident_miss"));
+    telemetry.emit("stage.binary_kv_lookup_decision", attrs);
+    result
 }
 
-fn maybe_plan_record_binary_prefill(
-    _config: &StageConfig,
-    _kv: Option<&Arc<KvStageIntegration>>,
-    _telemetry: &Telemetry,
-    _session_id: &str,
-    _message: &StageWireMessage,
-    _token_ids: &[i32],
-    _min_record_tokens: u64,
-) -> Vec<BinaryKvRecordCandidate> {
-    Vec::new()
-}
-
-fn spawn_commit_record_binary_prefill(
-    _runtime: Arc<Mutex<RuntimeState>>,
-    _kv: Option<Arc<KvStageIntegration>>,
-    _telemetry: Telemetry,
-    _records: Vec<BinaryKvRecordCandidate>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(|| {})
-}
-
-fn drain_record_workers(workers: &mut Vec<thread::JoinHandle<()>>) {
-    for worker in workers.drain(..) {
-        let _ = worker.join();
+fn maybe_record_binary_prefill(
+    config: &StageConfig,
+    runtime: &Arc<Mutex<RuntimeState>>,
+    kv: Option<&Arc<KvStageIntegration>>,
+    telemetry: &Telemetry,
+    session_id: &str,
+    message: &StageWireMessage,
+    token_ids: &[i32],
+    min_record_tokens: u64,
+    activation_width: i32,
+    output: Option<&ActivationFrame>,
+) -> BinaryKvRecordResult {
+    let mut result = BinaryKvRecordResult::default();
+    let Some(kv) = kv else {
+        return result;
+    };
+    if !message.kind.is_prefill()
+        || message.kind.requires_predicted_reply()
+        || !kv.should_record()
+        || token_ids.is_empty()
+    {
+        return result;
     }
+    let token_start = message.pos_start.max(0) as u64;
+    let base = binary_message_base(config, session_id, message);
+    let identities = kv.record_identities(config, &base, token_start, token_ids);
+    let mut attrs = binary_message_kv_attrs(config, kv, session_id, message, token_ids.len());
+    attrs.insert(
+        "skippy.kv.record_candidates".to_string(),
+        json!(identities.len()),
+    );
+    let started = Instant::now();
+    let mut runtime = runtime.lock().expect("runtime lock poisoned");
+    for identity in identities {
+        let token_count = identity.identity.token_count;
+        if token_count <= min_record_tokens {
+            continue;
+        }
+        let token_count_usize = usize::try_from(token_count)
+            .unwrap_or(usize::MAX)
+            .min(token_ids.len());
+        match kv.record_resident_prefix(
+            &mut runtime,
+            session_id,
+            &identity,
+            &token_ids[..token_count_usize],
+        ) {
+            Ok(Some(record)) => {
+                result.recorded_pages = result.recorded_pages.saturating_add(1);
+                result.recorded_tokens = result
+                    .recorded_tokens
+                    .saturating_add(record.token_count as u64);
+                result.evicted_entries = result
+                    .evicted_entries
+                    .saturating_add(record.evicted_entries);
+                result.evicted_tokens = result.evicted_tokens.saturating_add(record.evicted_tokens);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                attrs.insert(
+                    "skippy.kv.record_error".to_string(),
+                    json!(error.to_string()),
+                );
+                break;
+            }
+        }
+    }
+    if config.downstream.is_some() {
+        if let Some(output) = output {
+            if let Some(record) = kv.record_resident_activation(
+                config,
+                &base,
+                token_start,
+                token_ids,
+                activation_width,
+                output,
+            ) {
+                result.recorded_activations = result.recorded_activations.saturating_add(1);
+                result.recorded_activation_bytes = result
+                    .recorded_activation_bytes
+                    .saturating_add(record.payload_bytes as u64);
+                result.evicted_activation_entries = result
+                    .evicted_activation_entries
+                    .saturating_add(record.evicted_entries);
+                result.evicted_activation_bytes = result
+                    .evicted_activation_bytes
+                    .saturating_add(record.evicted_bytes);
+                attrs.insert(
+                    "skippy.activation_cache.recorded_page_id".to_string(),
+                    json!(record.page_id),
+                );
+                attrs.insert(
+                    "skippy.activation_cache.entries".to_string(),
+                    json!(record.entries),
+                );
+                attrs.insert(
+                    "skippy.activation_cache.resident_bytes".to_string(),
+                    json!(record.resident_bytes),
+                );
+            }
+        }
+    }
+    attrs.insert(
+        "skippy.kv.record_ms".to_string(),
+        json!(elapsed_ms(started)),
+    );
+    attrs.insert(
+        "skippy.kv.recorded_pages".to_string(),
+        json!(result.recorded_pages),
+    );
+    attrs.insert(
+        "skippy.kv.recorded_tokens".to_string(),
+        json!(result.recorded_tokens),
+    );
+    attrs.insert(
+        "skippy.kv.evicted_entries".to_string(),
+        json!(result.evicted_entries),
+    );
+    attrs.insert(
+        "skippy.kv.evicted_tokens".to_string(),
+        json!(result.evicted_tokens),
+    );
+    attrs.insert(
+        "skippy.activation_cache.recorded_frames".to_string(),
+        json!(result.recorded_activations),
+    );
+    attrs.insert(
+        "skippy.activation_cache.recorded_bytes".to_string(),
+        json!(result.recorded_activation_bytes),
+    );
+    attrs.insert(
+        "skippy.activation_cache.evicted_entries".to_string(),
+        json!(result.evicted_activation_entries),
+    );
+    attrs.insert(
+        "skippy.activation_cache.evicted_bytes".to_string(),
+        json!(result.evicted_activation_bytes),
+    );
+    telemetry.emit("stage.binary_kv_record_decision", attrs);
+    result
 }
 
 #[derive(Default)]
@@ -1663,58 +1773,6 @@ struct SessionControlTiming {
     downstream_wait_us: i64,
     total_us: i64,
     prefill_drained_replies: i64,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct WireCondition {
-    delay_ms: f64,
-    mbps: Option<f64>,
-}
-
-impl WireCondition {
-    pub fn new(delay_ms: f64, mbps: Option<f64>) -> Result<Self> {
-        if delay_ms < 0.0 {
-            bail!("downstream wire delay must not be negative");
-        }
-        if mbps.is_some_and(|value| value <= 0.0) {
-            bail!("downstream wire mbps must be greater than zero");
-        }
-        Ok(Self { delay_ms, mbps })
-    }
-
-    fn sleep_for(&self, message: &StageWireMessage) {
-        let delay_seconds = self.delay_ms / 1000.0;
-        let bandwidth_seconds = self
-            .mbps
-            .map(|mbps| conditioned_wire_bytes(message) as f64 / (mbps * 125_000.0))
-            .unwrap_or(0.0);
-        let seconds = delay_seconds + bandwidth_seconds;
-        if seconds > 0.0 {
-            thread::sleep(Duration::from_secs_f64(seconds));
-        }
-    }
-}
-
-fn conditioned_wire_bytes(message: &StageWireMessage) -> usize {
-    let header_bytes: usize = 4 * 4 + 9 * 4;
-    let token_bytes = message
-        .tokens
-        .len()
-        .saturating_mul(std::mem::size_of::<i32>());
-    header_bytes
-        .saturating_add(token_bytes)
-        .saturating_add(message.activation.len())
-        .saturating_add(message.raw_bytes.len())
-}
-
-pub(crate) fn write_stage_message_conditioned(
-    writer: impl io::Write,
-    message: &StageWireMessage,
-    dtype: WireActivationDType,
-    condition: WireCondition,
-) -> io::Result<()> {
-    condition.sleep_for(message);
-    write_stage_message(writer, message, dtype)
 }
 
 struct AsyncForwarder {
@@ -2192,70 +2250,6 @@ fn token_sideband_or_fill(message: &StageWireMessage) -> Result<Vec<i32>> {
         0
     };
     Ok(vec![fill; token_count])
-}
-
-pub(crate) fn forwarded_stage_message(
-    config: &StageConfig,
-    incoming: &StageWireMessage,
-    output: &ActivationFrame,
-    wire_dtype: WireActivationDType,
-    activation_width: i32,
-) -> Result<StageWireMessage> {
-    Ok(
-        forwarded_stage_message_timed(config, incoming, output, wire_dtype, activation_width)?
-            .message,
-    )
-}
-
-pub(crate) struct ForwardedStageMessage {
-    pub message: StageWireMessage,
-    pub activation_encode_ms: f64,
-}
-
-pub(crate) fn forwarded_stage_message_timed(
-    config: &StageConfig,
-    incoming: &StageWireMessage,
-    output: &ActivationFrame,
-    wire_dtype: WireActivationDType,
-    activation_width: i32,
-) -> Result<ForwardedStageMessage> {
-    let mut state = incoming.state;
-    state.source_stage_index = config.stage_index as i32;
-    state.reserved = wire_dtype as i32;
-    let encode_started = Instant::now();
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
-        wire_dtype,
-        incoming.token_count,
-        activation_width,
-        &output.payload,
-    )
-    .context("encode output activation payload")?;
-    let activation_encode_ms = elapsed_ms(encode_started);
-    Ok(ForwardedStageMessage {
-        message: StageWireMessage {
-            kind: incoming.kind,
-            pos_start: incoming.pos_start,
-            token_count: incoming.token_count,
-            state,
-            request_id: incoming.request_id,
-            session_id: incoming.session_id,
-            sampling: incoming.sampling.clone(),
-            chat_sampling_metadata: None,
-            tokens: incoming.tokens.clone(),
-            activation,
-            raw_bytes: Vec::new(),
-        },
-        activation_encode_ms,
-    })
-}
-
-pub fn parse_wire_dtype(value: &str) -> Result<WireActivationDType> {
-    match value {
-        "fp32" | "f32" => Ok(WireActivationDType::F32),
-        "fp16" | "f16" => Ok(WireActivationDType::F16),
-        "q8" | "int8" | "i8" => Ok(WireActivationDType::Q8),
-        _ => bail!("unsupported activation wire dtype {value}"),
-    }
 }
 
 #[cfg(test)]

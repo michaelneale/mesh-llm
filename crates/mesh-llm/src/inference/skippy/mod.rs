@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod deployment;
+mod family_policy;
 mod hooks;
 mod kv_cache;
 mod materialization;
@@ -29,6 +30,7 @@ use skippy_server::{
     EmbeddedRuntimeStatus, EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
 };
 
+pub(crate) use family_policy::{family_policy_for_model_path, family_policy_for_stage_config};
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
@@ -239,6 +241,7 @@ impl SkippyModelHandle {
             )
         })?;
         let telemetry = Telemetry::new(None, 0, stage_config.clone(), TelemetryLevel::Off);
+        let family_policy = family_policy_for_stage_config(&stage_config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
@@ -259,7 +262,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width: 0,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F32,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -312,6 +315,7 @@ impl SkippyModelHandle {
             )
         })?;
         let telemetry = Telemetry::new(None, 0, config.clone(), TelemetryLevel::Off);
+        let family_policy = family_policy_for_stage_config(&config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
@@ -332,7 +336,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F16,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -484,6 +488,7 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         flash_attn_type: options.flash_attn_type,
         filter_tensors_on_load: false,
         selected_device: options.selected_device.clone().map(Into::into),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,

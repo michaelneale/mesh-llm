@@ -432,6 +432,7 @@ async fn load_split_runtime_generation(
     let mut ready_by_stage: HashMap<String, skippy::StageStatusSnapshot> = HashMap::new();
     let mut downstream: Option<skippy::StagePeerDescriptor> = None;
     let kv_cache = skippy::KvCachePolicy::for_model_size(spec.package.source_model_bytes);
+    let family_policy = skippy::family_policy_for_model_path(spec.model_path, Some(spec.model_ref));
     let effective_cache_type_k = spec
         .cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k())
@@ -465,7 +466,7 @@ async fn load_split_runtime_generation(
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
             activation_width: spec.package.activation_width as i32,
-            wire_dtype: skippy::StageWireDType::F16,
+            wire_dtype: family_policy.activation_wire_dtype,
             ctx_size: spec.ctx_size,
             lane_count: spec.slots as u32,
             n_batch: spec.n_batch_override,
@@ -1265,6 +1266,7 @@ fn split_stage0_config(
             index: Some(gpu.index),
             vram_bytes: Some(gpu.vram_bytes),
         }),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,

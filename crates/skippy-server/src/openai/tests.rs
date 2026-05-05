@@ -405,6 +405,7 @@ fn multimodal_stage_config(
         flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
         filter_tensors_on_load: false,
         selected_device: None,
+        kv_cache: None,
         load_mode: skippy_protocol::LoadMode::RuntimeSlice,
         bind_addr: bind_addr.to_string(),
         upstream: None,
@@ -433,6 +434,7 @@ fn local_openai_backend(config: StageConfig) -> Result<StageOpenAiBackend> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
         hook_policy: None,
+        kv: None,
     })
 }
 
@@ -606,6 +608,7 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
         hook_policy: None,
+        kv: None,
     };
     let response = backend
         .chat_completion(multimodal_chat_request(&fixture)?)

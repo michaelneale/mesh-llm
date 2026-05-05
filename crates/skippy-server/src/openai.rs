@@ -40,7 +40,7 @@ use skippy_protocol::binary::{
     StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL,
     MAX_STAGE_LOGIT_BIAS,
 };
-use skippy_protocol::{StageConfig, StageTopology};
+use skippy_protocol::{MessageBase, StageConfig, StageTopology, SCHEMA_VERSION};
 use skippy_runtime::{
     ChatTemplateJsonOptions, ChatTemplateOptions, FlashAttentionType as RuntimeFlashAttentionType,
     GenerationSignalWindow, LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig,
@@ -59,6 +59,7 @@ use crate::{
     },
     cli::ServeOpenAiArgs,
     config::{load_json, validate_config},
+    kv_integration::KvStageIntegration,
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry},
 };
@@ -140,6 +141,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         )
         .context("prewarm OpenAI runtime sessions")?;
     }
+    let kv = KvStageIntegration::from_config(&config)?.map(Arc::new);
     let ctx_size = usize::try_from(config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime,
@@ -154,6 +156,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         hook_policy: None,
+        kv,
     });
     let app: Router = instrumented_openai_router(backend, telemetry.clone());
 
@@ -305,6 +308,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         "stage.openai_runtime_prewarm",
     )
     .context("prewarm embedded OpenAI runtime sessions")?;
+    let kv = KvStageIntegration::from_config(&args.config)?.map(Arc::new);
     let ctx_size = usize::try_from(args.config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime: args.runtime,
@@ -319,6 +323,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         adaptive_speculative_window: args.adaptive_speculative_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         hook_policy: args.hook_policy,
+        kv,
     });
 
     Ok(EmbeddedOpenAiBackend {
@@ -342,6 +347,7 @@ struct StageOpenAiBackend {
     adaptive_speculative_window: bool,
     generation_limit: Arc<Semaphore>,
     hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+    kv: Option<Arc<KvStageIntegration>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1361,6 +1367,22 @@ impl StageOpenAiBackend {
             json!(self.mode.label()),
         );
         attrs
+    }
+
+    fn local_kv_message_base(&self, session_id: &str, ids: &OpenAiGenerationIds) -> MessageBase {
+        MessageBase {
+            schema_version: SCHEMA_VERSION,
+            run_id: self.config.run_id.clone(),
+            request_id: ids.request_id_string(),
+            session_id: session_id.to_string(),
+            stage_id: "openai-local".to_string(),
+            stage_index: self.config.stage_index,
+            topology_id: self.config.topology_id.clone(),
+            model_id: Some(self.config.model_id.clone()),
+            tokenizer_id: None,
+            chat_template_id: None,
+            seq: Some(ids.session_id),
+        }
     }
 
     fn insert_runtime_session_stats(
@@ -2615,6 +2637,10 @@ impl StageOpenAiBackend {
         let result = (|| {
             if request.prompt_token_ids.len() > 1 {
                 let prefill_timer = PhaseTimer::start();
+                let prefill_tokens =
+                    &request.prompt_token_ids[..request.prompt_token_ids.len() - 1];
+                let mut restored_prefill = false;
+                let mut resident_recorded_pages = 0usize;
                 let lock_timer = PhaseTimer::start();
                 let mut runtime = self
                     .runtime
@@ -2623,20 +2649,113 @@ impl StageOpenAiBackend {
                 let runtime_lock_wait_ms = lock_timer.elapsed_ms();
                 let runtime_lock_hold_timer = PhaseTimer::start();
                 let runtime_sessions_before = runtime.session_stats();
-                runtime
-                    .prefill(
+                if let Some(kv) = self.kv.as_ref() {
+                    let base = self.local_kv_message_base(&session_id, request.ids);
+                    let identities = kv.lookup_identities(&self.config, &base, 0, prefill_tokens);
+                    match kv.restore_resident_prefix(
+                        &mut runtime,
                         &session_id,
-                        &request.prompt_token_ids[..request.prompt_token_ids.len() - 1],
-                    )
-                    .map_err(openai_backend_error)?;
+                        &identities,
+                        prefill_tokens,
+                    ) {
+                        Ok(Some(restored)) => {
+                            restored_prefill = true;
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert("skippy.kv.decision".to_string(), json!("resident_hit"));
+                            attrs.insert(
+                                "skippy.kv.hit_page_id".to_string(),
+                                json!(restored.page_id),
+                            );
+                            attrs.insert(
+                                "skippy.kv.restored_tokens".to_string(),
+                                json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.resident_seq_id".to_string(),
+                                json!(restored.seq_id),
+                            );
+                            self.telemetry
+                                .emit("stage.openai_kv_lookup_decision", attrs);
+                        }
+                        Ok(None) => {
+                            self.telemetry.emit(
+                                "stage.openai_kv_lookup_decision",
+                                BTreeMap::from([
+                                    ("skippy.kv.decision".to_string(), json!("miss")),
+                                    (
+                                        "llama_stage.request_id".to_string(),
+                                        json!(request.ids.request_id_string()),
+                                    ),
+                                ]),
+                            );
+                        }
+                        Err(error) => {
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert("skippy.kv.decision".to_string(), json!("resident_error"));
+                            attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
+                            self.telemetry
+                                .emit("stage.openai_kv_lookup_decision", attrs);
+                        }
+                    }
+                }
+                if !restored_prefill {
+                    runtime
+                        .prefill(&session_id, prefill_tokens)
+                        .map_err(openai_backend_error)?;
+                    if let Some(kv) = self.kv.as_ref() {
+                        let base = self.local_kv_message_base(&session_id, request.ids);
+                        for identity in kv.record_identities(&self.config, &base, 0, prefill_tokens)
+                        {
+                            if let Ok(Some(record)) = kv.record_resident_prefix(
+                                &mut runtime,
+                                &session_id,
+                                &identity,
+                                prefill_tokens,
+                            ) {
+                                resident_recorded_pages = resident_recorded_pages.saturating_add(1);
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.recorded_page_id".to_string(),
+                                    json!(record.page_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.recorded_tokens".to_string(),
+                                    json!(record.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_seq_id".to_string(),
+                                    json!(record.seq_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_entries".to_string(),
+                                    json!(record.entries),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.evicted_entries".to_string(),
+                                    json!(record.evicted_entries),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_record_decision", attrs);
+                            }
+                        }
+                    }
+                }
                 let runtime_sessions_after = runtime.session_stats();
                 let runtime_lock_hold_ms = runtime_lock_hold_timer.elapsed_ms();
                 let mut attrs = self.openai_attrs(&request.ids);
                 attrs.insert(
                     "llama_stage.prefill_token_count".to_string(),
-                    json!(request.prompt_token_ids.len() - 1),
+                    json!(prefill_tokens.len()),
                 );
                 attrs.insert("llama_stage.prefill_chunk_count".to_string(), json!(1));
+                attrs.insert(
+                    "skippy.kv.restored_prefill".to_string(),
+                    json!(restored_prefill),
+                );
+                attrs.insert(
+                    "skippy.kv.recorded_pages".to_string(),
+                    json!(resident_recorded_pages),
+                );
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),

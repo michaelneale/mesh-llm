@@ -1174,12 +1174,13 @@ fn run_local_state_handoff(
     include_embeddings: bool,
     include_output: bool,
 ) -> Result<BinaryStateHandoffResult> {
+    let lane_count = args.cache_hit_repeats.saturating_add(2).max(2) as u32;
     let runtime_config = RuntimeConfig {
         stage_index: args.state_stage_index,
         layer_start: args.state_layer_start,
         layer_end: args.state_layer_end,
         ctx_size: args.ctx_size,
-        lane_count: 1,
+        lane_count,
         n_batch: None,
         n_ubatch: None,
         n_gpu_layers: args.n_gpu_layers,

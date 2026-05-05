@@ -397,6 +397,7 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             LoadMode::RuntimeSlice | LoadMode::LayerPackage
         ),
         selected_device: load.selected_device.clone(),
+        kv_cache: None,
         load_mode: load.load_mode.clone(),
         bind_addr: load.bind_addr.clone(),
         upstream: load.upstream.as_ref().map(peer_config),

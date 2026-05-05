@@ -9,13 +9,16 @@ use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig};
 use skippy_runtime::{
     parse_cache_type, ActivationFrame, FlashAttentionType as RuntimeFlashAttentionType,
     GenerationSignalWindow, MediaInput, MediaPrefill, MediaPrefillFrame, RuntimeConfig,
-    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, StageSessionCheckpoint, TokenSignal,
+    RuntimeKvPage, RuntimeKvPageDesc, RuntimeLoadMode, SamplingConfig, StageModel, StageSession,
+    StageSessionCheckpoint, TokenSignal,
 };
 
 use crate::package::materialize_layer_package;
 
 pub struct RuntimeState {
     pub model: StageModel,
+    layer_start: u32,
+    layer_end: u32,
     lane_count: u32,
     sessions: BTreeMap<String, StageSession>,
     idle_sessions: Vec<StageSession>,
@@ -286,11 +289,149 @@ impl RuntimeState {
             .is_some_and(|known_tokens| token_end <= known_tokens)
     }
 
+    #[allow(dead_code)]
+    pub fn export_kv_page(
+        &mut self,
+        session_id: &str,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPage> {
+        self.validate_export_range(session_id, token_start, token_count)?;
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.export_kv_page(layer_start, layer_end, token_start, token_count)
+    }
+
+    #[allow(dead_code)]
+    pub fn probe_kv_page(
+        &mut self,
+        session_id: &str,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<RuntimeKvPageDesc> {
+        self.validate_export_range(session_id, token_start, token_count)?;
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        let page = session.export_kv_page(layer_start, layer_end, token_start, token_count)?;
+        Ok(page.desc)
+    }
+
+    pub fn import_kv_page(
+        &mut self,
+        session_id: &str,
+        desc: &RuntimeKvPageDesc,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let session = self.session(session_id)?;
+        session.import_kv_page(desc, bytes)?;
+        let token_end = desc
+            .token_start
+            .checked_add(desc.token_count)
+            .ok_or_else(|| anyhow::anyhow!("KV page token range overflows"))?;
+        self.session_token_counts
+            .entry(session_id.to_string())
+            .and_modify(|current| *current = (*current).max(token_end))
+            .or_insert(token_end);
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn export_state(&mut self, session_id: &str) -> Result<Vec<u8>> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.export_state(layer_start, layer_end)
+    }
+
+    pub fn import_state(&mut self, session_id: &str, bytes: &[u8]) -> Result<()> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.import_state(layer_start, layer_end, bytes)
+    }
+
+    pub fn export_full_state(&mut self, session_id: &str) -> Result<Vec<u8>> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.export_full_state(layer_start, layer_end)
+    }
+
+    pub fn import_full_state(&mut self, session_id: &str, bytes: &[u8]) -> Result<()> {
+        let layer_start = i32::try_from(self.model_layer_start())?;
+        let layer_end = i32::try_from(self.model_layer_end())?;
+        let session = self.session(session_id)?;
+        session.import_full_state(layer_start, layer_end, bytes)
+    }
+
+    pub fn save_resident_prefix(
+        &mut self,
+        session_id: &str,
+        cache_seq_id: i32,
+        token_count: u64,
+    ) -> Result<()> {
+        self.session(session_id)?
+            .save_prefix(cache_seq_id, token_count)
+    }
+
+    pub fn restore_resident_prefix(
+        &mut self,
+        session_id: &str,
+        cache_seq_id: i32,
+        token_ids: &[i32],
+    ) -> Result<()> {
+        let session = self.session(session_id)?;
+        session.restore_prefix(cache_seq_id, token_ids)?;
+        self.session_token_counts
+            .insert(session_id.to_string(), token_ids.len() as u64);
+        Ok(())
+    }
+
+    pub fn drop_resident_prefix_sequence(
+        &mut self,
+        session_id: &str,
+        cache_seq_id: i32,
+    ) -> Result<()> {
+        self.session(session_id)?.drop_sequence(cache_seq_id)
+    }
+
     fn add_session_tokens(&mut self, session_id: &str, count: u64) {
         self.session_token_counts
             .entry(session_id.to_string())
             .and_modify(|current| *current = current.saturating_add(count))
             .or_insert(count);
+    }
+
+    fn validate_export_range(
+        &self,
+        session_id: &str,
+        token_start: u64,
+        token_count: u64,
+    ) -> Result<()> {
+        let token_end = token_start
+            .checked_add(token_count)
+            .ok_or_else(|| anyhow::anyhow!("KV page token range overflows"))?;
+        let known_tokens = self
+            .session_token_counts
+            .get(session_id)
+            .copied()
+            .unwrap_or_default();
+        if token_end > known_tokens {
+            bail!(
+                "cannot export KV page [{token_start}, {token_end}) from session with {known_tokens} known tokens"
+            );
+        }
+        Ok(())
+    }
+
+    fn model_layer_start(&self) -> u32 {
+        self.layer_start
+    }
+
+    fn model_layer_end(&self) -> u32 {
+        self.layer_end
     }
 }
 
@@ -320,6 +461,8 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
 
     Ok(Some(Arc::new(Mutex::new(RuntimeState {
         model,
+        layer_start: config.layer_start,
+        layer_end: config.layer_end,
         lane_count: config.lane_count,
         sessions: BTreeMap::new(),
         idle_sessions: Vec::new(),
@@ -410,6 +553,7 @@ mod tests {
                 index: Some(1),
                 vram_bytes: Some(16_000_000_000),
             }),
+            kv_cache: None,
             load_mode: LoadMode::RuntimeSlice,
             bind_addr: "127.0.0.1:0".to_string(),
             upstream: None,
