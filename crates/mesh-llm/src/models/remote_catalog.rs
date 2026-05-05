@@ -195,7 +195,9 @@ pub fn load_catalog_from_disk() -> Result<()> {
     }
 
     let entries = parse_entries_recursive(&entries_dir)?;
-    let mut lock = CATALOG_ENTRIES.write().map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
+    let mut lock = CATALOG_ENTRIES
+        .write()
+        .map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
     *lock = Some(entries);
     Ok(())
 }
@@ -203,7 +205,9 @@ pub fn load_catalog_from_disk() -> Result<()> {
 /// Ensures the catalog is loaded — refreshes if stale, otherwise loads from disk.
 pub fn ensure_catalog() -> Result<()> {
     {
-        let lock = CATALOG_ENTRIES.read().map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
+        let lock = CATALOG_ENTRIES
+            .read()
+            .map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
         if lock.is_some() && !is_catalog_stale() {
             return Ok(());
         }
