@@ -34,7 +34,9 @@ pub(crate) use materialization::{
     materialized_stage_cache_dir, prune_unpinned_materialized_stages,
     remove_materialized_stages_for_sources, MaterializedStagePin,
 };
-pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
+pub(crate) use package::{
+    identity_from_layer_package, synthetic_direct_gguf_package, SkippyPackageIdentity,
+};
 pub(crate) use stage::{
     spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
     StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,

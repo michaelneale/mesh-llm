@@ -285,6 +285,33 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+/// Build a `SkippyPackageIdentity` from a remote HF layer package.
+///
+/// This inspects the package manifest (downloading only the manifest JSON, not the
+/// full model) and constructs the identity needed for topology planning and deployment.
+/// The actual layer files are downloaded later by each node for its assigned stage.
+pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPackageIdentity> {
+    let info = skippy_runtime::package::inspect_layer_package(package_ref)
+        .with_context(|| format!("inspect layer package {package_ref}"))?;
+
+    let activation_width = info.activation_width.unwrap_or(4096);
+    let source_model_bytes = info.source_model_bytes.unwrap_or_else(|| {
+        info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>()
+    });
+
+    Ok(SkippyPackageIdentity {
+        package_ref: package_ref.to_string(),
+        manifest_sha256: info.manifest_sha256,
+        source_model_path: PathBuf::from(&info.source_model_path),
+        source_model_sha256: info.source_model_sha256,
+        source_model_bytes,
+        source_files: Vec::new(),
+        layer_count: info.layer_count,
+        activation_width,
+        tensor_count: info.layers.iter().map(|l| l.tensor_count as u64).sum(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

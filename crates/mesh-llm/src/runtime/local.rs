@@ -260,7 +260,20 @@ pub(super) async fn start_runtime_split_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_ref: &str,
 ) -> Result<SplitRuntimeStart> {
-    let package = skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?;
+    // Check the remote catalog for a pre-split layer package before requiring
+    // the full GGUF on disk. This allows split mode to work without downloading
+    // the entire model — each node fetches only its assigned layers.
+    let package = if let Some(package_ref) = resolve_layer_package_ref(model_ref, spec.model_path)
+    {
+        tracing::info!(
+            model_ref,
+            package_ref,
+            "using pre-split layer package from catalog"
+        );
+        skippy::identity_from_layer_package(&package_ref)?
+    } else {
+        skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?
+    };
     let participants = wait_for_split_participants(
         spec.node,
         model_ref,
@@ -1217,6 +1230,28 @@ fn split_stage_topology_instance(
             })
             .collect(),
     }
+}
+
+/// Resolve a layer package reference for a model.
+///
+/// Returns `Some("hf://meshllm/...")` if:
+/// 1. The model_path is already an `hf://` package ref, OR
+/// 2. The remote catalog has a layer-package entry matching the model_ref
+///
+/// Returns `None` if no layer package is available (fall back to local GGUF).
+fn resolve_layer_package_ref(model_ref: &str, model_path: &Path) -> Option<String> {
+    // If the user already passed an hf:// package ref, use it directly
+    let path_str = model_path.to_string_lossy();
+    if path_str.starts_with("hf://") {
+        return Some(path_str.to_string());
+    }
+
+    // Try the remote catalog
+    if let Err(err) = crate::models::remote_catalog::ensure_catalog() {
+        tracing::debug!("remote catalog unavailable: {err:#}");
+        return None;
+    }
+    crate::models::remote_catalog::find_layer_package(model_ref)
 }
 
 fn now_unix_nanos() -> i64 {
