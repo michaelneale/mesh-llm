@@ -39,7 +39,7 @@ production cache mode.
        --prefix-tokens 128
    ```
 
-4. Run the Hugging Face use-case matrix against the same family set:
+4. Run the use-case benchmark matrix against the same family set:
 
    ```bash
    LLAMA_STAGE_BUILD_DIR=.deps/llama-build/build-stage-abi-cpu \

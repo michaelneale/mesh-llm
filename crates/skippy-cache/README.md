@@ -287,7 +287,7 @@ Rows are ordered so related runtime/cache families appear next to each other.
 | OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | pass | 128 | 129 | 28.9 | 24.0 | **1.20x faster** | 64.0 MiB | measured | Correct and faster. |
 | MiniMax M2.7 | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `ResidentKv` | pass | 128 | 129 | 39.5 | 31.9 | **1.24x faster** | 31.0 MiB | measured | Correct and faster on the large sharded GGUF. |
 
-### HF Use-Case Matrix
+### Use-Case Benchmark Matrix
 
 This matrix uses one Hugging Face-sourced representative prompt per use case,
 the same `128` requested prefix tokens, one generated token, Skippy

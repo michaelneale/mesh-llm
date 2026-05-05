@@ -327,7 +327,7 @@ def render_report(results: list[dict[str, Any]], use_case_corpus: Path) -> str:
         "",
         render_full_gguf_table(full_gguf_rows(results)),
         "",
-        "### HF Use-Case Matrix",
+        "### Use-Case Benchmark Matrix",
         "",
         "This matrix uses one Hugging Face-sourced representative prompt per use case,",
         "the same requested prefix tokens, one generated token, Skippy",
