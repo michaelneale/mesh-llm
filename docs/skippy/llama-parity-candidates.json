@@ -260,7 +260,8 @@
       "status": "candidate_stateful",
       "repo": "mradermacher/mamba-130m-hf-GGUF",
       "include": "*Q4_K_M.gguf",
-      "recurrent": "all"
+      "recurrent": "all",
+      "notes": "text lane passed in llama-parity-mamba-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
     },
     {
       "llama_model": "mamba2",
@@ -269,7 +270,7 @@
       "repo": "mradermacher/mamba-2.8b-hf-GGUF",
       "include": "*Q4_K_M.gguf",
       "recurrent": "all",
-      "notes": "replaces stale mradermacher/mamba2-130m-GGUF; no small mamba2-130m GGUF candidate found"
+      "notes": "replaces stale mradermacher/mamba2-130m-GGUF; no small mamba2-130m GGUF candidate found; text lane passed in llama-parity-mamba2-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
     },
     {
       "llama_model": "rwkv6",
