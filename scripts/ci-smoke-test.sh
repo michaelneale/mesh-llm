@@ -147,9 +147,19 @@ STREAM_PAYLOAD="$(
     }'
 )"
 STREAM_OUT="$(mktemp)"
-curl -fsS --max-time 60 -N "${BASE_URL}/chat/completions" -H 'content-type: application/json' -d "$STREAM_PAYLOAD" >"$STREAM_OUT"
-grep -q 'data: \[DONE\]' "$STREAM_OUT"
-grep -q '"role":"assistant"' "$STREAM_OUT"
+if ! curl -fsS --max-time 60 -N "${BASE_URL}/chat/completions" -H 'content-type: application/json' -d "$STREAM_PAYLOAD" >"$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
+    exit 1
+fi
+if ! grep -q 'data: \[DONE\]' "$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
+    exit 1
+fi
+if ! grep -q '"role":"assistant"' "$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
+    exit 1
+fi
+rm -f "$STREAM_OUT"
 
 echo "Testing model=auto routing..."
 AUTO_PAYLOAD="$(
