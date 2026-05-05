@@ -43,6 +43,7 @@ pub(crate) fn remote_stage_load_request(
         layer_start: stage.layer_start,
         layer_end: stage.layer_end,
         model_path: Some(context.package.package_ref.clone()),
+        source_model_bytes: context.package.source_model_bytes,
         projector_path: None,
         selected_device: None,
         bind_addr: "127.0.0.1:0".to_string(),
@@ -237,6 +238,7 @@ mod tests {
         assert_eq!(request.package_ref, "hf://Mesh-LLM/demo-package");
         assert_eq!(request.manifest_sha256, "manifest");
         assert_eq!(request.load_mode, LoadMode::LayerPackage);
+        assert_eq!(request.source_model_bytes, Some(100));
         assert_eq!(
             request.model_path.as_deref(),
             Some("hf://Mesh-LLM/demo-package")

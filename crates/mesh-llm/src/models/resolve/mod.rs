@@ -249,8 +249,9 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
     }
 
     if input.exists() {
-        record_resolved_model_usage(input, Some(raw.as_ref()));
-        return Ok(input.to_path_buf());
+        let resolved = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
+        record_resolved_model_usage(&resolved, Some(raw.as_ref()));
+        return Ok(resolved);
     }
 
     if !raw.contains('/') {
@@ -265,6 +266,27 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
         }
         if let Some(entry) = find_catalog_model_exact(&raw).or_else(|| catalog::find_model(&raw)) {
             return catalog::download_model_with_progress(entry, progress).await;
+        }
+        // Fallback: check the remote meshllm/catalog on HuggingFace for models
+        // not in the baked-in catalog (e.g. newly added models).
+        let raw_owned = raw.to_string();
+        if let Some(hf_ref) = tokio::task::spawn_blocking(move || {
+            super::remote_catalog::resolve_model_download(&raw_owned)
+        })
+        .await
+        .context("join remote catalog resolve task")?
+        {
+            if progress {
+                eprintln!("📥 Found in remote catalog: {}", hf_ref.name);
+            }
+            return catalog::download_hf_repo_file_with_progress_label(
+                &hf_ref.repo,
+                hf_ref.revision.as_deref(),
+                &hf_ref.file,
+                &hf_ref.name,
+                progress,
+            )
+            .await;
         }
         if let Ok(canonical) = canonicalize_model_ref_input(&raw).await {
             if canonical != raw {

@@ -17,6 +17,7 @@ fn load_request() -> StageLoadRequest {
         layer_start: 0,
         layer_end: 12,
         model_path: Some("/models/model.gguf".to_string()),
+        source_model_bytes: Some(64 * 1024 * 1024 * 1024),
         projector_path: Some("/models/mmproj.gguf".to_string()),
         selected_device: Some(StageDevice {
             backend_device: "CUDA0".to_string(),
@@ -235,4 +236,28 @@ fn inventory_source_candidates_prefer_explicit_gguf_ref() {
         candidates[0],
         std::path::PathBuf::from("/tmp/source-model.gguf")
     );
+}
+
+#[test]
+fn stage_load_timeout_keeps_existing_floor_without_size_hint() {
+    let mut request = load_request();
+    request.source_model_bytes = None;
+    request.load_mode = LoadMode::RuntimeSlice;
+
+    assert_eq!(stage_load_timeout(&request), Duration::from_secs(900));
+}
+
+#[test]
+fn stage_load_timeout_scales_with_size_hints_for_all_load_modes() {
+    let mut request = load_request();
+    request.source_model_bytes = Some(170 * 1024 * 1024 * 1024);
+    request.load_mode = LoadMode::RuntimeSlice;
+
+    assert_eq!(stage_load_timeout(&request), Duration::from_secs(1360));
+
+    request.load_mode = LoadMode::LayerPackage;
+    assert_eq!(stage_load_timeout(&request), Duration::from_secs(1360));
+
+    request.source_model_bytes = Some(u64::MAX);
+    assert_eq!(stage_load_timeout(&request), Duration::from_secs(14400));
 }

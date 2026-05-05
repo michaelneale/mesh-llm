@@ -384,7 +384,14 @@ pub(super) async fn start_runtime_split_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_ref: &str,
 ) -> Result<SplitRuntimeStart> {
-    let package = skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?;
+    let model_path_str = spec.model_path.to_string_lossy().to_string();
+    let package = if skippy::is_layer_package_ref(&model_path_str) {
+        tokio::task::spawn_blocking(move || skippy::identity_from_layer_package(&model_path_str))
+            .await
+            .context("join identify skippy layer package task")??
+    } else {
+        skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?
+    };
     let participants = wait_for_split_participants(
         spec.node,
         model_ref,
@@ -557,6 +564,17 @@ async fn load_split_runtime_generation(
         kv_cache.label(spec.package.source_model_bytes)
     );
 
+    // Use LayerPackage mode when we have an hf:// distributable package ref,
+    // otherwise fall back to RuntimeSlice (requires full GGUF on each node).
+    let use_layer_package = skippy::is_layer_package_ref(&spec.package.package_ref);
+    let load_mode = if use_layer_package {
+        LoadMode::LayerPackage
+    } else {
+        LoadMode::RuntimeSlice
+    };
+    let activation_width =
+        skippy_stage_activation_width(spec.package.activation_width, spec.model_ref)?;
+
     for stage in spec.generation.stages.iter().skip(1).rev() {
         let load = skippy::StageLoadRequest {
             topology_id: spec.generation.topology_id.clone(),
@@ -569,11 +587,16 @@ async fn load_split_runtime_generation(
             stage_index: stage.stage_index,
             layer_start: stage.layer_start,
             layer_end: stage.layer_end,
-            model_path: Some(spec.model_ref.to_string()),
+            model_path: Some(stage_load_model_path(
+                load_mode.clone(),
+                &spec.package.package_ref,
+                spec.model_path,
+            )),
+            source_model_bytes: Some(spec.package.source_model_bytes),
             projector_path: spec.projector_path.clone(),
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
-            activation_width: spec.package.activation_width as i32,
+            activation_width,
             wire_dtype: family_policy.activation_wire_dtype,
             ctx_size: spec.ctx_size,
             lane_count: spec.slots as u32,
@@ -584,7 +607,7 @@ async fn load_split_runtime_generation(
             cache_type_v: effective_cache_type_v.clone(),
             flash_attn_type: resolved_flash_attn_type,
             shutdown_generation: spec.generation.generation,
-            load_mode: LoadMode::RuntimeSlice,
+            load_mode: load_mode.clone(),
             upstream: None,
             downstream: downstream.clone(),
         };
@@ -675,14 +698,21 @@ async fn load_split_runtime_generation(
         spec.n_ubatch_override,
         spec.flash_attention_override,
         spec.pinned_gpu,
+        load_mode.clone(),
     );
-    let handle = skippy::SkippyModelHandle::load_stage0_config(
-        config,
-        spec.package.activation_width as i32,
-        spec.slots,
-        skippy_server::openai::CONTEXT_BUDGET_MAX_TOKENS,
-        Some(skippy::MeshAutoHookPolicy::new(spec.node.clone())),
-    )?;
+    let slots = spec.slots;
+    let node_for_hook = spec.node.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        skippy::SkippyModelHandle::load_stage0_config(
+            config,
+            activation_width,
+            slots,
+            skippy_server::openai::CONTEXT_BUDGET_MAX_TOKENS,
+            Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+        )
+    })
+    .await
+    .context("join load skippy stage0 config task")??;
     let http = handle.start_http(alloc_local_port().await?);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
 
@@ -717,6 +747,15 @@ async fn load_split_runtime_generation(
         coordinator_rx: None,
         coordinator_task: None,
     })
+}
+
+fn stage_load_model_path(load_mode: LoadMode, package_ref: &str, model_path: &Path) -> String {
+    match load_mode {
+        LoadMode::LayerPackage => package_ref.to_string(),
+        LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => {
+            model_path.to_string_lossy().to_string()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1432,6 +1471,7 @@ fn split_stage0_config(
     n_ubatch_override: Option<u32>,
     flash_attention_override: FlashAttentionType,
     pinned_gpu: Option<&crate::runtime::StartupPinnedGpuTarget>,
+    load_mode: LoadMode,
 ) -> StageConfig {
     let effective_cache_type_k = cache_type_k_override
         .unwrap_or(kv_cache.cache_type_k())
@@ -1442,18 +1482,23 @@ fn split_stage0_config(
     let resolved_flash_attn_type =
         effective_flash_attention(flash_attention_override, &effective_cache_type_v);
     let family_policy = skippy::family_policy_for_model_path(model_path, Some(model_ref));
+    let effective_model_path = if load_mode == LoadMode::LayerPackage {
+        package.package_ref.clone()
+    } else {
+        model_path.to_string_lossy().to_string()
+    };
     let mut config = StageConfig {
         run_id: run_id.to_string(),
         topology_id: topology_id.to_string(),
         model_id: model_ref.to_string(),
         package_ref: Some(package.package_ref.clone()),
         manifest_sha256: Some(package.manifest_sha256.clone()),
-        source_model_path: Some(model_path.to_string_lossy().to_string()),
+        source_model_path: Some(effective_model_path.clone()),
         source_model_sha256: Some(package.source_model_sha256.clone()),
         source_model_bytes: Some(package.source_model_bytes),
         materialized_path: None,
         materialized_pinned: false,
-        model_path: Some(model_path.to_string_lossy().to_string()),
+        model_path: Some(effective_model_path),
         projector_path,
         stage_id: stage0.stage_id.clone(),
         stage_index: stage0.stage_index,
@@ -1475,7 +1520,7 @@ fn split_stage0_config(
             vram_bytes: Some(gpu.vram_bytes),
         }),
         kv_cache: None,
-        load_mode: LoadMode::RuntimeSlice,
+        load_mode,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: Some(PeerConfig {
@@ -1735,6 +1780,14 @@ pub(super) fn local_process_snapshot(
     }
 }
 
+fn skippy_stage_activation_width(activation_width: u32, model_ref: &str) -> Result<i32> {
+    i32::try_from(activation_width).with_context(|| {
+        format!(
+            "activation width {activation_width} for {model_ref} exceeds skippy stage ABI limit"
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1938,6 +1991,33 @@ mod tests {
 
         assert!(error.contains("stage-1"));
         assert!(error.contains("exceeds node capacity"));
+    }
+
+    #[test]
+    fn stage_load_model_path_uses_local_path_outside_layer_packages() {
+        let model_path = PathBuf::from("/models/runtime-slice.gguf");
+
+        let layer_package = stage_load_model_path(
+            LoadMode::LayerPackage,
+            "hf://meshllm/demo-package",
+            &model_path,
+        );
+        assert_eq!(layer_package, "hf://meshllm/demo-package");
+
+        for mode in [LoadMode::RuntimeSlice, LoadMode::ArtifactSlice] {
+            let path = stage_load_model_path(mode, "hf://meshllm/demo-package", &model_path);
+            assert_eq!(path, "/models/runtime-slice.gguf");
+        }
+    }
+
+    #[test]
+    fn skippy_stage_activation_width_rejects_i32_overflow() {
+        let error = skippy_stage_activation_width(i32::MAX as u32 + 1, "overflow-model")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("exceeds skippy stage ABI limit"));
+        assert!(error.contains("overflow-model"));
     }
 
     #[test]

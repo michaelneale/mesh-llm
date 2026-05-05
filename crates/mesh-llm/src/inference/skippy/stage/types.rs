@@ -44,6 +44,7 @@ pub(crate) struct StageLoadRequest {
     pub(crate) layer_start: u32,
     pub(crate) layer_end: u32,
     pub(crate) model_path: Option<String>,
+    pub(crate) source_model_bytes: Option<u64>,
     pub(crate) projector_path: Option<String>,
     pub(crate) selected_device: Option<StageDevice>,
     pub(crate) bind_addr: String,
