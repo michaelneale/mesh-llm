@@ -499,6 +499,17 @@ mod tests {
         }
     }
 
+    struct EnvRestore {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            restore_env(self.key, self.previous.take());
+        }
+    }
+
     #[test]
     fn layer_package_ref_detects_local_manifest_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -531,6 +542,10 @@ mod tests {
     #[serial]
     fn materialized_stage_preview_matches_source_removal_candidates() {
         let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+        let _xdg_restore = EnvRestore {
+            key: "XDG_CACHE_HOME",
+            previous: prev_xdg,
+        };
 
         let temp = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CACHE_HOME", temp.path());
@@ -551,7 +566,7 @@ mod tests {
         };
         let index_path = root.join("source-test.json");
         fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
-        fs::create_dir(root.join("source-unreadable.json")).unwrap();
+        fs::create_dir_all(root.join("source-unreadable.json")).unwrap();
 
         let preview = materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
         assert_eq!(preview, vec![artifact.clone()]);
@@ -561,7 +576,5 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!artifact.exists());
         assert!(!index_path.exists());
-
-        restore_env("XDG_CACHE_HOME", prev_xdg);
     }
 }
