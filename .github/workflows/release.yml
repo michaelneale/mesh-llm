@@ -1,27 +1,346 @@
-name: release
+name: Release
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version/tag to build, for example v0.31.0
+        required: true
+        type: string
+      skip_gpu_bundles:
+        description: Skip Linux CUDA, ROCm, and Vulkan release bundles
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
+  packages: write
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
-  linux:
+  metadata:
+    name: Resolve release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      skip_gpu_bundles: ${{ steps.meta.outputs.skip_gpu_bundles }}
+    steps:
+      - id: meta
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SKIP_GPU_BUNDLES: ${{ inputs.skip_gpu_bundles || 'false' }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${INPUT_VERSION}"
+          fi
+          tag="v${tag#v}"
+          version="${tag#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $tag" >&2
+            exit 1
+          fi
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "skip_gpu_bundles=$INPUT_SKIP_GPU_BUNDLES"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS aarch64 Metal
+            os: macos-14
+            artifact_name: release-macos
+            build_recipe: release-build
+            bundle_recipe: release-bundle
+            backend: metal
+          - name: Linux x86_64 CPU
+            os: ubuntu-latest
+            artifact_name: release-linux
+            build_recipe: release-build
+            bundle_recipe: release-bundle
+            backend: cpu
+    env:
+      LLAMA_STAGE_BACKEND: ${{ matrix.backend }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: taiki-e/install-action@just
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja
+
+      - name: Build release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc ${{ matrix.build_recipe }}
+          just --shell bash --shell-arg -lc ${{ matrix.bundle_recipe }} "$RELEASE_TAG" dist
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Upload Linux smoke binary
+        if: matrix.artifact_name == 'release-linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-inference-binary
+          path: target/release/mesh-llm
+          if-no-files-found: error
+
+  inference_smoke_tests:
+    needs: [metadata, build]
+    if: needs.build.result == 'success'
+    uses: ./.github/workflows/smoke.yml
+    with:
+      artifact_name: release-linux-inference-binary
+      mesh_binary_target: target/release/mesh-llm
+      cache_key_prefix: release-
+      workflow_cache_file: .github/workflows/release.yml
+
+  build_linux_arm64:
+    name: Build Linux ARM64 CPU
+    needs: metadata
+    runs-on: ubuntu-24.04-arm
+    env:
+      LLAMA_STAGE_BACKEND: cpu
+      MESH_RELEASE_ARCH: aarch64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl
+      - name: Build ARM64 CPU release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-arm64
+          just --shell bash --shell-arg -lc release-bundle-arm64 "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-arm64
+          path: dist/*
+          if-no-files-found: error
+
+  build_linux_cuda:
+    name: Build Linux CUDA
+    needs: metadata
+    if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
+    env:
+      LLAMA_STAGE_BACKEND: cuda
+    steps:
+      - name: Install base packages
+        run: |
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - name: Build CUDA release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-cuda
+          just --shell bash --shell-arg -lc release-bundle-cuda "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-cuda
+          path: dist/*
+          if-no-files-found: error
+
+  build_linux_rocm:
+    name: Build Linux ROCm
+    needs: metadata
+    if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.0-complete
+    env:
+      LLAMA_STAGE_BACKEND: rocm
+    steps:
+      - name: Install base packages
+        run: |
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - name: Build ROCm release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-rocm
+          just --shell bash --shell-arg -lc release-bundle-rocm "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-rocm
+          path: dist/*
+          if-no-files-found: error
+
+  build_linux_vulkan:
+    name: Build Linux Vulkan
+    needs: metadata
+    if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
     runs-on: ubuntu-latest
     env:
-      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
+      LLAMA_STAGE_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl glslc libvulkan-dev spirv-headers
+      - name: Build Vulkan release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-vulkan
+          just --shell bash --shell-arg -lc release-bundle-vulkan "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-vulkan
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - metadata
+      - build
+      - inference_smoke_tests
+      - build_linux_arm64
+      - build_linux_cuda
+      - build_linux_rocm
+      - build_linux_vulkan
+      # build_windows:
+      # - build_windows  # disabled until llama.cpp CUDA fix
+    if: ${{ always() && needs.metadata.result == 'success' && needs.build.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.build_linux_arm64.result == 'success' && (needs.build_linux_cuda.result == 'success' || needs.build_linux_cuda.result == 'skipped') && (needs.build_linux_rocm.result == 'success' || needs.build_linux_rocm.result == 'skipped') && (needs.build_linux_vulkan.result == 'success' || needs.build_linux_vulkan.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-artifacts
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Remove smoke-only binary
+        run: rm -f release-artifacts/mesh-llm
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          prerelease: ${{ needs.metadata.outputs.prerelease }}
+          files: release-artifacts/*
+
+  publish_crates:
+    name: Publish crates.io packages
+    needs: [metadata, publish]
+    if: ${{ needs.metadata.outputs.prerelease != 'true' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@just
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev curl
-      - name: Build release
-        run: just release-build
-      - name: Package release
-        run: just release-bundle "${GITHUB_REF_NAME}"
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
+      - name: Publish mesh-llm-client
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p mesh-llm-client
+      - name: Publish mesh-api
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked -p mesh-api

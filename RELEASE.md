@@ -36,6 +36,14 @@ just release-build
 just release-bundle v0.X.Y
 ```
 
+The current GitHub Actions release workflow publishes CPU bundles for macOS
+aarch64, Linux x86_64, and Linux ARM64. The Linux ARM64 artifact is named
+`mesh-llm-aarch64-unknown-linux-gnu.tar.gz`.
+
+Windows release bundles are not expected from the current GitHub Actions workflow while the publish block stays commented out.
+
+On native Windows, `just check-release` still runs the Rust/docs/workflow invariant checks, but it skips the Bash-only `install.sh` and `scripts/package-release.sh` parity checks.
+
 ## Smoke Test
 
 ```bash
