@@ -72,11 +72,17 @@ llama-build: llama-prepare
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
-# Build a Linux CUDA ABI release artifact with an explicit architecture list.
-release-build-cuda cuda_arch="75;80;86;87;89;90;100;120":
+# Build a Linux CUDA release artifact (primary / R535-compatible lane).
+release-build-cuda cuda_arch="75;80;86;87;89;90":
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-release-build-cuda-windows cuda_arch="75;80;86;87;89;90;100;120":
+release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120":
+    @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
+
+release-build-cuda-windows cuda_arch="75;80;86;87;89;90":
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
+
+release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
 # Build a Linux ROCm ABI release artifact with an explicit architecture list.
@@ -203,8 +209,14 @@ release-bundle-windows version output="dist":
 release-bundle-cuda version output="dist":
     MESH_RELEASE_FLAVOR=cuda scripts/package-release.sh "{{ version }}" "{{ output }}"
 
+release-bundle-cuda-blackwell version output="dist":
+    MESH_RELEASE_FLAVOR=cuda-blackwell scripts/package-release.sh "{{ version }}" "{{ output }}"
+
 release-bundle-cuda-windows version output="dist":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}" -Flavor cuda
+
+release-bundle-cuda-blackwell-windows version output="dist":
+    @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-release.ps1 -Version "{{version}}" -OutputDir "{{output}}" -Flavor cuda-blackwell
 
 # Create Linux ROCm release archive(s).
 release-bundle-rocm version output="dist":
