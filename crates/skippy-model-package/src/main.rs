@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -538,13 +538,6 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
     write_json_file(&manifest_path, &manifest)?;
     println!("{}", serde_json::to_string_pretty(&manifest)?);
     Ok(())
-}
-
-fn package_activation_width(tensors: &[TensorInfo]) -> Option<u32> {
-    tensors
-        .iter()
-        .find(|tensor| tensor.name.contains("attn_norm.weight"))
-        .map(|tensor| tensor.element_count as u32)
 }
 
 fn resolve_package_input(model: String, explicit: ExplicitSourceIdentity) -> Result<PackageInput> {
@@ -1184,37 +1177,30 @@ fn write_sharded_stage_artifact(source: &ModelSource, stage: &StagePlan, out: &P
     result.and(cleanup)
 }
 
-fn layer_count(tensors: &[TensorInfo]) -> Result<u32> {
-    tensors
-        .iter()
-        .filter_map(|tensor| tensor.layer_index)
-        .max()
-        .map(|max_layer| max_layer + 1)
-        .context("model has no layer tensors")
-}
-
 const MAX_GGUF_STRING_BYTES: u64 = 1_000_000;
 const MAX_GGUF_ARRAY_ELEMENTS: u64 = 1_000_000;
-const MAX_GGUF_ARRAY_DEPTH: u32 = 64;
+const MAX_GGUF_ARRAY_DEPTH: usize = 64;
 const MAX_GGUF_HEADER_KV_COUNT: u64 = 1_000_000;
 const MAX_GGUF_TENSOR_COUNT: u64 = 1_000_000;
 
 fn activation_width(model_path: &Path) -> Result<u32> {
     let mut file = File::open(model_path)
-        .with_context(|| format!("open GGUF metadata {}", model_path.display()))?;
+        .with_context(|| format!("open GGUF metadata source {}", model_path.display()))?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)
-        .with_context(|| format!("read GGUF magic {}", model_path.display()))?;
-    if &magic != b"GGUF" {
-        bail!("{} is not a GGUF file", model_path.display());
-    }
+        .with_context(|| format!("read GGUF magic from {}", model_path.display()))?;
+    anyhow::ensure!(
+        &magic == b"GGUF",
+        "not a GGUF file: {}",
+        model_path.display()
+    );
+
     let version = read_gguf_u32(&mut file)?;
-    if version < 2 {
-        bail!(
-            "GGUF metadata for {} uses unsupported version {version}",
-            model_path.display()
-        );
-    }
+    anyhow::ensure!(
+        version >= 2,
+        "unsupported GGUF version {version} in {}",
+        model_path.display()
+    );
     let _tensor_count = read_gguf_header_count(&mut file, MAX_GGUF_TENSOR_COUNT, "tensor")?;
     let kv_count = read_gguf_header_count(&mut file, MAX_GGUF_HEADER_KV_COUNT, "metadata")?;
 
@@ -1230,7 +1216,7 @@ fn activation_width(model_path: &Path) -> Result<u32> {
                 embedding_lengths.insert(arch.to_string(), value);
             }
         } else {
-            skip_gguf_value(&mut file, value_type, 0)?;
+            skip_gguf_value(&mut file, value_type)?;
         }
     }
 
@@ -1240,23 +1226,16 @@ fn activation_width(model_path: &Path) -> Result<u32> {
             model_path.display()
         )
     })?;
-    let width = embedding_lengths.remove(&architecture).with_context(|| {
+    embedding_lengths.remove(&architecture).with_context(|| {
         format!(
             "GGUF metadata for {} does not contain {}.embedding_length",
             model_path.display(),
             architecture
         )
-    })?;
-    anyhow::ensure!(
-        width > 0,
-        "GGUF metadata for {} does not contain a positive {}.embedding_length",
-        model_path.display(),
-        architecture
-    );
-    Ok(width)
+    })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GgufValueType {
     Uint8,
     Int8,
@@ -1293,7 +1272,7 @@ impl GgufValueType {
         })
     }
 
-    fn fixed_size(self) -> Option<usize> {
+    fn fixed_width(self) -> Option<u64> {
         match self {
             Self::Uint8 | Self::Int8 | Self::Bool => Some(1),
             Self::Uint16 | Self::Int16 => Some(2),
@@ -1306,50 +1285,38 @@ impl GgufValueType {
 
 fn read_gguf_u32(reader: &mut impl Read) -> Result<u32> {
     let mut bytes = [0u8; 4];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF u32 value")?;
+    reader.read_exact(&mut bytes).context("read GGUF u32")?;
     Ok(u32::from_le_bytes(bytes))
 }
 
 fn read_gguf_i32(reader: &mut impl Read) -> Result<i32> {
     let mut bytes = [0u8; 4];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF i32 value")?;
+    reader.read_exact(&mut bytes).context("read GGUF i32")?;
     Ok(i32::from_le_bytes(bytes))
-}
-
-fn read_gguf_u16(reader: &mut impl Read) -> Result<u16> {
-    let mut bytes = [0u8; 2];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF u16 value")?;
-    Ok(u16::from_le_bytes(bytes))
-}
-
-fn read_gguf_u8(reader: &mut impl Read) -> Result<u8> {
-    let mut bytes = [0u8; 1];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF u8 value")?;
-    Ok(bytes[0])
 }
 
 fn read_gguf_u64(reader: &mut impl Read) -> Result<u64> {
     let mut bytes = [0u8; 8];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF u64 value")?;
+    reader.read_exact(&mut bytes).context("read GGUF u64")?;
     Ok(u64::from_le_bytes(bytes))
 }
 
 fn read_gguf_i64(reader: &mut impl Read) -> Result<i64> {
     let mut bytes = [0u8; 8];
-    reader
-        .read_exact(&mut bytes)
-        .context("read GGUF i64 value")?;
+    reader.read_exact(&mut bytes).context("read GGUF i64")?;
     Ok(i64::from_le_bytes(bytes))
+}
+
+fn read_gguf_u16(reader: &mut impl Read) -> Result<u16> {
+    let mut bytes = [0u8; 2];
+    reader.read_exact(&mut bytes).context("read GGUF u16")?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_gguf_u8(reader: &mut impl Read) -> Result<u8> {
+    let mut bytes = [0u8; 1];
+    reader.read_exact(&mut bytes).context("read GGUF u8")?;
+    Ok(bytes[0])
 }
 
 fn read_gguf_header_count(reader: &mut impl Read, max: u64, label: &str) -> Result<u64> {
@@ -1365,77 +1332,106 @@ fn read_gguf_header_count(reader: &mut impl Read, max: u64, label: &str) -> Resu
 
 fn read_gguf_string(reader: &mut impl Read) -> Result<String> {
     let len = read_gguf_u64(reader)?;
-    if len > MAX_GGUF_STRING_BYTES {
-        bail!("GGUF metadata string is too long: {len} bytes");
-    }
-    let mut bytes = vec![0u8; len as usize];
+    ensure!(
+        len <= MAX_GGUF_STRING_BYTES,
+        "GGUF string length {len} exceeds safety limit {MAX_GGUF_STRING_BYTES}"
+    );
+    let len = usize::try_from(len).context("GGUF string length does not fit usize")?;
+    let mut bytes = vec![0u8; len];
     reader
         .read_exact(&mut bytes)
         .context("read GGUF string bytes")?;
-    String::from_utf8(bytes).context("GGUF metadata string is not valid UTF-8")
+    String::from_utf8(bytes).context("GGUF string is not valid UTF-8")
 }
 
 fn read_gguf_string_value(
-    reader: &mut impl Read,
+    reader: &mut (impl Read + Seek),
     value_type: GgufValueType,
 ) -> Result<Option<String>> {
-    match value_type {
-        GgufValueType::String => Ok(Some(read_gguf_string(reader)?)),
-        _ => {
-            skip_gguf_value(reader, value_type, 0)?;
-            Ok(None)
-        }
+    if value_type == GgufValueType::String {
+        return Ok(Some(read_gguf_string(reader)?));
     }
+    skip_gguf_value(reader, value_type)?;
+    Ok(None)
 }
 
-fn read_gguf_u32_value(reader: &mut impl Read, value_type: GgufValueType) -> Result<Option<u32>> {
-    match value_type {
-        GgufValueType::Uint32 => Ok(Some(read_gguf_u32(reader)?)),
+fn read_gguf_u32_value(
+    reader: &mut (impl Read + Seek),
+    value_type: GgufValueType,
+) -> Result<Option<u32>> {
+    Ok(match value_type {
+        GgufValueType::Uint32 => Some(read_gguf_u32(reader)?),
         GgufValueType::Int32 => {
             let value = read_gguf_i32(reader)?;
-            Ok(Some(
-                u32::try_from(value).context("GGUF embedding_length is negative")?,
-            ))
+            Some(u32::try_from(value).context("GGUF embedding_length is negative")?)
         }
-        GgufValueType::Uint16 => Ok(Some(u32::from(read_gguf_u16(reader)?))),
-        GgufValueType::Uint8 => Ok(Some(u32::from(read_gguf_u8(reader)?))),
+        GgufValueType::Uint16 => Some(u32::from(read_gguf_u16(reader)?)),
+        GgufValueType::Uint8 => Some(u32::from(read_gguf_u8(reader)?)),
         _ => {
-            skip_gguf_value(reader, value_type, 0)?;
-            Ok(None)
+            skip_gguf_value(reader, value_type)?;
+            None
+        }
+    })
+}
+
+fn skip_gguf_value(reader: &mut (impl Read + Seek), value_type: GgufValueType) -> Result<()> {
+    skip_gguf_value_with_depth(reader, value_type, 0)
+}
+
+fn skip_gguf_value_with_depth(
+    reader: &mut (impl Read + Seek),
+    value_type: GgufValueType,
+    depth: usize,
+) -> Result<()> {
+    ensure!(
+        depth <= MAX_GGUF_ARRAY_DEPTH,
+        "GGUF array nesting exceeds safety limit {MAX_GGUF_ARRAY_DEPTH}"
+    );
+    if let Some(width) = value_type.fixed_width() {
+        skip_gguf_bytes(reader, width)
+    } else if value_type == GgufValueType::String {
+        let len = read_gguf_u64(reader)?;
+        ensure!(
+            len <= MAX_GGUF_STRING_BYTES,
+            "GGUF string length {len} exceeds safety limit {MAX_GGUF_STRING_BYTES}"
+        );
+        skip_gguf_bytes(reader, len)
+    } else {
+        let item_type = GgufValueType::from_u32(read_gguf_u32(reader)?)?;
+        let len = read_gguf_u64(reader)?;
+        ensure!(
+            len <= MAX_GGUF_ARRAY_ELEMENTS,
+            "GGUF array length {len} exceeds safety limit {MAX_GGUF_ARRAY_ELEMENTS}"
+        );
+        if let Some(width) = item_type.fixed_width() {
+            let bytes = width
+                .checked_mul(len)
+                .context("GGUF array byte size overflows u64")?;
+            skip_gguf_bytes(reader, bytes)
+        } else {
+            for _ in 0..len {
+                skip_gguf_value_with_depth(reader, item_type, depth + 1)?;
+            }
+            Ok(())
         }
     }
 }
 
-fn skip_gguf_value(reader: &mut impl Read, value_type: GgufValueType, depth: u32) -> Result<()> {
-    if let Some(size) = value_type.fixed_size() {
-        let mut bytes = vec![0u8; size];
-        reader
-            .read_exact(&mut bytes)
-            .context("skip GGUF scalar metadata value")?;
-        return Ok(());
-    }
+fn skip_gguf_bytes(reader: &mut impl Seek, len: u64) -> Result<()> {
+    let offset = i64::try_from(len).context("GGUF value is too large to seek over")?;
+    reader
+        .seek(SeekFrom::Current(offset))
+        .context("skip GGUF metadata value")?;
+    Ok(())
+}
 
-    match value_type {
-        GgufValueType::String => {
-            let _ = read_gguf_string(reader)?;
-            Ok(())
-        }
-        GgufValueType::Array => {
-            if depth >= MAX_GGUF_ARRAY_DEPTH {
-                bail!("GGUF metadata array nesting is too deep");
-            }
-            let element_type = GgufValueType::from_u32(read_gguf_u32(reader)?)?;
-            let len = read_gguf_u64(reader)?;
-            if len > MAX_GGUF_ARRAY_ELEMENTS {
-                bail!("GGUF metadata array is too long: {len} elements");
-            }
-            for _ in 0..len {
-                skip_gguf_value(reader, element_type, depth + 1)?;
-            }
-            Ok(())
-        }
-        _ => unreachable!("fixed-size GGUF metadata value should already be handled"),
-    }
+fn layer_count(tensors: &[TensorInfo]) -> Result<u32> {
+    tensors
+        .iter()
+        .filter_map(|tensor| tensor.layer_index)
+        .max()
+        .map(|max_layer| max_layer + 1)
+        .context("model has no layer tensors")
 }
 
 fn stage_plan_from_tensors(
@@ -1614,7 +1610,6 @@ mod tests {
         activation_width, local_artifact_files, model_distribution_id, resolve_gguf_shard_paths,
         resolve_local_package_input, ExplicitSourceIdentity,
     };
-    use std::io::Write;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1732,16 +1727,13 @@ mod tests {
     fn activation_width_reads_arch_embedding_length_from_gguf_metadata() {
         let dir = unique_test_dir("activation-width");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("model.gguf");
-        let mut fixture = gguf_header(2);
-        push_string_kv(&mut fixture, "general.architecture", "qwen2");
-        push_u32_kv(&mut fixture, "qwen2.embedding_length", 3584);
-        std::fs::File::create(&path)
-            .unwrap()
-            .write_all(&fixture)
-            .unwrap();
+        let model = dir.join("model.gguf");
+        let mut bytes = gguf_header(2);
+        push_string_kv(&mut bytes, "general.architecture", "qwen2");
+        push_u32_kv(&mut bytes, "qwen2.embedding_length", 3584);
+        std::fs::write(&model, bytes).unwrap();
 
-        assert_eq!(activation_width(&path).unwrap(), 3584);
+        assert_eq!(activation_width(&model).unwrap(), 3584);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1779,10 +1771,7 @@ mod tests {
         std::fs::write(&model, bytes).unwrap();
 
         let error = activation_width(&model).unwrap_err().to_string();
-        assert!(
-            error.contains("too long") || error.contains("exceeds safety limit"),
-            "{error}"
-        );
+        assert!(error.contains("exceeds safety limit"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1798,14 +1787,14 @@ mod tests {
         std::fs::write(&model, bytes).unwrap();
 
         let error = activation_width(&model).unwrap_err().to_string();
-        assert!(error.contains("array nesting"), "{error}");
+        assert!(error.contains("array nesting exceeds"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn gguf_header(kv_count: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"GGUF");
-        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
         bytes.extend_from_slice(&0_i64.to_le_bytes());
         bytes.extend_from_slice(&(kv_count as i64).to_le_bytes());
         bytes

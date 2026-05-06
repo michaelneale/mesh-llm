@@ -384,9 +384,11 @@ pub(super) async fn start_runtime_split_model(
     spec: LocalRuntimeModelStartSpec<'_>,
     model_ref: &str,
 ) -> Result<SplitRuntimeStart> {
-    let model_path_str = spec.model_path.to_string_lossy();
+    let model_path_str = spec.model_path.to_string_lossy().to_string();
     let package = if skippy::is_layer_package_ref(&model_path_str) {
-        skippy::identity_from_layer_package(&model_path_str)?
+        tokio::task::spawn_blocking(move || skippy::identity_from_layer_package(&model_path_str))
+            .await
+            .context("join identify skippy layer package task")??
     } else {
         skippy::synthetic_direct_gguf_package(model_ref, spec.model_path)?
     };
