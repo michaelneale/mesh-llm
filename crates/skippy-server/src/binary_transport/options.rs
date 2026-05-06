@@ -40,6 +40,10 @@ pub struct EmbeddedOpenAiStageOptions {
     pub draft_model_path: Option<PathBuf>,
     pub speculative_window: usize,
     pub adaptive_speculative_window: bool,
+    pub ngram_speculative: bool,
+    pub ngram_auto: bool,
+    pub spec_ngram_size_n: usize,
+    pub ngram_history_min_hits: u32,
     pub draft_n_gpu_layers: Option<i32>,
 }
 
@@ -83,6 +87,10 @@ impl BinaryStageOptions {
                 draft_model_path: args.openai_draft_model_path,
                 speculative_window: args.openai_speculative_window,
                 adaptive_speculative_window: args.openai_adaptive_speculative_window,
+                ngram_speculative: args.openai_ngram_speculative,
+                ngram_auto: args.openai_ngram_auto,
+                spec_ngram_size_n: args.openai_spec_ngram_size_n,
+                ngram_history_min_hits: args.openai_ngram_history_min_hits,
                 draft_n_gpu_layers: args.openai_draft_n_gpu_layers,
             });
         Ok(Self {

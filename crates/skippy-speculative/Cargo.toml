@@ -1,0 +1,9 @@
+[package]
+name = "skippy-speculative"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "skippy_speculative"
+path = "src/lib.rs"

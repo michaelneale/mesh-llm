@@ -47,6 +47,11 @@ use skippy_runtime::{
     LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig, RuntimeLoadMode,
     SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
+use skippy_speculative::{
+    classify_verify_span, proposal_len_bucket, repair_path_label, repaired_commit_tokens,
+    verify_inputs_for_proposals, NgramActivation, NgramConfig, NgramPolicySnapshot, NgramStore,
+    VerifySpanDecision, VerifySpanDecisionKind, VerifySpanRepairStrategy,
+};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, Semaphore},
@@ -153,6 +158,8 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         ctx_size,
         mode,
         draft: None,
+        ngram: None,
+        ngram_auto: false,
         speculative_window: 0,
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
@@ -188,6 +195,10 @@ pub struct EmbeddedOpenAiArgs {
     pub draft_model_path: Option<PathBuf>,
     pub speculative_window: usize,
     pub adaptive_speculative_window: bool,
+    pub ngram_speculative: bool,
+    pub ngram_auto: bool,
+    pub spec_ngram_size_n: usize,
+    pub ngram_history_min_hits: u32,
     pub draft_n_gpu_layers: Option<i32>,
     pub activation_width: i32,
     pub wire_dtype: WireActivationDType,
@@ -260,6 +271,15 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
     if args.draft_model_path.is_some() && args.speculative_window == 0 {
         bail!("--openai-speculative-window must be greater than zero when a draft model is set");
     }
+    if args.ngram_speculative && args.ngram_auto {
+        bail!("--openai-ngram-speculative and --openai-ngram-auto are mutually exclusive");
+    }
+    if (args.ngram_speculative || args.ngram_auto) && args.speculative_window == 0 {
+        bail!("--openai-speculative-window must be greater than zero when n-gram speculation is enabled");
+    }
+    if (args.ngram_speculative || args.ngram_auto) && args.spec_ngram_size_n == 0 {
+        bail!("--openai-spec-ngram-size-n must be greater than zero when n-gram speculation is enabled");
+    }
     if args.config.stage_index != 0 || args.config.layer_start != 0 {
         bail!("embedded OpenAI serving is only supported on stage 0");
     }
@@ -269,6 +289,13 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         args.draft_n_gpu_layers,
         args.speculative_window,
     )?;
+    let ngram = (args.ngram_speculative || args.ngram_auto).then(|| {
+        Arc::new(Mutex::new(NgramStore::new(NgramConfig {
+            n: args.spec_ngram_size_n,
+            min_hits: args.ngram_history_min_hits.max(1),
+            max_tokens_per_pool: 131_072,
+        })))
+    });
     let model_id = ModelId::new(
         args.model_id
             .unwrap_or_else(|| args.config.model_id.clone()),
@@ -320,6 +347,8 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         ctx_size,
         mode,
         draft,
+        ngram,
+        ngram_auto: args.ngram_auto,
         speculative_window: args.speculative_window,
         adaptive_speculative_window: args.adaptive_speculative_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
@@ -344,6 +373,8 @@ struct StageOpenAiBackend {
     ctx_size: usize,
     mode: OpenAiBackendMode,
     draft: Option<Arc<Mutex<DraftRunner>>>,
+    ngram: Option<Arc<Mutex<NgramStore>>>,
+    ngram_auto: bool,
     speculative_window: usize,
     adaptive_speculative_window: bool,
     generation_limit: Arc<Semaphore>,
@@ -922,6 +953,16 @@ struct OpenAiGenerationIds {
     cache: OpenAiCacheHints,
 }
 
+struct RunGenerationRequest {
+    prompt: PreparedGenerationPrompt,
+    max_tokens: GenerationTokenLimit,
+    stop: Option<openai_frontend::StopSequence>,
+    sampling: SamplingConfig,
+    hook_request: Option<ChatCompletionRequest>,
+    user_key: Option<String>,
+    ids: OpenAiGenerationIds,
+}
+
 impl OpenAiGenerationIds {
     fn new(cache: OpenAiCacheHints) -> Self {
         let sequence = OPENAI_GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1201,14 +1242,15 @@ impl OpenAiBackend for StageOpenAiBackend {
         );
         let chat_parse_metadata = prompt.chat_parse_metadata.clone();
         let output = self
-            .run_generation(
+            .run_generation(RunGenerationRequest {
                 prompt,
                 max_tokens,
-                request.stop.clone(),
+                stop: request.stop.clone(),
                 sampling,
-                Some(request.clone()),
-                ids.clone(),
-            )
+                hook_request: Some(request.clone()),
+                user_key: request.user.clone(),
+                ids: ids.clone(),
+            })
             .await?;
         let response_timer = PhaseTimer::start();
         let parsed_tool_calls =
@@ -1296,6 +1338,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 sampling,
                 include_usage,
                 Some(request.clone()),
+                request.user.clone(),
                 context,
                 ids,
             )
@@ -1326,14 +1369,15 @@ impl OpenAiBackend for StageOpenAiBackend {
         );
         self.emit_openai_phase("stage.openai_prompt_prepare", prompt_timer, prompt_attrs);
         let output = self
-            .run_generation(
+            .run_generation(RunGenerationRequest {
                 prompt,
                 max_tokens,
-                request.stop.clone(),
+                stop: request.stop.clone(),
                 sampling,
-                None,
-                ids.clone(),
-            )
+                hook_request: None,
+                user_key: request.user.clone(),
+                ids: ids.clone(),
+            })
             .await?;
         let response_timer = PhaseTimer::start();
         let response = CompletionResponse::new_with_reason(
@@ -1411,6 +1455,7 @@ impl OpenAiBackend for StageOpenAiBackend {
                 sampling,
                 include_usage,
                 None,
+                request.user.clone(),
                 context,
                 ids,
             )
@@ -2034,15 +2079,16 @@ impl StageOpenAiBackend {
         Ok(())
     }
 
-    async fn run_generation(
-        &self,
-        prompt: PreparedGenerationPrompt,
-        max_tokens: GenerationTokenLimit,
-        stop: Option<openai_frontend::StopSequence>,
-        sampling: SamplingConfig,
-        hook_request: Option<ChatCompletionRequest>,
-        ids: OpenAiGenerationIds,
-    ) -> OpenAiResult<GeneratedText> {
+    async fn run_generation(&self, request: RunGenerationRequest) -> OpenAiResult<GeneratedText> {
+        let RunGenerationRequest {
+            prompt,
+            max_tokens,
+            stop,
+            sampling,
+            hook_request,
+            user_key,
+            ids,
+        } = request;
         let admit_timer = PhaseTimer::start();
         let permit = self
             .generation_limit
@@ -2067,6 +2113,7 @@ impl StageOpenAiBackend {
                 hook_request,
                 hook_runtime,
                 None,
+                user_key,
                 ids,
                 |_| Ok(()),
             )
@@ -2084,6 +2131,7 @@ impl StageOpenAiBackend {
         sampling: SamplingConfig,
         include_usage: bool,
         hook_request: Option<ChatCompletionRequest>,
+        user_key: Option<String>,
         context: OpenAiRequestContext,
         ids: OpenAiGenerationIds,
     ) -> OpenAiResult<GenerationStream> {
@@ -2116,6 +2164,7 @@ impl StageOpenAiBackend {
                 hook_request,
                 hook_runtime,
                 Some(&context.cancellation_token()),
+                user_key,
                 ids,
                 |chunk| {
                     if tool_call_stream {
@@ -2302,6 +2351,7 @@ impl StageOpenAiBackend {
         hook_request: Option<ChatCompletionRequest>,
         hook_runtime: Option<tokio::runtime::Handle>,
         cancellation: Option<&openai_frontend::CancellationToken>,
+        user_key: Option<String>,
         ids: OpenAiGenerationIds,
         on_text_chunk: impl FnMut(&str) -> OpenAiResult<()>,
     ) -> OpenAiResult<GeneratedText> {
@@ -2395,6 +2445,9 @@ impl StageOpenAiBackend {
                     downstream_wire_condition,
                     lane_pool,
                     draft: self.draft.clone(),
+                    ngram: self.ngram.clone(),
+                    ngram_auto: self.ngram_auto,
+                    ngram_auto_decision: detect_ngram_auto_candidate(&prompt.text),
                     speculative_window: self.speculative_window,
                     adaptive_speculative_window: self.adaptive_speculative_window,
                     prompt_token_ids: &prompt_token_ids,
@@ -2404,6 +2457,7 @@ impl StageOpenAiBackend {
                     hook_request,
                     hook_runtime,
                     cancellation,
+                    user_key: user_key.clone(),
                     ids: &ids,
                 },
                 |token| collector.push_token(token),
@@ -4350,11 +4404,33 @@ impl StageOpenAiBackend {
                 .last()
                 .expect("checked non-empty prompt");
             let mut context_tokens = request.prompt_token_ids.to_vec();
+            let ngram_pool_key = request.ngram.as_ref().map(|_| {
+                ngram_pool_key(
+                    &self.model_id,
+                    request.user_key.as_deref(),
+                    request.prompt_token_ids,
+                )
+            });
+            if let (Some(ngram), Some(pool_key)) = (request.ngram.as_ref(), ngram_pool_key.as_ref())
+            {
+                let mut ngram = ngram
+                    .lock()
+                    .map_err(|_| OpenAiError::backend("n-gram store lock poisoned"))?;
+                ngram.observe_sequence(pool_key, request.prompt_token_ids);
+            }
             let mut fused_reached_stop = false;
             if let Some(fused) = fused_first_decode.take() {
                 current = fused.predicted;
                 decoded_tokens = 1;
                 context_tokens.push(current);
+                if let (Some(ngram), Some(pool_key)) =
+                    (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                {
+                    let mut ngram = ngram
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("n-gram store lock poisoned"))?;
+                    ngram.observe_sequence(pool_key, &[current]);
+                }
                 decode_stage0_compute_ms += fused.execution.stage0_compute_ms;
                 decode_runtime_lock_wait_ms += fused.execution.runtime_lock_wait_ms;
                 decode_runtime_lock_wait_max_ms =
@@ -4431,7 +4507,10 @@ impl StageOpenAiBackend {
                 adaptive_window_start: adaptive_window,
                 adaptive_window_final: adaptive_window,
                 adaptive_window_max: max_speculative_window,
-                adaptive_window_min: if request.draft.is_some() {
+                ngram_available: request.ngram.is_some(),
+                ngram_auto: request.ngram_auto,
+                ngram_auto_decision: request.ngram_auto_decision,
+                adaptive_window_min: if request.draft.is_some() || request.ngram.is_some() {
                     adaptive_window
                 } else {
                     0
@@ -4479,7 +4558,13 @@ impl StageOpenAiBackend {
                     break;
                 }
                 let token_timer = PhaseTimer::start();
-                if draft_guard.is_some() {
+                let mut skipped_ngram_single_token_verify = false;
+                let mut skipped_ngram_single_token_policy = None;
+                let mut ngram_proposal_stop_reason = None;
+                let mut ngram_match_order_min = None;
+                let mut ngram_match_order_max = None;
+                let mut ngram_configured_order = None;
+                if draft_guard.is_some() || request.ngram.is_some() {
                     let remaining = request.max_tokens as usize - decoded_tokens;
                     if remaining == 0 {
                         break;
@@ -4488,6 +4573,63 @@ impl StageOpenAiBackend {
                     let proposal_limit = remaining.min(adaptive_window);
                     let propose_timer = PhaseTimer::start();
                     let mut draft_tokens = Vec::new();
+                    let mut ngram_policy = None;
+                    if let (Some(ngram), Some(pool_key)) =
+                        (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                    {
+                        let mut ngram = ngram
+                            .lock()
+                            .map_err(|_| OpenAiError::backend("n-gram store lock poisoned"))?;
+                        let activation = if request.ngram_auto {
+                            NgramActivation::Auto {
+                                prompt_candidate: request.ngram_auto_decision.candidate,
+                                min_repeated_suffix_hits: 3,
+                            }
+                        } else {
+                            NgramActivation::Manual {
+                                stable_user: request.user_key.is_some(),
+                            }
+                        };
+                        let proposal = ngram.propose_with_activation(
+                            pool_key,
+                            &context_tokens,
+                            proposal_limit,
+                            activation,
+                        );
+                        ngram_policy = Some(proposal.policy);
+                        ngram_proposal_stop_reason = Some(proposal.stop_reason);
+                        ngram_match_order_min = Some(proposal.match_order_min);
+                        ngram_match_order_max = Some(proposal.match_order_max);
+                        ngram_configured_order = Some(proposal.configured_order);
+                        draft_tokens = proposal.tokens;
+                        if !draft_tokens.is_empty() {
+                            proposal_source = "ngram";
+                            speculative_stats.observe_ngram_proposal_len(draft_tokens.len());
+                        }
+                    }
+                    if proposal_source == "ngram"
+                        && draft_tokens.len() == 1
+                        && ngram_policy.is_some_and(|policy| {
+                            policy.should_skip_single_token_verify(
+                                ngram_match_order_max.unwrap_or(0),
+                                ngram_configured_order.unwrap_or(0),
+                            )
+                        })
+                    {
+                        if let (Some(ngram), Some(pool_key)) =
+                            (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                        {
+                            let mut ngram = ngram
+                                .lock()
+                                .map_err(|_| OpenAiError::backend("n-gram store lock poisoned"))?;
+                            ngram_policy = ngram.observe_skipped_single_token_verify(pool_key);
+                        }
+                        skipped_ngram_single_token_verify = true;
+                        skipped_ngram_single_token_policy = ngram_policy;
+                        speculative_stats.ngram_skipped_single_token_windows += 1;
+                        draft_tokens.clear();
+                        proposal_source = "none";
+                    }
                     if draft_tokens.is_empty() {
                         if let Some(draft) = draft_guard.as_deref_mut() {
                             let proposal_limit = proposal_limit.min(draft.window);
@@ -4503,6 +4645,7 @@ impl StageOpenAiBackend {
                     speculative_stats.draft_propose_ms += draft_propose_ms;
                     if !draft_tokens.is_empty() {
                         let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
+                        let verify_needs_checkpoint = draft_tokens.len() > 1;
                         let message = embedded_verify_message(
                             request.wire_dtype,
                             VerifySpanMessageArgs {
@@ -4512,7 +4655,7 @@ impl StageOpenAiBackend {
                                 pos_start: prefill_token_count + decoded_tokens,
                                 decode_step: decoded_tokens,
                                 tokens: &verify_inputs,
-                                checkpoint: true,
+                                checkpoint: verify_needs_checkpoint,
                             },
                         )?;
                         let verify = self.execute_embedded_stage_message(
@@ -4525,6 +4668,9 @@ impl StageOpenAiBackend {
                         )?;
                         speculative_stats.windows += 1;
                         speculative_stats.draft_tokens += draft_tokens.len();
+                        if proposal_source == "ngram" {
+                            speculative_stats.ngram_tokens += draft_tokens.len();
+                        }
                         speculative_stats.primary_verify_requests += 1;
                         speculative_stats.primary_verify_tokens += verify_inputs.len();
                         speculative_stats.primary_verify_elapsed_ms += verify.elapsed_ms;
@@ -4570,17 +4716,29 @@ impl StageOpenAiBackend {
                             &verify.reply.predicted_tokens,
                             decoded_tokens,
                             request.max_tokens as usize,
-                            |token| token_is_eog_with_runtime(&self.runtime, token),
-                        )?;
+                            |token| {
+                                token_is_eog_with_runtime(&self.runtime, token)
+                                    .map_err(|error| error.to_string())
+                            },
+                        )
+                        .map_err(|error| OpenAiError::backend(error.to_string()))?;
                         speculative_stats.observe_verify_decision(
                             decision,
                             &mut adaptive_window,
                             request.adaptive_speculative_window,
                             max_speculative_window,
                         );
+                        let ngram_recovery_ms_before = speculative_stats.recovery_ms;
+                        let repair_strategy = VerifySpanRepairStrategy::for_decision(
+                            decision,
+                            proposal_source,
+                            ngram_policy,
+                            verify.elapsed_ms,
+                            verify_inputs.len(),
+                        );
                         let mut commit_tokens =
                             verify.reply.predicted_tokens[..decision.commit_count].to_vec();
-                        if decision.requires_repair() {
+                        if repair_strategy != VerifySpanRepairStrategy::None {
                             speculative_stats.recovery_restores += 1;
                             let restore = self.restore_embedded_stage_session(
                                 &request,
@@ -4599,7 +4757,7 @@ impl StageOpenAiBackend {
                             let repair_input_count = decision
                                 .repair_input_count
                                 .ok_or_else(|| OpenAiError::backend("missing repair count"))?;
-                            if repair_input_count == 1 {
+                            if repair_strategy == VerifySpanRepairStrategy::RestoreDecodeOne {
                                 let repair_message = embedded_decode_message(
                                     request.wire_dtype,
                                     DecodeMessageArgs {
@@ -4640,7 +4798,7 @@ impl StageOpenAiBackend {
                                 speculative_stats.recovery_decode_repairs += 1;
                                 speculative_stats.recovery_ms += repair.elapsed_ms;
                                 speculative_stats.recovery_decode_elapsed_ms += repair.elapsed_ms;
-                            } else {
+                            } else if repair_strategy == VerifySpanRepairStrategy::RestoreReverify {
                                 let repair_inputs = &verify_inputs[..repair_input_count];
                                 let repair_message = embedded_verify_message(
                                     request.wire_dtype,
@@ -4667,7 +4825,8 @@ impl StageOpenAiBackend {
                                     decision.accepted_before_reject,
                                     repair_input_count,
                                     &repair.reply.predicted_tokens,
-                                )?;
+                                )
+                                .map_err(|error| OpenAiError::backend(error.to_string()))?;
                                 decode_stage0_compute_ms += repair.stats.stage0_compute_ms;
                                 decode_runtime_lock_wait_ms += repair.stats.runtime_lock_wait_ms;
                                 decode_runtime_lock_wait_max_ms = decode_runtime_lock_wait_max_ms
@@ -4689,12 +4848,40 @@ impl StageOpenAiBackend {
                                 speculative_stats.recovery_reverify_elapsed_ms += repair.elapsed_ms;
                             }
                         }
+                        if proposal_source == "ngram" {
+                            if let (Some(ngram), Some(pool_key)) =
+                                (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                            {
+                                let mut ngram = ngram.lock().map_err(|_| {
+                                    OpenAiError::backend("n-gram store lock poisoned")
+                                })?;
+                                let ngram_repair_elapsed_ms =
+                                    speculative_stats.recovery_ms.max(ngram_recovery_ms_before)
+                                        - ngram_recovery_ms_before;
+                                ngram_policy = ngram.observe_window(
+                                    pool_key,
+                                    decision,
+                                    draft_tokens.len(),
+                                    verify.elapsed_ms,
+                                    ngram_repair_elapsed_ms,
+                                    max_speculative_window,
+                                );
+                            }
+                        }
 
                         let mut reached_stop = false;
                         for token in commit_tokens {
                             current = token;
                             decoded_tokens += 1;
                             context_tokens.push(current);
+                            if let (Some(ngram), Some(pool_key)) =
+                                (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                            {
+                                let mut ngram = ngram.lock().map_err(|_| {
+                                    OpenAiError::backend("n-gram store lock poisoned")
+                                })?;
+                                ngram.observe_sequence(pool_key, &[current]);
+                            }
                             if on_token(current)? == TokenControl::Stop {
                                 reached_stop = true;
                             }
@@ -4727,12 +4914,44 @@ impl StageOpenAiBackend {
                             json!(draft_tokens.len()),
                         );
                         token_attrs.insert(
+                            "llama_stage.spec.proposal_len_bucket".to_string(),
+                            json!(proposal_len_bucket(draft_tokens.len())),
+                        );
+                        token_attrs.insert(
                             "llama_stage.spec.accepted".to_string(),
                             json!(decision.accepted_before_reject),
                         );
                         token_attrs.insert(
                             "llama_stage.spec.rejected".to_string(),
                             json!(decision.rejected()),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.rejection_point".to_string(),
+                            json!(decision.repair_input_count),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.verify_elapsed_ms".to_string(),
+                            json!(verify.elapsed_ms),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.verify_checkpointed".to_string(),
+                            json!(verify_needs_checkpoint),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.verify_checkpoint_ms".to_string(),
+                            json!(us_to_ms(verify.reply.stats.checkpoint_total_us)),
+                        );
+                        insert_verify_span_stats_attrs(&mut token_attrs, &verify.reply.stats);
+                        token_attrs.insert(
+                            "llama_stage.spec.repair_elapsed_ms".to_string(),
+                            json!(
+                                speculative_stats.recovery_ms.max(ngram_recovery_ms_before)
+                                    - ngram_recovery_ms_before
+                            ),
+                        );
+                        token_attrs.insert(
+                            "llama_stage.spec.repair_path".to_string(),
+                            json!(repair_path_label(decision, repair_strategy)),
                         );
                         token_attrs.insert(
                             "llama_stage.spec.draft_propose_ms".to_string(),
@@ -4742,6 +4961,39 @@ impl StageOpenAiBackend {
                             "llama_stage.spec.proposal_source".to_string(),
                             json!(proposal_source),
                         );
+                        insert_ngram_auto_attrs(
+                            &mut token_attrs,
+                            request.ngram.is_some(),
+                            request.ngram_auto,
+                            request.ngram_auto_decision,
+                        );
+                        if proposal_source == "ngram" {
+                            if let Some(reason) = ngram_proposal_stop_reason {
+                                token_attrs.insert(
+                                    "llama_stage.spec.ngram_proposal_stop_reason".to_string(),
+                                    json!(reason),
+                                );
+                            }
+                            if let Some(order) = ngram_match_order_min {
+                                token_attrs.insert(
+                                    "llama_stage.spec.ngram_match_order_min".to_string(),
+                                    json!(order),
+                                );
+                            }
+                            if let Some(order) = ngram_match_order_max {
+                                token_attrs.insert(
+                                    "llama_stage.spec.ngram_match_order_max".to_string(),
+                                    json!(order),
+                                );
+                            }
+                        }
+                        if skipped_ngram_single_token_verify {
+                            token_attrs.insert(
+                                "llama_stage.spec.ngram_skipped_single_token_verify".to_string(),
+                                json!(true),
+                            );
+                        }
+                        insert_ngram_policy_attrs(&mut token_attrs, ngram_policy);
                         token_attrs.insert(
                             "llama_stage.spec.proposal_limit".to_string(),
                             json!(proposal_limit),
@@ -4884,7 +5136,60 @@ impl StageOpenAiBackend {
                 current = reply.predicted;
                 decoded_tokens += 1;
                 context_tokens.push(current);
+                let mut ngram_policy = None;
+                if let (Some(ngram), Some(pool_key)) =
+                    (request.ngram.as_ref(), ngram_pool_key.as_ref())
+                {
+                    let mut ngram = ngram
+                        .lock()
+                        .map_err(|_| OpenAiError::backend("n-gram store lock poisoned"))?;
+                    ngram.observe_sequence(pool_key, &[current]);
+                    ngram_policy = ngram.observe_decode_step(pool_key, token_timer.elapsed_ms());
+                }
                 let mut token_attrs = self.openai_attrs(request.ids);
+                if skipped_ngram_single_token_verify {
+                    token_attrs.insert(
+                        "llama_stage.spec.ngram_skipped_single_token_verify".to_string(),
+                        json!(true),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.spec.ngram_skipped_reason".to_string(),
+                        json!("single_token_policy"),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.spec.ngram_skipped_proposed".to_string(),
+                        json!(1),
+                    );
+                    token_attrs.insert(
+                        "llama_stage.spec.ngram_skipped_proposal_len_bucket".to_string(),
+                        json!("1"),
+                    );
+                    if let Some(reason) = ngram_proposal_stop_reason {
+                        token_attrs.insert(
+                            "llama_stage.spec.ngram_proposal_stop_reason".to_string(),
+                            json!(reason),
+                        );
+                    }
+                    if let Some(order) = ngram_match_order_min {
+                        token_attrs.insert(
+                            "llama_stage.spec.ngram_match_order_min".to_string(),
+                            json!(order),
+                        );
+                    }
+                    if let Some(order) = ngram_match_order_max {
+                        token_attrs.insert(
+                            "llama_stage.spec.ngram_match_order_max".to_string(),
+                            json!(order),
+                        );
+                    }
+                    if let Some(policy) = skipped_ngram_single_token_policy {
+                        token_attrs.insert(
+                            "llama_stage.spec.ngram_skipped_single_token_policy_window".to_string(),
+                            json!(policy.current_window),
+                        );
+                    }
+                }
+                insert_ngram_policy_attrs(&mut token_attrs, ngram_policy);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -4924,6 +5229,12 @@ impl StageOpenAiBackend {
                 );
                 token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
                 token_attrs.insert("llama_stage.message_kind".to_string(), json!("DecodeEmbd"));
+                insert_ngram_auto_attrs(
+                    &mut token_attrs,
+                    request.ngram.is_some(),
+                    request.ngram_auto,
+                    request.ngram_auto_decision,
+                );
                 self.emit_openai_phase("stage.openai_decode_token", token_timer, token_attrs);
                 if on_token(current)? == TokenControl::Stop {
                     break;
@@ -4993,6 +5304,12 @@ impl StageOpenAiBackend {
                 json!(decode_downstream_wait_ms),
             );
             speculative_stats.insert_attrs(&mut decode_attrs);
+            insert_ngram_auto_attrs(
+                &mut decode_attrs,
+                request.ngram.is_some(),
+                request.ngram_auto,
+                request.ngram_auto_decision,
+            );
             self.emit_openai_phase("stage.openai_decode", decode_timer, decode_attrs);
             Ok(())
         })();
@@ -5264,6 +5581,23 @@ fn mid_generation_window_should_fire(
     sustained_entropy || window.repetition_count >= REPETITION_TRIGGER_COUNT
 }
 
+fn ngram_pool_key(model_id: &str, user_key: Option<&str>, prompt_token_ids: &[i32]) -> String {
+    let mut hasher = Sha256::new();
+    for token in prompt_token_ids.iter().take(512) {
+        hasher.update(token.to_le_bytes());
+    }
+    let prompt_digest = hasher.finalize();
+    let prompt_prefix = u64::from_le_bytes(
+        prompt_digest[..8]
+            .try_into()
+            .expect("sha256 digest has an 8-byte prefix"),
+    );
+    match user_key.filter(|value| !value.trim().is_empty()) {
+        Some(user) => format!("model={model_id};user={user}"),
+        None => format!("model={model_id};prompt_prefix={prompt_prefix:016x}"),
+    }
+}
+
 fn attrs_insert_prefill_chunk_policy(
     attrs: &mut BTreeMap<String, Value>,
     policy: &PrefillChunkPolicy,
@@ -5304,6 +5638,174 @@ fn attrs_insert_prefill_chunk_policy(
     }
 }
 
+fn insert_ngram_policy_attrs(
+    attrs: &mut BTreeMap<String, Value>,
+    policy: Option<NgramPolicySnapshot>,
+) {
+    let Some(policy) = policy else {
+        return;
+    };
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_enabled".to_string(),
+        json!(policy.enabled),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_reason".to_string(),
+        json!(policy.reason),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_quality".to_string(),
+        json!(policy.quality),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_cooldown_remaining".to_string(),
+        json!(policy.cooldown_remaining),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_window".to_string(),
+        json!(policy.current_window),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_window_cap_probes".to_string(),
+        json!(policy.policy_window_cap_probes),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_auto_repeated_suffix_hits".to_string(),
+        json!(policy.auto_repeated_suffix_hits),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_windows".to_string(),
+        json!(policy.windows),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_skipped_single_token_windows".to_string(),
+        json!(policy.skipped_single_token_windows),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_accept_rate".to_string(),
+        json!(policy.accept_rate),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_enable_count".to_string(),
+        json!(policy.enable_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_disable_count".to_string(),
+        json!(policy.disable_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_grow_count".to_string(),
+        json!(policy.grow_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_shrink_count".to_string(),
+        json!(policy.shrink_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_proposed".to_string(),
+        json!(policy.proposed_tokens),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_accepted".to_string(),
+        json!(policy.accepted_tokens),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_rejected_windows".to_string(),
+        json!(policy.rejected_windows),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_early_reject_windows".to_string(),
+        json!(policy.early_reject_windows),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_unproductive_windows".to_string(),
+        json!(policy.unproductive_windows),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_verify_ms_per_accepted".to_string(),
+        json!(policy.verify_ms_per_accepted),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_repair_ms_per_accepted".to_string(),
+        json!(policy.repair_ms_per_accepted),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_policy_non_spec_decode_ms_per_token".to_string(),
+        json!(policy.non_spec_decode_ms_per_token),
+    );
+}
+
+fn insert_ngram_auto_attrs(
+    attrs: &mut BTreeMap<String, Value>,
+    ngram_available: bool,
+    ngram_auto: bool,
+    decision: NgramAutoDecision,
+) {
+    let mode = if !ngram_available {
+        "off"
+    } else if ngram_auto {
+        "auto"
+    } else {
+        "manual"
+    };
+    attrs.insert("llama_stage.spec.ngram_mode".to_string(), json!(mode));
+    attrs.insert(
+        "llama_stage.spec.ngram_auto_candidate".to_string(),
+        json!(ngram_auto && decision.candidate),
+    );
+    attrs.insert(
+        "llama_stage.spec.ngram_auto_reason".to_string(),
+        json!(if ngram_auto {
+            decision.reason
+        } else {
+            "disabled"
+        }),
+    );
+}
+
+fn insert_verify_span_stats_attrs(attrs: &mut BTreeMap<String, Value>, stats: &StageReplyStats) {
+    attrs.insert(
+        "llama_stage.spec.verify_chain_compute_ms".to_string(),
+        json!(us_to_ms(stats.verify_span_compute_us)),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_forward_write_ms".to_string(),
+        json!(us_to_ms(stats.verify_span_forward_write_us)),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_downstream_wait_ms".to_string(),
+        json!(us_to_ms(stats.verify_span_downstream_wait_us)),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_total_ms".to_string(),
+        json!(us_to_ms(stats.verify_span_total_us)),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_stage_count".to_string(),
+        json!(stats.verify_span_stage_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_request_count".to_string(),
+        json!(stats.verify_span_request_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_token_count".to_string(),
+        json!(stats.verify_span_token_count),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_max_tokens".to_string(),
+        json!(stats.verify_span_max_tokens),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_checkpointed_requests".to_string(),
+        json!(stats.verify_span_checkpointed_requests),
+    );
+    attrs.insert(
+        "llama_stage.spec.verify_chain_skip_checkpoint_requests".to_string(),
+        json!(stats.verify_span_skip_checkpoint_requests),
+    );
+}
+
 #[derive(Debug, Clone)]
 struct PreparedGenerationPrompt {
     text: String,
@@ -5322,6 +5824,70 @@ impl PreparedGenerationPrompt {
 
     fn has_media(&self) -> bool {
         !self.media.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct NgramAutoDecision {
+    candidate: bool,
+    reason: &'static str,
+}
+
+fn detect_ngram_auto_candidate(prompt: &str) -> NgramAutoDecision {
+    let lower = prompt.to_ascii_lowercase();
+    let strong_signals = [
+        ("fenced_code", "```"),
+        ("diff", "diff --git"),
+        ("diff", "@@"),
+        ("stack_trace", "traceback"),
+        ("stack_trace", "stack trace"),
+        ("compiler_error", "error:"),
+        ("test_output", "test failed"),
+        ("test_output", "assertion failed"),
+        ("tool_output", "exit code"),
+        ("json", "```json"),
+        ("json", "json schema"),
+        ("json", "return json"),
+        ("json", "output json"),
+        ("json", "tool call"),
+        ("xml", "</"),
+        ("sql", "select "),
+    ];
+    for (reason, needle) in strong_signals {
+        if lower.contains(needle) {
+            return NgramAutoDecision {
+                candidate: true,
+                reason,
+            };
+        }
+    }
+    let weak_signals = [
+        ("compiler_warning", "warning:"),
+        ("path", ".rs"),
+        ("path", ".ts"),
+        ("path", ".tsx"),
+        ("path", ".py"),
+        ("path", ".go"),
+        ("path", ".java"),
+        ("path", ".cpp"),
+        ("path", "src/"),
+        ("path", "crates/"),
+    ];
+    let mut weak_hits = 0usize;
+    for (reason, needle) in weak_signals {
+        if lower.contains(needle) {
+            weak_hits += 1;
+            if weak_hits >= 2 {
+                return NgramAutoDecision {
+                    candidate: true,
+                    reason,
+                };
+            }
+        }
+    }
+    NgramAutoDecision {
+        candidate: false,
+        reason: "no_signal",
     }
 }
 
@@ -5539,6 +6105,9 @@ struct EmbeddedStageZeroGeneration<'a> {
     downstream_wire_condition: WireCondition,
     lane_pool: Option<Arc<PersistentStageLanePool>>,
     draft: Option<Arc<Mutex<DraftRunner>>>,
+    ngram: Option<Arc<Mutex<NgramStore>>>,
+    ngram_auto: bool,
+    ngram_auto_decision: NgramAutoDecision,
     speculative_window: usize,
     adaptive_speculative_window: bool,
     prompt_token_ids: &'a [i32],
@@ -5548,6 +6117,7 @@ struct EmbeddedStageZeroGeneration<'a> {
     hook_request: Option<ChatCompletionRequest>,
     hook_runtime: Option<tokio::runtime::Handle>,
     cancellation: Option<&'a openai_frontend::CancellationToken>,
+    user_key: Option<String>,
     ids: &'a OpenAiGenerationIds,
 }
 
@@ -5569,6 +6139,12 @@ struct SplitMultimodalGeneration<'a> {
 struct OpenAiSpeculativeStats {
     windows: usize,
     draft_tokens: usize,
+    ngram_tokens: usize,
+    ngram_skipped_single_token_windows: usize,
+    ngram_proposal_len_1_windows: usize,
+    ngram_proposal_len_2_windows: usize,
+    ngram_proposal_len_3_windows: usize,
+    ngram_proposal_len_4_plus_windows: usize,
     accepted_tokens: usize,
     rejected_tokens: usize,
     full_accept_windows: usize,
@@ -5612,9 +6188,22 @@ struct OpenAiSpeculativeStats {
     adaptive_window_grows: usize,
     adaptive_window_shrinks: usize,
     adaptive_window_enabled: bool,
+    ngram_available: bool,
+    ngram_auto: bool,
+    ngram_auto_decision: NgramAutoDecision,
 }
 
 impl OpenAiSpeculativeStats {
+    fn observe_ngram_proposal_len(&mut self, len: usize) {
+        match len {
+            0 => {}
+            1 => self.ngram_proposal_len_1_windows += 1,
+            2 => self.ngram_proposal_len_2_windows += 1,
+            3 => self.ngram_proposal_len_3_windows += 1,
+            _ => self.ngram_proposal_len_4_plus_windows += 1,
+        }
+    }
+
     fn observe_verify_decision(
         &mut self,
         decision: VerifySpanDecision,
@@ -5636,6 +6225,7 @@ impl OpenAiSpeculativeStats {
                     adaptive_window,
                     adaptive_enabled,
                     max_speculative_window,
+                    decision.commit_count.clamp(1, 2),
                 );
             }
             VerifySpanDecisionKind::AcceptedStop => {
@@ -5648,6 +6238,7 @@ impl OpenAiSpeculativeStats {
                     adaptive_window,
                     adaptive_enabled,
                     max_speculative_window,
+                    1,
                 );
             }
             VerifySpanDecisionKind::EarlyReject => {
@@ -5676,9 +6267,12 @@ impl OpenAiSpeculativeStats {
         adaptive_window: &mut usize,
         adaptive_enabled: bool,
         max_speculative_window: usize,
+        step: usize,
     ) {
         if adaptive_enabled && *adaptive_window < max_speculative_window {
-            *adaptive_window += 1;
+            *adaptive_window = adaptive_window
+                .saturating_add(step.max(1))
+                .min(max_speculative_window);
             self.adaptive_window_grows += 1;
         }
     }
@@ -5706,8 +6300,19 @@ impl OpenAiSpeculativeStats {
     }
 
     fn insert_attrs(&self, attrs: &mut BTreeMap<String, Value>) {
+        insert_ngram_auto_attrs(
+            attrs,
+            self.ngram_available,
+            self.ngram_auto,
+            self.ngram_auto_decision,
+        );
         if self.windows == 0 {
             attrs.insert("llama_stage.spec.enabled".to_string(), json!(false));
+            attrs.insert(
+                "llama_stage.spec.ngram_skipped_single_token_windows".to_string(),
+                json!(self.ngram_skipped_single_token_windows),
+            );
+            self.insert_ngram_proposal_histogram(attrs);
             return;
         }
         attrs.insert("llama_stage.spec.enabled".to_string(), json!(true));
@@ -5715,6 +6320,19 @@ impl OpenAiSpeculativeStats {
         attrs.insert(
             "llama_stage.spec.proposed".to_string(),
             json!(self.draft_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.ngram_proposed".to_string(),
+            json!(self.ngram_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.ngram_skipped_single_token_windows".to_string(),
+            json!(self.ngram_skipped_single_token_windows),
+        );
+        self.insert_ngram_proposal_histogram(attrs);
+        attrs.insert(
+            "llama_stage.spec.draft_proposed".to_string(),
+            json!(self.draft_tokens.saturating_sub(self.ngram_tokens)),
         );
         attrs.insert(
             "llama_stage.spec.accepted".to_string(),
@@ -5809,6 +6427,22 @@ impl OpenAiSpeculativeStats {
             json!(self.recovery_restores),
         );
         attrs.insert(
+            "llama_stage.spec.recovery_decode_repairs".to_string(),
+            json!(self.recovery_decode_repairs),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_decode_elapsed_ms".to_string(),
+            json!(self.recovery_decode_elapsed_ms),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_reverify_tokens".to_string(),
+            json!(self.recovery_reverify_tokens),
+        );
+        attrs.insert(
+            "llama_stage.spec.recovery_reverify_elapsed_ms".to_string(),
+            json!(self.recovery_reverify_elapsed_ms),
+        );
+        attrs.insert(
             "llama_stage.spec.recovery_ms".to_string(),
             json!(self.recovery_ms),
         );
@@ -5855,6 +6489,25 @@ impl OpenAiSpeculativeStats {
         attrs.insert(
             "llama_stage.spec.window_shrinks".to_string(),
             json!(self.adaptive_window_shrinks),
+        );
+    }
+
+    fn insert_ngram_proposal_histogram(&self, attrs: &mut BTreeMap<String, Value>) {
+        attrs.insert(
+            "llama_stage.spec.ngram_proposal_len_1_windows".to_string(),
+            json!(self.ngram_proposal_len_1_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.ngram_proposal_len_2_windows".to_string(),
+            json!(self.ngram_proposal_len_2_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.ngram_proposal_len_3_windows".to_string(),
+            json!(self.ngram_proposal_len_3_windows),
+        );
+        attrs.insert(
+            "llama_stage.spec.ngram_proposal_len_4_plus_windows".to_string(),
+            json!(self.ngram_proposal_len_4_plus_windows),
         );
     }
 }
@@ -6275,134 +6928,6 @@ fn embedded_session_control_message(
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     }
-}
-
-fn verify_inputs_for_proposals(current: i32, proposals: &[i32]) -> Vec<i32> {
-    let mut tokens = Vec::with_capacity(proposals.len());
-    if proposals.is_empty() {
-        return tokens;
-    }
-    tokens.push(current);
-    tokens.extend(proposals.iter().take(proposals.len().saturating_sub(1)));
-    tokens
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VerifySpanDecisionKind {
-    FullAccept,
-    AcceptedStop,
-    TailReject,
-    EarlyReject,
-    EarlyRejectStop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VerifySpanDecision {
-    kind: VerifySpanDecisionKind,
-    accepted_before_reject: usize,
-    repair_input_count: Option<usize>,
-    commit_count: usize,
-}
-
-impl VerifySpanDecision {
-    fn rejected(self) -> bool {
-        matches!(
-            self.kind,
-            VerifySpanDecisionKind::TailReject
-                | VerifySpanDecisionKind::EarlyReject
-                | VerifySpanDecisionKind::EarlyRejectStop
-        )
-    }
-
-    fn requires_repair(self) -> bool {
-        self.kind == VerifySpanDecisionKind::EarlyReject
-    }
-}
-
-fn classify_verify_span<F>(
-    draft_tokens: &[i32],
-    predicted_tokens: &[i32],
-    generated_len: usize,
-    max_new_tokens: usize,
-    mut token_is_eog: F,
-) -> OpenAiResult<VerifySpanDecision>
-where
-    F: FnMut(i32) -> OpenAiResult<bool>,
-{
-    if predicted_tokens.len() < draft_tokens.len() {
-        return Err(OpenAiError::backend(format!(
-            "verify span returned too few tokens: got {} expected {}",
-            predicted_tokens.len(),
-            draft_tokens.len()
-        )));
-    }
-
-    let mut accepted_before_reject = 0usize;
-    let mut commit_count = 0usize;
-    for (draft_token, predicted) in draft_tokens.iter().zip(predicted_tokens.iter()) {
-        commit_count += 1;
-        let accepted = *predicted == *draft_token;
-        let reached_eog = token_is_eog(*predicted)?;
-        let reached_limit = generated_len + commit_count >= max_new_tokens;
-        if accepted {
-            accepted_before_reject += 1;
-            if (reached_eog || reached_limit) && commit_count < draft_tokens.len() {
-                return Ok(VerifySpanDecision {
-                    kind: VerifySpanDecisionKind::AcceptedStop,
-                    accepted_before_reject,
-                    repair_input_count: None,
-                    commit_count,
-                });
-            }
-            continue;
-        }
-
-        let repair_input_count = accepted_before_reject + 1;
-        let kind = if repair_input_count == draft_tokens.len() {
-            VerifySpanDecisionKind::TailReject
-        } else if reached_eog || reached_limit {
-            VerifySpanDecisionKind::EarlyRejectStop
-        } else {
-            VerifySpanDecisionKind::EarlyReject
-        };
-        return Ok(VerifySpanDecision {
-            kind,
-            accepted_before_reject,
-            repair_input_count: Some(repair_input_count),
-            commit_count,
-        });
-    }
-
-    Ok(VerifySpanDecision {
-        kind: VerifySpanDecisionKind::FullAccept,
-        accepted_before_reject,
-        repair_input_count: None,
-        commit_count,
-    })
-}
-
-fn repaired_commit_tokens(
-    draft_tokens: &[i32],
-    accepted_before_reject: usize,
-    repair_input_count: usize,
-    repaired_predictions: &[i32],
-) -> OpenAiResult<Vec<i32>> {
-    if repaired_predictions.len() < repair_input_count {
-        return Err(OpenAiError::backend(format!(
-            "recovery verify returned too few tokens: expected {} got {:?}",
-            repair_input_count, repaired_predictions
-        )));
-    }
-    if accepted_before_reject > 0
-        && repaired_predictions[..accepted_before_reject] != draft_tokens[..accepted_before_reject]
-    {
-        eprintln!(
-            "recovery verify changed accepted prefix; committing restored target tokens: accepted {:?}, repaired {:?}",
-            &draft_tokens[..accepted_before_reject],
-            &repaired_predictions[..accepted_before_reject]
-        );
-    }
-    Ok(repaired_predictions[..repair_input_count].to_vec())
 }
 
 fn nonzero_min(current: usize, candidate: usize) -> usize {

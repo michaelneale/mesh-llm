@@ -120,6 +120,12 @@ spec-bench target draft *ARGS:
 skippy-openai-smoke *ARGS:
     scripts/skippy-openai-smoke.sh {{ ARGS }}
 
+# Compare fallback decode, n-gram speculation, and optional draft-model speculation
+# on OpenAI chat corpora. Set DRAFT_MODEL_PATH to include draft modes, or MODES to
+# choose explicit modes such as "baseline ngram draft draft-adaptive".
+skippy-openai-ngram-bench *ARGS:
+    scripts/skippy-openai-ngram-bench.sh {{ ARGS }}
+
 # Run the skippy benchmark/debug telemetry collector.
 metrics-server db="/tmp/mesh-metrics.duckdb" http_addr="127.0.0.1:18080" otlp_addr="127.0.0.1:14317" *ARGS: metrics-server-build
     target/debug/metrics-server serve --db "{{ db }}" --http-addr "{{ http_addr }}" --otlp-grpc-addr "{{ otlp_addr }}" {{ ARGS }}

@@ -430,6 +430,8 @@ fn local_openai_backend(config: StageConfig) -> Result<StageOpenAiBackend> {
         ctx_size,
         mode: OpenAiBackendMode::LocalRuntime,
         draft: None,
+        ngram: None,
+        ngram_auto: false,
         speculative_window: 0,
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
@@ -604,6 +606,8 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
             lane_pool: Some(lane_pool),
         },
         draft: None,
+        ngram: None,
+        ngram_auto: false,
         speculative_window: 0,
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
@@ -976,6 +980,52 @@ fn generation_ids_are_unique_under_fast_creation() {
         assert!(sessions.insert(id.session_id));
         assert!(requests.insert(id.request_id));
     }
+}
+
+#[test]
+fn ngram_pool_key_prefers_user_over_prompt_hash() {
+    let first = ngram_pool_key("model-a", Some("alice"), &[1, 2, 3]);
+    let second = ngram_pool_key("model-a", Some("alice"), &[9, 8, 7]);
+    let fallback = ngram_pool_key("model-a", None, &[1, 2, 3]);
+
+    assert_eq!(first, second);
+    assert_ne!(first, fallback);
+}
+
+#[test]
+fn ngram_auto_detects_coding_shaped_prompts() {
+    let decision = detect_ngram_auto_candidate(
+        "Please fix crates/skippy-server/src/openai.rs:\n```rust\nfn main() {}\n```",
+    );
+
+    assert!(decision.candidate);
+    assert_ne!(decision.reason, "no_signal");
+}
+
+#[test]
+fn ngram_auto_needs_more_than_one_weak_path_signal() {
+    let decision =
+        detect_ngram_auto_candidate("Please review src/openai.md and summarize the approach.");
+
+    assert!(!decision.candidate);
+    assert_eq!(decision.reason, "no_signal");
+}
+
+#[test]
+fn ngram_auto_accepts_two_weak_path_signals() {
+    let decision =
+        detect_ngram_auto_candidate("Compare crates/skippy-server/src/openai.rs with src/main.ts.");
+
+    assert!(decision.candidate);
+    assert_eq!(decision.reason, "path");
+}
+
+#[test]
+fn ngram_auto_leaves_plain_chat_cold() {
+    let decision = detect_ngram_auto_candidate("Tell me a short story about summer evenings.");
+
+    assert!(!decision.candidate);
+    assert_eq!(decision.reason, "no_signal");
 }
 
 #[test]

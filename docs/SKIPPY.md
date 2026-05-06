@@ -364,7 +364,9 @@ supports:
 - per-model concurrency/parallelism limits;
 - backend admission and rate limiting;
 - KV cache type policy where applicable;
-- draft/speculative settings only when parity exists;
+- adaptive n-gram auto speculation as the default skippy serving policy for
+  coding-shaped sessions; draft-model speculation remains explicit until a
+  useful assistant pair is certified;
 - model source/provenance in status and usage records;
 - log paths and error reporting usable from the existing dashboard/API.
 
