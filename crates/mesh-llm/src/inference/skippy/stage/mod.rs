@@ -201,7 +201,9 @@ impl StageControlState {
             downstream_connect_timeout_secs: 30,
             openai: None,
         });
-        if let Err(error) = wait_for_binary_stage_ready(bind_addr, Duration::from_secs(120)).await {
+        // Large models (especially layer packages on NFS) can take 5+ minutes to load
+        // into memory. The default 120s is too short for 170GB+ from network storage.
+        if let Err(error) = wait_for_binary_stage_ready(bind_addr, Duration::from_secs(900)).await {
             let _ = server.shutdown().await;
             return Err(error);
         }

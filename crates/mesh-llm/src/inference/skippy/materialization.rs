@@ -357,8 +357,8 @@ pub(crate) fn resolve_stage_load_package(load: &StageLoadRequest) -> Result<Opti
         &load.package_ref,
         load.layer_start,
         load.layer_end,
-        is_first,  // include_embeddings
-        is_final,  // include_output
+        is_first, // include_embeddings
+        is_final, // include_output
     )?;
     Ok(Some(local_ref))
 }

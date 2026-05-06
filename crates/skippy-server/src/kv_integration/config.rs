@@ -90,7 +90,15 @@ fn model_requires_recurrent_state(config: &StageConfig) -> bool {
 fn kv_cache_inspection_path(config: &StageConfig) -> Option<PathBuf> {
     let path = config.model_path.as_deref()?;
     match config.load_mode {
-        LoadMode::LayerPackage => crate::package::materialize_layer_package(config).ok(),
+        LoadMode::LayerPackage => {
+            let package_dir = std::path::Path::new(path);
+            let metadata = package_dir.join("shared").join("metadata.gguf");
+            if metadata.is_file() {
+                Some(metadata)
+            } else {
+                Some(PathBuf::from(path))
+            }
+        }
         LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => Some(PathBuf::from(path)),
     }
 }
