@@ -967,6 +967,27 @@ pub fn qwen3next_capability(
     }
 }
 
+pub fn recurrent_family_capability(
+    family_id: &str,
+    layer_count: u32,
+    activation_width: u32,
+) -> FamilyCapabilityRecord {
+    FamilyCapabilityRecord {
+        family_id: family_id.to_string(),
+        layer_count,
+        activation_width,
+        default_wire_dtype: WireDType::F16,
+        q8_wire_validation: WireValidation::Untested,
+        exact_state_mobility: ExactStateMobility::Accepted,
+        recurrent_ranges: vec![LayerRange {
+            start: 0,
+            end: layer_count,
+        }],
+        split_constraints: Vec::new(),
+        sidebands: Vec::new(),
+    }
+}
+
 pub fn rwkv6_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
     FamilyCapabilityRecord {
         family_id: "rwkv6".to_string(),
@@ -1109,6 +1130,34 @@ pub fn infer_family_capability(
                 start: 0,
                 end: layer_count,
             }],
+        ));
+    }
+    if compact.contains("jamba") {
+        return Some(recurrent_family_capability(
+            "jamba",
+            layer_count,
+            activation_width,
+        ));
+    }
+    if compact.contains("lfm2") {
+        return Some(recurrent_family_capability(
+            "lfm2",
+            layer_count,
+            activation_width,
+        ));
+    }
+    if compact.contains("mamba2") {
+        return Some(recurrent_family_capability(
+            "mamba2",
+            layer_count,
+            activation_width,
+        ));
+    }
+    if compact.contains("mamba") {
+        return Some(recurrent_family_capability(
+            "mamba",
+            layer_count,
+            activation_width,
         ));
     }
     if compact.contains("rwkv6") {

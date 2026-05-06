@@ -71,8 +71,13 @@ fn infer_cache_payload(config: &StageConfig) -> StagePrefixCachePayload {
     if identity.contains("falcon-h1")
         || identity.contains("qwen3next")
         || identity.contains("qwen3-next")
+        || identity.contains("qwen3-coder-next")
         || identity.contains("qwen3.6")
         || identity.contains("qwen3_6")
+        || identity.contains("jamba")
+        || identity.contains("lfm2")
+        || identity.contains("mamba")
+        || identity.contains("rwkv")
     {
         return StagePrefixCachePayload::KvRecurrent;
     }
@@ -158,5 +163,67 @@ fn parse_cache_mode(value: &str) -> Option<StageKvCacheMode> {
             Some(StageKvCacheMode::LookupRecord)
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skippy_protocol::{FlashAttentionType, LoadMode};
+
+    fn stage_config(model_id: &str) -> StageConfig {
+        StageConfig {
+            run_id: "run".to_string(),
+            topology_id: "topology".to_string(),
+            model_id: model_id.to_string(),
+            package_ref: None,
+            manifest_sha256: None,
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: None,
+            projector_path: None,
+            stage_id: "stage-0".to_string(),
+            stage_index: 0,
+            layer_start: 0,
+            layer_end: 1,
+            ctx_size: 128,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Disabled,
+            filter_tensors_on_load: false,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::RuntimeSlice,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: None,
+            downstream: None,
+        }
+    }
+
+    #[test]
+    fn auto_payload_keeps_recurrent_families_off_resident_kv() {
+        for model_id in [
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+            "bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS",
+            "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+            "meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M",
+            "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+            "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+            "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+            "Mungert/rwkv7-191M-world-GGUF:Q4_K",
+        ] {
+            assert_eq!(
+                infer_cache_payload(&stage_config(model_id)),
+                StagePrefixCachePayload::KvRecurrent,
+                "{model_id}"
+            );
+        }
     }
 }

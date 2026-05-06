@@ -289,6 +289,10 @@ and repeated hits stayed stable. `KvRecurrent` rows carried non-zero recurrent
 payloads. Pure recurrent families and recurrent-only stage ranges correctly
 recorded zero native KV bytes plus recurrent state.
 
+Negative policy regression tests now assert that Falcon-H1, Qwen3Next, Jamba,
+LFM2, Mamba, Mamba2, RWKV6, and RWKV7 select `KvRecurrent`, never `ResidentKv`,
+through mesh family policy and server-side auto-payload inference.
+
 | Family | Model ref | Payload | Topology | Result | Seq remap | Source -> target seq | Suffix prefill | Payload bytes | Recurrent bytes | Repeated hits |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |

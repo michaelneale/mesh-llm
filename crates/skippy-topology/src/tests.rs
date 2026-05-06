@@ -495,6 +495,21 @@ fn infers_known_family_capabilities_from_model_identity() {
         rwkv6.exact_state_mobility,
         ExactStateMobility::RejectedTooLarge
     );
+    for (identity, expected_family) in [
+        ("bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M", "jamba"),
+        ("meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M", "lfm2"),
+        ("mradermacher/mamba-130m-hf-GGUF:Q4_K_M", "mamba"),
+        ("mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M", "mamba2"),
+        ("Mungert/rwkv7-191M-world-GGUF:Q4_K", "rwkv7"),
+    ] {
+        let capability = infer_family_capability(identity, 12, 768)
+            .unwrap_or_else(|| panic!("failed to infer {identity}"));
+        assert_eq!(capability.family_id, expected_family, "{identity}");
+        assert!(
+            !capability.recurrent_ranges.is_empty(),
+            "{identity} should be treated as recurrent"
+        );
+    }
     assert_eq!(
         infer_family_capability("Qwen/Qwen3-0.6B", 28, 1024)
             .expect("qwen3")

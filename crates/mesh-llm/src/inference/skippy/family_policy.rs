@@ -154,7 +154,9 @@ fn family_policy_for_normalized_family_id(
         "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
         | "olmo" | "gemma2" | "gemma" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
         | "minimax_m27" | "qwen2moe" | "qwen3moe" => resident_kv_policy(activation_wire_dtype),
-        "qwen3next" | "falcon_h1" | "rwkv6" => kv_recurrent_policy(activation_wire_dtype),
+        "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7" => {
+            kv_recurrent_policy(activation_wire_dtype)
+        }
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -446,7 +448,8 @@ mod tests {
                         "{family_id}"
                     )
                 }
-                "qwen3next" | "falcon_h1" | "rwkv6" => assert_eq!(
+                "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
+                | "rwkv7" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
@@ -476,6 +479,33 @@ mod tests {
                     record.capability.family_id
                 );
             }
+        }
+    }
+
+    #[test]
+    fn certified_recurrent_families_never_use_resident_kv_policy() {
+        for model_id in [
+            "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
+            "bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS",
+            "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+            "meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M",
+            "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+            "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+            "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+            "Mungert/rwkv7-191M-world-GGUF:Q4_K",
+        ] {
+            let policy = family_policy_for_model_id(model_id);
+            assert!(
+                matches!(
+                    policy.prefix_cache,
+                    FamilyPrefixCachePolicy::Auto {
+                        payload: FamilyPrefixCachePayload::KvRecurrent,
+                        ..
+                    }
+                ),
+                "{model_id}: {:?}",
+                policy.prefix_cache
+            );
         }
     }
 

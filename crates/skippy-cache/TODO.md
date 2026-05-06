@@ -27,6 +27,10 @@
   split-middle, and split-final topologies. All rows restored `0 -> 1`,
   suffix-prefill matched, repeated hits were stable, and recurrent payload
   bytes were non-zero for `KvRecurrent` families.
+- Negative policy coverage now keeps certified recurrent families off
+  `ResidentKv`: mesh family policy, topology inference, and server-side
+  auto-payload inference all map Falcon-H1, Qwen3Next, Jamba, LFM2, Mamba,
+  Mamba2, RWKV6, and RWKV7 to `KvRecurrent`.
 
 ## DeepSeek3 Exact-State Certification
 
@@ -50,10 +54,10 @@ with q8 activation wire.
 
 ## Follow-Up Certification
 
-- Negative policy gate: assert recurrent/stateful GGUFs do not select
-  `ResidentKv`. Check that tensor-name guards catch `.ssm`, `ssm_`, `time_mix`,
-  `recurrent`, and `rwkv`; add proposed detection rules for any stateful family
-  with different naming before enabling cache.
+- Extend negative policy coverage if a future stateful family uses tensor names
+  outside the current `.ssm`, `ssm_`, `time_mix`, `recurrent`, and `rwkv`
+  guard set. Do not enable cache reuse for that family until detection is
+  explicit.
 - DeepSeek3 remains package-only for benchmark evidence. If a machine with
   enough memory can run the monolithic full GGUF under llama-server, add that as
   a separate baseline, but do not block package-backed serving or cache strategy
