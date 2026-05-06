@@ -9,19 +9,19 @@ fn build_plugin(name: String) -> mesh_llm_plugin::SimplePlugin {
             name,
             crate::VERSION,
             plugin_server_info(
-                "mesh-survey",
+                "mesh-telemetry",
                 crate::VERSION,
-                "Survey Metrics Plugin",
+                "Telemetry Metrics Plugin",
                 "Enables host-owned OTLP metrics export for local model lifecycle telemetry.",
                 Some(
-                    "Configure [telemetry] and enable [[plugin]] name = \"survey\" \
-                     to export metrics-only OTLP survey telemetry.",
+                    "Configure [telemetry] and enable [[plugin]] name = \"telemetry\" \
+                     to export metrics-only OTLP telemetry.",
                 ),
             ),
         ),
         startup_policy: PluginStartupPolicy::Any,
         provides: [
-            capability(crate::plugin::SURVEY_CAPABILITY),
+            capability(crate::plugin::TELEMETRY_CAPABILITY),
         ],
         health: |_context| {
             Box::pin(async move { Ok("metrics=host-owned".to_string()) })

@@ -34,7 +34,7 @@ plugins/
 ├── blackboard/            shared mesh message feed + MCP surface
 ├── blobstore/             request-scoped media object storage for multimodal
 ├── openai_endpoint/       external OpenAI-compatible inference endpoint bridge
-└── survey/                opt-in OTLP metrics-only local runtime survey
+└── telemetry/             opt-in OTLP metrics-only local runtime telemetry
 ```
 
 ## Runtime model

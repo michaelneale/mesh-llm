@@ -6,6 +6,10 @@ It describes the target architecture, not just the code as it exists today.
 
 As implementation lands, this document should be updated to match the intended end state and the concrete protocol and runtime decisions that have been made.
 
+Plugin-specific documentation:
+
+- [Telemetry](telemetry.md) - opt-in OTLP metrics-only local runtime telemetry
+
 The main goals are:
 
 - keep `mesh-llm` decoupled from specific plugins

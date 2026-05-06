@@ -84,7 +84,7 @@ impl SurveySettings {
     where
         F: Fn(&str) -> Option<String>,
     {
-        if !plugin::survey_plugin_enabled(config) {
+        if !plugin::telemetry_plugin_enabled(config) {
             return None;
         }
         if config.telemetry.enabled == Some(false) {
@@ -135,7 +135,7 @@ impl SurveyTelemetry {
         let recorder = match SurveyRecorder::otlp(&settings) {
             Ok(recorder) => recorder,
             Err(err) => {
-                tracing::warn!("disabling survey OTLP metrics exporter: {err:#}");
+                tracing::warn!("disabling telemetry OTLP metrics exporter: {err:#}");
                 return Self::disabled();
             }
         };
@@ -494,7 +494,7 @@ impl SurveyEventQueue {
         let mut events = self
             .events
             .lock()
-            .expect("survey event queue lock poisoned");
+            .expect("telemetry event queue lock poisoned");
         if events.len() == self.capacity {
             events.pop_front();
         }
@@ -507,7 +507,7 @@ impl SurveyEventQueue {
         let mut events = self
             .events
             .lock()
-            .expect("survey event queue lock poisoned");
+            .expect("telemetry event queue lock poisoned");
         events.drain(..).collect()
     }
 
@@ -557,7 +557,7 @@ impl SurveyRecorder {
     }
 
     fn new(provider: SdkMeterProvider) -> Self {
-        let meter = provider.meter("mesh-llm.survey");
+        let meter = provider.meter("mesh-llm.telemetry");
         Self {
             _provider: provider,
             launch_total: meter
@@ -675,7 +675,7 @@ mod tests {
                 ..Default::default()
             },
             plugins: vec![PluginConfigEntry {
-                name: plugin::SURVEY_PLUGIN_ID.into(),
+                name: plugin::TELEMETRY_PLUGIN_ID.into(),
                 enabled: Some(true),
                 command: None,
                 args: Vec::new(),

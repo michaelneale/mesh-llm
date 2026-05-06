@@ -1,6 +1,6 @@
 use super::{
     PluginSummary, BLACKBOARD_PLUGIN_ID, BLOBSTORE_PLUGIN_ID, OPENAI_ENDPOINT_PLUGIN_ID,
-    SURVEY_PLUGIN_ID,
+    TELEMETRY_PLUGIN_ID,
 };
 use anyhow::{bail, Context, Result};
 use mesh_llm_plugin::MeshVisibility;
@@ -244,11 +244,11 @@ fn validate_telemetry_config(config: &TelemetryConfig) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn survey_plugin_enabled(config: &MeshConfig) -> bool {
+pub(crate) fn telemetry_plugin_enabled(config: &MeshConfig) -> bool {
     config
         .plugins
         .iter()
-        .find(|entry| entry.name == SURVEY_PLUGIN_ID)
+        .find(|entry| entry.name == TELEMETRY_PLUGIN_ID)
         .map(|entry| entry.enabled.unwrap_or(true))
         .unwrap_or(false)
 }
@@ -261,7 +261,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let mut blobstore_enabled = true;
     let mut openai_endpoint_enabled = false;
     let mut openai_endpoint_url: Option<String> = None;
-    let mut survey_enabled = false;
+    let mut telemetry_enabled = false;
     for entry in &config.plugins {
         if names.insert(entry.name.clone(), ()).is_some() {
             bail!("Duplicate plugin entry '{}'", entry.name);
@@ -300,14 +300,14 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
             }
             continue;
         }
-        if entry.name == SURVEY_PLUGIN_ID {
+        if entry.name == TELEMETRY_PLUGIN_ID {
             if entry.command.is_some() || !entry.args.is_empty() || entry.url.is_some() {
                 bail!(
                     "Plugin '{}' is served by mesh-llm itself; only `enabled` may be set",
-                    SURVEY_PLUGIN_ID
+                    TELEMETRY_PLUGIN_ID
                 );
             }
-            survey_enabled = enabled;
+            telemetry_enabled = enabled;
             continue;
         }
         if !enabled {
@@ -328,9 +328,9 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     if blackboard_enabled {
         externals.insert(0, blackboard_plugin_spec()?);
     }
-    if survey_enabled {
+    if telemetry_enabled {
         let insert_at = usize::from(blackboard_enabled).min(externals.len());
-        externals.insert(insert_at, survey_plugin_spec()?);
+        externals.insert(insert_at, telemetry_plugin_spec()?);
     }
     if openai_endpoint_enabled {
         let mut spec = openai_endpoint_plugin_spec()?;
@@ -401,19 +401,19 @@ pub fn openai_endpoint_plugin_spec() -> Result<ExternalPluginSpec> {
     })
 }
 
-pub fn survey_plugin_spec() -> Result<ExternalPluginSpec> {
+pub fn telemetry_plugin_spec() -> Result<ExternalPluginSpec> {
     let command = std::env::current_exe()
         .context("Cannot determine mesh-llm executable path")?
         .display()
         .to_string();
     Ok(ExternalPluginSpec {
-        name: SURVEY_PLUGIN_ID.to_string(),
+        name: TELEMETRY_PLUGIN_ID.to_string(),
         command,
         args: vec![
             "--log-format".into(),
             "json".into(),
             "--plugin".into(),
-            SURVEY_PLUGIN_ID.into(),
+            TELEMETRY_PLUGIN_ID.into(),
         ],
         url: None,
     })
@@ -486,7 +486,7 @@ prompt_shape_metrics = false
 endpoint = "https://otel.example.com/v1/metrics"
 
 [[plugin]]
-name = "survey"
+name = "telemetry"
 enabled = true
 "#,
         )
