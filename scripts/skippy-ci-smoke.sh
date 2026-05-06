@@ -45,7 +45,7 @@ require_cmd() {
 run_with_timeout() {
   local label="$1"
   shift
-  python3 - "$SMOKE_COMMAND_TIMEOUT_SECS" "$label" "$@" <<'PY'
+  python3 - "$SMOKE_COMMAND_TIMEOUT_SECS" "$label" "$@" 3<&0 <<'PY'
 import os
 import signal
 import subprocess
@@ -55,7 +55,8 @@ timeout_secs = int(sys.argv[1])
 label = sys.argv[2]
 command = sys.argv[3:]
 
-process = subprocess.Popen(command, start_new_session=True)
+process_stdin = os.fdopen(3, "rb", closefd=False)
+process = subprocess.Popen(command, stdin=process_stdin, start_new_session=True)
 try:
     raise SystemExit(process.wait(timeout=timeout_secs))
 except subprocess.TimeoutExpired:
