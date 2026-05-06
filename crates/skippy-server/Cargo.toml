@@ -20,6 +20,7 @@ skippy-runtime = { path = "../skippy-runtime" }
 skippy-protocol = { path = "../skippy-protocol" }
 skippy-cache = { path = "../skippy-cache" }
 skippy-metrics = { path = "../skippy-metrics" }
+skippy-speculative = { path = "../skippy-speculative" }
 openai-frontend = { path = "../openai-frontend" }
 opentelemetry-proto = "0.31.0"
 serde.workspace = true

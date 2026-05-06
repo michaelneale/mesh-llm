@@ -7133,12 +7133,17 @@ dependencies = [
  "skippy-metrics",
  "skippy-protocol",
  "skippy-runtime",
+ "skippy-speculative",
  "socket2",
  "tempfile",
  "tokio",
  "tokio-stream",
  "tonic",
 ]
+
+[[package]]
+name = "skippy-speculative"
+version = "0.1.0"
 
 [[package]]
 name = "skippy-topology"

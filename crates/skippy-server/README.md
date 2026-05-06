@@ -142,7 +142,46 @@ unload or replan.
   recovery costs are visible on OpenAI-path spans. The draft runner is
   single-session guarded; use this first as a depth-1 measurement knob before
   promoting it for concurrent serving.
+- Embedded stage-0 OpenAI serving can also run in-process n-gram speculation.
+  Use `--openai-ngram-auto` for production-shaped coding/edit sessions: it
+  observes cold sessions first, enables immediately for code/structured prompts,
+  and otherwise waits for repeated-suffix evidence before spending verifier
+  work. `--openai-ngram-speculative` remains available as the fixed/manual
+  diagnostic mode. The proposer is keyed by the
+  OpenAI `user` value when present, otherwise by a prompt-prefix hash, and uses
+  `--openai-spec-ngram-size-n` plus `--openai-ngram-history-min-hits` to choose
+  repeated-suffix continuations. The proposer tries the configured n-gram order
+  first, then backs off to shorter suffixes when an exact suffix cannot continue.
+  It shares the same
+  `--openai-speculative-window` and `--openai-adaptive-speculative-window`
+  verifier path as draft speculation. Each pool has a conservative adaptive
+  policy: auto pools start with `cold_observe`, wake on `enabled_prompt_shape`
+  or `enabled_repeated_suffix`, and verified outcomes grow, shrink, or
+  temporarily disable the pool with telemetry explaining the decision.
+  Pools that stay capped at a one-token policy window can occasionally probe a
+  two-token exact-order continuation after they have at least one verified
+  window; fully accepted two-token probes grow the policy window faster.
+  The policy classifies pools as `probing`, `high_accept`, `low_accept`, or
+  `disabled`; low-acceptance pools cool down quickly, while high-acceptance
+  pools probe caps more aggressively.
+  One-token verify windows skip speculative checkpoints because they cannot
+  require early-reject restore; multi-token windows keep checkpointing so the
+  early-reject repair path remains safe. Once a pool has tried verification and
+  remains limited to a one-token n-gram window, those proposals are recorded as
+  skips and the request falls back to the normal decode path for that token,
+  with periodic reprobes so the pool can recover if the pattern improves.
 - Benchy usage lives in [`docs/LLAMA_BENCHY.md`](../../docs/LLAMA_BENCHY.md).
+- OpenAI corpus speculation benchmarking is available through
+  `just skippy-openai-ngram-bench`. It runs the same local two-stage embedded
+  OpenAI chain for fallback decode, auto/fixed/adaptive n-gram speculation, and
+  optional fixed/adaptive draft-model speculation when `DRAFT_MODEL_PATH` is
+  set. Override `MODES` to choose an explicit set, for example
+  `MODES="baseline ngram-auto ngram-adaptive draft draft-adaptive"`. Results are written under
+  `target/skippy-openai-spec-bench/<run-id>/` with raw chat-corpus JSON, server
+  telemetry logs, `summary.json`, and `summary.md`. The report uses the same
+  proposal-source acceptance/cost telemetry for n-gram and draft-model modes,
+  while preserving n-gram-specific proposal-length buckets, suffix match-order
+  ranges, proposal stop reasons, and skipped one-token policy reasons.
 - The local OpenAI smoke harness is `scripts/openai-smoke.sh`.
 - `serve-binary --async-prefill-forward` forwards eligible non-final prefill
   activation frames on a bounded background writer. It is opt-in because the

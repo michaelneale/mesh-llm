@@ -92,6 +92,7 @@ struct TensorOutput {
     layer_index: Option<u32>,
     role: String,
     ggml_type: u32,
+    element_count: u64,
     byte_size: u64,
 }
 
@@ -1472,6 +1473,7 @@ fn tensor_output(tensor: TensorInfo) -> TensorOutput {
         layer_index: tensor.layer_index,
         role: role_name(tensor.role).to_string(),
         ggml_type: tensor.ggml_type,
+        element_count: tensor.element_count,
         byte_size: tensor.byte_size,
     }
 }

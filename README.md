@@ -168,7 +168,7 @@ ABI patch queue; see [docs/SKIPPY.md](docs/SKIPPY.md).
 - **Direct GGUF packages** — direct `--gguf-file` loads materialize as single-stage fake packages in the runtime.
 - **Stage packages** — split serving loads derived stage artifacts from package materialization instead of launching external worker servers.
 - **Stage transport** — activation frames move between selected stage peers over the mesh stage transport, not through the OpenAI request tunnel.
-- **Speculative decoding** — draft model runs locally on the host, proposes tokens verified in one batched forward pass. +38% throughput on code (75% acceptance).
+- **Speculative decoding** — skippy-backed serving enables adaptive n-gram auto speculation for coding-shaped sessions. Recent Qwen3.6 local gates show neutral mixed traffic and strong warm coding-loop gains; draft-model speculation remains experimental and assistant-dependent.
 
 ## Usage
 
