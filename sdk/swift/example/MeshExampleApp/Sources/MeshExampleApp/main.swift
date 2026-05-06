@@ -41,7 +41,7 @@ Task {
         var firstToken = true
         var sawToken = false
         var completed = false
-        for try await event in client.chatStream(request) {
+        chatLoop: for try await event in client.chatStream(request) {
             switch event {
             case .tokenDelta(_, let delta):
                 if firstToken {
@@ -54,6 +54,7 @@ Task {
             case .completed:
                 completed = true
                 print("\n[chat] done")
+                break chatLoop
             case .failed(_, let error):
                 throw ExampleError.chatFailed(error)
             default:
