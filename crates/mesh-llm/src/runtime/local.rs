@@ -539,6 +539,21 @@ async fn load_split_runtime_generation(
             upstream: None,
             downstream: downstream.clone(),
         };
+        prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
+        wait_for_split_stage_source(
+            spec.node,
+            stage.node_id,
+            &load,
+            Duration::from_secs(30 * 60),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "prepare split stage {} on {}",
+                stage.stage_id,
+                stage.node_id.fmt_short()
+            )
+        })?;
         let response = if stage.node_id == spec.node.id() {
             spec.node
                 .send_local_stage_control(skippy::StageControlRequest::Load(load))
@@ -1338,6 +1353,107 @@ fn split_stage0_config(
     };
     config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
     config
+}
+
+async fn prepare_split_stage(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: skippy::StageLoadRequest,
+) -> Result<()> {
+    let prepare = skippy::StagePrepareRequest {
+        load,
+        coordinator_id: Some(node.id()),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Prepare(prepare))
+            .await
+    } else {
+        node.send_stage_control(stage_node_id, skippy::StageControlRequest::Prepare(prepare))
+            .await
+    }?;
+    let skippy::StageControlResponse::PrepareAccepted(accepted) = response else {
+        anyhow::bail!("unexpected response while preparing split stage");
+    };
+    anyhow::ensure!(
+        accepted.accepted,
+        "stage {} rejected prepare: {}",
+        accepted.status.stage_id,
+        accepted
+            .error
+            .unwrap_or_else(|| "unknown error".to_string())
+    );
+    Ok(())
+}
+
+async fn wait_for_split_stage_source(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let inventory = query_stage_inventory(node, stage_node_id, load).await?;
+        if inventory
+            .available_ranges
+            .iter()
+            .chain(inventory.ready_ranges.iter())
+            .any(|range| range.layer_start <= load.layer_start && range.layer_end >= load.layer_end)
+        {
+            tracing::info!(
+                topology_id = %load.topology_id,
+                run_id = %load.run_id,
+                stage_id = %load.stage_id,
+                node = %stage_node_id.fmt_short(),
+                "split stage source is available; loading runtime"
+            );
+            return Ok(());
+        }
+        if let Some(failed) = inventory.preparing_ranges.iter().find(|status| {
+            status.stage_id == load.stage_id
+                && matches!(status.state, skippy::StagePreparationState::Failed)
+        }) {
+            anyhow::bail!(
+                "stage {} source prepare failed: {}",
+                load.stage_id,
+                failed.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for stage {} source availability after {:?}",
+                load.stage_id,
+                timeout
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn query_stage_inventory(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+) -> Result<skippy::StageLayerInventory> {
+    let request = skippy::StageInventoryRequest {
+        model_id: load.model_id.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Inventory(request))
+            .await
+    } else {
+        node.send_stage_control(
+            stage_node_id,
+            skippy::StageControlRequest::Inventory(request),
+        )
+        .await
+    }?;
+    let skippy::StageControlResponse::Inventory(inventory) = response else {
+        anyhow::bail!("unexpected response while querying stage inventory");
+    };
+    Ok(inventory)
 }
 
 fn split_stage_topology_instance(

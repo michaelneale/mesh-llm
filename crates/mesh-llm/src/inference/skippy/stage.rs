@@ -1,4 +1,10 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Context, Result};
 use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
@@ -7,7 +13,9 @@ use skippy_server::{
     telemetry::TelemetryLevel,
     EmbeddedServerHandle,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
+
+use super::materialization::{inspect_stage_package, is_layer_package_ref};
 
 #[derive(Debug)]
 pub(crate) struct StageControlCommand {
@@ -253,6 +261,7 @@ struct RunningStage {
 #[derive(Default)]
 struct StageControlState {
     stages: HashMap<String, RunningStage>,
+    preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
 }
 
 pub(crate) fn spawn_stage_control_loop() -> mpsc::UnboundedSender<StageControlCommand> {
@@ -279,9 +288,9 @@ impl StageControlState {
             StageControlRequest::Status(filter) => {
                 Ok(StageControlResponse::Status(self.statuses(&filter)))
             }
-            StageControlRequest::Inventory(request) => {
-                Ok(StageControlResponse::Inventory(self.inventory(request)))
-            }
+            StageControlRequest::Inventory(request) => Ok(StageControlResponse::Inventory(
+                self.inventory(request).await,
+            )),
             StageControlRequest::Prepare(request) => Ok(StageControlResponse::PrepareAccepted(
                 self.prepare(request).await?,
             )),
@@ -297,19 +306,70 @@ impl StageControlState {
         }
     }
 
-    fn inventory(&self, request: StageInventoryRequest) -> StageLayerInventory {
+    async fn inventory(&self, request: StageInventoryRequest) -> StageLayerInventory {
+        let preparing_ranges = self
+            .preparations
+            .lock()
+            .await
+            .values()
+            .filter(|status| {
+                status.model_id == request.model_id
+                    && status.package_ref == request.package_ref
+                    && status.manifest_sha256 == request.manifest_sha256
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let source = resolve_inventory_source(&request);
+        let layer_count = source
+            .as_ref()
+            .map(|source| source.layer_count)
+            .unwrap_or(0);
+        let available_ranges = if source.is_some() && layer_count > 0 {
+            vec![LayerRange {
+                layer_start: 0,
+                layer_end: layer_count,
+            }]
+        } else {
+            Vec::new()
+        };
+        let ready_ranges = self
+            .stages
+            .values()
+            .filter(|stage| {
+                stage.load.model_id == request.model_id
+                    && stage.load.package_ref == request.package_ref
+                    && stage.load.manifest_sha256 == request.manifest_sha256
+            })
+            .map(|stage| LayerRange {
+                layer_start: stage.load.layer_start,
+                layer_end: stage.load.layer_end,
+            })
+            .collect::<Vec<_>>();
+        let missing_ranges = if source.is_none() && layer_count > 0 {
+            vec![LayerRange {
+                layer_start: 0,
+                layer_end: layer_count,
+            }]
+        } else {
+            Vec::new()
+        };
         StageLayerInventory {
             model_id: request.model_id,
             package_ref: request.package_ref,
             manifest_sha256: request.manifest_sha256,
-            layer_count: 0,
-            ready_ranges: Vec::new(),
-            available_ranges: Vec::new(),
-            missing_ranges: Vec::new(),
-            preparing_ranges: Vec::new(),
-            source_model_path: None,
-            source_model_bytes: None,
-            source_model_kind: SourceModelKind::Unknown,
+            layer_count,
+            ready_ranges,
+            available_ranges,
+            missing_ranges,
+            preparing_ranges,
+            source_model_path: source
+                .as_ref()
+                .map(|source| source.path.to_string_lossy().to_string()),
+            source_model_bytes: source.as_ref().and_then(|source| source.bytes),
+            source_model_kind: source
+                .as_ref()
+                .map(|source| source.kind)
+                .unwrap_or(SourceModelKind::Unknown),
         }
     }
 
@@ -317,7 +377,20 @@ impl StageControlState {
         &mut self,
         request: StagePrepareRequest,
     ) -> Result<StagePrepareAcceptedResponse> {
+        let key = stage_key(
+            &request.load.topology_id,
+            &request.load.run_id,
+            &request.load.stage_id,
+        );
         let status = preparation_status_from_load(&request.load, StagePreparationState::Assigned);
+        self.preparations
+            .lock()
+            .await
+            .insert(key.clone(), status.clone());
+        let preparations = Arc::clone(&self.preparations);
+        tokio::spawn(async move {
+            run_stage_prepare_task(preparations, key, request.load).await;
+        });
         Ok(StagePrepareAcceptedResponse {
             accepted: true,
             status,
@@ -429,6 +502,151 @@ impl StageControlState {
             .map(status_from_running)
             .collect()
     }
+}
+
+#[derive(Clone, Debug)]
+struct InventorySource {
+    path: PathBuf,
+    bytes: Option<u64>,
+    layer_count: u32,
+    kind: SourceModelKind,
+}
+
+fn resolve_inventory_source(request: &StageInventoryRequest) -> Option<InventorySource> {
+    if is_layer_package_ref(&request.package_ref) {
+        let info = inspect_stage_package(&request.package_ref).ok()?;
+        return Some(InventorySource {
+            path: info.package_dir,
+            bytes: info.source_model_bytes,
+            layer_count: info.layer_count,
+            kind: SourceModelKind::LayerPackage,
+        });
+    }
+
+    for candidate in inventory_source_candidates(request) {
+        if !candidate.exists() {
+            continue;
+        }
+        let layer_count = super::infer_layer_count(&candidate).ok()?;
+        let kind = if is_split_gguf_path(&candidate) {
+            SourceModelKind::SplitGguf
+        } else {
+            SourceModelKind::PlainGguf
+        };
+        let bytes = crate::inference::election::total_model_bytes(&candidate);
+        return Some(InventorySource {
+            path: candidate,
+            bytes: Some(bytes),
+            layer_count,
+            kind,
+        });
+    }
+    None
+}
+
+fn inventory_source_candidates(request: &StageInventoryRequest) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = request.package_ref.strip_prefix("gguf://") {
+        if !path.is_empty() {
+            candidates.push(PathBuf::from(path));
+        }
+    }
+    if !request.model_id.is_empty() {
+        candidates.push(crate::models::find_model_path(&request.model_id));
+    }
+    candidates
+}
+
+fn is_split_gguf_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(model_ref::split_gguf_shard_info)
+        .is_some()
+}
+
+async fn run_stage_prepare_task(
+    preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
+    key: String,
+    load: StageLoadRequest,
+) {
+    update_preparation(
+        &preparations,
+        &key,
+        preparation_status_from_load(&load, StagePreparationState::Resolving),
+    )
+    .await;
+    if load.load_mode != LoadMode::LayerPackage && !is_layer_package_ref(&load.package_ref) {
+        update_preparation(
+            &preparations,
+            &key,
+            preparation_status_from_load(&load, StagePreparationState::Downloading),
+        )
+        .await;
+    }
+    let result = prepare_stage_source(&load).await;
+    let state = match result {
+        Ok(PrepareSourceResult { bytes_total }) => {
+            let mut status = preparation_status_from_load(&load, StagePreparationState::Available);
+            status.bytes_done = bytes_total;
+            status.bytes_total = bytes_total;
+            status
+        }
+        Err(error) => {
+            let mut status = preparation_status_from_load(&load, StagePreparationState::Failed);
+            status.error = Some(error.to_string());
+            status
+        }
+    };
+    update_preparation(&preparations, &key, state).await;
+}
+
+struct PrepareSourceResult {
+    bytes_total: Option<u64>,
+}
+
+async fn prepare_stage_source(load: &StageLoadRequest) -> Result<PrepareSourceResult> {
+    if load.load_mode == LoadMode::LayerPackage || is_layer_package_ref(&load.package_ref) {
+        let info = inspect_stage_package(&load.package_ref)?;
+        return Ok(PrepareSourceResult {
+            bytes_total: info.source_model_bytes,
+        });
+    }
+
+    for candidate in [
+        load.model_path.as_deref(),
+        Some(load.model_id.as_str()),
+        load.package_ref.strip_prefix("gguf://"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|candidate| !candidate.is_empty())
+    {
+        match crate::models::resolve_model_spec_with_progress(Path::new(candidate), false).await {
+            Ok(path) => {
+                let bytes_total = crate::inference::election::total_model_bytes(&path);
+                return Ok(PrepareSourceResult {
+                    bytes_total: Some(bytes_total),
+                });
+            }
+            Err(last_error) => {
+                tracing::debug!(
+                    stage_id = %load.stage_id,
+                    candidate,
+                    error = %last_error,
+                    "stage source prepare candidate failed"
+                );
+            }
+        }
+    }
+    anyhow::bail!("stage source model is not available")
+}
+
+async fn update_preparation(
+    preparations: &Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
+    key: &str,
+    status: StagePreparationStatus,
+) {
+    preparations.lock().await.insert(key.to_string(), status);
 }
 
 impl StageStatusFilter {
@@ -868,5 +1086,53 @@ mod tests {
             .unwrap();
         assert!(started.elapsed() >= Duration::from_millis(50));
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_stage_records_background_source_availability() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut load = load_request();
+        load.model_path = Some(path.clone());
+        load.package_ref = "gguf:///definitely/missing/model.gguf".to_string();
+        load.downstream = None;
+        let mut state = StageControlState::default();
+
+        let accepted = state
+            .prepare(StagePrepareRequest {
+                load: load.clone(),
+                coordinator_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(accepted.accepted);
+        assert_eq!(accepted.status.state, StagePreparationState::Assigned);
+
+        let mut last_state = StagePreparationState::Assigned;
+        for _ in 0..20 {
+            let inventory = state
+                .inventory(StageInventoryRequest {
+                    model_id: load.model_id.clone(),
+                    package_ref: load.package_ref.clone(),
+                    manifest_sha256: load.manifest_sha256.clone(),
+                })
+                .await;
+            if let Some(status) = inventory
+                .preparing_ranges
+                .iter()
+                .find(|status| status.stage_id == load.stage_id)
+            {
+                last_state = status.state;
+                if status.state == StagePreparationState::Available {
+                    assert_eq!(status.bytes_done, Some(0));
+                    assert_eq!(status.bytes_total, Some(0));
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        panic!("prepare did not become available, last state: {last_state:?}");
     }
 }
