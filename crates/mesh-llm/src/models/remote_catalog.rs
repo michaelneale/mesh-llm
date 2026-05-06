@@ -301,7 +301,7 @@ pub fn find_layer_package(model_query: &str) -> Option<String> {
 
     for entry in entries {
         let mut variants: Vec<_> = entry.variants.iter().collect();
-        variants.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+        variants.sort_by_key(|(variant_name, _)| *variant_name);
         for (variant_name, variant) in variants {
             let matches = variant_name.to_lowercase().contains(&query_lower)
                 || variant.curated.name.to_lowercase().contains(&query_lower)
@@ -345,7 +345,7 @@ pub fn resolve_model_download(query: &str) -> Option<RemoteModelRef> {
 
     for entry in entries {
         let mut variants: Vec<_> = entry.variants.iter().collect();
-        variants.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+        variants.sort_by_key(|(variant_name, _)| *variant_name);
         for (variant_name, variant) in variants {
             let matches = variant_name.to_lowercase().contains(&query_lower)
                 || variant.curated.name.to_lowercase().contains(&query_lower)
