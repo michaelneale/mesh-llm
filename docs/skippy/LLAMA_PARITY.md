@@ -174,6 +174,7 @@ or a blocker is discovered.
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
 | `qwen3vl` | `qwen3vl` | selected | yes | pass | pass | multimodal policy pending | local projector pass; split blocked | text split and local multimodal ready; split media sideband crashes in filtered stage-0 prefill |
 | `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `phi2` | `phi2` | selected | yes | pass | rejected-too-large | `ResidentKv` | pass | runtime-slice and resident cache ready; full-state payload is too large for mobility |
 | `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -219,6 +220,7 @@ themselves until the reviewed topology records are updated.
 | `deepseek` | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1.58x cache-hit speedup |
 | `mistral3` | `meshllm/mistral-7b-instruct-v0.3-parity-f16-gguf` | invalid for this row: GGUF reports architecture `llama` | invalid | invalid | invalid; replaced by `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF` candidate |
 | `baichuan`, `bloom`, `gptneox`, `phi`, `stablelm` | see `target/family-certify/llama-parity-dense-tranche-1` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
+| `phi2` | see `target/family-certify/llama-parity-phi2-runtime-slice-2`, `target/family-certify/llama-parity-phi2-resident-kv-1`, and `/Volumes/External/tmp/skippy-phi2-resident-kv-stage1-20260506.json` | `single-step`, `chain`, and dtype matrix passed | validated | rejected-too-large for full-state | `ResidentKv` one-stage and split-final cache restore passed; stage0 cache probe remaps resident KV but cannot produce logits because it is a non-output slice |
 | `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `internlm2`, `mistral3` | see `target/family-certify/llama-parity-dense-tranche-2` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
 | `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed staged activation rescaling |
 | `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
@@ -226,6 +228,7 @@ themselves until the reviewed topology records are updated.
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c`, `/tmp/skippy-cache-correctness-dense-*`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; `olmoe` MoE expert-stage smoke passed for one-stage, split-middle, and split-final |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, and dtype matrix passed; full-model local multimodal OpenAI smoke passed | validated for text; local projector validated | accepted for text/local runtime only | split multimodal still blocked: filtered stage-0 media prefill reaches `mtmd_helper_eval_chunks`, prints `embeddings required...`, then SIGSEGVs before activation forwarding |
+| `gemma3n` | `lmstudio-community/gemma-3n-E2B-it-GGUF` | blocked: llama.cpp reports `runtime-slice execution is not supported for this model architecture yet` | untested | untested | text and multimodal promotion blocked until Gemma3n graph support and media loader/projector strategy are implemented |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
 | `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; keep recurrent ownership sticky for normal decode |
@@ -322,6 +325,8 @@ through mesh family policy and server-side auto-payload inference.
 | Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Phi2 | `TheBloke/phi-2-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Phi2 | `TheBloke/phi-2-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `76923484` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
@@ -357,7 +362,14 @@ through mesh family policy and server-side auto-payload inference.
 - Runtime-slice expansion and cache restore now pass for `baichuan`, `bloom`,
   `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32`
   wire, `gpt2`, `gptneox`, `granite`, `internlm2`, `mistral3`, `mpt`, `olmo2`,
-  `phi3`, `stablelm`, and `starcoder2`.
+  `phi2`, `phi3`, `stablelm`, and `starcoder2`.
+- `phi2` required a llama.cpp stage-filter fix for filtered fused-QKV tensors:
+  when a merged QKV weight is skipped for a slice, the matching merged QKV bias
+  must also be accounted for instead of falling back to separate Q/K/V tensors.
+- `gemma3n` is locally downloaded, but remains blocked before promotion because
+  the pinned llama.cpp graph rejects runtime-slice execution for `gemma3n`; the
+  sampled LM Studio artifact also does not expose a separate mmproj file for the
+  current multimodal smoke harness.
 - `olmoe`, `qwen2moe`, and `qwen3moe` now pass MoE expert-stage smoke for
   one-stage, split-middle, and split-final ranges. The smoke confirms nonzero
   expert tensor ownership in each tested range, native sequence remap `0 -> 1`,

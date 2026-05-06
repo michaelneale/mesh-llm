@@ -97,7 +97,8 @@
       "family": "phi2",
       "status": "candidate",
       "repo": "TheBloke/phi-2-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-phi2-runtime-slice-2 after the fused-QKV stage-filter fix; ResidentKv one-stage and split-final cache restore passed in llama-parity-phi2-resident-kv-1 and /Volumes/External/tmp/skippy-phi2-resident-kv-stage1-20260506.json; full-state mobility rejected as too large"
     },
     {
       "llama_model": "phimoe",
@@ -147,7 +148,7 @@
       "status": "candidate_multimodal",
       "repo": "lmstudio-community/gemma-3n-E2B-it-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "audio/vision side lanes must be checked before promoting multimodal support"
+      "notes": "local Q4_K_M artifact is downloaded, but text split is blocked because llama.cpp reports runtime-slice execution is not supported for gemma3n; multimodal promotion also needs a Gemma3n media/projector strategy because this repo does not publish a separate mmproj file"
     },
     {
       "llama_model": "deepseek",

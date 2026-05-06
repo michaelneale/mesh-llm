@@ -26,6 +26,7 @@ Last updated: 2026-05-06.
 | Gemma4 E4B | Supported | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `layer_end=42`, `split=21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Use boundary `21`; do not cut at `12`, `14`, `24`, or `28`. | Token-id sideband required. |
 | Gemma3 | Supported | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `1152` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Gemma2 | Supported | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `2304` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
+| Phi2 | Supported | `TheBloke/phi-2-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; full-state mobility is rejected as too large. |
 | Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
@@ -50,6 +51,7 @@ RWKV6, RWKV7, StableLM, StarCoder2
 | --- | --- |
 | Falcon-H1 | Recurrent state is too large to move. Keep recurrent range `0..24` sticky and transfer activation frames only. |
 | Gemma text | The sampled `gemma` architecture artifact only passed stage parity with `f32` activation wire. `f16` and `q8` changed the next-token argmax. |
+| Gemma3n | Local text split is still blocked by llama.cpp reporting `runtime-slice execution is not supported for this model architecture yet`. Do not promote multimodal until Gemma3n graph filtering and media/projector handling have dedicated evidence. |
 | Jamba | Hybrid attention/SSM text lane and `KvRecurrent` cache smoke passed. Middle-stage cache records can have zero native KV bytes plus recurrent state; keep ownership sticky for normal decode. |
 | LFM2 | Recurrent text lane and `KvRecurrent` cache smoke passed. Keep ownership sticky for normal decode. |
 | Mamba | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
@@ -102,6 +104,7 @@ activation handoff sizes for the recommended split.
 | Gemma4 E4B | 5,120 | Accepted, 0.50x Qwen |
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |
 | Gemma2 | 4,608 | Accepted, 0.93x Qwen |
+| Phi2 | 5,120 | Full-state rejected as too large; `ResidentKv` cache restore accepted |
 | Falcon-H1 | 4,096 | Accepted for `KvRecurrent` cache restore, 663.5x Qwen recurrent state |
 | Qwen2-MoE | 3,072 | Accepted, 0.25x Qwen |
 | Qwen3-MoE | 2,048 | Accepted, 1.00x Qwen |

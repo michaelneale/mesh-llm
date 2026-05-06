@@ -274,6 +274,26 @@
     }
   },
   {
+    "model_id": "TheBloke/phi-2-GGUF:Q4_K_M",
+    "source_repo": "TheBloke/phi-2-GGUF",
+    "source_revision": "5a454d977c6438bb9fb2df233c8ca70f21c87420",
+    "source_file": "phi-2.Q4_K_M.gguf",
+    "canonical_ref": "TheBloke/phi-2-GGUF@5a454d977c6438bb9fb2df233c8ca70f21c87420/phi-2.Q4_K_M.gguf",
+    "distribution_id": "phi-2.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phi2",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
     "source_repo": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF",
     "source_revision": "0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a",

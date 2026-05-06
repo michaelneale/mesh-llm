@@ -373,6 +373,17 @@ CASES = [
         3072,
     ),
     Case(
+        "phi2",
+        "Phi2",
+        "TheBloke/phi-2-GGUF:Q4_K_M",
+        HOME
+        / ".cache/huggingface/hub/models--TheBloke--phi-2-GGUF/snapshots/5a454d977c6438bb9fb2df233c8ca70f21c87420/phi-2.Q4_K_M.gguf",
+        "resident-kv",
+        32,
+        2560,
+        resident_kv_bytes_per_token=327_680,
+    ),
+    Case(
         "granite",
         "Granite",
         "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF:Q4_K_M",
