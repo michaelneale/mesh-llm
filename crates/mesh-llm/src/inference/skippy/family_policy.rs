@@ -401,6 +401,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_coder_active_parameter_package_uses_resident_kv_cache_shape() {
+        let policy =
+            family_policy_for_model_id("unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL");
+
+        assert_eq!(policy.activation_wire_dtype, StageWireDType::F16);
+        assert!(matches!(
+            policy.prefix_cache,
+            FamilyPrefixCachePolicy::Auto {
+                payload: FamilyPrefixCachePayload::ResidentKv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn gemma_family_uses_resident_kv_cache_shape() {
         let policy = family_policy_for_gguf_meta(&meta("gemma3"), None);
 

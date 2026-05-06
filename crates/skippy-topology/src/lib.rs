@@ -1169,7 +1169,7 @@ pub fn infer_family_capability(
     if compact.contains("qwen2moe") {
         return Some(qwen2moe_capability(layer_count, activation_width));
     }
-    if compact.contains("qwen3moe") {
+    if compact.contains("qwen3moe") || is_qwen3_active_parameter_moe(&compact) {
         return Some(qwen3moe_capability(layer_count, activation_width));
     }
     if compact.contains("qwen3") {
@@ -1177,6 +1177,43 @@ pub fn infer_family_capability(
     }
 
     None
+}
+
+fn is_qwen3_active_parameter_moe(compact_identity: &str) -> bool {
+    if !compact_identity.contains("qwen3") {
+        return false;
+    }
+
+    let bytes = compact_identity.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'a' {
+            index += 1;
+            continue;
+        }
+
+        let mut cursor = index + 1;
+        let mut saw_digit = false;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            saw_digit = true;
+            cursor += 1;
+        }
+
+        if cursor < bytes.len() && bytes[cursor] == b'.' {
+            cursor += 1;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                saw_digit = true;
+                cursor += 1;
+            }
+        }
+
+        if saw_digit && cursor < bytes.len() && bytes[cursor] == b'b' {
+            return true;
+        }
+        index += 1;
+    }
+
+    false
 }
 
 fn reviewed_record_matches(record: &ReviewedCapabilityRecord, normalized_identity: &str) -> bool {
