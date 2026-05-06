@@ -182,7 +182,7 @@ jobs:
     if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
     runs-on: ubuntu-latest
     container:
-      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
+      image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
     env:
       LLAMA_STAGE_BACKEND: cuda
     steps:
@@ -217,6 +217,50 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux-cuda
+          path: dist/*
+          if-no-files-found: error
+
+  build_linux_cuda_blackwell:
+    name: Build Linux CUDA (Blackwell)
+    needs: metadata
+    if: ${{ needs.metadata.outputs.skip_gpu_bundles != 'true' }}
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:${{ vars.CUDA_BLACKWELL_VERSION || '12.8.0' }}-devel-ubuntu22.04
+    env:
+      LLAMA_STAGE_BACKEND: cuda
+    steps:
+      - name: Install base packages
+        run: |
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            .github/cache-version.txt
+            crates/mesh-llm/ui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - name: Build CUDA Blackwell release bundle
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          just --shell bash --shell-arg -lc release-build-cuda-blackwell
+          just --shell bash --shell-arg -lc release-bundle-cuda-blackwell "$RELEASE_TAG" dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-cuda-blackwell
           path: dist/*
           if-no-files-found: error
 
@@ -304,11 +348,12 @@ jobs:
       - inference_smoke_tests
       - build_linux_arm64
       - build_linux_cuda
+      - build_linux_cuda_blackwell
       - build_linux_rocm
       - build_linux_vulkan
       # build_windows:
       # - build_windows  # disabled until llama.cpp CUDA fix
-    if: ${{ always() && needs.metadata.result == 'success' && needs.build.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.build_linux_arm64.result == 'success' && (needs.build_linux_cuda.result == 'success' || needs.build_linux_cuda.result == 'skipped') && (needs.build_linux_rocm.result == 'success' || needs.build_linux_rocm.result == 'skipped') && (needs.build_linux_vulkan.result == 'success' || needs.build_linux_vulkan.result == 'skipped') }}
+    if: ${{ always() && needs.metadata.result == 'success' && needs.build.result == 'success' && needs.inference_smoke_tests.result == 'success' && needs.build_linux_arm64.result == 'success' && (needs.build_linux_cuda.result == 'success' || needs.build_linux_cuda.result == 'skipped') && (needs.build_linux_cuda_blackwell.result == 'success' || needs.build_linux_cuda_blackwell.result == 'skipped') && (needs.build_linux_rocm.result == 'success' || needs.build_linux_rocm.result == 'skipped') && (needs.build_linux_vulkan.result == 'success' || needs.build_linux_vulkan.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download release artifacts

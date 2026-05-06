@@ -44,8 +44,12 @@ pub(crate) trait SearchFormatter {
 pub(crate) struct InstalledRow {
     pub(crate) name: String,
     pub(crate) model_ref: String,
+    pub(crate) show_command: Option<String>,
+    pub(crate) download_command: Option<String>,
+    pub(crate) delete_command: String,
     pub(crate) path: PathBuf,
     pub(crate) size: Option<u64>,
+    pub(crate) layer_count: Option<usize>,
     pub(crate) catalog_model: Option<&'static catalog::CatalogModel>,
     pub(crate) capabilities: ModelCapabilities,
     pub(crate) managed_by_mesh: bool,

@@ -24,6 +24,12 @@ on:
       cuda_fat_cache_key:
         description: Exact fat CUDA cache key
         value: ${{ jobs.resolve.outputs.cuda_fat_cache_key }}
+      cuda_blackwell_fat_cache_key:
+        description: Exact fat CUDA cache key for the Blackwell lane
+        value: ${{ jobs.resolve.outputs.cuda_blackwell_fat_cache_key }}
+      cuda_blackwell_version:
+        description: CUDA version fragment used for the Blackwell lane
+        value: ${{ jobs.resolve.outputs.cuda_blackwell_version }}
       rocm_slim_cache_key:
         description: Exact slim ROCm cache key
         value: ${{ jobs.resolve.outputs.rocm_slim_cache_key }}
@@ -49,6 +55,8 @@ jobs:
       rocm_cache_inputs_hash: ${{ steps.cache_inputs.outputs.rocm_hash }}
       cuda_slim_cache_key: ${{ steps.render.outputs.cuda_slim_cache_key }}
       cuda_fat_cache_key: ${{ steps.render.outputs.cuda_fat_cache_key }}
+      cuda_blackwell_fat_cache_key: ${{ steps.render.outputs.cuda_blackwell_fat_cache_key }}
+      cuda_blackwell_version: ${{ steps.cuda_blackwell_version.outputs.value }}
       rocm_slim_cache_key: ${{ steps.render.outputs.rocm_slim_cache_key }}
       rocm_fat_cache_key: ${{ steps.render.outputs.rocm_fat_cache_key }}
 
@@ -61,7 +69,11 @@ jobs:
 
       - name: Expose CUDA version
         id: cuda_version
-        run: echo "value=${{ vars.CUDA_VERSION || '12.8.0' }}" >> "$GITHUB_OUTPUT"
+        run: echo "value=${{ vars.CUDA_VERSION || '12.6.3' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Expose CUDA Blackwell version
+        id: cuda_blackwell_version
+        run: echo "value=${{ vars.CUDA_BLACKWELL_VERSION || '12.8.0' }}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve llama.cpp SHA
         id: resolve
@@ -86,6 +98,7 @@ jobs:
         env:
           CACHE_NAMESPACE: ${{ steps.cache_namespace.outputs.value }}
           CUDA_VERSION: ${{ steps.cuda_version.outputs.value }}
+          CUDA_BLACKWELL_VERSION: ${{ steps.cuda_blackwell_version.outputs.value }}
           LLAMA_SHA: ${{ steps.resolve.outputs.sha }}
           CUDA_HASH: ${{ steps.cache_inputs.outputs.cuda_hash }}
           ROCM_HASH: ${{ steps.cache_inputs.outputs.rocm_hash }}
@@ -93,7 +106,8 @@ jobs:
           set -euo pipefail
           {
             echo "cuda_slim_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-slim-${LLAMA_SHA}-${CUDA_HASH}-arch89-cuda${CUDA_VERSION}"
-            echo "cuda_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-100-120-cuda${CUDA_VERSION}"
+            echo "cuda_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-cuda${CUDA_VERSION}"
+            echo "cuda_blackwell_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-blackwell-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-100-120-cuda${CUDA_BLACKWELL_VERSION}"
             echo "rocm_slim_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-slim-${LLAMA_SHA}-${ROCM_HASH}-gfx1100-rocm7.0"
             echo "rocm_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-fat-${LLAMA_SHA}-${ROCM_HASH}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0"
           } >> "$GITHUB_OUTPUT"

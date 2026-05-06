@@ -211,7 +211,7 @@ supported_flavors() {
             echo "cpu"
             ;;
         Linux/x86_64)
-            echo "cpu cuda rocm vulkan"
+            echo "cpu cuda cuda-blackwell rocm vulkan"
             ;;
         *)
                 platform_error_message >&2
@@ -364,6 +364,7 @@ asset_name() {
             case "$flavor" in
                 cpu) echo "mesh-llm-x86_64-unknown-linux-gnu.tar.gz" ;;
                 cuda) echo "mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz" ;;
+                cuda-blackwell) echo "mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz" ;;
                 rocm) echo "mesh-llm-x86_64-unknown-linux-gnu-rocm.tar.gz" ;;
                 vulkan) echo "mesh-llm-x86_64-unknown-linux-gnu-vulkan.tar.gz" ;;
                 *)

@@ -577,6 +577,8 @@ jobs:
       artifact_path: ci-artifacts/cuda-benchmark
       benchmark_binary: membench-fingerprint-cuda
       runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER }}
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
+      container_options: --gpus all
 
   linux_rocm_benchmark_smoke:
     needs: linux_rocm
