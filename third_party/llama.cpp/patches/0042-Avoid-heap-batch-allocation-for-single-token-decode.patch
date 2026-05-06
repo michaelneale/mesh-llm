@@ -1,0 +1,46 @@
+From c38cc1e3e29b3fd164a6b2af18308623483e1dbe Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 19:45:00 +1000
+Subject: [PATCH 42/45] Avoid heap batch allocation for single-token decode
+
+---
+ src/skippy.cpp | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 4c9592fe..8c431715 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -759,6 +759,29 @@ static enum skippy_status skippy_decode_tokens(
+     }
+ 
+     const int32_t n_tokens = static_cast<int32_t>(token_count);
++    if (n_tokens == 1) {
++        llama_token token = token_ids[0];
++        llama_pos pos = session->n_past;
++        int32_t n_seq_id = 1;
++        llama_seq_id seq_id = session->seq_id;
++        llama_seq_id * seq_ids = &seq_id;
++        int8_t logits = request_logits ? 1 : 0;
++        llama_batch batch = {
++            /*n_tokens =*/ 1,
++            /*token    =*/ &token,
++            /*embd     =*/ nullptr,
++            /*pos      =*/ &pos,
++            /*n_seq_id =*/ &n_seq_id,
++            /*seq_id   =*/ &seq_ids,
++            /*logits   =*/ &logits,
++        };
++        enum skippy_status status = skippy_decode_batch(session, batch, 1, out_error);
++        if (status == SKIPPY_STATUS_OK) {
++            skippy_record_tokens(session, token_ids, token_count);
++        }
++        return status;
++    }
++
+     llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+     batch.n_tokens = n_tokens;
+     for (int32_t i = 0; i < n_tokens; ++i) {
+-- 
+2.50.1 (Apple Git-155)
+

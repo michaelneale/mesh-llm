@@ -52,6 +52,26 @@
     }
   },
   {
+    "model_id": "unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL",
+    "source_repo": "unsloth/DeepSeek-V3.2-GGUF",
+    "source_revision": "main",
+    "source_file": "UD-Q4_K_XL/DeepSeek-V3.2-UD-Q4_K_XL-00001-of-00009.gguf",
+    "canonical_ref": "unsloth/DeepSeek-V3.2-GGUF@main/UD-Q4_K_XL/DeepSeek-V3.2-UD-Q4_K_XL-00001-of-00009.gguf",
+    "distribution_id": "DeepSeek-V3.2-UD-Q4_K_XL",
+    "selector": "UD-Q4_K_XL",
+    "capability": {
+      "family_id": "deepseek3",
+      "layer_count": 61,
+      "activation_width": 7168,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "untested",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "unsloth/GLM-4.7-Flash-GGUF:Q4_K_M",
     "source_repo": "unsloth/GLM-4.7-Flash-GGUF",
     "source_revision": "0d32489ecb9db6d2a4fc93bd27ef01519f95474d",

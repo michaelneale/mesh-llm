@@ -1,7 +1,7 @@
-From 6cae0e52d05901bec13e0bd65c546abb17f49ead Mon Sep 17 00:00:00 2001
+From d2420a330301a0ed3fec819806377dcb6f851295 Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:05:00 +1000
-Subject: [PATCH 14/37] Position stage token batches from session offset
+Subject: [PATCH 14/45] Position stage token batches from session offset
 
 ---
  src/skippy.cpp | 17 +++++++++++++----

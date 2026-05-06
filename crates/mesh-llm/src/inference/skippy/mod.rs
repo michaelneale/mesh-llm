@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod deployment;
+mod family_policy;
 mod hooks;
 mod kv_cache;
 mod materialization;
@@ -29,19 +30,22 @@ use skippy_server::{
     EmbeddedRuntimeStatus, EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
 };
 
+pub(crate) use family_policy::{family_policy_for_model_path, family_policy_for_stage_config};
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
     configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
     materialized_stage_cache_dir, materialized_stages_for_sources,
     prune_unpinned_materialized_stages, remove_materialized_stages_for_sources,
-    MaterializedStagePin,
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
-    spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
-    StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
-    StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
+    spawn_stage_control_loop, LayerRange, SourceModelKind, StageCancelPrepareRequest,
+    StageControlCommand, StageControlRequest, StageControlResponse, StageInventoryRequest,
+    StageLayerInventory, StageLoadRequest, StagePeerDescriptor, StagePreparationState,
+    StagePreparationStatus, StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse,
+    StageRuntimeState, StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest,
+    StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,7 +211,7 @@ pub(crate) struct SkippyModelHandle {
     config: StageConfig,
     started_at_unix_nanos: i64,
     status: Arc<Mutex<HandleState>>,
-    _materialized_pin: Option<MaterializedStagePin>,
+    _materialized_pin: Option<materialization::MaterializedStagePin>,
 }
 
 pub(crate) struct SkippyHttpHandle {
@@ -250,6 +254,7 @@ impl SkippyModelHandle {
             )
         })?;
         let telemetry = Telemetry::new(None, 0, stage_config.clone(), TelemetryLevel::Off);
+        let family_policy = family_policy_for_stage_config(&stage_config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
@@ -270,7 +275,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width: 0,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F32,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -309,6 +314,8 @@ impl SkippyModelHandle {
             config.materialized_pinned = true;
             pin
         });
+        let family_policy = family_policy_for_stage_config(&config);
+        config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: config.clone(),
             topology: None,
@@ -343,7 +350,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F16,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -460,7 +467,8 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         "skippy stage layer_end must be greater than zero"
     );
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
-    Ok(StageConfig {
+    let family_policy = family_policy_for_model_path(&options.model_path, Some(&options.model_id));
+    let mut config = StageConfig {
         run_id: run_id.clone(),
         topology_id: format!("topology-{run_id}"),
         model_id: options.model_id.clone(),
@@ -495,11 +503,14 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         flash_attn_type: options.flash_attn_type,
         filter_tensors_on_load: false,
         selected_device: options.selected_device.clone().map(Into::into),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: None,
-    })
+    };
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 impl From<SkippyDeviceDescriptor> for StageDevice {

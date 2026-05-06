@@ -1811,6 +1811,8 @@ impl DriverTokenizer {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers: args.n_gpu_layers,
                 selected_backend_device: None,
                 cache_type_k: skippy_runtime::GGML_TYPE_F16,

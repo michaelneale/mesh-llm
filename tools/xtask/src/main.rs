@@ -561,6 +561,44 @@ fn check_docs_and_workflow_invariants(repo_root: &Path) -> DynResult<()> {
         "cargo run -p xtask -- repo-consistency release-targets",
         "CI xtask release-target check",
     )?;
+    check_ci_crate_test_coverage(&ci_workflow)?;
+
+    Ok(())
+}
+
+fn check_ci_crate_test_coverage(ci_workflow: &str) -> DynResult<()> {
+    const REQUIRED_TEST_COMMANDS: &[(&str, &str)] = &[
+        ("cargo test -p mesh-llm-client", "mesh client crate tests"),
+        ("cargo test -p mesh-api", "mesh API crate tests"),
+        ("cargo test -p mesh-api-ffi", "mesh API FFI crate tests"),
+        (
+            "cargo test -p skippy-protocol --lib",
+            "skippy protocol crate tests",
+        ),
+        (
+            "cargo test -p skippy-server --lib",
+            "skippy server crate tests",
+        ),
+        (
+            "cargo test -p openai-frontend --lib",
+            "OpenAI frontend crate tests",
+        ),
+        ("cargo test -p skippy-runtime", "skippy runtime crate tests"),
+        (
+            "cargo test -p skippy-topology",
+            "skippy topology crate tests",
+        ),
+        (
+            "cargo test -p skippy-model-package",
+            "skippy model-package crate tests",
+        ),
+        ("cargo test -p skippy-prompt", "skippy prompt crate tests"),
+        ("cargo test -p metrics-server", "metrics server crate tests"),
+    ];
+
+    for (command, context) in REQUIRED_TEST_COMMANDS {
+        ensure_contains(ci_workflow, command, &format!("CI {context}"))?;
+    }
 
     Ok(())
 }

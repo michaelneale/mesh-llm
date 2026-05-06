@@ -4720,6 +4720,222 @@ fn test_stage_status(
     }
 }
 
+fn test_stage_load_request() -> crate::inference::skippy::StageLoadRequest {
+    crate::inference::skippy::StageLoadRequest {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        backend: "skippy".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stage_id: "stage-1".to_string(),
+        stage_index: 1,
+        layer_start: 12,
+        layer_end: 24,
+        model_path: Some("/model.gguf".to_string()),
+        projector_path: None,
+        selected_device: None,
+        bind_addr: "127.0.0.1:0".to_string(),
+        activation_width: 896,
+        wire_dtype: crate::inference::skippy::StageWireDType::F16,
+        ctx_size: 512,
+        lane_count: 4,
+        n_batch: Some(128),
+        n_ubatch: Some(64),
+        n_gpu_layers: -1,
+        cache_type_k: "f16".to_string(),
+        cache_type_v: "f16".to_string(),
+        flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
+        shutdown_generation: 7,
+        load_mode: skippy_protocol::LoadMode::RuntimeSlice,
+        upstream: None,
+        downstream: Some(crate::inference::skippy::StagePeerDescriptor {
+            stage_id: "stage-2".to_string(),
+            stage_index: 2,
+            endpoint: "127.0.0.1:9002".to_string(),
+            node_id: Some(make_test_endpoint_id(0x80)),
+        }),
+    }
+}
+
+fn test_preparation_status(
+    state: crate::inference::skippy::StagePreparationState,
+) -> crate::inference::skippy::StagePreparationStatus {
+    crate::inference::skippy::StagePreparationStatus {
+        topology_id: "topology-a".to_string(),
+        run_id: "run-a".to_string(),
+        model_id: "model-a".to_string(),
+        backend: "skippy".to_string(),
+        package_ref: "gguf:///model.gguf".to_string(),
+        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        stage_id: "stage-1".to_string(),
+        stage_index: 1,
+        layer_start: 12,
+        layer_end: 24,
+        state,
+        bytes_done: Some(1024),
+        bytes_total: Some(4096),
+        bind_addr: Some("127.0.0.1:51234".to_string()),
+        error: None,
+        shutdown_generation: 7,
+    }
+}
+
+#[test]
+fn stage_control_inventory_request_round_trips_proto() {
+    let requester = make_test_endpoint_id(0x81);
+    let request = crate::inference::skippy::StageControlRequest::Inventory(
+        crate::inference::skippy::StageInventoryRequest {
+            model_id: "model-a".to_string(),
+            package_ref: "gguf:///model.gguf".to_string(),
+            manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+        },
+    );
+
+    let decoded =
+        stage_control_request_from_proto(stage_control_request_to_proto(requester, request))
+            .unwrap();
+
+    let crate::inference::skippy::StageControlRequest::Inventory(inventory) = decoded else {
+        panic!("expected inventory request");
+    };
+    assert_eq!(inventory.model_id, "model-a");
+    assert_eq!(inventory.package_ref, "gguf:///model.gguf");
+    assert_eq!(inventory.manifest_sha256, "direct-gguf:1:model.gguf");
+}
+
+#[test]
+fn stage_control_prepare_request_round_trips_proto() {
+    let requester = make_test_endpoint_id(0x82);
+    let coordinator_id = make_test_endpoint_id(0x83);
+    let request = crate::inference::skippy::StageControlRequest::Prepare(
+        crate::inference::skippy::StagePrepareRequest {
+            load: test_stage_load_request(),
+            coordinator_id: Some(coordinator_id),
+        },
+    );
+
+    let decoded =
+        stage_control_request_from_proto(stage_control_request_to_proto(requester, request))
+            .unwrap();
+
+    let crate::inference::skippy::StageControlRequest::Prepare(prepare) = decoded else {
+        panic!("expected prepare request");
+    };
+    assert_eq!(prepare.coordinator_id, Some(coordinator_id));
+    assert_eq!(prepare.load.stage_id, "stage-1");
+    assert_eq!(prepare.load.layer_start, 12);
+    assert_eq!(prepare.load.layer_end, 24);
+    assert_eq!(prepare.load.model_path.as_deref(), Some("/model.gguf"));
+    assert_eq!(
+        prepare.load.load_mode,
+        skippy_protocol::LoadMode::RuntimeSlice
+    );
+    assert_eq!(
+        prepare.load.downstream.and_then(|peer| peer.node_id),
+        Some(make_test_endpoint_id(0x80))
+    );
+}
+
+#[test]
+fn stage_control_status_update_request_round_trips_proto() {
+    let requester = make_test_endpoint_id(0x84);
+    let status = test_preparation_status(crate::inference::skippy::StagePreparationState::Loading);
+    let request = crate::inference::skippy::StageControlRequest::StatusUpdate(status);
+
+    let decoded =
+        stage_control_request_from_proto(stage_control_request_to_proto(requester, request))
+            .unwrap();
+
+    let crate::inference::skippy::StageControlRequest::StatusUpdate(status) = decoded else {
+        panic!("expected status update request");
+    };
+    assert_eq!(
+        status.state,
+        crate::inference::skippy::StagePreparationState::Loading
+    );
+    assert_eq!(status.bind_addr.as_deref(), Some("127.0.0.1:51234"));
+    assert_eq!(status.bytes_done, Some(1024));
+    assert_eq!(status.bytes_total, Some(4096));
+}
+
+#[test]
+fn stage_control_inventory_response_round_trips_plain_gguf_source() {
+    let response = crate::inference::skippy::StageControlResponse::Inventory(
+        crate::inference::skippy::StageLayerInventory {
+            model_id: "model-a".to_string(),
+            package_ref: "gguf:///model.gguf".to_string(),
+            manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+            layer_count: 32,
+            ready_ranges: vec![crate::inference::skippy::LayerRange {
+                layer_start: 0,
+                layer_end: 16,
+            }],
+            available_ranges: vec![crate::inference::skippy::LayerRange {
+                layer_start: 0,
+                layer_end: 32,
+            }],
+            missing_ranges: Vec::new(),
+            preparing_ranges: vec![test_preparation_status(
+                crate::inference::skippy::StagePreparationState::Resolving,
+            )],
+            source_model_path: Some("/model.gguf".to_string()),
+            source_model_bytes: Some(4_096),
+            source_model_kind: crate::inference::skippy::SourceModelKind::PlainGguf,
+        },
+    );
+
+    let decoded =
+        stage_control_response_from_proto(stage_control_response_to_proto(response)).unwrap();
+
+    let crate::inference::skippy::StageControlResponse::Inventory(inventory) = decoded else {
+        panic!("expected inventory response");
+    };
+    assert_eq!(inventory.layer_count, 32);
+    assert_eq!(
+        inventory.source_model_kind,
+        crate::inference::skippy::SourceModelKind::PlainGguf
+    );
+    assert_eq!(inventory.source_model_path.as_deref(), Some("/model.gguf"));
+    assert_eq!(inventory.available_ranges[0].layer_start, 0);
+    assert_eq!(inventory.available_ranges[0].layer_end, 32);
+    assert_eq!(
+        inventory.preparing_ranges[0].state,
+        crate::inference::skippy::StagePreparationState::Resolving
+    );
+}
+
+#[test]
+fn stage_control_prepare_response_round_trips_failed_status() {
+    let mut status =
+        test_preparation_status(crate::inference::skippy::StagePreparationState::Failed);
+    status.error = Some("source GGUF missing".to_string());
+    let response = crate::inference::skippy::StageControlResponse::PrepareAccepted(
+        crate::inference::skippy::StagePrepareAcceptedResponse {
+            accepted: false,
+            status,
+            error: Some("source GGUF missing".to_string()),
+        },
+    );
+
+    let decoded =
+        stage_control_response_from_proto(stage_control_response_to_proto(response)).unwrap();
+
+    let crate::inference::skippy::StageControlResponse::PrepareAccepted(accepted) = decoded else {
+        panic!("expected prepare response");
+    };
+    assert!(!accepted.accepted);
+    assert_eq!(
+        accepted.status.state,
+        crate::inference::skippy::StagePreparationState::Failed
+    );
+    assert_eq!(accepted.error.as_deref(), Some("source GGUF missing"));
+    assert_eq!(
+        accepted.status.error.as_deref(),
+        Some("source GGUF missing")
+    );
+}
+
 #[test]
 fn stage_status_updates_materialized_topology_endpoint() {
     let node_id = EndpointId::from(SecretKey::from_bytes(&[0x31; 32]).public());

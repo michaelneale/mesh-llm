@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "use_cases": [
+    {
+      "key": "tool_calling",
+      "label": "Tool calling",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "glaiveai/glaive-function-calling-v2",
+        "config": "default",
+        "split": "train",
+        "row_idx": 1
+      },
+      "prompt": "SYSTEM: You are a helpful assistant with access to the following functions. Use them if required -\n{\n    \"name\": \"get_news_headlines\",\n    \"description\": \"Get the latest news headlines\",\n    \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n            \"country\": {\n                \"type\": \"string\",\n                \"description\": \"The country for which to fetch news\"\n            }\n        },\n        \"required\": [\n            \"country\"\n        ]\n    }\n}\nUSER: Can you tell me the latest news headlines for the United States?\n\n\nASSISTANT: <functioncall> {\"name\": \"get_news_headlines\", \"arguments\": '{\"country\": \"United States\"}'} <|endoftext|>\n\n\nFUNCTION RESPONSE: {\"headlines\": [\"Biden announces new vaccine mandates\", \"Hurricane Ida devastates Louisiana\", \"Apple unveils new iPhone\", \"NASA's Perseverance rover collects first Mars rock sample\"]}\n\n\nASSISTANT: Here are the latest news headlines for the United States:\n1. Biden announces new vaccine mandates\n2. Hurricane Ida devastates Louisiana\n3. Apple unveils new iPhone\n4. NASA's Perseverance rover collects first Mars rock sample <|endoftext|>\n\n\nUSER: That's interesting. What about the news in France?\n\n\nASSISTANT: <functioncall> {\"name\": \"get_news_headlines\", \"arguments\": '{\"country\": \"France\"}'} <|endoftext|>\n\n\nFUNCTION RESPONSE: {\"headlines\": [\"France recalls ambassadors to US and Australia\", \"French election: Macron's party braces for tough fight\", \"Louvre Museum to undergo major overhaul\", \"France to offer free birth control to all women under 25\"]}\n\n\nASSISTANT: Here are the latest news headlines for France:\n1. France recalls ambassadors to US and Australia\n2. French election: Macron's party braces for tough fight\n3. Louvre Museum to undergo major overhaul\n4. France to offer free birth control to all women under 25 <|endoftext|>\nASSISTANT:"
+    },
+    {
+      "key": "text_to_sql",
+      "label": "Text-to-SQL",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "gretelai/synthetic_text_to_sql",
+        "config": "default",
+        "split": "test",
+        "row_idx": 0
+      },
+      "prompt": "You are a SQL assistant. Schema and sample data:\nCREATE TABLE creative_ai (application_id INT, name TEXT, region TEXT, explainability_score FLOAT); INSERT INTO creative_ai (application_id, name, region, explainability_score) VALUES (1, 'ApplicationX', 'Europe', 0.87), (2, 'ApplicationY', 'North America', 0.91), (3, 'ApplicationZ', 'Europe', 0.84), (4, 'ApplicationAA', 'North America', 0.93), (5, 'ApplicationAB', 'Europe', 0.89);\nQuestion: What is the average explainability score of creative AI applications in 'Europe' and 'North America' in the 'creative_ai' table?\nWrite the SQL query and briefly explain it."
+    },
+    {
+      "key": "coding_agent_loop",
+      "label": "Coding agent loop",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "SWE-bench/SWE-smith-trajectories",
+        "config": "default",
+        "split": "tool",
+        "row_idx": 0
+      },
+      "prompt": "Continue this coding-agent task transcript and choose the next concrete action.\nRepository task: MoneyWidget decompress method breaks form validation with disabled fields. The task asks the agent to inspect /testbed/djmoney/forms/widgets.py, reproduce the issue, edit non-test source files only, and rerun validation. Current transcript shows the agent found /testbed/djmoney/forms/widgets.py and observed that MoneyWidget.decompress immediately returns [None, self.default_currency] before checking whether value is not None. Continue with the next concrete coding-agent action."
+    },
+    {
+      "key": "issue_fixing",
+      "label": "Issue fixing",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "SWE-bench/SWE-bench",
+        "config": "default",
+        "split": "dev",
+        "row_idx": 0
+      },
+      "prompt": "Repository: sqlfluff/sqlfluff\nIssue:\nEnable quiet mode/no-verbose in CLI for use in pre-commit hook. SQLFluff can increase verbosity, but users want an option to limit output from sqlfluff fix, especially in pre-commit. The desired behavior is to hide the long list of fixes and print only a compact status.\nFailing tests: test__cli__fix_multiple_errors_quiet_force and test__cli__fix_multiple_errors_quiet_no_force.\nPlan the minimal source fix and validation steps."
+    },
+    {
+      "key": "code_refinement",
+      "label": "Code refinement",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "google/code_x_glue_cc_code_refinement",
+        "config": "small",
+        "split": "test",
+        "row_idx": 0
+      },
+      "prompt": "Improve this buggy Java method while preserving behavior outside the bug.\nBuggy code:\nprivate TYPE_1 getType ( TYPE_2 VAR_1 ) { TYPE_3 VAR_2 = new TYPE_3 ( STRING_1 ) ; return new TYPE_1 ( VAR_2 , VAR_2 ) ; }\nReturn the corrected method and explain the change."
+    },
+    {
+      "key": "few_shot_reasoning",
+      "label": "Few-shot reasoning",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "openai/gsm8k",
+        "config": "main",
+        "split": "test",
+        "row_idx": 0
+      },
+      "prompt": "Solve the arithmetic word problem step by step.\nExample: If 3 packs have 4 pencils each, total pencils are 3 * 4 = 12.\nProblem: Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?"
+    },
+    {
+      "key": "open_chat",
+      "label": "Open chat",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "HuggingFaceH4/mt_bench_prompts",
+        "config": "default",
+        "split": "train",
+        "row_idx": 0
+      },
+      "prompt": "User: Compose an engaging travel blog post about a recent trip to Hawaii, highlighting cultural experiences and must-see attractions.\nAssistant:"
+    },
+    {
+      "key": "summarization_rag",
+      "label": "Summarization/RAG",
+      "prefix_tokens": 128,
+      "source": {
+        "dataset": "nvidia/ChatRAG-Bench",
+        "config": "doc2dial",
+        "split": "test",
+        "row_idx": 0
+      },
+      "prompt": "Use the retrieved context to answer the user and summarize the evidence.\nContext:\nBenefits Planner: Survivors | Planning For Your Survivors. As you plan for the future, think about what your family would need if you should die now. Social Security can help your family if you have earned enough Social Security credits through your work. You can earn up to four credits each year. The number of credits needed to provide benefits for your survivors depends on your age when you die. No one needs more than 40 credits, or 10 years of work, to be eligible for any Social Security benefit. Younger workers may need fewer credits for family members to receive survivors benefits. Benefits can be paid to children and to a spouse caring for children even if the worker does not have the usual required number of credits, if the worker has credit for one and one-half years of work in the three years just before death. Widows and widowers can receive reduced benefits as early as age 60, full benefits at full retirement age or older, disability benefits as early as age 50 under the program rules, or benefits at any age if caring for a child under age 16 or disabled who receives benefits on the worker's record.\nConversation: User asks for help planning Social Security benefits for survivors.\nAnswer:"
+    }
+  ]
+}

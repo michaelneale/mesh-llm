@@ -1,0 +1,36 @@
+From e97983ff2478ba0e2d47c6a531d856517789b9e8 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 19:35:00 +1000
+Subject: [PATCH 41/45] Compute stage generation signals lazily
+
+---
+ src/skippy.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index b979cbb2..4c9592fe 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -773,9 +773,6 @@ static enum skippy_status skippy_decode_tokens(
+     llama_batch_free(batch);
+     if (status == SKIPPY_STATUS_OK) {
+         skippy_record_tokens(session, token_ids, token_count);
+-        if (request_logits) {
+-            skippy_record_signal(session, -1);
+-        }
+     }
+     return status;
+ }
+@@ -1796,6 +1793,9 @@ enum skippy_status skippy_session_last_token_signal(
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and out_signal are required");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
++    if (session->signal_history.size() < static_cast<size_t>(std::max(session->n_past, 0))) {
++        skippy_record_signal(session, -1);
++    }
+     if (session->signal_history.empty()) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "no token signal is available");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+-- 
+2.50.1 (Apple Git-155)
+

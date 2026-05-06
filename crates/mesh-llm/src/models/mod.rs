@@ -29,8 +29,8 @@ pub use resolve::{
     canonicalize_interest_model_ref, catalog_model_draft_ref, catalog_model_ref,
     download_model_ref_with_progress_details, find_catalog_model_exact,
     installed_model_capabilities, installed_model_display_name, installed_model_huggingface_ref,
-    resolve_model_spec, show_exact_model, show_model_variants_with_progress, ModelDetails,
-    ShowVariantsProgress,
+    resolve_model_spec, resolve_model_spec_with_progress, show_exact_model,
+    show_model_variants_with_progress, ModelDetails, ShowVariantsProgress,
 };
 pub use search::{
     search_catalog_json_payload, search_catalog_models, search_huggingface,

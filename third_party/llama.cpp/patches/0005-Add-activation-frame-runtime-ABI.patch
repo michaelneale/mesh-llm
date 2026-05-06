@@ -1,7 +1,7 @@
-From 1f82d812a179b1d7510b5c5ba173207ad58cf8aa Mon Sep 17 00:00:00 2001
+From d8d898667379a2cb0e1ccd5ecbe0b7491b9e7c63 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 12:15:31 +1000
-Subject: [PATCH 05/37] Add activation frame runtime ABI
+Subject: [PATCH 05/45] Add activation frame runtime ABI
 
 ---
  include/skippy.h |  50 +++++++++++++++++++++

@@ -13,10 +13,12 @@ anyhow.workspace = true
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
+blake3.workspace = true
 clap.workspace = true
 futures-util = "0.3"
 skippy-runtime = { path = "../skippy-runtime" }
 skippy-protocol = { path = "../skippy-protocol" }
+skippy-cache = { path = "../skippy-cache" }
 skippy-metrics = { path = "../skippy-metrics" }
 openai-frontend = { path = "../openai-frontend" }
 opentelemetry-proto = "0.31.0"

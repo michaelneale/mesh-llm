@@ -40,11 +40,12 @@ use skippy_protocol::binary::{
     StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL,
     MAX_STAGE_LOGIT_BIAS,
 };
-use skippy_protocol::{StageConfig, StageTopology};
+use skippy_protocol::{MessageBase, StageConfig, StageTopology, SCHEMA_VERSION};
 use skippy_runtime::{
-    ChatTemplateJsonOptions, ChatTemplateOptions, FlashAttentionType as RuntimeFlashAttentionType,
-    GenerationSignalWindow, LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig,
-    RuntimeLoadMode, SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
+    ActivationFrame, ChatTemplateJsonOptions, ChatTemplateOptions,
+    FlashAttentionType as RuntimeFlashAttentionType, GenerationSignalWindow,
+    LogitBias as RuntimeLogitBias, MediaInput, ModelInfo, RuntimeConfig, RuntimeLoadMode,
+    SamplingConfig, StageModel, StageSession, TokenSignal, MAX_LOGIT_BIAS,
 };
 use tokio::{
     net::TcpListener,
@@ -59,6 +60,7 @@ use crate::{
     },
     cli::ServeOpenAiArgs,
     config::{load_json, validate_config},
+    kv_integration::KvStageIntegration,
     runtime_state::{load_runtime, RuntimeSessionStats, RuntimeState},
     telemetry::{lifecycle_attrs, now_unix_nanos, Telemetry},
 };
@@ -140,6 +142,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         )
         .context("prewarm OpenAI runtime sessions")?;
     }
+    let kv = KvStageIntegration::from_config(&config)?.map(Arc::new);
     let ctx_size = usize::try_from(config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime,
@@ -154,6 +157,7 @@ pub async fn serve_openai(args: ServeOpenAiArgs) -> Result<()> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         hook_policy: None,
+        kv,
     });
     let app: Router = instrumented_openai_router(backend, telemetry.clone());
 
@@ -305,6 +309,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         "stage.openai_runtime_prewarm",
     )
     .context("prewarm embedded OpenAI runtime sessions")?;
+    let kv = KvStageIntegration::from_config(&args.config)?.map(Arc::new);
     let ctx_size = usize::try_from(args.config.ctx_size).unwrap_or(usize::MAX);
     let backend = Arc::new(StageOpenAiBackend {
         runtime: args.runtime,
@@ -319,6 +324,7 @@ pub fn embedded_openai_backend(args: EmbeddedOpenAiArgs) -> Result<EmbeddedOpenA
         adaptive_speculative_window: args.adaptive_speculative_window,
         generation_limit: Arc::new(Semaphore::new(args.generation_concurrency)),
         hook_policy: args.hook_policy,
+        kv,
     });
 
     Ok(EmbeddedOpenAiBackend {
@@ -342,6 +348,7 @@ struct StageOpenAiBackend {
     adaptive_speculative_window: bool,
     generation_limit: Arc<Semaphore>,
     hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
+    kv: Option<Arc<KvStageIntegration>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,8 +476,8 @@ async fn openai_http_telemetry(
     response
 }
 
-#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 enum OpenAiBackendMode {
     LocalRuntime,
     BinaryChain {
@@ -912,16 +919,18 @@ struct OpenAiGenerationIds {
     session_label: String,
     session_id: u64,
     request_id: u64,
+    cache: OpenAiCacheHints,
 }
 
 impl OpenAiGenerationIds {
-    fn new() -> Self {
+    fn new(cache: OpenAiCacheHints) -> Self {
         let sequence = OPENAI_GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let session_label = format!("openai-session-{}-{sequence}", now_unix_millis());
         Self {
             session_id: stable_wire_id(&[session_label.as_bytes()]),
             request_id: stable_wire_id(&[session_label.as_bytes(), b"request"]),
             session_label,
+            cache,
         }
     }
 
@@ -932,6 +941,70 @@ impl OpenAiGenerationIds {
     fn request_id_string(&self) -> String {
         self.request_id.to_string()
     }
+}
+
+#[derive(Clone, Default)]
+struct OpenAiCacheHints {
+    prompt_cache_key: Option<String>,
+    prompt_cache_retention: Option<String>,
+}
+
+impl OpenAiCacheHints {
+    fn from_chat_request(request: &ChatCompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn from_completion_request(request: &CompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn namespace(&self) -> Option<String> {
+        self.prompt_cache_key
+            .as_ref()
+            .map(|key| format!("openai:prompt_cache_key:{key}"))
+    }
+}
+
+fn prompt_cache_retention_label(retention: openai_frontend::PromptCacheRetention) -> &'static str {
+    match retention {
+        openai_frontend::PromptCacheRetention::InMemory => "in_memory",
+        openai_frontend::PromptCacheRetention::TwentyFourHours => "24h",
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct GenerationCacheStats {
+    cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    hit_kind: Option<&'static str>,
+}
+
+struct ChainPrefixRestore {
+    restored_tokens: usize,
+    stats: StageReplyStats,
 }
 
 struct PhaseTimer {
@@ -995,6 +1068,8 @@ impl DraftRunner {
                 lane_count: 1,
                 n_batch: None,
                 n_ubatch: None,
+                n_threads: None,
+                n_threads_batch: None,
                 n_gpu_layers: n_gpu_layers.unwrap_or(config.n_gpu_layers),
                 selected_backend_device: config
                     .selected_device
@@ -1093,7 +1168,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         &self,
         mut request: ChatCompletionRequest,
     ) -> OpenAiResult<ChatCompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         let request_timer = PhaseTimer::start();
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
@@ -1181,7 +1256,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         mut request: ChatCompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<ChatCompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
         ensure_chat_runtime_features_supported(&request)?;
@@ -1231,7 +1306,7 @@ impl OpenAiBackend for StageOpenAiBackend {
     }
 
     async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         let request_timer = PhaseTimer::start();
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
@@ -1263,8 +1338,8 @@ impl OpenAiBackend for StageOpenAiBackend {
         let response_timer = PhaseTimer::start();
         let response = CompletionResponse::new_with_reason(
             request.model,
-            output.text,
-            Usage::new(output.prompt_tokens, output.completion_tokens),
+            output.text.clone(),
+            output.usage(),
             output.finish_reason,
         );
         let mut response_attrs = self.openai_attrs(&ids);
@@ -1308,7 +1383,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         request: CompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<CompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
@@ -1361,7 +1436,531 @@ impl StageOpenAiBackend {
             "llama_stage.openai_backend".to_string(),
             json!(self.mode.label()),
         );
+        if let Some(cache_key) = ids.cache.prompt_cache_key.as_deref() {
+            attrs.insert("openai.prompt_cache_key".to_string(), json!(cache_key));
+        }
+        if let Some(retention) = ids.cache.prompt_cache_retention.as_deref() {
+            attrs.insert(
+                "openai.prompt_cache_retention".to_string(),
+                json!(retention),
+            );
+        }
         attrs
+    }
+
+    fn local_kv_message_base(&self, session_id: &str, ids: &OpenAiGenerationIds) -> MessageBase {
+        MessageBase {
+            schema_version: SCHEMA_VERSION,
+            run_id: self.config.run_id.clone(),
+            request_id: ids.request_id_string(),
+            session_id: session_id.to_string(),
+            stage_id: "openai-local".to_string(),
+            stage_index: self.config.stage_index,
+            topology_id: self.config.topology_id.clone(),
+            model_id: Some(self.config.model_id.clone()),
+            tokenizer_id: None,
+            chat_template_id: ids.cache.namespace(),
+            seq: Some(ids.session_id),
+        }
+    }
+
+    fn restore_embedded_stage0_prefill(
+        &self,
+        session_id: &str,
+        ids: &OpenAiGenerationIds,
+        token_start: u64,
+        token_ids: &[i32],
+        activation_width: i32,
+    ) -> OpenAiResult<Option<ActivationFrame>> {
+        if token_start != 0 {
+            return Ok(None);
+        }
+        let Some(kv) = self.kv.as_ref() else {
+            return Ok(None);
+        };
+        let base = self.local_kv_message_base(session_id, ids);
+        let Some(activation) = kv.restore_resident_activation(
+            &self.config,
+            &base,
+            token_start,
+            token_ids,
+            activation_width,
+        ) else {
+            let mut attrs = self.openai_attrs(ids);
+            attrs.insert(
+                "skippy.kv.decision".to_string(),
+                json!("stage0_activation_miss"),
+            );
+            attrs.insert("skippy.kv.token_start".to_string(), json!(token_start));
+            attrs.insert("skippy.kv.token_count".to_string(), json!(token_ids.len()));
+            self.telemetry
+                .emit("stage.openai_kv_lookup_decision", attrs);
+            return Ok(None);
+        };
+        let restored = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            kv.restore_resident_prefix(
+                &mut runtime,
+                session_id,
+                std::slice::from_ref(&activation.identity),
+                token_ids,
+            )
+            .map_err(openai_backend_error)?
+        };
+        let Some(restored) = restored else {
+            let mut attrs = self.openai_attrs(ids);
+            attrs.insert(
+                "skippy.kv.decision".to_string(),
+                json!("stage0_activation_hit_kv_miss"),
+            );
+            attrs.insert(
+                "skippy.activation_cache.hit_page_id".to_string(),
+                json!(activation.page_id),
+            );
+            self.telemetry
+                .emit("stage.openai_kv_lookup_decision", attrs);
+            return Ok(None);
+        };
+        if restored.token_count < token_ids.len() {
+            let mut attrs = self.openai_attrs(ids);
+            attrs.insert(
+                "skippy.kv.decision".to_string(),
+                json!("stage0_activation_hit_prefix_short"),
+            );
+            attrs.insert(
+                "skippy.kv.restored_tokens".to_string(),
+                json!(restored.token_count),
+            );
+            self.telemetry
+                .emit("stage.openai_kv_lookup_decision", attrs);
+            return Ok(None);
+        }
+        let mut attrs = self.openai_attrs(ids);
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("stage0_activation_resident_hit"),
+        );
+        attrs.insert(
+            "skippy.kv.restored_tokens".to_string(),
+            json!(restored.token_count),
+        );
+        attrs.insert(
+            "skippy.kv.resident_lane_hit".to_string(),
+            json!(restored.borrowed),
+        );
+        attrs.insert(
+            "skippy.activation_cache.hit_page_id".to_string(),
+            json!(activation.page_id),
+        );
+        attrs.insert(
+            "skippy.activation_cache.payload_bytes".to_string(),
+            json!(activation.payload_bytes),
+        );
+        self.telemetry
+            .emit("stage.openai_kv_lookup_decision", attrs);
+        Ok(Some(activation.frame))
+    }
+
+    fn record_embedded_stage0_prefill(
+        &self,
+        session_id: &str,
+        ids: &OpenAiGenerationIds,
+        token_start: u64,
+        token_ids: &[i32],
+        activation_width: i32,
+        output: &ActivationFrame,
+    ) -> OpenAiResult<()> {
+        if token_start != 0 {
+            return Ok(());
+        }
+        let Some(kv) = self.kv.as_ref() else {
+            return Ok(());
+        };
+        let base = self.local_kv_message_base(session_id, ids);
+        let identity = kv.prefill_identity(&self.config, &base, token_start, token_ids);
+        let resident_record = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            kv.record_resident_prefix(&mut runtime, session_id, &identity, token_ids)
+                .map_err(openai_backend_error)?
+        };
+        let activation_record = kv.record_resident_activation(
+            &self.config,
+            &base,
+            token_start,
+            token_ids,
+            activation_width,
+            output,
+        );
+        let mut attrs = self.openai_attrs(ids);
+        attrs.insert("skippy.kv.decision".to_string(), json!("stage0_record"));
+        attrs.insert("skippy.kv.token_start".to_string(), json!(token_start));
+        attrs.insert("skippy.kv.token_count".to_string(), json!(token_ids.len()));
+        if let Some(record) = resident_record {
+            attrs.insert(
+                "skippy.kv.recorded_page_id".to_string(),
+                json!(record.page_id),
+            );
+            attrs.insert(
+                "skippy.kv.recorded_tokens".to_string(),
+                json!(record.token_count),
+            );
+            attrs.insert(
+                "skippy.kv.resident_seq_id".to_string(),
+                json!(record.seq_id),
+            );
+        }
+        if let Some(record) = activation_record {
+            attrs.insert(
+                "skippy.activation_cache.recorded_page_id".to_string(),
+                json!(record.page_id),
+            );
+            attrs.insert(
+                "skippy.activation_cache.payload_bytes".to_string(),
+                json!(record.payload_bytes),
+            );
+        }
+        self.telemetry
+            .emit("stage.openai_kv_record_decision", attrs);
+        Ok(())
+    }
+
+    fn record_embedded_stage0_full_prefill(
+        &self,
+        session_id: &str,
+        ids: &OpenAiGenerationIds,
+        token_ids: &[i32],
+    ) -> OpenAiResult<bool> {
+        let Some(kv) = self.kv.as_ref() else {
+            return Ok(false);
+        };
+        if token_ids.is_empty() || !kv.should_record() {
+            return Ok(false);
+        }
+        let base = self.local_kv_message_base(session_id, ids);
+        let identity = kv.prefill_identity(&self.config, &base, 0, token_ids);
+        let record = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            kv.record_resident_prefix(&mut runtime, session_id, &identity, token_ids)
+                .map_err(openai_backend_error)?
+        };
+        let mut attrs = self.openai_attrs(ids);
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("stage0_full_prefill_record"),
+        );
+        attrs.insert("skippy.kv.token_count".to_string(), json!(token_ids.len()));
+        if let Some(record) = record {
+            attrs.insert(
+                "skippy.kv.recorded_page_id".to_string(),
+                json!(record.page_id),
+            );
+            attrs.insert(
+                "skippy.kv.recorded_tokens".to_string(),
+                json!(record.token_count),
+            );
+            attrs.insert(
+                "skippy.kv.resident_seq_id".to_string(),
+                json!(record.seq_id),
+            );
+            self.telemetry
+                .emit("stage.openai_kv_record_decision", attrs);
+            return Ok(true);
+        }
+        self.telemetry
+            .emit("stage.openai_kv_record_decision", attrs);
+        Ok(false)
+    }
+
+    fn try_restore_embedded_split_prefill(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        session_key: &str,
+        downstream: &mut TcpStream,
+        prefill_tokens: &[i32],
+    ) -> OpenAiResult<Option<ChainPrefixRestore>> {
+        let Some(kv) = self.kv.as_ref() else {
+            return Ok(None);
+        };
+        if prefill_tokens.is_empty() || !kv.should_lookup() {
+            return Ok(None);
+        }
+        let base = self.local_kv_message_base(session_key, request.ids);
+        let identities = kv.lookup_identities(request.config, &base, 0, prefill_tokens);
+        let mut restore_stats = StageReplyStats::default();
+        let local_restore = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            match kv
+                .restore_exact_state(&mut runtime, session_key, &identities)
+                .map_err(openai_backend_error)?
+            {
+                Some(restored) => Some(restored.token_count),
+                None => kv
+                    .restore_resident_prefix(&mut runtime, session_key, &identities, prefill_tokens)
+                    .map_err(openai_backend_error)?
+                    .map(|restored| restored.token_count),
+            }
+        };
+        let Some(local_restore) = local_restore else {
+            return Ok(None);
+        };
+        if local_restore == 0 {
+            return Ok(None);
+        }
+        let restored_tokens = local_restore.min(prefill_tokens.len());
+        restore_stats.kv_lookup_hits += 1;
+        restore_stats.kv_imported_pages += 1;
+        restore_stats.kv_imported_tokens += restored_tokens as i64;
+        restore_stats.kv_hit_stage_mask |= openai_stage_mask(request.config.stage_index);
+        let restore = embedded_prefix_cache_message(
+            WireMessageKind::TryRestorePrefill,
+            request.wire_dtype,
+            &prefill_tokens[..restored_tokens],
+            request.ids.request_id,
+            request.ids.session_id,
+        )?;
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &restore,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .map_err(openai_io_error)?;
+        let downstream_restore = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+        if downstream_restore.kind != WireReplyKind::Ack {
+            return Err(OpenAiError::backend(format!(
+                "expected prefix try-restore ACK from downstream, got {:?}",
+                downstream_restore.kind
+            )));
+        }
+        restore_stats.merge(downstream_restore.stats);
+        if restore_stats.kv_lookup_errors > 0
+            || restore_stats.kv_lookup_misses > 0
+            || downstream_restore.stats.kv_lookup_hits == 0
+        {
+            self.drop_embedded_split_restore(request, session_key, downstream);
+            return Ok(None);
+        }
+        let mut attrs = self.openai_attrs(request.ids);
+        attrs.insert("skippy.kv.decision".to_string(), json!("chain_restore_hit"));
+        attrs.insert(
+            "skippy.kv.restored_tokens".to_string(),
+            json!(restored_tokens),
+        );
+        attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(prefill_tokens.len().saturating_sub(restored_tokens)),
+        );
+        attrs.insert(
+            "skippy.kv.lookup_hits".to_string(),
+            json!(restore_stats.kv_lookup_hits),
+        );
+        attrs.insert(
+            "skippy.kv.hit_stage_mask".to_string(),
+            json!(restore_stats.kv_hit_stage_mask),
+        );
+        self.telemetry
+            .emit("stage.openai_kv_lookup_decision", attrs);
+        Ok(Some(ChainPrefixRestore {
+            restored_tokens,
+            stats: restore_stats,
+        }))
+    }
+
+    fn try_restore_embedded_split_prefill_and_decode(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        session_key: &str,
+        downstream: &mut TcpStream,
+        prefill_tokens: &[i32],
+        current: i32,
+        wire_sampling: Option<WireSamplingConfig>,
+    ) -> OpenAiResult<Option<EmbeddedFusedFirstDecode>> {
+        let Some(kv) = self.kv.as_ref() else {
+            return Ok(None);
+        };
+        if prefill_tokens.is_empty() || !kv.should_lookup() {
+            return Ok(None);
+        }
+        let timer = PhaseTimer::start();
+        let base = self.local_kv_message_base(session_key, request.ids);
+        let identity = kv.prefill_identity(request.config, &base, 0, prefill_tokens);
+        let mut reply_stats = StageReplyStats::default();
+        let local_restore = {
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            kv.restore_resident_prefix(
+                &mut runtime,
+                session_key,
+                std::slice::from_ref(&identity),
+                prefill_tokens,
+            )
+            .map_err(openai_backend_error)?
+        };
+        let Some(local_restore) = local_restore else {
+            return Ok(None);
+        };
+        if local_restore.token_count < prefill_tokens.len() {
+            return Ok(None);
+        }
+        reply_stats.kv_lookup_hits += 1;
+        reply_stats.kv_imported_pages += 1;
+        reply_stats.kv_imported_tokens += local_restore.token_count as i64;
+        reply_stats.kv_hit_stage_mask |= openai_stage_mask(request.config.stage_index);
+
+        let decode_message = embedded_decode_message(
+            request.wire_dtype,
+            DecodeMessageArgs {
+                request_id: request.ids.request_id,
+                session_id: request.ids.session_id,
+                prompt_token_count: request.prompt_token_ids.len(),
+                pos_start: prefill_tokens.len(),
+                decode_step: 0,
+                current,
+                sampling: wire_sampling.clone(),
+            },
+        )?;
+        let stage0_timer = PhaseTimer::start();
+        let token_runtime_lock_wait_ms;
+        let token_runtime_lock_hold_ms;
+        let output = {
+            let lock_timer = PhaseTimer::start();
+            let mut runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+            token_runtime_lock_wait_ms = lock_timer.elapsed_ms();
+            let lock_hold_timer = PhaseTimer::start();
+            let output = run_binary_stage_message(
+                &mut runtime,
+                session_key,
+                &decode_message,
+                &[current],
+                None,
+                false,
+            )
+            .map_err(openai_backend_error)?
+            .2;
+            token_runtime_lock_hold_ms = lock_hold_timer.elapsed_ms();
+            output
+        };
+        let stage0_compute_ms = stage0_timer.elapsed_ms();
+
+        let fused_message = embedded_restore_prefill_decode_message(
+            request.wire_dtype,
+            RestorePrefillDecodeMessageArgs {
+                request_id: request.ids.request_id,
+                session_id: request.ids.session_id,
+                prompt_token_count: request.prompt_token_ids.len(),
+                pos_start: prefill_tokens.len(),
+                decode_step: 0,
+                prefix_tokens: prefill_tokens,
+                current,
+                sampling: wire_sampling,
+            },
+        )?;
+        let forwarded = forwarded_stage_message_timed(
+            request.config,
+            &fused_message,
+            &output,
+            request.wire_dtype,
+            request.activation_width,
+        )
+        .map_err(openai_backend_error)?;
+        let write_timer = PhaseTimer::start();
+        write_stage_message_conditioned(
+            &mut *downstream,
+            &forwarded.message,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .map_err(openai_io_error)?;
+        let forward_write_ms = write_timer.elapsed_ms();
+        let wait_timer = PhaseTimer::start();
+        let downstream_reply = recv_reply(&mut *downstream).map_err(openai_io_error)?;
+        let downstream_wait_ms = wait_timer.elapsed_ms();
+        let downstream_missed = downstream_reply.kind != WireReplyKind::PredictedToken
+            || downstream_reply.stats.kv_lookup_errors > 0
+            || downstream_reply.stats.kv_lookup_misses > 0
+            || downstream_reply.stats.kv_lookup_hits == 0;
+        reply_stats.merge(downstream_reply.stats);
+        if downstream_missed {
+            self.drop_embedded_split_restore(request, session_key, downstream);
+            return Ok(None);
+        }
+        let mut attrs = self.openai_attrs(request.ids);
+        attrs.insert(
+            "skippy.kv.decision".to_string(),
+            json!("chain_restore_decode_hit"),
+        );
+        attrs.insert(
+            "skippy.kv.restored_tokens".to_string(),
+            json!(prefill_tokens.len()),
+        );
+        attrs.insert(
+            "skippy.kv.lookup_hits".to_string(),
+            json!(reply_stats.kv_lookup_hits),
+        );
+        attrs.insert(
+            "skippy.kv.hit_stage_mask".to_string(),
+            json!(reply_stats.kv_hit_stage_mask),
+        );
+        self.telemetry
+            .emit("stage.openai_kv_lookup_decision", attrs);
+        Ok(Some(EmbeddedFusedFirstDecode {
+            predicted: downstream_reply.predicted,
+            reply_stats,
+            execution: EmbeddedExecutionStats {
+                stage0_compute_ms,
+                runtime_lock_wait_ms: token_runtime_lock_wait_ms,
+                runtime_lock_hold_ms: token_runtime_lock_hold_ms,
+                activation_encode_ms: forwarded.activation_encode_ms,
+                output_activation_bytes: output.payload.len(),
+                forward_activation_bytes: forwarded.message.activation.len(),
+                forward_write_ms,
+                downstream_wait_ms,
+            },
+            elapsed_ms: timer.elapsed_ms(),
+        }))
+    }
+
+    fn drop_embedded_split_restore(
+        &self,
+        request: &EmbeddedStageZeroGeneration<'_>,
+        session_key: &str,
+        downstream: &mut TcpStream,
+    ) {
+        if let Ok(mut runtime) = self.runtime.lock() {
+            let _ = runtime.drop_session_timed(session_key);
+        }
+        let stop = StageWireMessage::stop_with_identity(
+            request.wire_dtype,
+            request.ids.request_id,
+            request.ids.session_id,
+        );
+        if write_stage_message_conditioned(
+            &mut *downstream,
+            &stop,
+            request.wire_dtype,
+            request.downstream_wire_condition,
+        )
+        .is_ok()
+        {
+            let _ = recv_reply(&mut *downstream);
+        }
     }
 
     fn insert_runtime_session_stats(
@@ -1376,6 +1975,10 @@ impl StageOpenAiBackend {
         attrs.insert(
             format!("{prefix}.idle_sessions"),
             json!(stats.idle_sessions),
+        );
+        attrs.insert(
+            format!("{prefix}.idle_resident_prefixes"),
+            json!(stats.idle_resident_prefixes),
         );
         attrs.insert(
             format!("{prefix}.tracked_token_counts"),
@@ -1742,7 +2345,7 @@ impl StageOpenAiBackend {
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
-        match self.mode.clone() {
+        let cache_stats = match self.mode.clone() {
             OpenAiBackendMode::LocalRuntime => self.generate_local_tokens(
                 LocalGeneration {
                     prompt_token_ids: &prompt_token_ids,
@@ -1807,7 +2410,7 @@ impl StageOpenAiBackend {
             )?,
         };
 
-        let output = collector.finish(prompt_token_ids.len())?;
+        let output = collector.finish(prompt_token_ids.len(), cache_stats)?;
         let mut summary_attrs = self.openai_attrs(&ids);
         summary_attrs.insert(
             "llama_stage.prompt_token_count".to_string(),
@@ -1817,6 +2420,21 @@ impl StageOpenAiBackend {
             "llama_stage.completion_token_count".to_string(),
             json!(output.completion_tokens),
         );
+        summary_attrs.insert(
+            "skippy.kv.cached_prompt_tokens".to_string(),
+            json!(output.cached_prompt_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.matched_prefix_tokens".to_string(),
+            json!(output.matched_prefix_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(output.suffix_prefill_tokens),
+        );
+        if let Some(hit_kind) = output.cache_hit_kind {
+            summary_attrs.insert("skippy.kv.hit_kind".to_string(), json!(hit_kind));
+        }
         summary_attrs.insert(
             "llama_stage.detokenize_ms".to_string(),
             json!(output.detokenize_ms),
@@ -2122,7 +2740,7 @@ impl StageOpenAiBackend {
             }
         }
         result?;
-        collector.finish(prefill.token_count)
+        collector.finish(prefill.token_count, GenerationCacheStats::default())
     }
 
     fn generate_split_multimodal_text(
@@ -2499,7 +3117,7 @@ impl StageOpenAiBackend {
             stop_result?;
         }
         result?;
-        collector.finish(prompt_tokens)
+        collector.finish(prompt_tokens, GenerationCacheStats::default())
     }
 
     fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
@@ -2613,11 +3231,17 @@ impl StageOpenAiBackend {
         &self,
         request: LocalGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let session_id = request.ids.session_label.clone();
+        let mut cache_stats = GenerationCacheStats::default();
         let result = (|| {
             if request.prompt_token_ids.len() > 1 {
                 let prefill_timer = PhaseTimer::start();
+                let prefill_tokens =
+                    &request.prompt_token_ids[..request.prompt_token_ids.len() - 1];
+                let mut restored_prefill = false;
+                let mut restored_prefill_tokens = 0usize;
+                let mut resident_recorded_pages = 0usize;
                 let lock_timer = PhaseTimer::start();
                 let mut runtime = self
                     .runtime
@@ -2626,20 +3250,291 @@ impl StageOpenAiBackend {
                 let runtime_lock_wait_ms = lock_timer.elapsed_ms();
                 let runtime_lock_hold_timer = PhaseTimer::start();
                 let runtime_sessions_before = runtime.session_stats();
-                runtime
-                    .prefill(
-                        &session_id,
-                        &request.prompt_token_ids[..request.prompt_token_ids.len() - 1],
-                    )
-                    .map_err(openai_backend_error)?;
+                if let Some(kv) = self.kv.as_ref() {
+                    let base = self.local_kv_message_base(&session_id, request.ids);
+                    let kv_identity_timer = PhaseTimer::start();
+                    let identities = kv.lookup_identities(&self.config, &base, 0, prefill_tokens);
+                    let kv_identity_ms = kv_identity_timer.elapsed_ms();
+                    let kv_restore_timer = PhaseTimer::start();
+                    match kv.restore_exact_state(&mut runtime, &session_id, &identities) {
+                        Ok(Some(restored)) => {
+                            restored_prefill = true;
+                            cache_stats.hit_kind = Some("exact_prefix");
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert("skippy.kv.decision".to_string(), json!("exact_hit"));
+                            attrs.insert(
+                                "skippy.exact_cache.hit_page_id".to_string(),
+                                json!(restored.page_id),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.payload_kind".to_string(),
+                                json!(restored.payload_kind.to_string()),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.restored_tokens".to_string(),
+                                json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.matched_prefix_tokens".to_string(),
+                                json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.suffix_prefill_tokens".to_string(),
+                                json!(prefill_tokens.len().saturating_sub(restored.token_count)),
+                            );
+                            restored_prefill_tokens = restored.token_count;
+                            cache_stats.cached_prompt_tokens =
+                                saturating_u32(restored_prefill_tokens);
+                            attrs.insert(
+                                "skippy.exact_cache.logical_bytes".to_string(),
+                                json!(restored.logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.entries".to_string(),
+                                json!(restored.entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_ms".to_string(),
+                                json!(restored.reconstruct_ms),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_bytes".to_string(),
+                                json!(restored.reconstruct_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.reconstruct_blocks".to_string(),
+                                json!(restored.reconstruct_blocks),
+                            );
+                            self.telemetry
+                                .emit("stage.openai_kv_lookup_decision", attrs);
+                        }
+                        Ok(None) => match kv.restore_resident_prefix(
+                            &mut runtime,
+                            &session_id,
+                            &identities,
+                            prefill_tokens,
+                        ) {
+                            Ok(Some(restored)) => {
+                                restored_prefill = true;
+                                cache_stats.hit_kind = Some("resident_prefix");
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.decision".to_string(),
+                                    json!("resident_hit"),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.hit_page_id".to_string(),
+                                    json!(restored.page_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.restored_tokens".to_string(),
+                                    json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.matched_prefix_tokens".to_string(),
+                                    json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.suffix_prefill_tokens".to_string(),
+                                    json!(prefill_tokens
+                                        .len()
+                                        .saturating_sub(restored.token_count)),
+                                );
+                                restored_prefill_tokens = restored.token_count;
+                                cache_stats.cached_prompt_tokens =
+                                    saturating_u32(restored_prefill_tokens);
+                                attrs.insert(
+                                    "skippy.kv.resident_seq_id".to_string(),
+                                    json!(restored.seq_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_lane_hit".to_string(),
+                                    json!(restored.borrowed),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_lookup_decision", attrs);
+                            }
+                            Ok(None) => {
+                                self.telemetry.emit(
+                                    "stage.openai_kv_lookup_decision",
+                                    BTreeMap::from([
+                                        ("skippy.kv.decision".to_string(), json!("miss")),
+                                        (
+                                            "llama_stage.request_id".to_string(),
+                                            json!(request.ids.request_id_string()),
+                                        ),
+                                    ]),
+                                );
+                            }
+                            Err(error) => {
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.decision".to_string(),
+                                    json!("resident_error"),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.error".to_string(),
+                                    json!(error.to_string()),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_lookup_decision", attrs);
+                            }
+                        },
+                        Err(error) => {
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert("skippy.kv.decision".to_string(), json!("exact_error"));
+                            attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
+                            self.telemetry
+                                .emit("stage.openai_kv_lookup_decision", attrs);
+                        }
+                    }
+                    let mut attrs = self.openai_attrs(request.ids);
+                    attrs.insert("skippy.kv.identity_ms".to_string(), json!(kv_identity_ms));
+                    attrs.insert(
+                        "skippy.kv.restore_ms".to_string(),
+                        json!(kv_restore_timer.elapsed_ms()),
+                    );
+                    attrs.insert(
+                        "skippy.kv.identity_count".to_string(),
+                        json!(identities.len()),
+                    );
+                    self.telemetry.emit_debug("stage.openai_kv_timing", attrs);
+                }
+                let mut decoded_prefill_suffix = false;
+                if restored_prefill_tokens < prefill_tokens.len() {
+                    decoded_prefill_suffix = true;
+                    runtime
+                        .prefill(&session_id, &prefill_tokens[restored_prefill_tokens..])
+                        .map_err(openai_backend_error)?;
+                }
+                cache_stats.matched_prefix_tokens = saturating_u32(restored_prefill_tokens);
+                cache_stats.suffix_prefill_tokens =
+                    saturating_u32(prefill_tokens.len().saturating_sub(restored_prefill_tokens));
+                if !restored_prefill || decoded_prefill_suffix {
+                    if let Some(kv) = self.kv.as_ref() {
+                        let base = self.local_kv_message_base(&session_id, request.ids);
+                        let exact_identity =
+                            kv.prefill_identity(&self.config, &base, 0, prefill_tokens);
+                        if let Ok(Some(record)) =
+                            kv.record_exact_state(&mut runtime, &session_id, &exact_identity)
+                        {
+                            resident_recorded_pages = resident_recorded_pages.saturating_add(1);
+                            let mut attrs = self.openai_attrs(request.ids);
+                            attrs.insert(
+                                "skippy.exact_cache.recorded_page_id".to_string(),
+                                json!(record.page_id),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.payload_kind".to_string(),
+                                json!(record.payload_kind.to_string()),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.recorded_tokens".to_string(),
+                                json!(record.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.stored".to_string(),
+                                json!(record.stored),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.logical_bytes".to_string(),
+                                json!(record.logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.physical_bytes".to_string(),
+                                json!(record.physical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.entries".to_string(),
+                                json!(record.entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.evicted_entries".to_string(),
+                                json!(record.evicted_entries),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.evicted_logical_bytes".to_string(),
+                                json!(record.evicted_logical_bytes),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_hash_ms".to_string(),
+                                json!(record.dedupe.hash_ms),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_block_count".to_string(),
+                                json!(record.dedupe.block_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_new_block_count".to_string(),
+                                json!(record.dedupe.new_block_count),
+                            );
+                            attrs.insert(
+                                "skippy.exact_cache.dedupe_reused_block_count".to_string(),
+                                json!(record.dedupe.reused_block_count),
+                            );
+                            self.telemetry
+                                .emit("stage.openai_kv_record_decision", attrs);
+                        }
+                        for identity in kv.record_identities(&self.config, &base, 0, prefill_tokens)
+                        {
+                            if let Ok(Some(record)) = kv.record_resident_prefix(
+                                &mut runtime,
+                                &session_id,
+                                &identity,
+                                prefill_tokens,
+                            ) {
+                                resident_recorded_pages = resident_recorded_pages.saturating_add(1);
+                                let mut attrs = self.openai_attrs(request.ids);
+                                attrs.insert(
+                                    "skippy.kv.recorded_page_id".to_string(),
+                                    json!(record.page_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.recorded_tokens".to_string(),
+                                    json!(record.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_seq_id".to_string(),
+                                    json!(record.seq_id),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.resident_entries".to_string(),
+                                    json!(record.entries),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.evicted_entries".to_string(),
+                                    json!(record.evicted_entries),
+                                );
+                                self.telemetry
+                                    .emit("stage.openai_kv_record_decision", attrs);
+                            }
+                        }
+                    }
+                }
                 let runtime_sessions_after = runtime.session_stats();
                 let runtime_lock_hold_ms = runtime_lock_hold_timer.elapsed_ms();
                 let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.prefill_token_count".to_string(),
-                    json!(request.prompt_token_ids.len() - 1),
+                    json!(prefill_tokens.len()),
                 );
                 attrs.insert("llama_stage.prefill_chunk_count".to_string(), json!(1));
+                attrs.insert(
+                    "skippy.kv.restored_prefill".to_string(),
+                    json!(restored_prefill),
+                );
+                attrs.insert(
+                    "skippy.kv.restored_prefill_tokens".to_string(),
+                    json!(restored_prefill_tokens),
+                );
+                attrs.insert(
+                    "skippy.kv.prefill_suffix_tokens".to_string(),
+                    json!(prefill_tokens.len().saturating_sub(restored_prefill_tokens)),
+                );
+                attrs.insert(
+                    "skippy.kv.recorded_pages".to_string(),
+                    json!(resident_recorded_pages),
+                );
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),
@@ -2703,6 +3598,8 @@ impl StageOpenAiBackend {
                 let token_timer = PhaseTimer::start();
                 let token_runtime_lock_wait_ms;
                 let token_runtime_lock_hold_ms;
+                let token_decode_ms;
+                let token_signal_ms;
                 let token_signal;
                 let signal_window;
                 current = {
@@ -2718,6 +3615,7 @@ impl StageOpenAiBackend {
                     runtime_lock_acquires += 1;
                     let hold_timer = PhaseTimer::start();
                     runtime_sessions_before.get_or_insert_with(|| runtime.session_stats());
+                    let decode_call_timer = PhaseTimer::start();
                     let predicted = runtime
                         .decode_sampled(
                             &session_id,
@@ -2725,8 +3623,11 @@ impl StageOpenAiBackend {
                             request.sampling.enabled.then_some(request.sampling),
                         )
                         .map_err(openai_backend_error)?;
+                    token_decode_ms = decode_call_timer.elapsed_ms();
+                    let signal_timer = PhaseTimer::start();
                     token_signal = runtime.last_token_signal(&session_id).ok();
                     signal_window = runtime.signal_window(&session_id, 16).ok();
+                    token_signal_ms = signal_timer.elapsed_ms();
                     runtime_sessions_after = Some(runtime.session_stats());
                     token_runtime_lock_hold_ms = hold_timer.elapsed_ms();
                     runtime_lock_hold_ms += token_runtime_lock_hold_ms;
@@ -2760,6 +3661,11 @@ impl StageOpenAiBackend {
                     "llama_stage.stage0_compute_ms".to_string(),
                     json!(token_timer.elapsed_ms()),
                 );
+                token_attrs.insert(
+                    "llama_stage.decode_call_ms".to_string(),
+                    json!(token_decode_ms),
+                );
+                token_attrs.insert("llama_stage.signal_ms".to_string(), json!(token_signal_ms));
                 token_attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(token_runtime_lock_wait_ms),
@@ -2843,14 +3749,15 @@ impl StageOpenAiBackend {
                     .emit_debug("stage.openai_session_stop", attrs);
             }
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn generate_binary_chain_tokens(
         &self,
         request: BinaryChainGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let wire_sampling = wire_sampling_config(request.sampling);
         let session_id = request.ids.session_id;
         let request_id = request.ids.request_id;
@@ -3026,14 +3933,15 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result.map_err(openai_io_error)?;
         }
-        result
+        result?;
+        Ok(GenerationCacheStats::default())
     }
 
     fn generate_embedded_stage_zero_tokens(
         &self,
         request: EmbeddedStageZeroGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         if request.config.downstream.is_none() {
             return self.generate_local_tokens(
                 LocalGeneration {
@@ -3059,6 +3967,7 @@ impl StageOpenAiBackend {
             .as_ref()
             .ok_or_else(|| OpenAiError::backend("embedded stage 0 has no downstream lane pool"))?;
         let mut lane = lane_pool.checkout(request.ids)?;
+        let mut cache_stats = GenerationCacheStats::default();
 
         let result = (|| {
             let downstream = &mut lane.stream;
@@ -3079,10 +3988,67 @@ impl StageOpenAiBackend {
             let mut prefill_output_activation_bytes = 0usize;
             let mut prefill_forward_activation_bytes = 0usize;
             let mut prefill_downstream_wait_ms = 0.0;
+            let mut prefill_stage0_cache_hits = 0usize;
+            let mut prefill_stage0_cache_misses = 0usize;
+            let mut prefill_stage0_cache_errors = 0usize;
+            let mut prefill_chain_cache_restored = false;
+            let mut prefill_chain_restored_tokens = 0usize;
+            let mut prefill_chain_cache_stats = StageReplyStats::default();
+            let mut prefill_stage0_full_recorded = false;
+            let mut fused_first_decode = None;
             let mut prefill_planner = request.prefill_chunk_policy.planner();
             if prefill_token_count > 0 {
                 let prefill_tokens = &request.prompt_token_ids[..prefill_token_count];
-                let mut pos_start = 0usize;
+                if request.max_tokens > 0
+                    && request.draft.is_none()
+                    && request.chat_sampling_metadata.is_none()
+                {
+                    let current = *request
+                        .prompt_token_ids
+                        .last()
+                        .expect("checked non-empty prompt");
+                    if let Some(fused) = self.try_restore_embedded_split_prefill_and_decode(
+                        &request,
+                        &session_key,
+                        downstream,
+                        prefill_tokens,
+                        current,
+                        wire_sampling.clone(),
+                    )? {
+                        prefill_chain_cache_restored = true;
+                        prefill_chain_restored_tokens = prefill_token_count;
+                        prefill_chain_cache_stats = fused.reply_stats;
+                        cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.matched_prefix_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.suffix_prefill_tokens = 0;
+                        cache_stats.hit_kind = Some("chain_fused_exact_prefix");
+                        fused_first_decode = Some(fused);
+                    }
+                }
+                if !prefill_chain_cache_restored {
+                    if let Some(restore) = self.try_restore_embedded_split_prefill(
+                        &request,
+                        &session_key,
+                        downstream,
+                        prefill_tokens,
+                    )? {
+                        prefill_chain_restored_tokens = restore.restored_tokens;
+                        prefill_chain_cache_restored =
+                            prefill_chain_restored_tokens >= prefill_tokens.len();
+                        prefill_chain_cache_stats = restore.stats;
+                        cache_stats.cached_prompt_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.matched_prefix_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.suffix_prefill_tokens = saturating_u32(
+                            prefill_tokens
+                                .len()
+                                .saturating_sub(prefill_chain_restored_tokens),
+                        );
+                        cache_stats.hit_kind = Some("chain_prefix");
+                    }
+                }
+                let mut pos_start = prefill_chain_restored_tokens.min(prefill_tokens.len());
                 let mut chunk_index = 0usize;
                 while pos_start < prefill_tokens.len() {
                     if request
@@ -3110,37 +4076,70 @@ impl StageOpenAiBackend {
                         },
                     )?;
                     let stage0_timer = PhaseTimer::start();
-                    let output = {
-                        let lock_timer = PhaseTimer::start();
-                        let mut runtime = self
-                            .runtime
-                            .lock()
-                            .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-                        let lock_wait_ms = lock_timer.elapsed_ms();
-                        prefill_runtime_lock_wait_ms += lock_wait_ms;
-                        prefill_runtime_lock_wait_max_ms =
-                            prefill_runtime_lock_wait_max_ms.max(lock_wait_ms);
-                        prefill_runtime_lock_acquires += 1;
-                        let lock_hold_timer = PhaseTimer::start();
-                        prefill_runtime_sessions_before
-                            .get_or_insert_with(|| runtime.session_stats());
-                        let output = run_binary_stage_message(
-                            &mut runtime,
-                            &session_key,
-                            &message,
-                            chunk,
-                            None,
-                            false,
-                        )
-                        .map_err(openai_backend_error)?
-                        .2;
-                        prefill_runtime_sessions_after = Some(runtime.session_stats());
-                        let lock_hold_ms = lock_hold_timer.elapsed_ms();
-                        prefill_runtime_lock_hold_ms += lock_hold_ms;
-                        prefill_runtime_lock_hold_max_ms =
-                            prefill_runtime_lock_hold_max_ms.max(lock_hold_ms);
-                        output
+                    let mut output = self.restore_embedded_stage0_prefill(
+                        &session_key,
+                        request.ids,
+                        pos_start as u64,
+                        chunk,
+                        request.activation_width,
+                    )?;
+                    if output.is_some() {
+                        prefill_stage0_cache_hits += 1;
+                    } else {
+                        prefill_stage0_cache_misses += usize::from(pos_start == 0);
+                    }
+                    let output = match output.take() {
+                        Some(output) => output,
+                        None => {
+                            let lock_timer = PhaseTimer::start();
+                            let mut runtime = self
+                                .runtime
+                                .lock()
+                                .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
+                            let lock_wait_ms = lock_timer.elapsed_ms();
+                            prefill_runtime_lock_wait_ms += lock_wait_ms;
+                            prefill_runtime_lock_wait_max_ms =
+                                prefill_runtime_lock_wait_max_ms.max(lock_wait_ms);
+                            prefill_runtime_lock_acquires += 1;
+                            let lock_hold_timer = PhaseTimer::start();
+                            prefill_runtime_sessions_before
+                                .get_or_insert_with(|| runtime.session_stats());
+                            let output = run_binary_stage_message(
+                                &mut runtime,
+                                &session_key,
+                                &message,
+                                chunk,
+                                None,
+                                false,
+                            )
+                            .map_err(openai_backend_error)?
+                            .2;
+                            prefill_runtime_sessions_after = Some(runtime.session_stats());
+                            let lock_hold_ms = lock_hold_timer.elapsed_ms();
+                            prefill_runtime_lock_hold_ms += lock_hold_ms;
+                            prefill_runtime_lock_hold_max_ms =
+                                prefill_runtime_lock_hold_max_ms.max(lock_hold_ms);
+                            output
+                        }
                     };
+                    if let Err(error) = self.record_embedded_stage0_prefill(
+                        &session_key,
+                        request.ids,
+                        pos_start as u64,
+                        chunk,
+                        request.activation_width,
+                        &output,
+                    ) {
+                        prefill_stage0_cache_errors += 1;
+                        let mut attrs = self.openai_attrs(request.ids);
+                        attrs.insert(
+                            "skippy.kv.decision".to_string(),
+                            json!("stage0_record_error"),
+                        );
+                        attrs.insert("skippy.kv.error".to_string(), json!(error.to_string()));
+                        self.telemetry
+                            .emit("stage.openai_kv_record_decision", attrs);
+                    }
                     let chunk_stage0_compute_ms = stage0_timer.elapsed_ms();
                     prefill_stage0_compute_ms += chunk_stage0_compute_ms;
                     let forwarded = forwarded_stage_message(
@@ -3183,6 +4182,13 @@ impl StageOpenAiBackend {
                     prefill_chunks += 1;
                     pos_start = end;
                     chunk_index += 1;
+                }
+                if !prefill_chain_cache_restored {
+                    prefill_stage0_full_recorded = self.record_embedded_stage0_full_prefill(
+                        &session_key,
+                        request.ids,
+                        prefill_tokens,
+                    )?;
                 }
             }
             let mut prefill_attrs = self.openai_attrs(request.ids);
@@ -3254,6 +4260,50 @@ impl StageOpenAiBackend {
                 "llama_stage.downstream_wait_ms".to_string(),
                 json!(prefill_downstream_wait_ms),
             );
+            prefill_attrs.insert(
+                "skippy.kv.stage0_cache_hits".to_string(),
+                json!(prefill_stage0_cache_hits),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.stage0_cache_misses".to_string(),
+                json!(prefill_stage0_cache_misses),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.stage0_cache_errors".to_string(),
+                json!(prefill_stage0_cache_errors),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.stage0_full_recorded".to_string(),
+                json!(prefill_stage0_full_recorded),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.chain_cache_restored".to_string(),
+                json!(prefill_chain_cache_restored),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.matched_prefix_tokens".to_string(),
+                json!(prefill_chain_restored_tokens),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.suffix_prefill_tokens".to_string(),
+                json!(prefill_token_count.saturating_sub(prefill_chain_restored_tokens)),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.chain_cache_hits".to_string(),
+                json!(prefill_chain_cache_stats.kv_lookup_hits),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.chain_cache_misses".to_string(),
+                json!(prefill_chain_cache_stats.kv_lookup_misses),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.chain_cache_errors".to_string(),
+                json!(prefill_chain_cache_stats.kv_lookup_errors),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.chain_cache_hit_stage_mask".to_string(),
+                json!(prefill_chain_cache_stats.kv_hit_stage_mask),
+            );
             self.emit_openai_phase("stage.openai_prefill", prefill_timer, prefill_attrs);
 
             if let Some(message) = generation_config_message(
@@ -3300,6 +4350,77 @@ impl StageOpenAiBackend {
                 .last()
                 .expect("checked non-empty prompt");
             let mut context_tokens = request.prompt_token_ids.to_vec();
+            let mut fused_reached_stop = false;
+            if let Some(fused) = fused_first_decode.take() {
+                current = fused.predicted;
+                decoded_tokens = 1;
+                context_tokens.push(current);
+                decode_stage0_compute_ms += fused.execution.stage0_compute_ms;
+                decode_runtime_lock_wait_ms += fused.execution.runtime_lock_wait_ms;
+                decode_runtime_lock_wait_max_ms =
+                    decode_runtime_lock_wait_max_ms.max(fused.execution.runtime_lock_wait_ms);
+                decode_runtime_lock_hold_ms += fused.execution.runtime_lock_hold_ms;
+                decode_runtime_lock_hold_max_ms =
+                    decode_runtime_lock_hold_max_ms.max(fused.execution.runtime_lock_hold_ms);
+                decode_runtime_lock_acquires += 1;
+                decode_forward_activation_encode_ms += fused.execution.activation_encode_ms;
+                decode_output_activation_bytes = decode_output_activation_bytes
+                    .saturating_add(fused.execution.output_activation_bytes);
+                decode_forward_activation_bytes = decode_forward_activation_bytes
+                    .saturating_add(fused.execution.forward_activation_bytes);
+                decode_forward_write_ms += fused.execution.forward_write_ms;
+                decode_downstream_wait_ms += fused.execution.downstream_wait_ms;
+                let mut token_attrs = self.openai_attrs(request.ids);
+                token_attrs.insert("llama_stage.decode_step".to_string(), json!(0));
+                token_attrs.insert(
+                    "llama_stage.decode_token_phase".to_string(),
+                    json!("fused-restore"),
+                );
+                token_attrs.insert(
+                    "llama_stage.message_kind".to_string(),
+                    json!("TryRestorePrefillDecode"),
+                );
+                token_attrs.insert(
+                    "llama_stage.elapsed_ms".to_string(),
+                    json!(fused.elapsed_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.stage0_compute_ms".to_string(),
+                    json!(fused.execution.stage0_compute_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_wait_ms".to_string(),
+                    json!(fused.execution.runtime_lock_wait_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.runtime_lock_hold_ms".to_string(),
+                    json!(fused.execution.runtime_lock_hold_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.output_activation_bytes".to_string(),
+                    json!(fused.execution.output_activation_bytes),
+                );
+                token_attrs.insert(
+                    "llama_stage.forward_activation_bytes".to_string(),
+                    json!(fused.execution.forward_activation_bytes),
+                );
+                token_attrs.insert(
+                    "llama_stage.activation_encode_ms".to_string(),
+                    json!(fused.execution.activation_encode_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.forward_write_ms".to_string(),
+                    json!(fused.execution.forward_write_ms),
+                );
+                token_attrs.insert(
+                    "llama_stage.downstream_wait_ms".to_string(),
+                    json!(fused.execution.downstream_wait_ms),
+                );
+                token_attrs.insert("llama_stage.predicted_token".to_string(), json!(current));
+                self.telemetry
+                    .emit_debug("stage.openai_decode_token", token_attrs);
+                fused_reached_stop = on_token(current)? == TokenControl::Stop;
+            }
             let max_speculative_window = request.speculative_window.max(1);
             let mut adaptive_window = if request.adaptive_speculative_window {
                 max_speculative_window.min(4)
@@ -3347,7 +4468,10 @@ impl StageOpenAiBackend {
                 }
                 _ => None,
             };
-            for decode_step in 0..request.max_tokens {
+            for decode_step in decoded_tokens as u32..request.max_tokens {
+                if fused_reached_stop {
+                    break;
+                }
                 if request
                     .cancellation
                     .is_some_and(openai_frontend::CancellationToken::is_cancelled)
@@ -3924,7 +5048,8 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result?;
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn execute_embedded_stage_message(
@@ -4757,6 +5882,13 @@ struct EmbeddedStageExecution {
     elapsed_ms: f64,
 }
 
+struct EmbeddedFusedFirstDecode {
+    predicted: i32,
+    reply_stats: StageReplyStats,
+    execution: EmbeddedExecutionStats,
+    elapsed_ms: f64,
+}
+
 struct EmbeddedSessionControl {
     elapsed_ms: f64,
     local_ms: f64,
@@ -4934,11 +6066,19 @@ where
         Ok(())
     }
 
-    fn finish(mut self, prompt_token_count: usize) -> OpenAiResult<GeneratedText> {
+    fn finish(
+        mut self,
+        prompt_token_count: usize,
+        cache_stats: GenerationCacheStats,
+    ) -> OpenAiResult<GeneratedText> {
         self.emit_safe_delta(true)?;
         Ok(GeneratedText {
             prompt_tokens: saturating_u32(prompt_token_count),
             completion_tokens: saturating_u32(self.completion_tokens),
+            cached_prompt_tokens: cache_stats.cached_prompt_tokens,
+            matched_prefix_tokens: cache_stats.matched_prefix_tokens,
+            suffix_prefill_tokens: cache_stats.suffix_prefill_tokens,
+            cache_hit_kind: cache_stats.hit_kind,
             text: self.text,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
@@ -4951,6 +6091,10 @@ where
 struct GeneratedText {
     prompt_tokens: u32,
     completion_tokens: u32,
+    cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    cache_hit_kind: Option<&'static str>,
     text: String,
     finish_reason: FinishReason,
     detokenize_ms: f64,
@@ -4961,6 +6105,7 @@ struct GeneratedText {
 impl GeneratedText {
     fn usage(&self) -> Usage {
         Usage::new(self.prompt_tokens, self.completion_tokens)
+            .with_cached_tokens(self.cached_prompt_tokens)
     }
 }
 
@@ -5409,6 +6554,84 @@ fn embedded_prefill_message(
         activation: Vec::new(),
         raw_bytes: Vec::new(),
     })
+}
+
+fn embedded_prefix_cache_message(
+    kind: WireMessageKind,
+    wire_dtype: WireActivationDType,
+    tokens: &[i32],
+    request_id: u64,
+    session_id: u64,
+) -> OpenAiResult<StageWireMessage> {
+    let mut state = StageStateHeader::new(kind, wire_dtype);
+    state.prompt_token_count = i32::try_from(tokens.len())
+        .map_err(|_| OpenAiError::backend("prefix token count exceeds i32"))?;
+    state.current_token = tokens.last().copied().unwrap_or(LLAMA_TOKEN_NULL);
+    state.source_stage_index = -1;
+    Ok(StageWireMessage {
+        kind,
+        pos_start: 0,
+        token_count: i32::try_from(tokens.len())
+            .map_err(|_| OpenAiError::backend("prefix token count exceeds i32"))?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
+struct RestorePrefillDecodeMessageArgs<'a> {
+    request_id: u64,
+    session_id: u64,
+    prompt_token_count: usize,
+    pos_start: usize,
+    decode_step: usize,
+    prefix_tokens: &'a [i32],
+    current: i32,
+    sampling: Option<WireSamplingConfig>,
+}
+
+fn embedded_restore_prefill_decode_message(
+    wire_dtype: WireActivationDType,
+    args: RestorePrefillDecodeMessageArgs<'_>,
+) -> OpenAiResult<StageWireMessage> {
+    let mut state = StageStateHeader::new(WireMessageKind::TryRestorePrefillDecode, wire_dtype);
+    state.seq_id = 0;
+    state.prompt_token_count = i32::try_from(args.prompt_token_count)
+        .map_err(|_| OpenAiError::backend("prompt token count exceeds i32"))?;
+    state.decode_step = i32::try_from(args.decode_step)
+        .map_err(|_| OpenAiError::backend("decode step exceeds i32"))?;
+    state.current_token = args.current;
+    state.source_stage_index = -1;
+    let mut tokens = Vec::with_capacity(args.prefix_tokens.len().saturating_add(1));
+    tokens.extend_from_slice(args.prefix_tokens);
+    tokens.push(args.current);
+    Ok(StageWireMessage {
+        kind: WireMessageKind::TryRestorePrefillDecode,
+        pos_start: i32::try_from(args.pos_start)
+            .map_err(|_| OpenAiError::backend("decode position exceeds i32"))?,
+        token_count: 1,
+        state,
+        request_id: args.request_id,
+        session_id: args.session_id,
+        sampling: args.sampling,
+        chat_sampling_metadata: None,
+        tokens,
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    })
+}
+
+fn openai_stage_mask(stage_index: u32) -> i64 {
+    if stage_index < 63 {
+        1_i64 << stage_index
+    } else {
+        0
+    }
 }
 
 struct MultimodalFinalPrefillArgs {

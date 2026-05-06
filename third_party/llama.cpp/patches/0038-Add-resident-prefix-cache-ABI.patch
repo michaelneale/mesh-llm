@@ -1,0 +1,214 @@
+From 2b57a6e3028cc0da193aa3cdbf3c684a742d42f1 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 4 May 2026 21:58:07 +1000
+Subject: [PATCH 38/45] Add resident prefix cache ABI
+
+---
+ include/skippy.h |  20 ++++++-
+ src/skippy.cpp   | 152 +++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 171 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 3ffdb879..d8dba876 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 18
++#define SKIPPY_ABI_VERSION_PATCH 19
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -359,6 +359,24 @@ LLAMA_API enum skippy_status skippy_trim_session(
+         uint64_t token_count,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_session_save_prefix(
++        struct skippy_session * session,
++        int32_t cache_seq_id,
++        uint64_t token_count,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_session_restore_prefix(
++        struct skippy_session * session,
++        int32_t cache_seq_id,
++        const llama_token * token_ids,
++        size_t token_count,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_session_drop_sequence(
++        struct skippy_session * session,
++        int32_t seq_id,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_tokenize(
+         struct skippy_model * model,
+         const char * text,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index ae18f5fc..3002b720 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2292,6 +2292,158 @@ enum skippy_status skippy_trim_session(
+     return skippy_success(out_error);
+ }
+ 
++static bool skippy_is_reserved_sequence_id(
++        const skippy_session * session,
++        int32_t seq_id) {
++    if (session == nullptr || session->stage_model == nullptr || seq_id < 0) {
++        return true;
++    }
++    const int32_t reserved = static_cast<int32_t>(session->stage_model->lane_count) * 2;
++    return seq_id < reserved;
++}
++
++static enum skippy_status skippy_get_resident_prefix_memory(
++        skippy_session * session,
++        llama_memory_t * out_memory,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || out_memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_memory_t memory = session->ctx->get_memory();
++    if (memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "runtime memory is unavailable");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    skippy_error * recurrent_error = nullptr;
++    llama_memory_recurrent * recurrent = skippy_get_recurrent_memory(session, &recurrent_error);
++    if (recurrent_error != nullptr) {
++        if (out_error != nullptr) {
++            *out_error = recurrent_error;
++        } else {
++            skippy_error_free(recurrent_error);
++        }
++        return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    if (recurrent != nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "resident prefix cache is not enabled for recurrent memory");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    *out_memory = memory;
++    return SKIPPY_STATUS_OK;
++}
++
++enum skippy_status skippy_session_save_prefix(
++        struct skippy_session * session,
++        int32_t cache_seq_id,
++        uint64_t token_count,
++        struct skippy_error ** out_error) {
++    if (token_count > static_cast<uint64_t>(std::numeric_limits<llama_pos>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds llama position range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (session == nullptr || token_count > static_cast<uint64_t>(session->n_past)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cannot save prefix beyond current session position");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_reserved_sequence_id(session, cache_seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cache sequence id overlaps execution lanes");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_memory_t memory = nullptr;
++    enum skippy_status status = skippy_get_resident_prefix_memory(session, &memory, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    session->ctx->synchronize();
++    llama_memory_seq_rm(memory, cache_seq_id, -1, -1);
++    if (token_count > 0) {
++        llama_memory_seq_cp(memory, session->seq_id, cache_seq_id, 0, static_cast<llama_pos>(token_count));
++    }
++    session->ctx->synchronize();
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_restore_prefix(
++        struct skippy_session * session,
++        int32_t cache_seq_id,
++        const llama_token * token_ids,
++        size_t token_count,
++        struct skippy_error ** out_error) {
++    if (token_count > static_cast<size_t>(std::numeric_limits<llama_pos>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds llama position range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > 0 && token_ids == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_ids are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_reserved_sequence_id(session, cache_seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cache sequence id overlaps execution lanes");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_memory_t memory = nullptr;
++    enum skippy_status status = skippy_get_resident_prefix_memory(session, &memory, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    session->ctx->synchronize();
++    if (token_count > 0) {
++        const llama_pos max_pos = llama_memory_seq_pos_max(memory, cache_seq_id);
++        if (max_pos < static_cast<llama_pos>(token_count - 1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "resident prefix sequence is incomplete");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
++        }
++    }
++    if (!llama_memory_seq_rm(memory, session->seq_id, -1, -1)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to clear execution lane");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    if (token_count > 0) {
++        llama_memory_seq_cp(memory, cache_seq_id, session->seq_id, 0, static_cast<llama_pos>(token_count));
++    }
++    session->n_past = static_cast<int32_t>(token_count);
++    if (token_count == 0) {
++        session->token_history.clear();
++    } else {
++        session->token_history.assign(token_ids, token_ids + token_count);
++    }
++    session->signal_history.clear();
++    session->checkpoint_valid = false;
++    session->checkpoint_n_past = 0;
++    session->checkpoint_token_history_size = 0;
++    session->checkpoint_signal_history_size = 0;
++    session->ctx->synchronize();
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_session_drop_sequence(
++        struct skippy_session * session,
++        int32_t seq_id,
++        struct skippy_error ** out_error) {
++    if (skippy_is_reserved_sequence_id(session, seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "sequence id overlaps execution lanes");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_memory_t memory = nullptr;
++    enum skippy_status status = skippy_get_resident_prefix_memory(session, &memory, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    session->ctx->synchronize();
++    llama_memory_seq_rm(memory, seq_id, -1, -1);
++    session->ctx->synchronize();
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_checkpoint_session(
+         struct skippy_session * session,
+         uint64_t * out_token_count,
+-- 
+2.50.1 (Apple Git-155)
+
