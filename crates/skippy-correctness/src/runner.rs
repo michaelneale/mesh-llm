@@ -1004,6 +1004,10 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
     ]);
     configure_child_logs(&mut stage2_command, args.child_logs);
     let _stage2 = ChildGuard::spawn(stage2_command)?;
+    drop(
+        connect_ready(args.stage2_bind_addr, args.startup_timeout_secs)
+            .context("stage 2 binary server did not become ready")?,
+    );
 
     let mut stage1_command = Command::new(&args.stage_server_bin);
     stage1_command.args([

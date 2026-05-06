@@ -27,8 +27,8 @@ SMOKE_COMMAND_TIMEOUT_SECS="${SMOKE_COMMAND_TIMEOUT_SECS:-900}"
 SMOKE_FLASH_ATTN="${SMOKE_FLASH_ATTN:-disabled}"
 SMOKE_N_BATCH="${SMOKE_N_BATCH:-1}"
 SMOKE_N_UBATCH="${SMOKE_N_UBATCH:-1}"
-DENSE_SMOKE_LAYER_END="${DENSE_SMOKE_LAYER_END:-3}"
-RECURRENT_SMOKE_LAYER_END="${RECURRENT_SMOKE_LAYER_END:-1}"
+DENSE_SMOKE_SPLIT_1="${DENSE_SMOKE_SPLIT_1:-1}"
+DENSE_SMOKE_SPLIT_2="${DENSE_SMOKE_SPLIT_2:-2}"
 STAGE_SERVER_BIN="${STAGE_SERVER_BIN:-target/debug/skippy-server}"
 
 SERVER_PID=""
@@ -172,25 +172,6 @@ assert_json() {
   fi
 }
 
-bounded_layer_end() {
-  local requested="$1"
-  local available="$2"
-  local minimum="$3"
-  if [[ "$requested" -lt "$minimum" ]]; then
-    echo "requested smoke layer end ${requested} is below required minimum ${minimum}" >&2
-    exit 1
-  fi
-  if [[ "$available" -lt "$minimum" ]]; then
-    echo "model layer end ${available} is below required minimum ${minimum}" >&2
-    exit 1
-  fi
-  if [[ "$requested" -lt "$available" ]]; then
-    printf '%s\n' "$requested"
-  else
-    printf '%s\n' "$available"
-  fi
-}
-
 write_stage_config() {
   local config_path="$1"
   local model_id="$2"
@@ -313,31 +294,24 @@ if [[ -z "$RECURRENT_LAYER_END" || "$RECURRENT_LAYER_END" == "null" || "$RECURRE
   echo "failed to infer recurrent layer count from $RECURRENT_MODEL_PATH" >&2
   exit 1
 fi
-DENSE_ACTIVE_LAYER_END="$(bounded_layer_end "$DENSE_SMOKE_LAYER_END" "$DENSE_LAYER_END" 3)"
-RECURRENT_ACTIVE_LAYER_END="$(bounded_layer_end "$RECURRENT_SMOKE_LAYER_END" "$RECURRENT_LAYER_END" 1)"
-echo "smoke: dense runtime slice 0..${DENSE_ACTIVE_LAYER_END} of ${DENSE_LAYER_END} layers"
-echo "smoke: recurrent runtime slice 0..${RECURRENT_ACTIVE_LAYER_END} of ${RECURRENT_LAYER_END} layers"
+echo "smoke: dense model has ${DENSE_LAYER_END} layers"
+echo "smoke: recurrent model has ${RECURRENT_LAYER_END} layers"
 
-DENSE_SPLIT_1="$((DENSE_ACTIVE_LAYER_END / 3))"
-DENSE_SPLIT_2="$(((DENSE_ACTIVE_LAYER_END * 2) / 3))"
-if [[ "$DENSE_SPLIT_1" -lt 1 ]]; then
-  DENSE_SPLIT_1=1
-fi
-if [[ "$DENSE_SPLIT_2" -le "$DENSE_SPLIT_1" ]]; then
-  DENSE_SPLIT_2=$((DENSE_SPLIT_1 + 1))
-fi
-if [[ "$DENSE_SPLIT_2" -ge "$DENSE_ACTIVE_LAYER_END" ]]; then
-  DENSE_SPLIT_2=$((DENSE_ACTIVE_LAYER_END - 1))
+DENSE_SPLIT_1="$DENSE_SMOKE_SPLIT_1"
+DENSE_SPLIT_2="$DENSE_SMOKE_SPLIT_2"
+if [[ "$DENSE_SPLIT_1" -lt 1 || "$DENSE_SPLIT_1" -ge "$DENSE_SPLIT_2" || "$DENSE_SPLIT_2" -ge "$DENSE_LAYER_END" ]]; then
+  echo "dense smoke splits ${DENSE_SPLIT_1},${DENSE_SPLIT_2} must partition 0..${DENSE_LAYER_END}" >&2
+  exit 1
 fi
 
 CHAIN_PORT_1="$(pick_port)"
 CHAIN_PORT_2="$(pick_port)"
-echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_ACTIVE_LAYER_END} active layers"
+echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_LAYER_END} layers"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   run_with_timeout "dense chain smoke" target/debug/skippy-correctness chain \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
-    --layer-end "$DENSE_ACTIVE_LAYER_END" \
+    --layer-end "$DENSE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
     --n-batch "$SMOKE_N_BATCH" \
     --n-ubatch "$SMOKE_N_UBATCH" \
@@ -347,6 +321,7 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
     --stage1-bind-addr "127.0.0.1:${CHAIN_PORT_1}" \
     --stage2-bind-addr "127.0.0.1:${CHAIN_PORT_2}" \
     --stage-server-bin "$STAGE_SERVER_BIN" \
+    --startup-timeout-secs 60 \
     --report-out "$REPORT_DIR/dense-chain.json"
 assert_json "$REPORT_DIR/dense-chain.json" \
   '.matches == true and (.stages | length) == 3 and any(.stages[]; .forwarded_over_binary == true) and any(.stages[]; .returned_predicted_token == true)'
@@ -356,14 +331,14 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   run_with_timeout "dense ResidentKv smoke" target/debug/skippy-correctness state-handoff \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
-    --layer-end "$DENSE_ACTIVE_LAYER_END" \
+    --layer-end "$DENSE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
     --n-batch "$SMOKE_N_BATCH" \
     --n-ubatch "$SMOKE_N_UBATCH" \
     --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Dense resident KV cache smoke." \
     --state-layer-start 0 \
-    --state-layer-end "$DENSE_ACTIVE_LAYER_END" \
+    --state-layer-end "$DENSE_LAYER_END" \
     --state-stage-index 0 \
     --state-payload-kind resident-kv \
     --prefix-token-count "$STATE_PREFIX_TOKENS" \
@@ -379,14 +354,14 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
   run_with_timeout "recurrent KvRecurrent smoke" target/debug/skippy-correctness state-handoff \
     --model "$RECURRENT_MODEL_PATH" \
     --model-id "$RECURRENT_MODEL_ID" \
-    --layer-end "$RECURRENT_ACTIVE_LAYER_END" \
+    --layer-end "$RECURRENT_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
     --n-batch "$SMOKE_N_BATCH" \
     --n-ubatch "$SMOKE_N_UBATCH" \
     --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Recurrent KV cache smoke." \
     --state-layer-start 0 \
-    --state-layer-end "$RECURRENT_ACTIVE_LAYER_END" \
+    --state-layer-end "$RECURRENT_LAYER_END" \
     --state-stage-index 0 \
     --state-payload-kind kv-recurrent \
     --prefix-token-count "$STATE_PREFIX_TOKENS" \
@@ -401,7 +376,7 @@ PROMPT_LOG="$WORK_DIR/prompt-stage.log"
 PROMPT_IN="$WORK_DIR/prompt-input.txt"
 PROMPT_OUT="$WORK_DIR/prompt-output.log"
 PROMPT_BIND="127.0.0.1:${PROMPT_PORT}"
-write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_ACTIVE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
+write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
 make_long_prompt_file "$PROMPT_IN"
 
 OPENAI_PORT="$(pick_port)"
@@ -409,7 +384,7 @@ OPENAI_STAGE_PORT="$(pick_port)"
 OPENAI_CONFIG="$WORK_DIR/openai-stage.json"
 OPENAI_LOG="$WORK_DIR/openai-server.log"
 OPENAI_BASE_URL="http://127.0.0.1:${OPENAI_PORT}/v1"
-write_stage_config "$OPENAI_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_ACTIVE_LAYER_END" "$CTX_SIZE" "127.0.0.1:${OPENAI_STAGE_PORT}" "resident-kv"
+write_stage_config "$OPENAI_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$CTX_SIZE" "127.0.0.1:${OPENAI_STAGE_PORT}" "resident-kv"
 
 echo "smoke: OpenAI /v1/chat/completions streaming/tools/logprobs/structured-output"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
@@ -599,7 +574,7 @@ LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
     --tokenizer-model-path "$DENSE_MODEL_PATH" \
     --tokenizer-load-mode runtime-slice \
     --tokenizer-layer-start 0 \
-    --tokenizer-layer-end "$DENSE_ACTIVE_LAYER_END" \
+    --tokenizer-layer-end "$DENSE_LAYER_END" \
     --first-stage-addr "$PROMPT_BIND" \
     --ctx-size "$PROMPT_CTX_SIZE" \
     --activation-width 2048 \
