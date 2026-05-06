@@ -358,6 +358,31 @@ fn gemma4_e4b_accepts_validated_boundary_with_sideband() {
 }
 
 #[test]
+fn rwkv7_boundary_accounts_for_v_first_sideband() {
+    let request = TopologyPlanRequest {
+        topology_id: "rwkv7-sideband".to_string(),
+        model_id: "rwkv7-191m".to_string(),
+        layers: falcon_h1_layers(12, 4),
+        nodes: nodes(3),
+        family: Some(rwkv7_capability(12, 768)),
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_even_contiguous(&request).expect("plan");
+
+    assert_eq!(plan.boundaries[0].layer_boundary, 4);
+    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
+    assert_eq!(plan.boundaries[0].raw_activation_bytes_per_token, 6144);
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 3072);
+    assert!(plan.boundaries[0]
+        .reason_codes
+        .contains(&PlanReasonCode::ActivationSidebandRequired));
+    assert!(plan.boundaries[0]
+        .reason_codes
+        .contains(&PlanReasonCode::RecurrentOwnerSticky));
+}
+
+#[test]
 fn gemma4_e4b_rejects_known_bad_shared_kv_boundaries() {
     let request = TopologyPlanRequest {
         topology_id: "gemma-invalid".to_string(),
@@ -673,10 +698,18 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
         }
 
         if !family.sidebands.is_empty() {
+            let sideband_reason_codes: Vec<_> = family
+                .sidebands
+                .iter()
+                .map(|sideband| match sideband.kind {
+                    SidebandKind::TokenIds => PlanReasonCode::TokenSidebandRequired,
+                    SidebandKind::Rwkv7VFirst => PlanReasonCode::ActivationSidebandRequired,
+                })
+                .collect();
             assert!(
-                plan.boundaries[0]
-                    .reason_codes
-                    .contains(&PlanReasonCode::TokenSidebandRequired),
+                sideband_reason_codes
+                    .iter()
+                    .any(|code| plan.boundaries[0].reason_codes.contains(code)),
                 "missing sideband signal for {identity}"
             );
         }

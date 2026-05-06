@@ -1,9 +1,10 @@
 use std::io::{self, Read, Write};
 
 use super::{
-    activation::activation_wire_bytes, invalid_data, invalid_input, StageLogitBias, StageReply,
-    StageReplyStats, StageSamplingConfig, StageStateHeader, StageWireMessage, WireActivationDType,
-    WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS, READY_MAGIC, STAGE_STATE_VERSION,
+    activation::activation_wire_bytes_with_state_flags, invalid_data, invalid_input,
+    StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, MAX_STAGE_LOGIT_BIAS,
+    READY_MAGIC, STAGE_STATE_VERSION,
 };
 
 pub fn send_ready(mut writer: impl Write) -> io::Result<()> {
@@ -216,7 +217,7 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
         if state.source_stage_index < 0 || kind.is_activationless_prefix_cache_control() {
             0
         } else {
-            activation_wire_bytes(dtype, token_count, n_embd)?
+            activation_wire_bytes_with_state_flags(dtype, token_count, n_embd, state.flags)?
         };
     let mut activation = vec![0; activation_bytes];
     if activation_bytes > 0 {

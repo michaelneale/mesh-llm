@@ -2,7 +2,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use skippy_protocol::{
-    binary::{StageWireMessage, WireActivationDType},
+    binary::{
+        activation_state_flags_from_frame_flags, encode_f32_activation_payload_with_state_flags,
+        StageWireMessage, WireActivationDType,
+    },
     StageConfig,
 };
 use skippy_runtime::ActivationFrame;
@@ -35,12 +38,15 @@ pub(crate) fn forwarded_stage_message_timed(
     let mut state = incoming.state;
     state.source_stage_index = config.stage_index as i32;
     state.reserved = wire_dtype as i32;
+    state.flags &= !skippy_protocol::binary::state_flags::RWKV7_V_FIRST_SIDEBAND;
+    state.flags |= activation_state_flags_from_frame_flags(output.desc.flags);
     let encode_started = Instant::now();
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    let activation = encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         incoming.token_count,
         activation_width,
         &output.payload,
+        state.flags,
     )
     .context("encode output activation payload")?;
     Ok(ForwardedStageMessage {

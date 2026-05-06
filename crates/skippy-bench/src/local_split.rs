@@ -211,6 +211,8 @@ fn run_full_model_decode(
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers,
         selected_backend_device: None,
         cache_type_k: skippy_runtime::GGML_TYPE_F16,
@@ -276,6 +278,8 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         cache_type_k: skippy_runtime::GGML_TYPE_F16,
@@ -358,11 +362,14 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -425,6 +432,8 @@ fn run_binary_chain(args: LocalSplitChainBinaryArgs) -> Result<BinaryChainResult
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         cache_type_k: skippy_runtime::GGML_TYPE_F16,
@@ -550,11 +559,14 @@ fn run_binary_chain(args: LocalSplitChainBinaryArgs) -> Result<BinaryChainResult
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -675,6 +687,8 @@ pub fn local_split_inprocess(args: LocalSplitInprocessArgs) -> Result<()> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         cache_type_k: skippy_runtime::GGML_TYPE_F16,
@@ -694,6 +708,8 @@ pub fn local_split_inprocess(args: LocalSplitInprocessArgs) -> Result<()> {
         lane_count: 1,
         n_batch: None,
         n_ubatch: None,
+        n_threads: None,
+        n_threads_batch: None,
         n_gpu_layers: args.n_gpu_layers,
         selected_backend_device: None,
         cache_type_k: skippy_runtime::GGML_TYPE_F16,

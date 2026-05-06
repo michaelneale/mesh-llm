@@ -201,12 +201,10 @@ implementation.
 
 ## Next Batch
 
-1. Add RWKV7 activation-frame sideband support for the layer-0 `v_first`
-   value, then rerun the sampled RWKV7 text lane.
-2. Finish the missing causal sweep for `llama4` where applicable.
-3. Keep `bert` and `t5` in the non-causal aux lane instead of promoting them
+1. Finish the missing causal sweep for `llama4` where applicable.
+2. Keep `bert` and `t5` in the non-causal aux lane instead of promoting them
    as causal stage-split serving.
-4. Promote multimodal only after projector/media sideband evidence, even when
+3. Promote multimodal only after projector/media sideband evidence, even when
    text-lane split support passes.
 
 ## Current Local Evidence
@@ -235,7 +233,7 @@ themselves until the reviewed topology records are updated.
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba2` | see `target/family-certify/llama-parity-mamba2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `rwkv6` | see `target/family-certify/llama-parity-rwkv6-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | rejected too large | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `rwkv7` | see `target/family-certify/llama-parity-external-available` | blocked before split execution | untested | accepted | needs activation-frame sideband for layer-0 `v_first` |
+| `rwkv7` | `Mungert/rwkv7-191M-world-GGUF` plus `target/family-certify/rwkv7-sideband-*.json` | `single-step`, `chain`, and dtype matrix passed | validated on sampled artifact | accepted | activation-frame sideband carries layer-0 `v_first`; keep recurrent ownership sticky |
 
 Raw run directories:
 
@@ -262,6 +260,9 @@ Raw run directories:
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
 - `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`
 - `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
+- `target/family-certify/rwkv7-sideband-single-step.json`
+- `target/family-certify/rwkv7-sideband-chain.json`
+- `target/family-certify/rwkv7-sideband-dtype-matrix.json`
 
 ## Cache Correctness Evidence
 
@@ -322,9 +323,10 @@ and repeated hits stayed stable. Recurrent payloads were non-zero for the
   text, `qwen2moe`, `qwen3moe`, `rwkv6`, `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
-- `rwkv7` needs a wider activation-frame contract. Later RWKV7 layers depend
-  on the layer-0 `v_first` tensor, so a downstream stage cannot be correct with
-  boundary hidden state alone.
+- `rwkv7` uses a wider activation-frame contract. Later RWKV7 layers depend on
+  the layer-0 `v_first` tensor, so non-first stages receive hidden state plus a
+  `v_first` activation sideband. The sampled 12-layer artifact now passes
+  two-stage, three-stage, and f32/f16/q8 wire checks.
 - The old local `rwkv6` sample was not a GGUF artifact. Its files carry the
   legacy `fmgg` magic and fail GGUF metadata inspection, so the replacement
   candidate is `latestissue/rwkv-6-finch-1b6-gguf`. The replacement passed the

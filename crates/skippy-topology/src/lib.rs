@@ -130,6 +130,7 @@ pub enum PlanReasonCode {
     RecurrentStateTransferRejected,
     SharedKvRegionCut,
     TokenSidebandRequired,
+    ActivationSidebandRequired,
     DefaultWireDtypeF16,
     Q8WireValidated,
     Q8WireRejected,
@@ -224,6 +225,7 @@ pub struct SidebandRequirement {
 #[serde(rename_all = "snake_case")]
 pub enum SidebandKind {
     TokenIds,
+    Rwkv7VFirst,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -584,11 +586,13 @@ fn boundaries_for(
                         &mut reason_codes,
                         &mut messages,
                     );
-                    let raw = u64::from(family.activation_width) * 4;
+                    let payload_multiplier =
+                        activation_payload_multiplier_for_boundary(family, layer_boundary);
+                    let raw = u64::from(family.activation_width) * 4 * payload_multiplier;
                     let wire = wire_payload_bytes_per_token(
                         family.activation_width,
                         family.default_wire_dtype,
-                    );
+                    ) * payload_multiplier;
                     (family.default_wire_dtype, raw, wire)
                 } else {
                     (WireDType::F16, 0, 0)
@@ -643,9 +647,25 @@ fn apply_family_boundary_rules(
         if layer_boundary <= sideband.first_required_layer {
             reason_codes.push(match sideband.kind {
                 SidebandKind::TokenIds => PlanReasonCode::TokenSidebandRequired,
+                SidebandKind::Rwkv7VFirst => PlanReasonCode::ActivationSidebandRequired,
             });
             messages.push(sideband.reason.clone());
         }
+    }
+}
+
+fn activation_payload_multiplier_for_boundary(
+    family: &FamilyCapabilityRecord,
+    layer_boundary: u32,
+) -> u64 {
+    let has_activation_sideband = family.sidebands.iter().any(|sideband| {
+        sideband.kind == SidebandKind::Rwkv7VFirst
+            && layer_boundary <= sideband.first_required_layer
+    });
+    if has_activation_sideband {
+        2
+    } else {
+        1
     }
 }
 
@@ -964,6 +984,27 @@ pub fn rwkv6_capability(layer_count: u32, activation_width: u32) -> FamilyCapabi
     }
 }
 
+pub fn rwkv7_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    FamilyCapabilityRecord {
+        family_id: "rwkv7".to_string(),
+        layer_count,
+        activation_width,
+        default_wire_dtype: WireDType::F16,
+        q8_wire_validation: WireValidation::Untested,
+        exact_state_mobility: ExactStateMobility::RejectedTooLarge,
+        recurrent_ranges: vec![LayerRange {
+            start: 0,
+            end: layer_count,
+        }],
+        split_constraints: Vec::new(),
+        sidebands: vec![SidebandRequirement {
+            kind: SidebandKind::Rwkv7VFirst,
+            first_required_layer: layer_count,
+            reason: "RWKV7 downstream slices require the layer-0 v_first activation sideband in addition to the boundary hidden state".to_string(),
+        }],
+    }
+}
+
 pub fn gemma4_e4b_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
     FamilyCapabilityRecord {
         family_id: "gemma4_e4b".to_string(),
@@ -1072,6 +1113,9 @@ pub fn infer_family_capability(
     }
     if compact.contains("rwkv6") {
         return Some(rwkv6_capability(layer_count, activation_width));
+    }
+    if compact.contains("rwkv7") {
+        return Some(rwkv7_capability(layer_count, activation_width));
     }
     if compact.contains("qwen2moe") {
         return Some(qwen2moe_capability(layer_count, activation_width));

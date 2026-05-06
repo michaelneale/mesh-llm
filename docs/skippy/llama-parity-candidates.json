@@ -292,7 +292,7 @@
       "repo": "Mungert/rwkv7-191M-world-GGUF",
       "include": "*q4_k.gguf",
       "recurrent": "all",
-      "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF; stage splits need activation-frame sideband for layer-0 v_first before text-lane promotion"
+      "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF; text lane passed after adding the layer-0 v_first activation sideband; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
     },
     {
       "llama_model": "falcon-h1",

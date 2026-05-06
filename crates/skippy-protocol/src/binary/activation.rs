@@ -1,16 +1,29 @@
 use std::io;
 
-use super::{invalid_data, WireActivationDType};
+use super::{invalid_data, state_flags, WireActivationDType};
 
 pub fn activation_wire_bytes(
     dtype: WireActivationDType,
     token_count: i32,
     n_embd: i32,
 ) -> io::Result<usize> {
+    activation_wire_bytes_with_state_flags(dtype, token_count, n_embd, 0)
+}
+
+pub fn activation_wire_bytes_with_state_flags(
+    dtype: WireActivationDType,
+    token_count: i32,
+    n_embd: i32,
+    state_flag_bits: i32,
+) -> io::Result<usize> {
     if token_count < 0 || n_embd < 0 {
         return Err(invalid_data("negative activation dimensions"));
     }
-    let token_count = token_count as usize;
+    let token_count = (token_count as usize)
+        .checked_mul(activation_payload_multiplier_from_state_flags(
+            state_flag_bits,
+        ))
+        .ok_or_else(|| invalid_data("activation token count overflow"))?;
     let n_embd = n_embd as usize;
     let elements = token_count
         .checked_mul(n_embd)
@@ -35,14 +48,42 @@ pub fn encode_f32_activation_payload(
     n_embd: i32,
     f32_payload: &[u8],
 ) -> io::Result<Vec<u8>> {
-    let expected_f32_bytes = activation_wire_bytes(WireActivationDType::F32, token_count, n_embd)?;
+    encode_f32_activation_payload_with_state_flags(dtype, token_count, n_embd, f32_payload, 0)
+}
+
+pub fn encode_f32_activation_payload_with_state_flags(
+    dtype: WireActivationDType,
+    token_count: i32,
+    n_embd: i32,
+    f32_payload: &[u8],
+    state_flag_bits: i32,
+) -> io::Result<Vec<u8>> {
+    let expected_f32_bytes = activation_wire_bytes_with_state_flags(
+        WireActivationDType::F32,
+        token_count,
+        n_embd,
+        state_flag_bits,
+    )?;
     if f32_payload.len() != expected_f32_bytes {
         return Err(invalid_data("F32 activation payload size mismatch"));
     }
     match dtype {
         WireActivationDType::F32 => Ok(f32_payload.to_vec()),
         WireActivationDType::F16 => encode_f32_to_f16_bytes(f32_payload),
-        WireActivationDType::Q8 => encode_f32_to_q8_bytes(f32_payload, token_count, n_embd),
+        WireActivationDType::Q8 => {
+            let token_count = token_count
+                .checked_mul(activation_payload_multiplier_from_state_flags(state_flag_bits) as i32)
+                .ok_or_else(|| invalid_data("Q8 activation token count overflow"))?;
+            encode_f32_to_q8_bytes(f32_payload, token_count, n_embd)
+        }
+    }
+}
+
+pub fn activation_payload_multiplier_from_state_flags(state_flag_bits: i32) -> usize {
+    if (state_flag_bits & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
+        2
+    } else {
+        1
     }
 }
 
@@ -70,15 +111,20 @@ fn encode_f32_to_f16_bytes(input: &[u8]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-pub(crate) fn decode_q8_to_f32_bytes(
+pub(crate) fn decode_q8_to_f32_bytes_with_state_flags(
     input: &[u8],
     token_count: i32,
     n_embd: i32,
+    state_flag_bits: i32,
 ) -> io::Result<Vec<u8>> {
     if token_count < 0 || n_embd < 0 {
         return Err(invalid_data("negative Q8 activation dimensions"));
     }
-    let token_count = token_count as usize;
+    let token_count = (token_count as usize)
+        .checked_mul(activation_payload_multiplier_from_state_flags(
+            state_flag_bits,
+        ))
+        .ok_or_else(|| invalid_data("Q8 activation token count overflow"))?;
     let n_embd = n_embd as usize;
     let scale_bytes = token_count
         .checked_mul(4)
@@ -105,6 +151,15 @@ pub(crate) fn decode_q8_to_f32_bytes(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn decode_q8_to_f32_bytes(
+    input: &[u8],
+    token_count: i32,
+    n_embd: i32,
+) -> io::Result<Vec<u8>> {
+    decode_q8_to_f32_bytes_with_state_flags(input, token_count, n_embd, 0)
 }
 
 fn encode_f32_to_q8_bytes(input: &[u8], token_count: i32, n_embd: i32) -> io::Result<Vec<u8>> {

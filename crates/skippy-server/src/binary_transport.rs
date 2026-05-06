@@ -25,10 +25,10 @@ use serde_json::{json, Value};
 use skippy_metrics::{attr, metric};
 use skippy_protocol::{
     binary::{
-        read_stage_message, recv_reply, send_ready, send_reply_ack, send_reply_ack_with_stats,
-        send_reply_predicted_tokens_with_stats, send_reply_predicted_with_stats, state_flags,
-        StageReplyStats, StageSamplingConfig, StageStateHeader, StageWireMessage,
-        WireActivationDType, WireMessageKind, WireReplyKind,
+        activation_frame_flags_from_state_flags, read_stage_message, recv_reply, send_ready,
+        send_reply_ack, send_reply_ack_with_stats, send_reply_predicted_tokens_with_stats,
+        send_reply_predicted_with_stats, state_flags, StageReplyStats, StageSamplingConfig,
+        StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
     },
     LoadMode, MessageBase, StageConfig, StageTopology, SCHEMA_VERSION,
 };
@@ -2826,7 +2826,7 @@ fn input_activation_frame(
             token_count: message.token_count.try_into().unwrap_or(0),
             sequence_count: if message.token_count > 0 { 1 } else { 0 },
             payload_bytes: payload.len() as u64,
-            flags: 0,
+            flags: activation_frame_flags_from_state_flags(message.state.flags),
         },
         payload,
     }))

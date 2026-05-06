@@ -41,7 +41,7 @@ are updated.
 Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
 GPT-NeoX, GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT,
 OLMo2, OLMoE, Phi3, Qwen2-MoE, Qwen3-MoE, Qwen2-VL text, Qwen3-VL text,
-RWKV6, StableLM, StarCoder2
+RWKV6, RWKV7, StableLM, StarCoder2
 ```
 
 ## Exceptions
@@ -56,7 +56,7 @@ RWKV6, StableLM, StarCoder2
 | Qwen2-MoE | Text lane passed; run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
 | Qwen3-MoE | Text lane passed; q8 activation wire validated. Run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
 | RWKV6 | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. Exact state mobility is rejected as too large. |
-| RWKV7 | Later layers depend on layer-0 `v_first`, so arbitrary stage splits need an activation-frame sideband beyond the boundary hidden state. |
+| RWKV7 | Text lane passed after adding the layer-0 `v_first` activation sideband. Payloads are hidden state plus `v_first`, so budget RWKV7 activation handoffs at 2x hidden width and keep recurrent ownership sticky until `KvRecurrent` cache smoke passes. |
 | Qwen3Next | Same policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. |
 | DeepSeek3 | Package evidence uses selected stage parts only. The local gate covered real-input `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late layers `30..31` and `60..61`; full llama-server baseline requires a full GGUF and is intentionally not part of this package-only gate. |
 | Gemma4 E4B | Use split `21`. Avoid `12`, `14`, `24`, and `28`. Downstream slices need token-id sideband. |
@@ -73,6 +73,7 @@ GLM-4.7 Flash
 Gemma2
 Falcon-H1
 Qwen3-MoE
+RWKV7 sampled artifact
 ```
 
 All other supported families should ship with `f16` activation wire until q8 is

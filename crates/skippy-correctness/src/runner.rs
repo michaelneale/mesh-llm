@@ -764,11 +764,14 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -1009,11 +1012,14 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -2367,7 +2373,18 @@ fn send_prefill_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
-    let activation = encode_handoff_activation(input, token_count, wire_dtype, activation_width)?;
+    state.flags |= input
+        .map(|frame| {
+            skippy_protocol::binary::activation_state_flags_from_frame_flags(frame.desc.flags)
+        })
+        .unwrap_or(0);
+    let activation = encode_handoff_activation(
+        input,
+        token_count,
+        wire_dtype,
+        activation_width,
+        state.flags,
+    )?;
     let message = StageWireMessage {
         kind: WireMessageKind::PrefillEmbd,
         pos_start: 0,
@@ -2471,7 +2488,13 @@ fn decode_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
-    let activation = encode_handoff_activation(input, 1, wire_dtype, activation_width)?;
+    state.flags |= input
+        .map(|frame| {
+            skippy_protocol::binary::activation_state_flags_from_frame_flags(frame.desc.flags)
+        })
+        .unwrap_or(0);
+    let activation =
+        encode_handoff_activation(input, 1, wire_dtype, activation_width, state.flags)?;
     let message = StageWireMessage {
         kind: WireMessageKind::DecodeEmbd,
         pos_start: i32::try_from(pos_start).context("decode position exceeds i32")?,
@@ -2498,15 +2521,17 @@ fn encode_handoff_activation(
     token_count: i32,
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     activation_width: i32,
+    state_flags: i32,
 ) -> Result<Vec<u8>> {
     let Some(input) = input else {
         return Ok(Vec::new());
     };
-    skippy_protocol::binary::encode_f32_activation_payload(
+    skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         token_count,
         activation_width,
         &input.payload,
+        state_flags,
     )
     .context("failed to encode state handoff input activation")
 }
