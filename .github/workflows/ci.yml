@@ -185,6 +185,7 @@ jobs:
         run: cargo test -p mesh-llm --lib
 
       - name: Skippy smoke tests
+        timeout-minutes: 45
         env:
           WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
         run: scripts/skippy-ci-smoke.sh

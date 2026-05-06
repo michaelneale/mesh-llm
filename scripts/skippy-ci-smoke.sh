@@ -24,6 +24,9 @@ STATE_PREFIX_TOKENS="${STATE_PREFIX_TOKENS:-128}"
 PROMPT_PREFILL_CHUNK_SIZE="${PROMPT_PREFILL_CHUNK_SIZE:-128}"
 PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-32}"
 STAGE_SERVER_BIN="${STAGE_SERVER_BIN:-target/debug/skippy-server}"
+SMOKE_STEP_TIMEOUT_SECONDS="${SMOKE_STEP_TIMEOUT_SECONDS:-900}"
+SMOKE_PROMPT_TIMEOUT_SECONDS="${SMOKE_PROMPT_TIMEOUT_SECONDS:-600}"
+SERVER_SHUTDOWN_GRACE_SECONDS="${SERVER_SHUTDOWN_GRACE_SECONDS:-5}"
 
 SERVER_PID=""
 
@@ -34,13 +37,58 @@ require_cmd() {
   fi
 }
 
-cleanup() {
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
-    kill "$SERVER_PID" >/dev/null 2>&1 || true
-    wait "$SERVER_PID" >/dev/null 2>&1 || true
+stop_process() {
+  local pid="$1"
+  local label="${2:-process}"
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" >/dev/null 2>&1; then
+    return 0
   fi
+
+  echo "stopping ${label} (pid ${pid})"
+  kill "$pid" >/dev/null 2>&1 || true
+  sleep "$SERVER_SHUTDOWN_GRACE_SECONDS"
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    echo "${label} did not exit after ${SERVER_SHUTDOWN_GRACE_SECONDS}s; force-killing"
+    kill -9 "$pid" >/dev/null 2>&1 || true
+  fi
+  wait "$pid" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  stop_process "$SERVER_PID" "skippy smoke server"
 }
 trap cleanup EXIT
+
+run_with_timeout() {
+  local seconds="$1"
+  local label="$2"
+  shift 2
+
+  python3 -c '
+import os
+import signal
+import subprocess
+import sys
+
+seconds = int(sys.argv[1])
+label = sys.argv[2]
+args = sys.argv[3:]
+
+proc = subprocess.Popen(args, start_new_session=True)
+try:
+    sys.exit(proc.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    print(f"timed out after {seconds}s: {label}", file=sys.stderr)
+    os.killpg(proc.pid, signal.SIGTERM)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        print(f"force-killing timed-out command: {label}", file=sys.stderr)
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    sys.exit(124)
+' "$seconds" "$label" "$@"
+}
 
 download_model() {
   local repo="$1"
@@ -237,7 +285,8 @@ CHAIN_PORT_1="$(pick_port)"
 CHAIN_PORT_2="$(pick_port)"
 echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_LAYER_END} layers"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness chain \
+  run_with_timeout "$SMOKE_STEP_TIMEOUT_SECONDS" "dense 3-stage split" \
+    target/debug/skippy-correctness chain \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
     --layer-end "$DENSE_LAYER_END" \
@@ -253,7 +302,8 @@ assert_json "$REPORT_DIR/dense-chain.json" \
 
 echo "smoke: dense ResidentKv cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "$SMOKE_STEP_TIMEOUT_SECONDS" "dense ResidentKv cache hit correctness" \
+    target/debug/skippy-correctness state-handoff \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
     --layer-end "$DENSE_LAYER_END" \
@@ -273,7 +323,8 @@ assert_json "$REPORT_DIR/dense-resident-kv.json" \
 
 echo "smoke: recurrent KvRecurrent cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "$SMOKE_STEP_TIMEOUT_SECONDS" "recurrent KvRecurrent cache hit correctness" \
+    target/debug/skippy-correctness state-handoff \
     --model "$RECURRENT_MODEL_PATH" \
     --model-id "$RECURRENT_MODEL_ID" \
     --layer-end "$RECURRENT_LAYER_END" \
@@ -488,7 +539,8 @@ fi
 
 set +e
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-prompt binary \
+  run_with_timeout "$SMOKE_PROMPT_TIMEOUT_SECONDS" "prompt exact-prefix hit and live-session reuse" \
+    target/debug/skippy-prompt binary \
     --model-path "$DENSE_MODEL_PATH" \
     --tokenizer-model-path "$DENSE_MODEL_PATH" \
     --tokenizer-load-mode runtime-slice \
