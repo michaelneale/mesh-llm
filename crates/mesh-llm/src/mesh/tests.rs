@@ -8,6 +8,29 @@ use crate::proto::node::{GossipFrame, NodeRole, PeerAnnouncement, RouteTableRequ
 use std::collections::HashSet;
 use tokio::sync::watch;
 
+#[test]
+fn quic_bind_addr_uses_explicit_port_on_all_platforms() {
+    assert_eq!(
+        quic_bind_addr(Some(7000)),
+        Some(std::net::SocketAddr::from(([0, 0, 0, 0], 7000)))
+    );
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn quic_bind_addr_falls_back_to_localhost_ephemeral_on_windows() {
+    assert_eq!(
+        quic_bind_addr(None),
+        Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "windows"))]
+fn quic_bind_addr_keeps_endpoint_default_on_non_windows() {
+    assert_eq!(quic_bind_addr(None), None);
+}
+
 async fn make_test_node(role: super::NodeRole) -> Result<Node> {
     use iroh::endpoint::QuicTransportConfig;
 
