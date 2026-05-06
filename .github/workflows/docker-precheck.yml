@@ -1,0 +1,133 @@
+name: Docker precheck
+
+on:
+  workflow_call:
+    inputs:
+      job_name:
+        required: true
+        type: string
+      dockerfile_path:
+        required: true
+        type: string
+      validate_shared_core:
+        required: false
+        type: boolean
+        default: false
+      validate_fly_ui_builder:
+        required: false
+        type: boolean
+        default: false
+      validate_entrypoint_modes:
+        required: false
+        type: boolean
+        default: false
+      validate_workflow_no_qemu:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  precheck:
+    name: ${{ inputs.job_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate target Dockerfile exists
+        run: test -f "${{ inputs.dockerfile_path }}"
+
+      - name: UI build precedes cargo build
+        if: ${{ inputs.validate_shared_core || inputs.validate_fly_ui_builder }}
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          ui_line="$(grep -n "COPY --from=ui-builder" "$file" | head -1 | cut -d: -f1 || true)"
+          build_line="$(grep -n "cargo build" "$file" | head -1 | cut -d: -f1 || true)"
+          if [[ -z "$ui_line" || -z "$build_line" || "$ui_line" -ge "$build_line" ]]; then
+            echo "UI dist must be copied before cargo build in $file" >&2
+            exit 1
+          fi
+
+      - name: Explicit workspace copy pattern is preserved
+        if: ${{ inputs.validate_shared_core }}
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          if grep -qE '^\s*COPY \. \.' "$file"; then
+            echo "Blanket COPY . . is not allowed in $file" >&2
+            exit 1
+          fi
+          grep -qE '^\s*COPY\s+Cargo\.toml\s+Cargo\.lock\s+\./?$' "$file"
+          for path in \
+            crates/mesh-llm/ \
+            crates/mesh-llm-plugin/ \
+            crates/mesh-client/ \
+            crates/mesh-api/ \
+            crates/mesh-host-core/ \
+            crates/mesh-api-ffi/ \
+            crates/mesh-llm-test-harness/ \
+            crates/model-ref/ \
+            crates/model-artifact/ \
+            crates/model-hf/ \
+            crates/skippy-protocol/ \
+            crates/skippy-topology/ \
+            crates/skippy-ffi/ \
+            crates/skippy-runtime/ \
+            crates/skippy-server/ \
+            crates/skippy-model-package/ \
+            crates/skippy-correctness/ \
+            crates/skippy-bench/ \
+            tools/xtask/
+          do
+            grep -q "COPY ${path} ${path}" "$file"
+          done
+
+      - name: Llama patch queue is used
+        if: ${{ inputs.validate_shared_core }}
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "scripts/prepare-llama.sh pinned" "$file"
+          grep -q "scripts/build-llama.sh" "$file"
+          grep -q "third_party/llama.cpp/patches" "$file"
+
+      - name: Runtime apt libraries are present
+        if: ${{ inputs.validate_shared_core }}
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "ca-certificates" "$file"
+          grep -q "libgomp1" "$file"
+          grep -q "libdbus-1-3" "$file"
+
+      - name: Fly Dockerfile includes UI builder stage
+        if: ${{ inputs.validate_fly_ui_builder }}
+        run: |
+          set -euo pipefail
+          file="${{ inputs.dockerfile_path }}"
+          grep -q "AS ui-builder" "$file"
+          grep -q "COPY --from=ui-builder" "$file"
+
+      - name: Entrypoint supports console worker and default modes only
+        if: ${{ inputs.validate_entrypoint_modes }}
+        run: |
+          set -euo pipefail
+          grep -qE '^[[:space:]]*console([|)])' docker/entrypoint.sh
+          grep -qE '^[[:space:]]*worker\)' docker/entrypoint.sh
+          grep -qE '^[[:space:]]*\*\)' docker/entrypoint.sh
+          if grep -qE '^[[:space:]]*api\)' docker/entrypoint.sh; then
+            echo "api mode should not be a separate entrypoint mode" >&2
+            exit 1
+          fi
+
+      - name: Docker workflow avoids QEMU-based runners
+        if: ${{ inputs.validate_workflow_no_qemu }}
+        run: |
+          set -euo pipefail
+          if grep -qiE '(^|[^[:alnum:]_])qemu([^[:alnum:]_]|$)' .github/workflows/docker.yml; then
+            echo "QEMU tooling reference found in docker.yml" >&2
+            exit 1
+          fi
