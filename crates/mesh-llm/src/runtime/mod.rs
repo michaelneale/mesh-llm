@@ -60,11 +60,31 @@ const DASHBOARD_FIRST_PAINT_TIMEOUT: Duration = Duration::from_secs(2);
 
 type DashboardContextUsage =
     Arc<tokio::sync::Mutex<HashMap<String, HashMap<DashboardContextUsageSource, u64>>>>;
+type RuntimeInstanceRegistry =
+    Arc<tokio::sync::Mutex<HashMap<String, BTreeMap<String, Option<u32>>>>>;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct DashboardContextUsageSource {
     port: u16,
     pid: u32,
+}
+
+struct RuntimeModelHandleEntry {
+    model_name: String,
+    handle: LocalRuntimeModelHandle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeUnloadOwner {
+    Runtime,
+    Managed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeUnloadCandidate {
+    owner: RuntimeUnloadOwner,
+    instance_id: String,
+    model_name: String,
 }
 
 thread_local! {
@@ -374,11 +394,31 @@ fn dashboard_context_usage_for_model(
         .max()
 }
 
-fn dashboard_lanes_for_model(
+fn dashboard_context_usage_for_process(
+    values_by_name: &HashMap<String, HashMap<DashboardContextUsageSource, u64>>,
+    process: &api::RuntimeProcessPayload,
+) -> Option<u64> {
+    let source = DashboardContextUsageSource {
+        port: process.port,
+        pid: process.pid,
+    };
+    dashboard_inventory_model_keys(&process.name)
+        .into_iter()
+        .filter_map(|key| values_by_name.get(&key))
+        .find_map(|source_values| source_values.get(&source).copied())
+        .or_else(|| dashboard_context_usage_for_model(values_by_name, &process.name))
+}
+
+fn dashboard_lanes_for_process(
+    snapshots_by_instance: &BTreeMap<String, crate::runtime_data::RuntimeLlamaRuntimeSnapshot>,
     snapshots_by_model: &BTreeMap<String, crate::runtime_data::RuntimeLlamaRuntimeSnapshot>,
-    model_name: &str,
+    process: &api::RuntimeProcessPayload,
 ) -> Option<Vec<DashboardModelLane>> {
-    let snapshot = snapshots_by_model.get(model_name)?;
+    let snapshot = process
+        .instance_id
+        .as_ref()
+        .and_then(|instance_id| snapshots_by_instance.get(instance_id))
+        .or_else(|| snapshots_by_model.get(&process.name))?;
 
     let mut lanes = snapshot
         .items
@@ -465,6 +505,8 @@ impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
             let process_rows = local_processes.lock().await.clone();
             let context_usage_by_name = local_context_usage.lock().await.clone();
             let llama_runtime_by_model = runtime_data_collector.runtime_llama_snapshots_by_model();
+            let llama_runtime_by_instance =
+                runtime_data_collector.runtime_llama_snapshots_by_instance();
             let request_metrics = node.local_request_metrics_snapshot();
             let accepted_request_counts_len = request_metrics.accepted_request_counts.len();
             let inventory_snapshot = provider.inventory_snapshot().await;
@@ -499,11 +541,15 @@ impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
                     slots: Some(process.slots),
                     quantization,
                     ctx_size,
-                    ctx_used_tokens: dashboard_context_usage_for_model(
+                    ctx_used_tokens: dashboard_context_usage_for_process(
                         &context_usage_by_name,
-                        &process.name,
+                        process,
                     ),
-                    lanes: dashboard_lanes_for_model(&llama_runtime_by_model, &process.name),
+                    lanes: dashboard_lanes_for_process(
+                        &llama_runtime_by_instance,
+                        &llama_runtime_by_model,
+                        process,
+                    ),
                     file_size_gb: dashboard_inventory_value_for_model(&size_by_name, &process.name)
                         .map(|size| *size as f64 / 1e9),
                 });
@@ -643,11 +689,13 @@ fn plugin_dashboard_command_name(summary: &plugin::PluginSummary) -> String {
 
 fn runtime_process_payload_with_status(
     name: &str,
+    instance_id: Option<&str>,
     handle: &LocalRuntimeModelHandle,
     status: &str,
 ) -> api::RuntimeProcessPayload {
     api::RuntimeProcessPayload {
         name: name.to_string(),
+        instance_id: instance_id.map(str::to_string),
         backend: handle.backend.clone(),
         status: status.to_string(),
         port: handle.port,
@@ -662,19 +710,187 @@ async fn upsert_dashboard_process(
     process: api::RuntimeProcessPayload,
 ) {
     let mut guard = shared.lock().await;
-    guard.retain(|existing| existing.name != process.name);
+    guard.retain(|existing| {
+        runtime_process_payload_identity(existing) != runtime_process_payload_identity(&process)
+    });
     guard.push(process);
-    guard.sort_by_key(|process| process.name.to_lowercase());
+    guard.sort_by(|left, right| {
+        (
+            left.name.to_lowercase(),
+            left.instance_id.as_deref().unwrap_or(""),
+            left.port,
+        )
+            .cmp(&(
+                right.name.to_lowercase(),
+                right.instance_id.as_deref().unwrap_or(""),
+                right.port,
+            ))
+    });
 }
 
 async fn remove_dashboard_process(
     shared: &Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
-    model_name: &str,
+    target: &str,
 ) {
-    shared
+    let mut guard = shared.lock().await;
+    let has_instance_match = guard
+        .iter()
+        .any(|process| process.instance_id.as_deref() == Some(target));
+    guard.retain(|process| {
+        if has_instance_match {
+            process.instance_id.as_deref() != Some(target)
+        } else {
+            process.name != target
+        }
+    });
+}
+
+fn runtime_process_payload_identity(process: &api::RuntimeProcessPayload) -> &str {
+    process.instance_id.as_deref().unwrap_or(&process.name)
+}
+
+fn next_runtime_instance_id(next_sequence: &mut u64) -> String {
+    let instance_id = format!("runtime-{}", *next_sequence);
+    *next_sequence = next_sequence.saturating_add(1);
+    instance_id
+}
+
+async fn register_runtime_instance(
+    registry: &RuntimeInstanceRegistry,
+    node: &mesh::Node,
+    primary_model_name: &str,
+    model_name: &str,
+    instance_id: &str,
+    context_length: Option<u32>,
+) {
+    let (was_empty, context_changed, next_context) = {
+        let mut guard = registry.lock().await;
+        let instances = guard.entry(model_name.to_string()).or_default();
+        let previous_context = runtime_registry_model_context(instances);
+        let was_empty = instances.is_empty();
+        instances.insert(instance_id.to_string(), context_length);
+        let next_context = runtime_registry_model_context(instances);
+        (was_empty, previous_context != next_context, next_context)
+    };
+
+    if context_changed {
+        set_advertised_model_context(node, model_name, next_context).await;
+    }
+    if was_empty {
+        add_serving_assignment(node, primary_model_name, model_name).await;
+        advertise_model_ready(node, primary_model_name, model_name).await;
+    }
+}
+
+async fn unregister_runtime_instance(
+    registry: &RuntimeInstanceRegistry,
+    node: &mesh::Node,
+    model_name: &str,
+    instance_id: &str,
+) -> bool {
+    let (removed, became_empty, context_changed, next_context) = {
+        let mut guard = registry.lock().await;
+        let Some(instances) = guard.get_mut(model_name) else {
+            return false;
+        };
+        let previous_context = runtime_registry_model_context(instances);
+        let removed = instances.remove(instance_id).is_some();
+        let next_context = runtime_registry_model_context(instances);
+        let became_empty = instances.is_empty();
+        if became_empty {
+            guard.remove(model_name);
+        }
+        (
+            removed,
+            became_empty,
+            previous_context != next_context,
+            next_context,
+        )
+    };
+
+    if !removed {
+        return false;
+    }
+    if became_empty {
+        set_advertised_model_context(node, model_name, None).await;
+        withdraw_advertised_model(node, model_name).await;
+        remove_serving_assignment(node, model_name).await;
+        true
+    } else {
+        if context_changed {
+            set_advertised_model_context(node, model_name, next_context).await;
+        }
+        false
+    }
+}
+
+async fn runtime_registry_has_model(registry: &RuntimeInstanceRegistry, model_name: &str) -> bool {
+    registry
         .lock()
         .await
-        .retain(|process| process.name != model_name);
+        .get(model_name)
+        .map(|instances| !instances.is_empty())
+        .unwrap_or(false)
+}
+
+fn runtime_registry_model_context(instances: &BTreeMap<String, Option<u32>>) -> Option<u32> {
+    instances.values().filter_map(|context| *context).max()
+}
+
+fn runtime_unload_candidates(
+    runtime_models: &HashMap<String, RuntimeModelHandleEntry>,
+    managed_models: &HashMap<String, ManagedModelController>,
+) -> Vec<RuntimeUnloadCandidate> {
+    runtime_models
+        .iter()
+        .map(|(instance_id, entry)| RuntimeUnloadCandidate {
+            owner: RuntimeUnloadOwner::Runtime,
+            instance_id: instance_id.clone(),
+            model_name: entry.model_name.clone(),
+        })
+        .chain(
+            managed_models
+                .iter()
+                .map(|(instance_id, controller)| RuntimeUnloadCandidate {
+                    owner: RuntimeUnloadOwner::Managed,
+                    instance_id: instance_id.clone(),
+                    model_name: controller.model_name.clone(),
+                }),
+        )
+        .collect()
+}
+
+fn resolve_runtime_unload_target(
+    target: &str,
+    candidates: Vec<RuntimeUnloadCandidate>,
+) -> Result<RuntimeUnloadCandidate> {
+    let mut instance_matches = candidates
+        .iter()
+        .filter(|candidate| candidate.instance_id == target);
+    if let Some(candidate) = instance_matches.next() {
+        return Ok(candidate.clone());
+    }
+
+    let model_matches: Vec<_> = candidates
+        .into_iter()
+        .filter(|candidate| candidate.model_name == target)
+        .collect();
+    match model_matches.len() {
+        0 => Err(anyhow::anyhow!(
+            "model or runtime instance '{target}' is not loaded"
+        )),
+        1 => Ok(model_matches.into_iter().next().expect("one model match")),
+        _ => {
+            let ids = model_matches
+                .iter()
+                .map(|candidate| candidate.instance_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(anyhow::anyhow!(
+                "model '{target}' has multiple loaded instances ({ids}); unload by runtime instance id"
+            ))
+        }
+    }
 }
 
 async fn refresh_dashboard_context_usage(
@@ -694,12 +910,13 @@ async fn refresh_dashboard_context_usage(
 fn publish_runtime_llama_slots(
     producer: Option<&crate::runtime_data::RuntimeDataProducer>,
     model_name: &str,
+    instance_id: Option<&str>,
     handle: &LocalRuntimeModelHandle,
 ) {
     let Some(producer) = producer else {
         return;
     };
-    if let Some(snapshot) = handle.llama_slots_snapshot(model_name) {
+    if let Some(snapshot) = handle.llama_slots_snapshot(model_name, instance_id) {
         producer.publish_llama_slots_snapshot(snapshot);
     }
 }
@@ -707,6 +924,7 @@ fn publish_runtime_llama_slots(
 fn publish_runtime_llama_unavailable(
     producer: Option<&crate::runtime_data::RuntimeDataProducer>,
     model_name: &str,
+    instance_id: Option<&str>,
 ) {
     let Some(producer) = producer else {
         return;
@@ -714,6 +932,7 @@ fn publish_runtime_llama_unavailable(
     producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
         status: crate::runtime_data::RuntimeLlamaEndpointStatus::Unavailable,
         model: Some(model_name.to_string()),
+        instance_id: instance_id.map(str::to_string),
         last_attempt_unix_ms: Some(current_time_unix_ms()),
         last_success_unix_ms: None,
         error: None,
@@ -798,6 +1017,7 @@ struct StartupLocalModelTask {
     model_path: PathBuf,
     model_ref: String,
     model_name: String,
+    instance_id: String,
     primary_model_name: String,
     mmproj_path: Option<PathBuf>,
     ctx_size: Option<u32>,
@@ -813,6 +1033,7 @@ struct StartupLocalModelTask {
     stop_rx: tokio::sync::watch::Receiver<bool>,
     dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
     dashboard_context_usage: DashboardContextUsage,
+    runtime_instance_registry: RuntimeInstanceRegistry,
     console_state: Option<api::MeshApi>,
     api_port: u16,
     startup_ready_reporter: StartupReadyReporter,
@@ -831,6 +1052,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         model_path,
         model_ref,
         model_name,
+        instance_id,
         primary_model_name,
         mmproj_path,
         ctx_size,
@@ -846,6 +1068,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mut stop_rx,
         dashboard_processes,
         dashboard_context_usage,
+        runtime_instance_registry,
         console_state,
         api_port,
         startup_ready_reporter,
@@ -968,10 +1191,18 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         http_port: api_port,
     })
     .await;
-    set_advertised_model_context(&node, &loaded_name, Some(handle.context_length)).await;
-    advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
+    register_runtime_instance(
+        &runtime_instance_registry,
+        &node,
+        &primary_model_name,
+        &loaded_name,
+        &instance_id,
+        Some(handle.context_length),
+    )
+    .await;
     let payload = local_process_payload(
         &loaded_name,
+        Some(&instance_id),
         &handle.backend,
         handle.port,
         handle.pid(),
@@ -980,7 +1211,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     );
     upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
     refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-    publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+    publish_runtime_llama_slots(
+        runtime_data_producer.as_ref(),
+        &loaded_name,
+        Some(&instance_id),
+        &handle,
+    );
     if let Some(ref cs) = console_state {
         cs.upsert_local_process(payload).await;
         cs.update(true, true).await;
@@ -1019,7 +1255,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         tokio::select! {
             _ = context_usage_tick.tick() => {
                 refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+                publish_runtime_llama_slots(
+                    runtime_data_producer.as_ref(),
+                    &loaded_name,
+                    Some(&instance_id),
+                    &handle,
+                );
             }
             _ = &mut death_rx => {
                 let _ = emit_event(OutputEvent::Warning {
@@ -1046,19 +1287,33 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 remove_runtime_local_target(&target_tx, &old_loaded_name, old_port);
                 add_runtime_local_target(&target_tx, &next.loaded_name, next.handle.port);
                 tunnel_mgr.set_http_port(api_port);
-                if old_loaded_name != next.loaded_name {
-                    withdraw_advertised_model(&node, &old_loaded_name).await;
-                    set_advertised_model_context(&node, &old_loaded_name, None).await;
-                    advertise_model_ready(&node, &primary_model_name, &next.loaded_name).await;
+                if old_loaded_name != next.loaded_name
+                    && unregister_runtime_instance(
+                        &runtime_instance_registry,
+                        &node,
+                        &old_loaded_name,
+                        &instance_id,
+                    )
+                    .await
+                {
+                    publish_runtime_llama_unavailable(
+                        runtime_data_producer.as_ref(),
+                        &old_loaded_name,
+                        Some(&instance_id),
+                    );
                 }
-                set_advertised_model_context(
+                register_runtime_instance(
+                    &runtime_instance_registry,
                     &node,
+                    &primary_model_name,
                     &next.loaded_name,
+                    &instance_id,
                     Some(next.handle.context_length),
                 )
                 .await;
                 let payload = local_process_payload(
                     &next.loaded_name,
+                    Some(&instance_id),
                     &next.handle.backend,
                     next.handle.port,
                     next.handle.pid(),
@@ -1077,13 +1332,15 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     &old_handle,
                 )
                 .await;
-                if old_loaded_name != next.loaded_name {
-                    publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &old_loaded_name);
-                }
                 loaded_name = next.loaded_name;
                 refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle)
                     .await;
-                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+                publish_runtime_llama_slots(
+                    runtime_data_producer.as_ref(),
+                    &loaded_name,
+                    Some(&instance_id),
+                    &handle,
+                );
                 death_rx = next.death_rx;
                 split_cleanup = next.cleanup.take();
                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
@@ -1113,30 +1370,47 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     let port = handle.port;
     remove_runtime_local_target(&target_tx, &loaded_name, port);
     tunnel_mgr.set_http_port(api_port);
-    withdraw_advertised_model(&node, &loaded_name).await;
-    set_advertised_model_context(&node, &loaded_name, None).await;
+    if unregister_runtime_instance(
+        &runtime_instance_registry,
+        &node,
+        &loaded_name,
+        &instance_id,
+    )
+    .await
+    {
+        publish_runtime_llama_unavailable(
+            runtime_data_producer.as_ref(),
+            &loaded_name,
+            Some(&instance_id),
+        );
+    }
     upsert_dashboard_process(
         &dashboard_processes,
-        runtime_process_payload_with_status(&loaded_name, &handle, "shutting down"),
+        runtime_process_payload_with_status(
+            &loaded_name,
+            Some(&instance_id),
+            &handle,
+            "shutting down",
+        ),
     )
     .await;
     if let Some(ref cs) = console_state {
         cs.upsert_local_process(runtime_process_payload_with_status(
             &loaded_name,
+            Some(&instance_id),
             &handle,
             "shutting down",
         ))
         .await;
     }
     remove_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-    publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &loaded_name);
     handle.shutdown().await;
     if let Some(cleanup) = split_cleanup.take() {
         stop_split_generation_cleanup(&node, cleanup, u64::MAX).await;
     }
-    remove_dashboard_process(&dashboard_processes, &loaded_name).await;
+    remove_dashboard_process(&dashboard_processes, &instance_id).await;
     if let Some(cs) = console_state {
-        cs.remove_local_process(&loaded_name).await;
+        cs.remove_local_process(&instance_id).await;
         cs.update(false, false).await;
     }
     let _ = emit_event(OutputEvent::Info {
@@ -2696,7 +2970,8 @@ async fn startup_ready_reporter_uses_bound_urls_for_runtime_ready() {
 #[cfg(test)]
 #[test]
 fn dashboard_lanes_prefer_sparse_slot_ids() {
-    let mut snapshots = BTreeMap::new();
+    let snapshots_by_instance = BTreeMap::new();
+    let mut snapshots_by_model = BTreeMap::new();
     let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
     snapshot.items.slots = vec![
         crate::runtime_data::RuntimeLlamaSlotItem {
@@ -2714,9 +2989,19 @@ fn dashboard_lanes_prefer_sparse_slot_ids() {
             is_processing: true,
         },
     ];
-    snapshots.insert("model-a".to_string(), snapshot);
+    snapshots_by_model.insert("model-a".to_string(), snapshot);
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: None,
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4001,
+        pid: 1234,
+        slots: 2,
+        context_length: Some(8192),
+    };
 
-    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
         .expect("snapshot with slots should produce dashboard lanes");
 
     assert_eq!(lanes.len(), 2);
@@ -2729,7 +3014,8 @@ fn dashboard_lanes_prefer_sparse_slot_ids() {
 #[cfg(test)]
 #[test]
 fn dashboard_lanes_fall_back_to_slot_index_when_id_is_missing() {
-    let mut snapshots = BTreeMap::new();
+    let snapshots_by_instance = BTreeMap::new();
+    let mut snapshots_by_model = BTreeMap::new();
     let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
     snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
         index: 7,
@@ -2738,13 +3024,66 @@ fn dashboard_lanes_fall_back_to_slot_index_when_id_is_missing() {
         n_ctx: None,
         is_processing: true,
     }];
-    snapshots.insert("model-a".to_string(), snapshot);
+    snapshots_by_model.insert("model-a".to_string(), snapshot);
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: None,
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4001,
+        pid: 1234,
+        slots: 1,
+        context_length: Some(8192),
+    };
 
-    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
         .expect("snapshot with slots should produce dashboard lanes");
 
     assert_eq!(lanes.len(), 1);
     assert_eq!(lanes[0].index, 7);
+    assert!(lanes[0].active);
+}
+
+#[cfg(test)]
+#[test]
+fn dashboard_lanes_prefer_instance_snapshot_for_duplicate_models() {
+    let mut snapshots_by_instance = BTreeMap::new();
+    let snapshots_by_model = BTreeMap::new();
+    let mut first_snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    first_snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
+        index: 0,
+        id: Some(1),
+        id_task: None,
+        n_ctx: None,
+        is_processing: false,
+    }];
+    let mut second_snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    second_snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
+        index: 0,
+        id: Some(2),
+        id_task: None,
+        n_ctx: None,
+        is_processing: true,
+    }];
+    snapshots_by_instance.insert("runtime-1".to_string(), first_snapshot);
+    snapshots_by_instance.insert("runtime-2".to_string(), second_snapshot);
+
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: Some("runtime-2".to_string()),
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4002,
+        pid: 1235,
+        slots: 1,
+        context_length: Some(8192),
+    };
+
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
+        .expect("instance snapshot should produce dashboard lanes");
+
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].index, 2);
     assert!(lanes[0].active);
 }
 
@@ -3709,8 +4048,11 @@ async fn run_auto(
         tokio::sync::mpsc::unbounded_channel::<api::RuntimeControlRequest>();
     let (runtime_event_tx, mut runtime_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<RuntimeEvent>();
-    let mut runtime_models: HashMap<String, LocalRuntimeModelHandle> = HashMap::new();
+    let mut runtime_models: HashMap<String, RuntimeModelHandleEntry> = HashMap::new();
     let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
+    let runtime_instance_registry: RuntimeInstanceRegistry =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut next_runtime_instance_sequence = 1_u64;
     let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let dashboard_context_usage = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let input_handler_enabled = crate::cli::output::OutputManager::global()
@@ -3978,8 +4320,11 @@ async fn run_auto(
         .unwrap_or_else(|| model_name.clone());
     let startup_split = cli.split;
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
+    let primary_instance_id = next_runtime_instance_id(&mut next_runtime_instance_sequence);
+    let primary_task_instance_id = primary_instance_id.clone();
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
     let dashboard_context_usage_for_primary_task = dashboard_context_usage.clone();
+    let runtime_instance_registry_for_primary_task = runtime_instance_registry.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(async move {
         startup_local_model_loop(StartupLocalModelTask {
@@ -3989,6 +4334,7 @@ async fn run_auto(
             model_path: model2,
             model_ref: primary_model_ref,
             model_name: model_name_for_election,
+            instance_id: primary_task_instance_id,
             primary_model_name: primary_model_name_for_advertise,
             mmproj_path: primary_mmproj,
             ctx_size: primary_ctx_size,
@@ -4004,6 +4350,7 @@ async fn run_auto(
             stop_rx: primary_stop_rx,
             dashboard_processes: dashboard_processes_for_primary_task,
             dashboard_context_usage: dashboard_context_usage_for_primary_task,
+            runtime_instance_registry: runtime_instance_registry_for_primary_task,
             console_state: console_state_for_election,
             api_port,
             startup_ready_reporter: primary_startup_ready_reporter,
@@ -4016,8 +4363,9 @@ async fn run_auto(
         .await;
     });
     managed_models.insert(
-        model_name.clone(),
+        primary_instance_id,
         ManagedModelController {
+            model_name: model_name.clone(),
             stop_tx: primary_stop_tx,
             task: primary_task,
         },
@@ -4064,8 +4412,11 @@ async fn run_auto(
             let primary_model_name_for_extra = model_name.clone();
             let managed_model_name = extra_name.clone();
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
+            let extra_instance_id = next_runtime_instance_id(&mut next_runtime_instance_sequence);
+            let extra_task_instance_id = extra_instance_id.clone();
             let dashboard_processes_for_extra_task = dashboard_processes.clone();
             let dashboard_context_usage_for_extra_task = dashboard_context_usage.clone();
+            let runtime_instance_registry_for_extra_task = runtime_instance_registry.clone();
             let extra_control_tx = control_tx.clone();
             let extra_task = tokio::spawn(async move {
                 startup_local_model_loop(StartupLocalModelTask {
@@ -4075,6 +4426,7 @@ async fn run_auto(
                     model_path: extra_path,
                     model_ref: extra_ref,
                     model_name: extra_model_name,
+                    instance_id: extra_task_instance_id,
                     primary_model_name: primary_model_name_for_extra,
                     mmproj_path: extra_mmproj,
                     ctx_size: extra_ctx_size,
@@ -4090,6 +4442,7 @@ async fn run_auto(
                     stop_rx: extra_stop_rx,
                     dashboard_processes: dashboard_processes_for_extra_task,
                     dashboard_context_usage: dashboard_context_usage_for_extra_task,
+                    runtime_instance_registry: runtime_instance_registry_for_extra_task,
                     console_state: extra_console_state,
                     api_port: api_port_extra,
                     startup_ready_reporter: extra_startup_ready_reporter,
@@ -4102,8 +4455,9 @@ async fn run_auto(
                 .await;
             });
             managed_models.insert(
-                managed_model_name,
+                extra_instance_id,
                 ManagedModelController {
+                    model_name: managed_model_name,
                     stop_tx: extra_stop_tx,
                     task: extra_task,
                 },
@@ -4190,12 +4544,17 @@ async fn run_auto(
             _ = dashboard_context_usage_tick.tick() => {
                 let updates = runtime_models
                     .iter()
-                    .map(|(name, handle)| {
-                        publish_runtime_llama_slots(runtime_data_producer.as_ref(), name, handle);
+                    .map(|(instance_id, entry)| {
+                        publish_runtime_llama_slots(
+                            runtime_data_producer.as_ref(),
+                            &entry.model_name,
+                            Some(instance_id.as_str()),
+                            &entry.handle,
+                        );
                         (
-                            name.clone(),
-                            dashboard_context_usage_source(handle),
-                            handle.ctx_used_tokens(),
+                            entry.model_name.clone(),
+                            dashboard_context_usage_source(&entry.handle),
+                            entry.handle.ctx_used_tokens(),
                         )
                     })
                     .collect();
@@ -4209,18 +4568,8 @@ async fn run_auto(
             Some(cmd) = control_rx.recv() => {
                 match cmd {
                     api::RuntimeControlRequest::Load { spec, resp } => {
-                        let mut assigned_runtime_model: Option<String> = None;
                         let result = async {
                             let model_path = resolve_model(&PathBuf::from(&spec)).await?;
-                            let runtime_model_name = models::find_catalog_model_exact(&spec)
-                                .map(models::catalog_model_ref)
-                                .unwrap_or_else(|| models::model_ref_for_path(&model_path));
-                            let already_loaded = managed_models.contains_key(&runtime_model_name)
-                                || runtime_models.contains_key(&runtime_model_name);
-                            anyhow::ensure!(
-                                !already_loaded,
-                                "model '{runtime_model_name}' is already loaded"
-                            );
 
                             // Look up per-model overrides from TOML config by matching the
                             // spec string against [[models]].model entries. Metadata-based
@@ -4232,9 +4581,8 @@ async fn run_auto(
                                 .or(config.gpu.parallel);
                             let slots = parallel_override.unwrap_or(4);
 
-                            assigned_runtime_model = Some(runtime_model_name.clone());
-                            add_serving_assignment(&node, &primary_model_name, &runtime_model_name)
-                                .await;
+                            let instance_id =
+                                next_runtime_instance_id(&mut next_runtime_instance_sequence);
                             let (loaded_name, handle, death_rx) = start_runtime_local_model(
                                 LocalRuntimeModelStartSpec {
                                     node: &node,
@@ -4258,16 +4606,19 @@ async fn run_auto(
                             .await?;
 
                             add_runtime_local_target(&target_tx, &loaded_name, handle.port);
-                            set_advertised_model_context(
+                            register_runtime_instance(
+                                &runtime_instance_registry,
                                 &node,
+                                &primary_model_name,
                                 &loaded_name,
+                                &instance_id,
                                 Some(handle.context_length),
                             )
                             .await;
-                            advertise_model_ready(&node, &primary_model_name, &loaded_name).await;
                             node.set_available_models(models::scan_local_models()).await;
                             let payload = local_process_payload(
                                 &loaded_name,
+                                Some(&instance_id),
                                 &handle.backend,
                                 handle.port,
                                 handle.pid(),
@@ -4281,11 +4632,13 @@ async fn run_auto(
                             }
 
                             let event_tx = runtime_event_tx.clone();
+                            let event_instance_id = instance_id.clone();
                             let event_name = loaded_name.clone();
                             let event_port = handle.port;
                             tokio::spawn(async move {
                                 let _ = death_rx.await;
                                 let _ = event_tx.send(RuntimeEvent::Exited {
+                                    instance_id: event_instance_id,
                                     model: event_name,
                                     port: event_port,
                                 });
@@ -4309,77 +4662,141 @@ async fn run_auto(
                             publish_runtime_llama_slots(
                                 runtime_data_producer.as_ref(),
                                 &loaded_name,
+                                Some(&instance_id),
                                 &handle,
                             );
-                            runtime_models.insert(loaded_name.clone(), handle);
-                            Ok(loaded_name)
+                            runtime_models.insert(
+                                instance_id.clone(),
+                                RuntimeModelHandleEntry {
+                                    model_name: loaded_name.clone(),
+                                    handle,
+                                },
+                            );
+                            Ok(api::RuntimeLoadResponse {
+                                model: loaded_name,
+                                instance_id,
+                            })
                         }
                         .await;
-                        if let Err(err) = &result {
-                            let _ = err;
-                            if let Some(name) = assigned_runtime_model.as_deref() {
-                                remove_serving_assignment(&node, name).await;
-                            }
-                        }
                         let _ = resp.send(result);
                     }
-                    api::RuntimeControlRequest::Unload { model, resp } => {
-                        let result = if let Some(handle) = runtime_models.remove(&model) {
-                            let port = handle.port;
-                            publish_runtime_llama_unavailable(
-                                runtime_data_producer.as_ref(),
-                                &model,
-                            );
-                            remove_runtime_local_target(&target_tx, &model, port);
-                            withdraw_advertised_model(&node, &model).await;
-                            upsert_dashboard_process(
-                                &dashboard_processes,
-                                runtime_process_payload_with_status(&model, &handle, "shutting down"),
-                            )
-                            .await;
-                            if let Some(ref cs) = console_state {
-                                cs.upsert_local_process(runtime_process_payload_with_status(
-                                    &model,
-                                    &handle,
-                                    "shutting down",
-                                ))
-                                .await;
+                    api::RuntimeControlRequest::Unload { target, resp } => {
+                        let result = async {
+                            let unload = resolve_runtime_unload_target(
+                                &target,
+                                runtime_unload_candidates(&runtime_models, &managed_models),
+                            )?;
+                            match unload.owner {
+                                RuntimeUnloadOwner::Runtime => {
+                                    let Some(entry) = runtime_models.remove(&unload.instance_id)
+                                    else {
+                                        anyhow::bail!(
+                                            "model or runtime instance '{}' is not loaded",
+                                            unload.instance_id
+                                        );
+                                    };
+                                    let model = entry.model_name;
+                                    let handle = entry.handle;
+                                    let port = handle.port;
+                                    remove_runtime_local_target(&target_tx, &model, port);
+                                    if unregister_runtime_instance(
+                                        &runtime_instance_registry,
+                                        &node,
+                                        &model,
+                                        &unload.instance_id,
+                                    )
+                                    .await
+                                    {
+                                        publish_runtime_llama_unavailable(
+                                            runtime_data_producer.as_ref(),
+                                            &model,
+                                            Some(&unload.instance_id),
+                                        );
+                                    }
+                                    upsert_dashboard_process(
+                                        &dashboard_processes,
+                                        runtime_process_payload_with_status(
+                                            &model,
+                                            Some(&unload.instance_id),
+                                            &handle,
+                                            "shutting down",
+                                        ),
+                                    )
+                                    .await;
+                                    if let Some(ref cs) = console_state {
+                                        cs.upsert_local_process(runtime_process_payload_with_status(
+                                            &model,
+                                            Some(&unload.instance_id),
+                                            &handle,
+                                            "shutting down",
+                                        ))
+                                        .await;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(300))
+                                        .await;
+                                    remove_dashboard_context_usage(
+                                        &dashboard_context_usage,
+                                        &model,
+                                        &handle,
+                                    )
+                                    .await;
+                                    handle.shutdown().await;
+                                    remove_dashboard_process(
+                                        &dashboard_processes,
+                                        &unload.instance_id,
+                                    )
+                                    .await;
+                                    if let Some(ref cs) = console_state {
+                                        cs.remove_local_process(&unload.instance_id).await;
+                                    }
+                                    let _ = emit_event(OutputEvent::Info {
+                                        message: format!(
+                                            "Unloaded local model '{}' from :{}",
+                                            model, port
+                                        ),
+                                        context: None,
+                                    });
+                                    Ok(api::RuntimeUnloadResponse {
+                                        model,
+                                        instance_id: unload.instance_id,
+                                    })
+                                }
+                                RuntimeUnloadOwner::Managed => {
+                                    let Some(controller) = managed_models.remove(&unload.instance_id) else {
+                                        anyhow::bail!(
+                                            "model or runtime instance '{}' is not loaded",
+                                            unload.instance_id
+                                        );
+                                    };
+                                    let model = controller.model_name.clone();
+                                    let _ = controller.stop_tx.send(true);
+                                    let _ = controller.task.await;
+                                    if !runtime_registry_has_model(&runtime_instance_registry, &model).await {
+                                        publish_runtime_llama_unavailable(
+                                            runtime_data_producer.as_ref(),
+                                            &model,
+                                            Some(&unload.instance_id),
+                                        );
+                                        withdraw_advertised_model(&node, &model).await;
+                                        set_advertised_model_context(&node, &model, None).await;
+                                        remove_serving_assignment(&node, &model).await;
+                                    }
+                                    remove_dashboard_process(&dashboard_processes, &unload.instance_id).await;
+                                    if let Some(ref cs) = console_state {
+                                        cs.remove_local_process(&unload.instance_id).await;
+                                    }
+                                    let _ = emit_event(OutputEvent::Info {
+                                        message: format!("Unloaded managed model '{}'", model),
+                                        context: None,
+                                    });
+                                    Ok(api::RuntimeUnloadResponse {
+                                        model,
+                                        instance_id: unload.instance_id,
+                                    })
+                                }
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                            remove_dashboard_context_usage(&dashboard_context_usage, &model, &handle)
-                                .await;
-                            handle.shutdown().await;
-                            remove_serving_assignment(&node, &model).await;
-                            remove_dashboard_process(&dashboard_processes, &model).await;
-                            if let Some(ref cs) = console_state {
-                                cs.remove_local_process(&model).await;
-                            }
-                            let _ = emit_event(OutputEvent::Info {
-                                message: format!("Unloaded local model '{}' from :{}", model, port),
-                                context: None,
-                            });
-                            Ok(())
-                        } else if let Some(controller) = managed_models.remove(&model) {
-                            let _ = controller.stop_tx.send(true);
-                            let _ = controller.task.await;
-                            publish_runtime_llama_unavailable(
-                                runtime_data_producer.as_ref(),
-                                &model,
-                            );
-                            withdraw_advertised_model(&node, &model).await;
-                            remove_serving_assignment(&node, &model).await;
-                            remove_dashboard_process(&dashboard_processes, &model).await;
-                            if let Some(ref cs) = console_state {
-                                cs.remove_local_process(&model).await;
-                            }
-                            let _ = emit_event(OutputEvent::Info {
-                                message: format!("Unloaded managed model '{}'", model),
-                                context: None,
-                            });
-                            Ok(())
-                        } else {
-                            Err(anyhow::anyhow!("model '{model}' is not loaded"))
-                        };
+                        }
+                        .await;
                         let _ = resp.send(result);
                     }
                     api::RuntimeControlRequest::Shutdown => {
@@ -4391,25 +4808,44 @@ async fn run_auto(
             }
             Some(event) = runtime_event_rx.recv() => {
                 match event {
-                    RuntimeEvent::Exited { model, port } => {
+                    RuntimeEvent::Exited { instance_id, model, port } => {
                         let matches = runtime_models
-                            .get(&model)
-                            .map(|handle| handle.port == port)
+                            .get(&instance_id)
+                            .map(|entry| entry.model_name == model && entry.handle.port == port)
                             .unwrap_or(false);
                         if matches {
-                            if let Some(handle) = runtime_models.remove(&model) {
-                                publish_runtime_llama_unavailable(
-                                    runtime_data_producer.as_ref(),
+                            if let Some(entry) = runtime_models.remove(&instance_id) {
+                                let handle = entry.handle;
+                                if unregister_runtime_instance(
+                                    &runtime_instance_registry,
+                                    &node,
                                     &model,
-                                );
+                                    &instance_id,
+                                )
+                                .await
+                                {
+                                    publish_runtime_llama_unavailable(
+                                        runtime_data_producer.as_ref(),
+                                        &model,
+                                        Some(&instance_id),
+                                    );
+                                }
                                 upsert_dashboard_process(
                                     &dashboard_processes,
-                                    runtime_process_payload_with_status(&model, &handle, "exited"),
+                                    runtime_process_payload_with_status(
+                                        &model,
+                                        Some(&instance_id),
+                                        &handle,
+                                        "exited",
+                                    ),
                                 )
                                 .await;
                                 if let Some(ref cs) = console_state {
                                     cs.upsert_local_process(runtime_process_payload_with_status(
-                                        &model, &handle, "exited",
+                                        &model,
+                                        Some(&instance_id),
+                                        &handle,
+                                        "exited",
                                     ))
                                     .await;
                                 }
@@ -4422,8 +4858,6 @@ async fn run_auto(
                                 handle.shutdown().await;
                             }
                             remove_runtime_local_target(&target_tx, &model, port);
-                            withdraw_advertised_model(&node, &model).await;
-                            remove_serving_assignment(&node, &model).await;
                             let _ = emit_event(OutputEvent::Warning {
                                 message: format!("Runtime model '{model}' exited unexpectedly"),
                                 context: Some(format!("model={model} port={port}")),
@@ -4463,19 +4897,31 @@ async fn run_auto(
         let _ = handle.await;
     }
 
-    for (name, handle) in runtime_models.drain() {
-        let shutting_down_payload =
-            runtime_process_payload_with_status(&name, &handle, "shutting down");
+    for (instance_id, entry) in runtime_models.drain() {
+        let name = entry.model_name;
+        let handle = entry.handle;
+        let shutting_down_payload = runtime_process_payload_with_status(
+            &name,
+            Some(&instance_id),
+            &handle,
+            "shutting down",
+        );
         upsert_dashboard_process(&dashboard_processes, shutting_down_payload.clone()).await;
         if let Some(ref cs) = console_state {
             cs.upsert_local_process(shutting_down_payload).await;
         }
         remove_runtime_local_target(&target_tx, &name, handle.port);
-        publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &name);
-        withdraw_advertised_model(&node, &name).await;
-        remove_serving_assignment(&node, &name).await;
+        if unregister_runtime_instance(&runtime_instance_registry, &node, &name, &instance_id).await
+        {
+            publish_runtime_llama_unavailable(
+                runtime_data_producer.as_ref(),
+                &name,
+                Some(&instance_id),
+            );
+        }
         remove_dashboard_context_usage(&dashboard_context_usage, &name, &handle).await;
-        let stopped_payload = runtime_process_payload_with_status(&name, &handle, "stopped");
+        let stopped_payload =
+            runtime_process_payload_with_status(&name, Some(&instance_id), &handle, "stopped");
         handle.shutdown().await;
         upsert_dashboard_process(&dashboard_processes, stopped_payload.clone()).await;
         if let Some(ref cs) = console_state {
@@ -5042,6 +5488,52 @@ mod tests {
         assert_eq!(plugin_dashboard_command_name(&summary), "browser-tools");
     }
 
+    #[test]
+    fn runtime_unload_target_requires_instance_id_for_duplicate_models() {
+        let err = resolve_runtime_unload_target(
+            "Qwen",
+            vec![
+                RuntimeUnloadCandidate {
+                    owner: RuntimeUnloadOwner::Runtime,
+                    instance_id: "runtime-1".to_string(),
+                    model_name: "Qwen".to_string(),
+                },
+                RuntimeUnloadCandidate {
+                    owner: RuntimeUnloadOwner::Managed,
+                    instance_id: "runtime-2".to_string(),
+                    model_name: "Qwen".to_string(),
+                },
+            ],
+        )
+        .expect_err("duplicate model-name unload should be ambiguous");
+
+        assert!(err.to_string().contains("multiple loaded instances"));
+    }
+
+    #[test]
+    fn runtime_unload_target_resolves_exact_instance_before_model_name() {
+        let target = resolve_runtime_unload_target(
+            "runtime-2",
+            vec![
+                RuntimeUnloadCandidate {
+                    owner: RuntimeUnloadOwner::Runtime,
+                    instance_id: "runtime-1".to_string(),
+                    model_name: "runtime-2".to_string(),
+                },
+                RuntimeUnloadCandidate {
+                    owner: RuntimeUnloadOwner::Managed,
+                    instance_id: "runtime-2".to_string(),
+                    model_name: "Qwen".to_string(),
+                },
+            ],
+        )
+        .expect("exact instance id should resolve");
+
+        assert_eq!(target.instance_id, "runtime-2");
+        assert_eq!(target.model_name, "Qwen");
+        assert_eq!(target.owner, RuntimeUnloadOwner::Managed);
+    }
+
     #[tokio::test]
     async fn dashboard_snapshot_provider_reuses_cached_inventory_within_ttl() {
         let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
@@ -5081,6 +5573,7 @@ mod tests {
         set_advertised_model_context(&node, &model_name, Some(8192)).await;
         let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
             name: model_name.clone(),
+            instance_id: None,
             backend: "CUDA0".to_string(),
             status: "ready".to_string(),
             port: 4001,
@@ -5157,6 +5650,7 @@ mod tests {
         let local_processes = Arc::new(tokio::sync::Mutex::new(vec![
             api::RuntimeProcessPayload {
                 name: "model-a".to_string(),
+                instance_id: None,
                 backend: "skippy".to_string(),
                 status: "ready".to_string(),
                 port: 4001,
@@ -5166,6 +5660,7 @@ mod tests {
             },
             api::RuntimeProcessPayload {
                 name: "model-b".to_string(),
+                instance_id: None,
                 backend: "skippy".to_string(),
                 status: "ready".to_string(),
                 port: 4002,
@@ -5177,6 +5672,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
             status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-a".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(1),
             last_success_unix_ms: Some(1),
             error: None,
@@ -5196,6 +5692,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
             status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-b".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(2),
             last_success_unix_ms: Some(2),
             error: None,
@@ -5268,6 +5765,7 @@ mod tests {
         let inventory_model_name = "Qwen3.5-4B-UD-Q4_K_XL".to_string();
         let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
             name: runtime_model_name.clone(),
+            instance_id: None,
             backend: "skippy".to_string(),
             status: "ready".to_string(),
             port: 37615,
@@ -5323,6 +5821,7 @@ mod tests {
         set_advertised_model_context(&node, &model_name, Some(131_072)).await;
         let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
             name: model_name.clone(),
+            instance_id: None,
             backend: "skippy".to_string(),
             status: "ready".to_string(),
             port: 34097,

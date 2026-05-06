@@ -79,6 +79,10 @@ pub(super) const DISPATCH_REQUEST: DispatchRequestFn =
                     runtime::handle(stream, state, method, path_only, body).await?;
                     Ok(true)
                 }
+                ("DELETE", p) if p.starts_with("/api/runtime/instances/") => {
+                    runtime::handle(stream, state, method, path_only, body).await?;
+                    Ok(true)
+                }
                 ("DELETE", p) if p.starts_with("/api/runtime/models/") => {
                     runtime::handle(stream, state, method, path_only, body).await?;
                     Ok(true)
