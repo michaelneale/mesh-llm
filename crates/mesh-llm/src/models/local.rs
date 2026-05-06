@@ -166,6 +166,13 @@ fn cache_repo_id(repo: &CachedRepoInfo) -> Option<&str> {
 }
 
 pub fn mesh_llm_cache_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("XDG_CACHE_HOME") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("mesh-llm");
+        }
+    }
+
     dirs::cache_dir()
         .unwrap_or_else(|| {
             dirs::home_dir()
