@@ -142,6 +142,7 @@ different continuation state.
 | Family shape | Safe cache shape | Notes |
 | --- | --- | --- |
 | Dense attention models such as Llama, Qwen3 dense, DeepSeek2, DeepSeek3, GLM4, GLM-4.7 Flash, OLMo, Gemma, MiniMax-M2.7 | `ResidentKv` | Attention KV is the continuation state for the certified prompt-continuation path. The cache entry is resident in the live runtime, so serving reuses llama.cpp sequence state without serializing bytes. |
+| MoE attention models such as OLMoE, Qwen2-MoE, and Qwen3-MoE | `ResidentKv` | Expert routing is part of the layer compute, while attention KV remains the exact continuation state. Promotion requires MoE expert-stage smoke so every tested stage range owns expert tensors and still restores exactly. |
 | Hybrid/recurrent models such as Qwen3Next, Falcon-H1, RWKV/Mamba-like tensors | `KvRecurrent` only | KV-only reuse is disabled; recurrent/SSM state must be restored with KV for exact continuation. |
 | Families with uncertain state layout | disabled until certified | Unknown families should not silently reuse state. |
 | Diagnostic/correctness runs | `FullState`, `RecurrentOnly`, or `KvRecurrent` | Used to prove exactness and payload economics before enabling serving policy. |
@@ -253,6 +254,15 @@ For a faster rerun after building locally:
 SKIPPY_CACHE_SKIP_BUILD=1 evals/skippy-cache-family-bench.sh /tmp/skippy-cache-family-bench
 ```
 
+Reproduce the MoE expert-stage cache smoke with:
+
+```bash
+python3 evals/skippy-moe-expert-smoke.py \
+  --output-dir /tmp/skippy-moe-expert-smoke \
+  --llama-stage-build-dir .deps/llama-build/build-stage-abi-metal \
+  --n-gpu-layers 999
+```
+
 Local correctness evidence below was collected on the same machine with
 `n_predict = 1`, `n_gpu_layers = -1`, Skippy `--runtime-lane-count 1`, and
 llama-server `--parallel 1`. The payload column is the production serving
@@ -347,6 +357,13 @@ restored from native sequence `0` into native sequence `1`,
 suffix-prefill-then-decode matched, repeated hits stayed stable, and
 recurrent-only ranges correctly recorded zero native KV bytes plus recurrent
 state.
+
+The MoE expert-stage smoke additionally passed `9/9` rows for OLMoE,
+Qwen2-MoE, and Qwen3-MoE. That run verifies nonzero expert tensor ownership in
+each tested stage range, nonzero resident KV cache bytes, native sequence remap
+`0 -> 1`, suffix-prefill match, and repeated hit stability. `ResidentKv`
+reports zero serialized payload bytes in this mode because the production hit
+borrows resident runtime state instead of exporting a portable payload.
 
 `state-handoff` reports distinguish behavioral exactness from byte-stable state
 re-export. `status = pass` means the restored cache state produced the same next

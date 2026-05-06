@@ -37,6 +37,13 @@
   `qwen3moe` instead of the dense Qwen3 fallback. The locally cached 480B layer
   package has `activation_width = 6144` in its manifest, and a package-backed
   `ResidentKv` smoke passed for layer `3..4` with native sequence remap.
+- MoE expert-stage smoke is now reproducible with
+  `evals/skippy-moe-expert-smoke.py`. The local Metal evidence under
+  `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` passed OLMoE,
+  Qwen2-MoE, and Qwen3-MoE for one-stage, split-middle, and split-final ranges.
+  Each row confirmed expert tensor ownership in the tested stage range,
+  resident KV cache bytes, native sequence remap `0 -> 1`, suffix-prefill
+  match, and repeated hit stability.
 
 ## DeepSeek3 Exact-State Certification
 
