@@ -355,6 +355,47 @@ async fn resolve_model_identifier_repo_ref_returns_all_layered_package_files() {
 
 #[tokio::test]
 #[serial]
+async fn resolve_model_identifier_rejects_layers_repo_without_package_ggufs() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-layered-non-gguf");
+    let _manifest = create_cache_repo_file(
+        &temp,
+        "meshllm/Reports-layers",
+        "abcdef1234567890",
+        "model-package.json",
+        12,
+    );
+    let _report = create_cache_repo_file(
+        &temp,
+        "meshllm/Reports-layers",
+        "abcdef1234567890",
+        "reports/certification.gguf",
+        10,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let err = resolve_model_identifier("meshllm/Reports-layers")
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("Delete only supports GGUF models"),
+        "{err:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}
+
+#[tokio::test]
+#[serial]
 async fn delete_model_by_identifier_removes_all_layered_package_files() {
     let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
     let prev_hf_home = std::env::var_os("HF_HOME");

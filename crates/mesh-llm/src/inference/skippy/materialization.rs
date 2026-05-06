@@ -315,7 +315,9 @@ fn materialized_stage_removal_candidates(
         if !file_name.starts_with("source-") {
             continue;
         }
-        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
         let Ok(index) = serde_json::from_slice::<SourceIndex>(&bytes) else {
             continue;
         };
@@ -544,6 +546,7 @@ mod tests {
         };
         let index_path = root.join("source-test.json");
         fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
+        fs::create_dir(root.join("source-unreadable.json")).unwrap();
 
         let preview = materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
         assert_eq!(preview, vec![artifact.clone()]);

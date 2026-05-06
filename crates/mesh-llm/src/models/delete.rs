@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use hf_hub::types::cache::{CachedRevisionInfo, HFCacheInfo};
+use hf_hub::types::cache::{CachedFileInfo, CachedRevisionInfo, HFCacheInfo};
 
 use crate::models::local::{
     gguf_metadata_cache_path, huggingface_hub_cache_dir, huggingface_identity_for_path,
@@ -73,10 +73,15 @@ async fn resolve_cached_hf_ref(
                 continue;
             }
             if file.is_empty() && repo_id.ends_with("-layers") {
-                let matches = layered_package_owned_paths(cached_revision);
-                if !matches.is_empty() {
+                if cached_revision
+                    .files
+                    .iter()
+                    .any(|file| is_layered_package_gguf_artifact(cached_revision, file))
+                {
+                    let matches = layered_package_owned_paths(cached_revision);
                     return Ok(matches);
                 }
+                bail!("Delete only supports GGUF models: {repo_id}");
             }
             let sibling_entries: Vec<(String, Option<u64>)> = cached_revision
                 .files
@@ -126,6 +131,17 @@ fn layered_package_owned_paths(revision: &CachedRevisionInfo) -> Vec<PathBuf> {
         .collect();
     matches.sort();
     matches
+}
+
+fn is_layered_package_gguf_artifact(revision: &CachedRevisionInfo, file: &CachedFileInfo) -> bool {
+    let relative = file
+        .file_path
+        .strip_prefix(&revision.snapshot_path)
+        .unwrap_or(file.file_path.as_path())
+        .to_string_lossy()
+        .replace('\\', "/");
+    (relative.starts_with("shared/") || relative.starts_with("layers/"))
+        && relative.ends_with(".gguf")
 }
 
 fn find_related_hf_cache_paths(cache_info: &HFCacheInfo, path: &Path) -> Vec<PathBuf> {

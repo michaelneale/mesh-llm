@@ -26,9 +26,14 @@ fn model_ref_paths() -> &'static Mutex<HashMap<String, PathBuf>> {
 
 fn remember_model_ref_path(model_ref: &str, path: &Path) {
     if let Ok(mut paths) = model_ref_paths().lock() {
-        paths
-            .entry(model_ref.to_string())
-            .or_insert_with(|| path.to_path_buf());
+        match paths.get(model_ref) {
+            Some(existing)
+                if model_ref_path_preference_key(existing)
+                    <= model_ref_path_preference_key(path) => {}
+            _ => {
+                paths.insert(model_ref.to_string(), path.to_path_buf());
+            }
+        }
     }
 }
 
@@ -358,6 +363,36 @@ fn cache_scanned_file_path(
         .join(relative)
 }
 
+fn cached_relative_file(revision: &CachedRevisionInfo, file: &CachedFileInfo) -> String {
+    file.file_path
+        .strip_prefix(&revision.snapshot_path)
+        .unwrap_or(file.file_path.as_path())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn layered_package_relative_preference(relative_file: &str) -> u8 {
+    if relative_file == "shared/output.gguf" {
+        0
+    } else if is_layered_package_direct_shared_relative_file(relative_file) {
+        1
+    } else if layered_package_layer_index(relative_file).is_some() {
+        2
+    } else if is_layered_package_gguf_relative_file(relative_file) {
+        3
+    } else {
+        4
+    }
+}
+
+fn model_ref_path_preference_key(path: &Path) -> (u8, String) {
+    let rank = huggingface_identity_for_path(path)
+        .filter(|identity| identity.repo_id.ends_with("-layers"))
+        .map(|identity| layered_package_relative_preference(&identity.file))
+        .unwrap_or(0);
+    (rank, path.to_string_lossy().to_string())
+}
+
 fn push_model_name(
     path: &Path,
     names: &mut Vec<String>,
@@ -398,7 +433,15 @@ fn scan_hf_cache_models(names: &mut Vec<String>, seen: &mut HashSet<String>, min
             continue;
         }
         for revision in &repo.revisions {
-            for file in &revision.files {
+            let mut files = revision.files.iter().collect::<Vec<_>>();
+            files.sort_by(|left, right| {
+                let left_relative = cached_relative_file(revision, left);
+                let right_relative = cached_relative_file(revision, right);
+                layered_package_relative_preference(&left_relative)
+                    .cmp(&layered_package_relative_preference(&right_relative))
+                    .then_with(|| left_relative.cmp(&right_relative))
+            });
+            for file in files {
                 if !file.file_name.ends_with(".gguf") {
                     continue;
                 }
@@ -441,8 +484,7 @@ fn hf_identity_model_ref(identity: &HuggingFaceModelIdentity) -> String {
 
 fn layered_package_model_ref(identity: &HuggingFaceModelIdentity) -> Option<String> {
     if identity.repo_id.ends_with("-layers")
-        && (layered_package_layer_index(&identity.file).is_some()
-            || is_layered_package_shared_file(identity))
+        && is_layered_package_gguf_relative_file(&identity.file)
     {
         Some(format_model_ref(&identity.repo_id, None, None))
     } else {
@@ -450,11 +492,13 @@ fn layered_package_model_ref(identity: &HuggingFaceModelIdentity) -> Option<Stri
     }
 }
 
-fn is_layered_package_shared_file(identity: &HuggingFaceModelIdentity) -> bool {
-    is_layered_package_shared_relative_file(&identity.file)
+fn is_layered_package_gguf_relative_file(relative_file: &str) -> bool {
+    (relative_file.starts_with("shared/") || relative_file.starts_with("layers/"))
+        && relative_file.ends_with(".gguf")
+        && Path::new(relative_file).file_name().is_some()
 }
 
-fn is_layered_package_shared_relative_file(relative_file: &str) -> bool {
+fn is_layered_package_direct_shared_relative_file(relative_file: &str) -> bool {
     let Some(file_name) = relative_file.strip_prefix("shared/") else {
         return false;
     };
@@ -462,7 +506,8 @@ fn is_layered_package_shared_relative_file(relative_file: &str) -> bool {
 }
 
 fn layered_package_layer_index(relative_file: &str) -> Option<usize> {
-    let file_name = relative_file.strip_prefix("layers/")?;
+    let relative = relative_file.strip_prefix("layers/")?;
+    let file_name = Path::new(relative).file_name()?.to_str()?;
     let index = file_name.strip_prefix("layer-")?.strip_suffix(".gguf")?;
     if index.is_empty() || !index.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
@@ -489,23 +534,30 @@ fn layered_package_gguf_paths(path: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
     let root = layered_package_snapshot_root(path, &identity)?;
     let mut paths = Vec::new();
     for subdir in ["shared", "layers"] {
-        let dir = root.join(subdir);
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-            {
-                paths.push(path);
-            }
-        }
+        collect_gguf_paths_recursive(&root.join(subdir), &mut paths);
     }
     paths.sort();
     Some((root, paths))
+}
+
+fn collect_gguf_paths_recursive(dir: &Path, paths: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_gguf_paths_recursive(&path, paths);
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        {
+            paths.push(path);
+        }
+    }
 }
 
 pub fn layered_package_layer_count_for_path(path: &Path) -> Option<usize> {
@@ -1145,6 +1197,9 @@ mod tests {
     #[test]
     #[serial]
     fn scan_installed_models_collapses_layered_package_files() {
+        if let Ok(mut paths) = model_ref_paths().lock() {
+            paths.clear();
+        }
         let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
         let prev_hf_home = std::env::var_os("HF_HOME");
         let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
@@ -1162,13 +1217,22 @@ mod tests {
         let shared = snapshot.join("shared").join("embeddings.gguf");
         let layer_000 = snapshot.join("layers").join("layer-000.gguf");
         let layer_001 = snapshot.join("layers").join("layer-001.gguf");
+        let nested_layer_002 = snapshot
+            .join("layers")
+            .join("blocks")
+            .join("layer-002.gguf");
+        let nested_shared = snapshot.join("shared").join("nested").join("extra.gguf");
         std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
         std::fs::create_dir_all(layer_000.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(nested_layer_002.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(nested_shared.parent().unwrap()).unwrap();
         std::fs::create_dir_all(repo_dir.join("refs")).unwrap();
         std::fs::write(repo_dir.join("refs").join("main"), revision).unwrap();
         std::fs::write(&shared, b"shared").unwrap();
         std::fs::write(&layer_000, b"layer-000").unwrap();
         std::fs::write(&layer_001, b"layer-001").unwrap();
+        std::fs::write(&nested_layer_002, b"layer-002").unwrap();
+        std::fs::write(&nested_shared, b"nested").unwrap();
 
         std::env::set_var("HF_HUB_CACHE", &temp);
         std::env::remove_var("HF_HOME");
@@ -1180,7 +1244,15 @@ mod tests {
             installed,
             vec!["meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers".to_string()]
         );
-        assert_eq!(layered_package_layer_count_for_path(&layer_000), Some(2));
+        assert_eq!(
+            find_model_path("meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers"),
+            shared
+        );
+        assert_eq!(layered_package_layer_count_for_path(&layer_000), Some(3));
+        assert_eq!(
+            layered_package_total_bytes_for_path(&layer_000),
+            Some(6 + 9 + 9 + 9 + 6)
+        );
 
         let _ = std::fs::remove_dir_all(&temp);
         restore_env("HF_HUB_CACHE", prev_hub_cache);
@@ -1205,7 +1277,7 @@ mod tests {
     }
 
     #[test]
-    fn layered_package_shared_matching_requires_direct_child() {
+    fn layered_package_shared_matching_accepts_nested_package_artifacts() {
         let direct = HuggingFaceModelIdentity {
             repo_id: "meshllm/Demo-layers".to_string(),
             revision: "deadbeef".to_string(),
@@ -1223,12 +1295,15 @@ mod tests {
             layered_package_model_ref(&direct),
             Some("meshllm/Demo-layers".to_string())
         );
-        assert_eq!(layered_package_model_ref(&nested), None);
+        assert_eq!(
+            layered_package_model_ref(&nested),
+            Some("meshllm/Demo-layers".to_string())
+        );
     }
 
     #[test]
     fn layered_package_layer_matching_is_separator_safe_after_normalization() {
-        let relative = "layers\\layer-000.gguf".replace('\\', "/");
+        let relative = "layers\\block-0\\layer-000.gguf".replace('\\', "/");
 
         assert_eq!(layered_package_layer_index(&relative), Some(0));
     }
