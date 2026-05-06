@@ -34,9 +34,9 @@ async fn mesh_client_join_and_status() {
 }
 
 #[tokio::test]
-async fn mesh_client_api_base_join_reports_connected() {
+async fn api_backed_client_join_updates_status() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken("api-base-token".to_string());
+    let token = InviteToken("api-mode-token".to_string());
     let mut client = ClientBuilder::new(kp, token)
         .with_api_base_url("http://127.0.0.1:9347".to_string())
         .build()
@@ -49,6 +49,7 @@ async fn mesh_client_api_base_join_reports_connected() {
 
     let status_after = client.status().await;
     assert!(status_after.connected);
+    assert_eq!(status_after.peer_count, 1);
 
     client.disconnect().await;
     let status_disconnected = client.status().await;
