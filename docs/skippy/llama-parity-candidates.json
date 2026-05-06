@@ -276,9 +276,10 @@
       "llama_model": "rwkv6",
       "family": "rwkv6",
       "status": "candidate_stateful",
-      "repo": "jpodivin/rwkv-4-pile-169m-GGUF",
-      "include": "*.gguf",
-      "recurrent": "all"
+      "repo": "latestissue/rwkv-6-finch-1b6-gguf",
+      "include": "rwkv-6-finch-1b6-Q4_K.gguf",
+      "recurrent": "all",
+      "notes": "replaces jpodivin/rwkv-4-pile-169m-GGUF because those local files use legacy fmgg/GGML magic and cannot be inspected as GGUF; text lane passed in llama-parity-rwkv6-runtime-slice-3; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
     },
     {
       "llama_model": "rwkv7",

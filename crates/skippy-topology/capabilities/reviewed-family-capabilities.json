@@ -362,5 +362,30 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+    "source_repo": "latestissue/rwkv-6-finch-1b6-gguf",
+    "source_revision": "9f4420bafb8fe463599b9983d81e12e1868c3746",
+    "source_file": "rwkv-6-finch-1b6-Q4_K.gguf",
+    "canonical_ref": "latestissue/rwkv-6-finch-1b6-gguf@9f4420bafb8fe463599b9983d81e12e1868c3746/rwkv-6-finch-1b6-Q4_K.gguf",
+    "distribution_id": "rwkv-6-finch-1b6-Q4_K",
+    "selector": "Q4_K",
+    "capability": {
+      "family_id": "rwkv6",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

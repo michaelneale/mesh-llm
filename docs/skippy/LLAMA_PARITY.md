@@ -137,7 +137,7 @@ or a blocker is discovered.
 | `starcoder2` | `starcoder2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
-| `rwkv6` | `rwkv6` | selected | no | pending | pending | `KvRecurrent` target | pending | pending |
+| `rwkv6` | `rwkv6` | replacement selected | yes | pass | rejected too large | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
 | `qwen2moe` | `qwen2moe` | needs candidate | no | pending | pending | pending | pending | pending |
 | `qwen3moe` | `qwen3moe` | needs candidate | no | pending | pending | pending | pending | pending |
@@ -181,8 +181,8 @@ themselves until the reviewed topology records are updated.
 | `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba2` | see `target/family-certify/llama-parity-mamba2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
+| `rwkv6` | see `target/family-certify/llama-parity-rwkv6-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | rejected too large | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `rwkv7` | see `target/family-certify/llama-parity-external-available` | blocked before split execution | untested | accepted | needs activation-frame sideband for layer-0 `v_first` |
-| `gemma` | `ggml-org/gemma-3-270m-it-GGUF` | runtime-slice opens but split token mismatches | passed | accepted | blocked until split output parity is fixed |
 
 Raw run directories:
 
@@ -207,6 +207,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
+- `target/family-certify/llama-parity-rwkv6-runtime-slice-3`
 - `target/family-certify/cache-smoke/reports`
 
 ## Current Blockers
@@ -215,12 +216,16 @@ Raw run directories:
   `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32` wire, `gpt2`,
   `gptneox`, `granite`, `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`,
   `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl`
-  text, `stablelm`, and `starcoder2`.
+  text, `rwkv6`, `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
 - `rwkv7` needs a wider activation-frame contract. Later RWKV7 layers depend
   on the layer-0 `v_first` tensor, so a downstream stage cannot be correct with
   boundary hidden state alone.
+- The old local `rwkv6` sample was not a GGUF artifact. Its files carry the
+  legacy `fmgg` magic and fail GGUF metadata inspection, so the replacement
+  candidate is `latestissue/rwkv-6-finch-1b6-gguf`. The replacement passed the
+  text lane; exact state is intentionally rejected as too large.
 - `gemma` is stage-correct only with `f32` activation wire for the sampled
   artifact. The earlier default-`f16` cheap run predicted token `0`, and `q8`
   predicted token `107`, while `f32` matched token `1106`.

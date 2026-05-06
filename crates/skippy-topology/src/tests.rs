@@ -462,6 +462,14 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "qwen3next"
     );
+    let rwkv6 =
+        infer_family_capability("latestissue/rwkv-6-finch-1b6-gguf:Q4_K", 24, 2048).expect("rwkv6");
+    assert_eq!(rwkv6.family_id, "rwkv6");
+    assert_eq!(rwkv6.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        rwkv6.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
     assert_eq!(
         infer_family_capability("Qwen/Qwen3-0.6B", 28, 1024)
             .expect("qwen3")

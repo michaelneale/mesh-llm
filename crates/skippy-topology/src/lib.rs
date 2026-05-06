@@ -927,6 +927,23 @@ pub fn qwen3next_capability(
     }
 }
 
+pub fn rwkv6_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    FamilyCapabilityRecord {
+        family_id: "rwkv6".to_string(),
+        layer_count,
+        activation_width,
+        default_wire_dtype: WireDType::F16,
+        q8_wire_validation: WireValidation::Untested,
+        exact_state_mobility: ExactStateMobility::RejectedTooLarge,
+        recurrent_ranges: vec![LayerRange {
+            start: 0,
+            end: layer_count,
+        }],
+        split_constraints: Vec::new(),
+        sidebands: Vec::new(),
+    }
+}
+
 pub fn gemma4_e4b_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
     FamilyCapabilityRecord {
         family_id: "gemma4_e4b".to_string(),
@@ -1032,6 +1049,9 @@ pub fn infer_family_capability(
                 end: layer_count,
             }],
         ));
+    }
+    if compact.contains("rwkv6") {
+        return Some(rwkv6_capability(layer_count, activation_width));
     }
     if compact.contains("qwen3") {
         return Some(qwen3_dense_capability(layer_count, activation_width));
