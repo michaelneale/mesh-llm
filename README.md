@@ -63,6 +63,18 @@ curl http://localhost:9337/v1/chat/completions \
   -d '{"model":"GLM-4.7-Flash-Q4_K_M","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+## Supported model families
+
+Mesh LLM's stage runtime tracks llama.cpp family parity with one reviewed GGUF representative per family. The current reviewed support set covers 66 model families for text stage-split serving, including:
+
+```text
+Arcee, Baichuan, Bloom, ChatGLM, CodeShell, Cohere2, Deci, DeepSeek, DeepSeek2, DeepSeek3, EXAONE, EXAONE4, Falcon, Falcon-H1, Gemma, Gemma2, Gemma3, Gemma4, GLM4, GLM-4.7 Flash, GLM4-MoE, GPT2, GPT-NeoX, Granite, Granite-Hybrid, Granite-MoE, Hunyuan-Dense, Hunyuan-MoE, InternLM2, Jamba, LFM2, Llama, Maincoder, Mamba, Mamba2, MiniCPM, MiniCPM3, MiniMax M2.7, Mistral, MPT, OLMo, OLMo2, OLMoE, OpenELM, Phi, Phi2, PhiMoE, Plamo3, PLM, Qwen2, Qwen2-MoE, Qwen3 dense, Qwen3-MoE, Qwen3.5 recurrent, Qwen3Next, Refact, RWKV6, RWKV7, SmallThinker, SmolLM3, StableLM, StarCoder2, XVerse
+```
+
+Qwen2-VL and Qwen3-VL are supported for text split/cache; split multimodal serving remains behind projector/media sideband certification. DeepSeek3 is supported through package-backed stages because the full GGUF is too large for the cheap local baseline.
+
+See [docs/skippy/FAMILY_STATUS.md](docs/skippy/FAMILY_STATUS.md) for the full artifact, split, wire dtype, cache policy, and exception matrix. See [docs/skippy/LLAMA_PARITY.md](docs/skippy/LLAMA_PARITY.md) for the remaining llama.cpp parity queue.
+
 ## Common workflows
 
 ### 1. Try the public mesh

@@ -16,6 +16,26 @@
     }
   },
   {
+    "model_id": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf:Q8_0",
+    "source_repo": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf",
+    "source_revision": "ba673b0fcc82c6f247864338366cdf58e10fc8fa",
+    "source_file": "qwen2.5-0.5b-instruct-q8_0.gguf",
+    "canonical_ref": "meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf@ba673b0fcc82c6f247864338366cdf58e10fc8fa/qwen2.5-0.5b-instruct-q8_0.gguf",
+    "distribution_id": "qwen2.5-0.5b-instruct-q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "qwen2",
+      "layer_count": 24,
+      "activation_width": 896,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M",
     "distribution_id": "Llama-3.2-1B-Instruct-Q4_K_M",
     "selector": "Q4_K_M",
@@ -26,6 +46,46 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
       "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Qwen2-VL-2B-Instruct-GGUF",
+    "source_revision": "2160e265f926e84e84dbb1c73e623b5324b23707",
+    "source_file": "Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Qwen2-VL-2B-Instruct-GGUF@2160e265f926e84e84dbb1c73e623b5324b23707/Qwen2-VL-2B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Qwen2-VL-2B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "qwen2vl",
+      "layer_count": 28,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "untested",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+    "source_revision": "52d6c8ffea26cc873ac5ad116f8631268d7eb503",
+    "source_file": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "Qwen/Qwen3-VL-2B-Instruct-GGUF@52d6c8ffea26cc873ac5ad116f8631268d7eb503/Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "Qwen3VL-2B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "qwen3vl",
+      "layer_count": 28,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "untested",
       "recurrent_ranges": [],
       "split_constraints": [],
       "sidebands": []
@@ -45,6 +105,26 @@
       "activation_width": 2048,
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF",
+    "source_revision": "8f007de7920d36e28a917817014c356b4557a6be",
+    "source_file": "deepseek-llm-7b-chat-q4_k_m-imat.gguf",
+    "canonical_ref": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF@8f007de7920d36e28a917817014c356b4557a6be/deepseek-llm-7b-chat-q4_k_m-imat.gguf",
+    "distribution_id": "deepseek-llm-7b-chat-q4_k_m-imat",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "deepseek",
+      "layer_count": 30,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
       "exact_state_mobility": "accepted",
       "recurrent_ranges": [],
       "split_constraints": [],
@@ -81,6 +161,26 @@
     "selector": "Q4_K_M",
     "capability": {
       "family_id": "glm47_flash",
+      "layer_count": 47,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF:MXFP4_MOE",
+    "source_repo": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF",
+    "source_revision": "32edcb1326558c4766554f0601f5f385e8cd77ff",
+    "source_file": "GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE.gguf",
+    "canonical_ref": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF@32edcb1326558c4766554f0601f5f385e8cd77ff/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE.gguf",
+    "distribution_id": "GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE",
+    "selector": "MXFP4_MOE",
+    "capability": {
+      "family_id": "glm4_moe",
       "layer_count": 47,
       "activation_width": 2048,
       "default_wire_dtype": "f16",
@@ -150,8 +250,16 @@
       "split_constraints": [
         {
           "kind": "shared_kv_producer_consumer",
-          "range": { "start": 0, "end": 0 },
-          "forbidden_boundaries": [12, 14, 24, 28],
+          "range": {
+            "start": 0,
+            "end": 0
+          },
+          "forbidden_boundaries": [
+            12,
+            14,
+            24,
+            28
+          ],
           "reject_boundary_inside": false,
           "reason": "known-bad Gemma4 E4B shared-KV producer/consumer boundary; keep this cut rejected unless KV replay or KV transfer is added"
         }
@@ -186,6 +294,26 @@
     }
   },
   {
+    "model_id": "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
+    "source_repo": "ggml-org/gemma-3-270m-it-GGUF",
+    "source_revision": "e7647be17ae1108f2f605ed061ca0608b171afff",
+    "source_file": "gemma-3-270m-it-Q8_0.gguf",
+    "canonical_ref": "ggml-org/gemma-3-270m-it-GGUF@e7647be17ae1108f2f605ed061ca0608b171afff/gemma-3-270m-it-Q8_0.gguf",
+    "distribution_id": "gemma-3-270m-it-Q8_0",
+    "selector": "Q8_0",
+    "capability": {
+      "family_id": "gemma",
+      "layer_count": 18,
+      "activation_width": 640,
+      "default_wire_dtype": "f32",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "bartowski/gemma-2-2b-it-GGUF:Q4_K_M",
     "source_repo": "bartowski/gemma-2-2b-it-GGUF",
     "source_revision": "855f67caed130e1befc571b52bd181be2e858883",
@@ -206,6 +334,26 @@
     }
   },
   {
+    "model_id": "TheBloke/phi-2-GGUF:Q4_K_M",
+    "source_repo": "TheBloke/phi-2-GGUF",
+    "source_revision": "5a454d977c6438bb9fb2df233c8ca70f21c87420",
+    "source_file": "phi-2.Q4_K_M.gguf",
+    "canonical_ref": "TheBloke/phi-2-GGUF@5a454d977c6438bb9fb2df233c8ca70f21c87420/phi-2.Q4_K_M.gguf",
+    "distribution_id": "phi-2.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phi2",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M",
     "source_repo": "tiiuae/Falcon-H1-1.5B-Instruct-GGUF",
     "source_revision": "0d3a6cfe25fb4eeab0153fb8623aac5b69d6bd0a",
@@ -220,7 +368,12 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "validated",
       "exact_state_mobility": "rejected_too_large",
-      "recurrent_ranges": [{ "start": 0, "end": 24 }],
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
       "split_constraints": [],
       "sidebands": []
     }
@@ -239,6 +392,46 @@
       "activation_width": 4096,
       "default_wire_dtype": "f16",
       "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "allenai/OLMo-2-1124-7B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "allenai/OLMo-2-1124-7B-Instruct-GGUF",
+    "source_revision": "410e0069f64869e4b1d17d8de04810b881fd824b",
+    "source_file": "olmo-2-1124-7B-instruct-Q4_K_M.gguf",
+    "canonical_ref": "allenai/OLMo-2-1124-7B-Instruct-GGUF@410e0069f64869e4b1d17d8de04810b881fd824b/olmo-2-1124-7B-instruct-Q4_K_M.gguf",
+    "distribution_id": "olmo-2-1124-7B-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "olmo2",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF",
+    "source_revision": "7448e4317d367a3d6838fe367fe996758da6fc6e",
+    "source_file": "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF@7448e4317d367a3d6838fe367fe996758da6fc6e/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+    "distribution_id": "OLMoE-1B-7B-0924-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "olmoe",
+      "layer_count": 16,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
       "exact_state_mobility": "accepted",
       "recurrent_ranges": [],
       "split_constraints": [],
@@ -280,7 +473,918 @@
       "default_wire_dtype": "f16",
       "q8_wire_validation": "rejected",
       "exact_state_mobility": "rejected_too_large",
-      "recurrent_ranges": [{ "start": 0, "end": 48 }],
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 48
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "meshllm/lfm2-350m-parity-q4_k_m-gguf:q4_k_m",
+    "source_repo": "meshllm/lfm2-350m-parity-q4_k_m-gguf",
+    "source_revision": "8ee744b5e828d851b872fc5ac5dc6724976e8203",
+    "source_file": "lfm2-350m-q4_k_m.gguf",
+    "canonical_ref": "meshllm/lfm2-350m-parity-q4_k_m-gguf@8ee744b5e828d851b872fc5ac5dc6724976e8203/lfm2-350m-q4_k_m.gguf",
+    "distribution_id": "lfm2-350m-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "lfm2",
+      "layer_count": 16,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 16
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+    "source_repo": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF",
+    "source_revision": "02d70acd708332ec4e78e9ceefe116851a307411",
+    "source_file": "ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF@02d70acd708332ec4e78e9ceefe116851a307411/ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
+    "distribution_id": "ai21labs_AI21-Jamba2-3B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "jamba",
+      "layer_count": 28,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 28
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mamba-130m-hf-GGUF",
+    "source_revision": "ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1",
+    "source_file": "mamba-130m-hf.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mamba-130m-hf-GGUF@ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1/mamba-130m-hf.Q4_K_M.gguf",
+    "distribution_id": "mamba-130m-hf.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mamba",
+      "layer_count": 24,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mamba-2.8b-hf-GGUF",
+    "source_revision": "c71444344da0c2fd57d8e11d4d8b4b5debd16ca7",
+    "source_file": "mamba-2.8b-hf.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mamba-2.8b-hf-GGUF@c71444344da0c2fd57d8e11d4d8b4b5debd16ca7/mamba-2.8b-hf.Q4_K_M.gguf",
+    "distribution_id": "mamba-2.8b-hf.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mamba2",
+      "layer_count": 64,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 64
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S",
+    "source_repo": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF",
+    "source_revision": "414ad2bb294cb29d2281ffa3e09a0293ae5d9f94",
+    "source_file": "Qwen2-1.5B-2x-MoE.Q4_K_S.gguf",
+    "canonical_ref": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF@414ad2bb294cb29d2281ffa3e09a0293ae5d9f94/Qwen2-1.5B-2x-MoE.Q4_K_S.gguf",
+    "distribution_id": "Qwen2-1.5B-2x-MoE.Q4_K_S",
+    "selector": "Q4_K_S",
+    "capability": {
+      "family_id": "qwen2moe",
+      "layer_count": 28,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF",
+    "source_revision": "7bde5ba921ce6969f494d75b6c98b8c211ca4d45",
+    "source_file": "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF@7bde5ba921ce6969f494d75b6c98b8c211ca4d45/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M.gguf",
+    "distribution_id": "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "qwen3moe",
+      "layer_count": 28,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+    "source_repo": "latestissue/rwkv-6-finch-1b6-gguf",
+    "source_revision": "9f4420bafb8fe463599b9983d81e12e1868c3746",
+    "source_file": "rwkv-6-finch-1b6-Q4_K.gguf",
+    "canonical_ref": "latestissue/rwkv-6-finch-1b6-gguf@9f4420bafb8fe463599b9983d81e12e1868c3746/rwkv-6-finch-1b6-Q4_K.gguf",
+    "distribution_id": "rwkv-6-finch-1b6-Q4_K",
+    "selector": "Q4_K",
+    "capability": {
+      "family_id": "rwkv6",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Mungert/rwkv7-191M-world-GGUF:q4_k",
+    "source_repo": "Mungert/rwkv7-191M-world-GGUF",
+    "source_revision": "e49a4381662e78e48ca3079770a6a47e203c22ab",
+    "source_file": "rwkv7-191M-world-f16-q4_k.gguf",
+    "canonical_ref": "Mungert/rwkv7-191M-world-GGUF@e49a4381662e78e48ca3079770a6a47e203c22ab/rwkv7-191M-world-f16-q4_k.gguf",
+    "distribution_id": "rwkv7-191M-world-f16-q4_k",
+    "selector": "q4_k",
+    "capability": {
+      "family_id": "rwkv7",
+      "layer_count": 12,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 12
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": [
+        {
+          "kind": "rwkv7_v_first",
+          "first_required_layer": 12,
+          "reason": "RWKV7 downstream slices require the layer-0 v_first activation sideband in addition to the boundary hidden state"
+        }
+      ]
+    }
+  },
+  {
+    "model_id": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF:MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "source_repo": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF",
+    "source_revision": "5076cc11784d16955b423a22c767838bbe14d9ad",
+    "source_file": "f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K.gguf",
+    "canonical_ref": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF@5076cc11784d16955b423a22c767838bbe14d9ad/f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K.gguf",
+    "distribution_id": "f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "selector": "MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "capability": {
+      "family_id": "granite_hybrid",
+      "layer_count": 32,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 32
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/tiny-random-granite-moe-GGUF",
+    "source_revision": "6cd39b53264cda53dc81462b8be16ff903f2366a",
+    "source_file": "tiny-random-granite-moe.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/tiny-random-granite-moe-GGUF@6cd39b53264cda53dc81462b8be16ff903f2366a/tiny-random-granite-moe.Q4_K_M.gguf",
+    "distribution_id": "tiny-random-granite-moe.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "granite_moe",
+      "layer_count": 6,
+      "activation_width": 64,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF",
+    "source_revision": "9be2c106c8c073f5a140ec03c8c7a6a6e72d097b",
+    "source_file": "ibm-granite_granite-3.2-2b-instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF@9be2c106c8c073f5a140ec03c8c7a6a6e72d097b/ibm-granite_granite-3.2-2b-instruct-Q4_K_M.gguf",
+    "distribution_id": "ibm-granite_granite-3.2-2b-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "granite",
+      "layer_count": 40,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF",
+    "source_revision": "e3b14825a989269a5b97bc0ced18af69b94254bc",
+    "source_file": "hunyuan-1.8b-instruct-q4_k_m.gguf",
+    "canonical_ref": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF@e3b14825a989269a5b97bc0ced18af69b94254bc/hunyuan-1.8b-instruct-q4_k_m.gguf",
+    "distribution_id": "hunyuan-1.8b-instruct-q4_k_m",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "hunyuan_dense",
+      "layer_count": 32,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "warriorknight3/pythia-70m-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "warriorknight3/pythia-70m-Q4_K_M-GGUF",
+    "source_revision": "ba4a120b4593c70f38bb7a0b788d564266f9a4f1",
+    "source_file": "pythia-70m-q4_k_m.gguf",
+    "canonical_ref": "warriorknight3/pythia-70m-Q4_K_M-GGUF@ba4a120b4593c70f38bb7a0b788d564266f9a4f1/pythia-70m-q4_k_m.gguf",
+    "distribution_id": "pythia-70m-q4_k_m",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gptneox",
+      "layer_count": 6,
+      "activation_width": 512,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "QuantFactory/bloomz-560m-GGUF:Q4_K_M",
+    "source_repo": "QuantFactory/bloomz-560m-GGUF",
+    "source_revision": "e6bb9d1223649e37470868933633c7be8b802b0d",
+    "source_file": "bloomz-560m.Q4_K_M.gguf",
+    "canonical_ref": "QuantFactory/bloomz-560m-GGUF@e6bb9d1223649e37470868933633c7be8b802b0d/bloomz-560m.Q4_K_M.gguf",
+    "distribution_id": "bloomz-560m.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "bloom",
+      "layer_count": 24,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M",
+    "source_repo": "TheBloke/stablelm-zephyr-3b-GGUF",
+    "source_revision": "465310e5eb914190e89f531cc1c348812e27dcea",
+    "source_file": "stablelm-zephyr-3b.Q4_K_M.gguf",
+    "canonical_ref": "TheBloke/stablelm-zephyr-3b-GGUF@465310e5eb914190e89f531cc1c348812e27dcea/stablelm-zephyr-3b.Q4_K_M.gguf",
+    "distribution_id": "stablelm-zephyr-3b.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "stablelm",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "combos/starcoder2-3b-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "combos/starcoder2-3b-Q4_K_M-GGUF",
+    "source_revision": "b1e2a600035f177377307ec4f83bb121dddc72da",
+    "source_file": "starcoder2-3b-q4_k_m.gguf",
+    "canonical_ref": "combos/starcoder2-3b-Q4_K_M-GGUF@b1e2a600035f177377307ec4f83bb121dddc72da/starcoder2-3b-q4_k_m.gguf",
+    "distribution_id": "starcoder2-3b-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "starcoder2",
+      "layer_count": 30,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mpt-7b-chat-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mpt-7b-chat-GGUF",
+    "source_revision": "ece0fae7b970c1f8af1c7a53a36d141b1744ad54",
+    "source_file": "mpt-7b-chat.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mpt-7b-chat-GGUF@ece0fae7b970c1f8af1c7a53a36d141b1744ad54/mpt-7b-chat.Q4_K_M.gguf",
+    "distribution_id": "mpt-7b-chat.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mpt",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+    "source_revision": "6d70da17e749a471ccb62ade694486011a75cda3",
+    "source_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    "distribution_id": "Phi-3.5-mini-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phi",
+      "layer_count": 32,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/Phi-3.5-MoE-instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/Phi-3.5-MoE-instruct-GGUF",
+    "source_revision": "4b580329100cf44d7d041b6f63967b26869a6937",
+    "source_file": "Phi-3.5-MoE-instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/Phi-3.5-MoE-instruct-GGUF@4b580329100cf44d7d041b6f63967b26869a6937/Phi-3.5-MoE-instruct-Q4_K_M.gguf",
+    "distribution_id": "Phi-3.5-MoE-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "phimoe",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "QuantFactory/gpt2-GGUF:Q4_K_M",
+    "source_repo": "QuantFactory/gpt2-GGUF",
+    "source_revision": "7eae6f079f0164bff66b86eea5159f7a368f9381",
+    "source_file": "gpt2.Q4_K_M.gguf",
+    "canonical_ref": "QuantFactory/gpt2-GGUF@7eae6f079f0164bff66b86eea5159f7a368f9381/gpt2.Q4_K_M.gguf",
+    "distribution_id": "gpt2.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "gpt2",
+      "layer_count": 12,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF",
+    "source_revision": "94b49547f1931930f002226bc0a68b5f10a4ee25",
+    "source_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF@94b49547f1931930f002226bc0a68b5f10a4ee25/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "distribution_id": "Ministral-3-3B-Instruct-2512-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mistral",
+      "layer_count": 26,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/Hunyuan-A13B-Instruct-GGUF:UD-IQ2_XXS",
+    "source_repo": "unsloth/Hunyuan-A13B-Instruct-GGUF",
+    "source_revision": "62a00b68c1deb5fe630fe71b5db5530509b651fc",
+    "source_file": "Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
+    "canonical_ref": "unsloth/Hunyuan-A13B-Instruct-GGUF@62a00b68c1deb5fe630fe71b5db5530509b651fc/Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
+    "distribution_id": "Hunyuan-A13B-Instruct-UD-IQ2_XXS",
+    "selector": "UD-IQ2_XXS",
+    "capability": {
+      "family_id": "hunyuan_moe",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/internlm2_5-1_8b-chat-GGUF",
+    "source_revision": "f5dbdc487d2fa53d1fd75251e7414d102e983467",
+    "source_file": "internlm2_5-1_8b-chat-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/internlm2_5-1_8b-chat-GGUF@f5dbdc487d2fa53d1fd75251e7414d102e983467/internlm2_5-1_8b-chat-Q4_K_M.gguf",
+    "distribution_id": "internlm2_5-1_8b-chat-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "internlm2",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF",
+    "source_revision": "bd228a8d85e496c023b4ef04552cce2765bafb81",
+    "source_file": "baichuan2-7b-chat.Q4_K_M.gguf",
+    "canonical_ref": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF@bd228a8d85e496c023b4ef04552cce2765bafb81/baichuan2-7b-chat.Q4_K_M.gguf",
+    "distribution_id": "baichuan2-7b-chat.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "baichuan",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF",
+    "source_revision": "347ad15365d7e4c4fb0d206e07b87bdefe9e67d9",
+    "source_file": "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF@347ad15365d7e4c4fb0d206e07b87bdefe9e67d9/EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "EXAONE-3.5-2.4B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "exaone",
+      "layer_count": 30,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF:Q4_K_M",
+    "source_repo": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF",
+    "source_revision": "4e4f843c37937a5d43a2f391f59da27d90b45152",
+    "source_file": "LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF@4e4f843c37937a5d43a2f391f59da27d90b45152/LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    "distribution_id": "LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "exaone4",
+      "layer_count": 30,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
+    "source_revision": "dc804ce37a456c449d1306ca3d875f5fb01b4a9b",
+    "source_file": "c4ai-command-r7b-12-2024-q4_k_m.gguf",
+    "canonical_ref": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF@dc804ce37a456c449d1306ca3d875f5fb01b4a9b/c4ai-command-r7b-12-2024-q4_k_m.gguf",
+    "distribution_id": "c4ai-command-r7b-12-2024-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "cohere2",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF",
+    "source_revision": "7b901012e9e715c2f64e537e6331af0cdb424a21",
+    "source_file": "falcon-7b-instruct-q4_k_m.gguf",
+    "canonical_ref": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF@7b901012e9e715c2f64e537e6331af0cdb424a21/falcon-7b-instruct-q4_k_m.gguf",
+    "distribution_id": "falcon-7b-instruct-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "falcon",
+      "layer_count": 32,
+      "activation_width": 4544,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/Maincoder-1B-GGUF:Q2_K",
+    "source_repo": "mradermacher/Maincoder-1B-GGUF",
+    "source_revision": "1c963c98dfb478ea3b4719299bd85fbb5cf30899",
+    "source_file": "Maincoder-1B.Q2_K.gguf",
+    "canonical_ref": "mradermacher/Maincoder-1B-GGUF@1c963c98dfb478ea3b4719299bd85fbb5cf30899/Maincoder-1B.Q2_K.gguf",
+    "distribution_id": "Maincoder-1B.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "maincoder",
+      "layer_count": 32,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "LiteLLMs/OpenELM-270M-GGUF:Q2_K",
+    "source_repo": "LiteLLMs/OpenELM-270M-GGUF",
+    "source_revision": "11303f32f8786d979cee36f1fbcc3895f5c7231f",
+    "source_file": "Q2_K/Q2_K-00001-of-00001.gguf",
+    "canonical_ref": "LiteLLMs/OpenELM-270M-GGUF@11303f32f8786d979cee36f1fbcc3895f5c7231f/Q2_K/Q2_K-00001-of-00001.gguf",
+    "distribution_id": "Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "openelm",
+      "layer_count": 16,
+      "activation_width": 1280,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mmnga-o/plamo-3-nict-2b-base-gguf:IQ3_M",
+    "source_repo": "mmnga-o/plamo-3-nict-2b-base-gguf",
+    "source_revision": "0b028e355d6847732cef68a7d49757b9cde3a784",
+    "source_file": "plamo-3-nict-2b-base-IQ3_M.gguf",
+    "canonical_ref": "mmnga-o/plamo-3-nict-2b-base-gguf@0b028e355d6847732cef68a7d49757b9cde3a784/plamo-3-nict-2b-base-IQ3_M.gguf",
+    "distribution_id": "plamo-3-nict-2b-base-IQ3_M",
+    "selector": "IQ3_M",
+    "capability": {
+      "family_id": "plamo3",
+      "layer_count": 24,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf:Q2_K",
+    "source_repo": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf",
+    "source_revision": "d86087b9d3765d1c6757369b2cce6af4b9b2c1c4",
+    "source_file": "Refact-1_6B-fim.Q2_K.gguf",
+    "canonical_ref": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf@d86087b9d3765d1c6757369b2cce6af4b9b2c1c4/Refact-1_6B-fim.Q2_K.gguf",
+    "distribution_id": "Refact-1_6B-fim.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "refact",
+      "layer_count": 32,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:IQ2_M",
+    "source_repo": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF",
+    "source_revision": "86b3536ed1ca0dcb4716745642db4e6804bf3d32",
+    "source_file": "HuggingFaceTB_SmolLM3-3B-IQ2_M.gguf",
+    "canonical_ref": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF@86b3536ed1ca0dcb4716745642db4e6804bf3d32/HuggingFaceTB_SmolLM3-3B-IQ2_M.gguf",
+    "distribution_id": "HuggingFaceTB_SmolLM3-3B-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "smollm3",
+      "layer_count": 36,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "s3nh/MiniCPM-2B-dpo-fp32-GGUF:Q3_K_S",
+    "source_repo": "s3nh/MiniCPM-2B-dpo-fp32-GGUF",
+    "source_revision": "83e85efc8267f3034bdceeaa573cc2b92ba94ee7",
+    "source_file": "minicpm-2b-dpo-fp32.Q3_K_S.gguf",
+    "canonical_ref": "s3nh/MiniCPM-2B-dpo-fp32-GGUF@83e85efc8267f3034bdceeaa573cc2b92ba94ee7/minicpm-2b-dpo-fp32.Q3_K_S.gguf",
+    "distribution_id": "minicpm-2b-dpo-fp32.Q3_K_S",
+    "selector": "Q3_K_S",
+    "capability": {
+      "family_id": "minicpm",
+      "layer_count": 40,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF:IQ2_XXS",
+    "source_repo": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF",
+    "source_revision": "c1daa6a9e5691067469c4d00bd883aa4bb210c39",
+    "source_file": "MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS.gguf",
+    "canonical_ref": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF@c1daa6a9e5691067469c4d00bd883aa4bb210c39/MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS.gguf",
+    "distribution_id": "MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS",
+    "selector": "IQ2_XXS",
+    "capability": {
+      "family_id": "minicpm3",
+      "layer_count": 40,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "StatPan/42dot_LLM-PLM-1.3B_GGUF:q3_k_m",
+    "source_repo": "StatPan/42dot_LLM-PLM-1.3B_GGUF",
+    "source_revision": "bc4c646563d584f08eadceef486c034124e0ca40",
+    "source_file": "gguf-42dot_PLM-q3_k_m.gguf",
+    "canonical_ref": "StatPan/42dot_LLM-PLM-1.3B_GGUF@bc4c646563d584f08eadceef486c034124e0ca40/gguf-42dot_PLM-q3_k_m.gguf",
+    "distribution_id": "gguf-42dot_PLM-q3_k_m",
+    "selector": "q3_k_m",
+    "capability": {
+      "family_id": "plm",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/SmallThinker-3B-Preview-GGUF:IQ2_M",
+    "source_repo": "bartowski/SmallThinker-3B-Preview-GGUF",
+    "source_revision": "d07554b45b559f4272f2b959401233eb49a7d012",
+    "source_file": "SmallThinker-3B-Preview-IQ2_M.gguf",
+    "canonical_ref": "bartowski/SmallThinker-3B-Preview-GGUF@d07554b45b559f4272f2b959401233eb49a7d012/SmallThinker-3B-Preview-IQ2_M.gguf",
+    "distribution_id": "SmallThinker-3B-Preview-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "smallthinker",
+      "layer_count": 36,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/arcee-ai_AFM-4.5B-GGUF:IQ2_M",
+    "source_repo": "bartowski/arcee-ai_AFM-4.5B-GGUF",
+    "source_revision": "7c01c520766d940d39da6874cce439de7f9b8b79",
+    "source_file": "arcee-ai_AFM-4.5B-IQ2_M.gguf",
+    "canonical_ref": "bartowski/arcee-ai_AFM-4.5B-GGUF@7c01c520766d940d39da6874cce439de7f9b8b79/arcee-ai_AFM-4.5B-IQ2_M.gguf",
+    "distribution_id": "arcee-ai_AFM-4.5B-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "arcee",
+      "layer_count": 36,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/chatglm3-6b-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/chatglm3-6b-i1-GGUF",
+    "source_revision": "6b8d85948c7f38c19b8844223790bf95f01a7e1e",
+    "source_file": "chatglm3-6b.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/chatglm3-6b-i1-GGUF@6b8d85948c7f38c19b8844223790bf95f01a7e1e/chatglm3-6b.i1-IQ2_M.gguf",
+    "distribution_id": "chatglm3-6b.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "chatglm",
+      "layer_count": 28,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/CodeShell-7B-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/CodeShell-7B-i1-GGUF",
+    "source_revision": "3ebad8f32c2fb59c7a67cb1be0fdd524bcf250c4",
+    "source_file": "CodeShell-7B.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/CodeShell-7B-i1-GGUF@3ebad8f32c2fb59c7a67cb1be0fdd524bcf250c4/CodeShell-7B.i1-IQ2_M.gguf",
+    "distribution_id": "CodeShell-7B.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "codeshell",
+      "layer_count": 42,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/DeciLM-6b-instruct-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/DeciLM-6b-instruct-i1-GGUF",
+    "source_revision": "47ec508523d1a04de0f93f434be5bd9abc1436a1",
+    "source_file": "DeciLM-6b-instruct.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/DeciLM-6b-instruct-i1-GGUF@47ec508523d1a04de0f93f434be5bd9abc1436a1/DeciLM-6b-instruct.i1-IQ2_M.gguf",
+    "distribution_id": "DeciLM-6b-instruct.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "deci",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF",
+    "source_revision": "b0f6b1742934d13f494b53353f291b31886dc25a",
+    "source_file": "UnifiedReward-Edit-qwen35-4b.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF@b0f6b1742934d13f494b53353f291b31886dc25a/UnifiedReward-Edit-qwen35-4b.i1-IQ2_M.gguf",
+    "distribution_id": "UnifiedReward-Edit-qwen35-4b.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "qwen35",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 32
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "xverse/XVERSE-7B-Chat-GGUF:q2_k",
+    "source_repo": "xverse/XVERSE-7B-Chat-GGUF",
+    "source_revision": "fabec6808fa2b0e7ba93a4f9c0743e9d637f2492",
+    "source_file": "xverse-7b-chat-q2_k.gguf",
+    "canonical_ref": "xverse/XVERSE-7B-Chat-GGUF@fabec6808fa2b0e7ba93a4f9c0743e9d637f2492/xverse-7b-chat-q2_k.gguf",
+    "distribution_id": "xverse-7b-chat-q2_k",
+    "selector": "q2_k",
+    "capability": {
+      "family_id": "xverse",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
       "split_constraints": [],
       "sidebands": []
     }

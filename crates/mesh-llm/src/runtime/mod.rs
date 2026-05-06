@@ -907,14 +907,17 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 });
             }
             match start_runtime_split_model(start_spec, &model_ref).await {
-                Ok(SplitRuntimeStart::Started(mut loaded)) => (
-                    loaded.loaded_name,
-                    loaded.handle,
-                    loaded.death_rx,
-                    loaded.cleanup.take(),
-                    loaded.coordinator_rx.take(),
-                    loaded.coordinator_task.take(),
-                ),
+                Ok(SplitRuntimeStart::Started(loaded)) => {
+                    let mut loaded = *loaded;
+                    (
+                        loaded.loaded_name,
+                        loaded.handle,
+                        loaded.death_rx,
+                        loaded.cleanup.take(),
+                        loaded.coordinator_rx.take(),
+                        loaded.coordinator_task.take(),
+                    )
+                }
                 Ok(SplitRuntimeStart::Standby { coordinator }) => {
                     drop(startup_load_guard);
                     let _ = emit_event(OutputEvent::Info {

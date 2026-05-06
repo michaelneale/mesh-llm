@@ -61,6 +61,8 @@ enum Command {
         model: String,
         #[arg(long)]
         out_dir: PathBuf,
+        #[arg(long = "projector")]
+        projectors: Vec<PathBuf>,
         #[arg(long)]
         model_id: Option<String>,
         #[arg(long)]
@@ -168,6 +170,8 @@ struct PackageManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     activation_width: Option<u32>,
     shared: PackageShared,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    projectors: Vec<PackageProjector>,
     layers: Vec<PackageLayer>,
     skippy_abi_version: String,
     created_at_unix_secs: u64,
@@ -217,6 +221,16 @@ struct PackageArtifact {
     sha256: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct PackageProjector {
+    kind: String,
+    path: String,
+    tensor_count: usize,
+    tensor_bytes: u64,
+    artifact_bytes: u64,
+    sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 struct PackageValidateOutput {
     valid: bool,
@@ -229,6 +243,8 @@ struct PackageValidateOutput {
     duplicate_owned_tensors: Vec<String>,
     checked_artifact_count: usize,
     artifacts: Vec<PackageValidateArtifact>,
+    checked_projector_count: usize,
+    projectors: Vec<PackageValidateProjector>,
     missing_layers: Vec<u32>,
     duplicate_layers: Vec<u32>,
 }
@@ -245,6 +261,19 @@ struct PackageValidateArtifact {
     tensor_bytes_matches_manifest: bool,
     artifact_bytes_matches_manifest: bool,
     missing_from_full: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PackageValidateProjector {
+    path: String,
+    kind: String,
+    tensor_count: usize,
+    tensor_bytes: u64,
+    artifact_bytes: u64,
+    sha256_matches_manifest: bool,
+    tensor_count_matches_manifest: bool,
+    tensor_bytes_matches_manifest: bool,
+    artifact_bytes_matches_manifest: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +347,7 @@ fn main() -> Result<()> {
         Command::WritePackage {
             model,
             out_dir,
+            projectors,
             model_id,
             source_repo,
             source_revision,
@@ -325,6 +355,7 @@ fn main() -> Result<()> {
         } => write_package(
             model,
             out_dir,
+            projectors,
             ExplicitSourceIdentity {
                 model_id,
                 source_repo,
@@ -416,7 +447,12 @@ fn write_stages(model: PathBuf, stages: usize, out_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdentity) -> Result<()> {
+fn write_package(
+    model: String,
+    out_dir: PathBuf,
+    projectors: Vec<PathBuf>,
+    explicit: ExplicitSourceIdentity,
+) -> Result<()> {
     let input = resolve_package_input(model, explicit)?;
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("create output directory {}", out_dir.display()))?;
@@ -424,6 +460,10 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
         .with_context(|| format!("create shared directory {}", out_dir.display()))?;
     fs::create_dir_all(out_dir.join("layers"))
         .with_context(|| format!("create layers directory {}", out_dir.display()))?;
+    if !projectors.is_empty() {
+        fs::create_dir_all(out_dir.join("projectors"))
+            .with_context(|| format!("create projectors directory {}", out_dir.display()))?;
+    }
 
     let source = ModelSource::open(&input.model_path)?;
     let tensors = &source.tensors;
@@ -497,6 +537,12 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
         });
     }
 
+    let projectors = projectors
+        .iter()
+        .enumerate()
+        .map(|(index, projector)| copy_projector_artifact(projector, index, &out_dir))
+        .collect::<Result<Vec<_>>>()?;
+
     let manifest = PackageManifest {
         schema_version: 1,
         model_id: input.model_id,
@@ -518,6 +564,7 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
             embeddings,
             output,
         },
+        projectors,
         layers,
         skippy_abi_version: format!(
             "{}.{}.{}",
@@ -813,6 +860,11 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
             &mut owned_occurrences,
         )?);
     }
+    let projectors = manifest
+        .projectors
+        .iter()
+        .map(|projector| validate_package_projector(&package, projector))
+        .collect::<Result<Vec<_>>>()?;
 
     let missing_owned_tensors = required_owned_tensors
         .iter()
@@ -835,6 +887,12 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
                 && artifact.tensor_bytes_matches_manifest
                 && artifact.artifact_bytes_matches_manifest
                 && artifact.missing_from_full.is_empty()
+        })
+        && projectors.iter().all(|projector| {
+            projector.sha256_matches_manifest
+                && projector.tensor_count_matches_manifest
+                && projector.tensor_bytes_matches_manifest
+                && projector.artifact_bytes_matches_manifest
         });
     let output = PackageValidateOutput {
         valid,
@@ -847,6 +905,8 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
         duplicate_owned_tensors,
         checked_artifact_count: artifacts.len(),
         artifacts,
+        checked_projector_count: projectors.len(),
+        projectors,
         missing_layers,
         duplicate_layers,
     };
@@ -893,6 +953,33 @@ fn validate_package_artifact(
         tensor_bytes_matches_manifest: tensor_bytes == artifact.tensor_bytes,
         artifact_bytes_matches_manifest: artifact_bytes == artifact.artifact_bytes,
         missing_from_full,
+    })
+}
+
+fn validate_package_projector(
+    package: &Path,
+    projector: &PackageProjector,
+) -> Result<PackageValidateProjector> {
+    let path = package.join(&projector.path);
+    let info = ModelInfo::open(&path)
+        .with_context(|| format!("open package projector {}", path.display()))?;
+    let tensors = info
+        .tensors()
+        .with_context(|| format!("read package projector tensors {}", path.display()))?;
+    let tensor_bytes = tensors.iter().map(|tensor| tensor.byte_size).sum();
+    let artifact_bytes = fs::metadata(&path)
+        .with_context(|| format!("read projector metadata {}", path.display()))?
+        .len();
+    Ok(PackageValidateProjector {
+        path: projector.path.clone(),
+        kind: projector.kind.clone(),
+        tensor_count: tensors.len(),
+        tensor_bytes,
+        artifact_bytes,
+        sha256_matches_manifest: file_sha256(&path)? == projector.sha256,
+        tensor_count_matches_manifest: tensors.len() == projector.tensor_count,
+        tensor_bytes_matches_manifest: tensor_bytes == projector.tensor_bytes,
+        artifact_bytes_matches_manifest: artifact_bytes == projector.artifact_bytes,
     })
 }
 
@@ -976,6 +1063,51 @@ fn write_package_artifact(
         tensor_bytes: stage.tensor_bytes,
         artifact_bytes: metadata.len(),
         sha256: file_sha256(&path)?,
+    })
+}
+
+fn copy_projector_artifact(
+    projector: &Path,
+    index: usize,
+    out_dir: &Path,
+) -> Result<PackageProjector> {
+    if !projector.is_file() {
+        bail!("projector is not a file: {}", projector.display());
+    }
+    let info = ModelInfo::open(projector)
+        .with_context(|| format!("open multimodal projector GGUF {}", projector.display()))?;
+    let tensors = info
+        .tensors()
+        .with_context(|| format!("read multimodal projector tensors {}", projector.display()))?;
+    let file_name = projector
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("mmproj-{index:03}.gguf"));
+    let relative_path = PathBuf::from("projectors").join(file_name);
+    let output_path = out_dir.join(&relative_path);
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create projector directory {}", parent.display()))?;
+    }
+    fs::copy(projector, &output_path).with_context(|| {
+        format!(
+            "copy multimodal projector {} to {}",
+            projector.display(),
+            output_path.display()
+        )
+    })?;
+    let metadata = fs::metadata(&output_path)
+        .with_context(|| format!("read projector metadata {}", output_path.display()))?;
+
+    Ok(PackageProjector {
+        kind: "mmproj".to_string(),
+        path: relative_path.to_string_lossy().replace('\\', "/"),
+        tensor_count: tensors.len(),
+        tensor_bytes: tensors.iter().map(|tensor| tensor.byte_size).sum(),
+        artifact_bytes: metadata.len(),
+        sha256: file_sha256(&output_path)?,
     })
 }
 

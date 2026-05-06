@@ -1,4 +1,5 @@
 use super::*;
+use serde::Deserialize;
 
 fn nodes(count: u32) -> Vec<NodeSpec> {
     (0..count)
@@ -8,6 +9,10 @@ fn nodes(count: u32) -> Vec<NodeSpec> {
             vram_bytes: 0,
         })
         .collect()
+}
+
+fn compact_identity(value: &str) -> String {
+    value.to_ascii_lowercase().replace(['_', '-', '/', ' '], "")
 }
 
 fn weighted_node(node_id: &str, vram_bytes: u64) -> NodeSpec {
@@ -358,6 +363,31 @@ fn gemma4_e4b_accepts_validated_boundary_with_sideband() {
 }
 
 #[test]
+fn rwkv7_boundary_accounts_for_v_first_sideband() {
+    let request = TopologyPlanRequest {
+        topology_id: "rwkv7-sideband".to_string(),
+        model_id: "rwkv7-191m".to_string(),
+        layers: falcon_h1_layers(12, 4),
+        nodes: nodes(3),
+        family: Some(rwkv7_capability(12, 768)),
+        policy: PlannerPolicy::default(),
+    };
+
+    let plan = plan_even_contiguous(&request).expect("plan");
+
+    assert_eq!(plan.boundaries[0].layer_boundary, 4);
+    assert_eq!(plan.boundaries[0].wire_dtype, WireDType::F16);
+    assert_eq!(plan.boundaries[0].raw_activation_bytes_per_token, 6144);
+    assert_eq!(plan.boundaries[0].wire_payload_bytes_per_token, 3072);
+    assert!(plan.boundaries[0]
+        .reason_codes
+        .contains(&PlanReasonCode::ActivationSidebandRequired));
+    assert!(plan.boundaries[0]
+        .reason_codes
+        .contains(&PlanReasonCode::RecurrentOwnerSticky));
+}
+
+#[test]
 fn gemma4_e4b_rejects_known_bad_shared_kv_boundaries() {
     let request = TopologyPlanRequest {
         topology_id: "gemma-invalid".to_string(),
@@ -462,12 +492,100 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "qwen3next"
     );
+    let rwkv6 =
+        infer_family_capability("latestissue/rwkv-6-finch-1b6-gguf:Q4_K", 24, 2048).expect("rwkv6");
+    assert_eq!(rwkv6.family_id, "rwkv6");
+    assert_eq!(rwkv6.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(
+        rwkv6.exact_state_mobility,
+        ExactStateMobility::RejectedTooLarge
+    );
+    for (identity, expected_family) in [
+        ("bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M", "jamba"),
+        ("meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M", "lfm2"),
+        ("mradermacher/mamba-130m-hf-GGUF:Q4_K_M", "mamba"),
+        ("mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M", "mamba2"),
+        ("Mungert/rwkv7-191M-world-GGUF:Q4_K", "rwkv7"),
+    ] {
+        let capability = infer_family_capability(identity, 12, 768)
+            .unwrap_or_else(|| panic!("failed to infer {identity}"));
+        assert_eq!(capability.family_id, expected_family, "{identity}");
+        assert!(
+            !capability.recurrent_ranges.is_empty(),
+            "{identity} should be treated as recurrent"
+        );
+    }
+    for (identity, expected_family) in [
+        ("mradermacher/Maincoder-1B-GGUF:Q2_K", "maincoder"),
+        ("LiteLLMs/OpenELM-270M-GGUF:Q2_K", "openelm"),
+        (
+            "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf:Q2_K",
+            "refact",
+        ),
+        ("s3nh/MiniCPM-2B-dpo-fp32-GGUF:Q3_K_S", "minicpm"),
+        (
+            "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF:IQ2_XXS",
+            "minicpm3",
+        ),
+        ("mmnga-o/plamo-3-nict-2b-base-gguf:IQ3_M", "plamo3"),
+        ("StatPan/42dot_LLM-PLM-1.3B_GGUF:q3_k_m", "plm"),
+        (
+            "bartowski/SmallThinker-3B-Preview-GGUF:IQ2_M",
+            "smallthinker",
+        ),
+        ("bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:IQ2_M", "smollm3"),
+    ] {
+        let capability = infer_family_capability(identity, 24, 2048)
+            .unwrap_or_else(|| panic!("failed to infer {identity}"));
+        assert_eq!(capability.family_id, expected_family, "{identity}");
+        assert!(
+            capability.recurrent_ranges.is_empty(),
+            "{identity} should be treated as dense"
+        );
+    }
     assert_eq!(
         infer_family_capability("Qwen/Qwen3-0.6B", 28, 1024)
             .expect("qwen3")
             .family_id,
         "qwen3_dense"
     );
+    let qwen2moe = infer_family_capability("mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S", 28, 1536)
+        .expect("qwen2moe");
+    assert_eq!(qwen2moe.family_id, "qwen2moe");
+    assert_eq!(qwen2moe.q8_wire_validation, WireValidation::Rejected);
+    let qwen3moe = infer_family_capability(
+        "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M",
+        28,
+        1024,
+    )
+    .expect("qwen3moe");
+    assert_eq!(qwen3moe.family_id, "qwen3moe");
+    assert_eq!(qwen3moe.q8_wire_validation, WireValidation::Validated);
+    let qwen3_coder_package = infer_family_capability(
+        "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF:UD-Q4_K_XL",
+        62,
+        6144,
+    )
+    .expect("qwen3 coder package");
+    assert_eq!(qwen3_coder_package.family_id, "qwen3moe");
+    assert_eq!(
+        qwen3_coder_package.q8_wire_validation,
+        WireValidation::Untested
+    );
+    let qwen3_coder_30b =
+        infer_family_capability("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Q4_K_M", 48, 2048)
+            .expect("qwen3 coder 30b");
+    assert_eq!(qwen3_coder_30b.family_id, "qwen3moe");
+    let qwen2vl = infer_family_capability("bartowski/Qwen2-VL-2B-Instruct-GGUF:Q4_K_M", 28, 1536)
+        .expect("qwen2vl");
+    assert_eq!(qwen2vl.family_id, "qwen2vl");
+    assert_eq!(qwen2vl.q8_wire_validation, WireValidation::Rejected);
+    assert_eq!(qwen2vl.exact_state_mobility, ExactStateMobility::Untested);
+    let qwen3vl = infer_family_capability("Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M", 28, 2048)
+        .expect("qwen3vl");
+    assert_eq!(qwen3vl.family_id, "qwen3vl");
+    assert_eq!(qwen3vl.q8_wire_validation, WireValidation::Validated);
+    assert_eq!(qwen3vl.exact_state_mobility, ExactStateMobility::Untested);
     assert_eq!(
         infer_family_capability("meta/Llama-3.2-1B-Instruct", 16, 2048)
             .expect("llama")
@@ -516,6 +634,11 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "gemma3"
     );
+    let gemma =
+        infer_family_capability("ggml-org/gemma-3-270m-it-GGUF:Q8_0", 18, 640).expect("gemma");
+    assert_eq!(gemma.family_id, "gemma");
+    assert_eq!(gemma.default_wire_dtype, WireDType::F32);
+    assert_eq!(gemma.q8_wire_validation, WireValidation::Rejected);
     assert_eq!(
         infer_family_capability("google-gemma-4-26B-A4B-it", 30, 2816)
             .expect("gemma4a4b")
@@ -535,6 +658,92 @@ fn infers_known_family_capabilities_from_model_identity() {
         "minimax_m27"
     );
     assert!(infer_family_capability("unknown", 1, 1).is_none());
+}
+
+#[test]
+fn every_stage_runtime_llama_architecture_has_family_inference() {
+    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+        let capability = infer_family_capability(expected.llama_architecture, 12, 768)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing family inference for {}",
+                    expected.llama_architecture
+                )
+            });
+
+        assert_eq!(
+            capability.family_id, expected.family_id,
+            "{}",
+            expected.llama_architecture
+        );
+        assert_eq!(
+            !capability.recurrent_ranges.is_empty(),
+            expected.recurrent_or_hybrid,
+            "{}",
+            expected.llama_architecture
+        );
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ParityCandidateManifest {
+    candidates: Vec<ParityCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParityCandidate {
+    llama_model: String,
+    status: String,
+}
+
+#[test]
+fn parity_candidate_manifest_covers_stage_runtime_architectures() {
+    let manifest: ParityCandidateManifest = serde_json::from_str(include_str!(
+        "../../../docs/skippy/llama-parity-candidates.json"
+    ))
+    .expect("parity candidate manifest must parse");
+    let candidates: Vec<String> = manifest
+        .candidates
+        .into_iter()
+        .map(|candidate| compact_identity(&candidate.llama_model))
+        .collect();
+
+    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+        assert!(
+            candidates.contains(&compact_identity(expected.llama_architecture)),
+            "missing parity candidate row for {}",
+            expected.llama_architecture
+        );
+    }
+}
+
+#[test]
+fn parity_candidate_manifest_uses_known_statuses() {
+    let manifest: ParityCandidateManifest = serde_json::from_str(include_str!(
+        "../../../docs/skippy/llama-parity-candidates.json"
+    ))
+    .expect("parity candidate manifest must parse");
+
+    for candidate in manifest.candidates {
+        assert!(
+            matches!(
+                candidate.status.as_str(),
+                "candidate"
+                    | "candidate_stateful"
+                    | "candidate_multimodal"
+                    | "certified"
+                    | "certified_package_only"
+                    | "implementation_base"
+                    | "needs_candidate"
+                    | "needs_runtime_slice_support"
+                    | "non_causal_aux"
+                    | "package_or_remote_only"
+            ),
+            "{} has unknown status {}",
+            candidate.llama_model,
+            candidate.status
+        );
+    }
 }
 
 #[test]
@@ -591,16 +800,17 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
             "unexpected boundary count for {identity}"
         );
         assert_eq!(
-            plan.boundaries[0].wire_dtype,
-            WireDType::F16,
-            "supported families default to f16 wire for serving smoke: {identity}"
+            plan.boundaries[0].wire_dtype, family.default_wire_dtype,
+            "supported family default wire mismatch for {identity}"
         );
-        assert!(
-            plan.boundaries[0]
-                .reason_codes
-                .contains(&PlanReasonCode::DefaultWireDtypeF16),
-            "missing f16 reason for {identity}"
-        );
+        if family.default_wire_dtype == WireDType::F16 {
+            assert!(
+                plan.boundaries[0]
+                    .reason_codes
+                    .contains(&PlanReasonCode::DefaultWireDtypeF16),
+                "missing f16 reason for {identity}"
+            );
+        }
 
         match family.q8_wire_validation {
             WireValidation::Validated => assert!(
@@ -647,10 +857,18 @@ fn reviewed_supported_families_smoke_plan_with_expected_policy_signals() {
         }
 
         if !family.sidebands.is_empty() {
+            let sideband_reason_codes: Vec<_> = family
+                .sidebands
+                .iter()
+                .map(|sideband| match sideband.kind {
+                    SidebandKind::TokenIds => PlanReasonCode::TokenSidebandRequired,
+                    SidebandKind::Rwkv7VFirst => PlanReasonCode::ActivationSidebandRequired,
+                })
+                .collect();
             assert!(
-                plan.boundaries[0]
-                    .reason_codes
-                    .contains(&PlanReasonCode::TokenSidebandRequired),
+                sideband_reason_codes
+                    .iter()
+                    .any(|code| plan.boundaries[0].reason_codes.contains(code)),
                 "missing sideband signal for {identity}"
             );
         }

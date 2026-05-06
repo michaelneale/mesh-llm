@@ -403,7 +403,7 @@ fn multimodal_stage_config(
         cache_type_k: "f16".to_string(),
         cache_type_v: "f16".to_string(),
         flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
-        filter_tensors_on_load: false,
+        filter_tensors_on_load: layer_start != 0 || layer_end != fixture.layer_end,
         selected_device: None,
         kv_cache: None,
         load_mode: skippy_protocol::LoadMode::RuntimeSlice,
@@ -574,8 +574,12 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
         });
     let ready = connect_endpoint_ready(&stage1_addr.to_string(), 10);
     if let Err(error) = ready {
+        let status = stage1_handle.status();
         stage1_handle.abort();
-        return Err(error.context("wait for stage-1 binary server"));
+        return Err(error.context(format!(
+            "wait for stage-1 binary server; status={:?} last_error={:?}",
+            status.state, status.last_error
+        )));
     }
 
     let telemetry = Telemetry::new(

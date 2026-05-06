@@ -176,6 +176,7 @@ mod tests {
             source_model_bytes: Some(120),
             layer_count,
             activation_width: 1024,
+            projector_path: None,
             layers: (0..layer_count)
                 .map(|layer_index| StagePackageLayerInfo {
                     layer_index,

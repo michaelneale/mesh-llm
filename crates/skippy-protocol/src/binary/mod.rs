@@ -2,16 +2,21 @@ mod activation;
 mod codec;
 mod types;
 
-pub use activation::{activation_wire_bytes, encode_f32_activation_payload};
+pub use activation::{
+    activation_payload_multiplier_from_state_flags, activation_wire_bytes,
+    activation_wire_bytes_with_state_flags, encode_f32_activation_payload,
+    encode_f32_activation_payload_with_state_flags,
+};
 pub use codec::{
     read_stage_message, recv_ready, recv_reply, send_ready, send_reply_ack,
     send_reply_ack_with_stats, send_reply_predicted, send_reply_predicted_tokens_with_stats,
     send_reply_predicted_with_stats, write_stage_message,
 };
 pub use types::{
-    state_flags, StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig,
-    StageStateHeader, StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind,
-    WireStagePhase, LLAMA_TOKEN_NULL, MAX_STAGE_LOGIT_BIAS, READY_MAGIC,
+    activation_frame_flags_from_state_flags, activation_state_flags_from_frame_flags, state_flags,
+    StageLogitBias, StageReply, StageReplyStats, StageSamplingConfig, StageStateHeader,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, WireStagePhase,
+    ACTIVATION_FLAG_RWKV7_V_FIRST, LLAMA_TOKEN_NULL, MAX_STAGE_LOGIT_BIAS, READY_MAGIC,
     STAGE_LOGIT_BIAS_WIRE_BYTES, STAGE_SAMPLING_CONFIG_BASE_BYTES, STAGE_STATE_HEADER_BYTES,
     STAGE_STATE_VERSION, STAGE_WIRE_FIXED_HEADER_BYTES,
 };
@@ -319,5 +324,42 @@ mod tests {
         let second = f32::from_le_bytes(decoded[4..8].try_into().unwrap());
         assert!((first - 1.0).abs() < 0.01);
         assert!((second + 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn rwkv7_sideband_activation_round_trips() {
+        let mut state =
+            StageStateHeader::new(WireMessageKind::DecodeEmbd, WireActivationDType::F32);
+        state.source_stage_index = 0;
+        state.flags |= state_flags::RWKV7_V_FIRST_SIDEBAND;
+        let mut activation = Vec::new();
+        for value in [1.0_f32, 2.0, 3.0, 4.0] {
+            activation.extend_from_slice(&value.to_le_bytes());
+        }
+        let message = StageWireMessage {
+            kind: WireMessageKind::DecodeEmbd,
+            pos_start: 0,
+            token_count: 1,
+            state,
+            request_id: 7,
+            session_id: 9,
+            sampling: None,
+            chat_sampling_metadata: None,
+            tokens: vec![42],
+            activation,
+            raw_bytes: Vec::new(),
+        };
+        let mut bytes = Vec::new();
+        write_stage_message(&mut bytes, &message, WireActivationDType::F32).unwrap();
+        let decoded = read_stage_message(Cursor::new(bytes), 2).unwrap();
+        assert_eq!(decoded.activation.len(), 16);
+        assert_eq!(
+            activation_frame_flags_from_state_flags(decoded.state.flags),
+            ACTIVATION_FLAG_RWKV7_V_FIRST
+        );
+        assert_eq!(
+            decoded.activation_f32_payload(2).unwrap(),
+            message.activation
+        );
     }
 }

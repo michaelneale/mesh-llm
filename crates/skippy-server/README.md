@@ -155,6 +155,9 @@ unload or replan.
   the stage ABI.
 - Package selection validates manifest schema, ABI version, selected part sizes,
   duplicate layers, and required layer presence before runtime load.
+- If a layer package declares `projectors` with `kind: "mmproj"`, package-backed
+  loading uses the first projector unless the stage config supplies an explicit
+  `projector_path`.
 - `layer-package` also accepts `hf://namespace/repo[:revision]` and caches the
   downloaded package under `SKIPPY_HF_PACKAGE_CACHE` or the default user
   cache directory.

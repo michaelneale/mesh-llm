@@ -362,11 +362,14 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -556,11 +559,14 @@ fn run_binary_chain(args: LocalSplitChainBinaryArgs) -> Result<BinaryChainResult
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    let activation = skippy_protocol::binary::encode_f32_activation_payload(
+    state.flags |=
+        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
+    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
+        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {

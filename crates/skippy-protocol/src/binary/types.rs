@@ -1,7 +1,7 @@
 use std::io;
 
 use super::{
-    activation::{decode_f16_to_f32_bytes, decode_q8_to_f32_bytes},
+    activation::{decode_f16_to_f32_bytes, decode_q8_to_f32_bytes_with_state_flags},
     invalid_data,
 };
 
@@ -179,6 +179,25 @@ pub mod state_flags {
     pub const SAMPLING: i32 = 1 << 3;
     pub const FULL_STATE: i32 = 1 << 4;
     pub const CHAT_SAMPLING_METADATA: i32 = 1 << 5;
+    pub const RWKV7_V_FIRST_SIDEBAND: i32 = 1 << 6;
+}
+
+pub const ACTIVATION_FLAG_RWKV7_V_FIRST: u64 = 1 << 0;
+
+pub fn activation_frame_flags_from_state_flags(flags: i32) -> u64 {
+    if (flags & state_flags::RWKV7_V_FIRST_SIDEBAND) != 0 {
+        ACTIVATION_FLAG_RWKV7_V_FIRST
+    } else {
+        0
+    }
+}
+
+pub fn activation_state_flags_from_frame_flags(flags: u64) -> i32 {
+    if (flags & ACTIVATION_FLAG_RWKV7_V_FIRST) != 0 {
+        state_flags::RWKV7_V_FIRST_SIDEBAND
+    } else {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,9 +397,12 @@ impl StageWireMessage {
         match self.state.dtype()? {
             WireActivationDType::F32 => Ok(self.activation.clone()),
             WireActivationDType::F16 => decode_f16_to_f32_bytes(&self.activation),
-            WireActivationDType::Q8 => {
-                decode_q8_to_f32_bytes(&self.activation, self.token_count, n_embd)
-            }
+            WireActivationDType::Q8 => decode_q8_to_f32_bytes_with_state_flags(
+                &self.activation,
+                self.token_count,
+                n_embd,
+                self.state.flags,
+            ),
         }
     }
 }
