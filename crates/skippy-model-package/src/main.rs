@@ -165,6 +165,8 @@ struct PackageManifest {
     source_model: PackageSourceModel,
     format: String,
     layer_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    activation_width: Option<u32>,
     shared: PackageShared,
     layers: Vec<PackageLayer>,
     skippy_abi_version: String,
@@ -426,6 +428,7 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
     let source = ModelSource::open(&input.model_path)?;
     let tensors = &source.tensors;
     let layer_count = layer_count(tensors)?;
+    let activation_width = activation_width(&input.model_path)?;
     let source_sha256 = file_sha256(&input.model_path)?;
 
     let metadata = write_package_artifact(
@@ -509,6 +512,7 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
         },
         format: "layer-package".to_string(),
         layer_count,
+        activation_width: Some(activation_width),
         shared: PackageShared {
             metadata,
             embeddings,
@@ -1171,6 +1175,205 @@ fn layer_count(tensors: &[TensorInfo]) -> Result<u32> {
         .context("model has no layer tensors")
 }
 
+fn activation_width(model_path: &Path) -> Result<u32> {
+    const MAX_GGUF_KV_COUNT: u64 = 1_000_000;
+    let mut file = File::open(model_path)
+        .with_context(|| format!("open GGUF metadata {}", model_path.display()))?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)
+        .with_context(|| format!("read GGUF magic {}", model_path.display()))?;
+    if &magic != b"GGUF" {
+        bail!("{} is not a GGUF file", model_path.display());
+    }
+    let version = read_gguf_u32(&mut file)?;
+    if version < 2 {
+        bail!(
+            "GGUF metadata for {} uses unsupported version {version}",
+            model_path.display()
+        );
+    }
+    let _tensor_count = read_gguf_u64(&mut file)?;
+    let kv_count = read_gguf_u64(&mut file)?;
+    if kv_count > MAX_GGUF_KV_COUNT {
+        bail!(
+            "GGUF metadata for {} has too many key-value entries: {kv_count}",
+            model_path.display()
+        );
+    }
+
+    let mut architecture = None;
+    let mut embedding_lengths = BTreeMap::<String, u32>::new();
+    for _ in 0..kv_count {
+        let key = read_gguf_string(&mut file)?;
+        let value_type = GgufValueType::from_u32(read_gguf_u32(&mut file)?)?;
+        if key == "general.architecture" {
+            architecture = read_gguf_string_value(&mut file, value_type)?;
+        } else if let Some(arch) = key.strip_suffix(".embedding_length") {
+            if let Some(value) = read_gguf_u32_value(&mut file, value_type)? {
+                embedding_lengths.insert(arch.to_string(), value);
+            }
+        } else {
+            skip_gguf_value(&mut file, value_type, 0)?;
+        }
+    }
+
+    let architecture = architecture.with_context(|| {
+        format!(
+            "GGUF metadata for {} does not contain general.architecture",
+            model_path.display()
+        )
+    })?;
+    let width = embedding_lengths.remove(&architecture).with_context(|| {
+        format!(
+            "GGUF metadata for {} does not contain {}.embedding_length",
+            model_path.display(),
+            architecture
+        )
+    })?;
+    anyhow::ensure!(
+        width > 0,
+        "GGUF metadata for {} does not contain a positive {}.embedding_length",
+        model_path.display(),
+        architecture
+    );
+    Ok(width)
+}
+
+#[derive(Clone, Copy)]
+enum GgufValueType {
+    Uint8,
+    Int8,
+    Uint16,
+    Int16,
+    Uint32,
+    Int32,
+    Float32,
+    Bool,
+    String,
+    Array,
+    Uint64,
+    Int64,
+    Float64,
+}
+
+impl GgufValueType {
+    fn from_u32(value: u32) -> Result<Self> {
+        Ok(match value {
+            0 => Self::Uint8,
+            1 => Self::Int8,
+            2 => Self::Uint16,
+            3 => Self::Int16,
+            4 => Self::Uint32,
+            5 => Self::Int32,
+            6 => Self::Float32,
+            7 => Self::Bool,
+            8 => Self::String,
+            9 => Self::Array,
+            10 => Self::Uint64,
+            11 => Self::Int64,
+            12 => Self::Float64,
+            other => bail!("unsupported GGUF metadata value type {other}"),
+        })
+    }
+
+    fn fixed_size(self) -> Option<usize> {
+        match self {
+            Self::Uint8 | Self::Int8 | Self::Bool => Some(1),
+            Self::Uint16 | Self::Int16 => Some(2),
+            Self::Uint32 | Self::Int32 | Self::Float32 => Some(4),
+            Self::Uint64 | Self::Int64 | Self::Float64 => Some(8),
+            Self::String | Self::Array => None,
+        }
+    }
+}
+
+fn read_gguf_u32(reader: &mut impl Read) -> Result<u32> {
+    let mut bytes = [0u8; 4];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF u32 value")?;
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn read_gguf_u64(reader: &mut impl Read) -> Result<u64> {
+    let mut bytes = [0u8; 8];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF u64 value")?;
+    Ok(u64::from_le_bytes(bytes))
+}
+
+fn read_gguf_string(reader: &mut impl Read) -> Result<String> {
+    const MAX_GGUF_STRING_BYTES: u64 = 1_000_000;
+    let len = read_gguf_u64(reader)?;
+    if len > MAX_GGUF_STRING_BYTES {
+        bail!("GGUF metadata string is too long: {len} bytes");
+    }
+    let mut bytes = vec![0u8; len as usize];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF string bytes")?;
+    String::from_utf8(bytes).context("GGUF metadata string is not valid UTF-8")
+}
+
+fn read_gguf_string_value(
+    reader: &mut impl Read,
+    value_type: GgufValueType,
+) -> Result<Option<String>> {
+    match value_type {
+        GgufValueType::String => Ok(Some(read_gguf_string(reader)?)),
+        _ => {
+            skip_gguf_value(reader, value_type, 0)?;
+            Ok(None)
+        }
+    }
+}
+
+fn read_gguf_u32_value(reader: &mut impl Read, value_type: GgufValueType) -> Result<Option<u32>> {
+    match value_type {
+        GgufValueType::Uint32 => Ok(Some(read_gguf_u32(reader)?)),
+        _ => {
+            skip_gguf_value(reader, value_type, 0)?;
+            Ok(None)
+        }
+    }
+}
+
+fn skip_gguf_value(reader: &mut impl Read, value_type: GgufValueType, depth: u32) -> Result<()> {
+    const MAX_GGUF_ARRAY_ELEMENTS: u64 = 1_000_000;
+    const MAX_GGUF_ARRAY_DEPTH: u32 = 64;
+
+    if let Some(size) = value_type.fixed_size() {
+        let mut bytes = vec![0u8; size];
+        reader
+            .read_exact(&mut bytes)
+            .context("skip GGUF scalar metadata value")?;
+        return Ok(());
+    }
+
+    match value_type {
+        GgufValueType::String => {
+            let _ = read_gguf_string(reader)?;
+            Ok(())
+        }
+        GgufValueType::Array => {
+            if depth >= MAX_GGUF_ARRAY_DEPTH {
+                bail!("GGUF metadata array nesting is too deep");
+            }
+            let element_type = GgufValueType::from_u32(read_gguf_u32(reader)?)?;
+            let len = read_gguf_u64(reader)?;
+            if len > MAX_GGUF_ARRAY_ELEMENTS {
+                bail!("GGUF metadata array is too long: {len} elements");
+            }
+            for _ in 0..len {
+                skip_gguf_value(reader, element_type, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => unreachable!("fixed-size GGUF metadata value should already be handled"),
+    }
+}
+
 fn stage_plan_from_tensors(
     stage_index: usize,
     layer_start: u32,
@@ -1344,9 +1547,10 @@ fn hex_lower(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        local_artifact_files, model_distribution_id, resolve_gguf_shard_paths,
+        activation_width, local_artifact_files, model_distribution_id, resolve_gguf_shard_paths,
         resolve_local_package_input, ExplicitSourceIdentity,
     };
+    use std::io::Write;
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -1458,6 +1662,44 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activation_width_reads_arch_embedding_length_from_gguf_metadata() {
+        let dir = unique_test_dir("activation-width");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.gguf");
+        let mut fixture = Vec::<u8>::new();
+        fixture.extend_from_slice(b"GGUF");
+        fixture.extend_from_slice(&3u32.to_le_bytes());
+        fixture.extend_from_slice(&0i64.to_le_bytes());
+        fixture.extend_from_slice(&2i64.to_le_bytes());
+        push_string_kv(&mut fixture, "general.architecture", "qwen2");
+        push_u32_kv(&mut fixture, "qwen2.embedding_length", 3584);
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&fixture)
+            .unwrap();
+
+        assert_eq!(activation_width(&path).unwrap(), 3584);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn push_gguf_string(bytes: &mut Vec<u8>, value: &str) {
+        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
+    }
+
+    fn push_string_kv(bytes: &mut Vec<u8>, key: &str, value: &str) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        push_gguf_string(bytes, value);
+    }
+
+    fn push_u32_kv(bytes: &mut Vec<u8>, key: &str, value: u32) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {
