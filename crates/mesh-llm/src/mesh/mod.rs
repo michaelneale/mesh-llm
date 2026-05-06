@@ -1687,7 +1687,7 @@ impl Node {
     ) -> std::time::Duration {
         match request {
             crate::inference::skippy::StageControlRequest::Load(_) => {
-                std::time::Duration::from_secs(180)
+                std::time::Duration::from_secs(900)
             }
             crate::inference::skippy::StageControlRequest::Stop(_)
             | crate::inference::skippy::StageControlRequest::Status(_)
