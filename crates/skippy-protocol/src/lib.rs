@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod binary;
 pub mod proto {
     pub mod stage {
+        #![allow(clippy::large_enum_variant)]
         include!(concat!(env!("OUT_DIR"), "/skippy.stage.v1.rs"));
     }
 }

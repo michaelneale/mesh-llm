@@ -14,7 +14,7 @@ impl ResidentCacheConfig {
             .unwrap_or(i32::MAX)
             .max(2);
         Self {
-            max_entries: cache.max_entries.max(1).min(512),
+            max_entries: cache.max_entries.clamp(1, 512),
             max_bytes: cache.max_bytes,
             min_tokens: cache.min_tokens,
             reserved_seq_count,

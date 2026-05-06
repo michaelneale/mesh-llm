@@ -50,7 +50,7 @@ impl KvStageIntegration {
             resident: Arc::new(Mutex::new(ResidentPrefixCache::new(resident_config))),
             activations: Arc::new(Mutex::new(ResidentActivationCache::new(resident_config))),
             exact_states: Arc::new(Mutex::new(ExactStateCache::<ExactStateExtra>::new(
-                cache_config.max_entries.max(1).min(512),
+                cache_config.max_entries.clamp(1, 512),
                 cache_config.max_bytes,
             ))),
         }))

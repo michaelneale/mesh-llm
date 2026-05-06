@@ -218,7 +218,7 @@ async fn responses(
                             out.push(
                                 Event::default()
                                     .event("response.created")
-                                    .json_data(&responses_stream_created_event(
+                                    .json_data(responses_stream_created_event(
                                         &state_machine.model,
                                         state_machine.created_at,
                                     ))
@@ -235,7 +235,7 @@ async fn responses(
                             out.push(
                                 Event::default()
                                     .event("response.output_text.delta")
-                                    .json_data(&responses_stream_delta_event_with_logprobs(
+                                    .json_data(responses_stream_delta_event_with_logprobs(
                                         &state_machine.item_id,
                                         &delta,
                                         logprobs,
@@ -251,7 +251,7 @@ async fn responses(
                         out.push(
                             Event::default()
                                 .event("error")
-                                .json_data(&error.body())
+                                .json_data(error.body())
                                 .unwrap_or_else(|_| Event::default().data("{}")),
                         );
                     }
@@ -267,7 +267,7 @@ async fn responses(
                     out.push(
                         Event::default()
                             .event("response.created")
-                            .json_data(&responses_stream_created_event(
+                            .json_data(responses_stream_created_event(
                                 &state_machine.model,
                                 state_machine.created_at,
                             ))
@@ -278,7 +278,7 @@ async fn responses(
                 out.push(
                     Event::default()
                         .event("response.output_text.done")
-                        .json_data(&responses_stream_text_done_event(
+                        .json_data(responses_stream_text_done_event(
                             &state_machine.item_id,
                             &state_machine.output_text,
                         ))
@@ -287,7 +287,7 @@ async fn responses(
                 out.push(
                     Event::default()
                         .event("response.completed")
-                        .json_data(&responses_stream_completed_event(
+                        .json_data(responses_stream_completed_event(
                             &state_machine.response_id,
                             state_machine.created_at,
                             &state_machine.model,

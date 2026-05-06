@@ -1958,6 +1958,7 @@ fn restore_prefill_decode_as_decode_message(
     decode
 }
 
+#[allow(clippy::too_many_arguments)]
 fn maybe_lookup_binary_prefill(
     config: &StageConfig,
     runtime: &Arc<Mutex<RuntimeState>>,
@@ -2164,6 +2165,7 @@ fn maybe_lookup_binary_prefill(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn maybe_record_binary_prefill(
     config: &StageConfig,
     runtime: &Arc<Mutex<RuntimeState>>,

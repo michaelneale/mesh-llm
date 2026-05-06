@@ -183,7 +183,7 @@ struct HookDebugForce {
     mid_generation: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct HookDebugConfig {
     force: HookDebugForce,
     injected_text: Option<String>,
@@ -221,15 +221,6 @@ impl HookDebugConfig {
                 .clone()
                 .unwrap_or_else(|| format!("[Mesh hook debug: forced {}]\n\n", point.label())),
         ))
-    }
-}
-
-impl Default for HookDebugConfig {
-    fn default() -> Self {
-        Self {
-            force: HookDebugForce::default(),
-            injected_text: None,
-        }
     }
 }
 

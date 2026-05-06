@@ -132,6 +132,7 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
     pub(super) slots: usize,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum SplitRuntimeStart {
     Started(SplitRuntimeGenerationHandle),
     Standby { coordinator: iroh::EndpointId },
