@@ -25,9 +25,11 @@ pub(crate) const STREAM_PEER_DOWN: u8 = 0x06;
 pub(crate) const STREAM_PEER_LEAVING: u8 = 0x07;
 pub(crate) const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub(crate) const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
+pub(crate) const STREAM_TOPOLOGY_SUBSCRIBE: u8 = 0x0a;
 pub(crate) const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub(crate) const STREAM_CONFIG_PUSH: u8 = 0x0c;
 const _: () = {
+    let _ = STREAM_TOPOLOGY_SUBSCRIBE;
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
 };
@@ -216,6 +218,19 @@ impl ValidateControlFrame for crate::proto::node::PeerLeaving {
         if self.peer_id.len() != 32 {
             return Err(ControlFrameError::InvalidEndpointId {
                 got: self.peer_id.len(),
+            });
+        }
+        Ok(())
+    }
+}
+impl ValidateControlFrame for crate::proto::node::TopologySubscribe {
+    fn validate_frame(&self) -> Result<(), ControlFrameError> {
+        if self.gen != NODE_PROTOCOL_GENERATION {
+            return Err(ControlFrameError::BadGeneration { got: self.gen });
+        }
+        if self.subscriber_id.len() != 32 {
+            return Err(ControlFrameError::InvalidEndpointId {
+                got: self.subscriber_id.len(),
             });
         }
         Ok(())

@@ -1,11 +1,10 @@
 #![allow(unused)]
 use mesh_client::{ClientBuilder, InviteToken, MeshClient, Model, OwnerKeypair, Status};
-use std::str::FromStr;
 
 #[test]
 fn client_builder_with_keypair_and_token() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("mesh-test:abc123").expect("valid token");
+    let token = InviteToken("mesh-test:abc123".to_string());
     let _builder = ClientBuilder::new(kp, token);
     // Compile-time check of the API shape
 }
@@ -13,7 +12,7 @@ fn client_builder_with_keypair_and_token() {
 #[test]
 fn client_builder_builds_mesh_client() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("mesh-test:abc123").expect("valid token");
+    let token = InviteToken("mesh-test:abc123".to_string());
     let builder = ClientBuilder::new(kp, token);
     let _client: MeshClient = builder.build().expect("build");
 }

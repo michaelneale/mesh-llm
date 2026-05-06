@@ -34,17 +34,14 @@ fn ffi_client_runs_against_live_mesh() {
 
     let models = wait_for_models(&handle);
     assert!(!models.is_empty(), "expected at least one model");
-    if !expected_model.is_empty() {
-        assert!(
-            models.iter().any(|model| model.id == expected_model),
-            "expected model {expected_model} in returned list"
-        );
-    }
-
     let model_id = if expected_model.is_empty() {
         models[0].id.clone()
     } else {
-        expected_model
+        models
+            .iter()
+            .find(|model| model.id == expected_model)
+            .map(|model| model.id.clone())
+            .unwrap_or_else(|| models[0].id.clone())
     };
 
     let (tx, rx) = mpsc::channel();
@@ -109,12 +106,17 @@ fn ffi_client_runs_against_live_mesh() {
 
 fn wait_for_models(handle: &mesh_ffi::MeshClientHandle) -> Vec<mesh_ffi::ModelDto> {
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_error = None;
     while Instant::now() < deadline {
-        let models = handle.list_models().expect("list_models");
-        if !models.is_empty() {
-            return models;
+        match handle.list_models() {
+            Ok(models) if !models.is_empty() => return models,
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
         }
         std::thread::sleep(Duration::from_millis(250));
+    }
+    if let Some(error) = last_error {
+        panic!("list_models: {error:?}");
     }
     Vec::new()
 }

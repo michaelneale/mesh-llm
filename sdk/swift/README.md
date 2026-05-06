@@ -43,7 +43,11 @@ MESH_SWIFT_FORCE_STUB=1 swift test
 ```swift
 import MeshLLM
 
-let client = MeshClient(inviteToken: InviteToken("your-invite-token"))
+let publicMeshes = try await MeshClient.discoverPublicMeshes()
+let client = MeshClient(
+    inviteToken: publicMeshes[0].inviteToken,
+    ownerKeypairBytesHex: loadPersistedOwnerKeypair()
+)
 try await client.join()
 
 let models = try await client.listModels()
@@ -61,6 +65,15 @@ for try await event in client.chatStream(request) {
         break
     }
 }
+```
+
+Or let the SDK pick the best public mesh with smart auto:
+
+```swift
+let client = try await MeshClient.connectPublic(
+    ownerKeypairBytesHex: loadPersistedOwnerKeypair()
+)
+try await client.join()
 ```
 
 ## App Store Export Compliance

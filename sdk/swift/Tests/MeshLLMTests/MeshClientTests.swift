@@ -13,26 +13,51 @@ final class MeshClientTests: XCTestCase {
         XCTAssertFalse(status.connected)
     }
 
-    func testJoinAndStatus() async throws {
+    func testJoinRejectsInvalidInviteToken() async {
         let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: makeOwnerKeypairBytesHex())
-        try await client.join()
+        do {
+            try await client.join()
+            XCTFail("Joining with an invalid invite token should fail")
+        } catch let error as FfiError {
+            guard case .JoinFailed(let message) = error else {
+                return XCTFail("Expected JoinFailed, got \(error)")
+            }
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("invalid invite token"))
+        } catch {
+            XCTFail("Expected FfiError.JoinFailed, got \(error)")
+        }
+
         let status = await client.status()
-        XCTAssertTrue(status.connected)
+        XCTAssertFalse(status.connected)
     }
 
-    func testDisconnect() async throws {
+    func testDisconnectAfterFailedJoinLeavesClientDisconnected() async {
         let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: makeOwnerKeypairBytesHex())
-        try await client.join()
+        do {
+            try await client.join()
+            XCTFail("Joining with an invalid invite token should fail")
+        } catch {}
+
         await client.disconnect()
         let status = await client.status()
         XCTAssertFalse(status.connected)
     }
 
-    func testReconnect() async throws {
+    func testReconnectRejectsInvalidInviteToken() async {
         let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: makeOwnerKeypairBytesHex())
-        try await client.join()
-        try await client.reconnect()
+        do {
+            try await client.reconnect()
+            XCTFail("Reconnect with an invalid invite token should fail")
+        } catch let error as FfiError {
+            guard case .ReconnectFailed(let message) = error else {
+                return XCTFail("Expected ReconnectFailed, got \(error)")
+            }
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("invalid invite token"))
+        } catch {
+            XCTFail("Expected FfiError.ReconnectFailed, got \(error)")
+        }
+
         let status = await client.status()
-        XCTAssertTrue(status.connected)
+        XCTAssertFalse(status.connected)
     }
 }

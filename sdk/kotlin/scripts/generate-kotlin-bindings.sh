@@ -12,13 +12,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UDL="$REPO_ROOT/crates/mesh-api-ffi/src/mesh_ffi.udl"
 KOTLIN_LIB_DIR="$REPO_ROOT/sdk/kotlin/src/main/kotlin/uniffi/mesh_ffi"
 KOTLIN_EXAMPLE_DIR="$REPO_ROOT/sdk/kotlin/example/example-jvm/src/main/kotlin/uniffi/mesh_ffi"
+CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
 
 BINDGEN_ROOT="${MESH_UNIFFI_BINDGEN_ROOT:-$HOME/.cache/mesh-llm/uniffi-bindgen-0.31.0}"
 BINDGEN="$BINDGEN_ROOT/bin/uniffi-bindgen"
 
 if [ ! -x "$BINDGEN" ]; then
     echo "Installing uniffi-bindgen 0.31.0 into $BINDGEN_ROOT ..."
-    cargo install uniffi --version 0.31.0 --features cli --bin uniffi-bindgen \
+    "$CARGO_BIN" install uniffi --version 0.31.0 --features cli --bin uniffi-bindgen \
         --root "$BINDGEN_ROOT"
 fi
 

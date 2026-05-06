@@ -18,9 +18,11 @@ pub const STREAM_PEER_DOWN: u8 = 0x06;
 pub const STREAM_PEER_LEAVING: u8 = 0x07;
 pub const STREAM_PLUGIN_CHANNEL: u8 = 0x08;
 pub const STREAM_PLUGIN_BULK_TRANSFER: u8 = 0x09;
+pub const STREAM_TOPOLOGY_SUBSCRIBE: u8 = 0x0a;
 pub const STREAM_CONFIG_SUBSCRIBE: u8 = 0x0b;
 pub const STREAM_CONFIG_PUSH: u8 = 0x0c;
 const _: () = {
+    let _ = STREAM_TOPOLOGY_SUBSCRIBE;
     let _ = STREAM_CONFIG_SUBSCRIBE;
     let _ = STREAM_CONFIG_PUSH;
 };

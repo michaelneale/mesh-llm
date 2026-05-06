@@ -8,11 +8,13 @@ TARGET_DIR="$REPO_ROOT/target"
 XCFRAMEWORK_DIR="$SWIFT_DIR/Generated"
 FRAMEWORK_NAME="MeshLLMFFI"
 GENERATED_SWIFT="$SWIFT_DIR/Sources/MeshLLM/Generated/mesh_ffi.swift"
+CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
 
 echo "Building $FRAMEWORK_NAME XCFramework..."
 echo "Repo root: $REPO_ROOT"
+echo "Using cargo: $CARGO_BIN"
 
-if ! cargo metadata --no-deps --format-version 1 2>/dev/null | grep -q '"name":"mesh-api-ffi"'; then
+if ! "$CARGO_BIN" metadata --no-deps --format-version 1 2>/dev/null | grep -q '"name":"mesh-api-ffi"'; then
   echo "ERROR: mesh-api-ffi crate not found. Ensure the workspace is configured."
   exit 1
 fi
@@ -35,36 +37,38 @@ if [ ! -x "$RUSTUP_RUSTC" ]; then
   # Fallback: find any stable toolchain
   STABLE_TOOLCHAIN=$(rustup toolchain list | grep stable | head -1 | awk '{print $1}')
   RUSTUP_RUSTC="$(rustup run "$STABLE_TOOLCHAIN" which rustc)"
+  CARGO_BIN="$(rustup run "$STABLE_TOOLCHAIN" which cargo)"
 fi
 echo "Using rustc: $RUSTUP_RUSTC"
+echo "Resolved cargo: $CARGO_BIN"
 
 echo "Building for aarch64-apple-ios..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target aarch64-apple-ios --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target aarch64-apple-ios --no-default-features
 
 echo "Building for aarch64-apple-ios-sim..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target aarch64-apple-ios-sim --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target aarch64-apple-ios-sim --no-default-features
 
 echo "Building for x86_64-apple-ios..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target x86_64-apple-ios --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target x86_64-apple-ios --no-default-features
 
 echo "Building for aarch64-apple-ios-macabi (Mac Catalyst)..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target aarch64-apple-ios-macabi --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target aarch64-apple-ios-macabi --no-default-features
 
 echo "Building for x86_64-apple-ios-macabi (Mac Catalyst)..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target x86_64-apple-ios-macabi --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target x86_64-apple-ios-macabi --no-default-features
 
 echo "Building for aarch64-apple-darwin (macOS)..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target aarch64-apple-darwin --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target aarch64-apple-darwin --no-default-features
 
 echo "Building for x86_64-apple-darwin (macOS)..."
 RUSTC="$RUSTUP_RUSTC" \
-  cargo build --release -p mesh-api-ffi --target x86_64-apple-darwin --no-default-features
+  "$CARGO_BIN" build --release -p mesh-api-ffi --target x86_64-apple-darwin --no-default-features
 
 echo "Syncing UniFFI API checksums into generated Swift bindings..."
 python3 - "$TARGET_DIR/aarch64-apple-darwin/release/libmesh_ffi.a" "$GENERATED_SWIFT" <<'PY'
@@ -123,29 +127,9 @@ lipo -create \
   "$TARGET_DIR/x86_64-apple-ios-macabi/release/libmesh_ffi.a" \
   -output "$TARGET_DIR/ios-macabi-fat/libmesh_ffi.a"
 
-create_framework() {
-  local ARCH="$1"
-  local LIB_PATH="$2"
-  local FRAMEWORK_DIR="$TARGET_DIR/frameworks/$ARCH/$FRAMEWORK_NAME.framework"
-
-  mkdir -p "$FRAMEWORK_DIR/Headers"
-  mkdir -p "$FRAMEWORK_DIR/Modules"
-
-  # Copy static library as the framework binary (no extension)
-  cp "$LIB_PATH" "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
-  cp "$FFI_DIR/MeshLLMFFI.h" "$FRAMEWORK_DIR/Headers/MeshLLMFFI.h"
-  cp "$FFI_DIR/MeshLLMFFI.modulemap" "$FRAMEWORK_DIR/Modules/module.modulemap"
-
-  # Embed PrivacyInfo.xcprivacy (required for App Store submission)
-  if [ -f "$SWIFT_DIR/PrivacyInfo.xcprivacy" ]; then
-    cp "$SWIFT_DIR/PrivacyInfo.xcprivacy" "$FRAMEWORK_DIR/PrivacyInfo.xcprivacy"
-    echo "  Embedded PrivacyInfo.xcprivacy in $ARCH framework"
-  else
-    echo "WARNING: PrivacyInfo.xcprivacy not found at $SWIFT_DIR/PrivacyInfo.xcprivacy"
-  fi
-
-  # Minimal Info.plist (required by xcodebuild -create-xcframework)
-  cat > "$FRAMEWORK_DIR/Info.plist" << 'PLIST'
+write_framework_info_plist() {
+  local PLIST_PATH="$1"
+  cat > "$PLIST_PATH" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -163,6 +147,64 @@ create_framework() {
 </dict>
 </plist>
 PLIST
+}
+
+create_framework() {
+  local ARCH="$1"
+  local LIB_PATH="$2"
+  local FRAMEWORK_DIR="$TARGET_DIR/frameworks/$ARCH/$FRAMEWORK_NAME.framework"
+
+  rm -rf "$FRAMEWORK_DIR"
+
+  if [[ "$ARCH" == "macos" || "$ARCH" == "ios-macabi" ]]; then
+    local VERSION_DIR="$FRAMEWORK_DIR/Versions/A"
+    local RESOURCES_DIR="$VERSION_DIR/Resources"
+
+    mkdir -p "$FRAMEWORK_DIR/Headers"
+    mkdir -p "$FRAMEWORK_DIR/Modules"
+    mkdir -p "$FRAMEWORK_DIR/Resources"
+    mkdir -p "$VERSION_DIR/Headers"
+    mkdir -p "$VERSION_DIR/Modules"
+    mkdir -p "$RESOURCES_DIR"
+
+    cp "$LIB_PATH" "$VERSION_DIR/$FRAMEWORK_NAME"
+    cp "$LIB_PATH" "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
+    cp "$FFI_DIR/MeshLLMFFI.h" "$VERSION_DIR/Headers/MeshLLMFFI.h"
+    cp "$FFI_DIR/MeshLLMFFI.h" "$FRAMEWORK_DIR/Headers/MeshLLMFFI.h"
+    cp "$FFI_DIR/MeshLLMFFI.modulemap" "$VERSION_DIR/Modules/module.modulemap"
+    cp "$FFI_DIR/MeshLLMFFI.modulemap" "$FRAMEWORK_DIR/Modules/module.modulemap"
+
+    if [ -f "$SWIFT_DIR/PrivacyInfo.xcprivacy" ]; then
+      cp "$SWIFT_DIR/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
+      cp "$SWIFT_DIR/PrivacyInfo.xcprivacy" "$FRAMEWORK_DIR/Resources/PrivacyInfo.xcprivacy"
+      echo "  Embedded PrivacyInfo.xcprivacy in $ARCH framework"
+    else
+      echo "WARNING: PrivacyInfo.xcprivacy not found at $SWIFT_DIR/PrivacyInfo.xcprivacy"
+    fi
+
+    write_framework_info_plist "$RESOURCES_DIR/Info.plist"
+
+    ln -sfn A "$FRAMEWORK_DIR/Versions/Current"
+
+    echo "  Created hybrid versioned framework bundle for $ARCH"
+    return
+  fi
+
+  mkdir -p "$FRAMEWORK_DIR/Headers"
+  mkdir -p "$FRAMEWORK_DIR/Modules"
+
+  cp "$LIB_PATH" "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
+  cp "$FFI_DIR/MeshLLMFFI.h" "$FRAMEWORK_DIR/Headers/MeshLLMFFI.h"
+  cp "$FFI_DIR/MeshLLMFFI.modulemap" "$FRAMEWORK_DIR/Modules/module.modulemap"
+
+  if [ -f "$SWIFT_DIR/PrivacyInfo.xcprivacy" ]; then
+    cp "$SWIFT_DIR/PrivacyInfo.xcprivacy" "$FRAMEWORK_DIR/PrivacyInfo.xcprivacy"
+    echo "  Embedded PrivacyInfo.xcprivacy in $ARCH framework"
+  else
+    echo "WARNING: PrivacyInfo.xcprivacy not found at $SWIFT_DIR/PrivacyInfo.xcprivacy"
+  fi
+
+  write_framework_info_plist "$FRAMEWORK_DIR/Info.plist"
 
   echo "  Created framework bundle for $ARCH"
 }

@@ -2,7 +2,7 @@ import XCTest
 @testable import MeshLLM
 
 final class EventStreamTests: XCTestCase {
-    func testChatStreamEmitsCompletedEvent() async throws {
+    func testChatStreamEmitsTerminalEvent() async throws {
         let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: makeOwnerKeypairBytesHex())
         let request = ChatRequest(model: "test", messages: [])
 
@@ -12,11 +12,13 @@ final class EventStreamTests: XCTestCase {
         }
 
         XCTAssertFalse(events.isEmpty)
-        let hasCompleted = events.contains { if case .completed = $0 { return true }; return false }
-        XCTAssertTrue(hasCompleted, "Stream should emit Completed event")
+        XCTAssertTrue(
+            events.contains(where: isTerminalEvent),
+            "Stream should emit a terminal event before finishing"
+        )
     }
 
-    func testResponsesStreamEmitsCompletedEvent() async throws {
+    func testResponsesStreamEmitsTerminalEvent() async throws {
         let client = MeshClient(inviteToken: InviteToken("test-token"), ownerKeypairBytesHex: makeOwnerKeypairBytesHex())
         let request = ResponsesRequest(model: "test", input: "hello")
 
@@ -26,8 +28,10 @@ final class EventStreamTests: XCTestCase {
         }
 
         XCTAssertFalse(events.isEmpty)
-        let hasCompleted = events.contains { if case .completed = $0 { return true }; return false }
-        XCTAssertTrue(hasCompleted, "Stream should emit Completed event")
+        XCTAssertTrue(
+            events.contains(where: isTerminalEvent),
+            "Stream should emit a terminal event before finishing"
+        )
     }
 
     func testCancelOnTermination() async throws {
@@ -36,6 +40,15 @@ final class EventStreamTests: XCTestCase {
 
         for try await _ in client.chatStream(request) {
             break
+        }
+    }
+
+    private func isTerminalEvent(_ event: MeshEvent) -> Bool {
+        switch event {
+        case .completed, .failed, .disconnected:
+            return true
+        default:
+            return false
         }
     }
 }

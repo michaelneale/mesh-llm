@@ -4072,6 +4072,7 @@ version = "0.65.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64",
  "bytes",
  "crypto_box",
  "ed25519-dalek",

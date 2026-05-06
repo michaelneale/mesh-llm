@@ -4032,6 +4032,17 @@ impl Node {
                         }
                     });
                 }
+                STREAM_TOPOLOGY_SUBSCRIBE => {
+                    let node = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = node.handle_topology_subscribe(remote, send, recv).await {
+                            tracing::warn!(
+                                "topology subscribe error from {}: {e}",
+                                remote.fmt_short()
+                            );
+                        }
+                    });
+                }
                 STREAM_CONFIG_SUBSCRIBE => {
                     let node = self.clone();
                     tokio::spawn(async move {
@@ -4056,6 +4067,65 @@ impl Node {
                 }
             }
         }
+    }
+
+    // --- Topology Subscribe ---
+
+    async fn handle_topology_subscribe(
+        &self,
+        remote: EndpointId,
+        mut send: iroh::endpoint::SendStream,
+        mut recv: iroh::endpoint::RecvStream,
+    ) -> anyhow::Result<()> {
+        use prost::Message as _;
+
+        let buf = read_len_prefixed(&mut recv).await?;
+        let frame = crate::proto::node::TopologySubscribe::decode(buf.as_slice())
+            .map_err(|e| anyhow::anyhow!("TopologySubscribe decode error: {e}"))?;
+        frame
+            .validate_frame()
+            .map_err(|e| anyhow::anyhow!("TopologySubscribe validation error: {e}"))?;
+
+        if frame.subscriber_id.as_slice() != remote.as_bytes() {
+            tracing::warn!(
+                "topology subscribe from {}: subscriber_id does not match connection identity",
+                remote.fmt_short()
+            );
+            return Ok(());
+        }
+
+        let initial_announcements = self.collect_announcements().await;
+        let initial_snapshot =
+            crate::protocol::build_gossip_frame(&initial_announcements, self.endpoint.id());
+        write_len_prefixed(&mut send, &initial_snapshot.encode_to_vec()).await?;
+
+        let mut peer_rx = self.peer_change_rx.clone();
+        loop {
+            tokio::select! {
+                changed = peer_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let announcements = self.collect_announcements().await;
+                    let snapshot =
+                        crate::protocol::build_gossip_frame(&announcements, self.endpoint.id());
+                    if write_len_prefixed(&mut send, &snapshot.encode_to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                inbound = read_len_prefixed(&mut recv) => {
+                    if inbound.is_ok() {
+                        tracing::debug!(
+                            "topology subscribe from {} sent unexpected extra frame; closing stream",
+                            remote.fmt_short()
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_stage_control(

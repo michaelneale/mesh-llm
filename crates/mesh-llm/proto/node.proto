@@ -220,6 +220,12 @@ message PeerLeaving {
   uint32 gen = 2;      // must equal NODE_PROTOCOL_GENERATION; rejected otherwise
 }
 
+// Stream 0x0a — Topology Subscribe
+message TopologySubscribe {
+  bytes subscriber_id = 1;  // exactly 32 bytes; must match the QUIC sender identity
+  uint32 gen = 2;           // must equal NODE_PROTOCOL_GENERATION; rejected otherwise
+}
+
 // Shared enum
 enum NodeRole {
   NODE_ROLE_UNSPECIFIED = 0;

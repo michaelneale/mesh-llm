@@ -11,6 +11,8 @@ import uniffi.mesh_ffi.EventDto
 import uniffi.mesh_ffi.EventListener as FfiEventListener
 import uniffi.mesh_ffi.MeshClientHandleInterface
 import uniffi.mesh_ffi.ModelDto
+import uniffi.mesh_ffi.PublicMeshDto
+import uniffi.mesh_ffi.PublicMeshQueryDto
 import uniffi.mesh_ffi.ResponsesRequestDto
 import uniffi.mesh_ffi.StatusDto
 
@@ -23,6 +25,31 @@ data class ChatRequest(val model: String, val messages: List<ChatMessage>)
 data class ResponsesRequest(val model: String, val input: String)
 
 data class Status(val connected: Boolean, val peerCount: ULong)
+
+data class PublicMeshQuery(
+    val model: String? = null,
+    val minVramGb: Double? = null,
+    val region: String? = null,
+    val targetName: String? = null,
+    val relays: List<String> = emptyList(),
+)
+
+data class PublicMesh(
+    val inviteToken: String,
+    val serving: List<String>,
+    val wanted: List<String>,
+    val onDisk: List<String>,
+    val totalVramBytes: ULong,
+    val nodeCount: ULong,
+    val clientCount: ULong,
+    val maxClients: ULong,
+    val name: String?,
+    val region: String?,
+    val meshId: String?,
+    val publisherNpub: String,
+    val publishedAt: ULong,
+    val expiresAt: ULong?,
+)
 
 @JvmInline
 value class RequestId(val value: String)
@@ -52,6 +79,33 @@ private fun ChatRequest.toDto() =
 
 private fun ResponsesRequest.toDto() = ResponsesRequestDto(model = model, input = input)
 
+private fun PublicMeshQuery.toDto() =
+    PublicMeshQueryDto(
+        model = model,
+        minVramGb = minVramGb,
+        region = region,
+        targetName = targetName,
+        relays = relays,
+    )
+
+private fun PublicMeshDto.toPublicMesh() =
+    PublicMesh(
+        inviteToken = inviteToken,
+        serving = serving,
+        wanted = wanted,
+        onDisk = onDisk,
+        totalVramBytes = totalVramBytes,
+        nodeCount = nodeCount,
+        clientCount = clientCount,
+        maxClients = maxClients,
+        name = name,
+        region = region,
+        meshId = meshId,
+        publisherNpub = publisherNpub,
+        publishedAt = publishedAt,
+        expiresAt = expiresAt,
+    )
+
 private fun EventDto.toEvent(): Event =
     when (this) {
         is EventDto.Connecting -> Event.Connecting
@@ -64,6 +118,35 @@ private fun EventDto.toEvent(): Event =
     }
 
 class MeshClient(private val handle: MeshClientHandleInterface) {
+    companion object {
+        suspend fun connect(
+            ownerKeypairBytesHex: String,
+            inviteToken: String,
+        ): MeshClient =
+            withContext(Dispatchers.IO) {
+                MeshClient(uniffi.mesh_ffi.createClient(ownerKeypairBytesHex, inviteToken))
+            }
+
+        suspend fun discoverPublicMeshes(
+            query: PublicMeshQuery = PublicMeshQuery(),
+        ): List<PublicMesh> =
+            withContext(Dispatchers.IO) {
+                uniffi.mesh_ffi.discoverPublicMeshes(query.toDto()).map { it.toPublicMesh() }
+            }
+
+        suspend fun connectPublic(
+            ownerKeypairBytesHex: String,
+            query: PublicMeshQuery = PublicMeshQuery(),
+        ): MeshClient =
+            withContext(Dispatchers.IO) {
+                MeshClient(
+                    uniffi.mesh_ffi.createAutoClient(
+                        ownerKeypairBytesHex,
+                        query.toDto(),
+                    ),
+                )
+            }
+    }
 
     suspend fun join(): Unit = withContext(Dispatchers.IO) { handle.join() }
 
@@ -137,6 +220,18 @@ class MeshClient(private val handle: MeshClientHandleInterface) {
             if (terminalRequestId != currentRequestId) {
                 cancel(currentRequestId)
             }
+        }
+    }
+
+    fun eventsFlow(): Flow<Event> = callbackFlow {
+        val bridge = object : FfiEventListener {
+            override fun onEvent(event: EventDto) {
+                trySend(event.toEvent())
+            }
+        }
+        val listenerId = handle.addEventListener(bridge)
+        awaitClose {
+            handle.removeEventListener(listenerId)
         }
     }
 }

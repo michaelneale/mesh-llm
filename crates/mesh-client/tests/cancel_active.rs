@@ -1,8 +1,9 @@
 use mesh_client::client::builder::{ChatMessage, ChatRequest, ClientBuilder, InviteToken};
 use mesh_client::crypto::keys::OwnerKeypair;
 use mesh_client::events::{Event, EventListener};
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+
+mod support;
 
 struct MockListener {
     events: Arc<Mutex<Vec<Event>>>,
@@ -14,10 +15,10 @@ impl EventListener for MockListener {
     }
 }
 
-#[test]
-fn cancel_active_request_emits_failed_cancelled() {
+#[tokio::test]
+async fn cancel_active_request_emits_failed_cancelled() {
     let kp = OwnerKeypair::generate();
-    let token = InviteToken::from_str("test-token").unwrap();
+    let token = InviteToken(support::spawn_mock_mesh(&["test-model"], "hello from mesh").await);
     let events: Arc<Mutex<Vec<Event>>> = Arc::new(Mutex::new(Vec::new()));
     let listener = Arc::new(MockListener {
         events: events.clone(),

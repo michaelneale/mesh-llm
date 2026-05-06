@@ -2,6 +2,12 @@ namespace mesh_ffi {
     [Throws=FfiError]
     MeshClientHandle create_client(string owner_keypair_bytes_hex, string invite_token);
 
+    [Throws=FfiError]
+    MeshClientHandle create_auto_client(string owner_keypair_bytes_hex, PublicMeshQueryDto query);
+
+    [Throws=FfiError]
+    sequence<PublicMeshDto> discover_public_meshes(PublicMeshQueryDto query);
+
     string generate_owner_keypair_hex();
 };
 
@@ -29,6 +35,10 @@ interface MeshClientHandle {
 
     string responses(ResponsesRequestDto request, EventListener listener);
 
+    string add_event_listener(EventListener listener);
+
+    void remove_event_listener(string listener_id);
+
     void cancel(string request_id);
 
     StatusDto status();
@@ -51,6 +61,31 @@ dictionary ModelDto {
 dictionary StatusDto {
     boolean connected;
     u64 peer_count;
+};
+
+dictionary PublicMeshQueryDto {
+    string? model;
+    double? min_vram_gb;
+    string? region;
+    string? target_name;
+    sequence<string> relays;
+};
+
+dictionary PublicMeshDto {
+    string invite_token;
+    sequence<string> serving;
+    sequence<string> wanted;
+    sequence<string> on_disk;
+    u64 total_vram_bytes;
+    u64 node_count;
+    u64 client_count;
+    u64 max_clients;
+    string? name;
+    string? region;
+    string? mesh_id;
+    string publisher_npub;
+    u64 published_at;
+    u64? expires_at;
 };
 
 dictionary ChatRequestDto {

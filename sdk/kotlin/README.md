@@ -41,3 +41,23 @@ To build the Android artifact locally:
 ```
 
 This writes the AAR to `sdk/kotlin/build/outputs/aar/meshllm-android.aar`.
+
+## Usage
+
+```kotlin
+val publicMeshes = MeshClient.discoverPublicMeshes()
+val client = MeshClient.connectPublic(ownerKeypairBytesHex = loadPersistedOwnerKeypair())
+client.join()
+```
+
+To join a specific public mesh, use the discovered invite token:
+
+```kotlin
+val publicMeshes = MeshClient.discoverPublicMeshes()
+val specific = publicMeshes.first()
+val client = MeshClient.connect(
+    ownerKeypairBytesHex = loadPersistedOwnerKeypair(),
+    inviteToken = specific.inviteToken,
+)
+client.join()
+```

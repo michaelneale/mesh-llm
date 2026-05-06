@@ -8,6 +8,19 @@ public extension MeshClient {
     func responsesStream(_ request: ResponsesRequest) -> AsyncThrowingStream<MeshEvent, Error> {
         responses(request)
     }
+
+    func observeEvents() -> AsyncStream<MeshEvent> {
+        AsyncStream { continuation in
+            do {
+                let handle = try ensureHandle()
+                let bridge = MeshEventObserverBridge(continuation: continuation)
+                let listenerID = handle.addEventListener(listener: bridge)
+                bridge.activate(listenerID: listenerID, handle: handle)
+            } catch {
+                continuation.finish()
+            }
+        }
+    }
 }
 
 #if canImport(MeshLLMFFI)
@@ -104,6 +117,61 @@ public final class EventStreamBridge: EventListener, @unchecked Sendable {
 
         continuation.yield(event)
         continuation.finish()
+    }
+}
+
+public final class MeshEventObserverBridge: EventListener, @unchecked Sendable {
+    private let continuation: AsyncStream<MeshEvent>.Continuation
+    private let stateLock = NSLock()
+    private weak var handle: MeshClientHandle?
+    private var listenerID: String?
+    private var finished = false
+
+    public init(continuation: AsyncStream<MeshEvent>.Continuation) {
+        self.continuation = continuation
+        continuation.onTermination = { [weak self] _ in
+            self?.removeIfNeeded()
+        }
+    }
+
+    public func activate(listenerID: String, handle: MeshClientHandle) {
+        stateLock.lock()
+        guard !finished else {
+            stateLock.unlock()
+            return
+        }
+        self.listenerID = listenerID
+        self.handle = handle
+        stateLock.unlock()
+    }
+
+    public func onEvent(event: EventDto) {
+        stateLock.lock()
+        let isFinished = finished
+        stateLock.unlock()
+        guard !isFinished else {
+            return
+        }
+        continuation.yield(MeshClient.mapEvent(event))
+    }
+
+    private func removeIfNeeded() {
+        stateLock.lock()
+        guard !finished else {
+            stateLock.unlock()
+            return
+        }
+        finished = true
+        let listenerID = self.listenerID
+        let handle = self.handle
+        self.listenerID = nil
+        self.handle = nil
+        stateLock.unlock()
+
+        guard let listenerID, let handle else {
+            return
+        }
+        handle.removeEventListener(listenerId: listenerID)
     }
 }
 #else

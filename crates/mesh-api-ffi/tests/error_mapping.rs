@@ -5,7 +5,7 @@ fn invalid_invite_token_returns_ffi_error() {
     let result = create_client("deadbeef".to_string(), "".to_string());
     match result {
         Ok(_) => panic!("expected Err(FfiError::InvalidInviteToken)"),
-        Err(FfiError::InvalidInviteToken) => {} // expected
+        Err(FfiError::InvalidInviteToken(_)) => {} // expected
         Err(other) => panic!("Expected InvalidInviteToken, got {:?}", other),
     }
 }
@@ -23,15 +23,15 @@ fn ffi_error_all_variants_present() {
     // Exhaustive match ensures all required variants exist and are reachable.
     // Adding a variant to FfiError without updating this test will cause a compile error.
     let variants: &[FfiError] = &[
-        FfiError::InvalidInviteToken,
-        FfiError::InvalidOwnerKeypair,
-        FfiError::BuildFailed,
-        FfiError::JoinFailed,
-        FfiError::DiscoveryFailed,
-        FfiError::StreamFailed,
-        FfiError::Cancelled,
-        FfiError::ReconnectFailed,
-        FfiError::HostUnavailable,
+        FfiError::InvalidInviteToken("invalid token".to_string()),
+        FfiError::InvalidOwnerKeypair("invalid owner".to_string()),
+        FfiError::BuildFailed("build".to_string()),
+        FfiError::JoinFailed("join".to_string()),
+        FfiError::DiscoveryFailed("discovery".to_string()),
+        FfiError::StreamFailed("stream".to_string()),
+        FfiError::Cancelled("cancelled".to_string()),
+        FfiError::ReconnectFailed("reconnect".to_string()),
+        FfiError::HostUnavailable("host unavailable".to_string()),
     ];
     for v in variants {
         assert!(

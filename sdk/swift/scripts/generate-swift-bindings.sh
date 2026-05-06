@@ -11,6 +11,7 @@ FFI_MODULE_NAME="MeshLLMFFI"
 FFI_HEADER_NAME="${FFI_MODULE_NAME}.h"
 FFI_MODULEMAP_NAME="${FFI_MODULE_NAME}.modulemap"
 UNIFFI_HEADER_SOURCE="mesh_ffiFFI.h"
+CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
 
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -60,7 +61,7 @@ fn main() -> Result<()> {
 }
 EOF
 
-cargo run --manifest-path "$RUNNER_DIR/Cargo.toml"
+"$CARGO_BIN" run --manifest-path "$RUNNER_DIR/Cargo.toml"
 
 cp "$OUT_DIR/mesh_ffi.swift" "$SWIFT_SOURCE_DIR/mesh_ffi.swift"
 perl -0pi -e 's/#if canImport\(mesh_ffiFFI\)/#if canImport('"$FFI_MODULE_NAME"')/g; s/import mesh_ffiFFI/import '"$FFI_MODULE_NAME"'/g' "$SWIFT_SOURCE_DIR/mesh_ffi.swift"

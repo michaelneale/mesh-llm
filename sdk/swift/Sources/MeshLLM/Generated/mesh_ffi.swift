@@ -441,6 +441,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
+    typealias FfiType = Double
+    typealias SwiftType = Double
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Double {
+        return try lift(readDouble(&buf))
+    }
+
+    public static func write(_ value: Double, into buf: inout [UInt8]) {
+        writeDouble(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -508,6 +524,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 public protocol MeshClientHandleProtocol: AnyObject, Sendable {
     
+    func addEventListener(listener: EventListener)  -> String
+    
     func cancel(requestId: String) 
     
     func chat(request: ChatRequestDto, listener: EventListener)  -> String
@@ -519,6 +537,8 @@ public protocol MeshClientHandleProtocol: AnyObject, Sendable {
     func listModels() throws  -> [ModelDto]
     
     func reconnect() throws 
+    
+    func removeEventListener(listenerId: String) 
     
     func responses(request: ResponsesRequestDto, listener: EventListener)  -> String
     
@@ -578,6 +598,15 @@ open class MeshClientHandle: MeshClientHandleProtocol, @unchecked Sendable {
     
 
     
+open func addEventListener(listener: EventListener) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_mesh_ffi_fn_method_meshclienthandle_add_event_listener(
+            self.uniffiCloneHandle(),
+        FfiConverterCallbackInterfaceEventListener_lower(listener),$0
+    )
+})
+}
+    
 open func cancel(requestId: String)  {try! rustCall() {
     uniffi_mesh_ffi_fn_method_meshclienthandle_cancel(
             self.uniffiCloneHandle(),
@@ -621,6 +650,14 @@ open func listModels()throws  -> [ModelDto]  {
 open func reconnect()throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
     uniffi_mesh_ffi_fn_method_meshclienthandle_reconnect(
             self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+open func removeEventListener(listenerId: String)  {try! rustCall() {
+    uniffi_mesh_ffi_fn_method_meshclienthandle_remove_event_listener(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(listenerId),$0
     )
 }
 }
@@ -850,6 +887,174 @@ public func FfiConverterTypeModelDto_lift(_ buf: RustBuffer) throws -> ModelDto 
 #endif
 public func FfiConverterTypeModelDto_lower(_ value: ModelDto) -> RustBuffer {
     return FfiConverterTypeModelDto.lower(value)
+}
+
+
+public struct PublicMeshDto: Equatable, Hashable {
+    public var inviteToken: String
+    public var serving: [String]
+    public var wanted: [String]
+    public var onDisk: [String]
+    public var totalVramBytes: UInt64
+    public var nodeCount: UInt64
+    public var clientCount: UInt64
+    public var maxClients: UInt64
+    public var name: String?
+    public var region: String?
+    public var meshId: String?
+    public var publisherNpub: String
+    public var publishedAt: UInt64
+    public var expiresAt: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(inviteToken: String, serving: [String], wanted: [String], onDisk: [String], totalVramBytes: UInt64, nodeCount: UInt64, clientCount: UInt64, maxClients: UInt64, name: String?, region: String?, meshId: String?, publisherNpub: String, publishedAt: UInt64, expiresAt: UInt64?) {
+        self.inviteToken = inviteToken
+        self.serving = serving
+        self.wanted = wanted
+        self.onDisk = onDisk
+        self.totalVramBytes = totalVramBytes
+        self.nodeCount = nodeCount
+        self.clientCount = clientCount
+        self.maxClients = maxClients
+        self.name = name
+        self.region = region
+        self.meshId = meshId
+        self.publisherNpub = publisherNpub
+        self.publishedAt = publishedAt
+        self.expiresAt = expiresAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PublicMeshDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePublicMeshDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PublicMeshDto {
+        return
+            try PublicMeshDto(
+                inviteToken: FfiConverterString.read(from: &buf), 
+                serving: FfiConverterSequenceString.read(from: &buf), 
+                wanted: FfiConverterSequenceString.read(from: &buf), 
+                onDisk: FfiConverterSequenceString.read(from: &buf), 
+                totalVramBytes: FfiConverterUInt64.read(from: &buf), 
+                nodeCount: FfiConverterUInt64.read(from: &buf), 
+                clientCount: FfiConverterUInt64.read(from: &buf), 
+                maxClients: FfiConverterUInt64.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf), 
+                region: FfiConverterOptionString.read(from: &buf), 
+                meshId: FfiConverterOptionString.read(from: &buf), 
+                publisherNpub: FfiConverterString.read(from: &buf), 
+                publishedAt: FfiConverterUInt64.read(from: &buf), 
+                expiresAt: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PublicMeshDto, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.inviteToken, into: &buf)
+        FfiConverterSequenceString.write(value.serving, into: &buf)
+        FfiConverterSequenceString.write(value.wanted, into: &buf)
+        FfiConverterSequenceString.write(value.onDisk, into: &buf)
+        FfiConverterUInt64.write(value.totalVramBytes, into: &buf)
+        FfiConverterUInt64.write(value.nodeCount, into: &buf)
+        FfiConverterUInt64.write(value.clientCount, into: &buf)
+        FfiConverterUInt64.write(value.maxClients, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+        FfiConverterOptionString.write(value.region, into: &buf)
+        FfiConverterOptionString.write(value.meshId, into: &buf)
+        FfiConverterString.write(value.publisherNpub, into: &buf)
+        FfiConverterUInt64.write(value.publishedAt, into: &buf)
+        FfiConverterOptionUInt64.write(value.expiresAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePublicMeshDto_lift(_ buf: RustBuffer) throws -> PublicMeshDto {
+    return try FfiConverterTypePublicMeshDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePublicMeshDto_lower(_ value: PublicMeshDto) -> RustBuffer {
+    return FfiConverterTypePublicMeshDto.lower(value)
+}
+
+
+public struct PublicMeshQueryDto: Equatable, Hashable {
+    public var model: String?
+    public var minVramGb: Double?
+    public var region: String?
+    public var targetName: String?
+    public var relays: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(model: String?, minVramGb: Double?, region: String?, targetName: String?, relays: [String]) {
+        self.model = model
+        self.minVramGb = minVramGb
+        self.region = region
+        self.targetName = targetName
+        self.relays = relays
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PublicMeshQueryDto: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePublicMeshQueryDto: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PublicMeshQueryDto {
+        return
+            try PublicMeshQueryDto(
+                model: FfiConverterOptionString.read(from: &buf), 
+                minVramGb: FfiConverterOptionDouble.read(from: &buf), 
+                region: FfiConverterOptionString.read(from: &buf), 
+                targetName: FfiConverterOptionString.read(from: &buf), 
+                relays: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PublicMeshQueryDto, into buf: inout [UInt8]) {
+        FfiConverterOptionString.write(value.model, into: &buf)
+        FfiConverterOptionDouble.write(value.minVramGb, into: &buf)
+        FfiConverterOptionString.write(value.region, into: &buf)
+        FfiConverterOptionString.write(value.targetName, into: &buf)
+        FfiConverterSequenceString.write(value.relays, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePublicMeshQueryDto_lift(_ buf: RustBuffer) throws -> PublicMeshQueryDto {
+    return try FfiConverterTypePublicMeshQueryDto.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePublicMeshQueryDto_lower(_ value: PublicMeshQueryDto) -> RustBuffer {
+    return FfiConverterTypePublicMeshQueryDto.lower(value)
 }
 
 
@@ -1347,6 +1552,103 @@ public func FfiConverterCallbackInterfaceEventListener_lower(_ v: EventListener)
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
+    typealias SwiftType = Double?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterDouble.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterDouble.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeChatMessageDto: FfiConverterRustBuffer {
     typealias SwiftType = [ChatMessageDto]
 
@@ -1393,11 +1695,51 @@ fileprivate struct FfiConverterSequenceTypeModelDto: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypePublicMeshDto: FfiConverterRustBuffer {
+    typealias SwiftType = [PublicMeshDto]
+
+    public static func write(_ value: [PublicMeshDto], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypePublicMeshDto.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [PublicMeshDto] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [PublicMeshDto]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypePublicMeshDto.read(from: &buf))
+        }
+        return seq
+    }
+}
+public func createAutoClient(ownerKeypairBytesHex: String, query: PublicMeshQueryDto)throws  -> MeshClientHandle  {
+    return try  FfiConverterTypeMeshClientHandle_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_mesh_ffi_fn_func_create_auto_client(
+        FfiConverterString.lower(ownerKeypairBytesHex),
+        FfiConverterTypePublicMeshQueryDto_lower(query),$0
+    )
+})
+}
 public func createClient(ownerKeypairBytesHex: String, inviteToken: String)throws  -> MeshClientHandle  {
     return try  FfiConverterTypeMeshClientHandle_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
     uniffi_mesh_ffi_fn_func_create_client(
         FfiConverterString.lower(ownerKeypairBytesHex),
         FfiConverterString.lower(inviteToken),$0
+    )
+})
+}
+public func discoverPublicMeshes(query: PublicMeshQueryDto)throws  -> [PublicMeshDto]  {
+    return try  FfiConverterSequenceTypePublicMeshDto.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+    uniffi_mesh_ffi_fn_func_discover_public_meshes(
+        FfiConverterTypePublicMeshQueryDto_lower(query),$0
     )
 })
 }
@@ -1423,10 +1765,19 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_mesh_ffi_checksum_func_create_auto_client() != 47814) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_mesh_ffi_checksum_func_create_client() != 44334) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_mesh_ffi_checksum_func_discover_public_meshes() != 41758) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_mesh_ffi_checksum_func_generate_owner_keypair_hex() != 58861) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_add_event_listener() != 21295) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mesh_ffi_checksum_method_meshclienthandle_cancel() != 27338) {
@@ -1445,6 +1796,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mesh_ffi_checksum_method_meshclienthandle_reconnect() != 11257) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_mesh_ffi_checksum_method_meshclienthandle_remove_event_listener() != 15534) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_mesh_ffi_checksum_method_meshclienthandle_responses() != 13271) {

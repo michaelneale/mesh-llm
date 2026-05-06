@@ -128,6 +128,11 @@ pub(crate) fn configure_materialized_stage_cache() {
 }
 
 pub(crate) fn materialized_stage_cache_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("SKIPPY_MATERIALIZED_DIR") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     crate::models::mesh_llm_cache_dir().join("skippy-stages")
 }
 
@@ -525,10 +530,10 @@ mod tests {
     #[test]
     #[serial]
     fn materialized_stage_preview_matches_source_removal_candidates() {
-        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+        let prev_materialized_dir = std::env::var_os("SKIPPY_MATERIALIZED_DIR");
 
         let temp = tempfile::tempdir().unwrap();
-        std::env::set_var("XDG_CACHE_HOME", temp.path());
+        std::env::set_var("SKIPPY_MATERIALIZED_DIR", temp.path());
 
         let root = materialized_stage_cache_dir();
         fs::create_dir_all(&root).unwrap();
@@ -557,6 +562,6 @@ mod tests {
         assert!(!artifact.exists());
         assert!(!index_path.exists());
 
-        restore_env("XDG_CACHE_HOME", prev_xdg);
+        restore_env("SKIPPY_MATERIALIZED_DIR", prev_materialized_dir);
     }
 }
