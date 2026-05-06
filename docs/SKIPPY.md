@@ -393,23 +393,24 @@ Required behavior:
 - surface synthetic package provenance in status so users can still understand
   which GGUF file is loaded.
 
-### Materialization Cache
+### Package Stage Loading
 
-Materialized skippy stage artifacts are derived cache, not durable user-owned
-model data. The source model or package remains the durable artifact.
+Package-backed skippy stages load the manifest-selected metadata, embedding,
+layer, and output GGUF parts directly through the runtime. Mesh should not
+compose a new per-stage GGUF file for normal package-backed stage loading. The
+source model or package remains the durable artifact.
 
 Required behavior:
 
-- `models delete <model>` should remove the source model/package and all
-  derived materialized stage artifacts for that source;
+- `models delete <model>` should remove the source model/package and any stale
+  derived artifacts left by older runtimes for that source;
 - `models prune` should be allowed to remove stale materialized artifacts before
   deleting durable source models;
-- active runtimes and active topologies must pin their materialized artifacts so
-  cleanup cannot delete files that are in use;
-- synthetic direct-GGUF package manifests and stage slices should be
-  regenerable from the source artifact;
-- runtime status should show materialized artifact path, size, source identity,
-  and whether it is currently pinned by an active runtime.
+- synthetic direct-GGUF package manifests should be regenerable from the source
+  artifact;
+- runtime status should show source identity for package-backed stages and leave
+  materialized artifact fields empty unless a legacy or explicit materialization
+  path is actually in use.
 
 ### Exact KV/Recurrent Cache Policy
 

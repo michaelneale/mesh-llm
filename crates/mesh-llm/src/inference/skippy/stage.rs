@@ -143,8 +143,7 @@ pub(crate) struct StageStatusSnapshot {
 struct RunningStage {
     load: StageLoadRequest,
     server: EmbeddedServerHandle,
-    materialized: Option<super::materialization::MaterializedStageArtifact>,
-    _materialized_pin: Option<super::materialization::MaterializedStagePin>,
+    package_info: Option<super::materialization::StagePackageInfo>,
 }
 
 #[derive(Default)]
@@ -193,8 +192,11 @@ impl StageControlState {
         let bind_addr = materialize_stage_bind_addr(parse_bind_addr(&load.bind_addr)?)?;
         let mut effective_load = load;
         effective_load.bind_addr = bind_addr.to_string();
-        super::configure_materialized_stage_cache();
-        let materialized = super::materialize_stage_load(&effective_load)?;
+        let package_info = if effective_load.load_mode == LoadMode::LayerPackage {
+            Some(super::inspect_stage_package(&effective_load.package_ref)?)
+        } else {
+            None
+        };
         let config = stage_config(&effective_load)?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
@@ -222,8 +224,7 @@ impl StageControlState {
             RunningStage {
                 load: effective_load.clone(),
                 server,
-                materialized: materialized.as_ref().map(|(artifact, _)| artifact.clone()),
-                _materialized_pin: materialized.map(|(_, pin)| pin),
+                package_info,
             },
         );
         let status = self
@@ -439,23 +440,20 @@ fn status_from_running(stage: &RunningStage) -> StageStatusSnapshot {
         package_ref: Some(stage.load.package_ref.clone()),
         manifest_sha256: Some(stage.load.manifest_sha256.clone()),
         source_model_path: stage
-            .materialized
+            .package_info
             .as_ref()
-            .map(|artifact| artifact.source_model_path.clone())
+            .map(|package| package.source_model_path.clone())
             .or_else(|| stage.load.model_path.clone()),
         source_model_sha256: stage
-            .materialized
+            .package_info
             .as_ref()
-            .map(|artifact| artifact.source_model_sha256.clone()),
+            .map(|package| package.source_model_sha256.clone()),
         source_model_bytes: stage
-            .materialized
+            .package_info
             .as_ref()
-            .and_then(|artifact| artifact.source_model_bytes),
-        materialized_path: stage
-            .materialized
-            .as_ref()
-            .map(|artifact| artifact.path.to_string_lossy().to_string()),
-        materialized_pinned: stage.materialized.is_some(),
+            .and_then(|package| package.source_model_bytes),
+        materialized_path: None,
+        materialized_pinned: false,
         projector_path: stage.load.projector_path.clone(),
         stage_id: stage.load.stage_id.clone(),
         stage_index: stage.load.stage_index,

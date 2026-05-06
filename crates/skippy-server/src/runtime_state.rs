@@ -12,7 +12,7 @@ use skippy_runtime::{
     RuntimeLoadMode, SamplingConfig, StageModel, StageSession, StageSessionCheckpoint, TokenSignal,
 };
 
-use crate::package::materialize_layer_package;
+use crate::package::select_package_parts;
 
 pub struct RuntimeState {
     pub model: StageModel,
@@ -373,9 +373,9 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
 
     let model = match config.load_mode {
         LoadMode::LayerPackage => {
-            let materialized_path =
-                materialize_layer_package(config).context("materialize layer package for stage")?;
-            open_stage_model(&materialized_path, &runtime_config)?
+            let selected =
+                select_package_parts(config).context("select layer package parts for stage")?;
+            open_stage_model_from_parts(&selected.absolute_paths, &runtime_config)?
         }
         _ => {
             let Some(model_path) = config.model_path.as_ref().map(std::path::Path::new) else {
@@ -427,7 +427,7 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
             LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
         },
         projector_path: config.projector_path.clone(),
-        include_embeddings: config.stage_index == 0,
+        include_embeddings: config.stage_index == 0 || config.downstream.is_none(),
         include_output: config.downstream.is_none(),
         filter_tensors_on_load: config.filter_tensors_on_load,
     })
@@ -437,10 +437,17 @@ fn open_stage_model(path: &std::path::Path, runtime_config: &RuntimeConfig) -> R
     StageModel::open(path, runtime_config)
 }
 
+fn open_stage_model_from_parts(
+    paths: &[std::path::PathBuf],
+    runtime_config: &RuntimeConfig,
+) -> Result<StageModel> {
+    StageModel::open_from_parts(paths, runtime_config)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::{bail, Result};
-    use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig, StageDevice};
+    use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
     use skippy_runtime::FlashAttentionType as RuntimeFlashAttentionType;
 
     use super::{create_indexed_lane_resource, runtime_config_from_stage_config};
@@ -519,5 +526,50 @@ mod tests {
             runtime_config.flash_attn_type,
             RuntimeFlashAttentionType::Enabled
         );
+    }
+
+    #[test]
+    fn runtime_config_keeps_embeddings_for_final_layer_package_stage() {
+        let config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            package_ref: Some("/tmp/package".to_string()),
+            manifest_sha256: Some("manifest".to_string()),
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some("/tmp/package".to_string()),
+            projector_path: None,
+            stage_id: "stage-2".to_string(),
+            stage_index: 2,
+            layer_start: 20,
+            layer_end: 30,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: true,
+            selected_device: None,
+            load_mode: LoadMode::LayerPackage,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: Some(PeerConfig {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                endpoint: "tcp://127.0.0.1:19001".to_string(),
+            }),
+            downstream: None,
+        };
+
+        let runtime_config = runtime_config_from_stage_config(&config).unwrap();
+
+        assert!(runtime_config.include_embeddings);
+        assert!(runtime_config.include_output);
     }
 }

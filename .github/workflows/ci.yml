@@ -429,7 +429,14 @@ jobs:
         if: steps.llama_cache.outputs.cache-hit == 'true'
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        run: target/release/mesh-llm --version
+        run: |
+          CUDA_STUB="$(find /usr/local/cuda -path '*/stubs/libcuda.so' -print -quit)"
+          if [ -n "$CUDA_STUB" ]; then
+            mkdir -p /tmp/cuda-stubs
+            ln -sf "$CUDA_STUB" /tmp/cuda-stubs/libcuda.so.1
+            export LD_LIBRARY_PATH="/tmp/cuda-stubs:$(dirname "$CUDA_STUB"):${LD_LIBRARY_PATH:-}"
+          fi
+          target/release/mesh-llm --version
       - name: Build CUDA benchmark binary
         if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         run: nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu

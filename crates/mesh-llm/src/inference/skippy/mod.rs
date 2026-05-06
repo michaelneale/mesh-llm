@@ -32,9 +32,8 @@ use skippy_server::{
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
-    configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
-    materialized_stage_cache_dir, prune_unpinned_materialized_stages,
-    remove_materialized_stages_for_sources, MaterializedStagePin,
+    configure_materialized_stage_cache, inspect_stage_package, materialized_stage_cache_dir,
+    prune_unpinned_materialized_stages, remove_materialized_stages_for_sources,
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
@@ -206,7 +205,6 @@ pub(crate) struct SkippyModelHandle {
     config: StageConfig,
     started_at_unix_nanos: i64,
     status: Arc<Mutex<HandleState>>,
-    _materialized_pin: Option<MaterializedStagePin>,
 }
 
 pub(crate) struct SkippyHttpHandle {
@@ -286,28 +284,16 @@ impl SkippyModelHandle {
                 stopped_at_unix_nanos: None,
                 last_error: None,
             })),
-            _materialized_pin: None,
         })
     }
 
     pub(crate) fn load_stage0_config(
-        mut config: StageConfig,
+        config: StageConfig,
         activation_width: i32,
         generation_concurrency: usize,
         default_max_tokens: u32,
         hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
     ) -> Result<Self> {
-        configure_materialized_stage_cache();
-        let materialized = materialize_stage_config(&config)?;
-        let materialized_pin = materialized.map(|(artifact, pin)| {
-            config.manifest_sha256 = Some(artifact.manifest_sha256);
-            config.source_model_path = Some(artifact.source_model_path);
-            config.source_model_sha256 = Some(artifact.source_model_sha256);
-            config.source_model_bytes = artifact.source_model_bytes;
-            config.materialized_path = Some(artifact.path.to_string_lossy().to_string());
-            config.materialized_pinned = true;
-            pin
-        });
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: config.clone(),
             topology: None,
@@ -359,7 +345,6 @@ impl SkippyModelHandle {
                 stopped_at_unix_nanos: None,
                 last_error: None,
             })),
-            _materialized_pin: materialized_pin,
         })
     }
 

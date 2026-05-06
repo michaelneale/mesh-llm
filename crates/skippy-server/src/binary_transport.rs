@@ -1996,25 +1996,30 @@ pub(crate) fn connect_binary_downstream(
 }
 
 fn model_supports_kv_only_cache(config: &StageConfig) -> bool {
-    let Some(path) = kv_cache_inspection_path(config) else {
-        return true;
+    let paths = match kv_cache_inspection_paths(config) {
+        Some(paths) => paths,
+        None => return true,
     };
-    let Ok(info) = ModelInfo::open(path) else {
-        return true;
-    };
-    let Ok(tensors) = info.tensors() else {
-        return true;
-    };
-    !tensors
-        .iter()
-        .any(|tensor| tensor_name_requires_recurrent_state(&tensor.name))
+    !paths.iter().any(|path| {
+        let Ok(info) = ModelInfo::open(path) else {
+            return false;
+        };
+        let Ok(tensors) = info.tensors() else {
+            return false;
+        };
+        tensors
+            .iter()
+            .any(|tensor| tensor_name_requires_recurrent_state(&tensor.name))
+    })
 }
 
-fn kv_cache_inspection_path(config: &StageConfig) -> Option<PathBuf> {
+fn kv_cache_inspection_paths(config: &StageConfig) -> Option<Vec<PathBuf>> {
     let path = config.model_path.as_deref()?;
     match config.load_mode {
-        LoadMode::LayerPackage => crate::package::materialize_layer_package(config).ok(),
-        LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => Some(PathBuf::from(path)),
+        LoadMode::LayerPackage => crate::package::select_package_parts(config)
+            .ok()
+            .map(|selection| selection.absolute_paths),
+        LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => Some(vec![PathBuf::from(path)]),
     }
 }
 
