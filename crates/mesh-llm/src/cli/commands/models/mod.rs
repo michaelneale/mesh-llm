@@ -140,29 +140,46 @@ fn build_installed_rows() -> Vec<InstalledRow> {
             let path = crate::models::find_model_path(&name);
             let display_name = crate::models::installed_model_display_name(&name);
             let catalog_model = find_catalog_model_exact(&name);
-            let model_ref = if let Some(model) = catalog_model {
+            let layer_count = crate::models::layered_package_layer_count_for_path(&path);
+            let model_ref = if layer_count.is_some() {
+                name.clone()
+            } else if let Some(model) = catalog_model {
                 catalog_model_ref(model)
             } else if let Some(identity) = crate::models::huggingface_identity_for_path(&path) {
                 crate::models::installed_model_huggingface_ref(&identity)
             } else {
                 name.clone()
             };
-            let size = if path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-            {
-                Some(crate::inference::election::total_model_bytes(&path))
-            } else {
-                std::fs::metadata(&path).map(|meta| meta.len()).ok()
-            };
+            let show_command = layer_count
+                .is_none()
+                .then(|| format!("mesh-llm models show {model_ref}"));
+            let download_command = layer_count
+                .is_none()
+                .then(|| format!("mesh-llm models download {model_ref}"));
+            let delete_command = format!("mesh-llm models delete {model_ref}");
+            let size =
+                if let Some(bytes) = crate::models::layered_package_total_bytes_for_path(&path) {
+                    Some(bytes)
+                } else if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+                {
+                    Some(crate::inference::election::total_model_bytes(&path))
+                } else {
+                    std::fs::metadata(&path).map(|meta| meta.len()).ok()
+                };
             let capabilities = installed_model_capabilities(&name);
             let usage = load_model_usage_record_for_path(&path);
             InstalledRow {
                 name: display_name,
                 model_ref,
+                show_command,
+                download_command,
+                delete_command,
                 path,
                 size,
+                layer_count,
                 catalog_model,
                 capabilities,
                 managed_by_mesh: usage.as_ref().is_some_and(|record| record.mesh_managed),
@@ -537,19 +554,9 @@ pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Resu
     }
 
     if !yes {
-        let display_name = paths[0]
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let resolved = crate::models::ResolvedModel {
-            path: paths[0].clone(),
-            display_name,
-            is_exact_path: false,
-            matched_records: vec![],
-        };
-
+        let derived_stage_paths =
+            crate::inference::skippy::materialized_stages_for_sources(&paths)?;
+        let resolved = build_delete_preview_model(model, &paths, derived_stage_paths);
         let formatter = models_formatter(json_output);
         return formatter.render_delete_preview(&resolved);
     }
@@ -560,6 +567,32 @@ pub async fn run_model_delete(model: &str, yes: bool, json_output: bool) -> Resu
     result.removed_derived_cache_files = removed_derived_cache_files;
     let formatter = models_formatter(json_output);
     formatter.render_delete_result(&result)
+}
+
+fn build_delete_preview_model(
+    model: &str,
+    paths: &[std::path::PathBuf],
+    derived_stage_paths: Vec<std::path::PathBuf>,
+) -> crate::models::ResolvedModel {
+    let primary_path = paths[0].clone();
+    let display_name = if paths.len() > 1 {
+        format!("{model} ({} files)", paths.len())
+    } else {
+        primary_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    };
+
+    crate::models::ResolvedModel {
+        path: primary_path,
+        paths: paths.to_vec(),
+        derived_stage_paths,
+        display_name,
+        is_exact_path: false,
+        matched_records: vec![],
+    }
 }
 
 fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
@@ -576,7 +609,48 @@ fn map_search_sort(sort: ModelSearchSort) -> SearchSort {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cleanup_age;
+    use super::{build_delete_preview_model, build_installed_rows, parse_cleanup_age};
+    use serial_test::serial;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("mesh-llm-{prefix}-{stamp}"))
+    }
+
+    fn restore_env(key: &str, previous: Option<OsString>) {
+        if let Some(value) = previous {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
+
+    fn create_cache_repo_file(
+        root: &Path,
+        repo_id: &str,
+        revision: &str,
+        relative_file: &str,
+        size_bytes: usize,
+    ) -> PathBuf {
+        let repo_dir = root.join(format!("models--{}", repo_id.replace('/', "--")));
+        let refs_dir = repo_dir.join("refs");
+        let snapshot_dir = repo_dir.join("snapshots").join(revision);
+        std::fs::create_dir_all(&refs_dir).unwrap();
+        std::fs::create_dir_all(
+            snapshot_dir.join(Path::new(relative_file).parent().unwrap_or(Path::new(""))),
+        )
+        .unwrap();
+        std::fs::write(refs_dir.join("main"), revision).unwrap();
+
+        let path = snapshot_dir.join(relative_file);
+        std::fs::write(&path, vec![0u8; size_bytes]).unwrap();
+        path
+    }
 
     #[test]
     fn cleanup_age_parser_accepts_common_units() {
@@ -599,5 +673,76 @@ mod tests {
         assert!(parse_cleanup_age("30").is_err());
         assert!(parse_cleanup_age("2months").is_err());
         assert!(parse_cleanup_age("").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn installed_rows_keep_layered_package_ref_and_safe_commands() {
+        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = unique_temp_dir("installed-layered-row");
+        create_cache_repo_file(
+            &temp,
+            "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+            "abcdef1234567890",
+            "shared/embeddings.gguf",
+            6,
+        );
+        create_cache_repo_file(
+            &temp,
+            "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+            "abcdef1234567890",
+            "layers/layer-000.gguf",
+            9,
+        );
+        create_cache_repo_file(
+            &temp,
+            "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+            "abcdef1234567890",
+            "layers/layer-001.gguf",
+            9,
+        );
+
+        std::env::set_var("HF_HUB_CACHE", &temp);
+        std::env::remove_var("HF_HOME");
+        std::env::remove_var("XDG_CACHE_HOME");
+
+        let rows = build_installed_rows();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.model_ref, "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers");
+        assert_eq!(row.layer_count, Some(2));
+        assert_eq!(row.show_command, None);
+        assert_eq!(row.download_command, None);
+        assert_eq!(
+            row.delete_command,
+            "mesh-llm models delete meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp);
+        restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    fn delete_preview_model_retains_all_resolved_package_paths() {
+        let paths = vec![
+            PathBuf::from("/tmp/demo-layers/layers/layer-000.gguf"),
+            PathBuf::from("/tmp/demo-layers/layers/layer-001.gguf"),
+            PathBuf::from("/tmp/demo-layers/shared/embeddings.gguf"),
+        ];
+
+        let derived_stage_paths =
+            vec![PathBuf::from("/tmp/mesh-llm/skippy-stages/demo-stage.gguf")];
+        let resolved =
+            build_delete_preview_model("meshllm/Demo-layers", &paths, derived_stage_paths.clone());
+
+        assert_eq!(resolved.path, paths[0]);
+        assert_eq!(resolved.paths, paths);
+        assert_eq!(resolved.derived_stage_paths, derived_stage_paths);
+        assert_eq!(resolved.display_name, "meshllm/Demo-layers (3 files)");
     }
 }

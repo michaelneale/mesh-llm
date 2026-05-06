@@ -267,19 +267,43 @@ pub(crate) fn prune_unpinned_materialized_stages() -> Result<usize> {
 }
 
 pub(crate) fn remove_materialized_stages_for_sources(sources: &[PathBuf]) -> Result<usize> {
+    let candidates = materialized_stage_removal_candidates(sources)?;
+    let mut removed = 0usize;
+    for candidate in candidates {
+        if candidate.artifact_path.exists() {
+            fs::remove_file(&candidate.artifact_path)
+                .with_context(|| format!("remove {}", candidate.artifact_path.display()))?;
+            removed += 1;
+        }
+        let _ = fs::remove_file(candidate.source_index_path);
+    }
+    Ok(removed)
+}
+
+pub(crate) fn materialized_stages_for_sources(sources: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    Ok(materialized_stage_removal_candidates(sources)?
+        .into_iter()
+        .filter(|candidate| candidate.artifact_path.exists())
+        .map(|candidate| candidate.artifact_path)
+        .collect())
+}
+
+fn materialized_stage_removal_candidates(
+    sources: &[PathBuf],
+) -> Result<Vec<MaterializedStageRemovalCandidate>> {
     if sources.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let root = materialized_stage_cache_dir();
     if !root.is_dir() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let source_strings = sources
         .iter()
         .map(|path| path.to_string_lossy().to_string())
         .collect::<Vec<_>>();
     let pins = active_pin_artifacts(&root)?;
-    let mut removed = 0usize;
+    let mut candidates = Vec::new();
     for entry in fs::read_dir(&root).with_context(|| format!("read {}", root.display()))? {
         let path = entry?.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -304,14 +328,19 @@ pub(crate) fn remove_materialized_stages_for_sources(sources: &[PathBuf]) -> Res
         if pins.iter().any(|pin| pin == &index.artifact_path) {
             continue;
         }
-        if index.artifact_path.exists() {
-            fs::remove_file(&index.artifact_path)
-                .with_context(|| format!("remove {}", index.artifact_path.display()))?;
-            removed += 1;
-        }
-        let _ = fs::remove_file(path);
+        candidates.push(MaterializedStageRemovalCandidate {
+            artifact_path: index.artifact_path,
+            source_index_path: path,
+        });
     }
-    Ok(removed)
+    candidates.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
+    Ok(candidates)
+}
+
+#[derive(Debug)]
+struct MaterializedStageRemovalCandidate {
+    artifact_path: PathBuf,
+    source_index_path: PathBuf,
 }
 
 fn stage_package_info(package_ref: &str, info: LayerPackageInfo) -> Result<StagePackageInfo> {
@@ -451,6 +480,17 @@ fn cache_key(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+
+    use serial_test::serial;
+
+    fn restore_env(key: &str, previous: Option<OsString>) {
+        if let Some(value) = previous {
+            std::env::set_var(key, value);
+        } else {
+            std::env::remove_var(key);
+        }
+    }
 
     #[test]
     fn layer_package_ref_detects_local_manifest_dir() {
@@ -478,5 +518,42 @@ mod tests {
             hf.as_package_ref().as_deref(),
             Some("hf://Mesh-LLM/demo-package@abc123")
         );
+    }
+
+    #[test]
+    #[serial]
+    fn materialized_stage_preview_matches_source_removal_candidates() {
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CACHE_HOME", temp.path());
+
+        let root = materialized_stage_cache_dir();
+        fs::create_dir_all(&root).unwrap();
+        let source = temp
+            .path()
+            .join("source-package")
+            .join("model-package.json");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"{}").unwrap();
+        let artifact = root.join("stage-000.gguf");
+        fs::write(&artifact, b"stage").unwrap();
+        let index = SourceIndex {
+            artifact_path: artifact.clone(),
+            source_model_path: source.to_string_lossy().to_string(),
+        };
+        let index_path = root.join("source-test.json");
+        fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
+
+        let preview = materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
+        assert_eq!(preview, vec![artifact.clone()]);
+
+        let removed =
+            remove_materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!artifact.exists());
+        assert!(!index_path.exists());
+
+        restore_env("XDG_CACHE_HOME", prev_xdg);
     }
 }

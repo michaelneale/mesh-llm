@@ -276,3 +276,159 @@ async fn resolve_model_identifier_repo_ref_matches_shared_resolver_semantics() {
     restore_env("HF_HOME", prev_hf_home);
     restore_env("XDG_CACHE_HOME", prev_xdg);
 }
+
+#[tokio::test]
+#[serial]
+async fn resolve_model_identifier_repo_ref_returns_all_layered_package_files() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-layered-resolve");
+    let shared = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "shared/embeddings.gguf",
+        6,
+    );
+    let layer_000 = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "layers/layer-000.gguf",
+        9,
+    );
+    let layer_001 = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "layers/layer-001.gguf",
+        9,
+    );
+    let nested_shared = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "shared/nested/extra.gguf",
+        6,
+    );
+    let manifest = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "model-package.json",
+        12,
+    );
+    let metadata = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "reports/certification.json",
+        10,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let resolved = resolve_model_identifier("meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers")
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved,
+        vec![
+            layer_000,
+            layer_001,
+            manifest,
+            metadata,
+            shared,
+            nested_shared
+        ]
+    );
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_model_by_identifier_removes_all_layered_package_files() {
+    let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+    let prev_hf_home = std::env::var_os("HF_HOME");
+    let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    let temp = unique_temp_dir("delete-layered-package");
+    let shared = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "shared/embeddings.gguf",
+        6,
+    );
+    let layer_000 = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "layers/layer-000.gguf",
+        9,
+    );
+    let layer_001 = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "layers/layer-001.gguf",
+        9,
+    );
+    let nested_shared = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "shared/nested/extra.gguf",
+        6,
+    );
+    let manifest = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "model-package.json",
+        12,
+    );
+    let metadata = create_cache_repo_file(
+        &temp,
+        "meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers",
+        "abcdef1234567890",
+        "reports/certification.json",
+        10,
+    );
+
+    std::env::set_var("HF_HUB_CACHE", &temp);
+    std::env::remove_var("HF_HOME");
+    std::env::remove_var("XDG_CACHE_HOME");
+
+    let expected_deleted = vec![
+        layer_000.canonicalize().unwrap(),
+        layer_001.canonicalize().unwrap(),
+        manifest.canonicalize().unwrap(),
+        metadata.canonicalize().unwrap(),
+        shared.canonicalize().unwrap(),
+        nested_shared.canonicalize().unwrap(),
+    ];
+    let result = delete_model_by_identifier("meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers")
+        .await
+        .unwrap();
+    assert_eq!(result.deleted_paths, expected_deleted);
+    assert!(!shared.exists());
+    assert!(!layer_000.exists());
+    assert!(!layer_001.exists());
+    assert!(!nested_shared.exists());
+    assert!(!manifest.exists());
+    assert!(!metadata.exists());
+
+    let _ = std::fs::remove_dir_all(&temp);
+    restore_env("HF_HUB_CACHE", prev_hub_cache);
+    restore_env("HF_HOME", prev_hf_home);
+    restore_env("XDG_CACHE_HOME", prev_xdg);
+}

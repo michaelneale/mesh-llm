@@ -26,7 +26,9 @@ fn model_ref_paths() -> &'static Mutex<HashMap<String, PathBuf>> {
 
 fn remember_model_ref_path(model_ref: &str, path: &Path) {
     if let Ok(mut paths) = model_ref_paths().lock() {
-        paths.insert(model_ref.to_string(), path.to_path_buf());
+        paths
+            .entry(model_ref.to_string())
+            .or_insert_with(|| path.to_path_buf());
     }
 }
 
@@ -429,9 +431,106 @@ pub fn scan_installed_models() -> Vec<String> {
 }
 
 fn hf_identity_model_ref(identity: &HuggingFaceModelIdentity) -> String {
+    if let Some(model_ref) = layered_package_model_ref(identity) {
+        return model_ref;
+    }
     let selector = model_ref::quant_selector_from_gguf_file(&identity.file)
         .or_else(|| normalize_gguf_distribution_id(&identity.file));
     format_model_ref(&identity.repo_id, None, selector.as_deref())
+}
+
+fn layered_package_model_ref(identity: &HuggingFaceModelIdentity) -> Option<String> {
+    if identity.repo_id.ends_with("-layers")
+        && (layered_package_layer_index(&identity.file).is_some()
+            || is_layered_package_shared_file(identity))
+    {
+        Some(format_model_ref(&identity.repo_id, None, None))
+    } else {
+        None
+    }
+}
+
+fn is_layered_package_shared_file(identity: &HuggingFaceModelIdentity) -> bool {
+    is_layered_package_shared_relative_file(&identity.file)
+}
+
+fn is_layered_package_shared_relative_file(relative_file: &str) -> bool {
+    let Some(file_name) = relative_file.strip_prefix("shared/") else {
+        return false;
+    };
+    !file_name.is_empty() && !file_name.contains('/') && file_name.ends_with(".gguf")
+}
+
+fn layered_package_layer_index(relative_file: &str) -> Option<usize> {
+    let file_name = relative_file.strip_prefix("layers/")?;
+    let index = file_name.strip_prefix("layer-")?.strip_suffix(".gguf")?;
+    if index.is_empty() || !index.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    index.parse().ok()
+}
+
+fn layered_package_snapshot_root(
+    path: &Path,
+    identity: &HuggingFaceModelIdentity,
+) -> Option<PathBuf> {
+    let mut root = path.to_path_buf();
+    for _ in Path::new(&identity.file).components() {
+        if !root.pop() {
+            return None;
+        }
+    }
+    Some(root)
+}
+
+fn layered_package_gguf_paths(path: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let identity = huggingface_identity_for_path(path)?;
+    layered_package_model_ref(&identity)?;
+    let root = layered_package_snapshot_root(path, &identity)?;
+    let mut paths = Vec::new();
+    for subdir in ["shared", "layers"] {
+        let dir = root.join(subdir);
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+            {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    Some((root, paths))
+}
+
+pub fn layered_package_layer_count_for_path(path: &Path) -> Option<usize> {
+    let (root, paths) = layered_package_gguf_paths(path)?;
+    let layers = paths
+        .iter()
+        .filter(|path| {
+            path.strip_prefix(&root)
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                .as_deref()
+                .and_then(layered_package_layer_index)
+                .is_some()
+        })
+        .count();
+    (layers > 0).then_some(layers)
+}
+
+pub fn layered_package_total_bytes_for_path(path: &Path) -> Option<u64> {
+    let (_root, paths) = layered_package_gguf_paths(path)?;
+    let total = paths
+        .iter()
+        .map(|path| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+        .sum();
+    Some(total)
 }
 
 fn synthetic_local_gguf_model_ref(path: &Path) -> String {
@@ -1041,6 +1140,97 @@ mod tests {
         restore_env("HF_HUB_CACHE", prev_hub_cache);
         restore_env("HF_HOME", prev_hf_home);
         restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    #[serial]
+    fn scan_installed_models_collapses_layered_package_files() {
+        let prev_hub_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+        let temp = std::env::temp_dir().join(format!(
+            "mesh-llm-layered-cache-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo_dir = temp.join("models--meshllm--DeepSeek-V3.2-UD-Q4_K_XL-layers");
+        let revision = "abcdef1234567890";
+        let snapshot = repo_dir.join("snapshots").join(revision);
+        let shared = snapshot.join("shared").join("embeddings.gguf");
+        let layer_000 = snapshot.join("layers").join("layer-000.gguf");
+        let layer_001 = snapshot.join("layers").join("layer-001.gguf");
+        std::fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(layer_000.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(repo_dir.join("refs")).unwrap();
+        std::fs::write(repo_dir.join("refs").join("main"), revision).unwrap();
+        std::fs::write(&shared, b"shared").unwrap();
+        std::fs::write(&layer_000, b"layer-000").unwrap();
+        std::fs::write(&layer_001, b"layer-001").unwrap();
+
+        std::env::set_var("HF_HUB_CACHE", &temp);
+        std::env::remove_var("HF_HOME");
+        std::env::remove_var("XDG_CACHE_HOME");
+
+        let installed = scan_installed_models();
+
+        assert_eq!(
+            installed,
+            vec!["meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers".to_string()]
+        );
+        assert_eq!(layered_package_layer_count_for_path(&layer_000), Some(2));
+
+        let _ = std::fs::remove_dir_all(&temp);
+        restore_env("HF_HUB_CACHE", prev_hub_cache);
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("XDG_CACHE_HOME", prev_xdg);
+    }
+
+    #[test]
+    fn hf_identity_model_ref_preserves_layer_selector_outside_layered_packages() {
+        let identity = HuggingFaceModelIdentity {
+            repo_id: "example/Regular-GGUF".to_string(),
+            revision: "deadbeef".to_string(),
+            file: "layers/layer-000.gguf".to_string(),
+            canonical_ref: "example/Regular-GGUF@deadbeef/layers/layer-000.gguf".to_string(),
+            local_file_name: "layer-000.gguf".to_string(),
+        };
+
+        assert_eq!(
+            hf_identity_model_ref(&identity),
+            "example/Regular-GGUF:layer-000"
+        );
+    }
+
+    #[test]
+    fn layered_package_shared_matching_requires_direct_child() {
+        let direct = HuggingFaceModelIdentity {
+            repo_id: "meshllm/Demo-layers".to_string(),
+            revision: "deadbeef".to_string(),
+            file: "shared/embeddings.gguf".to_string(),
+            canonical_ref: "meshllm/Demo-layers@deadbeef/shared/embeddings.gguf".to_string(),
+            local_file_name: "embeddings.gguf".to_string(),
+        };
+        let nested = HuggingFaceModelIdentity {
+            file: "shared/nested/embeddings.gguf".to_string(),
+            canonical_ref: "meshllm/Demo-layers@deadbeef/shared/nested/embeddings.gguf".to_string(),
+            ..direct.clone()
+        };
+
+        assert_eq!(
+            layered_package_model_ref(&direct),
+            Some("meshllm/Demo-layers".to_string())
+        );
+        assert_eq!(layered_package_model_ref(&nested), None);
+    }
+
+    #[test]
+    fn layered_package_layer_matching_is_separator_safe_after_normalization() {
+        let relative = "layers\\layer-000.gguf".replace('\\', "/");
+
+        assert_eq!(layered_package_layer_index(&relative), Some(0));
     }
 
     #[test]
