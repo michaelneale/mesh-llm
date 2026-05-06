@@ -342,7 +342,11 @@ impl MeshClient {
     /// Return the current mesh connection status.
     pub async fn status(&self) -> Status {
         let state = self.state.lock().unwrap();
-        let connected = state.connection.is_some();
+        let connected = if self.config.api_base_url.is_some() {
+            state.admitted
+        } else {
+            state.connection.is_some()
+        };
         Status {
             connected,
             peer_count: usize::from(connected),

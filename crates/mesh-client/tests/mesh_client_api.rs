@@ -34,6 +34,25 @@ async fn mesh_client_join_and_status() {
 }
 
 #[tokio::test]
+async fn api_backed_client_join_updates_status() {
+    let kp = OwnerKeypair::generate();
+    let token = InviteToken("api-mode-token".to_string());
+    let mut client = ClientBuilder::new(kp, token)
+        .with_api_base_url("http://127.0.0.1:9347".to_string())
+        .build()
+        .unwrap();
+
+    let status_before = client.status().await;
+    assert!(!status_before.connected);
+
+    client.join().await.unwrap();
+
+    let status_after = client.status().await;
+    assert!(status_after.connected);
+    assert_eq!(status_after.peer_count, 1);
+}
+
+#[tokio::test]
 async fn mesh_client_disconnect() {
     let kp = OwnerKeypair::generate();
     let token = InviteToken(support::spawn_mock_mesh(&["mesh-model-1"], "hello from mesh").await);
