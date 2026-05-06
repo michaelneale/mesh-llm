@@ -96,7 +96,7 @@
     {
       "llama_model": "phi2",
       "family": "phi2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "TheBloke/phi-2-GGUF",
       "include": "*Q4_K_M.gguf",
       "notes": "text lane passed in llama-parity-phi2-runtime-slice-2 after the fused-QKV stage-filter fix; ResidentKv one-stage and split-final cache restore passed in llama-parity-phi2-resident-kv-1 and /Volumes/External/tmp/skippy-phi2-resident-kv-stage1-20260506.json; full-state mobility rejected as too large"
@@ -112,7 +112,7 @@
     {
       "llama_model": "gemma",
       "family": "gemma",
-      "status": "candidate",
+      "status": "certified",
       "repo": "ggml-org/gemma-3-270m-it-GGUF",
       "include": "*.gguf",
       "notes": "repo currently provides Q8_0 only; text lane passed in llama-parity-gemma-f32-wire-1 with f32 activation wire; f16 and q8 activation wire changed the next-token argmax"
@@ -156,10 +156,10 @@
     {
       "llama_model": "deepseek",
       "family": "deepseek",
-      "status": "candidate",
+      "status": "certified",
       "repo": "Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "replaces stale legraphista/DeepSeek-LLM-7B-Chat-GGUF; dry-run shows deepseek-llm-7b-chat-q4_k_m-imat.gguf at 4.2GB"
+      "notes": "replaces stale legraphista/DeepSeek-LLM-7B-Chat-GGUF; text lane passed in llama-parity-cache-deepseek; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "deepseek2",
@@ -199,9 +199,10 @@
     {
       "llama_model": "granite",
       "family": "granite",
-      "status": "candidate",
+      "status": "certified",
       "repo": "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-dense-tranche-2-granite-fix2; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "granite-hybrid",

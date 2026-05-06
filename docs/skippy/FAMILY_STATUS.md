@@ -18,7 +18,7 @@ Last updated: 2026-05-06.
 | Qwen2 | Supported | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf:Q8_0` | `layer_end=24`, `splits=8,16`, activation width `896` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
 | Llama | Supported | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | DeepSeek2 | Supported | `bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF:Q4_K_M` | `layer_end=27`, `splits=7,14`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
-| DeepSeek LLM | Supported | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=30`, `splits=10,20`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
+| DeepSeek LLM | Supported | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=30`, `splits=10,20`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
 | DeepSeek3 | Supported for package-backed stages | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` via `meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers` | `layer_end=61`, activation width `7168`; materialize only the owned stage range | `f16`; q8 untested | `baseline,ngram,ngram-adaptive` | None | Use layer-package materialization and `ResidentKv`; do not require the full 406.8 GB layer set to be resident or merged. |
 | GLM-4.7 Flash | Supported | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | GGUF uses the DeepSeek2/MLA runtime path. |
 | GLM4 9B | Supported | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `layer_end=40`, `splits=13,27`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
@@ -31,6 +31,7 @@ Last updated: 2026-05-06.
 | Gemma3 | Supported | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `1152` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Gemma2 | Supported | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `2304` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Phi2 | Supported | `TheBloke/phi-2-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; full-state mobility is rejected as too large. |
+| Granite | Supported | `bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF:Q4_K_M` | `layer_end=40`, `splits=13,26`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Granite-Hybrid | Supported | `magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF:MXFP4_MOE-output_q6_K-router_gate_emb_q6_K` | `layer_end=32`, `splits=10,21`, activation width `768` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..32` sticky for normal decode. | Use `KvRecurrent`; full-state mobility is rejected as too large. |
 | Granite-MoE | Supported for layout parity | `mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M` | `layer_end=6`, `splits=2,4`, activation width `64` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Tiny random GGUF certifies graph/tensor layout and cache mechanics; replace with a real small artifact when available. |
 | Hunyuan-Dense | Supported | `Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache smoke passed. |
@@ -156,6 +157,7 @@ activation handoff sizes for the recommended split.
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |
 | Gemma2 | 4,608 | Accepted, 0.93x Qwen |
 | Phi2 | 5,120 | Full-state rejected as too large; `ResidentKv` cache restore accepted |
+| Granite | 4,096 | Accepted; `ResidentKv` 64-token smoke passed after staged activation rescaling fix |
 | Falcon-H1 | 4,096 | Accepted for `KvRecurrent` cache restore, 663.5x Qwen recurrent state |
 | Phi3 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 2645.30x cache-hit speedup |
 | PhiMoE | 8,192 | Accepted; runtime-slice parity passed after PhiMoE ABI allowlist support |
