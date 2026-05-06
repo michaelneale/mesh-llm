@@ -556,10 +556,11 @@ mod tests {
     use prost::Message as _;
 
     use super::proto::stage::{
-        stage_control_request, stage_control_response, GetLayerInventory, GetStageStatus,
-        LayerInventory, LayerRange, LoadStage, PrepareStageAccepted, StageControlRequest,
-        StageControlResponse, StagePreparationState, StagePreparationStatus, StageReady,
-        StageRuntimeState, StageStatus, StageTransportOpen, StageWireDType, StopStage,
+        stage_control_request, stage_control_response, CancelPrepareStage, GetLayerInventory,
+        GetStageStatus, LayerInventory, LayerRange, LoadStage, PrepareStage, PrepareStageAccepted,
+        SourceModelKind, StageControlRequest, StageControlResponse, StagePreparationState,
+        StagePreparationStatus, StageReady, StageRuntimeState, StageStatus, StageStatusAck,
+        StageStatusUpdate, StageTransportOpen, StageWireDType, StopStage,
     };
     use super::{
         validate_stage_control_request, validate_stage_control_response,
@@ -628,6 +629,65 @@ mod tests {
         };
         validate_stage_control_request(&inventory).unwrap();
 
+        let prepare = StageControlRequest {
+            command: Some(stage_control_request::Command::PrepareStage(PrepareStage {
+                load_stage: Some(LoadStage {
+                    topology_id: "topology-a".to_string(),
+                    run_id: "run-a".to_string(),
+                    model_id: "qwen".to_string(),
+                    backend: "skippy".to_string(),
+                    package_ref: "gguf:///model.gguf".to_string(),
+                    manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+                    stage_id: "stage-1".to_string(),
+                    layer_start: 8,
+                    layer_end: 16,
+                    ..Default::default()
+                }),
+                coordinator_id: Some(vec![8u8; 32]),
+            })),
+            ..frame.clone()
+        };
+        validate_stage_control_request(&prepare).unwrap();
+
+        let status_update = StageControlRequest {
+            command: Some(stage_control_request::Command::StageStatusUpdate(
+                StageStatusUpdate {
+                    status: Some(StagePreparationStatus {
+                        topology_id: "topology-a".to_string(),
+                        run_id: "run-a".to_string(),
+                        model_id: "qwen".to_string(),
+                        backend: "skippy".to_string(),
+                        package_ref: "gguf:///model.gguf".to_string(),
+                        manifest_sha256: "direct-gguf:1:model.gguf".to_string(),
+                        stage_id: "stage-1".to_string(),
+                        stage_index: 1,
+                        layer_start: 8,
+                        layer_end: 16,
+                        state: StagePreparationState::Loading as i32,
+                        bytes_done: Some(10),
+                        bytes_total: Some(20),
+                        shutdown_generation: 7,
+                        ..Default::default()
+                    }),
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_request(&status_update).unwrap();
+
+        let cancel = StageControlRequest {
+            command: Some(stage_control_request::Command::CancelPrepareStage(
+                CancelPrepareStage {
+                    topology_id: "topology-a".to_string(),
+                    run_id: "run-a".to_string(),
+                    stage_id: "stage-1".to_string(),
+                    shutdown_generation: 8,
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_request(&cancel).unwrap();
+
         let missing_command = StageControlRequest {
             command: None,
             ..frame.clone()
@@ -693,6 +753,9 @@ mod tests {
                     package_ref: "hf://repo/model".to_string(),
                     manifest_sha256: "a5".repeat(32),
                     layer_count: 16,
+                    source_model_path: Some("/model.gguf".to_string()),
+                    source_model_bytes: Some(1024),
+                    source_model_kind: SourceModelKind::PlainGguf as i32,
                     ready_ranges: vec![LayerRange {
                         layer_start: 0,
                         layer_end: 8,
@@ -729,6 +792,17 @@ mod tests {
             ..frame.clone()
         };
         validate_stage_control_response(&prepare_response).unwrap();
+
+        let ack_response = StageControlResponse {
+            response: Some(stage_control_response::Response::StageStatusAck(
+                StageStatusAck {
+                    accepted: true,
+                    error: None,
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_response(&ack_response).unwrap();
 
         let missing_response = StageControlResponse {
             response: None,
