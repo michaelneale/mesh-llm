@@ -64,6 +64,22 @@ const MIN_PINNED_GPU_CONFIG_PEER_VERSION: &str = "0.59.0";
 pub(super) const PEER_CONNECT_AND_GOSSIP_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(15);
 
+fn quic_bind_addr(bind_port: Option<u16>) -> Option<std::net::SocketAddr> {
+    if let Some(port) = bind_port {
+        return Some(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Some(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 fn config_uses_pinned_gpu(config: &crate::plugin::MeshConfig) -> bool {
     config.gpu.assignment == crate::plugin::GpuAssignment::Pinned
 }
@@ -1911,9 +1927,9 @@ impl Node {
             tracing::info!("Relay: {:?}", urls);
             builder = builder.relay_mode(iroh::endpoint::RelayMode::Custom(relay_map));
         }
-        if let Some(port) = bind_port {
-            tracing::info!("Binding QUIC to UDP port {port}");
-            builder = builder.bind_addr(std::net::SocketAddr::from(([0, 0, 0, 0], port)))?;
+        if let Some(addr) = quic_bind_addr(bind_port) {
+            tracing::info!("Binding QUIC to {addr}");
+            builder = builder.bind_addr(addr)?;
         }
         let endpoint = builder.bind().await?;
         // Wait briefly for relay connection so the invite token includes the relay URL.
@@ -2149,6 +2165,7 @@ impl Node {
             .alpns(vec![ALPN.to_vec(), skippy_protocol::STAGE_ALPN_V1.to_vec()])
             .relay_mode(iroh::endpoint::RelayMode::Disabled)
             .transport_config(transport_config)
+            .bind_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?
             .bind()
             .await?;
 
