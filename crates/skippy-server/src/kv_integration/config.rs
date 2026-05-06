@@ -120,18 +120,15 @@ fn infer_cache_payload(config: &StageConfig) -> StagePrefixCachePayload {
     {
         return StagePrefixCachePayload::KvRecurrent;
     }
-    if identity.contains("gemma")
-        || identity.contains("glm-4.7")
-        || identity.contains("glm47")
-        || identity.contains("glm4.7")
-    {
-        return StagePrefixCachePayload::FullState;
-    }
     if identity.contains("llama")
         || identity.contains("qwen3")
         || identity.contains("deepseek")
         || identity.contains("glm4")
+        || identity.contains("glm-4.7")
+        || identity.contains("glm47")
+        || identity.contains("glm4.7")
         || identity.contains("olmo")
+        || identity.contains("gemma")
         || identity.contains("minimax")
     {
         return StagePrefixCachePayload::ResidentKv;
@@ -242,7 +239,11 @@ mod tests {
         );
         assert_eq!(
             infer_cache_payload(&test_config("unsloth/gemma-4-E4B-it-GGUF:Q4_K_M")),
-            StagePrefixCachePayload::FullState
+            StagePrefixCachePayload::ResidentKv
+        );
+        assert_eq!(
+            infer_cache_payload(&test_config("unsloth/GLM-4.7-Flash-GGUF:Q4_K_M")),
+            StagePrefixCachePayload::ResidentKv
         );
         assert_eq!(
             infer_cache_payload(&test_config("example/unknown-model:Q4_K_M")),
@@ -261,6 +262,10 @@ mod tests {
         assert_eq!(
             effective_cache_payload(&config, StageKvCachePayload::KvRecurrent),
             StagePrefixCachePayload::KvRecurrent
+        );
+        assert_eq!(
+            effective_cache_payload(&config, StageKvCachePayload::FullState),
+            StagePrefixCachePayload::FullState
         );
     }
 
