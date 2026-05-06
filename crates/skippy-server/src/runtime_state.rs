@@ -893,6 +893,7 @@ mod tests {
             flash_attn_type: FlashAttentionType::Auto,
             filter_tensors_on_load: true,
             selected_device: None,
+            kv_cache: None,
             load_mode: LoadMode::LayerPackage,
             bind_addr: "127.0.0.1:0".to_string(),
             upstream: Some(PeerConfig {
