@@ -36,11 +36,31 @@ require_cmd() {
 
 cleanup() {
   if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    local children
+    children="$(descendant_pids "$SERVER_PID" | sort -u || true)"
     kill "$SERVER_PID" >/dev/null 2>&1 || true
+    if [[ -n "$children" ]]; then
+      printf '%s\n' "$children" | xargs kill >/dev/null 2>&1 || true
+    fi
+    sleep 1
+    kill -9 "$SERVER_PID" >/dev/null 2>&1 || true
+    if [[ -n "$children" ]]; then
+      printf '%s\n' "$children" | xargs kill -9 >/dev/null 2>&1 || true
+    fi
     wait "$SERVER_PID" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
+
+descendant_pids() {
+  local pid="$1"
+  local children
+  children="$(pgrep -P "$pid" 2>/dev/null || true)"
+  for child in $children; do
+    descendant_pids "$child"
+    printf '%s\n' "$child"
+  done
+}
 
 download_model() {
   local repo="$1"
