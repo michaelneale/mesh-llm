@@ -1,5 +1,7 @@
+pub mod attestation;
 mod envelope;
 mod error;
+pub mod inference_encryption;
 mod keychain;
 mod keys;
 mod keystore;

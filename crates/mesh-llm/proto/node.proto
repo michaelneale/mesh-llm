@@ -44,6 +44,17 @@ message PeerAnnouncement {
   optional HardwareInfo hardware = 33;              // Introduced in v0.60.0; preferred structured hardware inventory
   optional uint64 first_joined_mesh_ts = 34;
   repeated string explicit_model_interests = 35;    // Advisory canonical refs this node wants the mesh to consider
+  optional string inference_public_key = 36;        // X25519 public key (base64) for E2E inference encryption
+  optional SecurityPosture security_posture = 37;   // Runtime security posture
+  optional bytes hardware_attestation_blob = 38;    // JSON-serialized SignedHardwareAttestation
+}
+
+message SecurityPosture {
+  bool sip_enabled = 1;
+  bool rdma_disabled = 2;
+  bool debugger_blocked = 3;
+  bool core_dumps_disabled = 4;
+  optional string binary_hash = 5;
 }
 
 message HardwareInfo {

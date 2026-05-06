@@ -604,6 +604,9 @@ pub(crate) struct PeerAnnouncement {
     pub(crate) served_model_descriptors: Vec<ServedModelDescriptor>,
     pub(crate) served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub(crate) owner_attestation: Option<SignedNodeOwnership>,
+    pub(crate) inference_public_key: Option<String>,
+    pub(crate) security_posture: Option<crate::system::hardening::SecurityPosture>,
+    pub(crate) hardware_attestation: Option<crate::crypto::attestation::SignedHardwareAttestation>,
 }
 
 #[derive(Debug, Clone)]
@@ -657,6 +660,9 @@ pub struct PeerInfo {
     pub served_model_runtime: Vec<ModelRuntimeDescriptor>,
     pub owner_attestation: Option<SignedNodeOwnership>,
     pub owner_summary: OwnershipSummary,
+    pub inference_public_key: Option<String>,
+    pub security_posture: Option<crate::system::hardening::SecurityPosture>,
+    pub hardware_attestation: Option<crate::crypto::attestation::SignedHardwareAttestation>,
 }
 
 #[derive(Debug)]
@@ -712,6 +718,9 @@ impl PeerInfo {
             served_model_runtime: ann.served_model_runtime.clone(),
             owner_attestation: ann.owner_attestation.clone(),
             owner_summary,
+            inference_public_key: ann.inference_public_key.clone(),
+            security_posture: ann.security_posture.clone(),
+            hardware_attestation: ann.hardware_attestation.clone(),
         }
     }
 
@@ -1001,6 +1010,12 @@ pub struct Node {
     owner_summary: Arc<Mutex<OwnershipSummary>>,
     trust_store: Arc<Mutex<TrustStore>>,
     trust_policy: TrustPolicy,
+    pub(crate) inference_keypair: Arc<crate::crypto::inference_encryption::InferenceKeypair>,
+    pub local_security_posture: Arc<Mutex<Option<crate::system::hardening::SecurityPosture>>>,
+    pub local_hardware_attestation:
+        Arc<Mutex<Option<crate::crypto::attestation::SignedHardwareAttestation>>>,
+    pub(crate) se_identity_handle: Arc<Mutex<crate::crypto::attestation::SeIdentityHandle>>,
+    pub require_attested_hosts: Arc<std::sync::atomic::AtomicBool>,
     pub enumerate_host: bool,
     pub gpu_name: Option<String>,
     pub hostname: Option<String>,
@@ -2120,6 +2135,15 @@ impl Node {
             owner_summary: Arc::new(Mutex::new(owner_summary)),
             trust_store: Arc::new(Mutex::new(trust_store)),
             trust_policy,
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
+            local_hardware_attestation: Arc::new(Mutex::new(None)),
+            se_identity_handle: Arc::new(Mutex::new(
+                crate::crypto::attestation::SeIdentityHandle::empty(),
+            )),
+            require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             enumerate_host,
             gpu_name,
             hostname,
@@ -2239,6 +2263,15 @@ impl Node {
             owner_summary: Arc::new(Mutex::new(OwnershipSummary::default())),
             trust_store: Arc::new(Mutex::new(TrustStore::default())),
             trust_policy: TrustPolicy::Off,
+            inference_keypair: Arc::new(
+                crate::crypto::inference_encryption::InferenceKeypair::generate(),
+            ),
+            local_security_posture: Arc::new(Mutex::new(None)),
+            local_hardware_attestation: Arc::new(Mutex::new(None)),
+            se_identity_handle: Arc::new(Mutex::new(
+                crate::crypto::attestation::SeIdentityHandle::empty(),
+            )),
+            require_attested_hosts: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             enumerate_host: true,
             gpu_name: None,
             hostname: None,
@@ -2261,6 +2294,62 @@ impl Node {
     #[cfg(test)]
     pub async fn insert_test_peer(&self, peer: PeerInfo) {
         self.state.lock().await.peers.insert(peer.id, peer);
+    }
+
+    /// Get a peer's inference public key (for encrypting to them).
+    pub async fn peer_inference_public_key(
+        &self,
+        peer_id: iroh::EndpointId,
+    ) -> Option<crypto_box::PublicKey> {
+        let state = self.state.lock().await;
+        let peer = state.peers.get(&peer_id)?;
+        let key_b64 = peer.inference_public_key.as_ref()?;
+        crate::crypto::inference_encryption::parse_public_key(key_b64).ok()
+    }
+
+    /// Check if a peer has a verified hardware attestation.
+    pub async fn peer_is_attested(&self, peer_id: iroh::EndpointId) -> bool {
+        let state = self.state.lock().await;
+        let Some(peer) = state.peers.get(&peer_id) else {
+            return false;
+        };
+        let Some(ref att) = peer.hardware_attestation else {
+            return false;
+        };
+        let Some(ref inference_key) = peer.inference_public_key else {
+            return false;
+        };
+        let node_id = hex::encode(peer_id.as_bytes());
+        // Allow up to 10 minutes of clock skew / gossip delay beyond the
+        // refresh interval.  Attestations are re-signed every 5 minutes,
+        // so 660 s = 5 min refresh + 6 min grace.
+        let status =
+            crate::crypto::attestation::verify_attestation(att, &node_id, inference_key, 660, None);
+        status.is_verified()
+    }
+
+    /// Re-sign the local hardware attestation with a fresh timestamp.
+    /// Called periodically so peers always see a non-expired attestation.
+    /// Reuses the same Secure Enclave key across refreshes so that the SE
+    /// public key remains stable for TOFU pinning.
+    pub async fn refresh_attestation(&self) {
+        let posture = self.local_security_posture.lock().await.clone();
+        let Some(posture) = posture else {
+            return;
+        };
+        let node_id = hex::encode(self.id().as_bytes());
+        let inference_pub_key = self.inference_keypair.public_key_base64();
+        let mut handle = self.se_identity_handle.lock().await;
+        let attestation = crate::crypto::attestation::try_create_attestation(
+            &node_id,
+            &inference_pub_key,
+            &posture,
+            &mut handle,
+        );
+        if attestation.is_some() {
+            tracing::debug!("Refreshed hardware attestation");
+        }
+        *self.local_hardware_attestation.lock().await = attestation;
     }
 
     pub fn invite_token(&self) -> String {

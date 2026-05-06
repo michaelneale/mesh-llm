@@ -485,6 +485,20 @@ pub(crate) fn local_ann_to_proto_ann(
         gpu_reserved_bytes: ann.gpu_reserved_bytes.clone(),
         hardware,
         first_joined_mesh_ts: ann.first_joined_mesh_ts,
+        inference_public_key: ann.inference_public_key.clone(),
+        security_posture: ann.security_posture.as_ref().map(|sp| {
+            crate::proto::node::SecurityPosture {
+                sip_enabled: sp.sip_enabled,
+                rdma_disabled: sp.rdma_disabled,
+                debugger_blocked: sp.debugger_blocked,
+                core_dumps_disabled: sp.core_dumps_disabled,
+                binary_hash: sp.binary_hash.clone(),
+            }
+        }),
+        hardware_attestation_blob: ann
+            .hardware_attestation
+            .as_ref()
+            .and_then(|att| serde_json::to_vec(att).ok()),
     }
 }
 
@@ -646,6 +660,20 @@ pub(crate) fn proto_ann_to_local(
             .owner_attestation
             .as_ref()
             .map(proto_owner_attestation_to_local),
+        inference_public_key: pa.inference_public_key.clone(),
+        security_posture: pa.security_posture.as_ref().map(|sp| {
+            crate::system::hardening::SecurityPosture {
+                sip_enabled: sp.sip_enabled,
+                rdma_disabled: sp.rdma_disabled,
+                debugger_blocked: sp.debugger_blocked,
+                core_dumps_disabled: sp.core_dumps_disabled,
+                binary_hash: sp.binary_hash.clone(),
+            }
+        }),
+        hardware_attestation: pa
+            .hardware_attestation_blob
+            .as_ref()
+            .and_then(|blob| serde_json::from_slice(blob).ok()),
     };
     crate::mesh::backfill_legacy_descriptors(&mut ann);
     Some((addr, ann))

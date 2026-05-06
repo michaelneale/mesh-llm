@@ -3329,8 +3329,68 @@ async fn run_auto(
     .await?;
     node.set_stage_control_sender(skippy::spawn_stage_control_loop())
         .await;
+    // Harden runtime (debugger denial, core dump disable, posture checks).
+    // Env scrubbing is handled earlier in main.rs before the tokio runtime starts.
+    if cli.require_attested_hosts {
+        node.require_attested_hosts
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let security_posture = crate::system::hardening::harden_runtime();
     node.start_accepting();
     let token = node.invite_token();
+    // E2E encryption / attestation setup
+    {
+        let posture = security_posture;
+        tracing::info!(
+            "security posture: sip={} rdma_off={} debugger_blocked={} hash={}",
+            posture.sip_enabled,
+            posture.rdma_disabled,
+            posture.debugger_blocked,
+            posture.binary_hash.as_deref().unwrap_or("?"),
+        );
+
+        // Attempt SE attestation (macOS Apple Silicon only).
+        // The SE identity handle is stored on the node so that refresh_attestation()
+        // reuses the same Secure Enclave key (preserving SE public-key continuity).
+        let node_id = hex::encode(node.id().as_bytes());
+        let inference_pub_key = node.inference_keypair.public_key_base64();
+        let mut se_handle = node.se_identity_handle.lock().await;
+        let attestation = crate::crypto::attestation::try_create_attestation(
+            &node_id,
+            &inference_pub_key,
+            &posture,
+            &mut se_handle,
+        );
+        drop(se_handle);
+        if let Some(ref att) = attestation {
+            tracing::info!(
+                "hardware attestation: SE key bound to node {} (chip={})",
+                &node_id[..8],
+                if att.attestation.chip_name.is_empty() {
+                    "?"
+                } else {
+                    &att.attestation.chip_name
+                },
+            );
+        }
+        *node.local_hardware_attestation.lock().await = attestation;
+        *node.local_security_posture.lock().await = Some(posture);
+    }
+
+    // Re-sign hardware attestation every 5 minutes so peers always see a
+    // non-expired blob. The verifier allows 660 s (5 min refresh + 6 min grace).
+    {
+        let node_ref = node.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                node_ref.refresh_attestation().await;
+            }
+        });
+    }
+
     node.set_display_name(node_display_name(&cli, &node)).await;
     let (plugin_mesh_tx, plugin_mesh_rx) = tokio::sync::mpsc::channel(256);
     let plugin_manager =

@@ -410,6 +410,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) trust_owner: Vec<String>,
 
+    /// Only route inference to peers with verified hardware attestation.
+    #[arg(long)]
+    pub(crate) require_attested_hosts: bool,
+
     /// Internal: set when this node joined via Nostr discovery (not --join).
     #[arg(skip)]
     pub(crate) nostr_discovery: bool,
