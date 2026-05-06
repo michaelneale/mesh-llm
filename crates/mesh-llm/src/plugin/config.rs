@@ -534,6 +534,24 @@ queue_size = 0
     }
 
     #[test]
+    fn telemetry_config_rejects_prompt_shape_metrics_until_reviewed() {
+        let config: MeshConfig = toml::from_str(
+            r#"
+[telemetry]
+prompt_shape_metrics = true
+"#,
+        )
+        .unwrap();
+
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("telemetry.prompt_shape_metrics is not supported yet"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn pinned_gpu_config_accepted_pinned_config() {
         let config: MeshConfig = toml::from_str(
             r#"

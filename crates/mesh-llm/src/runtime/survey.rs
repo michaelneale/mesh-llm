@@ -21,6 +21,30 @@ const DEFAULT_EXPORT_INTERVAL_SECS: u64 = 15;
 const DEFAULT_QUEUE_SIZE: usize = 2048;
 const OTLP_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const OTLP_METRICS_ENDPOINT_ENV: &str = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT";
+#[cfg(any(debug_assertions, test))]
+const TELEMETRY_ATTRIBUTE_ALLOWLIST: &[&str] = &[
+    "mesh_llm.architecture",
+    "mesh_llm.attempt_outcome",
+    "mesh_llm.backend",
+    "mesh_llm.backend_device",
+    "mesh_llm.context_bucket",
+    "mesh_llm.failure_reason",
+    "mesh_llm.gpu_count",
+    "mesh_llm.gpu_name",
+    "mesh_llm.gpu_stable_id",
+    "mesh_llm.is_soc",
+    "mesh_llm.launch_kind",
+    "mesh_llm.model",
+    "mesh_llm.quantization",
+    "mesh_llm.request_outcome",
+    "mesh_llm.route_attempt_bucket",
+    "mesh_llm.route_service",
+    "mesh_llm.service_version",
+    "mesh_llm.source_node_id",
+    "mesh_llm.source_node_role",
+    "mesh_llm.target_kind",
+    "mesh_llm.target_node_id",
+];
 
 #[derive(Clone)]
 pub(super) struct SurveyTelemetry {
@@ -48,6 +72,7 @@ impl SurveyTelemetrySource {
         if let Some(node_id) = redact_stable_id(&self.node_id) {
             attrs.push(KeyValue::new("mesh_llm.source_node_id", node_id));
         }
+        debug_assert_telemetry_attrs_allowlisted(&attrs);
         attrs
     }
 }
@@ -113,7 +138,11 @@ impl SurveySettings {
         if config.telemetry.enabled == Some(false) {
             return None;
         }
-        let endpoint = resolve_metrics_endpoint(&config.telemetry, env)?;
+        let endpoint = resolve_metrics_endpoint(
+            &config.telemetry,
+            env,
+            config.telemetry.enabled == Some(true),
+        )?;
         let service_name = config
             .telemetry
             .service_name
@@ -316,16 +345,22 @@ fn spawn_survey_worker(queue: Arc<SurveyEventQueue>, mut recorder: SurveyRecorde
     });
 }
 
-fn resolve_metrics_endpoint<F>(config: &plugin::TelemetryConfig, env: F) -> Option<String>
+fn resolve_metrics_endpoint<F>(
+    config: &plugin::TelemetryConfig,
+    env: F,
+    allow_env_endpoint: bool,
+) -> Option<String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    trimmed_nonempty(config.metrics.endpoint.as_deref())
+    let configured = trimmed_nonempty(config.metrics.endpoint.as_deref())
         .map(ToOwned::to_owned)
-        .or_else(|| trimmed_nonempty(config.endpoint.as_deref()).map(metrics_endpoint_from_base))
-        .or_else(|| {
-            trimmed_nonempty(env(OTLP_METRICS_ENDPOINT_ENV).as_deref()).map(ToOwned::to_owned)
-        })
+        .or_else(|| trimmed_nonempty(config.endpoint.as_deref()).map(metrics_endpoint_from_base));
+    if configured.is_some() || !allow_env_endpoint {
+        return configured;
+    }
+    trimmed_nonempty(env(OTLP_METRICS_ENDPOINT_ENV).as_deref())
+        .map(ToOwned::to_owned)
         .or_else(|| {
             trimmed_nonempty(env(OTLP_ENDPOINT_ENV).as_deref()).map(metrics_endpoint_from_base)
         })
@@ -465,6 +500,7 @@ impl SurveyAttributes {
         if let Some(reason) = failure_reason {
             attrs.push(KeyValue::new("mesh_llm.failure_reason", reason.as_str()));
         }
+        debug_assert_telemetry_attrs_allowlisted(&attrs);
         attrs
     }
 }
@@ -501,6 +537,25 @@ fn context_bucket(context_length: u64) -> &'static str {
         _ => ">128k",
     }
 }
+
+#[cfg(any(debug_assertions, test))]
+fn telemetry_attribute_allowed(key: &str) -> bool {
+    TELEMETRY_ATTRIBUTE_ALLOWLIST.contains(&key)
+}
+
+#[cfg(debug_assertions)]
+fn debug_assert_telemetry_attrs_allowlisted(attrs: &[KeyValue]) {
+    for attr in attrs {
+        let key = attr.key.to_string();
+        debug_assert!(
+            telemetry_attribute_allowed(&key),
+            "OTLP telemetry attribute '{key}' must be added to the privacy-reviewed allowlist"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_assert_telemetry_attrs_allowlisted(_attrs: &[KeyValue]) {}
 
 impl SurveyLaunchKind {
     fn as_str(self) -> &'static str {
@@ -570,9 +625,10 @@ impl RequestAttributes {
             self.request_outcome,
         ));
         attrs.push(KeyValue::new(
-            "mesh_llm.route_attempt_count",
-            i64::try_from(self.attempts).unwrap_or(i64::MAX),
+            "mesh_llm.route_attempt_bucket",
+            request_attempt_bucket(self.attempts),
         ));
+        debug_assert_telemetry_attrs_allowlisted(&attrs);
         attrs
     }
 }
@@ -620,6 +676,7 @@ impl RouteAttemptAttributes {
             "mesh_llm.attempt_outcome",
             self.attempt_outcome,
         ));
+        debug_assert_telemetry_attrs_allowlisted(&attrs);
         attrs
     }
 }
@@ -629,6 +686,15 @@ fn request_service_label(service: RequestService) -> &'static str {
         RequestService::Local => "local",
         RequestService::Remote => "remote",
         RequestService::Endpoint => "endpoint",
+    }
+}
+
+fn request_attempt_bucket(attempts: u64) -> &'static str {
+    match attempts {
+        0 | 1 => "1",
+        2 => "2",
+        3 | 4 => "3_4",
+        _ => "5_plus",
     }
 }
 
@@ -882,19 +948,31 @@ impl SurveyRecorder {
 }
 
 fn service_version_attrs() -> Vec<KeyValue> {
-    vec![KeyValue::new("mesh_llm.service_version", crate::VERSION)]
+    let attrs = vec![KeyValue::new("mesh_llm.service_version", crate::VERSION)];
+    debug_assert_telemetry_attrs_allowlisted(&attrs);
+    attrs
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugin::{MeshConfig, PluginConfigEntry, TelemetryConfig, TelemetryMetricsConfig};
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     fn test_source() -> SurveyTelemetrySource {
         SurveyTelemetrySource {
             node_id: "source-node-raw".into(),
             node_role: "client".into(),
+        }
+    }
+
+    fn assert_attrs_allowlisted(attrs: Vec<KeyValue>) {
+        for attr in attrs {
+            let key = attr.key.to_string();
+            assert!(
+                telemetry_attribute_allowed(&key),
+                "unexpected telemetry attribute key: {key}"
+            );
         }
     }
 
@@ -988,6 +1066,43 @@ mod tests {
     }
 
     #[test]
+    fn ambient_otel_env_does_not_enable_export_without_explicit_telemetry_enable() {
+        let mut config = survey_config();
+        config.telemetry.enabled = None;
+        config.telemetry.endpoint = None;
+        config.telemetry.metrics.endpoint = None;
+
+        let settings = SurveySettings::from_config_with_env(&config, |key| match key {
+            OTLP_ENDPOINT_ENV => Some("https://ambient.example.com".into()),
+            _ => None,
+        });
+        assert!(settings.is_none());
+
+        config.telemetry.enabled = Some(true);
+        let settings = SurveySettings::from_config_with_env(&config, |key| match key {
+            OTLP_ENDPOINT_ENV => Some("https://ambient.example.com".into()),
+            _ => None,
+        })
+        .expect("explicit telemetry enable should allow OTel env endpoint");
+        assert_eq!(settings.endpoint, "https://ambient.example.com/v1/metrics");
+    }
+
+    #[test]
+    fn config_endpoint_enables_export_without_boolean_flag() {
+        let mut config = survey_config();
+        config.telemetry.enabled = None;
+        config.telemetry.endpoint = Some("https://config-owned.example.com".into());
+        config.telemetry.metrics.endpoint = None;
+
+        let settings =
+            SurveySettings::from_config_with_env(&config, |_| None).expect("config endpoint");
+        assert_eq!(
+            settings.endpoint,
+            "https://config-owned.example.com/v1/metrics"
+        );
+    }
+
+    #[test]
     fn event_queue_drops_oldest_when_full() {
         let queue = SurveyEventQueue::new(2);
         for model in ["first", "second", "third"] {
@@ -1068,6 +1183,78 @@ mod tests {
             Some("skippy")
         );
         assert_eq!(kv.get("mesh_llm.is_soc").map(String::as_str), Some("true"));
+        assert!(!kv.values().any(|value| value.contains("/private/models")));
+    }
+
+    #[test]
+    fn telemetry_attribute_allowlist_has_unique_reviewed_keys() {
+        let keys: BTreeSet<_> = TELEMETRY_ATTRIBUTE_ALLOWLIST.iter().copied().collect();
+        assert_eq!(keys.len(), TELEMETRY_ATTRIBUTE_ALLOWLIST.len());
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "mesh_llm.architecture",
+                "mesh_llm.attempt_outcome",
+                "mesh_llm.backend",
+                "mesh_llm.backend_device",
+                "mesh_llm.context_bucket",
+                "mesh_llm.failure_reason",
+                "mesh_llm.gpu_count",
+                "mesh_llm.gpu_name",
+                "mesh_llm.gpu_stable_id",
+                "mesh_llm.is_soc",
+                "mesh_llm.launch_kind",
+                "mesh_llm.model",
+                "mesh_llm.quantization",
+                "mesh_llm.request_outcome",
+                "mesh_llm.route_attempt_bucket",
+                "mesh_llm.route_service",
+                "mesh_llm.service_version",
+                "mesh_llm.source_node_id",
+                "mesh_llm.source_node_role",
+                "mesh_llm.target_kind",
+                "mesh_llm.target_node_id",
+            ])
+        );
+    }
+
+    #[test]
+    fn generated_telemetry_attributes_are_allowlisted() {
+        let lifecycle_attrs = SurveyAttributes {
+            model: "Qwen3-8B-Q4_K_M.gguf".into(),
+            architecture: Some("qwen3".into()),
+            quantization: Some("Q4_K_M".into()),
+            launch_kind: SurveyLaunchKind::Startup,
+            gpu_name: Some("NVIDIA Test".into()),
+            gpu_stable_id: Some("sha256:abcdef1234567890".into()),
+            backend_device: Some("CUDA0".into()),
+            gpu_count: 1,
+            is_soc: false,
+            backend: Some("skippy".into()),
+            context_length: Some(131_072),
+        };
+        assert_attrs_allowlisted(lifecycle_attrs.key_values(Some(SurveyFailureReason::Other)));
+
+        assert_attrs_allowlisted(
+            RequestAttributes::from_request(
+                Some("Qwen/Qwen3-8B-GGUF:Q4_K_M"),
+                2,
+                RequestOutcome::Rejected(RequestService::Endpoint),
+                test_source(),
+            )
+            .key_values(),
+        );
+        assert_attrs_allowlisted(
+            RouteAttemptAttributes::from_attempt(
+                Some("Qwen/Qwen3-8B-GGUF:Q4_K_M"),
+                &AttemptTarget::Remote("remote-node-raw".into()),
+                AttemptOutcome::Success,
+                test_source(),
+            )
+            .key_values(),
+        );
+        assert_attrs_allowlisted(test_source().key_values());
+        assert_attrs_allowlisted(service_version_attrs());
     }
 
     #[test]
@@ -1097,13 +1284,24 @@ mod tests {
             Some("success")
         );
         assert_eq!(
-            kv.get("mesh_llm.route_attempt_count").map(String::as_str),
+            kv.get("mesh_llm.route_attempt_bucket").map(String::as_str),
             Some("2")
         );
         assert_eq!(
             kv.get("mesh_llm.source_node_role").map(String::as_str),
             Some("client")
         );
+    }
+
+    #[test]
+    fn request_attempt_count_is_exported_as_bounded_bucket() {
+        assert_eq!(request_attempt_bucket(0), "1");
+        assert_eq!(request_attempt_bucket(1), "1");
+        assert_eq!(request_attempt_bucket(2), "2");
+        assert_eq!(request_attempt_bucket(3), "3_4");
+        assert_eq!(request_attempt_bucket(4), "3_4");
+        assert_eq!(request_attempt_bucket(5), "5_plus");
+        assert_eq!(request_attempt_bucket(100), "5_plus");
     }
 
     #[test]
