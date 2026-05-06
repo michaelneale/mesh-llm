@@ -45,7 +45,7 @@
       "status": "candidate_multimodal",
       "repo": "bartowski/Qwen2-VL-2B-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c; projector/image-token lane must pass before multimodal support is promoted"
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c; full-model local multimodal smoke passed with mmproj-Qwen2-VL-2B-Instruct-f16.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
     },
     {
       "llama_model": "qwen3vl",
@@ -53,7 +53,7 @@
       "status": "candidate_multimodal",
       "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c; projector/image-token lane must pass before multimodal support is promoted"
+      "notes": "text lane passed in llama-parity-decoder-tranche-3c; full-model local multimodal smoke passed with mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf; split multimodal blocked by filtered stage-0 media prefill SIGSEGV before activation forwarding"
     },
     {
       "llama_model": "qwen2moe",

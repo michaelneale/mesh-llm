@@ -57,6 +57,8 @@ RWKV6, RWKV7, StableLM, StarCoder2
 | OLMoE | Text lane, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
 | Qwen2-MoE | Text lane, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
 | Qwen3-MoE | Text lane, q8 activation wire, serving cache smoke, and MoE expert-stage smoke passed for one-stage, split-middle, and split-final ranges. `ResidentKv` is the selected cache policy. |
+| Qwen2-VL | Text split and full-model local multimodal OpenAI smoke passed with real mmproj/image fixtures. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
+| Qwen3-VL | Text split and full-model local multimodal OpenAI smoke passed with real mmproj/image fixtures. Do not promote split multimodal yet: filtered stage-0 media prefill currently SIGSEGVs before activation forwarding. |
 | RWKV6 | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
 | RWKV7 | Text lane passed after adding the layer-0 `v_first` activation sideband, and `KvRecurrent` cache smoke passed with zero native KV bytes. Payloads are hidden state plus `v_first`, so budget RWKV7 activation handoffs at 2x hidden width and keep recurrent ownership sticky for normal decode. |
 | Qwen3Next | Same normal-decode policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. Exact prefix cache restore uses `KvRecurrent`. |

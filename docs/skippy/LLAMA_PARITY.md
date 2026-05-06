@@ -172,7 +172,7 @@ or a blocker is discovered.
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmo2` | `olmo2` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `olmoe` | `olmoe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
-| `qwen3vl` | `qwen3vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
+| `qwen3vl` | `qwen3vl` | selected | yes | pass | pass | multimodal policy pending | local projector pass; split blocked | text split and local multimodal ready; split media sideband crashes in filtered stage-0 prefill |
 | `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -190,7 +190,7 @@ or a blocker is discovered.
 | `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `rwkv6` | `rwkv6` | replacement selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
-| `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
+| `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | local projector pass; split blocked | text split and local multimodal ready; split media sideband crashes in filtered stage-0 prefill |
 | `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
 | `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
 | `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | no cheap artifact; local glogwa68 sample reports `llama`, not `llama4` |
@@ -225,7 +225,7 @@ themselves until the reviewed topology records are updated.
 | `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` and `/tmp/skippy-cache-correctness-dense-small` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed mid-stage position input registration |
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c`, `/tmp/skippy-cache-correctness-dense-*`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; `olmoe` MoE expert-stage smoke passed for one-stage, split-middle, and split-final |
-| `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
+| `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, and dtype matrix passed; full-model local multimodal OpenAI smoke passed | validated for text; local projector validated | accepted for text/local runtime only | split multimodal still blocked: filtered stage-0 media prefill reaches `mtmd_helper_eval_chunks`, prints `embeddings required...`, then SIGSEGVs before activation forwarding |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
 | `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; keep recurrent ownership sticky for normal decode |
@@ -387,8 +387,13 @@ through mesh family policy and server-side auto-payload inference.
 - qwen2 full-state handoff was fixed by syncing token-count-aware imports back
   into the native session position before decode. Without that, restored KV was
   present but decode restarted at position zero.
-- `qwen2vl` and `qwen3vl` are still only text-lane candidates. Full multimodal
-  parity also needs projector/media-token sideband evidence.
+- `qwen2vl` and `qwen3vl` now pass full-model local multimodal OpenAI smoke
+  with real projectors and an image fixture. Split multimodal is still blocked:
+  after enabling `filter_tensors_on_load=true` for split stages, stage-0 media
+  prefill reaches `mtmd_helper_eval_chunks`, prints `embeddings required but
+  some input tokens were not marked as outputs -> overriding`, and then
+  SIGSEGVs before activation forwarding. Do not promote multimodal stage-split
+  support until the filtered stage-0 media prefill ABI is fixed.
 
 ## Cache Smoke Commands
 
