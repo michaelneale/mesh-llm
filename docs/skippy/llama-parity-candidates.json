@@ -259,7 +259,9 @@
       "llama_model": "command-r",
       "family": "command_r",
       "status": "needs_candidate",
-      "notes": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF reports GGUF architecture cohere2, so it certifies cohere2 rather than the legacy command-r llama.cpp graph"
+      "notes": "selected true command-r GGUF because newer Command-R7B artifacts report cohere2; Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF reports GGUF architecture cohere2, so it certifies cohere2 rather than the legacy command-r llama.cpp graph",
+      "repo": "qwp4w3hyb/c4ai-command-r-v01-iMat-GGUF",
+      "include": "c4ai-command-r-v01-imat-IQ2_M.gguf"
     },
     {
       "llama_model": "cohere2",
@@ -320,7 +322,9 @@
       "status": "needs_candidate",
       "search": "ARWKV7 GGUF small",
       "recurrent": "all",
-      "notes": "stage ABI supports arwkv7 through the RWKV7 activation-sideband path; find a cheap representative to prove parity separately from rwkv7"
+      "notes": "selected public arwkv7 GGUF for separate RWKV7-sideband certification; stage ABI supports arwkv7 through the RWKV7 activation-sideband path; find a cheap representative to prove parity separately from rwkv7",
+      "repo": "mradermacher/ARWKV-7B-Preview-0.1-i1-GGUF",
+      "include": "ARWKV-7B-Preview-0.1.i1-IQ2_M.gguf"
     },
     {
       "llama_model": "falcon-h1",
@@ -489,13 +493,17 @@
       "llama_model": "apertus",
       "family": "apertus",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected public apertus GGUF for split execution and ResidentKv certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion",
+      "repo": "unsloth/Apertus-8B-Instruct-2509-GGUF",
+      "include": "Apertus-8B-Instruct-2509-UD-IQ2_M.gguf"
     },
     {
       "llama_model": "arcee",
       "family": "arcee",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 rejected",
+      "repo": "bartowski/arcee-ai_AFM-4.5B-GGUF",
+      "include": "arcee-ai_AFM-4.5B-IQ2_M.gguf"
     },
     {
       "llama_model": "arctic",
@@ -519,7 +527,9 @@
       "llama_model": "bitnet",
       "family": "bitnet",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected true bitnet GGUF after rejecting earlier llama-architecture false positive; searched candidate gate369/Bitnet-M7-70m-Q8_0-GGUF but GGUF reports general.architecture=llama, not bitnet; find a true bitnet GGUF before promotion",
+      "repo": "microsoft/bitnet-b1.58-2B-4T-gguf",
+      "include": "ggml-model-i2_s.gguf"
     },
     {
       "llama_model": "chameleon",
@@ -530,14 +540,18 @@
     {
       "llama_model": "chatglm",
       "family": "chatglm",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 rejected",
+      "repo": "mradermacher/chatglm3-6b-i1-GGUF",
+      "include": "chatglm3-6b.i1-IQ2_M.gguf"
     },
     {
       "llama_model": "codeshell",
       "family": "codeshell",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 rejected",
+      "repo": "mradermacher/CodeShell-7B-i1-GGUF",
+      "include": "CodeShell-7B.i1-IQ2_M.gguf"
     },
     {
       "llama_model": "cogvlm",
@@ -554,8 +568,10 @@
     {
       "llama_model": "deci",
       "family": "deci",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 rejected",
+      "repo": "mradermacher/DeciLM-6b-instruct-i1-GGUF",
+      "include": "DeciLM-6b-instruct.i1-IQ2_M.gguf"
     },
     {
       "llama_model": "deepseek2ocr",
@@ -639,7 +655,9 @@
       "llama_model": "jais2",
       "family": "jais2",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected public jais2 GGUF for split execution and ResidentKv certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion",
+      "repo": "inceptionai/Jais-2-8B-Chat-GGUF",
+      "include": "Q2_K.gguf"
     },
     {
       "llama_model": "jina-bert-v2",
@@ -671,7 +689,9 @@
       "llama_model": "llada",
       "family": "llada",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected tiny public llada GGUF for split execution and ResidentKv certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion",
+      "repo": "Flexan/Fredtt3-LLaDA-100M-Test-GGUF",
+      "include": "LLaDA-100M-Test.Q2_K.gguf"
     },
     {
       "llama_model": "llada-moe",
@@ -688,8 +708,10 @@
     {
       "llama_model": "maincoder",
       "family": "maincoder",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "mradermacher/Maincoder-1B-GGUF",
+      "include": "Maincoder-1B.Q2_K.gguf",
+      "notes": "cheap candidate selected for llama.cpp maincoder parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "mamba-base",
@@ -706,14 +728,18 @@
     {
       "llama_model": "minicpm",
       "family": "minicpm",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "s3nh/MiniCPM-2B-dpo-fp32-GGUF",
+      "include": "minicpm-2b-dpo-fp32.Q3_K_S.gguf",
+      "notes": "cheap candidate selected for llama.cpp minicpm parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "minicpm3",
       "family": "minicpm3",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF",
+      "include": "MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS.gguf",
+      "notes": "cheap candidate selected for llama.cpp minicpm3 parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "modern-bert",
@@ -768,8 +794,10 @@
     {
       "llama_model": "openelm",
       "family": "openelm",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "LiteLLMs/OpenELM-270M-GGUF",
+      "include": "Q2_K/Q2_K-00001-of-00001.gguf",
+      "notes": "cheap candidate selected for llama.cpp openelm parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "orion",
@@ -793,26 +821,34 @@
       "llama_model": "plamo",
       "family": "plamo",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected public plamo GGUF for split execution and ResidentKv certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion",
+      "repo": "QuantFactory/plamo-13b-GGUF",
+      "include": "plamo-13b.Q2_K.gguf"
     },
     {
       "llama_model": "plamo2",
       "family": "plamo2",
       "status": "needs_candidate",
       "recurrent": "all",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+      "notes": "selected public plamo2 GGUF for split execution and KvRecurrent certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion",
+      "repo": "mitmul/plamo-2-translate-GGUF",
+      "include": "plamo-2-translate_IQ2_M.gguf"
     },
     {
       "llama_model": "plamo3",
       "family": "plamo3",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "mmnga-o/plamo-3-nict-2b-base-gguf",
+      "include": "plamo-3-nict-2b-base-IQ3_M.gguf",
+      "notes": "cheap candidate selected for llama.cpp plamo3 parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "plm",
       "family": "plm",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "StatPan/42dot_LLM-PLM-1.3B_GGUF",
+      "include": "gguf-42dot_PLM-q3_k_m.gguf",
+      "notes": "cheap candidate selected for llama.cpp plm parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "qwen",
@@ -823,9 +859,11 @@
     {
       "llama_model": "qwen35",
       "family": "qwen35",
-      "status": "needs_candidate",
+      "status": "certified",
       "recurrent": "all",
-      "notes": "stage ABI now accepts Qwen3.5 runtime slices after adding graph filtering; find a cheap representative and certify KvRecurrent cache restore before promotion"
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; KvRecurrent cache restore passed in llama-parity-finish-batch2-kvrecurrent-20260506; keep recurrent ownership sticky; q8 validated; full-state rejected as too large",
+      "repo": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF",
+      "include": "UnifiedReward-Edit-qwen35-4b.i1-IQ2_M.gguf"
     },
     {
       "llama_model": "qwen3vlmoe",
@@ -836,8 +874,10 @@
     {
       "llama_model": "refact",
       "family": "refact",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf",
+      "include": "Refact-1_6B-fim.Q2_K.gguf",
+      "notes": "cheap candidate selected for llama.cpp refact parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "rnd1",
@@ -873,20 +913,26 @@
     {
       "llama_model": "smallthinker",
       "family": "smallthinker",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "bartowski/SmallThinker-3B-Preview-GGUF",
+      "include": "SmallThinker-3B-Preview-IQ2_M.gguf",
+      "notes": "cheap candidate selected for llama.cpp smallthinker parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "smollm3",
       "family": "smollm3",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "repo": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF",
+      "include": "HuggingFaceTB_SmolLM3-3B-IQ2_M.gguf",
+      "notes": "cheap candidate selected for llama.cpp smollm3 parity; certify split execution plus ResidentKv cache restore before promotion; text split, dtype matrix, and ResidentKv borrowed-hit cache restore passed in llama-parity-finish-small/residentkv 20260506 runs; FullState is not the production cache target for this dense family"
     },
     {
       "llama_model": "starcoder",
       "family": "starcoder",
       "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "notes": "selected tiny public starcoder GGUF for split execution and ResidentKv certification; stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion",
+      "repo": "RichardErkhov/bigcode_-_tiny_starcoder_py-gguf",
+      "include": "tiny_starcoder_py.Q2_K.gguf"
     },
     {
       "llama_model": "step35",
@@ -909,8 +955,10 @@
     {
       "llama_model": "xverse",
       "family": "xverse",
-      "status": "needs_candidate",
-      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+      "status": "certified",
+      "notes": "text split and dtype matrix passed in llama-parity-finish-batch2-20260506; ResidentKv borrowed-hit cache restore passed in llama-parity-finish-batch2-residentkv-20260506; q8 validated",
+      "repo": "xverse/XVERSE-7B-Chat-GGUF",
+      "include": "xverse-7b-chat-q2_k.gguf"
     }
   ]
 }

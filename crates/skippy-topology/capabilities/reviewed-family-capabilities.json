@@ -1083,5 +1083,310 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "mradermacher/Maincoder-1B-GGUF:Q2_K",
+    "source_repo": "mradermacher/Maincoder-1B-GGUF",
+    "source_revision": "1c963c98dfb478ea3b4719299bd85fbb5cf30899",
+    "source_file": "Maincoder-1B.Q2_K.gguf",
+    "canonical_ref": "mradermacher/Maincoder-1B-GGUF@1c963c98dfb478ea3b4719299bd85fbb5cf30899/Maincoder-1B.Q2_K.gguf",
+    "distribution_id": "Maincoder-1B.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "maincoder",
+      "layer_count": 32,
+      "activation_width": 1536,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "LiteLLMs/OpenELM-270M-GGUF:Q2_K",
+    "source_repo": "LiteLLMs/OpenELM-270M-GGUF",
+    "source_revision": "11303f32f8786d979cee36f1fbcc3895f5c7231f",
+    "source_file": "Q2_K/Q2_K-00001-of-00001.gguf",
+    "canonical_ref": "LiteLLMs/OpenELM-270M-GGUF@11303f32f8786d979cee36f1fbcc3895f5c7231f/Q2_K/Q2_K-00001-of-00001.gguf",
+    "distribution_id": "Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "openelm",
+      "layer_count": 16,
+      "activation_width": 1280,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mmnga-o/plamo-3-nict-2b-base-gguf:IQ3_M",
+    "source_repo": "mmnga-o/plamo-3-nict-2b-base-gguf",
+    "source_revision": "0b028e355d6847732cef68a7d49757b9cde3a784",
+    "source_file": "plamo-3-nict-2b-base-IQ3_M.gguf",
+    "canonical_ref": "mmnga-o/plamo-3-nict-2b-base-gguf@0b028e355d6847732cef68a7d49757b9cde3a784/plamo-3-nict-2b-base-IQ3_M.gguf",
+    "distribution_id": "plamo-3-nict-2b-base-IQ3_M",
+    "selector": "IQ3_M",
+    "capability": {
+      "family_id": "plamo3",
+      "layer_count": 24,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf:Q2_K",
+    "source_repo": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf",
+    "source_revision": "d86087b9d3765d1c6757369b2cce6af4b9b2c1c4",
+    "source_file": "Refact-1_6B-fim.Q2_K.gguf",
+    "canonical_ref": "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf@d86087b9d3765d1c6757369b2cce6af4b9b2c1c4/Refact-1_6B-fim.Q2_K.gguf",
+    "distribution_id": "Refact-1_6B-fim.Q2_K",
+    "selector": "Q2_K",
+    "capability": {
+      "family_id": "refact",
+      "layer_count": 32,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:IQ2_M",
+    "source_repo": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF",
+    "source_revision": "86b3536ed1ca0dcb4716745642db4e6804bf3d32",
+    "source_file": "HuggingFaceTB_SmolLM3-3B-IQ2_M.gguf",
+    "canonical_ref": "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF@86b3536ed1ca0dcb4716745642db4e6804bf3d32/HuggingFaceTB_SmolLM3-3B-IQ2_M.gguf",
+    "distribution_id": "HuggingFaceTB_SmolLM3-3B-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "smollm3",
+      "layer_count": 36,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "s3nh/MiniCPM-2B-dpo-fp32-GGUF:Q3_K_S",
+    "source_repo": "s3nh/MiniCPM-2B-dpo-fp32-GGUF",
+    "source_revision": "83e85efc8267f3034bdceeaa573cc2b92ba94ee7",
+    "source_file": "minicpm-2b-dpo-fp32.Q3_K_S.gguf",
+    "canonical_ref": "s3nh/MiniCPM-2B-dpo-fp32-GGUF@83e85efc8267f3034bdceeaa573cc2b92ba94ee7/minicpm-2b-dpo-fp32.Q3_K_S.gguf",
+    "distribution_id": "minicpm-2b-dpo-fp32.Q3_K_S",
+    "selector": "Q3_K_S",
+    "capability": {
+      "family_id": "minicpm",
+      "layer_count": 40,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF:IQ2_XXS",
+    "source_repo": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF",
+    "source_revision": "c1daa6a9e5691067469c4d00bd883aa4bb210c39",
+    "source_file": "MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS.gguf",
+    "canonical_ref": "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF@c1daa6a9e5691067469c4d00bd883aa4bb210c39/MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS.gguf",
+    "distribution_id": "MiniCPM-3B-OpenHermes-2.5-v2-IQ2_XXS",
+    "selector": "IQ2_XXS",
+    "capability": {
+      "family_id": "minicpm3",
+      "layer_count": 40,
+      "activation_width": 2304,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "StatPan/42dot_LLM-PLM-1.3B_GGUF:q3_k_m",
+    "source_repo": "StatPan/42dot_LLM-PLM-1.3B_GGUF",
+    "source_revision": "bc4c646563d584f08eadceef486c034124e0ca40",
+    "source_file": "gguf-42dot_PLM-q3_k_m.gguf",
+    "canonical_ref": "StatPan/42dot_LLM-PLM-1.3B_GGUF@bc4c646563d584f08eadceef486c034124e0ca40/gguf-42dot_PLM-q3_k_m.gguf",
+    "distribution_id": "gguf-42dot_PLM-q3_k_m",
+    "selector": "q3_k_m",
+    "capability": {
+      "family_id": "plm",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/SmallThinker-3B-Preview-GGUF:IQ2_M",
+    "source_repo": "bartowski/SmallThinker-3B-Preview-GGUF",
+    "source_revision": "d07554b45b559f4272f2b959401233eb49a7d012",
+    "source_file": "SmallThinker-3B-Preview-IQ2_M.gguf",
+    "canonical_ref": "bartowski/SmallThinker-3B-Preview-GGUF@d07554b45b559f4272f2b959401233eb49a7d012/SmallThinker-3B-Preview-IQ2_M.gguf",
+    "distribution_id": "SmallThinker-3B-Preview-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "smallthinker",
+      "layer_count": 36,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/arcee-ai_AFM-4.5B-GGUF:IQ2_M",
+    "source_repo": "bartowski/arcee-ai_AFM-4.5B-GGUF",
+    "source_revision": "7c01c520766d940d39da6874cce439de7f9b8b79",
+    "source_file": "arcee-ai_AFM-4.5B-IQ2_M.gguf",
+    "canonical_ref": "bartowski/arcee-ai_AFM-4.5B-GGUF@7c01c520766d940d39da6874cce439de7f9b8b79/arcee-ai_AFM-4.5B-IQ2_M.gguf",
+    "distribution_id": "arcee-ai_AFM-4.5B-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "arcee",
+      "layer_count": 36,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/chatglm3-6b-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/chatglm3-6b-i1-GGUF",
+    "source_revision": "6b8d85948c7f38c19b8844223790bf95f01a7e1e",
+    "source_file": "chatglm3-6b.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/chatglm3-6b-i1-GGUF@6b8d85948c7f38c19b8844223790bf95f01a7e1e/chatglm3-6b.i1-IQ2_M.gguf",
+    "distribution_id": "chatglm3-6b.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "chatglm",
+      "layer_count": 28,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/CodeShell-7B-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/CodeShell-7B-i1-GGUF",
+    "source_revision": "3ebad8f32c2fb59c7a67cb1be0fdd524bcf250c4",
+    "source_file": "CodeShell-7B.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/CodeShell-7B-i1-GGUF@3ebad8f32c2fb59c7a67cb1be0fdd524bcf250c4/CodeShell-7B.i1-IQ2_M.gguf",
+    "distribution_id": "CodeShell-7B.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "codeshell",
+      "layer_count": 42,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/DeciLM-6b-instruct-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/DeciLM-6b-instruct-i1-GGUF",
+    "source_revision": "47ec508523d1a04de0f93f434be5bd9abc1436a1",
+    "source_file": "DeciLM-6b-instruct.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/DeciLM-6b-instruct-i1-GGUF@47ec508523d1a04de0f93f434be5bd9abc1436a1/DeciLM-6b-instruct.i1-IQ2_M.gguf",
+    "distribution_id": "DeciLM-6b-instruct.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "deci",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M",
+    "source_repo": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF",
+    "source_revision": "b0f6b1742934d13f494b53353f291b31886dc25a",
+    "source_file": "UnifiedReward-Edit-qwen35-4b.i1-IQ2_M.gguf",
+    "canonical_ref": "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF@b0f6b1742934d13f494b53353f291b31886dc25a/UnifiedReward-Edit-qwen35-4b.i1-IQ2_M.gguf",
+    "distribution_id": "UnifiedReward-Edit-qwen35-4b.i1-IQ2_M",
+    "selector": "IQ2_M",
+    "capability": {
+      "family_id": "qwen35",
+      "layer_count": 32,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 32
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "xverse/XVERSE-7B-Chat-GGUF:q2_k",
+    "source_repo": "xverse/XVERSE-7B-Chat-GGUF",
+    "source_revision": "fabec6808fa2b0e7ba93a4f9c0743e9d637f2492",
+    "source_file": "xverse-7b-chat-q2_k.gguf",
+    "canonical_ref": "xverse/XVERSE-7B-Chat-GGUF@fabec6808fa2b0e7ba93a4f9c0743e9d637f2492/xverse-7b-chat-q2_k.gguf",
+    "distribution_id": "xverse-7b-chat-q2_k",
+    "selector": "q2_k",
+    "capability": {
+      "family_id": "xverse",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

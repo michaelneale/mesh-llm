@@ -61,6 +61,21 @@ Last updated: 2026-05-06.
 | Cohere2 | Supported | `Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF:q4_k_m` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | GGUF reports `cohere2`; exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
 | Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky for normal decode until exact recurrent layer metadata is available. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
+| Arcee | Supported | `bartowski/arcee-ai_AFM-4.5B-GGUF:IQ2_M` | `layer_end=36`, `splits=12,24`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| ChatGLM | Supported | `mradermacher/chatglm3-6b-i1-GGUF:IQ2_M` | `layer_end=28`, `splits=9,18`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| CodeShell | Supported | `mradermacher/CodeShell-7B-i1-GGUF:IQ2_M` | `layer_end=42`, `splits=14,28`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| Deci | Supported | `mradermacher/DeciLM-6b-instruct-i1-GGUF:IQ2_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| Qwen3.5 recurrent | Supported | `mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..32` sticky for normal decode. | Use `KvRecurrent`; full-state mobility is rejected as too large. |
+| XVerse | Supported | `xverse/XVERSE-7B-Chat-GGUF:q2_k` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| Maincoder | Supported | `mradermacher/Maincoder-1B-GGUF:Q2_K` | `layer_end=32`, `splits=10,21`, activation width `1536` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| OpenELM | Supported | `LiteLLMs/OpenELM-270M-GGUF:Q2_K` | `layer_end=16`, `splits=5,10`, activation width `1280` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| MiniCPM | Supported | `s3nh/MiniCPM-2B-dpo-fp32-GGUF:Q3_K_S` | `layer_end=40`, `splits=13,26`, activation width `2304` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| MiniCPM3 | Supported | `duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF:IQ2_XXS` | `layer_end=40`, `splits=13,26`, activation width `2304` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| Plamo3 | Supported | `mmnga-o/plamo-3-nict-2b-base-gguf:IQ3_M` | `layer_end=24`, `splits=8,16`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| PLM | Supported | `StatPan/42dot_LLM-PLM-1.3B_GGUF:q3_k_m` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| Refact | Supported | `RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf:Q2_K` | `layer_end=32`, `splits=10,21`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| SmallThinker | Supported | `bartowski/SmallThinker-3B-Preview-GGUF:IQ2_M` | `layer_end=36`, `splits=12,24`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
+| SmolLM3 | Supported | `bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:IQ2_M` | `layer_end=36`, `splits=12,24`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Use `ResidentKv`; borrowed-hit cache restore passed. |
 | StableLM | Supported | `TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | StarCoder2 | Supported | `combos/starcoder2-3b-Q4_K_M-GGUF:q4_k_m` | `layer_end=30`, `splits=10,20`, activation width `3072` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | MPT | Supported | `mradermacher/mpt-7b-chat-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
@@ -72,8 +87,7 @@ to the customer support matrix until the remaining cache smoke, reviewed
 topology records, and family-specific policy notes are updated.
 
 ```text
-Command-R, Gemma text,
-Granite
+Gemma text
 ```
 
 ## Exceptions
@@ -130,6 +144,12 @@ Gemma2
 Falcon-H1
 Qwen3-MoE
 Qwen3-VL
+OpenELM
+MiniCPM3
+Refact
+SmallThinker
+Qwen3.5 recurrent
+XVerse
 ```
 
 All other supported families should ship with `f16` activation wire until q8 is
@@ -186,6 +206,21 @@ activation handoff sizes for the recommended split.
 | Mistral3 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 88.40x cache-hit speedup |
 | MiniMax M2.7 | 6,144 | Accepted, 2.21x Qwen |
 | Qwen3Next | 4,096 | Accepted for `KvRecurrent` cache restore, 685.2x Qwen recurrent state |
+| Arcee | 5,120 | `ResidentKv` cache restore accepted; q8 rejected |
+| ChatGLM | 8,192 | `ResidentKv` cache restore accepted; q8 rejected |
+| CodeShell | 8,192 | `ResidentKv` cache restore accepted; q8 rejected |
+| Deci | 8,192 | `ResidentKv` cache restore accepted; q8 rejected |
+| Qwen3.5 recurrent | 5,120 | `KvRecurrent` cache restore accepted; full-state mobility rejected as too large; q8 validated |
+| XVerse | 8,192 | `ResidentKv` cache restore accepted; q8 validated |
+| Maincoder | 3,072 | `ResidentKv` cache restore accepted; q8 rejected |
+| OpenELM | 2,560 | `ResidentKv` cache restore accepted; q8 validated |
+| MiniCPM | 4,608 | `ResidentKv` cache restore accepted; q8 rejected |
+| MiniCPM3 | 4,608 | `ResidentKv` cache restore accepted; q8 validated |
+| Plamo3 | 5,120 | `ResidentKv` cache restore accepted; q8 rejected |
+| PLM | 4,096 | `ResidentKv` cache restore accepted; q8 rejected |
+| Refact | 4,096 | `ResidentKv` cache restore accepted; q8 validated |
+| SmallThinker | 4,096 | `ResidentKv` cache restore accepted; q8 validated |
+| SmolLM3 | 4,096 | `ResidentKv` cache restore accepted; q8 rejected |
 | StableLM | 5,120 | Accepted; `ResidentKv` 64-token smoke passed, 211.80x cache-hit speedup |
 | StarCoder2 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 198.10x cache-hit speedup |
 | MPT | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 1657.77x cache-hit speedup |

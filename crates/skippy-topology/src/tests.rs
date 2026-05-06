@@ -515,6 +515,34 @@ fn infers_known_family_capabilities_from_model_identity() {
             "{identity} should be treated as recurrent"
         );
     }
+    for (identity, expected_family) in [
+        ("mradermacher/Maincoder-1B-GGUF:Q2_K", "maincoder"),
+        ("LiteLLMs/OpenELM-270M-GGUF:Q2_K", "openelm"),
+        (
+            "RichardErkhov/smallcloudai_-_Refact-1_6B-fim-gguf:Q2_K",
+            "refact",
+        ),
+        ("s3nh/MiniCPM-2B-dpo-fp32-GGUF:Q3_K_S", "minicpm"),
+        (
+            "duyntnet/MiniCPM-3B-OpenHermes-2.5-v2-imatrix-GGUF:IQ2_XXS",
+            "minicpm3",
+        ),
+        ("mmnga-o/plamo-3-nict-2b-base-gguf:IQ3_M", "plamo3"),
+        ("StatPan/42dot_LLM-PLM-1.3B_GGUF:q3_k_m", "plm"),
+        (
+            "bartowski/SmallThinker-3B-Preview-GGUF:IQ2_M",
+            "smallthinker",
+        ),
+        ("bartowski/HuggingFaceTB_SmolLM3-3B-GGUF:IQ2_M", "smollm3"),
+    ] {
+        let capability = infer_family_capability(identity, 24, 2048)
+            .unwrap_or_else(|| panic!("failed to infer {identity}"));
+        assert_eq!(capability.family_id, expected_family, "{identity}");
+        assert!(
+            capability.recurrent_ranges.is_empty(),
+            "{identity} should be treated as dense"
+        );
+    }
     assert_eq!(
         infer_family_capability("Qwen/Qwen3-0.6B", 28, 1024)
             .expect("qwen3")

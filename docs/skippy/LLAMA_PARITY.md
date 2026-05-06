@@ -179,9 +179,9 @@ available. Current classification:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
-| `certified` | 48 | Cheap representative passed the promoted text/cache evidence for this branch. |
+| `certified` | 63 | Cheap representative passed the promoted text/cache evidence for this branch. |
 | `certified_package_only` | 1 | Huge model has package/stage evidence rather than a monolithic local baseline. |
-| `needs_candidate` | 54 | Stage/runtime shape is known or already allowed, but we still need a real cheap representative. |
+| `needs_candidate` | 39 | Stage/runtime shape is known or already allowed, but we still need a real cheap representative. |
 | `candidate_multimodal` | 9 | Needs projector/media sideband certification before multimodal promotion. |
 | `needs_runtime_slice_support` | 0 | No currently tracked causal llama.cpp family is missing stage ABI graph/tensor-filtering support. |
 | `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
@@ -235,6 +235,21 @@ or a blocker is discovered.
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | FullState blocked by M-RoPE; `ResidentKv` pass | `ResidentKv` for text | pass for text; local projector pass; split multimodal blocked | text split/cache ready; split media sideband crashes in filtered stage-0 prefill |
 | `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
 | `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` | pass + MoE expert smoke | cache restore and MoE expert-stage smoke ready |
+| `arcee` | `arcee` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
+| `chatglm` | `chatglm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
+| `codeshell` | `codeshell` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
+| `deci` | `deci` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 rejected |
+| `qwen35` | `qwen35` | selected | yes | pass | `KvRecurrent` pass; FullState too large | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky; q8 validated |
+| `xverse` | `xverse` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready; q8 validated |
+| `maincoder` | `maincoder` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `openelm` | `openelm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `minicpm` | `minicpm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `minicpm3` | `minicpm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `plamo3` | `plamo3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `plm` | `plm` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `refact` | `refact` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `smallthinker` | `smallthinker` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
+| `smollm3` | `smollm3` | selected | yes | pass | `ResidentKv` pass | `ResidentKv` | pass | cache restore ready |
 | `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | no cheap artifact; local glogwa68 sample reports `llama`, not `llama4` |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
@@ -243,8 +258,10 @@ implementation.
 
 ## Next Batch
 
-1. Resolve `needs_candidate` rows that are already in the stage ABI allowlist,
-   such as `qwen35`, `qwen35moe`, `arwkv7`, and true `command-r` artifacts.
+1. Resolve remaining `needs_candidate` rows that are already in the stage ABI
+   allowlist, especially `qwen35moe`, `arwkv7`, true `command-r`,
+   `plamo2`, `jais2`, and families where public GGUF search still found no
+   architecture-matching cheap artifact.
 2. Keep non-causal auxiliary rows in their own serving lanes instead of
    promoting them as causal stage-split serving.
 3. Promote multimodal only after projector/media sideband evidence, even when
@@ -271,6 +288,12 @@ themselves until the reviewed topology records are updated.
 | `phi2` | see `target/family-certify/llama-parity-phi2-runtime-slice-2`, `target/family-certify/llama-parity-phi2-resident-kv-1`, and `/Volumes/External/tmp/skippy-phi2-resident-kv-stage1-20260506.json` | `single-step`, `chain`, and dtype matrix passed | validated | rejected-too-large for full-state | `ResidentKv` one-stage and split-final cache restore passed; stage0 cache probe remaps resident KV but cannot produce logits because it is a non-output slice |
 | `cohere2` | see `target/family-certify/llama-parity-cohere2-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 63.48x cache-hit speedup |
 | `command_r` | none | blocked | blocked | blocked | Lumia101/c4ai Command-R 7B reports GGUF architecture `cohere2`; find a true `command-r` artifact before promotion |
+| `arcee` | `bartowski/arcee-ai_AFM-4.5B-GGUF:IQ2_M` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 8-token prefix |
+| `chatglm` | `mradermacher/chatglm3-6b-i1-GGUF:IQ2_M` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 8-token prefix |
+| `codeshell` | `mradermacher/CodeShell-7B-i1-GGUF:IQ2_M` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 8-token prefix |
+| `deci` | `mradermacher/DeciLM-6b-instruct-i1-GGUF:IQ2_M` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 8-token prefix |
+| `qwen35` | `mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M` | `single-step`, `chain`, and dtype matrix passed | validated | FullState rejected-too-large | `KvRecurrent` smoke passed, 8-token prefix; keep normal decode ownership sticky |
+| `xverse` | `xverse/XVERSE-7B-Chat-GGUF:q2_k` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 8-token prefix |
 | `falcon` | see `target/family-certify/llama-parity-falcon-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1753.04x cache-hit speedup |
 | `exaone` | see `target/family-certify/llama-parity-exaone-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 868.76x cache-hit speedup |
 | `exaone4` | see `target/family-certify/llama-parity-exaone4-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 220.01x cache-hit speedup |

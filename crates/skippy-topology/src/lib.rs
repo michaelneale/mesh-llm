@@ -2086,7 +2086,10 @@ fn reviewed_record_matches(record: &ReviewedCapabilityRecord, normalized_identit
     [
         record.model_id.as_deref(),
         record.canonical_ref.as_deref(),
-        record.distribution_id.as_deref(),
+        record
+            .distribution_id
+            .as_deref()
+            .filter(|value| value.len() >= 12),
     ]
     .into_iter()
     .flatten()
