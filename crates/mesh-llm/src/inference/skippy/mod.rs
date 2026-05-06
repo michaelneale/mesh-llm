@@ -40,9 +40,12 @@ pub(crate) use materialization::{
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
-    spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
-    StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
-    StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
+    spawn_stage_control_loop, LayerRange, SourceModelKind, StageCancelPrepareRequest,
+    StageControlCommand, StageControlRequest, StageControlResponse, StageInventoryRequest,
+    StageLayerInventory, StageLoadRequest, StagePeerDescriptor, StagePreparationState,
+    StagePreparationStatus, StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse,
+    StageRuntimeState, StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest,
+    StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

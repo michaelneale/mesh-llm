@@ -1516,6 +1516,7 @@ impl Node {
                 Ok(Ok(crate::inference::skippy::StageControlResponse::Ready(ready))) => {
                     self.record_stage_status(Some(peer_id), ready.status).await;
                 }
+                Ok(Ok(_)) => {}
                 Ok(Err(error)) => {
                     self.record_stage_status(
                         Some(peer_id),
@@ -1574,6 +1575,7 @@ impl Node {
             crate::inference::skippy::StageControlResponse::Ready(_) => {
                 anyhow::bail!("unexpected ready response for stage status request")
             }
+            _ => anyhow::bail!("unexpected response for stage status request"),
         }
     }
 
@@ -1610,6 +1612,7 @@ impl Node {
                         .await;
                 }
             }
+            _ => {}
         }
         Ok(response)
     }
@@ -1658,6 +1661,7 @@ impl Node {
                         .await;
                 }
             }
+            _ => {}
         }
         Ok(response)
     }
@@ -1670,7 +1674,13 @@ impl Node {
                 std::time::Duration::from_secs(180)
             }
             crate::inference::skippy::StageControlRequest::Stop(_)
-            | crate::inference::skippy::StageControlRequest::Status(_) => {
+            | crate::inference::skippy::StageControlRequest::Status(_)
+            | crate::inference::skippy::StageControlRequest::Inventory(_)
+            | crate::inference::skippy::StageControlRequest::CancelPrepare(_)
+            | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {
+                std::time::Duration::from_secs(30)
+            }
+            crate::inference::skippy::StageControlRequest::Prepare(_) => {
                 std::time::Duration::from_secs(30)
             }
         }
@@ -4080,6 +4090,7 @@ impl Node {
                         .await;
                 }
             }
+            _ => {}
         }
         let proto_response = stage_control_response_to_proto(response);
         write_len_prefixed(&mut send, &proto_response.encode_to_vec()).await?;
@@ -4139,7 +4150,11 @@ impl Node {
                 self.stop_stage_transport_bridge(&stop.topology_id, &stop.run_id, &stop.stage_id)
                     .await;
             }
-            crate::inference::skippy::StageControlRequest::Status(_) => {}
+            crate::inference::skippy::StageControlRequest::Status(_)
+            | crate::inference::skippy::StageControlRequest::Inventory(_)
+            | crate::inference::skippy::StageControlRequest::Prepare(_)
+            | crate::inference::skippy::StageControlRequest::CancelPrepare(_)
+            | crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {}
         }
         Ok(())
     }
@@ -4917,6 +4932,32 @@ fn stage_control_request_to_proto(
                 stage_id: status.stage_id,
             })
         }
+        crate::inference::skippy::StageControlRequest::Inventory(inventory) => {
+            Command::GetLayerInventory(skippy_stage_proto::GetLayerInventory {
+                model_id: inventory.model_id,
+                package_ref: inventory.package_ref,
+                manifest_sha256: inventory.manifest_sha256,
+            })
+        }
+        crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
+            Command::PrepareStage(skippy_stage_proto::PrepareStage {
+                load_stage: Some(stage_load_to_proto(prepare.load)),
+                coordinator_id: prepare.coordinator_id.map(|id| id.as_bytes().to_vec()),
+            })
+        }
+        crate::inference::skippy::StageControlRequest::CancelPrepare(cancel) => {
+            Command::CancelPrepareStage(skippy_stage_proto::CancelPrepareStage {
+                topology_id: cancel.topology_id,
+                run_id: cancel.run_id,
+                stage_id: cancel.stage_id,
+                shutdown_generation: cancel.shutdown_generation,
+            })
+        }
+        crate::inference::skippy::StageControlRequest::StatusUpdate(status) => {
+            Command::StageStatusUpdate(skippy_stage_proto::StageStatusUpdate {
+                status: Some(stage_preparation_status_to_proto(status)),
+            })
+        }
     };
 
     skippy_stage_proto::StageControlRequest {
@@ -5018,6 +5059,48 @@ fn stage_control_request_from_proto(
                     run_id: status.run_id,
                     stage_id: status.stage_id,
                 },
+            ))
+        }
+        Command::GetLayerInventory(inventory) => {
+            Ok(crate::inference::skippy::StageControlRequest::Inventory(
+                crate::inference::skippy::StageInventoryRequest {
+                    model_id: inventory.model_id,
+                    package_ref: inventory.package_ref,
+                    manifest_sha256: inventory.manifest_sha256,
+                },
+            ))
+        }
+        Command::PrepareStage(prepare) => {
+            let load = prepare
+                .load_stage
+                .ok_or_else(|| anyhow::anyhow!("prepare stage missing load_stage"))?;
+            Ok(crate::inference::skippy::StageControlRequest::Prepare(
+                crate::inference::skippy::StagePrepareRequest {
+                    load: stage_load_from_proto(load)?,
+                    coordinator_id: prepare
+                        .coordinator_id
+                        .map(endpoint_id_from_bytes)
+                        .transpose()
+                        .context("invalid prepare stage coordinator_id")?,
+                },
+            ))
+        }
+        Command::CancelPrepareStage(cancel) => Ok(
+            crate::inference::skippy::StageControlRequest::CancelPrepare(
+                crate::inference::skippy::StageCancelPrepareRequest {
+                    topology_id: cancel.topology_id,
+                    run_id: cancel.run_id,
+                    stage_id: cancel.stage_id,
+                    shutdown_generation: cancel.shutdown_generation,
+                },
+            ),
+        ),
+        Command::StageStatusUpdate(update) => {
+            let status = update
+                .status
+                .ok_or_else(|| anyhow::anyhow!("stage status update missing status"))?;
+            Ok(crate::inference::skippy::StageControlRequest::StatusUpdate(
+                stage_preparation_status_from_proto(status),
             ))
         }
     }
@@ -5170,6 +5253,53 @@ fn stage_control_unavailable_response(
         crate::inference::skippy::StageControlRequest::Status(_) => {
             return crate::inference::skippy::StageControlResponse::Status(Vec::new());
         }
+        crate::inference::skippy::StageControlRequest::Inventory(inventory) => {
+            return crate::inference::skippy::StageControlResponse::Inventory(
+                crate::inference::skippy::StageLayerInventory {
+                    model_id: inventory.model_id,
+                    package_ref: inventory.package_ref,
+                    manifest_sha256: inventory.manifest_sha256,
+                    layer_count: 0,
+                    ready_ranges: Vec::new(),
+                    available_ranges: Vec::new(),
+                    missing_ranges: Vec::new(),
+                    preparing_ranges: Vec::new(),
+                    source_model_path: None,
+                    source_model_bytes: None,
+                    source_model_kind: crate::inference::skippy::SourceModelKind::Unknown,
+                },
+            );
+        }
+        crate::inference::skippy::StageControlRequest::Prepare(prepare) => {
+            return crate::inference::skippy::StageControlResponse::PrepareAccepted(
+                crate::inference::skippy::StagePrepareAcceptedResponse {
+                    accepted: false,
+                    status: stage_preparation_status_from_load(
+                        &prepare.load,
+                        crate::inference::skippy::StagePreparationState::Failed,
+                        Some("stage control is not available".to_string()),
+                    ),
+                    error: Some("stage control is not available".to_string()),
+                },
+            );
+        }
+        crate::inference::skippy::StageControlRequest::CancelPrepare(cancel) => {
+            return crate::inference::skippy::StageControlResponse::PreparationStatus(
+                stage_preparation_status_from_cancel(
+                    cancel,
+                    crate::inference::skippy::StagePreparationState::Failed,
+                    Some("stage control is not available".to_string()),
+                ),
+            );
+        }
+        crate::inference::skippy::StageControlRequest::StatusUpdate(_) => {
+            return crate::inference::skippy::StageControlResponse::StatusAck(
+                crate::inference::skippy::StageStatusAck {
+                    accepted: false,
+                    error: Some("stage control is not available".to_string()),
+                },
+            );
+        }
     };
     crate::inference::skippy::StageControlResponse::Ready(
         crate::inference::skippy::StageReadyResponse {
@@ -5216,6 +5346,56 @@ fn stage_status_from_load(
     }
 }
 
+fn stage_preparation_status_from_load(
+    load: &crate::inference::skippy::StageLoadRequest,
+    state: crate::inference::skippy::StagePreparationState,
+    error: Option<String>,
+) -> crate::inference::skippy::StagePreparationStatus {
+    crate::inference::skippy::StagePreparationStatus {
+        topology_id: load.topology_id.clone(),
+        run_id: load.run_id.clone(),
+        model_id: load.model_id.clone(),
+        backend: load.backend.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+        stage_id: load.stage_id.clone(),
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        state,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error,
+        shutdown_generation: load.shutdown_generation,
+    }
+}
+
+fn stage_preparation_status_from_cancel(
+    cancel: crate::inference::skippy::StageCancelPrepareRequest,
+    state: crate::inference::skippy::StagePreparationState,
+    error: Option<String>,
+) -> crate::inference::skippy::StagePreparationStatus {
+    crate::inference::skippy::StagePreparationStatus {
+        topology_id: cancel.topology_id,
+        run_id: cancel.run_id,
+        model_id: String::new(),
+        backend: "skippy".to_string(),
+        package_ref: String::new(),
+        manifest_sha256: String::new(),
+        stage_id: cancel.stage_id,
+        stage_index: 0,
+        layer_start: 0,
+        layer_end: 0,
+        state,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error,
+        shutdown_generation: cancel.shutdown_generation,
+    }
+}
+
 fn stage_control_response_to_proto(
     response: crate::inference::skippy::StageControlResponse,
 ) -> skippy_stage_proto::StageControlResponse {
@@ -5237,6 +5417,25 @@ fn stage_control_response_to_proto(
                 },
                 stage_status_to_proto,
             ))
+        }
+        crate::inference::skippy::StageControlResponse::Inventory(inventory) => {
+            Response::LayerInventory(layer_inventory_to_proto(inventory))
+        }
+        crate::inference::skippy::StageControlResponse::PrepareAccepted(accepted) => {
+            Response::PrepareStageAccepted(skippy_stage_proto::PrepareStageAccepted {
+                accepted: accepted.accepted,
+                status: Some(stage_preparation_status_to_proto(accepted.status)),
+                error: accepted.error,
+            })
+        }
+        crate::inference::skippy::StageControlResponse::PreparationStatus(status) => {
+            Response::StagePreparationStatus(stage_preparation_status_to_proto(status))
+        }
+        crate::inference::skippy::StageControlResponse::StatusAck(ack) => {
+            Response::StageStatusAck(skippy_stage_proto::StageStatusAck {
+                accepted: ack.accepted,
+                error: ack.error,
+            })
         }
     };
 
@@ -5272,6 +5471,208 @@ fn stage_control_response_from_proto(
                 vec![stage_status_from_proto(status)?],
             ))
         }
+        Response::LayerInventory(inventory) => {
+            Ok(crate::inference::skippy::StageControlResponse::Inventory(
+                layer_inventory_from_proto(inventory),
+            ))
+        }
+        Response::PrepareStageAccepted(accepted) => {
+            let status = accepted
+                .status
+                .ok_or_else(|| anyhow::anyhow!("prepare stage accepted missing status"))?;
+            Ok(
+                crate::inference::skippy::StageControlResponse::PrepareAccepted(
+                    crate::inference::skippy::StagePrepareAcceptedResponse {
+                        accepted: accepted.accepted,
+                        status: stage_preparation_status_from_proto(status),
+                        error: accepted.error,
+                    },
+                ),
+            )
+        }
+        Response::StagePreparationStatus(status) => Ok(
+            crate::inference::skippy::StageControlResponse::PreparationStatus(
+                stage_preparation_status_from_proto(status),
+            ),
+        ),
+        Response::StageStatusAck(ack) => {
+            Ok(crate::inference::skippy::StageControlResponse::StatusAck(
+                crate::inference::skippy::StageStatusAck {
+                    accepted: ack.accepted,
+                    error: ack.error,
+                },
+            ))
+        }
+    }
+}
+
+fn layer_inventory_to_proto(
+    inventory: crate::inference::skippy::StageLayerInventory,
+) -> skippy_stage_proto::LayerInventory {
+    skippy_stage_proto::LayerInventory {
+        model_id: inventory.model_id,
+        package_ref: inventory.package_ref,
+        manifest_sha256: inventory.manifest_sha256,
+        layer_count: inventory.layer_count,
+        ready_ranges: inventory
+            .ready_ranges
+            .into_iter()
+            .map(layer_range_to_proto)
+            .collect(),
+        available_ranges: inventory
+            .available_ranges
+            .into_iter()
+            .map(layer_range_to_proto)
+            .collect(),
+        missing_ranges: inventory
+            .missing_ranges
+            .into_iter()
+            .map(layer_range_to_proto)
+            .collect(),
+        preparing_ranges: inventory
+            .preparing_ranges
+            .into_iter()
+            .map(stage_preparation_status_to_proto)
+            .collect(),
+        source_model_path: inventory.source_model_path,
+        source_model_bytes: inventory.source_model_bytes,
+        source_model_kind: source_model_kind_to_proto(inventory.source_model_kind) as i32,
+    }
+}
+
+fn layer_inventory_from_proto(
+    inventory: skippy_stage_proto::LayerInventory,
+) -> crate::inference::skippy::StageLayerInventory {
+    crate::inference::skippy::StageLayerInventory {
+        model_id: inventory.model_id,
+        package_ref: inventory.package_ref,
+        manifest_sha256: inventory.manifest_sha256,
+        layer_count: inventory.layer_count,
+        ready_ranges: inventory
+            .ready_ranges
+            .into_iter()
+            .map(layer_range_from_proto)
+            .collect(),
+        available_ranges: inventory
+            .available_ranges
+            .into_iter()
+            .map(layer_range_from_proto)
+            .collect(),
+        missing_ranges: inventory
+            .missing_ranges
+            .into_iter()
+            .map(layer_range_from_proto)
+            .collect(),
+        preparing_ranges: inventory
+            .preparing_ranges
+            .into_iter()
+            .map(stage_preparation_status_from_proto)
+            .collect(),
+        source_model_path: inventory.source_model_path,
+        source_model_bytes: inventory.source_model_bytes,
+        source_model_kind: source_model_kind_from_proto(inventory.source_model_kind),
+    }
+}
+
+fn layer_range_to_proto(
+    range: crate::inference::skippy::LayerRange,
+) -> skippy_stage_proto::LayerRange {
+    skippy_stage_proto::LayerRange {
+        layer_start: range.layer_start,
+        layer_end: range.layer_end,
+    }
+}
+
+fn layer_range_from_proto(
+    range: skippy_stage_proto::LayerRange,
+) -> crate::inference::skippy::LayerRange {
+    crate::inference::skippy::LayerRange {
+        layer_start: range.layer_start,
+        layer_end: range.layer_end,
+    }
+}
+
+fn source_model_kind_to_proto(
+    kind: crate::inference::skippy::SourceModelKind,
+) -> skippy_stage_proto::SourceModelKind {
+    match kind {
+        crate::inference::skippy::SourceModelKind::Unknown => {
+            skippy_stage_proto::SourceModelKind::Unspecified
+        }
+        crate::inference::skippy::SourceModelKind::LayerPackage => {
+            skippy_stage_proto::SourceModelKind::LayerPackage
+        }
+        crate::inference::skippy::SourceModelKind::PlainGguf => {
+            skippy_stage_proto::SourceModelKind::PlainGguf
+        }
+        crate::inference::skippy::SourceModelKind::SplitGguf => {
+            skippy_stage_proto::SourceModelKind::SplitGguf
+        }
+    }
+}
+
+fn source_model_kind_from_proto(value: i32) -> crate::inference::skippy::SourceModelKind {
+    match skippy_stage_proto::SourceModelKind::try_from(value)
+        .unwrap_or(skippy_stage_proto::SourceModelKind::Unspecified)
+    {
+        skippy_stage_proto::SourceModelKind::Unspecified => {
+            crate::inference::skippy::SourceModelKind::Unknown
+        }
+        skippy_stage_proto::SourceModelKind::LayerPackage => {
+            crate::inference::skippy::SourceModelKind::LayerPackage
+        }
+        skippy_stage_proto::SourceModelKind::PlainGguf => {
+            crate::inference::skippy::SourceModelKind::PlainGguf
+        }
+        skippy_stage_proto::SourceModelKind::SplitGguf => {
+            crate::inference::skippy::SourceModelKind::SplitGguf
+        }
+    }
+}
+
+fn stage_preparation_status_to_proto(
+    status: crate::inference::skippy::StagePreparationStatus,
+) -> skippy_stage_proto::StagePreparationStatus {
+    skippy_stage_proto::StagePreparationStatus {
+        topology_id: status.topology_id,
+        run_id: status.run_id,
+        model_id: status.model_id,
+        backend: status.backend,
+        package_ref: status.package_ref,
+        manifest_sha256: status.manifest_sha256,
+        stage_id: status.stage_id,
+        stage_index: status.stage_index,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state: stage_preparation_state_to_proto(status.state) as i32,
+        bytes_done: status.bytes_done,
+        bytes_total: status.bytes_total,
+        bind_addr: status.bind_addr,
+        error: status.error,
+        shutdown_generation: status.shutdown_generation,
+    }
+}
+
+fn stage_preparation_status_from_proto(
+    status: skippy_stage_proto::StagePreparationStatus,
+) -> crate::inference::skippy::StagePreparationStatus {
+    crate::inference::skippy::StagePreparationStatus {
+        topology_id: status.topology_id,
+        run_id: status.run_id,
+        model_id: status.model_id,
+        backend: status.backend,
+        package_ref: status.package_ref,
+        manifest_sha256: status.manifest_sha256,
+        stage_id: status.stage_id,
+        stage_index: status.stage_index,
+        layer_start: status.layer_start,
+        layer_end: status.layer_end,
+        state: stage_preparation_state_from_proto(status.state),
+        bytes_done: status.bytes_done,
+        bytes_total: status.bytes_total,
+        bind_addr: status.bind_addr,
+        error: status.error,
+        shutdown_generation: status.shutdown_generation,
     }
 }
 
@@ -5422,6 +5823,71 @@ fn stage_runtime_state_to_proto(
         }
         crate::inference::skippy::StageRuntimeState::Failed => {
             skippy_stage_proto::StageRuntimeState::Failed
+        }
+    }
+}
+
+fn stage_preparation_state_from_proto(
+    value: i32,
+) -> crate::inference::skippy::StagePreparationState {
+    match skippy_stage_proto::StagePreparationState::try_from(value)
+        .unwrap_or(skippy_stage_proto::StagePreparationState::Unspecified)
+    {
+        skippy_stage_proto::StagePreparationState::Assigned
+        | skippy_stage_proto::StagePreparationState::Unspecified => {
+            crate::inference::skippy::StagePreparationState::Assigned
+        }
+        skippy_stage_proto::StagePreparationState::Downloading => {
+            crate::inference::skippy::StagePreparationState::Downloading
+        }
+        skippy_stage_proto::StagePreparationState::Available => {
+            crate::inference::skippy::StagePreparationState::Available
+        }
+        skippy_stage_proto::StagePreparationState::Resolving => {
+            crate::inference::skippy::StagePreparationState::Resolving
+        }
+        skippy_stage_proto::StagePreparationState::Loading => {
+            crate::inference::skippy::StagePreparationState::Loading
+        }
+        skippy_stage_proto::StagePreparationState::Ready => {
+            crate::inference::skippy::StagePreparationState::Ready
+        }
+        skippy_stage_proto::StagePreparationState::Failed => {
+            crate::inference::skippy::StagePreparationState::Failed
+        }
+        skippy_stage_proto::StagePreparationState::Cancelled => {
+            crate::inference::skippy::StagePreparationState::Cancelled
+        }
+    }
+}
+
+fn stage_preparation_state_to_proto(
+    state: crate::inference::skippy::StagePreparationState,
+) -> skippy_stage_proto::StagePreparationState {
+    match state {
+        crate::inference::skippy::StagePreparationState::Assigned => {
+            skippy_stage_proto::StagePreparationState::Assigned
+        }
+        crate::inference::skippy::StagePreparationState::Downloading => {
+            skippy_stage_proto::StagePreparationState::Downloading
+        }
+        crate::inference::skippy::StagePreparationState::Available => {
+            skippy_stage_proto::StagePreparationState::Available
+        }
+        crate::inference::skippy::StagePreparationState::Resolving => {
+            skippy_stage_proto::StagePreparationState::Resolving
+        }
+        crate::inference::skippy::StagePreparationState::Loading => {
+            skippy_stage_proto::StagePreparationState::Loading
+        }
+        crate::inference::skippy::StagePreparationState::Ready => {
+            skippy_stage_proto::StagePreparationState::Ready
+        }
+        crate::inference::skippy::StagePreparationState::Failed => {
+            skippy_stage_proto::StagePreparationState::Failed
+        }
+        crate::inference::skippy::StagePreparationState::Cancelled => {
+            skippy_stage_proto::StagePreparationState::Cancelled
         }
     }
 }

@@ -389,6 +389,7 @@ pub(super) async fn start_runtime_split_model(
         spec.node,
         model_ref,
         model_ref,
+        &package,
         spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
         Duration::from_secs(30),
     )
@@ -490,6 +491,7 @@ enum SplitParticipantExclusionReason {
     Client,
     MissingVram,
     MissingModelInterest,
+    MissingModelSource,
 }
 
 impl SplitParticipantExclusionReason {
@@ -498,6 +500,7 @@ impl SplitParticipantExclusionReason {
             Self::Client => "client",
             Self::MissingVram => "missing_vram",
             Self::MissingModelInterest => "missing_model_interest",
+            Self::MissingModelSource => "missing_model_source",
         }
     }
 }
@@ -585,6 +588,21 @@ async fn load_split_runtime_generation(
             upstream: None,
             downstream: downstream.clone(),
         };
+        prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
+        wait_for_split_stage_source(
+            spec.node,
+            stage.node_id,
+            &load,
+            Duration::from_secs(30 * 60),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "prepare split stage {} on {}",
+                stage.stage_id,
+                stage.node_id.fmt_short()
+            )
+        })?;
         let response = if stage.node_id == spec.node.id() {
             spec.node
                 .send_local_stage_control(skippy::StageControlRequest::Load(load))
@@ -810,6 +828,7 @@ impl SplitTopologyCoordinator {
             &self.node,
             &self.model_name,
             &self.model_ref,
+            &self.package,
             self.pinned_gpu.as_ref().map(|gpu| gpu.vram_bytes),
         )
         .await;
@@ -1044,6 +1063,7 @@ async fn wait_for_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
     timeout: Duration,
 ) -> Result<Vec<SplitParticipant>> {
@@ -1054,7 +1074,8 @@ async fn wait_for_split_participants(
     let mut stable_since = tokio::time::Instant::now();
     loop {
         let snapshot =
-            collect_split_participants(node, model_name, model_ref, local_vram_override).await;
+            collect_split_participants(node, model_name, model_ref, package, local_vram_override)
+                .await;
         let signature = split_participant_signature(&snapshot.participants);
         let now = tokio::time::Instant::now();
         if signature != last_signature {
@@ -1110,6 +1131,7 @@ async fn collect_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
 ) -> SplitParticipantSnapshot {
     let mut participants = vec![SplitParticipant {
@@ -1147,7 +1169,15 @@ async fn collect_split_participants(
                 .explicit_model_interests
                 .iter()
                 .any(|model| model == model_ref);
-        if wants_model {
+        if !wants_model {
+            excluded.push(SplitParticipantExclusion {
+                node_id: peer.id,
+                reason: SplitParticipantExclusionReason::MissingModelInterest,
+            });
+            continue;
+        }
+
+        if split_peer_source_available(node, peer.id, model_ref, package).await {
             participants.push(SplitParticipant {
                 node_id: peer.id,
                 vram_bytes: peer.vram_bytes,
@@ -1156,7 +1186,7 @@ async fn collect_split_participants(
         } else {
             excluded.push(SplitParticipantExclusion {
                 node_id: peer.id,
-                reason: SplitParticipantExclusionReason::MissingModelInterest,
+                reason: SplitParticipantExclusionReason::MissingModelSource,
             });
         }
     }
@@ -1168,6 +1198,30 @@ async fn collect_split_participants(
         participants,
         excluded,
     }
+}
+
+async fn split_peer_source_available(
+    node: &mesh::Node,
+    peer_id: iroh::EndpointId,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+) -> bool {
+    let request = skippy::StageInventoryRequest {
+        model_id: model_ref.to_string(),
+        package_ref: package.package_ref.clone(),
+        manifest_sha256: package.manifest_sha256.clone(),
+    };
+    let result = node
+        .send_stage_control(peer_id, skippy::StageControlRequest::Inventory(request))
+        .await;
+    let Ok(skippy::StageControlResponse::Inventory(inventory)) = result else {
+        return false;
+    };
+    inventory
+        .available_ranges
+        .iter()
+        .chain(inventory.ready_ranges.iter())
+        .any(|range| range.layer_start == 0 && range.layer_end >= package.layer_count)
 }
 
 fn split_participant_signature(participants: &[SplitParticipant]) -> Vec<(String, u64)> {
@@ -1432,6 +1486,107 @@ fn split_stage0_config(
     };
     config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
     config
+}
+
+async fn prepare_split_stage(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: skippy::StageLoadRequest,
+) -> Result<()> {
+    let prepare = skippy::StagePrepareRequest {
+        load,
+        coordinator_id: Some(node.id()),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Prepare(prepare))
+            .await
+    } else {
+        node.send_stage_control(stage_node_id, skippy::StageControlRequest::Prepare(prepare))
+            .await
+    }?;
+    let skippy::StageControlResponse::PrepareAccepted(accepted) = response else {
+        anyhow::bail!("unexpected response while preparing split stage");
+    };
+    anyhow::ensure!(
+        accepted.accepted,
+        "stage {} rejected prepare: {}",
+        accepted.status.stage_id,
+        accepted
+            .error
+            .unwrap_or_else(|| "unknown error".to_string())
+    );
+    Ok(())
+}
+
+async fn wait_for_split_stage_source(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let inventory = query_stage_inventory(node, stage_node_id, load).await?;
+        if inventory
+            .available_ranges
+            .iter()
+            .chain(inventory.ready_ranges.iter())
+            .any(|range| range.layer_start <= load.layer_start && range.layer_end >= load.layer_end)
+        {
+            tracing::info!(
+                topology_id = %load.topology_id,
+                run_id = %load.run_id,
+                stage_id = %load.stage_id,
+                node = %stage_node_id.fmt_short(),
+                "split stage source is available; loading runtime"
+            );
+            return Ok(());
+        }
+        if let Some(failed) = inventory.preparing_ranges.iter().find(|status| {
+            status.stage_id == load.stage_id
+                && matches!(status.state, skippy::StagePreparationState::Failed)
+        }) {
+            anyhow::bail!(
+                "stage {} source prepare failed: {}",
+                load.stage_id,
+                failed.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for stage {} source availability after {:?}",
+                load.stage_id,
+                timeout
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn query_stage_inventory(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+) -> Result<skippy::StageLayerInventory> {
+    let request = skippy::StageInventoryRequest {
+        model_id: load.model_id.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Inventory(request))
+            .await
+    } else {
+        node.send_stage_control(
+            stage_node_id,
+            skippy::StageControlRequest::Inventory(request),
+        )
+        .await
+    }?;
+    let skippy::StageControlResponse::Inventory(inventory) = response else {
+        anyhow::bail!("unexpected response while querying stage inventory");
+    };
+    Ok(inventory)
 }
 
 fn split_stage_topology_instance(
