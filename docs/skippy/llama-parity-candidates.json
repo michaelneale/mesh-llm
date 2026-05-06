@@ -382,9 +382,10 @@
     {
       "llama_model": "internlm2",
       "family": "internlm2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "lmstudio-community/internlm2_5-1_8b-chat-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-internlm2-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "exaone",

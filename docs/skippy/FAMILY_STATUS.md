@@ -35,6 +35,7 @@ Last updated: 2026-05-06.
 | Hunyuan-Dense | Supported | `Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache smoke passed. |
 | Hunyuan-MoE | Supported | `unsloth/Hunyuan-A13B-Instruct-GGUF:UD-IQ2_XXS` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Real A13B MoE GGUF passed runtime-slice and `ResidentKv` native sequence remap cache smoke. |
 | Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
+| InternLM2 | Supported | `lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Phi3 | Supported | `bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Mistral3 | Supported | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M` | `layer_end=26`, `splits=8,17`, activation width `3072` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
@@ -52,7 +53,7 @@ topology records, and family-specific policy notes are updated.
 
 ```text
 Baichuan, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
-Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, MPT,
+Granite, Jamba, LFM2, Mamba, Mamba2, MPT,
 OLMo2, OLMoE, Qwen2-VL text, Qwen3-VL text,
 RWKV6, RWKV7, StarCoder2
 ```
@@ -92,6 +93,7 @@ Bloom
 GPT-NeoX
 Mistral3
 Hunyuan-MoE
+InternLM2
 Gemma2
 Falcon-H1
 Qwen3-MoE
@@ -120,6 +122,7 @@ activation handoff sizes for the recommended split.
 | GPT2 | 1,536 | Accepted; `ResidentKv` 64-token smoke passed, 1535.17x cache-hit speedup |
 | GPT-NeoX | 1,024 | Accepted; `ResidentKv` 64-token smoke passed, 282.70x cache-hit speedup |
 | Hunyuan-MoE | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 465.32x cache-hit speedup |
+| InternLM2 | 4,096 | Accepted; `ResidentKv` 64-token smoke passed, 80.78x cache-hit speedup |
 | Gemma4 A4B | 5,632 | Accepted, 1.96x Qwen |
 | Gemma4 E4B | 5,120 | Accepted, 0.50x Qwen |
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |

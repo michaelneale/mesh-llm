@@ -652,5 +652,25 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/internlm2_5-1_8b-chat-GGUF",
+    "source_revision": "f5dbdc487d2fa53d1fd75251e7414d102e983467",
+    "source_file": "internlm2_5-1_8b-chat-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/internlm2_5-1_8b-chat-GGUF@f5dbdc487d2fa53d1fd75251e7414d102e983467/internlm2_5-1_8b-chat-Q4_K_M.gguf",
+    "distribution_id": "internlm2_5-1_8b-chat-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "internlm2",
+      "layer_count": 24,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]
