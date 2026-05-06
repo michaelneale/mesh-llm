@@ -124,6 +124,8 @@ pub struct StateHandoffReport {
     pub roundtrip_state_matches: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restored_output_matches: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix_prefill_matches: Option<bool>,
     pub cache_hit_matches: bool,
     pub stage_index: u32,
     pub layer_start: u32,
@@ -136,12 +138,7 @@ pub struct StateHandoffReport {
     pub cached_decoded_result_hits: bool,
     pub source_predicted_token: i32,
     pub restored_predicted_token: i32,
-    pub source_native_seq_id: i32,
-    pub restore_native_seq_id: i32,
-    pub native_seq_remapped: bool,
     pub prompt_token_count: usize,
-    pub suffix_token_count: usize,
-    pub suffix_prefill_matches: bool,
     pub benchmark_prompt_token_count: usize,
     pub benchmark_prompt_text: String,
     #[serde(skip_serializing_if = "Option::is_none")]

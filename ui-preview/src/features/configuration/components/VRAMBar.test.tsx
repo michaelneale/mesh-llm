@@ -11,10 +11,14 @@ function createMockDataTransfer() {
   return {
     dropEffect: 'none',
     effectAllowed: 'all',
-    get types() { return Array.from(data.keys()) },
+    get types() {
+      return Array.from(data.keys())
+    },
     getData: vi.fn((type: string) => data.get(type) ?? ''),
-    setData: vi.fn((type: string, value: string) => { data.set(type, value) }),
-    setDragImage: vi.fn(),
+    setData: vi.fn((type: string, value: string) => {
+      data.set(type, value)
+    }),
+    setDragImage: vi.fn()
   }
 }
 
@@ -26,12 +30,14 @@ const testNode: ConfigNode = {
   cpu: 'test cpu',
   ramGB: 64,
   placement: 'separate',
-  gpus: [{ idx: 0, name: 'test gpu', totalGB: 4, reservedGB: 1 }],
+  gpus: [{ idx: 0, name: 'test gpu', totalGB: 4, reservedGB: 1 }]
 }
 
 describe('VRAMBar', () => {
   it('sizes model usage against usable VRAM instead of raw total capacity', () => {
-    const assigns: ConfigAssign[] = [{ id: 'assign-qwen', modelId: 'qwen4', nodeId: testNode.id, containerIdx: 0, ctx: 4096 }]
+    const assigns: ConfigAssign[] = [
+      { id: 'assign-qwen', modelId: 'qwen4', nodeId: testNode.id, containerIdx: 0, ctx: 4096 }
+    ]
     const model = findModel('qwen4')
 
     if (!model) throw new Error('Expected qwen4 test model')
@@ -49,7 +55,7 @@ describe('VRAMBar', () => {
         setAssigns={vi.fn()}
         dragOver={null}
         setDragOver={vi.fn()}
-      />,
+      />
     )
 
     const bar = screen.getByRole('region', { name: /test gpu capacity/i })
@@ -83,7 +89,7 @@ describe('VRAMBar', () => {
         setAssigns={vi.fn()}
         dragOver={null}
         setDragOver={vi.fn()}
-      />,
+      />
     )
 
     const reservedLane = screen.getByRole('button', { name: /system reserved space, 1 GB reserved on test gpu/i })
@@ -94,7 +100,9 @@ describe('VRAMBar', () => {
   })
 
   it('keeps size and context metadata visible on dense model bars', () => {
-    const assigns: ConfigAssign[] = [{ id: 'assign-qwen-ud', modelId: 'qwenud', nodeId: testNode.id, containerIdx: 0, ctx: 262144 }]
+    const assigns: ConfigAssign[] = [
+      { id: 'assign-qwen-ud', modelId: 'qwenud', nodeId: testNode.id, containerIdx: 0, ctx: 262144 }
+    ]
 
     render(
       <VRAMBar
@@ -110,7 +118,7 @@ describe('VRAMBar', () => {
         dragOver={null}
         setDragOver={vi.fn()}
         dense
-      />,
+      />
     )
 
     expect(screen.getByRole('button', { name: /17\.8 GB weights, 6\.4 GB context cache/i })).toBeInTheDocument()
@@ -136,7 +144,7 @@ describe('VRAMBar', () => {
         setAssigns={setAssigns}
         dragOver={null}
         setDragOver={vi.fn()}
-      />,
+      />
     )
 
     const reservedLane = screen.getByTitle('Reserved 1 GB')

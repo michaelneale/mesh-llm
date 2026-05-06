@@ -12,11 +12,16 @@ export const getCommandBarErrorMessage = (error: unknown): string => {
   return 'Could not complete that action.'
 }
 
-export function isCommandBarAsyncSource<T>(source: CommandBarMode<T>['source']): source is Exclude<CommandBarMode<T>['source'], readonly T[]> {
+export function isCommandBarAsyncSource<T>(
+  source: CommandBarMode<T>['source']
+): source is Exclude<CommandBarMode<T>['source'], readonly T[]> {
   return typeof source === 'function'
 }
 
-export function resolveCommandBarModeSource<T>(mode: CommandBarMode<T>, asyncItemsByModeId: Record<string, readonly T[]>): readonly T[] {
+export function resolveCommandBarModeSource<T>(
+  mode: CommandBarMode<T>,
+  asyncItemsByModeId: Record<string, readonly T[]>
+): readonly T[] {
   if (isCommandBarAsyncSource(mode.source)) {
     return asyncItemsByModeId[mode.id] ?? []
   }
@@ -47,7 +52,10 @@ const getCommandBarSearchTerms = <T>(mode: CommandBarMode<T>, item: T): readonly
   return terms.map(normalizeCommandBarSearchText).filter((term) => term.length > 0)
 }
 
-const findCommandBarSearchMatch = (terms: readonly string[], query: string): { prefixMatch: boolean; matchIndex: number } | null => {
+const findCommandBarSearchMatch = (
+  terms: readonly string[],
+  query: string
+): { prefixMatch: boolean; matchIndex: number } | null => {
   if (!query) return { prefixMatch: true, matchIndex: 0 }
 
   let matchIndex = Number.POSITIVE_INFINITY
@@ -63,7 +71,10 @@ const findCommandBarSearchMatch = (terms: readonly string[], query: string): { p
   return { prefixMatch: false, matchIndex }
 }
 
-const compareCommandBarSearchCandidates = <T>(a: CommandBarSearchCandidate<T>, b: CommandBarSearchCandidate<T>): number => {
+const compareCommandBarSearchCandidates = <T>(
+  a: CommandBarSearchCandidate<T>,
+  b: CommandBarSearchCandidate<T>
+): number => {
   if (a.prefixMatch !== b.prefixMatch) return a.prefixMatch ? -1 : 1
   if (a.matchIndex !== b.matchIndex) return a.matchIndex - b.matchIndex
   if (a.modeIndex !== b.modeIndex) return a.modeIndex - b.modeIndex
@@ -80,14 +91,19 @@ export const normalizeCommandBarResult = <T>(mode: CommandBarMode<T>, item: T): 
     modeLabel: mode.label,
     itemKey,
     compositeKey: createCommandBarCompositeKey(mode.id, itemKey),
-    searchText: mode.getSearchText(item),
+    searchText: mode.getSearchText(item)
   }
 }
 
-export const normalizeCommandBarResults = <T>(mode: CommandBarMode<T>, items: readonly T[]): CommandBarNormalizedResult<T>[] =>
-  items.map((item) => normalizeCommandBarResult(mode, item))
+export const normalizeCommandBarResults = <T>(
+  mode: CommandBarMode<T>,
+  items: readonly T[]
+): CommandBarNormalizedResult<T>[] => items.map((item) => normalizeCommandBarResult(mode, item))
 
-export const resolveCommandBarOpenModeId = <T>(modes: readonly CommandBarResolvedMode<T>[], defaultModeId?: string | null): string | null => {
+export const resolveCommandBarOpenModeId = <T>(
+  modes: readonly CommandBarResolvedMode<T>[],
+  defaultModeId?: string | null
+): string | null => {
   if (defaultModeId) {
     const defaultMode = modes.find((mode) => mode.id === defaultModeId)
     if (defaultMode) return defaultMode.id
@@ -103,10 +119,11 @@ export const filterCommandBarResults = <T>({
   behavior,
   query,
   activeModeId,
-  defaultModeId,
+  defaultModeId
 }: CommandBarResultFilterOptions<T>): CommandBarNormalizedResult<T>[] => {
   const normalizedQuery = normalizeCommandBarSearchText(query)
-  const resolvedActiveModeId = behavior === 'distinct' ? activeModeId ?? resolveCommandBarOpenModeId(modes, defaultModeId) : null
+  const resolvedActiveModeId =
+    behavior === 'distinct' ? (activeModeId ?? resolveCommandBarOpenModeId(modes, defaultModeId)) : null
   const searchCandidates: CommandBarSearchCandidate<T>[] = []
 
   modes.forEach((mode, modeIndex) => {
@@ -123,7 +140,7 @@ export const filterCommandBarResults = <T>({
         modeIndex,
         itemIndex,
         prefixMatch: match.prefixMatch,
-        matchIndex: match.matchIndex,
+        matchIndex: match.matchIndex
       })
     })
   })

@@ -56,6 +56,7 @@ pub enum WireMessageKind {
     RestorePrefill = 16,
     TryRestorePrefill = 17,
     TryRestorePrefillDecode = 18,
+    TrimSession = 19,
 }
 
 impl WireMessageKind {
@@ -84,7 +85,10 @@ impl WireMessageKind {
     }
 
     pub fn is_session_control(self) -> bool {
-        matches!(self, Self::CheckpointSession | Self::RestoreSession)
+        matches!(
+            self,
+            Self::CheckpointSession | Self::RestoreSession | Self::TrimSession
+        )
     }
 
     pub fn is_generation_control(self) -> bool {
@@ -132,6 +136,7 @@ impl TryFrom<i32> for WireMessageKind {
             16 => Ok(Self::RestorePrefill),
             17 => Ok(Self::TryRestorePrefill),
             18 => Ok(Self::TryRestorePrefillDecode),
+            19 => Ok(Self::TrimSession),
             _ => Err(invalid_data("unknown stage message kind")),
         }
     }

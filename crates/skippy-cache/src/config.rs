@@ -14,7 +14,7 @@ impl ResidentCacheConfig {
             .unwrap_or(i32::MAX)
             .max(2);
         Self {
-            max_entries: cache.max_entries.max(1).min(512),
+            max_entries: cache.max_entries.clamp(1, 512),
             max_bytes: cache.max_bytes,
             min_tokens: cache.min_tokens,
             reserved_seq_count,
@@ -147,5 +147,33 @@ mod tests {
         };
 
         assert_eq!(policy.record_candidate_token_counts(160), vec![160, 64]);
+    }
+
+    #[test]
+    fn candidates_below_min_only_use_exact_request() {
+        let policy = PrefixCandidatePolicy {
+            min_tokens: 64,
+            stride_tokens: 32,
+            record_limit: 2,
+            page_size_tokens: 64,
+        };
+
+        assert_eq!(policy.candidate_token_counts(63), vec![63]);
+        assert_eq!(policy.record_candidate_token_counts(63), vec![63]);
+    }
+
+    #[test]
+    fn unlimited_record_candidates_keep_shared_prefix_grid() {
+        let policy = PrefixCandidatePolicy {
+            min_tokens: 64,
+            stride_tokens: 32,
+            record_limit: 0,
+            page_size_tokens: 64,
+        };
+
+        assert_eq!(
+            policy.record_candidate_token_counts(160),
+            vec![160, 159, 127, 95, 64]
+        );
     }
 }

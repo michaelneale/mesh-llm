@@ -7,17 +7,20 @@ export const DASHBOARD_MESH_ID = 'dashboard-mesh'
 function pinnedMeshNodeForPeer(peer: Peer, meshNodeSeeds: MeshNode[] = MESH_NODES) {
   const normalizedHostname = peer.hostname.toLowerCase()
 
-  return meshNodeSeeds.find((node) => node.peerId === peer.id || node.id === peer.id)
-    ?? meshNodeSeeds.find((node) => node.label.toLowerCase() === normalizedHostname)
+  return (
+    meshNodeSeeds.find((node) => node.peerId === peer.id || node.id === peer.id) ??
+    meshNodeSeeds.find((node) => node.label.toLowerCase() === normalizedHostname)
+  )
 }
 
 export function peerPlacementProfile(peer: Peer): MeshPlacementProfile {
   const isClient = peer.role === 'peer' && peer.hostedModels.length === 0 && !peer.vramGB
 
   return {
-    renderKind: peer.role === 'you' ? 'self' : isClient ? 'client' : peer.hostedModels.length > 0 ? 'serving' : 'worker',
+    renderKind:
+      peer.role === 'you' ? 'self' : isClient ? 'client' : peer.hostedModels.length > 0 ? 'serving' : 'worker',
     host: peer.role === 'host',
-    client: isClient,
+    client: isClient
   }
 }
 
@@ -40,22 +43,28 @@ export function peerToMeshNode(peer: Peer, position: Pick<MeshNode, 'x' | 'y'>):
     hostname: peer.hostname,
     vramGB: peer.vramGB,
     x: position.x,
-    y: position.y,
+    y: position.y
   }
 }
 
 export function meshNodeForPeer(peer: Peer, meshNodes: MeshNode[], meshId = DASHBOARD_MESH_ID) {
   const normalizedHostname = peer.hostname.toLowerCase()
 
-  return meshNodes.find((node) => node.peerId === peer.id || node.id === peer.id)
-    ?? meshNodes.find((node) => node.label.toLowerCase() === normalizedHostname)
-    ?? peerToMeshNode(
+  return (
+    meshNodes.find((node) => node.peerId === peer.id || node.id === peer.id) ??
+    meshNodes.find((node) => node.label.toLowerCase() === normalizedHostname) ??
+    peerToMeshNode(
       peer,
-      chooseClusteredMeshNodePosition(meshId, meshNodes.length + 1, peerPlacementProfile(peer), meshNodes),
+      chooseClusteredMeshNodePosition(meshId, meshNodes.length + 1, peerPlacementProfile(peer), meshNodes)
     )
+  )
 }
 
-export function buildDashboardMeshNodes(peers: Peer[], meshId = DASHBOARD_MESH_ID, meshNodeSeeds: MeshNode[] = MESH_NODES) {
+export function buildDashboardMeshNodes(
+  peers: Peer[],
+  meshId = DASHBOARD_MESH_ID,
+  meshNodeSeeds: MeshNode[] = MESH_NODES
+) {
   return peers.reduce<MeshNode[]>((meshNodes, peer, index) => {
     const pinnedNode = pinnedMeshNodeForPeer(peer, meshNodeSeeds)
     const profile = peerPlacementProfile(peer)
@@ -73,7 +82,7 @@ export function buildDashboardMeshNodes(peers: Peer[], meshId = DASHBOARD_MESH_I
         servingModels: peer.hostedModels,
         latencyMs: peer.latencyMs,
         hostname: peer.hostname,
-        vramGB: peer.vramGB,
+        vramGB: peer.vramGB
       })
       return meshNodes
     }

@@ -1,11 +1,4 @@
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CommandBarContext, type CommandBarContextValue } from './command-bar-context'
 
 export function CommandBarProvider({ children }: { children: ReactNode }) {
@@ -55,14 +48,17 @@ export function CommandBarProvider({ children }: { children: ReactNode }) {
     if (focusTarget?.isConnected) focusTarget.focus()
   }, [])
 
-  const toggleCommandBar = useCallback((modeId?: string) => {
-    if (isOpenRef.current) {
-      closeCommandBar()
-      return
-    }
+  const toggleCommandBar = useCallback(
+    (modeId?: string) => {
+      if (isOpenRef.current) {
+        closeCommandBar()
+        return
+      }
 
-    openCommandBar(modeId)
-  }, [closeCommandBar, openCommandBar])
+      openCommandBar(modeId)
+    },
+    [closeCommandBar, openCommandBar]
+  )
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -89,7 +85,7 @@ export function CommandBarProvider({ children }: { children: ReactNode }) {
       returnFocusElement,
       openCommandBar,
       closeCommandBar,
-      toggleCommandBar,
+      toggleCommandBar
     }),
     [
       activeIndex,
@@ -100,8 +96,8 @@ export function CommandBarProvider({ children }: { children: ReactNode }) {
       query,
       returnFocusElement,
       selectionError,
-      toggleCommandBar,
-    ],
+      toggleCommandBar
+    ]
   )
 
   return <CommandBarContext.Provider value={value}>{children}</CommandBarContext.Provider>

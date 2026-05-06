@@ -30,6 +30,7 @@ pub fn select_package_parts(config: &StageConfig) -> Result<SelectedPackageParts
     let package_ref = config.model_path.as_deref().ok_or_else(|| {
         anyhow!("layer-package load mode requires model_path to point at a package directory")
     })?;
+    let is_final_stage = config.downstream.is_none();
     select_layer_package_parts(&PackageStageRequest {
         model_id: config.model_id.clone(),
         topology_id: config.topology_id.clone(),
@@ -37,8 +38,8 @@ pub fn select_package_parts(config: &StageConfig) -> Result<SelectedPackageParts
         stage_id: config.stage_id.clone(),
         layer_start: config.layer_start,
         layer_end: config.layer_end,
-        include_embeddings: config.layer_start == 0,
-        include_output: config.downstream.is_none(),
+        include_embeddings: config.layer_start == 0 || is_final_stage,
+        include_output: is_final_stage,
     })
 }
 

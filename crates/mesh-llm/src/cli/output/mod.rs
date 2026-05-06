@@ -8,9 +8,10 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
+#[cfg(test)]
+use ratatui::backend::TestBackend;
 use ratatui::{
     backend::CrosstermBackend,
-    backend::TestBackend,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -38,7 +39,9 @@ use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeStatus {
+    NotReady,
     Starting,
+    Loading,
     Ready,
     ShuttingDown,
     Stopped,
@@ -50,7 +53,9 @@ pub enum RuntimeStatus {
 impl RuntimeStatus {
     fn as_str(&self) -> &'static str {
         match self {
+            RuntimeStatus::NotReady => "NOT READY",
             RuntimeStatus::Starting => "starting",
+            RuntimeStatus::Loading => "loading",
             RuntimeStatus::Ready => "ready",
             RuntimeStatus::ShuttingDown => "shutting down",
             RuntimeStatus::Stopped => "stopped",
@@ -100,7 +105,16 @@ pub struct DashboardModelRow {
     pub slots: Option<usize>,
     pub quantization: Option<String>,
     pub ctx_size: Option<u32>,
+    pub ctx_used_tokens: Option<u64>,
+    pub lanes: Option<Vec<DashboardModelLane>>,
     pub file_size_gb: Option<f64>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DashboardModelLane {
+    pub index: usize,
+    pub active: bool,
 }
 
 #[allow(dead_code)]
@@ -143,6 +157,234 @@ struct StartupProgressState {
     detail: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StartupLifecyclePhase {
+    Pending,
+    Starting,
+    Partial,
+    Ready,
+    Failed,
+    ShuttingDown,
+}
+
+impl StartupLifecyclePhase {
+    fn as_str(&self) -> &'static str {
+        match self {
+            StartupLifecyclePhase::Pending => "pending",
+            StartupLifecyclePhase::Starting => "starting",
+            StartupLifecyclePhase::Partial => "partial",
+            StartupLifecyclePhase::Ready => "ready",
+            StartupLifecyclePhase::Failed => "failed",
+            StartupLifecyclePhase::ShuttingDown => "shutting down",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartupComponentState {
+    pub phase: StartupLifecyclePhase,
+    pub detail: Option<String>,
+}
+
+impl Default for StartupComponentState {
+    fn default() -> Self {
+        Self {
+            phase: StartupLifecyclePhase::Pending,
+            detail: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartupLifecycleState {
+    pub phase: StartupLifecyclePhase,
+    pub mesh: StartupComponentState,
+    pub api: StartupComponentState,
+    pub console: StartupComponentState,
+    pub llama_server: StartupComponentState,
+    pub model_readiness: StartupComponentState,
+    boot_started: bool,
+    failure: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TruthfulStartupStatusKey {
+    Console,
+    Api,
+    LlamaServer,
+}
+
+impl Default for StartupLifecycleState {
+    fn default() -> Self {
+        Self {
+            phase: StartupLifecyclePhase::Pending,
+            mesh: StartupComponentState::default(),
+            api: StartupComponentState::default(),
+            console: StartupComponentState::default(),
+            llama_server: StartupComponentState::default(),
+            model_readiness: StartupComponentState::default(),
+            boot_started: false,
+            failure: None,
+        }
+    }
+}
+
+impl StartupLifecycleState {
+    fn mark_boot_started(&mut self, detail: Option<String>) {
+        self.boot_started = true;
+        if self.mesh.detail.is_none() {
+            self.mesh.detail = detail;
+        }
+        self.recompute_phase(false, false);
+    }
+
+    fn update_component_starting(component: &mut StartupComponentState, detail: Option<String>) {
+        component.phase = match component.phase {
+            StartupLifecyclePhase::Ready => StartupLifecyclePhase::Partial,
+            StartupLifecyclePhase::Failed => StartupLifecyclePhase::Failed,
+            StartupLifecyclePhase::ShuttingDown => StartupLifecyclePhase::ShuttingDown,
+            _ => StartupLifecyclePhase::Starting,
+        };
+        component.detail = detail.or_else(|| component.detail.clone());
+    }
+
+    fn update_component_ready(component: &mut StartupComponentState, detail: Option<String>) {
+        if !matches!(component.phase, StartupLifecyclePhase::Failed) {
+            component.phase = StartupLifecyclePhase::Ready;
+            component.detail = detail.or_else(|| component.detail.clone());
+        }
+    }
+
+    fn update_component_failed(component: &mut StartupComponentState, detail: Option<String>) {
+        component.phase = StartupLifecyclePhase::Failed;
+        component.detail = detail;
+    }
+
+    fn update_component_shutting_down(component: &mut StartupComponentState) {
+        if !matches!(component.phase, StartupLifecyclePhase::Pending) {
+            component.phase = StartupLifecyclePhase::ShuttingDown;
+        }
+    }
+
+    fn finalize_for_runtime_ready(&mut self, api_url: &str, console_url: Option<&str>) {
+        self.boot_started = true;
+        let mesh_detail = self.mesh.detail.clone();
+        let llama_detail = self.llama_server.detail.clone();
+        let model_detail = self.model_readiness.detail.clone();
+        Self::update_component_ready(&mut self.mesh, mesh_detail);
+        Self::update_component_ready(&mut self.api, Some(format!("API ready at {api_url}")));
+        if let Some(url) = console_url {
+            Self::update_component_ready(
+                &mut self.console,
+                Some(format!("console ready at {url}")),
+            );
+        }
+        if !matches!(
+            self.llama_server.phase,
+            StartupLifecyclePhase::Failed | StartupLifecyclePhase::ShuttingDown
+        ) {
+            Self::update_component_ready(
+                &mut self.llama_server,
+                llama_detail.or_else(|| Some("embedded runtime ready".to_string())),
+            );
+        }
+        if matches!(
+            self.model_readiness.phase,
+            StartupLifecyclePhase::Starting | StartupLifecyclePhase::Partial
+        ) {
+            Self::update_component_ready(&mut self.model_readiness, model_detail);
+        }
+        self.recompute_phase(true, false);
+    }
+
+    fn mark_failure(&mut self, detail: String) {
+        self.boot_started = true;
+        self.failure = Some(detail.clone());
+        let target = if matches!(
+            self.model_readiness.phase,
+            StartupLifecyclePhase::Starting | StartupLifecyclePhase::Partial
+        ) {
+            &mut self.model_readiness
+        } else if matches!(
+            self.llama_server.phase,
+            StartupLifecyclePhase::Starting | StartupLifecyclePhase::Partial
+        ) {
+            &mut self.llama_server
+        } else if matches!(
+            self.api.phase,
+            StartupLifecyclePhase::Starting | StartupLifecyclePhase::Partial
+        ) {
+            &mut self.api
+        } else if matches!(
+            self.console.phase,
+            StartupLifecyclePhase::Starting | StartupLifecyclePhase::Partial
+        ) {
+            &mut self.console
+        } else {
+            &mut self.mesh
+        };
+        Self::update_component_failed(target, Some(detail));
+        self.recompute_phase(false, false);
+    }
+
+    fn mark_shutting_down(&mut self) {
+        self.boot_started = true;
+        Self::update_component_shutting_down(&mut self.mesh);
+        Self::update_component_shutting_down(&mut self.api);
+        Self::update_component_shutting_down(&mut self.console);
+        Self::update_component_shutting_down(&mut self.llama_server);
+        Self::update_component_shutting_down(&mut self.model_readiness);
+        self.recompute_phase(false, true);
+    }
+
+    fn recompute_phase(&mut self, runtime_ready: bool, shutdown_in_progress: bool) {
+        if shutdown_in_progress {
+            self.phase = StartupLifecyclePhase::ShuttingDown;
+            return;
+        }
+        if self.failure.is_some()
+            || [
+                &self.mesh,
+                &self.api,
+                &self.console,
+                &self.llama_server,
+                &self.model_readiness,
+            ]
+            .iter()
+            .any(|component| matches!(component.phase, StartupLifecyclePhase::Failed))
+        {
+            self.phase = StartupLifecyclePhase::Failed;
+            return;
+        }
+        if runtime_ready {
+            self.phase = StartupLifecyclePhase::Ready;
+            return;
+        }
+        if !self.boot_started {
+            self.phase = StartupLifecyclePhase::Pending;
+            return;
+        }
+        if [
+            &self.mesh,
+            &self.api,
+            &self.console,
+            &self.llama_server,
+            &self.model_readiness,
+        ]
+        .iter()
+        .any(|component| {
+            matches!(
+                component.phase,
+                StartupLifecyclePhase::Ready | StartupLifecyclePhase::Partial
+            )
+        }) {
+            self.phase = StartupLifecyclePhase::Partial;
+        } else {
+            self.phase = StartupLifecyclePhase::Starting;
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct LoadingProgressState {
     ratio: f64,
@@ -179,6 +421,14 @@ impl Default for DashboardSnapshot {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DashboardLaunchPlan {
+    pub llama_process_rows: Vec<DashboardProcessRow>,
+    pub webserver_rows: Vec<DashboardEndpointRow>,
+    pub loaded_model_rows: Vec<DashboardModelRow>,
+}
+
+#[allow(dead_code)]
 pub type DashboardSnapshotFuture<'a> = Pin<Box<dyn Future<Output = DashboardSnapshot> + Send + 'a>>;
 
 #[allow(dead_code)]
@@ -187,12 +437,14 @@ pub trait DashboardSnapshotProvider: Send + Sync {
 }
 
 const DEFAULT_PRETTY_DASHBOARD_EVENT_HISTORY_LIMIT: usize = 1000;
+const PRETTY_TUI_STARTUP_HISTORY_LIMIT: usize = 32;
 const PRETTY_DASHBOARD_REQUEST_WINDOW_BUCKETS: usize = 30;
 const PRETTY_DASHBOARD_REQUEST_MAX_WINDOW_SECS: u32 = 24 * 60 * 60;
 const PRETTY_DASHBOARD_PANEL_COUNT: usize = 6;
 const PRETTY_TUI_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
 const PRETTY_TUI_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
-const PRETTY_TUI_MODEL_CARD_HEIGHT: usize = 7;
+const PRETTY_TUI_MODEL_CARD_HEIGHT: usize = 8;
+const PRETTY_TUI_MODEL_CARD_STRIDE: usize = PRETTY_TUI_MODEL_CARD_HEIGHT;
 const PRETTY_TUI_LIST_HIGHLIGHT_SYMBOL_WIDTH: u16 = 2;
 const PRETTY_TUI_REQUEST_GRAPH_GUIDE_SYMBOL: &str = "·";
 const PRETTY_TUI_REQUEST_GRAPH_BASELINE_SYMBOL: &str = "─";
@@ -307,22 +559,19 @@ impl OutputLevel {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LlamaInstanceKind {
-    RpcServer,
     LlamaServer,
 }
 
 impl LlamaInstanceKind {
     fn as_str(&self) -> &'static str {
         match self {
-            LlamaInstanceKind::RpcServer => "rpc-server",
             LlamaInstanceKind::LlamaServer => "llama-server",
         }
     }
 
     fn sort_key(&self) -> u8 {
         match self {
-            LlamaInstanceKind::RpcServer => 0,
-            LlamaInstanceKind::LlamaServer => 1,
+            LlamaInstanceKind::LlamaServer => 0,
         }
     }
 }
@@ -352,6 +601,9 @@ pub enum OutputEvent {
     Startup {
         version: String,
         message: Option<String>,
+    },
+    LaunchPlan {
+        plan: DashboardLaunchPlan,
     },
     NodeIdentity {
         node_id: String,
@@ -422,6 +674,12 @@ pub enum OutputEvent {
         device: String,
         log_path: Option<String>,
     },
+    RpcStartupFailed {
+        port: u16,
+        device: String,
+        log_path: Option<String>,
+        detail: String,
+    },
     LlamaStarting {
         model: Option<String>,
         http_port: u16,
@@ -433,6 +691,13 @@ pub enum OutputEvent {
         port: u16,
         ctx_size: Option<u32>,
         log_path: Option<String>,
+    },
+    LlamaStartupFailed {
+        model: Option<String>,
+        http_port: u16,
+        ctx_size: Option<u32>,
+        log_path: Option<String>,
+        detail: String,
     },
     ModelReady {
         model: String,
@@ -493,6 +758,7 @@ impl OutputEvent {
         match self {
             OutputEvent::Info { .. } => "info",
             OutputEvent::Startup { .. } => "startup",
+            OutputEvent::LaunchPlan { .. } => "launch_plan",
             OutputEvent::NodeIdentity { .. } => "node_identity",
             OutputEvent::InviteToken { .. } => "invite_token",
             OutputEvent::DiscoveryStarting { .. } => "discovery_starting",
@@ -509,8 +775,10 @@ impl OutputEvent {
             OutputEvent::HostElected { .. } => "host_elected",
             OutputEvent::RpcServerStarting { .. } => "rpc_server_starting",
             OutputEvent::RpcReady { .. } => "rpc_ready",
+            OutputEvent::RpcStartupFailed { .. } => "rpc_startup_failed",
             OutputEvent::LlamaStarting { .. } => "llama_starting",
             OutputEvent::LlamaReady { .. } => "llama_ready",
+            OutputEvent::LlamaStartupFailed { .. } => "llama_startup_failed",
             OutputEvent::ModelReady { .. } => "model_ready",
             OutputEvent::MultiModelMode { .. } => "multi_model_mode",
             OutputEvent::WebserverStarting { .. } => "webserver_starting",
@@ -528,6 +796,9 @@ impl OutputEvent {
 
     fn level(&self) -> OutputLevel {
         match self {
+            OutputEvent::RpcStartupFailed { .. } | OutputEvent::LlamaStartupFailed { .. } => {
+                OutputLevel::Error
+            }
             OutputEvent::Warning { .. } => OutputLevel::Warn,
             OutputEvent::Error { .. } => OutputLevel::Error,
             _ => OutputLevel::Info,
@@ -540,6 +811,12 @@ impl OutputEvent {
             OutputEvent::Startup { message, .. } => message
                 .clone()
                 .unwrap_or_else(|| "mesh-llm starting".to_string()),
+            OutputEvent::LaunchPlan { plan } => format!(
+                "startup plan ready ({} process(es), {} endpoint(s), {} model(s))",
+                plan.llama_process_rows.len(),
+                plan.webserver_rows.len(),
+                plan.loaded_model_rows.len()
+            ),
             OutputEvent::NodeIdentity { node_id, mesh_id } => match mesh_id {
                 Some(mesh_id) => format!("node {node_id} joined mesh {mesh_id}"),
                 None => format!("node {node_id} initialized"),
@@ -609,6 +886,19 @@ impl OutputEvent {
                     msg
                 }
             }
+            OutputEvent::RpcStartupFailed {
+                port,
+                detail,
+                log_path,
+                ..
+            } => {
+                let msg = format!("rpc-server failed to start on port {port}: {detail}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
+            }
             OutputEvent::LlamaStarting {
                 http_port,
                 log_path,
@@ -623,6 +913,25 @@ impl OutputEvent {
             }
             OutputEvent::LlamaReady { port, log_path, .. } => {
                 let msg = format!("llama-server ready on port {port}");
+                if let Some(path) = log_path {
+                    format!("{msg}\n  ↳ log={path}")
+                } else {
+                    msg
+                }
+            }
+            OutputEvent::LlamaStartupFailed {
+                model,
+                http_port,
+                detail,
+                log_path,
+                ..
+            } => {
+                let msg = match model {
+                    Some(model) => {
+                        format!("llama-server failed to start for {model} on port {http_port}: {detail}")
+                    }
+                    None => format!("llama-server failed to start on port {http_port}: {detail}"),
+                };
                 if let Some(path) = log_path {
                     format!("{msg}\n  ↳ log={path}")
                 } else {
@@ -685,6 +994,12 @@ impl OutputEvent {
             OutputEvent::DiscoveryStarting { source } => {
                 format!("🔍 discovering mesh via {source}")
             }
+            OutputEvent::LaunchPlan { plan } => format!(
+                "📋 startup plan ready: {} process(es), {} endpoint(s), {} model(s)",
+                plan.llama_process_rows.len(),
+                plan.webserver_rows.len(),
+                plan.loaded_model_rows.len()
+            ),
             OutputEvent::MeshFound {
                 mesh,
                 peers,
@@ -781,6 +1096,14 @@ impl OutputEvent {
             OutputEvent::RpcServerStarting { port, device, .. } => {
                 format!("🧵 rpc-server starting: port={port} device={device}")
             }
+            OutputEvent::RpcStartupFailed {
+                port,
+                device,
+                detail,
+                ..
+            } => {
+                format!("❌ rpc-server failed: port={port} device={device} {detail}")
+            }
             OutputEvent::LlamaStarting {
                 model,
                 http_port,
@@ -799,6 +1122,17 @@ impl OutputEvent {
             OutputEvent::LlamaReady { model, port, .. } => match model {
                 Some(model) => format!("✅ {model} ready on internal port {port}"),
                 None => format!("✅ llama-server ready on port {port}"),
+            },
+            OutputEvent::LlamaStartupFailed {
+                model,
+                http_port,
+                detail,
+                ..
+            } => match model {
+                Some(model) => {
+                    format!("❌ {model} failed to start on port {http_port}: {detail}")
+                }
+                None => format!("❌ llama-server failed to start on port {http_port}: {detail}"),
             },
             OutputEvent::RuntimeReady { models_count, .. } => match models_count {
                 Some(count) => format!("✅ Mesh runtime ready ({count} model(s))"),
@@ -835,6 +1169,11 @@ impl OutputEvent {
                 json!({ "message": message, "context": context })
             }
             OutputEvent::Startup { version, .. } => json!({ "version": version }),
+            OutputEvent::LaunchPlan { plan } => json!({
+                "llama_process_count": plan.llama_process_rows.len(),
+                "webserver_count": plan.webserver_rows.len(),
+                "loaded_model_count": plan.loaded_model_rows.len(),
+            }),
             OutputEvent::NodeIdentity { node_id, mesh_id } => {
                 json!({ "node_id": node_id, "mesh_id": mesh_id })
             }
@@ -899,6 +1238,17 @@ impl OutputEvent {
                 device,
                 log_path,
             } => json!({ "port": port, "device": device, "log_path": log_path }),
+            OutputEvent::RpcStartupFailed {
+                port,
+                device,
+                log_path,
+                detail,
+            } => json!({
+                "port": port,
+                "device": device,
+                "log_path": log_path,
+                "detail": detail,
+            }),
             OutputEvent::LlamaStarting {
                 model,
                 http_port,
@@ -920,6 +1270,19 @@ impl OutputEvent {
                 "port": port,
                 "ctx_size": ctx_size,
                 "log_path": log_path,
+            }),
+            OutputEvent::LlamaStartupFailed {
+                model,
+                http_port,
+                ctx_size,
+                log_path,
+                detail,
+            } => json!({
+                "model": model,
+                "http_port": http_port,
+                "ctx_size": ctx_size,
+                "log_path": log_path,
+                "detail": detail,
             }),
             OutputEvent::ModelReady {
                 model,
@@ -1407,21 +1770,26 @@ pub struct DashboardState {
     api: Option<EndpointState>,
     mesh_events: VecDeque<MeshEventState>,
     mesh_event_limit: usize,
+    startup_history: VecDeque<MeshEventState>,
+    startup_history_limit: usize,
     panel_focus: DashboardPanel,
     panel_layout: DashboardLayoutState,
     panel_view_states: [DashboardPanelViewState; PRETTY_DASHBOARD_PANEL_COUNT],
     events_follow: bool,
     events_filter: DashboardEventsFilterState,
     llama_process_rows: Vec<DashboardProcessRow>,
+    ready_llama_process_rows: BTreeSet<String>,
     webserver_rows: Vec<DashboardEndpointRow>,
     loaded_model_rows: Vec<DashboardModelRow>,
     request_history: DashboardRequestHistoryState,
     request_window: DashboardRequestWindow,
     join_token: Option<DashboardJoinTokenState>,
     terminal_size: Option<(u16, u16)>,
+    launch_plan: Option<DashboardLaunchPlan>,
     model_progress: Option<ModelProgressState>,
     startup_progress: Option<StartupProgressState>,
     startup_milestones: BTreeSet<String>,
+    startup_lifecycle: StartupLifecycleState,
     shutdown_in_progress: bool,
 }
 
@@ -1443,21 +1811,26 @@ impl Default for DashboardState {
             api: None,
             mesh_events: VecDeque::new(),
             mesh_event_limit: DEFAULT_PRETTY_DASHBOARD_EVENT_HISTORY_LIMIT,
+            startup_history: VecDeque::new(),
+            startup_history_limit: PRETTY_TUI_STARTUP_HISTORY_LIMIT,
             panel_focus: DashboardPanel::Events,
             panel_layout,
             panel_view_states: [DashboardPanelViewState::default(); PRETTY_DASHBOARD_PANEL_COUNT],
             events_follow: true,
             events_filter: DashboardEventsFilterState::default(),
             llama_process_rows: Vec::new(),
+            ready_llama_process_rows: BTreeSet::new(),
             webserver_rows: Vec::new(),
             loaded_model_rows: Vec::new(),
             request_history: DashboardRequestHistoryState::default(),
             request_window: DashboardRequestWindow::default(),
             join_token: None,
             terminal_size: None,
+            launch_plan: None,
             model_progress: None,
             startup_progress: None,
             startup_milestones: BTreeSet::new(),
+            startup_lifecycle: StartupLifecycleState::default(),
             shutdown_in_progress: false,
         };
         state.apply_layout(panel_layout);
@@ -1466,6 +1839,201 @@ impl Default for DashboardState {
 }
 
 impl DashboardState {
+    #[cfg(test)]
+    fn startup_lifecycle(&self) -> &StartupLifecycleState {
+        &self.startup_lifecycle
+    }
+
+    fn startup_mesh_component_active(&self) -> bool {
+        !self.runtime_ready && !self.shutdown_in_progress
+    }
+
+    fn update_startup_mesh_component_starting(&mut self, detail: Option<String>) {
+        if !self.startup_mesh_component_active() {
+            return;
+        }
+        StartupLifecycleState::update_component_starting(&mut self.startup_lifecycle.mesh, detail);
+        self.startup_lifecycle
+            .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+    }
+
+    fn update_startup_mesh_component_ready(&mut self, detail: Option<String>) {
+        if !self.startup_mesh_component_active() {
+            return;
+        }
+        StartupLifecycleState::update_component_ready(&mut self.startup_lifecycle.mesh, detail);
+        self.startup_lifecycle
+            .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+    }
+
+    fn mark_startup_mesh_component_failed(&mut self, detail: String) {
+        if !self.startup_mesh_component_active() {
+            return;
+        }
+        self.startup_lifecycle.failure = Some(detail.clone());
+        StartupLifecycleState::update_component_failed(
+            &mut self.startup_lifecycle.mesh,
+            Some(detail),
+        );
+        self.startup_lifecycle
+            .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+    }
+
+    fn startup_component_for_truthful_status(
+        &self,
+        key: TruthfulStartupStatusKey,
+    ) -> StartupComponentState {
+        match key {
+            TruthfulStartupStatusKey::Console => self.startup_lifecycle.console.clone(),
+            TruthfulStartupStatusKey::Api => self.startup_lifecycle.api.clone(),
+            TruthfulStartupStatusKey::LlamaServer => self.startup_lifecycle.llama_server.clone(),
+        }
+    }
+
+    fn truthful_startup_key_for_process(name: &str) -> Option<TruthfulStartupStatusKey> {
+        let normalized = name.to_ascii_lowercase();
+        if normalized.contains("llama") {
+            Some(TruthfulStartupStatusKey::LlamaServer)
+        } else {
+            None
+        }
+    }
+
+    fn truthful_startup_key_for_endpoint(label: &str) -> Option<TruthfulStartupStatusKey> {
+        let normalized = label.to_ascii_lowercase();
+        if normalized.contains("console") {
+            Some(TruthfulStartupStatusKey::Console)
+        } else if normalized == "api" || normalized.contains("openai-compatible api") {
+            Some(TruthfulStartupStatusKey::Api)
+        } else {
+            None
+        }
+    }
+
+    fn truthful_runtime_status_for_component(
+        component: &StartupComponentState,
+        current: &RuntimeStatus,
+    ) -> RuntimeStatus {
+        match component.phase {
+            StartupLifecyclePhase::Failed => match current {
+                RuntimeStatus::Warning
+                | RuntimeStatus::Error
+                | RuntimeStatus::Exited
+                | RuntimeStatus::Stopped
+                | RuntimeStatus::ShuttingDown => current.clone(),
+                _ => RuntimeStatus::Error,
+            },
+            StartupLifecyclePhase::ShuttingDown => RuntimeStatus::ShuttingDown,
+            StartupLifecyclePhase::Ready => match current {
+                RuntimeStatus::Warning
+                | RuntimeStatus::Error
+                | RuntimeStatus::Exited
+                | RuntimeStatus::Stopped
+                | RuntimeStatus::ShuttingDown => current.clone(),
+                _ => RuntimeStatus::Ready,
+            },
+            StartupLifecyclePhase::Pending
+            | StartupLifecyclePhase::Starting
+            | StartupLifecyclePhase::Partial => match current {
+                RuntimeStatus::NotReady => RuntimeStatus::NotReady,
+                RuntimeStatus::Loading => RuntimeStatus::Loading,
+                RuntimeStatus::Warning
+                | RuntimeStatus::Error
+                | RuntimeStatus::Exited
+                | RuntimeStatus::Stopped
+                | RuntimeStatus::ShuttingDown => current.clone(),
+                _ => RuntimeStatus::Starting,
+            },
+        }
+    }
+
+    fn truthful_runtime_status_for_process_component(
+        component: &StartupComponentState,
+        current: &RuntimeStatus,
+        ready_event_seen: bool,
+    ) -> RuntimeStatus {
+        match component.phase {
+            StartupLifecyclePhase::Pending
+            | StartupLifecyclePhase::Starting
+            | StartupLifecyclePhase::Partial
+                if ready_event_seen
+                    && matches!(
+                        current,
+                        RuntimeStatus::NotReady
+                            | RuntimeStatus::Loading
+                            | RuntimeStatus::Starting
+                            | RuntimeStatus::Ready
+                    ) =>
+            {
+                RuntimeStatus::Ready
+            }
+            _ => Self::truthful_runtime_status_for_component(component, current),
+        }
+    }
+
+    fn sync_truthful_startup_statuses(&mut self) {
+        let console_component =
+            self.startup_component_for_truthful_status(TruthfulStartupStatusKey::Console);
+        let api_component =
+            self.startup_component_for_truthful_status(TruthfulStartupStatusKey::Api);
+        let llama_component =
+            self.startup_component_for_truthful_status(TruthfulStartupStatusKey::LlamaServer);
+
+        if let Some(webserver) = &mut self.webserver {
+            if let Some(key) = Self::truthful_startup_key_for_endpoint(&webserver.label) {
+                webserver.status = Self::truthful_runtime_status_for_component(
+                    match key {
+                        TruthfulStartupStatusKey::Console => &console_component,
+                        TruthfulStartupStatusKey::Api => &api_component,
+                        TruthfulStartupStatusKey::LlamaServer => &llama_component,
+                    },
+                    &webserver.status,
+                );
+            }
+        }
+        if let Some(api) = &mut self.api {
+            if let Some(key) = Self::truthful_startup_key_for_endpoint(&api.label) {
+                api.status = Self::truthful_runtime_status_for_component(
+                    match key {
+                        TruthfulStartupStatusKey::Console => &console_component,
+                        TruthfulStartupStatusKey::Api => &api_component,
+                        TruthfulStartupStatusKey::LlamaServer => &llama_component,
+                    },
+                    &api.status,
+                );
+            }
+        }
+        let ready_llama_process_rows = self.ready_llama_process_rows.clone();
+        for row in &mut self.llama_process_rows {
+            if let Some(key) = Self::truthful_startup_key_for_process(&row.name) {
+                let ready_event_seen = ready_llama_process_rows
+                    .iter()
+                    .any(|ready_name| process_row_names_match(ready_name, &row.name));
+                row.status = Self::truthful_runtime_status_for_process_component(
+                    match key {
+                        TruthfulStartupStatusKey::Console => &console_component,
+                        TruthfulStartupStatusKey::Api => &api_component,
+                        TruthfulStartupStatusKey::LlamaServer => &llama_component,
+                    },
+                    &row.status,
+                    ready_event_seen,
+                );
+            }
+        }
+        for row in &mut self.webserver_rows {
+            if let Some(key) = Self::truthful_startup_key_for_endpoint(&row.label) {
+                row.status = Self::truthful_runtime_status_for_component(
+                    match key {
+                        TruthfulStartupStatusKey::Console => &console_component,
+                        TruthfulStartupStatusKey::Api => &api_component,
+                        TruthfulStartupStatusKey::LlamaServer => &llama_component,
+                    },
+                    &row.status,
+                );
+            }
+        }
+    }
+
     fn reduce(&mut self, action: DashboardAction) {
         match action {
             DashboardAction::OutputEvent(event) => self.apply_output_event(&event),
@@ -1562,11 +2130,17 @@ impl DashboardState {
     fn apply_snapshot(&mut self, snapshot: &DashboardSnapshot) {
         if self.shutdown_in_progress {
             self.merge_shutdown_process_snapshot(snapshot);
+        } else if self.launch_plan_known() && !self.runtime_ready {
+            self.merge_startup_process_snapshot(snapshot);
         } else {
             self.llama_process_rows = snapshot.llama_process_rows.clone();
             self.webserver_rows = snapshot.webserver_rows.clone();
-            self.loaded_model_rows = snapshot.loaded_model_rows.clone();
+            self.loaded_model_rows = merged_loaded_model_snapshot_rows(
+                &self.loaded_model_rows,
+                &snapshot.loaded_model_rows,
+            );
         }
+        self.sync_truthful_startup_statuses();
         self.request_history = DashboardRequestHistoryState::from_snapshot(snapshot);
         self.clamp_all_panel_views();
         self.sync_events_panel();
@@ -1612,8 +2186,23 @@ impl DashboardState {
                 self.webserver_rows.push(snapshot_row.clone());
             }
         }
-        self.webserver_rows
-            .sort_by(|left, right| left.label.cmp(&right.label));
+        sort_dashboard_endpoint_rows(&mut self.webserver_rows);
+    }
+
+    fn merge_startup_process_snapshot(&mut self, snapshot: &DashboardSnapshot) {
+        for row in &snapshot.llama_process_rows {
+            self.upsert_process_row(row.clone());
+        }
+        for row in &snapshot.webserver_rows {
+            self.upsert_endpoint_row(row.clone());
+        }
+        for row in &snapshot.loaded_model_rows {
+            self.upsert_loaded_model_row(row.clone());
+        }
+
+        if let Some(plan) = self.launch_plan.clone() {
+            self.preseed_launch_plan_rows(&plan);
+        }
     }
 
     fn mark_runtime_shutting_down(&mut self) {
@@ -1642,8 +2231,12 @@ impl DashboardState {
         }
     }
 
+    fn launch_plan_known(&self) -> bool {
+        self.launch_plan.is_some()
+    }
+
     fn is_startup_loading(&self) -> bool {
-        !self.runtime_ready && self.active_loading_progress().is_some()
+        false
     }
 
     fn active_loading_progress(&self) -> Option<LoadingProgressState> {
@@ -1682,6 +2275,10 @@ impl DashboardState {
     }
 
     fn apply_startup_progress_event(&mut self, event: &OutputEvent) {
+        if self.shutdown_in_progress && is_shutdown_suppressed_ready_event(event) {
+            return;
+        }
+
         if matches!(event, OutputEvent::Startup { .. }) {
             self.startup_milestones.clear();
             self.startup_progress = None;
@@ -1709,22 +2306,264 @@ impl DashboardState {
         });
     }
 
+    fn apply_startup_lifecycle_event(&mut self, event: &OutputEvent) {
+        match event {
+            OutputEvent::Startup { version, .. } => {
+                self.startup_lifecycle = StartupLifecycleState::default();
+                self.startup_lifecycle
+                    .mark_boot_started(Some(format!("starting mesh-llm {version}")));
+            }
+            OutputEvent::NodeIdentity { node_id, mesh_id } => {
+                let detail = match mesh_id {
+                    Some(mesh_id) => Some(format!("node {node_id} joined mesh {mesh_id}")),
+                    None => Some(format!("node {node_id} initialized")),
+                };
+                self.update_startup_mesh_component_ready(detail);
+            }
+            OutputEvent::InviteToken {
+                mesh_id, mesh_name, ..
+            } => {
+                self.update_startup_mesh_component_ready(Some(format!(
+                    "invite ready for {}",
+                    format_invite_mesh_label(mesh_name.as_deref(), mesh_id)
+                )));
+            }
+            OutputEvent::DiscoveryStarting { source } => {
+                self.update_startup_mesh_component_starting(Some(format!(
+                    "discovering mesh via {source}"
+                )));
+            }
+            OutputEvent::MeshFound { mesh, peers, .. } => {
+                self.update_startup_mesh_component_starting(Some(format!(
+                    "found mesh {mesh} with {peers} peer(s)"
+                )));
+            }
+            OutputEvent::DiscoveryJoined { mesh } => {
+                self.update_startup_mesh_component_ready(Some(format!("joined mesh {mesh}")));
+            }
+            OutputEvent::DiscoveryFailed { message, detail } => {
+                let failure_detail = detail
+                    .as_ref()
+                    .map(|detail| format!("{message}: {detail}"))
+                    .unwrap_or_else(|| message.clone());
+                self.mark_startup_mesh_component_failed(failure_detail);
+            }
+            OutputEvent::WaitingForPeers { detail } => {
+                self.update_startup_mesh_component_starting(
+                    detail
+                        .clone()
+                        .or_else(|| Some("waiting for peers".to_string())),
+                );
+            }
+            OutputEvent::PassiveMode { detail, .. } => {
+                self.update_startup_mesh_component_ready(detail.clone());
+            }
+            OutputEvent::Info { message, .. } if message == "Joined mesh" => {
+                self.update_startup_mesh_component_ready(Some(message.clone()));
+            }
+            OutputEvent::Warning { message, .. }
+                if message == "Failed to join any peer — running standalone" =>
+            {
+                self.mark_startup_mesh_component_failed(message.clone());
+            }
+            OutputEvent::ModelQueued { model }
+            | OutputEvent::ModelLoading { model, .. }
+            | OutputEvent::ModelLoaded { model, .. }
+            | OutputEvent::HostElected { model, .. } => {
+                StartupLifecycleState::update_component_starting(
+                    &mut self.startup_lifecycle.model_readiness,
+                    Some(format!("preparing model {model}")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::LlamaStarting {
+                model, http_port, ..
+            } => {
+                let detail = match model {
+                    Some(model) => Some(format!("starting llama-server for {model}")),
+                    None => Some(format!("starting llama-server on port {http_port}")),
+                };
+                StartupLifecycleState::update_component_starting(
+                    &mut self.startup_lifecycle.llama_server,
+                    detail,
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::LlamaReady { model, port, .. } => {
+                let detail = match model {
+                    Some(model) => Some(format!("llama-server ready for {model}")),
+                    None => Some(format!("llama-server ready on port {port}")),
+                };
+                StartupLifecycleState::update_component_ready(
+                    &mut self.startup_lifecycle.llama_server,
+                    detail,
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::LlamaStartupFailed {
+                model,
+                http_port,
+                detail,
+                ..
+            } => {
+                self.startup_lifecycle.failure = Some(detail.clone());
+                let llama_detail = match model {
+                    Some(model) => {
+                        format!("llama-server failed for {model} (port {http_port}): {detail}")
+                    }
+                    None => format!("llama-server failed on port {http_port}: {detail}"),
+                };
+                let model_detail = match model {
+                    Some(model) => format!("model {model} failed during llama startup: {detail}"),
+                    None => format!("model startup blocked by llama-server failure: {detail}"),
+                };
+                StartupLifecycleState::update_component_failed(
+                    &mut self.startup_lifecycle.llama_server,
+                    Some(llama_detail),
+                );
+                StartupLifecycleState::update_component_failed(
+                    &mut self.startup_lifecycle.model_readiness,
+                    Some(model_detail),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::ModelReady { model, .. } => {
+                StartupLifecycleState::update_component_ready(
+                    &mut self.startup_lifecycle.model_readiness,
+                    Some(format!("model {model} ready")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::WebserverStarting { url } => {
+                StartupLifecycleState::update_component_starting(
+                    &mut self.startup_lifecycle.console,
+                    Some(format!("starting console at {url}")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::WebserverReady { url } => {
+                StartupLifecycleState::update_component_ready(
+                    &mut self.startup_lifecycle.console,
+                    Some(format!("console ready at {url}")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::ApiStarting { url } => {
+                StartupLifecycleState::update_component_starting(
+                    &mut self.startup_lifecycle.api,
+                    Some(format!("starting API at {url}")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::ApiReady { url } => {
+                StartupLifecycleState::update_component_ready(
+                    &mut self.startup_lifecycle.api,
+                    Some(format!("API ready at {url}")),
+                );
+                self.startup_lifecycle
+                    .recompute_phase(self.runtime_ready, self.shutdown_in_progress);
+            }
+            OutputEvent::RuntimeReady {
+                api_url,
+                console_url,
+                ..
+            } => {
+                self.startup_lifecycle
+                    .finalize_for_runtime_ready(api_url, console_url.as_deref());
+            }
+            OutputEvent::Error { message, context } => {
+                if self.runtime_ready || self.shutdown_in_progress {
+                    return;
+                }
+                let detail = context
+                    .as_ref()
+                    .map(|context| format!("{context}: {message}"))
+                    .unwrap_or_else(|| message.clone());
+                self.startup_lifecycle.mark_failure(detail);
+            }
+            OutputEvent::Shutdown { .. } => {
+                self.startup_lifecycle.mark_shutting_down();
+            }
+            _ => {}
+        }
+    }
+
+    fn mark_llama_process_row_pending(&mut self, name: &str) {
+        self.ready_llama_process_rows
+            .retain(|ready_name| !process_row_names_match(ready_name, name));
+    }
+
+    fn mark_llama_process_row_ready(&mut self, name: String) {
+        self.ready_llama_process_rows.insert(name);
+    }
+
     fn apply_output_event(&mut self, event: &OutputEvent) {
+        self.record_startup_history_event(event);
+
+        if self.shutdown_in_progress && is_shutdown_suppressed_ready_event(event) {
+            return;
+        }
+
         match event {
             OutputEvent::Startup { version, .. } => {
                 self.version = Some(version.clone());
                 self.runtime_ready = false;
+                self.launch_plan = None;
+                self.ready_llama_process_rows.clear();
+            }
+            OutputEvent::LaunchPlan { plan } => {
+                self.launch_plan = Some(plan.clone());
+                self.preseed_launch_plan_rows(plan);
             }
             OutputEvent::NodeIdentity { node_id, mesh_id } => {
                 self.node_id = Some(node_id.clone());
                 self.mesh_id = mesh_id.clone();
             }
             OutputEvent::ModelQueued { model } | OutputEvent::ModelLoading { model, .. } => {
-                self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
+                self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
+                self.upsert_loading_model_row(model);
+                self.upsert_loading_process_row(model);
             }
             OutputEvent::ModelLoaded { model, .. } => {
-                self.upsert_model(model, RuntimeStatus::Starting, None, None, None);
+                self.upsert_model(model, RuntimeStatus::Loading, None, None, None);
+                self.upsert_loading_model_row(model);
+                self.upsert_loading_process_row(model);
             }
+            OutputEvent::ModelReady {
+                model,
+                internal_port,
+                role,
+            } => {
+                self.upsert_model(
+                    model,
+                    RuntimeStatus::Ready,
+                    *internal_port,
+                    role.clone(),
+                    None,
+                );
+                self.upsert_loaded_model_row(DashboardModelRow {
+                    name: model.clone(),
+                    role: role.clone(),
+                    status: RuntimeStatus::Ready,
+                    port: *internal_port,
+                    device: None,
+                    slots: None,
+                    quantization: None,
+                    ctx_size: None,
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                });
+            }
+
             OutputEvent::HostElected {
                 model,
                 role,
@@ -1771,72 +2610,96 @@ impl DashboardState {
                     models: models.clone(),
                 });
             }
-            OutputEvent::RpcServerStarting {
-                port,
-                device,
-                log_path,
-            } => self.upsert_llama_instance(LlamaInstanceState {
-                kind: LlamaInstanceKind::RpcServer,
-                port: *port,
-                status: RuntimeStatus::Starting,
-                device: Some(device.clone()),
-                model: None,
-                ctx_size: None,
-                log_path: log_path.clone(),
-            }),
-            OutputEvent::RpcReady {
-                port,
-                device,
-                log_path,
-            } => self.upsert_llama_instance(LlamaInstanceState {
-                kind: LlamaInstanceKind::RpcServer,
-                port: *port,
-                status: RuntimeStatus::Ready,
-                device: Some(device.clone()),
-                model: None,
-                ctx_size: None,
-                log_path: log_path.clone(),
-            }),
             OutputEvent::LlamaStarting {
                 model,
                 http_port,
                 ctx_size,
                 log_path,
-            } => self.upsert_llama_instance(LlamaInstanceState {
-                kind: LlamaInstanceKind::LlamaServer,
-                port: *http_port,
-                status: RuntimeStatus::Starting,
-                device: None,
-                model: model.clone(),
-                ctx_size: *ctx_size,
-                log_path: log_path.clone(),
-            }),
+            } => {
+                let process_name = llama_process_row_name(model.as_deref());
+                self.mark_llama_process_row_pending(&process_name);
+                self.upsert_llama_instance(LlamaInstanceState {
+                    kind: LlamaInstanceKind::LlamaServer,
+                    port: *http_port,
+                    status: RuntimeStatus::Starting,
+                    device: None,
+                    model: model.clone(),
+                    ctx_size: *ctx_size,
+                    log_path: log_path.clone(),
+                });
+                self.upsert_process_row(DashboardProcessRow {
+                    name: process_name,
+                    backend: String::new(),
+                    status: RuntimeStatus::Starting,
+                    port: *http_port,
+                    pid: 0,
+                });
+            }
             OutputEvent::LlamaReady {
                 model,
                 port,
                 ctx_size,
                 log_path,
-            } => self.upsert_llama_instance(LlamaInstanceState {
-                kind: LlamaInstanceKind::LlamaServer,
-                port: *port,
-                status: RuntimeStatus::Ready,
-                device: None,
-                model: model.clone(),
-                ctx_size: *ctx_size,
-                log_path: log_path.clone(),
-            }),
-            OutputEvent::ModelReady {
-                model,
-                internal_port,
-                role,
             } => {
-                self.upsert_model(
-                    model,
-                    RuntimeStatus::Ready,
-                    *internal_port,
-                    role.clone(),
-                    None,
-                );
+                let process_name = llama_process_row_name(model.as_deref());
+                self.mark_llama_process_row_ready(process_name.clone());
+                self.upsert_llama_instance(LlamaInstanceState {
+                    kind: LlamaInstanceKind::LlamaServer,
+                    port: *port,
+                    status: RuntimeStatus::Ready,
+                    device: None,
+                    model: model.clone(),
+                    ctx_size: *ctx_size,
+                    log_path: log_path.clone(),
+                });
+                self.upsert_process_row(DashboardProcessRow {
+                    name: process_name,
+                    backend: String::new(),
+                    status: RuntimeStatus::Ready,
+                    port: *port,
+                    pid: 0,
+                });
+            }
+            OutputEvent::LlamaStartupFailed {
+                model,
+                http_port,
+                ctx_size,
+                log_path,
+                ..
+            } => {
+                self.mark_llama_process_row_pending(&llama_process_row_name(model.as_deref()));
+                self.upsert_llama_instance(LlamaInstanceState {
+                    kind: LlamaInstanceKind::LlamaServer,
+                    port: *http_port,
+                    status: RuntimeStatus::Error,
+                    device: None,
+                    model: model.clone(),
+                    ctx_size: *ctx_size,
+                    log_path: log_path.clone(),
+                });
+                self.upsert_process_row(DashboardProcessRow {
+                    name: llama_process_row_name(model.as_deref()),
+                    backend: String::new(),
+                    status: RuntimeStatus::Error,
+                    port: *http_port,
+                    pid: 0,
+                });
+                if let Some(model) = model {
+                    self.upsert_model(model, RuntimeStatus::Error, Some(*http_port), None, None);
+                    self.upsert_loaded_model_row(DashboardModelRow {
+                        name: model.clone(),
+                        role: None,
+                        status: RuntimeStatus::Error,
+                        port: Some(*http_port),
+                        device: None,
+                        slots: None,
+                        quantization: None,
+                        ctx_size: *ctx_size,
+                        ctx_used_tokens: None,
+                        lanes: None,
+                        file_size_gb: None,
+                    });
+                }
             }
             OutputEvent::WebserverStarting { url } => {
                 self.webserver = Some(EndpointState {
@@ -1844,6 +2707,13 @@ impl DashboardState {
                     status: RuntimeStatus::Starting,
                     url: url.clone(),
                     details: Vec::new(),
+                });
+                self.upsert_endpoint_row(DashboardEndpointRow {
+                    label: "Console".to_string(),
+                    status: RuntimeStatus::Starting,
+                    url: url.clone(),
+                    port: dashboard_port_from_url(url),
+                    pid: None,
                 });
             }
             OutputEvent::WebserverReady { url } => {
@@ -1853,6 +2723,13 @@ impl DashboardState {
                     url: url.clone(),
                     details: Vec::new(),
                 });
+                self.upsert_endpoint_row(DashboardEndpointRow {
+                    label: "Console".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: url.clone(),
+                    port: dashboard_port_from_url(url),
+                    pid: None,
+                });
             }
             OutputEvent::ApiStarting { url } => {
                 self.api = Some(EndpointState {
@@ -1861,6 +2738,13 @@ impl DashboardState {
                     url: url.clone(),
                     details: Vec::new(),
                 });
+                self.upsert_endpoint_row(DashboardEndpointRow {
+                    label: "API".to_string(),
+                    status: RuntimeStatus::Starting,
+                    url: url.clone(),
+                    port: dashboard_port_from_url(url),
+                    pid: None,
+                });
             }
             OutputEvent::ApiReady { url } => {
                 self.api = Some(EndpointState {
@@ -1868,6 +2752,13 @@ impl DashboardState {
                     status: RuntimeStatus::Ready,
                     url: url.clone(),
                     details: Vec::new(),
+                });
+                self.upsert_endpoint_row(DashboardEndpointRow {
+                    label: "API".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: url.clone(),
+                    port: dashboard_port_from_url(url),
+                    pid: None,
                 });
             }
             OutputEvent::RuntimeReady {
@@ -1942,6 +2833,9 @@ impl DashboardState {
             }
             OutputEvent::Info { .. }
             | OutputEvent::Warning { .. }
+            | OutputEvent::RpcServerStarting { .. }
+            | OutputEvent::RpcReady { .. }
+            | OutputEvent::RpcStartupFailed { .. }
             | OutputEvent::DiscoveryStarting { .. }
             | OutputEvent::MeshFound { .. }
             | OutputEvent::DiscoveryJoined { .. }
@@ -1956,6 +2850,8 @@ impl DashboardState {
             }
         }
 
+        self.apply_startup_lifecycle_event(event);
+        self.sync_truthful_startup_statuses();
         self.apply_startup_progress_event(event);
         self.record_mesh_event(event);
         self.clamp_all_panel_views();
@@ -2372,6 +3268,151 @@ impl DashboardState {
             .sort_by(|left, right| left.model.cmp(&right.model));
     }
 
+    fn preseed_launch_plan_rows(&mut self, plan: &DashboardLaunchPlan) {
+        for row in &plan.llama_process_rows {
+            self.seed_process_row(row);
+        }
+        for row in &plan.webserver_rows {
+            self.seed_endpoint_row(row);
+        }
+        for row in &plan.loaded_model_rows {
+            self.seed_loaded_model_row(row);
+        }
+    }
+
+    fn seed_process_row(&mut self, row: &DashboardProcessRow) {
+        if self
+            .llama_process_rows
+            .iter()
+            .any(|candidate| process_rows_match(candidate, row))
+        {
+            return;
+        }
+
+        let planned = row.clone();
+        self.llama_process_rows.push(planned);
+        self.llama_process_rows
+            .sort_by(|left, right| left.port.cmp(&right.port).then(left.name.cmp(&right.name)));
+    }
+
+    fn seed_endpoint_row(&mut self, row: &DashboardEndpointRow) {
+        if self
+            .webserver_rows
+            .iter()
+            .any(|candidate| endpoint_rows_match(candidate, row))
+        {
+            return;
+        }
+
+        let mut planned = row.clone();
+        planned.status = RuntimeStatus::NotReady;
+        self.webserver_rows.push(planned);
+        sort_dashboard_endpoint_rows(&mut self.webserver_rows);
+    }
+
+    fn seed_loaded_model_row(&mut self, row: &DashboardModelRow) {
+        if self
+            .loaded_model_rows
+            .iter()
+            .any(|candidate| model_rows_match(candidate, row))
+        {
+            return;
+        }
+
+        let planned = row.clone();
+        self.loaded_model_rows.push(planned);
+        self.loaded_model_rows
+            .sort_by(|left, right| left.name.cmp(&right.name));
+    }
+
+    fn upsert_process_row(&mut self, next: DashboardProcessRow) {
+        if let Some(existing) = self
+            .llama_process_rows
+            .iter_mut()
+            .find(|candidate| process_rows_match(candidate, &next))
+        {
+            existing.name = preferred_dashboard_row_name(&existing.name, &next.name);
+            existing.backend = if next.backend.is_empty() {
+                existing.backend.clone()
+            } else {
+                next.backend
+            };
+            existing.status = merged_runtime_status(&existing.status, &next.status);
+            if next.port != 0 {
+                existing.port = next.port;
+            }
+            if next.pid != 0 {
+                existing.pid = next.pid;
+            }
+        } else {
+            self.llama_process_rows.push(next);
+        }
+
+        self.llama_process_rows
+            .sort_by(|left, right| left.port.cmp(&right.port).then(left.name.cmp(&right.name)));
+    }
+
+    fn upsert_endpoint_row(&mut self, next: DashboardEndpointRow) {
+        if let Some(existing) = self
+            .webserver_rows
+            .iter_mut()
+            .find(|candidate| endpoint_rows_match(candidate, &next))
+        {
+            existing.label = next.label;
+            existing.status = next.status;
+            existing.url = next.url;
+            if next.port != 0 {
+                existing.port = next.port;
+            }
+            existing.pid = next.pid.or(existing.pid);
+        } else {
+            self.webserver_rows.push(next);
+        }
+
+        sort_dashboard_endpoint_rows(&mut self.webserver_rows);
+    }
+
+    fn upsert_loading_model_row(&mut self, model: &str) {
+        self.upsert_loaded_model_row(DashboardModelRow {
+            name: model.to_string(),
+            role: None,
+            status: RuntimeStatus::Loading,
+            port: None,
+            device: None,
+            slots: None,
+            quantization: None,
+            ctx_size: None,
+            ctx_used_tokens: None,
+            lanes: None,
+            file_size_gb: None,
+        });
+    }
+
+    fn upsert_loading_process_row(&mut self, model: &str) {
+        self.upsert_process_row(DashboardProcessRow {
+            name: llama_process_row_name(Some(model)),
+            backend: String::new(),
+            status: RuntimeStatus::Loading,
+            port: 0,
+            pid: 0,
+        });
+    }
+
+    fn upsert_loaded_model_row(&mut self, next: DashboardModelRow) {
+        if let Some(existing) = self
+            .loaded_model_rows
+            .iter_mut()
+            .find(|candidate| model_rows_match(candidate, &next))
+        {
+            *existing = merged_loaded_model_row(existing.clone(), next);
+        } else {
+            self.loaded_model_rows.push(next);
+        }
+
+        self.loaded_model_rows
+            .sort_by(|left, right| left.name.cmp(&right.name));
+    }
+
     fn record_mesh_event(&mut self, event: &OutputEvent) {
         self.mesh_events.push_back(MeshEventState {
             timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -2380,6 +3421,29 @@ impl DashboardState {
         });
         while self.mesh_events.len() > self.mesh_event_limit {
             self.mesh_events.pop_front();
+        }
+    }
+
+    fn record_startup_history_event(&mut self, event: &OutputEvent) {
+        if self.shutdown_in_progress && is_shutdown_suppressed_ready_event(event) {
+            return;
+        }
+
+        if matches!(event, OutputEvent::Startup { .. }) {
+            self.startup_history.clear();
+        }
+
+        let Some(summary) = startup_history_summary(event) else {
+            return;
+        };
+
+        self.startup_history.push_back(MeshEventState {
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            level: event.level(),
+            summary,
+        });
+        while self.startup_history.len() > self.startup_history_limit {
+            self.startup_history.pop_front();
         }
     }
 
@@ -2634,6 +3698,246 @@ impl DashboardState {
     }
 }
 
+fn process_rows_match(existing: &DashboardProcessRow, next: &DashboardProcessRow) -> bool {
+    if existing.port == next.port {
+        return existing.port != 0 || process_row_names_match(&existing.name, &next.name);
+    }
+
+    (existing.port == 0 && next.port != 0 && process_row_names_match(&existing.name, &next.name))
+        || (next.port == 0
+            && existing.port != 0
+            && process_row_names_match(&existing.name, &next.name))
+}
+
+fn endpoint_rows_match(existing: &DashboardEndpointRow, next: &DashboardEndpointRow) -> bool {
+    existing.label == next.label || (existing.port != 0 && existing.port == next.port)
+}
+
+fn process_row_names_match(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+
+    if process_row_is_generic_llama(left) || process_row_is_generic_llama(right) {
+        return left.contains("llama-server") && right.contains("llama-server");
+    }
+
+    match (
+        process_row_model_identity(left),
+        process_row_model_identity(right),
+    ) {
+        (Some(left_model), Some(right_model)) => model_names_match(left_model, right_model),
+        _ => false,
+    }
+}
+
+fn process_row_is_generic_llama(name: &str) -> bool {
+    name == "llama-server"
+}
+
+fn process_row_model_identity(name: &str) -> Option<&str> {
+    if process_row_is_generic_llama(name) {
+        None
+    } else {
+        Some(llama_process_model_name(name).unwrap_or(name))
+    }
+}
+
+fn llama_process_model_name(name: &str) -> Option<&str> {
+    name.strip_prefix("llama-server ")
+}
+
+fn model_name_without_variant_suffix(name: &str) -> &str {
+    name.split_once(':')
+        .map(|(base_model, _variant)| base_model)
+        .unwrap_or(name)
+}
+
+fn llama_process_row_name(model: Option<&str>) -> String {
+    model
+        .map(|model| format!("llama-server {model}"))
+        .unwrap_or_else(|| "llama-server".to_string())
+}
+
+fn preferred_dashboard_row_name(existing: &str, next: &str) -> String {
+    if next == "llama-server" {
+        return existing.to_string();
+    }
+    if existing == "llama-server" {
+        return next.to_string();
+    }
+    match (name_looks_canonical(existing), name_looks_canonical(next)) {
+        (true, false) => existing.to_string(),
+        (false, true) => next.to_string(),
+        _ => next.to_string(),
+    }
+}
+
+fn name_looks_canonical(name: &str) -> bool {
+    let model_name = llama_process_model_name(name).unwrap_or(name);
+    model_name.contains('/') || model_name.contains(':')
+}
+
+fn merged_runtime_status(existing: &RuntimeStatus, next: &RuntimeStatus) -> RuntimeStatus {
+    if runtime_status_update_is_stale(existing, next) {
+        existing.clone()
+    } else {
+        next.clone()
+    }
+}
+
+fn runtime_status_update_is_stale(existing: &RuntimeStatus, next: &RuntimeStatus) -> bool {
+    matches!(
+        (existing, next),
+        (
+            RuntimeStatus::Ready,
+            RuntimeStatus::Loading | RuntimeStatus::Starting | RuntimeStatus::NotReady
+        ) | (
+            RuntimeStatus::Loading | RuntimeStatus::Starting,
+            RuntimeStatus::NotReady
+        )
+    )
+}
+
+fn merged_dashboard_device(existing: Option<String>, next: Option<String>) -> Option<String> {
+    match (existing, next) {
+        (Some(existing), Some(next)) if dashboard_device_update_is_backend_label(&next) => {
+            Some(existing)
+        }
+        (_, Some(next)) => Some(next),
+        (existing, None) => existing,
+    }
+}
+
+fn dashboard_device_update_is_backend_label(device: &str) -> bool {
+    matches!(
+        device.trim().to_ascii_lowercase().as_str(),
+        "skippy" | "llama" | "llama.cpp" | "llama-server"
+    )
+}
+
+fn merged_loaded_model_snapshot_rows(
+    existing_rows: &[DashboardModelRow],
+    snapshot_rows: &[DashboardModelRow],
+) -> Vec<DashboardModelRow> {
+    if snapshot_rows.is_empty() {
+        return existing_rows.to_vec();
+    }
+
+    snapshot_rows
+        .iter()
+        .cloned()
+        .map(|snapshot_row| {
+            existing_rows
+                .iter()
+                .find(|existing| model_rows_match(existing, &snapshot_row))
+                .cloned()
+                .map(|existing| merged_loaded_model_snapshot_row(existing, snapshot_row.clone()))
+                .unwrap_or(snapshot_row)
+        })
+        .collect()
+}
+
+fn merged_loaded_model_snapshot_row(
+    existing: DashboardModelRow,
+    next: DashboardModelRow,
+) -> DashboardModelRow {
+    let ctx_used_tokens = next.ctx_used_tokens;
+    let lanes = next.lanes.clone();
+    let mut merged = merged_loaded_model_row(existing, next);
+    // Dashboard snapshots are the authoritative source for live context usage;
+    // event/launch-plan rows may omit it and should not clear the latest reading.
+    merged.ctx_used_tokens = ctx_used_tokens;
+    merged.lanes = lanes;
+    merged
+}
+
+fn merged_loaded_model_row(
+    mut existing: DashboardModelRow,
+    next: DashboardModelRow,
+) -> DashboardModelRow {
+    existing.name = preferred_dashboard_row_name(&existing.name, &next.name);
+    existing.status = merged_runtime_status(&existing.status, &next.status);
+    existing.role = next.role.or(existing.role);
+    existing.port = next.port.or(existing.port);
+    existing.device = merged_dashboard_device(existing.device, next.device);
+    existing.slots = next.slots.or(existing.slots);
+    existing.quantization = next.quantization.or(existing.quantization);
+    existing.ctx_size = next.ctx_size.or(existing.ctx_size);
+    existing.ctx_used_tokens = next.ctx_used_tokens.or(existing.ctx_used_tokens);
+    existing.lanes = next.lanes.or(existing.lanes);
+    existing.file_size_gb = next.file_size_gb.or(existing.file_size_gb);
+    existing
+}
+
+fn model_rows_match(existing: &DashboardModelRow, next: &DashboardModelRow) -> bool {
+    model_names_match(&existing.name, &next.name)
+}
+
+fn model_names_match(left: &str, right: &str) -> bool {
+    let left_keys = model_identity_keys(left);
+    let right_keys = model_identity_keys(right);
+    left_keys
+        .iter()
+        .any(|left_key| right_keys.iter().any(|right_key| left_key == right_key))
+}
+
+fn model_identity_keys(name: &str) -> Vec<String> {
+    let normalized = name.trim().to_ascii_lowercase();
+    let basename = normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(normalized.as_str())
+        .to_string();
+    let candidates = [normalized, basename];
+    let mut keys = Vec::new();
+    for candidate in candidates {
+        push_model_identity_key(&mut keys, candidate.clone());
+        if let Some(variant_name) = candidate
+            .rsplit(':')
+            .next()
+            .filter(|part| *part != candidate && variant_name_looks_like_model_file(part))
+        {
+            push_model_identity_key(&mut keys, variant_name.to_string());
+            push_model_identity_key(&mut keys, variant_name.replace(".gguf", ""));
+        }
+        push_model_identity_key(&mut keys, candidate.replace("-gguf:", "-"));
+        push_model_identity_key(&mut keys, candidate.replace(":gguf:", "-"));
+        push_model_identity_key(&mut keys, candidate.replace(':', "-"));
+        push_model_identity_key(&mut keys, candidate.replace(".gguf", ""));
+    }
+    keys
+}
+
+fn push_model_identity_key(keys: &mut Vec<String>, key: String) {
+    if !key.is_empty() && !keys.iter().any(|existing| existing == &key) {
+        keys.push(key);
+    }
+}
+fn variant_name_looks_like_model_file(value: &str) -> bool {
+    value.matches('-').count() >= 2
+}
+
+pub(crate) fn sort_dashboard_endpoint_rows(rows: &mut [DashboardEndpointRow]) {
+    rows.sort_by(|left, right| {
+        dashboard_endpoint_sort_bucket(left)
+            .cmp(&dashboard_endpoint_sort_bucket(right))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+}
+
+fn dashboard_endpoint_sort_bucket(row: &DashboardEndpointRow) -> u8 {
+    if row.label.starts_with("Plugin: ") {
+        1
+    } else {
+        0
+    }
+}
+
+fn single_line_status_text(message: &str) -> String {
+    message.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn render_dashboard_text(state: &DashboardState) -> String {
     let mut output = String::new();
     let mut header = String::from("mesh-llm");
@@ -2650,6 +3954,12 @@ fn render_dashboard_text(state: &DashboardState) -> String {
     let _ = writeln!(&mut output, "{header}");
     let _ = writeln!(&mut output);
 
+    write_dashboard_section(
+        &mut output,
+        "Startup status",
+        &render_startup_summary(state),
+    );
+    let _ = writeln!(&mut output);
     write_dashboard_section(
         &mut output,
         "Running llama.cpp instances",
@@ -2686,6 +3996,37 @@ fn write_dashboard_section(output: &mut String, title: &str, lines: &[String]) {
         output,
         "└────────────────────────────────────────────────────────────────────"
     );
+}
+
+fn render_startup_summary(state: &DashboardState) -> Vec<String> {
+    let lifecycle = &state.startup_lifecycle;
+    let mut lines = vec![format!(
+        "startup={}{}",
+        lifecycle.phase.as_str(),
+        lifecycle
+            .failure
+            .as_ref()
+            .map(|failure| format!("  failure={}", single_line_status_text(failure)))
+            .unwrap_or_default()
+    )];
+    lines.extend(startup_component_summary_lines(lifecycle));
+    lines
+}
+
+fn startup_component_summary_lines(lifecycle: &StartupLifecycleState) -> Vec<String> {
+    vec![
+        format!(
+            "mesh={}  api={}  console={}",
+            lifecycle.mesh.phase.as_str(),
+            lifecycle.api.phase.as_str(),
+            lifecycle.console.phase.as_str(),
+        ),
+        format!(
+            "llama-server={}  model readiness={}",
+            lifecycle.llama_server.phase.as_str(),
+            lifecycle.model_readiness.phase.as_str(),
+        ),
+    ]
 }
 
 fn render_llama_instances(state: &DashboardState) -> Vec<String> {
@@ -2922,26 +4263,6 @@ fn draw_tui_dashboard_with_terminal(
         .draw(|frame| render_tui_frame(frame, state))
         .map(|_| ())
         .map_err(io::Error::other)
-}
-
-fn render_tui_text_snapshot(state: &DashboardState, width: u16, height: u16) -> io::Result<String> {
-    let width = width.max(1);
-    let height = height.max(1);
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).map_err(io::Error::other)?;
-    terminal
-        .draw(|frame| render_tui_frame(frame, state))
-        .map_err(io::Error::other)?;
-    let buffer = terminal.backend().buffer();
-    let mut lines = Vec::with_capacity(usize::from(height));
-    for y in 0..height {
-        let mut line = String::new();
-        for x in 0..width {
-            line.push_str(buffer[(x, y)].symbol());
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    Ok(lines.join("\n"))
 }
 
 fn render_tui_frame(frame: &mut Frame, state: &DashboardState) {
@@ -3399,7 +4720,10 @@ fn render_join_token_title_status(frame: &mut Frame, state: &DashboardState, pan
 }
 
 fn join_token_panel_left_title(state: &DashboardState, focus_marker: char) -> String {
-    let mut title = format!("{focus_marker} Join Token");
+    let mut title = format!(
+        "{focus_marker} Join Token  startup={}",
+        state.startup_lifecycle.phase.as_str()
+    );
     if let Some(join_token) = &state.join_token {
         title.push_str("  mesh=");
         title.push_str(&join_token.mesh_label());
@@ -3408,6 +4732,12 @@ fn join_token_panel_left_title(state: &DashboardState, focus_marker: char) -> St
 }
 
 fn join_token_panel_right_title(state: &DashboardState) -> String {
+    if let Some(failure) = state.startup_lifecycle.failure.as_ref() {
+        return format!(
+            "startup failed: {}",
+            truncate_with_ellipsis(&single_line_status_text(failure), 40)
+        );
+    }
     let Some(join_token) = &state.join_token else {
         return "waiting for cluster invite".to_string();
     };
@@ -3580,11 +4910,6 @@ fn render_requests_panel(
     );
 }
 
-#[derive(Clone, Copy, Default)]
-struct TuiModelGaugeScale {
-    max_file_size_gb: f64,
-}
-
 fn render_models_panel(
     frame: &mut Frame,
     state: &DashboardState,
@@ -3610,8 +4935,8 @@ fn render_models_panel(
 
     let view = state.panel_view_state(DashboardPanel::Models);
     let is_focused = state.panel_focus == DashboardPanel::Models;
-    let viewport_rows =
-        tui_panel_viewport_rows(DashboardPanel::Models, usize::from(inner_area.height));
+    let visible_height = usize::from(inner_area.height);
+    let viewport_rows = tui_panel_viewport_rows(DashboardPanel::Models, visible_height);
     let row_count = state.row_count_for_panel(DashboardPanel::Models);
     let show_scrollbar = row_count > viewport_rows && inner_area.width > 1;
     let list_area = if show_scrollbar {
@@ -3623,7 +4948,6 @@ fn render_models_panel(
         inner_area
     };
     let content_width = usize::from(list_area.width.max(1));
-    let scale = tui_model_gauge_scale(&state.loaded_model_rows);
     for (local_index, (row_index, row)) in state
         .loaded_model_rows
         .iter()
@@ -3633,7 +4957,7 @@ fn render_models_panel(
         .enumerate()
     {
         let card_y = list_area.y.saturating_add(
-            u16::try_from(local_index.saturating_mul(PRETTY_TUI_MODEL_CARD_HEIGHT)).unwrap_or(0),
+            u16::try_from(local_index.saturating_mul(PRETTY_TUI_MODEL_CARD_STRIDE)).unwrap_or(0),
         );
         if card_y >= list_area.bottom() {
             break;
@@ -3650,7 +4974,6 @@ fn render_models_panel(
         frame.render_widget(
             TuiModelCardWidget {
                 row,
-                scale,
                 content_width,
                 is_selected,
                 is_focused,
@@ -3689,12 +5012,11 @@ fn tui_models_viewport_rows(visible_height: u16) -> usize {
     if visible_height == 0 {
         return 0;
     }
-    (visible_height / PRETTY_TUI_MODEL_CARD_HEIGHT).max(1)
+    (visible_height / PRETTY_TUI_MODEL_CARD_STRIDE).max(1)
 }
 
 struct TuiModelCardWidget<'a> {
     row: &'a DashboardModelRow,
-    scale: TuiModelGaugeScale,
     content_width: usize,
     is_selected: bool,
     is_focused: bool,
@@ -3720,55 +5042,44 @@ impl Widget for TuiModelCardWidget<'_> {
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .style(Style::default().bg(card_bg))
-            .border_style(Style::default().fg(border_fg).bg(card_bg))
-            .title(Line::styled(
-                truncate_with_ellipsis(&self.row.name, self.content_width.saturating_sub(6).max(1)),
-                Style::default()
-                    .fg(theme.text)
-                    .bg(card_bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            .border_style(Style::default().fg(border_fg).bg(card_bg));
         let inner = block.inner(area);
         block.render(area, buf);
         if inner.height == 0 || inner.width == 0 {
             return;
         }
+        let [name_row, summary_top, summary_bottom, divider, ctx_row, slots_row] =
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                ])
+                .areas(inner);
 
-        let [summary_top, summary_bottom, divider, ctx_row, file_row] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .areas(inner);
+        render_tui_model_name_row(
+            buf,
+            name_row,
+            card_bg,
+            &self.row.name,
+            self.content_width.saturating_sub(2).max(1),
+        );
 
-        render_tui_model_summary_cells(
+        render_tui_model_identity_cells(
             buf,
             summary_top,
             card_bg,
-            vec![
-                (
-                    "PORT",
-                    self.row
-                        .port
-                        .map(|port| port.to_string())
-                        .unwrap_or_else(|| "n/a".to_string()),
-                    Style::default().fg(theme.text).bg(card_bg),
-                ),
-                (
-                    "DEVICE",
-                    "n/a".to_string(),
-                    Style::default().fg(theme.text).bg(card_bg),
-                ),
-                (
-                    "STATUS",
-                    self.row.status.as_str().to_string(),
-                    tui_model_status_style(&self.row.status).bg(card_bg),
-                ),
-            ],
+            self.row
+                .port
+                .map(|port| port.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            self.row.device.as_deref().unwrap_or("n/a").to_string(),
+            self.row.status.as_str().to_string(),
+            tui_model_status_style(&self.row.status).bg(card_bg),
         );
 
         render_tui_model_summary_cells(
@@ -3795,7 +5106,10 @@ impl Widget for TuiModelCardWidget<'_> {
                 ),
                 (
                     "CTX",
-                    "n/a".to_string(),
+                    self.row
+                        .ctx_size
+                        .map(|ctx_size| ctx_size.to_string())
+                        .unwrap_or_else(|| "n/a".to_string()),
                     Style::default().fg(theme.text).bg(card_bg),
                 ),
             ],
@@ -3805,36 +5119,54 @@ impl Widget for TuiModelCardWidget<'_> {
             .style(Style::default().fg(theme.dim).bg(card_bg))
             .render(divider, buf);
 
-        let ctx_value = "n/a".to_string();
-        let ctx_max = "n/a".to_string();
-        let file_value = self
+        let ctx_value = self
             .row
-            .file_size_gb
-            .map(|file_size_gb| format!("{file_size_gb:.1}"))
+            .ctx_used_tokens
+            .map(|ctx_used_tokens| ctx_used_tokens.to_string())
             .unwrap_or_else(|| "n/a".to_string());
-        let file_max = if self.scale.max_file_size_gb > 0.0 {
-            format!("{:.1} GB", self.scale.max_file_size_gb)
-        } else {
-            "n/a".to_string()
-        };
+        let ctx_max = self
+            .row
+            .ctx_size
+            .map(|ctx_size| ctx_size.to_string())
+            .unwrap_or_else(|| "n/a".to_string());
+        let ctx_label = format!("{ctx_value} / {ctx_max}");
+        let slots_label = tui_model_slots_value_label(self.row);
+        let metric_value_width =
+            tui_model_metric_value_width([ctx_label.as_str(), slots_label.as_str()]);
 
         render_tui_model_metric_row(
             buf,
             ctx_row,
             card_bg,
             "CTX",
-            format!("{ctx_value} / {ctx_max}"),
-            0.0,
+            ctx_label,
+            metric_value_width,
+            tui_model_gauge_ratio(
+                self.row
+                    .ctx_used_tokens
+                    .map(|ctx_used_tokens| ctx_used_tokens as f64),
+                self.row.ctx_size.map(f64::from).unwrap_or(0.0),
+            ),
         );
-        render_tui_model_metric_row(
+        render_tui_model_slots_row(
             buf,
-            file_row,
+            slots_row,
             card_bg,
-            "FILE",
-            format!("{file_value} / {file_max}"),
-            tui_model_gauge_ratio(self.row.file_size_gb, self.scale.max_file_size_gb),
+            slots_label,
+            metric_value_width,
+            self.row,
         );
     }
+}
+
+fn tui_model_metric_value_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> u16 {
+    let width = labels
+        .into_iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or(8)
+        .clamp(8, 20);
+    u16::try_from(width).unwrap_or(20)
 }
 
 fn render_tui_model_metric_row(
@@ -3843,6 +5175,7 @@ fn render_tui_model_metric_row(
     card_bg: Color,
     label: &'static str,
     value_label: String,
+    value_width: u16,
     ratio: f64,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -3850,12 +5183,12 @@ fn render_tui_model_metric_row(
     }
 
     let theme = tui_theme();
-    let value_width = u16::try_from(value_label.chars().count().clamp(8, 20)).unwrap_or(20);
-    let [label_area, bar_area, value_area] = Layout::default()
+    let [label_area, bar_area, _, value_area] = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(5),
             Constraint::Min(1),
+            Constraint::Length(1),
             Constraint::Length(value_width),
         ])
         .areas(area);
@@ -3876,6 +5209,201 @@ fn render_tui_model_metric_row(
     .style(Style::default().fg(theme.text).bg(card_bg))
     .alignment(Alignment::Right)
     .render(value_area, buf);
+}
+
+fn render_tui_model_slots_row(
+    buf: &mut Buffer,
+    area: Rect,
+    card_bg: Color,
+    value_label: String,
+    value_width: u16,
+    row: &DashboardModelRow,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let theme = tui_theme();
+    let [label_area, _, bar_area, _, value_area] = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(value_width),
+        ])
+        .areas(area);
+
+    Paragraph::new("SLOTS")
+        .style(
+            Style::default()
+                .fg(theme.muted)
+                .bg(card_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .render(label_area, buf);
+    render_tui_model_slot_blocks(buf, bar_area, card_bg, row);
+    Paragraph::new(truncate_with_ellipsis(
+        &value_label,
+        usize::from(value_area.width),
+    ))
+    .style(Style::default().fg(theme.text).bg(card_bg))
+    .alignment(Alignment::Right)
+    .render(value_area, buf);
+}
+
+fn render_tui_model_slot_blocks(
+    buf: &mut Buffer,
+    area: Rect,
+    card_bg: Color,
+    row: &DashboardModelRow,
+) {
+    let theme = tui_theme();
+    let lanes = tui_model_slot_lanes(row);
+    let max_width = usize::from(area.width);
+    if max_width == 0 {
+        return;
+    }
+
+    let spans = if lanes.is_empty() {
+        vec![Span::styled(
+            "n/a",
+            Style::default().fg(theme.dim).bg(card_bg),
+        )]
+    } else {
+        let visible_slots = lanes.len().min(max_width);
+        let mut spans = Vec::with_capacity(visible_slots);
+        for lane in lanes.into_iter().take(visible_slots) {
+            spans.push(Span::styled(
+                "◼",
+                Style::default()
+                    .fg(if lane.active {
+                        theme.warning
+                    } else {
+                        theme.dim
+                    })
+                    .bg(card_bg),
+            ));
+        }
+        spans
+    };
+    Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(card_bg))
+        .render(area, buf);
+}
+
+fn tui_model_slot_lanes(row: &DashboardModelRow) -> Vec<DashboardModelLane> {
+    if let Some(lanes) = row.lanes.as_ref().filter(|lanes| !lanes.is_empty()) {
+        let mut lanes = lanes.clone();
+        lanes.sort_by_key(|lane| lane.index);
+        return lanes;
+    }
+
+    let slot_count = row.slots.unwrap_or(0).min(usize::from(u16::MAX));
+    (0..slot_count)
+        .map(|index| DashboardModelLane {
+            index,
+            active: false,
+        })
+        .collect()
+}
+
+fn tui_model_slots_value_label(row: &DashboardModelRow) -> String {
+    let lanes = tui_model_slot_lanes(row);
+    if lanes.is_empty() {
+        return "n/a".to_string();
+    }
+    let active = lanes.iter().filter(|lane| lane.active).count();
+    format!("{active} / {}", lanes.len())
+}
+
+fn render_tui_model_identity_cells(
+    buf: &mut Buffer,
+    area: Rect,
+    card_bg: Color,
+    port: String,
+    device: String,
+    status: String,
+    status_style: Style,
+) {
+    render_tui_model_summary_cells(
+        buf,
+        area,
+        card_bg,
+        vec![
+            (
+                "PORT",
+                port,
+                Style::default().fg(tui_theme().text).bg(card_bg),
+            ),
+            ("STATUS", status, status_style),
+            (
+                "DEVICE",
+                device,
+                Style::default().fg(tui_theme().text).bg(card_bg),
+            ),
+        ],
+    );
+}
+
+fn render_tui_model_name_row(
+    buf: &mut Buffer,
+    area: Rect,
+    card_bg: Color,
+    name: &str,
+    max_width: usize,
+) {
+    if area.width == 0 {
+        return;
+    }
+
+    Paragraph::new(truncate_with_ellipsis(
+        name,
+        usize::from(area.width).min(max_width),
+    ))
+    .style(
+        Style::default()
+            .fg(tui_theme().text)
+            .bg(card_bg)
+            .add_modifier(Modifier::BOLD),
+    )
+    .alignment(Alignment::Left)
+    .render(area, buf);
+}
+
+fn render_tui_model_summary_cell(
+    buf: &mut Buffer,
+    area: Rect,
+    card_bg: Color,
+    label: &'static str,
+    value: String,
+    value_style: Style,
+) {
+    if area.width == 0 {
+        return;
+    }
+
+    let label_text = format!("{label}: ");
+    let label_width = label_text.chars().count();
+    let value_width = usize::from(area.width).saturating_sub(label_width).max(1);
+    let line = Line::from(vec![
+        Span::styled(
+            label_text,
+            Style::default()
+                .fg(tui_theme().dim)
+                .bg(card_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate_with_ellipsis(&value, value_width),
+            value_style.bg(card_bg),
+        ),
+    ]);
+    Paragraph::new(line)
+        .style(Style::default().bg(card_bg))
+        .alignment(Alignment::Left)
+        .render(area, buf);
 }
 
 fn render_tui_model_summary_cells(
@@ -3911,26 +5439,7 @@ fn render_tui_model_summary_cells(
             continue;
         }
 
-        let label_text = format!("{label}: ");
-        let label_width = label_text.chars().count();
-        let value_width = usize::from(cell_area.width)
-            .saturating_sub(label_width)
-            .max(1);
-        let value = truncate_with_ellipsis(&value, value_width);
-        let line = Line::from(vec![
-            Span::styled(
-                label_text,
-                Style::default()
-                    .fg(tui_theme().dim)
-                    .bg(card_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(value, value_style.bg(card_bg)),
-        ]);
-        Paragraph::new(line)
-            .style(Style::default().bg(card_bg))
-            .alignment(Alignment::Left)
-            .render(cell_area, buf);
+        render_tui_model_summary_cell(buf, cell_area, card_bg, label, value, value_style);
     }
 }
 
@@ -4406,15 +5915,6 @@ fn tui_p50_latency_ms(samples_ms: &[u64]) -> Option<u64> {
     }
 }
 
-fn tui_model_gauge_scale(rows: &[DashboardModelRow]) -> TuiModelGaugeScale {
-    TuiModelGaugeScale {
-        max_file_size_gb: rows
-            .iter()
-            .filter_map(|row| row.file_size_gb)
-            .fold(0.0, f64::max),
-    }
-}
-
 fn tui_model_card_divider(content_width: usize) -> Line<'static> {
     let theme = tui_theme();
     Line::from(Span::styled(
@@ -4443,14 +5943,16 @@ fn tui_model_gauge_ratio(value: Option<f64>, max_value: f64) -> f64 {
 }
 
 fn tui_model_status_style(status: &RuntimeStatus) -> Style {
+    let theme = tui_theme();
     match status {
-        RuntimeStatus::Starting => Style::default().fg(Color::Yellow),
-        RuntimeStatus::Ready => Style::default().fg(Color::Green),
-        RuntimeStatus::ShuttingDown => Style::default().fg(Color::Yellow),
-        RuntimeStatus::Stopped => Style::default().fg(Color::DarkGray),
-        RuntimeStatus::Exited => Style::default().fg(Color::DarkGray),
-        RuntimeStatus::Warning => Style::default().fg(Color::Yellow),
-        RuntimeStatus::Error => Style::default().fg(Color::Red),
+        RuntimeStatus::NotReady => Style::default().fg(theme.muted),
+        RuntimeStatus::Starting | RuntimeStatus::Loading => Style::default().fg(theme.warning),
+        RuntimeStatus::Ready => Style::default().fg(theme.success),
+        RuntimeStatus::ShuttingDown => Style::default().fg(theme.warning),
+        RuntimeStatus::Stopped => Style::default().fg(theme.dim),
+        RuntimeStatus::Exited => Style::default().fg(theme.dim),
+        RuntimeStatus::Warning => Style::default().fg(theme.warning),
+        RuntimeStatus::Error => Style::default().fg(theme.error),
     }
 }
 
@@ -4507,7 +6009,7 @@ fn render_process_table(
             }
 
             let [model_width, pid_width, port_width, status_width] =
-                llama_process_column_widths(inner_area.width);
+                llama_process_column_widths_for_rows(inner_area.width, &state.llama_process_rows);
             let available_rows = usize::from(inner_area.height.saturating_sub(1));
             let rows = state
                 .llama_process_rows
@@ -4517,14 +6019,18 @@ fn render_process_table(
                 .take(available_rows)
                 .map(|(_, row)| {
                     let model = llama_process_model_metadata(row, &state.loaded_model_rows);
+                    let model_name = model.map(|model| model.name.as_str()).unwrap_or(&row.name);
                     Row::new(vec![
                         Cell::from(truncate_with_ellipsis(
-                            model.map(|model| model.name.as_str()).unwrap_or(&row.name),
+                            model_name_without_variant_suffix(model_name),
                             model_width,
                         )),
-                        Cell::from(truncate_with_ellipsis(&row.pid.to_string(), pid_width)),
+                        Cell::from(truncate_with_ellipsis(
+                            &format_dashboard_pid((row.pid != 0).then_some(row.pid)),
+                            pid_width,
+                        )),
                         Cell::from(truncate_with_ellipsis(&row.port.to_string(), port_width)),
-                        process_status_cell(row.status.as_str(), status_width),
+                        process_status_cell(&row.status, status_width),
                     ])
                 })
                 .collect::<Vec<_>>();
@@ -4565,7 +6071,7 @@ fn render_process_table(
             }
 
             let [label_width, pid_width, port_width, status_width] =
-                webserver_process_column_widths(inner_area.width);
+                webserver_process_column_widths_for_rows(inner_area.width, &state.webserver_rows);
             let available_rows = usize::from(inner_area.height.saturating_sub(1));
             let rows = state
                 .webserver_rows
@@ -4584,7 +6090,7 @@ fn render_process_table(
                             &format_dashboard_port(row.port),
                             port_width,
                         )),
-                        process_status_cell(row.status.as_str(), status_width),
+                        process_status_cell(&row.status, status_width),
                     ])
                 })
                 .collect::<Vec<_>>();
@@ -4712,19 +6218,27 @@ fn format_dashboard_port(port: u16) -> String {
     }
 }
 
-fn process_status_cell(status: &str, width: usize) -> Cell<'static> {
+fn dashboard_port_from_url(url: &str) -> u16 {
+    url.rsplit(':')
+        .next()
+        .map(|tail| tail.trim_end_matches('/'))
+        .and_then(|tail| tail.parse().ok())
+        .unwrap_or(0)
+}
+
+fn process_status_cell(status: &RuntimeStatus, width: usize) -> Cell<'static> {
     let theme = tui_theme();
     let style = match status {
-        "ready" => Style::default().fg(theme.success),
-        "starting" => Style::default().fg(theme.warning),
-        "shutting down" => Style::default().fg(theme.warning),
-        "warning" => Style::default().fg(theme.warning),
-        "error" => Style::default().fg(theme.error),
-        "stopped" => Style::default().fg(theme.dim),
-        "exited" => Style::default().fg(theme.dim),
-        _ => Style::default().fg(theme.text),
+        RuntimeStatus::NotReady => Style::default().fg(theme.muted),
+        RuntimeStatus::Ready => Style::default().fg(theme.success),
+        RuntimeStatus::Starting
+        | RuntimeStatus::Loading
+        | RuntimeStatus::ShuttingDown
+        | RuntimeStatus::Warning => Style::default().fg(theme.warning),
+        RuntimeStatus::Error => Style::default().fg(theme.error),
+        RuntimeStatus::Stopped | RuntimeStatus::Exited => Style::default().fg(theme.dim),
     };
-    Cell::from(right_align_text(status, width)).style(style)
+    Cell::from(right_align_text(status.as_str(), width)).style(style)
 }
 
 fn llama_process_model_metadata<'a>(
@@ -4736,31 +6250,93 @@ fn llama_process_model_metadata<'a>(
         .find(|model| model.port == Some(process.port))
         .or_else(|| {
             models.iter().find(|model| {
-                process.name.contains(&model.name) || model.name.contains(&process.name)
+                llama_process_model_name(&process.name)
+                    .map(|process_model| model_names_match(process_model, &model.name))
+                    .unwrap_or(false)
             })
         })
 }
 
+#[cfg(test)]
 fn llama_process_column_widths(body_width: u16) -> [usize; 4] {
-    let status_width = 5usize;
-    let port_width = 5usize;
-    let pid_width = 5usize;
-    let reserved_width = status_width + port_width + pid_width + 3 + 2;
-    let model_width = usize::from(body_width)
-        .saturating_sub(reserved_width)
-        .max(8);
-    [model_width, pid_width, port_width, status_width]
+    process_column_widths(
+        body_width,
+        8,
+        process_pid_width(std::iter::empty()),
+        RuntimeStatus::NotReady.as_str().len(),
+    )
 }
 
+fn llama_process_column_widths_for_rows(
+    body_width: u16,
+    rows: &[DashboardProcessRow],
+) -> [usize; 4] {
+    process_column_widths(
+        body_width,
+        8,
+        process_pid_width(rows.iter().map(|row| (row.pid != 0).then_some(row.pid))),
+        process_status_width(rows.iter().map(|row| &row.status)),
+    )
+}
+
+#[cfg(test)]
 fn webserver_process_column_widths(body_width: u16) -> [usize; 4] {
-    let pid_width = 5usize;
+    process_column_widths(
+        body_width,
+        PRETTY_TUI_WEBSERVER_PROCESS_HEADER_LABEL.len(),
+        process_pid_width(std::iter::empty()),
+        RuntimeStatus::NotReady.as_str().len(),
+    )
+}
+
+fn webserver_process_column_widths_for_rows(
+    body_width: u16,
+    rows: &[DashboardEndpointRow],
+) -> [usize; 4] {
+    process_column_widths(
+        body_width,
+        PRETTY_TUI_WEBSERVER_PROCESS_HEADER_LABEL.len(),
+        process_pid_width(rows.iter().map(|row| row.pid)),
+        process_status_width(rows.iter().map(|row| &row.status)),
+    )
+}
+
+fn process_column_widths(
+    body_width: u16,
+    min_text_width: usize,
+    pid_width: usize,
+    status_width: usize,
+) -> [usize; 4] {
     let port_width = 5usize;
-    let status_width = 5usize;
     let reserved_width = pid_width + port_width + status_width + 3 + 2;
-    let label_width = usize::from(body_width)
+    let text_width = usize::from(body_width)
         .saturating_sub(reserved_width)
-        .max(PRETTY_TUI_WEBSERVER_PROCESS_HEADER_LABEL.len());
-    [label_width, pid_width, port_width, status_width]
+        .max(min_text_width);
+    [text_width, pid_width, port_width, status_width]
+}
+
+fn process_pid_width<I>(pids: I) -> usize
+where
+    I: IntoIterator<Item = Option<u32>>,
+{
+    pids.into_iter()
+        .map(format_dashboard_pid)
+        .map(|pid| pid.chars().count())
+        .max()
+        .unwrap_or(5)
+        .max(5)
+}
+
+fn process_status_width<'a, I>(statuses: I) -> usize
+where
+    I: IntoIterator<Item = &'a RuntimeStatus>,
+{
+    statuses
+        .into_iter()
+        .map(|status| status.as_str().chars().count())
+        .max()
+        .unwrap_or_else(|| RuntimeStatus::NotReady.as_str().len())
+        .max("STATE".len())
 }
 
 fn render_events_panel(
@@ -5003,21 +6579,34 @@ fn render_model_progress_loader(frame: &mut Frame, state: &DashboardState, area:
     }
     let progress = state.active_loading_progress();
     let logo_text = tui_logo_view(area, false);
-    let logo_height = logo_text
+    let raw_logo_height = logo_text
         .as_ref()
         .map(|text| u16::try_from(text.lines.len()).unwrap_or(u16::MAX))
         .unwrap_or(0)
         .min(area.height);
     let has_progress = progress.is_some();
-    let gap_height = u16::from(has_progress && logo_height > 0);
     let bar_height = u16::from(has_progress);
     let detail_height = u16::from(has_progress);
-    let loader_height = logo_height
+    let desired_context_rows =
+        u16::try_from((state.startup_history.len().saturating_add(1)).min(10)).unwrap_or(10);
+    let max_logo_height = area
+        .height
+        .saturating_sub(u16::from(has_progress))
+        .saturating_sub(bar_height)
+        .saturating_sub(detail_height)
+        .saturating_sub(desired_context_rows)
+        .max(1);
+    let logo_height = raw_logo_height.min(max_logo_height);
+    let gap_height = u16::from(has_progress && logo_height > 0);
+    let base_height = logo_height
         .saturating_add(gap_height)
         .saturating_add(bar_height)
         .saturating_add(detail_height)
-        .max(logo_height.max(1))
-        .min(area.height);
+        .max(logo_height.max(1));
+    let context_lines =
+        startup_loader_context_lines(state, area.width, area.height.saturating_sub(base_height));
+    let context_height = u16::try_from(context_lines.len()).unwrap_or(u16::MAX);
+    let loader_height = base_height.saturating_add(context_height).min(area.height);
     let loader_area = Rect {
         x: area.x,
         y: area.y + area.height.saturating_sub(loader_height) / 2,
@@ -5075,6 +6664,69 @@ fn render_model_progress_loader(frame: &mut Frame, state: &DashboardState, area:
             detail_area,
         );
     }
+
+    if context_height > 0 {
+        let context_y = loader_area.y + logo_height + gap_height + bar_height + detail_height;
+        let context_area = Rect {
+            x: loader_area.x,
+            y: context_y,
+            width: loader_area.width,
+            height: context_height.min(loader_area.bottom().saturating_sub(context_y)),
+        };
+        if context_area.height > 0 {
+            frame.render_widget(Paragraph::new(context_lines), context_area);
+        }
+    }
+}
+
+fn startup_loader_context_lines(
+    state: &DashboardState,
+    width: u16,
+    available_rows: u16,
+) -> Vec<Line<'static>> {
+    if available_rows == 0 {
+        return Vec::new();
+    }
+
+    let content_width = usize::from(width.max(1));
+    let mut lines = vec![startup_lifecycle_summary_line(
+        &state.startup_lifecycle,
+        content_width,
+    )];
+    lines.extend(
+        state
+            .startup_history
+            .iter()
+            .take(usize::from(available_rows).saturating_sub(lines.len()))
+            .map(|event| event_line(event, content_width)),
+    );
+    lines.truncate(usize::from(available_rows));
+    lines
+}
+
+fn startup_lifecycle_summary_line(
+    lifecycle: &StartupLifecycleState,
+    width: usize,
+) -> Line<'static> {
+    let theme = tui_theme();
+    let summary = format!(
+        "startup={}{}  mesh={}  api={}  console={}  llama-server={}  model readiness={}",
+        lifecycle.phase.as_str(),
+        lifecycle
+            .failure
+            .as_ref()
+            .map(|failure| format!("  failure={}", single_line_status_text(failure)))
+            .unwrap_or_default(),
+        lifecycle.mesh.phase.as_str(),
+        lifecycle.api.phase.as_str(),
+        lifecycle.console.phase.as_str(),
+        lifecycle.llama_server.phase.as_str(),
+        lifecycle.model_readiness.phase.as_str(),
+    );
+    Line::from(Span::styled(
+        truncate_with_ellipsis(&summary, width),
+        Style::default().fg(theme.dim),
+    ))
 }
 
 fn render_tui_logo(frame: &mut Frame, area: Rect, dimmed: bool) {
@@ -5417,14 +7069,6 @@ fn startup_progress_event(event: &OutputEvent) -> Option<(Option<String>, String
             Some(format!("host_elected:{model}")),
             format!("elected {host} for {model}"),
         )),
-        OutputEvent::RpcServerStarting { port, device, .. } => Some((
-            Some(format!("rpc_server_starting:{port}")),
-            format!("starting rpc-server on {device}"),
-        )),
-        OutputEvent::RpcReady { port, device, .. } => Some((
-            Some(format!("rpc_ready:{port}")),
-            format!("rpc-server ready on {device}"),
-        )),
         OutputEvent::LlamaStarting {
             model, http_port, ..
         } => Some((
@@ -5440,6 +7084,18 @@ fn startup_progress_event(event: &OutputEvent) -> Option<(Option<String>, String
                 .as_ref()
                 .map(|model| format!("llama-server ready for {model}"))
                 .unwrap_or_else(|| format!("llama-server ready on port {port}")),
+        )),
+        OutputEvent::LlamaStartupFailed {
+            model,
+            http_port,
+            detail,
+            ..
+        } => Some((
+            Some(format!("llama_failed:{}", model_key(model, *http_port))),
+            model
+                .as_ref()
+                .map(|model| format!("llama-server failed for {model}: {detail}"))
+                .unwrap_or_else(|| format!("llama-server failed on port {http_port}: {detail}")),
         )),
         OutputEvent::ModelReady { model, .. } => Some((
             Some(format!("model_ready:{model}")),
@@ -5466,6 +7122,55 @@ fn startup_progress_event(event: &OutputEvent) -> Option<(Option<String>, String
         )),
         _ => None,
     }
+}
+
+fn startup_history_summary(event: &OutputEvent) -> Option<String> {
+    match event {
+        OutputEvent::Startup { .. }
+        | OutputEvent::LaunchPlan { .. }
+        | OutputEvent::NodeIdentity { .. }
+        | OutputEvent::InviteToken { .. }
+        | OutputEvent::DiscoveryStarting { .. }
+        | OutputEvent::MeshFound { .. }
+        | OutputEvent::DiscoveryJoined { .. }
+        | OutputEvent::DiscoveryFailed { .. }
+        | OutputEvent::WaitingForPeers { .. }
+        | OutputEvent::PassiveMode { .. }
+        | OutputEvent::ModelQueued { .. }
+        | OutputEvent::ModelLoading { .. }
+        | OutputEvent::ModelLoaded { .. }
+        | OutputEvent::HostElected { .. }
+        | OutputEvent::LlamaStarting { .. }
+        | OutputEvent::LlamaReady { .. }
+        | OutputEvent::LlamaStartupFailed { .. }
+        | OutputEvent::ModelReady { .. }
+        | OutputEvent::WebserverStarting { .. }
+        | OutputEvent::WebserverReady { .. }
+        | OutputEvent::ApiStarting { .. }
+        | OutputEvent::ApiReady { .. }
+        | OutputEvent::RuntimeReady { .. }
+        | OutputEvent::Error { .. }
+        | OutputEvent::Warning { .. } => Some(event.summary_line()),
+        OutputEvent::ModelDownloadProgress { status, .. } => {
+            if matches!(status, ModelProgressStatus::Ready) {
+                Some(event.summary_line())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_shutdown_suppressed_ready_event(event: &OutputEvent) -> bool {
+    matches!(
+        event,
+        OutputEvent::LlamaReady { .. }
+            | OutputEvent::ModelReady { .. }
+            | OutputEvent::WebserverReady { .. }
+            | OutputEvent::ApiReady { .. }
+            | OutputEvent::RuntimeReady { .. }
+    )
 }
 
 fn model_key(model: &Option<String>, port: u16) -> String {
@@ -5859,22 +7564,24 @@ fn readiness_label(state: &DashboardState) -> &'static str {
             .any(|row| matches!(row.status, RuntimeStatus::Error | RuntimeStatus::Warning))
     {
         "degraded"
-    } else if state
-        .llama_instances
+    } else if state.llama_instances.iter().any(|instance| {
+        matches!(
+            instance.status,
+            RuntimeStatus::Starting | RuntimeStatus::Loading
+        )
+    }) || state.running_models.iter().any(|model| {
+        matches!(
+            model.status,
+            RuntimeStatus::Starting | RuntimeStatus::Loading
+        )
+    }) || state
+        .loaded_model_rows
         .iter()
-        .any(|instance| matches!(instance.status, RuntimeStatus::Starting))
-        || state
-            .running_models
-            .iter()
-            .any(|model| matches!(model.status, RuntimeStatus::Starting))
-        || state
-            .loaded_model_rows
-            .iter()
-            .any(|row| matches!(row.status, RuntimeStatus::Starting))
+        .any(|row| matches!(row.status, RuntimeStatus::Starting | RuntimeStatus::Loading))
         || state
             .webserver_rows
             .iter()
-            .any(|row| matches!(row.status, RuntimeStatus::Starting))
+            .any(|row| matches!(row.status, RuntimeStatus::Starting | RuntimeStatus::Loading))
     {
         "starting"
     } else if state
@@ -5976,8 +7683,7 @@ impl InteractiveDashboardFormatter {
             self.dirty = true;
             Ok(None)
         } else {
-            let (columns, rows) = crossterm::terminal::size().unwrap_or((120, 24));
-            render_tui_text_snapshot(&self.state, columns, rows).map(Some)
+            Ok(Some(format!("{}\n", event.summary_line())))
         }
     }
 
@@ -6557,9 +8263,9 @@ fn dashboard_layout_for_terminal_size(columns: u16, rows: u16) -> DashboardLayou
     let join_token_rows = usize::from(PRETTY_TUI_JOIN_TOKEN_PANEL_HEIGHT);
     let requests_rows = 6usize;
     let requests_band_rows = requests_rows + 2;
-    // Cap the dashboard height so it stays compact (~32 rows) instead of
-    // stretching to fill the entire terminal.
-    let max_dashboard_rows = usize::from(rows).min(32);
+    // Cap the dashboard height so it stays compact while leaving enough
+    // room for two full-height loaded model cards.
+    let max_dashboard_rows = usize::from(rows).min(33);
     let narrow_width_penalty = usize::from(columns < PRETTY_TUI_MIN_DASHBOARD_WIDTH);
     let main_body_rows = max_dashboard_rows
         .saturating_sub(footer_rows + join_token_rows + requests_band_rows)
@@ -6670,6 +8376,126 @@ impl DashboardFormatter {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_startup_lifecycle_transitions_pending_partial_ready_failed() {
+    tests::assert_startup_lifecycle_transitions_pending_partial_ready_failed();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_lifecycle_keeps_runtime_ready_as_final_edge() {
+    tests::assert_startup_lifecycle_keeps_runtime_ready_as_final_edge();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_failures_surface_in_tui_events_and_status() {
+    tests::assert_startup_failures_surface_in_tui_events_and_status();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_failure_summary_sanitizes_multiline_detail() {
+    tests::assert_startup_failure_summary_sanitizes_multiline_detail();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_rpc_and_llama_startup_failures_mark_components_failed() {
+    tests::assert_rpc_and_llama_startup_failures_mark_components_failed();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_discovery_and_join_failures_mark_startup_mesh_component_failed() {
+    tests::assert_discovery_and_join_failures_mark_startup_mesh_component_failed();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_post_ready_peer_churn_does_not_reopen_startup_failure() {
+    tests::assert_post_ready_peer_churn_does_not_reopen_startup_failure();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_history_is_visible_after_late_tui_attach() {
+    tests::assert_startup_history_is_visible_after_late_tui_attach();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_history_keeps_order_when_tui_attaches_late() {
+    tests::assert_startup_history_keeps_order_when_tui_attaches_late();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_endpoint_rows_remain_starting_until_ready_events() {
+    tests::assert_endpoint_rows_remain_starting_until_ready_events();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_launch_plan_renders_not_ready_rows_before_actions() {
+    tests::assert_startup_launch_plan_renders_not_ready_rows_before_actions();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_progress_after_launch_plan_shows_dashboard_not_loader() {
+    tests::assert_startup_progress_after_launch_plan_shows_dashboard_not_loader();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_tui_model_progress_renders_dashboard_without_loading_screen() {
+    tests::assert_tui_model_progress_renders_dashboard_without_loading_screen();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_tui_startup_progress_continues_in_dashboard_after_model_download_ready() {
+    tests::assert_tui_startup_progress_continues_in_dashboard_after_model_download_ready();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_planned_rows_transition_from_not_ready_to_ready_events() {
+    tests::assert_planned_rows_transition_from_not_ready_to_ready_events();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_launch_plan_rows_survive_empty_startup_snapshot() {
+    tests::assert_launch_plan_rows_survive_empty_startup_snapshot();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_launch_plan_preserves_distinct_port_zero_endpoint_rows() {
+    tests::assert_launch_plan_preserves_distinct_port_zero_endpoint_rows();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_snapshot_upsert_preserves_distinct_port_zero_endpoint_rows() {
+    tests::assert_snapshot_upsert_preserves_distinct_port_zero_endpoint_rows();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_planned_port_zero_process_rows_bind_to_concrete_startup_events() {
+    tests::assert_planned_port_zero_process_rows_bind_to_concrete_startup_events();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_fallback_mode_surfaces_startup_failures_without_tui() {
+    tests::assert_fallback_mode_surfaces_startup_failures_without_tui();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_shutdown_suppresses_late_ready_render() {
+    tests::assert_shutdown_suppresses_late_ready_render();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_interactive_preterminal_render_uses_plain_event_output() {
+    tests::assert_interactive_preterminal_render_uses_plain_event_output();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_interactive_post_terminal_exit_resumes_plain_event_output() {
+    tests::assert_interactive_post_terminal_exit_resumes_plain_event_output();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_tui_model_card_separates_name_from_metadata_columns() {
+    tests::assert_tui_model_card_separates_name_from_metadata_columns();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     struct StaticDashboardSnapshotProvider {
@@ -6740,7 +8566,97 @@ mod tests {
             slots: Some(4),
             quantization: Some("Q4_K_M".to_string()),
             ctx_size: Some(8192),
+            ctx_used_tokens: Some(8192),
+            lanes: Some(vec![
+                DashboardModelLane {
+                    index: 0,
+                    active: true,
+                },
+                DashboardModelLane {
+                    index: 1,
+                    active: true,
+                },
+                DashboardModelLane {
+                    index: 2,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 3,
+                    active: false,
+                },
+            ]),
             file_size_gb: Some(24.0),
+        }
+    }
+
+    fn sample_launch_plan() -> DashboardLaunchPlan {
+        DashboardLaunchPlan {
+            llama_process_rows: vec![DashboardProcessRow {
+                name: "llama-server".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::Loading,
+                port: 0,
+                pid: 0,
+            }],
+            webserver_rows: vec![
+                DashboardEndpointRow {
+                    label: "Console".to_string(),
+                    status: RuntimeStatus::NotReady,
+                    url: "http://localhost:3131".to_string(),
+                    port: 3131,
+                    pid: None,
+                },
+                DashboardEndpointRow {
+                    label: "API".to_string(),
+                    status: RuntimeStatus::NotReady,
+                    url: "http://localhost:9337".to_string(),
+                    port: 9337,
+                    pid: None,
+                },
+            ],
+            loaded_model_rows: vec![DashboardModelRow {
+                name: "Planned-Model".to_string(),
+                role: Some("host".to_string()),
+                status: RuntimeStatus::Loading,
+                port: None,
+                device: Some("GPU0".to_string()),
+                slots: Some(4),
+                quantization: Some("Q4_K_M".to_string()),
+                ctx_size: Some(8192),
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: Some(7.5),
+            }],
+        }
+    }
+
+    fn port_zero_endpoint_launch_plan() -> DashboardLaunchPlan {
+        DashboardLaunchPlan {
+            llama_process_rows: Vec::new(),
+            webserver_rows: vec![
+                DashboardEndpointRow {
+                    label: "Plugin: alpha".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: "alpha-plugin".to_string(),
+                    port: 0,
+                    pid: Some(1000),
+                },
+                DashboardEndpointRow {
+                    label: "Plugin: beta".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: "beta-plugin".to_string(),
+                    port: 0,
+                    pid: Some(1002),
+                },
+                DashboardEndpointRow {
+                    label: "Plugin: zebra".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: "zebra-plugin".to_string(),
+                    port: 0,
+                    pid: Some(1001),
+                },
+            ],
+            loaded_model_rows: Vec::new(),
         }
     }
 
@@ -6781,6 +8697,9 @@ mod tests {
             OutputEvent::Startup {
                 version: "v0.64.0".to_string(),
                 message: Some("mesh-llm starting".to_string()),
+            },
+            OutputEvent::LaunchPlan {
+                plan: sample_launch_plan(),
             },
             OutputEvent::NodeIdentity {
                 node_id: "node-123".to_string(),
@@ -7997,6 +9916,19 @@ mod tests {
         (lines.join("\n"), buffer)
     }
 
+    fn buffer_to_rendered_string(buffer: &ratatui::buffer::Buffer) -> String {
+        let area = buffer.area;
+        let mut lines = Vec::with_capacity(usize::from(area.height));
+        for y in area.y..area.bottom() {
+            let mut line = String::new();
+            for x in area.x..area.right() {
+                line.push_str(buffer[(x, y)].symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
     fn find_rendered_line<'a>(rendered: &'a str, needle: &str) -> (usize, &'a str) {
         rendered
             .lines()
@@ -8577,13 +10509,39 @@ mod tests {
     }
 
     #[test]
+    fn tui_llama_process_table_omits_model_variant_suffix() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        let mut process_row = sample_process_row("llama-server", 8001);
+        process_row.name = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string();
+        formatter.handle_snapshot(DashboardSnapshot {
+            llama_process_rows: vec![process_row],
+            ..snapshot_fixture(0, 30)
+        });
+        formatter.handle_tui_event(TuiEvent::Resize {
+            columns: 160,
+            rows: 30,
+        });
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 160, 30);
+
+        assert!(
+            rendered.contains("unsloth/Qwen3.5-4B-G"),
+            "expected truncated base model ref in llama.cpp process table: {rendered}"
+        );
+        assert!(
+            !rendered.contains(":UD-Q4_K_XL"),
+            "TUI should omit GGUF variant suffix from llama.cpp process model names: {rendered}"
+        );
+    }
+
+    #[test]
     fn tui_process_table_widths_give_text_columns_leftover_space() {
         let [model_width, pid_width, port_width, status_width] = llama_process_column_widths(52);
 
         assert_eq!(pid_width, 5);
         assert_eq!(port_width, 5);
-        assert_eq!(status_width, 5);
-        assert_eq!(model_width, 32);
+        assert_eq!(status_width, RuntimeStatus::NotReady.as_str().len());
+        assert_eq!(model_width, 28);
 
         let rows = [DashboardEndpointRow {
             label: "Plugin: browser-tools".to_string(),
@@ -8597,8 +10555,8 @@ mod tests {
 
         assert_eq!(web_pid_width, 5);
         assert_eq!(web_port_width, 5);
-        assert_eq!(web_status_width, 5);
-        assert_eq!(label_width, 32);
+        assert_eq!(web_status_width, RuntimeStatus::NotReady.as_str().len());
+        assert_eq!(label_width, 28);
         assert!(label_width >= rows[0].label.len());
         assert!(label_width >= PRETTY_TUI_WEBSERVER_PROCESS_HEADER_LABEL.len());
     }
@@ -8607,6 +10565,32 @@ mod tests {
     fn tui_dashboard_process_table_renders_missing_pid_as_dash() {
         assert_eq!(format_dashboard_pid(None), "-");
         assert_eq!(format_dashboard_pid(Some(4321)), "4321");
+    }
+
+    #[test]
+    fn tui_process_table_renders_six_digit_pid_without_truncation() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        formatter.handle_snapshot(DashboardSnapshot {
+            webserver_rows: vec![DashboardEndpointRow {
+                label: "Plugin: blobstore".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "blobstore".to_string(),
+                port: 0,
+                pid: Some(132098),
+            }],
+            ..snapshot_fixture(0, 30)
+        });
+        formatter.handle_tui_event(TuiEvent::Resize {
+            columns: 120,
+            rows: 24,
+        });
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 120, 24);
+
+        assert!(
+            rendered.contains("132098"),
+            "expected full six-digit PID in process table: {rendered}"
+        );
     }
 
     #[test]
@@ -9336,7 +11320,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_model_progress_renders_meshllm_wordmark_and_bar() {
+    fn tui_model_progress_renders_dashboard_without_loading_screen() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
             120, 24,
@@ -9351,31 +11335,24 @@ mod tests {
             },
         ));
 
-        let (rendered, buffer) = render_tui_frame_snapshot_with_buffer(&state, 120, 48);
-        let (detail_y, _) = find_rendered_line(
-            &rendered,
-            "downloading model qwen2.5-0.5b-instruct-q4_k_m.gguf",
-        );
+        let rendered = render_tui_frame_snapshot(&state, 120, 48);
 
-        assert!(rendered.contains("downloading model qwen2.5-0.5b-instruct-q4_k_m.gguf"));
-        assert!(rendered.contains('█'));
         assert!(
-            !render_tui_frame_snapshot(&state, 120, 48).contains("Mesh Events"),
-            "loading splash should own the full frame"
+            rendered.contains("Mesh Events"),
+            "startup progress should render inside the dashboard, not a loading screen: {rendered}"
         );
         assert!(
-            (0..detail_y.saturating_sub(2)).any(|y| {
-                (0..120).any(|x| {
-                    let cell = &buffer[(x as u16, y as u16)];
-                    cell.symbol() != " " && cell.style().fg.is_some()
-                })
-            }),
-            "expected ANSI logo content above the progress detail\n{rendered}"
+            !rendered.contains('█'),
+            "startup progress should not render the old progress bar: {rendered}"
         );
     }
 
+    pub(crate) fn assert_tui_model_progress_renders_dashboard_without_loading_screen() {
+        tui_model_progress_renders_dashboard_without_loading_screen();
+    }
+
     #[test]
-    fn tui_startup_progress_continues_after_model_download_ready() {
+    fn tui_startup_progress_continues_in_dashboard_after_model_download_ready() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
             120, 24,
@@ -9400,7 +11377,6 @@ mod tests {
             .active_loading_progress()
             .expect("startup loading progress should remain active before runtime ready");
         let rendered = render_tui_frame_snapshot(&state, 120, 48);
-        let bar = loading_progress_bar(progress.ratio, 40);
 
         assert!(
             progress.ratio < 1.0,
@@ -9409,12 +11385,15 @@ mod tests {
         assert!(progress
             .detail
             .contains("starting llama-server for Qwen2.5"));
-        assert!(rendered.contains("starting llama-server for Qwen2.5"));
         assert!(
-            bar.contains('░'),
-            "progress bar should still have remaining work"
+            rendered.contains("Mesh Events"),
+            "startup progress should stay in the dashboard instead of taking over the frame: {rendered}"
         );
-        assert!(!rendered.contains("Mesh Events"));
+        assert!(!rendered.contains('█'));
+    }
+
+    pub(crate) fn assert_tui_startup_progress_continues_in_dashboard_after_model_download_ready() {
+        tui_startup_progress_continues_in_dashboard_after_model_download_ready();
     }
 
     #[test]
@@ -9433,17 +11412,15 @@ mod tests {
             .active_loading_progress()
             .expect("download-ready progress should seed startup progress")
             .ratio;
-
-        state.reduce(DashboardAction::OutputEvent(
-            OutputEvent::RpcServerStarting {
-                port: 50052,
-                device: "CUDA0".to_string(),
-                log_path: None,
-            },
-        ));
-        let after_rpc = state
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Qwen2.5-0.5B-Instruct-Q4_K_M".to_string()),
+            http_port: 9338,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+        let after_llama_start = state
             .active_loading_progress()
-            .expect("rpc startup should advance startup progress")
+            .expect("llama startup should advance startup progress")
             .ratio;
 
         state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
@@ -9456,8 +11433,8 @@ mod tests {
             .expect("model ready should advance startup progress")
             .ratio;
 
-        assert!(after_rpc > after_download);
-        assert!(after_model_ready > after_rpc);
+        assert!(after_llama_start > after_download);
+        assert!(after_model_ready > after_llama_start);
     }
 
     #[test]
@@ -9538,10 +11515,1681 @@ mod tests {
     }
 
     #[test]
+    fn startup_lifecycle_transitions_pending_partial_ready_failed() {
+        let mut state = DashboardState::default();
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Pending
+        );
+        assert_eq!(
+            state.startup_lifecycle().api.phase,
+            StartupLifecyclePhase::Pending
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Starting
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
+            url: "http://localhost:9337".to_string(),
+        }));
+        assert_eq!(
+            state.startup_lifecycle().api.phase,
+            StartupLifecyclePhase::Starting
+        );
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Starting
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Partial
+        );
+        assert_eq!(
+            state.startup_lifecycle().api.phase,
+            StartupLifecyclePhase::Ready
+        );
+
+        let partial_rendered = render_tui_frame_snapshot(&state, 160, 32);
+        let partial_dashboard = render_dashboard_text(&state);
+        assert!(partial_rendered.contains("startup=partial"));
+        assert!(partial_dashboard.contains("mesh=pending  api=ready  console=pending"));
+        assert!(partial_dashboard.contains("llama-server=pending  model readiness=pending"));
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:9337".to_string(),
+            console_url: Some("http://localhost:3131".to_string()),
+            api_port: 9337,
+            console_port: Some(3131),
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().llama_server.phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().llama_server.detail.as_deref(),
+            Some("embedded runtime ready")
+        );
+
+        let ready_rendered = render_tui_frame_snapshot(&state, 160, 32);
+        let ready_dashboard = render_dashboard_text(&state);
+        assert!(ready_rendered.contains("startup=ready"));
+        assert!(ready_dashboard.contains("mesh=ready  api=ready  console=ready"));
+        assert!(ready_dashboard.contains("llama-server=ready  model readiness=pending"));
+
+        let mut failed = DashboardState::default();
+        failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        failed.reduce(DashboardAction::OutputEvent(OutputEvent::Error {
+            message: "mesh startup failed".to_string(),
+            context: Some("startup".to_string()),
+        }));
+        assert_eq!(
+            failed.startup_lifecycle().phase,
+            StartupLifecyclePhase::Failed
+        );
+        let failed_rendered = render_tui_frame_snapshot(&failed, 160, 32);
+        let failed_dashboard = render_dashboard_text(&failed);
+        assert!(failed_rendered.contains("startup=failed"));
+        assert!(failed_dashboard.contains("mesh=failed"));
+    }
+
+    #[test]
+    fn startup_lifecycle_keeps_runtime_ready_as_final_edge() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::NodeIdentity {
+            node_id: "node-7".to_string(),
+            mesh_id: Some("poker-night".to_string()),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::WebserverReady {
+            url: "http://localhost:3131".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("Qwen3-32B".to_string()),
+            port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "Qwen3-32B".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+
+        assert!(
+            !state.runtime_ready,
+            "RuntimeReady must remain the final edge"
+        );
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Partial
+        );
+        assert_eq!(
+            state.startup_lifecycle().model_readiness.phase,
+            StartupLifecyclePhase::Ready
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:9337".to_string(),
+            console_url: Some("http://localhost:3131".to_string()),
+            api_port: 9337,
+            console_port: Some(3131),
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+
+        assert!(state.runtime_ready);
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+    }
+
+    #[test]
+    fn endpoint_rows_remain_starting_until_ready_events() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            llama_process_rows: vec![sample_process_row("llama-server", 9338)],
+            webserver_rows: vec![
+                sample_endpoint_row("Console", 3131),
+                sample_endpoint_row("API", 9337),
+            ],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(
+            state.webserver_rows,
+            vec![
+                DashboardEndpointRow {
+                    label: "Console".to_string(),
+                    status: RuntimeStatus::Starting,
+                    url: "http://127.0.0.1:3131".to_string(),
+                    port: 3131,
+                    pid: None,
+                },
+                DashboardEndpointRow {
+                    label: "API".to_string(),
+                    status: RuntimeStatus::Starting,
+                    url: "http://127.0.0.1:9337".to_string(),
+                    port: 9337,
+                    pid: None,
+                },
+            ]
+        );
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .map(|row| (&row.name, &row.status))
+                .collect::<Vec<_>>(),
+            vec![(&"llama-server".to_string(), &RuntimeStatus::Starting)]
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::WebserverReady {
+            url: "http://localhost:3131".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("Qwen3-32B".to_string()),
+            port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+
+        assert!(state
+            .webserver_rows
+            .iter()
+            .all(|row| row.status == RuntimeStatus::Ready));
+        assert_eq!(state.llama_process_rows[0].status, RuntimeStatus::Ready);
+    }
+
+    #[test]
+    fn startup_history_is_visible_after_late_tui_attach() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        for event in [
+            OutputEvent::Startup {
+                version: "v0.65.0".to_string(),
+                message: None,
+            },
+            OutputEvent::NodeIdentity {
+                node_id: "node-7".to_string(),
+                mesh_id: Some("poker-night".to_string()),
+            },
+            OutputEvent::ApiStarting {
+                url: "http://localhost:9337".to_string(),
+            },
+            OutputEvent::LlamaStarting {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: None,
+            },
+        ] {
+            formatter
+                .handle_output_event(&event)
+                .expect("pre-attach startup events should reduce cleanly");
+        }
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 160, 32);
+
+        assert!(
+            rendered.contains("startup=partial"),
+            "expected lifecycle summary in {rendered}"
+        );
+        assert!(
+            rendered.contains("mesh-llm starting"),
+            "expected startup line in {rendered}"
+        );
+        assert!(
+            rendered.contains("node node-7 joined mesh poker-night"),
+            "expected node identity line in {rendered}"
+        );
+        assert!(
+            rendered.contains("api starting at http://localhost:9337"),
+            "expected API start line in {rendered}"
+        );
+        assert!(
+            rendered.contains("llama-server starting: port=9338 model=Qwen3-32B"),
+            "expected llama start line in {rendered}"
+        );
+        assert!(
+            rendered.contains("Mesh Events"),
+            "late attach should render the main dashboard now that the loading screen is gone"
+        );
+        assert!(formatter
+            .state
+            .startup_history
+            .iter()
+            .any(|event| event.summary.contains("llama-server starting: port=9338")));
+    }
+
+    #[test]
+    fn startup_history_keeps_order_when_tui_attaches_late() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        for event in [
+            OutputEvent::Startup {
+                version: "v0.65.0".to_string(),
+                message: None,
+            },
+            OutputEvent::NodeIdentity {
+                node_id: "node-7".to_string(),
+                mesh_id: Some("poker-night".to_string()),
+            },
+            OutputEvent::ApiStarting {
+                url: "http://localhost:9337".to_string(),
+            },
+            OutputEvent::ApiReady {
+                url: "http://localhost:9337".to_string(),
+            },
+            OutputEvent::LlamaStarting {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: None,
+            },
+        ] {
+            formatter
+                .handle_output_event(&event)
+                .expect("pre-attach startup events should reduce cleanly");
+        }
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 160, 32);
+        assert!(rendered.contains("Mesh Events"));
+        let history: Vec<&str> = formatter
+            .state
+            .startup_history
+            .iter()
+            .map(|event| event.summary.as_str())
+            .collect();
+        let startup_index = history
+            .iter()
+            .position(|summary| summary.contains("mesh-llm starting"))
+            .expect("expected startup line in retained history");
+        let node_index = history
+            .iter()
+            .position(|summary| summary.contains("node node-7 joined mesh poker-night"))
+            .expect("expected node identity line in retained history");
+        let api_start_index = history
+            .iter()
+            .position(|summary| summary.contains("api starting at http://localhost:9337"))
+            .expect("expected API start line in retained history");
+        let api_ready_index = history
+            .iter()
+            .position(|summary| summary.contains("api ready at http://localhost:9337"))
+            .expect("expected API ready line in retained history");
+
+        assert!(startup_index < node_index);
+        assert!(node_index < api_start_index);
+        assert!(api_start_index < api_ready_index);
+    }
+
+    #[test]
+    fn startup_failures_surface_in_tui_events_and_status() {
+        let mut formatter = InteractiveDashboardFormatter::default();
+        for event in [
+            OutputEvent::Startup {
+                version: "v0.65.0".to_string(),
+                message: None,
+            },
+            OutputEvent::LlamaStarting {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: Some("/tmp/llama.log".to_string()),
+            },
+            OutputEvent::LlamaStartupFailed {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: Some("/tmp/llama.log".to_string()),
+                detail: "llama-server exited before becoming healthy".to_string(),
+            },
+        ] {
+            formatter
+                .handle_output_event(&event)
+                .expect("startup failure events should reduce cleanly");
+        }
+
+        formatter
+            .handle_output_event(&OutputEvent::Info {
+                message: "background retry skipped after startup failure".to_string(),
+                context: None,
+            })
+            .expect("later info events should not clear startup failures");
+
+        let rendered = render_tui_frame_snapshot(&formatter.state, 160, 32);
+        let dashboard = render_dashboard_text(&formatter.state);
+        assert!(
+            rendered.contains("startup=failed"),
+            "expected failed lifecycle in {rendered}"
+        );
+        assert!(dashboard.contains("llama-server=failed  model readiness=failed"));
+        assert!(formatter.state.startup_history.iter().any(|event| event
+            .summary
+            .contains("llama-server exited before becoming healthy")));
+    }
+
+    #[test]
+    fn llama_startup_failures_mark_components_failed() {
+        let mut llama_failed = DashboardState::default();
+        llama_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        llama_failed.reduce(DashboardAction::OutputEvent(OutputEvent::ModelQueued {
+            model: "Qwen3-32B".to_string(),
+        }));
+        llama_failed.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Qwen3-32B".to_string()),
+            http_port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+        llama_failed.reduce(DashboardAction::OutputEvent(
+            OutputEvent::LlamaStartupFailed {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: None,
+                detail: "llama-server exited before becoming healthy".to_string(),
+            },
+        ));
+
+        assert_eq!(
+            llama_failed.startup_lifecycle().phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            llama_failed.startup_lifecycle().llama_server.phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            llama_failed.startup_lifecycle().model_readiness.phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert!(matches!(
+            llama_failed
+                .llama_instances
+                .iter()
+                .find(|instance| instance.kind == LlamaInstanceKind::LlamaServer)
+                .map(|instance| &instance.status),
+            Some(RuntimeStatus::Error)
+        ));
+        assert!(matches!(
+            llama_failed
+                .running_models
+                .iter()
+                .find(|model| model.model == "Qwen3-32B")
+                .map(|model| &model.status),
+            Some(RuntimeStatus::Error)
+        ));
+    }
+
+    #[test]
+    fn discovery_and_join_failures_mark_startup_mesh_component_failed() {
+        let mut discovery_failed = DashboardState::default();
+        discovery_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        discovery_failed.reduce(DashboardAction::OutputEvent(
+            OutputEvent::DiscoveryStarting {
+                source: "Nostr auto-discovery".to_string(),
+            },
+        ));
+        discovery_failed.reduce(DashboardAction::OutputEvent(OutputEvent::DiscoveryFailed {
+            message: "Nostr auto-discovery failed".to_string(),
+            detail: Some("relay timeout".to_string()),
+        }));
+
+        assert_eq!(
+            discovery_failed.startup_lifecycle().phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            discovery_failed.startup_lifecycle().mesh.phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            discovery_failed.startup_lifecycle().mesh.detail.as_deref(),
+            Some("Nostr auto-discovery failed: relay timeout")
+        );
+
+        let mut join_failed = DashboardState::default();
+        join_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        join_failed.reduce(DashboardAction::OutputEvent(OutputEvent::WaitingForPeers {
+            detail: Some("waiting for peers while joining mesh".to_string()),
+        }));
+        join_failed.reduce(DashboardAction::OutputEvent(OutputEvent::Warning {
+            message: "Failed to join any peer — running standalone".to_string(),
+            context: None,
+        }));
+
+        assert_eq!(
+            join_failed.startup_lifecycle().phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            join_failed.startup_lifecycle().mesh.phase,
+            StartupLifecyclePhase::Failed
+        );
+        assert_eq!(
+            join_failed.startup_lifecycle().mesh.detail.as_deref(),
+            Some("Failed to join any peer — running standalone")
+        );
+    }
+
+    #[test]
+    fn post_ready_peer_churn_does_not_reopen_startup_failure() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::DiscoveryJoined {
+            mesh: "poker-night".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:9337".to_string(),
+            console_url: Some("http://localhost:3131".to_string()),
+            api_port: 9337,
+            console_port: Some(3131),
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+
+        assert!(state.runtime_ready);
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().mesh.phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().mesh.detail.as_deref(),
+            Some("joined mesh poker-night")
+        );
+
+        for event in [
+            OutputEvent::DiscoveryStarting {
+                source: "Nostr re-discovery".to_string(),
+            },
+            OutputEvent::WaitingForPeers {
+                detail: Some("waiting for peers after reconnect".to_string()),
+            },
+            OutputEvent::DiscoveryFailed {
+                message: "Nostr re-discovery failed".to_string(),
+                detail: Some("relay timeout".to_string()),
+            },
+            OutputEvent::Warning {
+                message: "Failed to join any peer — running standalone".to_string(),
+                context: None,
+            },
+        ] {
+            state.reduce(DashboardAction::OutputEvent(event));
+        }
+
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().mesh.phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(
+            state.startup_lifecycle().mesh.detail.as_deref(),
+            Some("joined mesh poker-night")
+        );
+    }
+
+    #[test]
+    fn generic_error_after_runtime_ready_does_not_reopen_startup_failure() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:9337".to_string(),
+            console_url: Some("http://localhost:3131".to_string()),
+            api_port: 9337,
+            console_port: Some(3131),
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+
+        assert!(state.runtime_ready);
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Error {
+            message: "native stderr surfaced after startup".to_string(),
+            context: Some("stderr".to_string()),
+        }));
+
+        assert!(state.runtime_ready);
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::Ready
+        );
+        assert_eq!(state.startup_lifecycle().failure, None);
+        assert!(render_dashboard_text(&state).contains("startup=ready"));
+    }
+
+    #[test]
+    fn startup_launch_plan_renders_not_ready_rows_before_actions() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            160, 32,
+        )));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: sample_launch_plan(),
+        }));
+
+        let rendered = render_tui_frame_snapshot(&state, 160, 32);
+
+        assert!(
+            rendered.contains("Mesh Events"),
+            "expected dashboard in {rendered}"
+        );
+        assert!(
+            rendered.contains("NOT READY"),
+            "expected not-ready rows in {rendered}"
+        );
+        assert!(rendered.contains("Console"));
+        assert!(rendered.contains("Planned-Model"));
+        assert_eq!(state.llama_process_rows[0].status, RuntimeStatus::Loading);
+        assert_eq!(state.webserver_rows[0].status, RuntimeStatus::NotReady);
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Loading);
+    }
+
+    #[test]
+    fn startup_progress_after_launch_plan_shows_dashboard_not_loader() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            160, 32,
+        )));
+        state.reduce(DashboardAction::OutputEvent(
+            OutputEvent::ModelDownloadProgress {
+                label: "Planned-Model".to_string(),
+                file: Some("planned-model.gguf".to_string()),
+                downloaded_bytes: Some(100),
+                total_bytes: Some(100),
+                status: ModelProgressStatus::Ready,
+            },
+        ));
+
+        let loader_render = render_tui_frame_snapshot(&state, 160, 32);
+        assert!(state.active_loading_progress().is_some());
+        assert!(
+            loader_render.contains("Mesh Events"),
+            "startup progress should use the dashboard instead of a full-screen loader: {loader_render}"
+        );
+        assert!(!loader_render.contains('█'));
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: sample_launch_plan(),
+        }));
+
+        let dashboard_render = render_tui_frame_snapshot(&state, 160, 32);
+        assert!(state.active_loading_progress().is_some());
+        assert!(
+            dashboard_render.contains("Mesh Events"),
+            "expected dashboard after launch plan in {dashboard_render}"
+        );
+        assert!(dashboard_render.contains("NOT READY"));
+        assert!(dashboard_render.contains("Planned-Model"));
+    }
+
+    #[test]
+    fn planned_rows_transition_from_not_ready_to_ready_events() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: sample_launch_plan(),
+        }));
+
+        assert!(state
+            .llama_process_rows
+            .iter()
+            .all(|row| row.status == RuntimeStatus::Loading));
+        assert!(state
+            .webserver_rows
+            .iter()
+            .all(|row| row.status == RuntimeStatus::NotReady));
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Loading);
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Planned-Model".to_string()),
+            http_port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(
+            OutputEvent::WebserverStarting {
+                url: "http://localhost:3131".to_string(),
+            },
+        ));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
+            url: "http://localhost:9337".to_string(),
+        }));
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.port == 9338)
+                .expect("expected planned llama row")
+                .status,
+            RuntimeStatus::Starting
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "Console")
+                .expect("expected planned console row")
+                .status,
+            RuntimeStatus::Starting
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "API")
+                .expect("expected planned api row")
+                .status,
+            RuntimeStatus::Starting
+        );
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Loading);
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("Planned-Model".to_string()),
+            port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::WebserverReady {
+            url: "http://localhost:3131".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiReady {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "Planned-Model".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.port == 9338)
+                .expect("expected planned llama row")
+                .status,
+            RuntimeStatus::Ready
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "Console")
+                .expect("expected planned console row")
+                .status,
+            RuntimeStatus::Ready
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "API")
+                .expect("expected planned api row")
+                .status,
+            RuntimeStatus::Ready
+        );
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Ready);
+    }
+
+    #[test]
+    fn launch_plan_rows_survive_empty_startup_snapshot() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: sample_launch_plan(),
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(
+            DashboardSnapshot::default(),
+        ));
+
+        assert_eq!(state.llama_process_rows.len(), 1);
+        assert_eq!(state.webserver_rows.len(), 2);
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        assert!(state
+            .llama_process_rows
+            .iter()
+            .all(|row| row.status == RuntimeStatus::Loading));
+        assert!(state
+            .webserver_rows
+            .iter()
+            .all(|row| row.status == RuntimeStatus::NotReady));
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Loading);
+        state.reduce(DashboardAction::SnapshotUpdated(
+            DashboardSnapshot::default(),
+        ));
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server")
+                .expect("expected planned llama row")
+                .status,
+            RuntimeStatus::Loading
+        );
+    }
+
+    #[test]
+    fn launch_plan_preserves_distinct_port_zero_endpoint_rows() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: port_zero_endpoint_launch_plan(),
+        }));
+
+        let rows = state
+            .webserver_rows
+            .iter()
+            .map(|row| (row.label.clone(), row.port, row.status.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows,
+            vec![
+                ("Plugin: alpha".to_string(), 0, RuntimeStatus::NotReady),
+                ("Plugin: beta".to_string(), 0, RuntimeStatus::NotReady),
+                ("Plugin: zebra".to_string(), 0, RuntimeStatus::NotReady),
+            ]
+        );
+    }
+
+    #[test]
+    fn snapshot_upsert_preserves_distinct_port_zero_endpoint_rows() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: port_zero_endpoint_launch_plan(),
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            webserver_rows: vec![
+                DashboardEndpointRow {
+                    label: "Plugin: alpha".to_string(),
+                    status: RuntimeStatus::Ready,
+                    url: "alpha-plugin-live".to_string(),
+                    port: 0,
+                    pid: Some(2000),
+                },
+                DashboardEndpointRow {
+                    label: "Plugin: zebra".to_string(),
+                    status: RuntimeStatus::Warning,
+                    url: "zebra-plugin-live".to_string(),
+                    port: 0,
+                    pid: Some(2001),
+                },
+            ],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.webserver_rows.len(), 3);
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "Plugin: beta")
+                .expect("expected beta plugin placeholder row")
+                .status,
+            RuntimeStatus::NotReady
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "Plugin: alpha")
+                .expect("expected alpha plugin row"),
+            &DashboardEndpointRow {
+                label: "Plugin: alpha".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "alpha-plugin-live".to_string(),
+                port: 0,
+                pid: Some(2000),
+            }
+        );
+        assert_eq!(
+            state
+                .webserver_rows
+                .iter()
+                .find(|row| row.label == "Plugin: zebra")
+                .expect("expected zebra plugin row"),
+            &DashboardEndpointRow {
+                label: "Plugin: zebra".to_string(),
+                status: RuntimeStatus::Warning,
+                url: "zebra-plugin-live".to_string(),
+                port: 0,
+                pid: Some(2001),
+            }
+        );
+    }
+
+    #[test]
+    fn planned_port_zero_process_rows_bind_to_concrete_startup_events() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: vec![
+                    DashboardProcessRow {
+                        name: "llama-server Model-A".to_string(),
+                        backend: String::new(),
+                        status: RuntimeStatus::Loading,
+                        port: 0,
+                        pid: 0,
+                    },
+                    DashboardProcessRow {
+                        name: "llama-server Model-B".to_string(),
+                        backend: String::new(),
+                        status: RuntimeStatus::Loading,
+                        port: 0,
+                        pid: 0,
+                    },
+                ],
+                webserver_rows: Vec::new(),
+                loaded_model_rows: Vec::new(),
+            },
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Model-B".to_string()),
+            http_port: 9339,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 2);
+        assert!(state.webserver_rows.is_empty());
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-A")
+                .expect("unstarted planned llama row should remain visible")
+                .status,
+            RuntimeStatus::Loading
+        );
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-B")
+                .expect("planned llama row should bind to concrete model startup event"),
+            &DashboardProcessRow {
+                name: "llama-server Model-B".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::Starting,
+                port: 9339,
+                pid: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn ready_llama_process_row_stays_ready_when_another_model_starts() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.1".to_string(),
+            message: Some("starting multi-model runtime".to_string()),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Model-A".to_string()),
+            http_port: 9338,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("Model-A".to_string()),
+            port: 9338,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-A")
+                .expect("Model-A row should be present after ready event")
+                .status,
+            RuntimeStatus::Ready
+        );
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Model-B".to_string()),
+            http_port: 9339,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 2);
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-A")
+                .expect("ready Model-A row should remain present")
+                .status,
+            RuntimeStatus::Ready
+        );
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-B")
+                .expect("starting Model-B row should be present")
+                .status,
+            RuntimeStatus::Starting
+        );
+    }
+
+    #[test]
+    fn ready_llama_process_row_survives_lagging_startup_snapshot() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.1".to_string(),
+            message: Some("starting multi-model runtime".to_string()),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Model-A".to_string()),
+            http_port: 9338,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("Model-A".to_string()),
+            port: 9338,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaStarting {
+            model: Some("Model-B".to_string()),
+            http_port: 9339,
+            ctx_size: Some(4096),
+            log_path: None,
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            llama_process_rows: vec![DashboardProcessRow {
+                name: "llama-server Model-A".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::Starting,
+                port: 9338,
+                pid: 0,
+            }],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(
+            state
+                .llama_process_rows
+                .iter()
+                .find(|row| row.name == "llama-server Model-A")
+                .expect("ready Model-A row should survive lagging snapshot")
+                .status,
+            RuntimeStatus::Ready
+        );
+    }
+
+    #[test]
+    fn model_loading_row_reconciles_with_canonical_ready_name() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoading {
+            model: "Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+            source: None,
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        assert_eq!(state.loaded_model_rows[0].name, "Qwen3.5-4B-UD-Q4_K_XL");
+        assert_eq!(state.loaded_model_rows[0].status, RuntimeStatus::Loading);
+        assert_eq!(state.llama_process_rows.len(), 1);
+        assert_eq!(
+            state.llama_process_rows[0].name,
+            "llama-server Qwen3.5-4B-UD-Q4_K_XL"
+        );
+        assert_eq!(state.llama_process_rows[0].status, RuntimeStatus::Loading);
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+            internal_port: Some(9338),
+            role: Some("host".to_string()),
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        let row = &state.loaded_model_rows[0];
+        assert_eq!(row.name, "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.status, RuntimeStatus::Ready);
+        assert_eq!(row.port, Some(9338));
+        assert_eq!(row.role.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn planned_process_row_reconciles_with_canonical_loading_name() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: vec![DashboardProcessRow {
+                    name: "llama-server Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+                    backend: String::new(),
+                    status: RuntimeStatus::Loading,
+                    port: 0,
+                    pid: 0,
+                }],
+                webserver_rows: Vec::new(),
+                loaded_model_rows: Vec::new(),
+            },
+        }));
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelLoading {
+            model: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+            source: None,
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 1);
+        let row = &state.llama_process_rows[0];
+        assert_eq!(row.name, "llama-server unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.status, RuntimeStatus::Loading);
+        assert_eq!(row.port, 0);
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            llama_process_rows: vec![DashboardProcessRow {
+                name: "llama-server Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::NotReady,
+                port: 0,
+                pid: 0,
+            }],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 1);
+        let row = &state.llama_process_rows[0];
+        assert_eq!(row.name, "llama-server unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.status, RuntimeStatus::Loading);
+        assert_eq!(row.port, 0);
+    }
+
+    #[test]
+    fn raw_snapshot_ready_row_reconciles_with_canonical_loading_row() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: [
+                    "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL",
+                    "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+                ]
+                .into_iter()
+                .map(|model| DashboardProcessRow {
+                    name: llama_process_row_name(Some(model)),
+                    backend: String::new(),
+                    status: RuntimeStatus::Loading,
+                    port: 0,
+                    pid: 0,
+                })
+                .collect(),
+                webserver_rows: Vec::new(),
+                loaded_model_rows: [
+                    "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL",
+                    "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
+                ]
+                .into_iter()
+                .map(|model| DashboardModelRow {
+                    name: model.to_string(),
+                    role: None,
+                    status: RuntimeStatus::Loading,
+                    port: None,
+                    device: None,
+                    slots: None,
+                    quantization: None,
+                    ctx_size: None,
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                })
+                .collect(),
+            },
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            llama_process_rows: vec![DashboardProcessRow {
+                name: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::Ready,
+                port: 36561,
+                pid: 1221,
+            }],
+            loaded_model_rows: vec![DashboardModelRow {
+                name: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL".to_string(),
+                role: Some("host".to_string()),
+                status: RuntimeStatus::Ready,
+                port: Some(36561),
+                device: None,
+                slots: None,
+                quantization: None,
+                ctx_size: None,
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: None,
+            }],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 2);
+        let qwen_35 = state
+            .llama_process_rows
+            .iter()
+            .find(|row| row.name.contains("Qwen3.5-4B"))
+            .expect("expected 4B loading row");
+        assert_eq!(qwen_35.status, RuntimeStatus::Loading);
+        assert_eq!(qwen_35.port, 0);
+
+        let qwen_36 = state
+            .llama_process_rows
+            .iter()
+            .find(|row| row.name.contains("Qwen3.6-27B"))
+            .expect("expected 27B ready row");
+        assert_eq!(qwen_36.name, "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL");
+        assert_eq!(qwen_36.status, RuntimeStatus::Ready);
+        assert_eq!(qwen_36.port, 36561);
+        assert_eq!(qwen_36.pid, 1221);
+    }
+
+    #[test]
+    fn single_model_local_path_loading_row_merges_with_ready_model_ref() {
+        let mut state = DashboardState::default();
+        let loading_name = "Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m";
+        let ready_name = "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m";
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: Vec::new(),
+                webserver_rows: Vec::new(),
+                loaded_model_rows: vec![DashboardModelRow {
+                    name: loading_name.to_string(),
+                    role: Some("primary".to_string()),
+                    status: RuntimeStatus::Loading,
+                    port: None,
+                    device: None,
+                    slots: None,
+                    quantization: None,
+                    ctx_size: None,
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                }],
+            },
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ModelReady {
+            model: ready_name.to_string(),
+            internal_port: Some(51744),
+            role: Some("host".to_string()),
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        let row = &state.loaded_model_rows[0];
+        assert_eq!(row.name, ready_name);
+        assert_eq!(row.status, RuntimeStatus::Ready);
+        assert_eq!(row.port, Some(51744));
+        assert_eq!(row.role.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn loaded_model_row_preserves_launch_plan_device_when_ready_snapshot_reports_backend() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: Vec::new(),
+                webserver_rows: Vec::new(),
+                loaded_model_rows: vec![DashboardModelRow {
+                    name: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+                    role: Some("primary".to_string()),
+                    status: RuntimeStatus::Loading,
+                    port: None,
+                    device: Some("CUDA0".to_string()),
+                    slots: Some(4),
+                    quantization: None,
+                    ctx_size: Some(65_536),
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                }],
+            },
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            loaded_model_rows: vec![DashboardModelRow {
+                name: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+                role: Some("host".to_string()),
+                status: RuntimeStatus::Ready,
+                port: Some(40511),
+                device: Some("skippy".to_string()),
+                slots: Some(4),
+                quantization: Some("Q4_K_XL".to_string()),
+                ctx_size: Some(65_536),
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: Some(2.9),
+            }],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        let row = &state.loaded_model_rows[0];
+        assert_eq!(row.name, "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.device.as_deref(), Some("CUDA0"));
+        assert_eq!(row.status, RuntimeStatus::Ready);
+        assert_eq!(row.port, Some(40511));
+        assert_eq!(row.quantization.as_deref(), Some("Q4_K_XL"));
+    }
+
+    #[test]
+    fn runtime_ready_snapshot_preserves_launch_plan_device_metadata() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: Vec::new(),
+                webserver_rows: Vec::new(),
+                loaded_model_rows: vec![DashboardModelRow {
+                    name: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+                    role: Some("primary".to_string()),
+                    status: RuntimeStatus::Loading,
+                    port: None,
+                    device: Some("CUDA0".to_string()),
+                    slots: Some(4),
+                    quantization: None,
+                    ctx_size: Some(65_536),
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                }],
+            },
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:40511".to_string(),
+            console_url: None,
+            api_port: 40511,
+            console_port: None,
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            loaded_model_rows: vec![DashboardModelRow {
+                name: "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string(),
+                role: Some("host".to_string()),
+                status: RuntimeStatus::Ready,
+                port: Some(40511),
+                device: None,
+                slots: Some(4),
+                quantization: Some("Q4_K_XL".to_string()),
+                ctx_size: None,
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: Some(2.9),
+            }],
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        let row = &state.loaded_model_rows[0];
+        assert_eq!(row.device.as_deref(), Some("CUDA0"));
+        assert_eq!(row.status, RuntimeStatus::Ready);
+        assert_eq!(row.port, Some(40511));
+        assert_eq!(row.quantization.as_deref(), Some("Q4_K_XL"));
+        assert_eq!(row.file_size_gb, Some(2.9));
+    }
+
+    #[test]
+    fn runtime_ready_process_only_snapshot_preserves_loaded_model_device_metadata() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: Vec::new(),
+                webserver_rows: Vec::new(),
+                loaded_model_rows: vec![DashboardModelRow {
+                    name: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL".to_string(),
+                    role: Some("model".to_string()),
+                    status: RuntimeStatus::Loading,
+                    port: None,
+                    device: Some("CUDA1".to_string()),
+                    slots: Some(4),
+                    quantization: None,
+                    ctx_size: Some(65_536),
+                    ctx_used_tokens: None,
+                    lanes: None,
+                    file_size_gb: None,
+                }],
+            },
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::RuntimeReady {
+            api_url: "http://localhost:40511".to_string(),
+            console_url: None,
+            api_port: 40511,
+            console_port: None,
+            models_count: Some(1),
+            pi_command: None,
+            goose_command: None,
+        }));
+
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            llama_process_rows: vec![DashboardProcessRow {
+                name: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL".to_string(),
+                backend: String::new(),
+                status: RuntimeStatus::Ready,
+                port: 45145,
+                pid: 132098,
+            }],
+            loaded_model_rows: Vec::new(),
+            ..DashboardSnapshot::default()
+        }));
+
+        assert_eq!(state.loaded_model_rows.len(), 1);
+        let row = &state.loaded_model_rows[0];
+        assert_eq!(row.name, "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.device.as_deref(), Some("CUDA1"));
+        assert_eq!(row.status, RuntimeStatus::Loading);
+    }
+
+    #[test]
+    fn planned_process_row_reconciles_with_canonical_ready_name() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LaunchPlan {
+            plan: DashboardLaunchPlan {
+                llama_process_rows: vec![DashboardProcessRow {
+                    name: "llama-server Qwen3.5-4B-UD-Q4_K_XL".to_string(),
+                    backend: String::new(),
+                    status: RuntimeStatus::Loading,
+                    port: 0,
+                    pid: 0,
+                }],
+                webserver_rows: Vec::new(),
+                loaded_model_rows: Vec::new(),
+            },
+        }));
+
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::LlamaReady {
+            model: Some("unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string()),
+            port: 9338,
+            ctx_size: Some(8192),
+            log_path: None,
+        }));
+
+        assert_eq!(state.llama_process_rows.len(), 1);
+        let row = &state.llama_process_rows[0];
+        assert_eq!(row.name, "llama-server unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        assert_eq!(row.status, RuntimeStatus::Ready);
+        assert_eq!(row.port, 9338);
+    }
+
+    #[test]
+    fn startup_failure_summary_sanitizes_multiline_detail() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(
+            OutputEvent::LlamaStartupFailed {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: Some("/tmp/skippy-native.log".to_string()),
+                detail: "llama-server exited
+See /tmp/skippy-native.log:
+tail line"
+                    .to_string(),
+            },
+        ));
+
+        let summary = render_startup_summary(&state);
+        assert_eq!(
+            summary[0],
+            "startup=failed  failure=llama-server exited See /tmp/skippy-native.log: tail line"
+        );
+        assert!(!summary[0].contains('\n'));
+
+        let tui_summary =
+            spans_plain_text(&startup_lifecycle_summary_line(&state.startup_lifecycle, 160).spans);
+        assert!(tui_summary
+            .contains("failure=llama-server exited See /tmp/skippy-native.log: tail line"));
+        assert!(!tui_summary.contains('\n'));
+
+        let title = join_token_panel_right_title(&state);
+        assert!(title.starts_with("startup failed: llama-server exited See"));
+        assert!(!title.contains('\n'));
+    }
+
+    pub(crate) fn assert_startup_lifecycle_transitions_pending_partial_ready_failed() {
+        startup_lifecycle_transitions_pending_partial_ready_failed();
+    }
+
+    pub(crate) fn assert_startup_lifecycle_keeps_runtime_ready_as_final_edge() {
+        startup_lifecycle_keeps_runtime_ready_as_final_edge();
+    }
+
+    pub(crate) fn assert_startup_failures_surface_in_tui_events_and_status() {
+        startup_failures_surface_in_tui_events_and_status();
+    }
+
+    pub(crate) fn assert_startup_failure_summary_sanitizes_multiline_detail() {
+        startup_failure_summary_sanitizes_multiline_detail();
+    }
+
+    pub(crate) fn assert_rpc_and_llama_startup_failures_mark_components_failed() {
+        llama_startup_failures_mark_components_failed();
+    }
+
+    pub(crate) fn assert_discovery_and_join_failures_mark_startup_mesh_component_failed() {
+        discovery_and_join_failures_mark_startup_mesh_component_failed();
+    }
+
+    pub(crate) fn assert_post_ready_peer_churn_does_not_reopen_startup_failure() {
+        post_ready_peer_churn_does_not_reopen_startup_failure();
+    }
+
+    pub(crate) fn assert_startup_history_is_visible_after_late_tui_attach() {
+        startup_history_is_visible_after_late_tui_attach();
+    }
+
+    pub(crate) fn assert_startup_history_keeps_order_when_tui_attaches_late() {
+        startup_history_keeps_order_when_tui_attaches_late();
+    }
+
+    pub(crate) fn assert_endpoint_rows_remain_starting_until_ready_events() {
+        endpoint_rows_remain_starting_until_ready_events();
+    }
+
+    pub(crate) fn assert_startup_launch_plan_renders_not_ready_rows_before_actions() {
+        startup_launch_plan_renders_not_ready_rows_before_actions();
+    }
+
+    pub(crate) fn assert_startup_progress_after_launch_plan_shows_dashboard_not_loader() {
+        startup_progress_after_launch_plan_shows_dashboard_not_loader();
+    }
+
+    pub(crate) fn assert_planned_rows_transition_from_not_ready_to_ready_events() {
+        planned_rows_transition_from_not_ready_to_ready_events();
+    }
+
+    pub(crate) fn assert_launch_plan_rows_survive_empty_startup_snapshot() {
+        launch_plan_rows_survive_empty_startup_snapshot();
+    }
+
+    pub(crate) fn assert_launch_plan_preserves_distinct_port_zero_endpoint_rows() {
+        launch_plan_preserves_distinct_port_zero_endpoint_rows();
+    }
+
+    pub(crate) fn assert_snapshot_upsert_preserves_distinct_port_zero_endpoint_rows() {
+        snapshot_upsert_preserves_distinct_port_zero_endpoint_rows();
+    }
+
+    pub(crate) fn assert_planned_port_zero_process_rows_bind_to_concrete_startup_events() {
+        planned_port_zero_process_rows_bind_to_concrete_startup_events();
+    }
+
+    pub(crate) fn assert_fallback_mode_surfaces_startup_failures_without_tui() {
+        fallback_mode_surfaces_startup_failures_without_tui();
+    }
+
+    pub(crate) fn assert_shutdown_suppresses_late_ready_render() {
+        shutdown_suppresses_late_ready_render();
+    }
+
+    pub(crate) fn assert_interactive_post_terminal_exit_resumes_plain_event_output() {
+        interactive_post_terminal_exit_resumes_plain_event_output();
+    }
+
+    #[test]
+    fn fallback_mode_surfaces_startup_failures_without_tui() {
+        let mut formatter = DashboardFormatter::default();
+        let mut rendered = String::new();
+
+        for event in [
+            OutputEvent::Startup {
+                version: "v0.65.0".to_string(),
+                message: None,
+            },
+            OutputEvent::LlamaStarting {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: None,
+            },
+            OutputEvent::LlamaStartupFailed {
+                model: Some("Qwen3-32B".to_string()),
+                http_port: 9338,
+                ctx_size: Some(8192),
+                log_path: None,
+                detail: "llama-server exited before listening".to_string(),
+            },
+        ] {
+            rendered = formatter
+                .format(&event)
+                .expect("fallback formatter should keep rendering durable startup failures");
+        }
+
+        assert!(rendered.contains("startup=failed"));
+        assert!(rendered.contains("llama-server=failed"));
+        assert!(rendered.contains("llama-server exited before listening"));
+    }
+
+    #[test]
+    fn shutdown_suppresses_late_ready_render() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
+            version: "v0.65.0".to_string(),
+            message: None,
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::ApiStarting {
+            url: "http://localhost:9337".to_string(),
+        }));
+        state.reduce(DashboardAction::OutputEvent(OutputEvent::Shutdown {
+            reason: None,
+        }));
+
+        for event in [
+            OutputEvent::ApiReady {
+                url: "http://localhost:9337".to_string(),
+            },
+            OutputEvent::RuntimeReady {
+                api_url: "http://localhost:9337".to_string(),
+                console_url: Some("http://localhost:3131".to_string()),
+                api_port: 9337,
+                console_port: Some(3131),
+                models_count: Some(1),
+                pi_command: None,
+                goose_command: None,
+            },
+        ] {
+            state.reduce(DashboardAction::OutputEvent(event));
+        }
+
+        let dashboard = render_dashboard_text(&state);
+        let rendered = render_tui_frame_snapshot(&state, 160, 32);
+
+        assert_eq!(
+            state.startup_lifecycle().phase,
+            StartupLifecyclePhase::ShuttingDown
+        );
+        assert!(dashboard.contains("startup=shutting down"));
+        assert!(rendered.contains("startup=shutting down"));
+        assert!(!dashboard.contains("mesh-llm runtime ready"));
+        assert!(!rendered.contains("mesh-llm runtime ready"));
+        assert!(matches!(
+            state.api.as_ref().map(|api| &api.status),
+            Some(RuntimeStatus::ShuttingDown)
+        ));
+    }
+
+    #[test]
     fn tui_snapshot_renders_full_dashboard_spec() {
         let mut state = DashboardState::default();
         state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
-            220, 24,
+            260, 32,
         )));
         state.reduce(DashboardAction::SnapshotUpdated(snapshot_fixture(2, 30)));
         state.reduce(DashboardAction::OutputEvent(OutputEvent::Startup {
@@ -9695,6 +13343,41 @@ mod tests {
                     slots: Some(8),
                     quantization: Some("Q5_K_M".to_string()),
                     ctx_size: Some(4096),
+                    ctx_used_tokens: Some(2048),
+                    lanes: Some(vec![
+                        DashboardModelLane {
+                            index: 0,
+                            active: true,
+                        },
+                        DashboardModelLane {
+                            index: 1,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 2,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 3,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 4,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 5,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 6,
+                            active: false,
+                        },
+                        DashboardModelLane {
+                            index: 7,
+                            active: false,
+                        },
+                    ]),
                     file_size_gb: Some(12.0),
                 },
             ],
@@ -9704,39 +13387,77 @@ mod tests {
         let (rendered, buffer) = render_tui_frame_snapshot_with_buffer(&state, 260, 32);
         let theme = tui_theme();
         let (full_title_y, full_title_line) = find_rendered_line(&rendered, "Segmented-Model");
+        let full_border_line = rendered
+            .lines()
+            .nth(full_title_y.saturating_sub(1))
+            .expect("expected card border above model name");
         assert!(
-            full_title_line.contains('╭') && full_title_line.contains('╮'),
-            "expected bordered card title line in {full_title_line}"
+            full_border_line.contains("│╭"),
+            "expected model card to start flush against the panel content edge, without a highlight gutter, in {full_border_line}"
         );
         assert!(
-            full_title_line.contains("│╭"),
-            "expected model card to start flush against the panel content edge, without a highlight gutter, in {full_title_line}"
+            !full_title_line.contains("PORT:"),
+            "model name should have its own interior row before metadata: {full_title_line}"
         );
         let (full_ctx_y, full_ctx_line) =
-            find_rendered_line_after(&rendered, full_title_y, "n/a / n/a");
-        let (full_cap_y, full_cap_line) =
-            find_rendered_line_after(&rendered, full_ctx_y, "24.0 / 24.0 GB");
+            find_rendered_line_after(&rendered, full_title_y, "8192 / 8192");
+        let (full_slots_y, full_slots_line) =
+            find_rendered_line_after(&rendered, full_ctx_y, "2 / 4");
         let (_, divider_line) = find_rendered_line_after(&rendered, full_title_y, "──");
         assert!(
             !divider_line.contains('├') && !divider_line.contains('┤'),
             "expected subtle interior divider, not frame-joining divider, in {divider_line}"
         );
         assert!(
-            full_ctx_line.contains("CTX") && full_ctx_line.contains("n/a / n/a"),
+            full_ctx_line.contains("CTX") && full_ctx_line.contains("8192 / 8192"),
             "expected CTX row with right-aligned value label in {full_ctx_line}"
         );
         assert!(
-            full_cap_line.contains("FILE") && full_cap_line.contains("24.0 / 24.0 GB"),
-            "expected FILE row with right-aligned value label in {full_cap_line}"
+            full_slots_line.contains("SLOTS") && full_slots_line.contains("2 / 4"),
+            "expected SLOTS row with right-aligned value label in {full_slots_line}"
         );
-        let full_ctx_gauge_x = full_ctx_line
+        let full_ctx_gauge_byte = full_ctx_line
             .find('█')
+            .expect("expected CTX usage bar byte coordinate");
+        let full_slots_block_byte = full_slots_line
+            .find('◼')
+            .expect("expected SLOTS block byte coordinate");
+        let full_ctx_gauge_x = full_ctx_line[..full_ctx_gauge_byte].chars().count();
+        let full_slots_block_x = full_slots_line[..full_slots_block_byte].chars().count();
+        let full_ctx_bar_end_x = full_ctx_gauge_x
+            + full_ctx_line[full_ctx_gauge_byte..]
+                .chars()
+                .take_while(|ch| *ch == '█')
+                .count();
+        let full_ctx_value_x = full_ctx_line
+            .find("8192 / 8192")
             .map(|index| full_ctx_line[..index].chars().count())
-            .expect("expected CTX usage bar x coordinate");
-        let full_cap_gauge_x = full_cap_line
-            .find('█')
-            .map(|index| full_cap_line[..index].chars().count())
-            .expect("expected FILE usage bar x coordinate");
+            .expect("expected CTX value label x coordinate");
+        let full_slots_value_x = full_slots_line
+            .find("2 / 4")
+            .map(|index| full_slots_line[..index].chars().count())
+            .expect("expected SLOTS value label x coordinate");
+        let full_slots_label_x = full_slots_line
+            .find("SLOTS")
+            .map(|index| full_slots_line[..index].chars().count())
+            .expect("expected SLOTS label x coordinate");
+        assert!(
+            full_ctx_bar_end_x < full_ctx_value_x && full_slots_block_x < full_slots_value_x,
+            "expected a visible gap between metric visuals and value labels: {full_ctx_line} / {full_slots_line}"
+        );
+        assert!(
+            full_slots_block_x > full_slots_label_x + "SLOTS".chars().count(),
+            "expected visible gap between SLOTS label and slot blocks: {full_slots_line}"
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_slots_block_x + 1).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
+            )]
+                .symbol(),
+            "◼",
+            "expected adjacent visible slot blocks without separators"
+        );
         assert_eq!(
             buffer[(
                 u16::try_from(full_ctx_gauge_x).unwrap(),
@@ -9744,60 +13465,125 @@ mod tests {
             )]
                 .style()
                 .fg,
-            Some(theme.dim)
+            Some(tui_model_usage_color(1.0))
         );
         assert_eq!(
             buffer[(
-                u16::try_from(full_cap_gauge_x).unwrap(),
-                u16::try_from(full_cap_y).unwrap()
+                u16::try_from(full_slots_block_x).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
             )]
                 .style()
                 .fg,
-            Some(tui_model_usage_color(1.0))
+            Some(theme.warning)
+        );
+        assert_eq!(
+            buffer[(
+                u16::try_from(full_slots_block_x + 2).unwrap(),
+                u16::try_from(full_slots_y).unwrap()
+            )]
+                .style()
+                .fg,
+            Some(theme.dim)
         );
 
-        let (half_title_y, _) = find_rendered_line(&rendered, "Half-Scale");
+        let half_row = DashboardModelRow {
+            name: "Half-Scale".to_string(),
+            role: Some("host".to_string()),
+            status: RuntimeStatus::Ready,
+            port: Some(4002),
+            device: Some("CUDA0".to_string()),
+            slots: Some(8),
+            quantization: Some("Q5_K_M".to_string()),
+            ctx_size: Some(4096),
+            ctx_used_tokens: Some(2048),
+            lanes: Some(vec![
+                DashboardModelLane {
+                    index: 0,
+                    active: true,
+                },
+                DashboardModelLane {
+                    index: 1,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 2,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 3,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 4,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 5,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 6,
+                    active: false,
+                },
+                DashboardModelLane {
+                    index: 7,
+                    active: false,
+                },
+            ]),
+            file_size_gb: Some(12.0),
+        };
+        let mut half_buffer =
+            Buffer::empty(Rect::new(0, 0, 80, PRETTY_TUI_MODEL_CARD_HEIGHT as u16));
+        TuiModelCardWidget {
+            row: &half_row,
+            content_width: 78,
+            is_selected: false,
+            is_focused: false,
+        }
+        .render(half_buffer.area, &mut half_buffer);
+        let half_rendered = buffer_to_rendered_string(&half_buffer);
+        let (half_title_y, _) = find_rendered_line(&half_rendered, "Half-Scale");
         let (half_ctx_y, half_ctx_line) =
-            find_rendered_line_after(&rendered, half_title_y, "n/a / n/a");
-        let (half_cap_y, half_cap_line) =
-            find_rendered_line_after(&rendered, half_ctx_y, "12.0 / 24.0 GB");
+            find_rendered_line_after(&half_rendered, half_title_y, "2048 / 4096");
+        let (half_slots_y, half_slots_line) =
+            find_rendered_line_after(&half_rendered, half_ctx_y, "1 / 8");
         let half_ctx_gauge_x = half_ctx_line
             .find('█')
             .map(|index| half_ctx_line[..index].chars().count())
             .expect("expected half-scale CTX usage bar x coordinate");
-        let half_cap_gauge_x = half_cap_line
-            .find('█')
-            .map(|index| half_cap_line[..index].chars().count())
-            .expect("expected half-scale FILE usage bar x coordinate");
+        let half_slots_block_x = half_slots_line
+            .find('◼')
+            .map(|index| half_slots_line[..index].chars().count())
+            .expect("expected half-scale SLOTS block x coordinate");
         assert_eq!(
-            buffer[(
+            half_buffer[(
                 u16::try_from(half_ctx_gauge_x).unwrap(),
                 u16::try_from(half_ctx_y).unwrap()
             )]
                 .style()
                 .fg,
-            Some(theme.dim)
+            Some(tui_model_usage_color(0.5))
         );
         assert_eq!(
-            buffer[(
-                u16::try_from(half_cap_gauge_x).unwrap(),
-                u16::try_from(half_cap_y).unwrap()
+            half_buffer[(
+                u16::try_from(half_slots_block_x).unwrap(),
+                u16::try_from(half_slots_y).unwrap()
             )]
                 .style()
                 .fg,
-            Some(tui_model_usage_color(0.5))
+            Some(theme.warning)
         );
         let ctx_value_x = half_ctx_line
-            .find("n/a / n/a")
+            .find("2048 / 4096")
             .map(|index| half_ctx_line[..index].chars().count())
             .expect("expected half CTX value label x coordinate");
-        let file_value_x = half_cap_line
-            .find("12.0 / 24.0 GB")
-            .map(|index| half_cap_line[..index].chars().count())
-            .expect("expected half FILE value label x coordinate");
+        let slots_value_x = half_slots_line
+            .find("1 / 8")
+            .map(|index| half_slots_line[..index].chars().count())
+            .expect("expected half SLOTS value label x coordinate");
         assert!(
             ((half_ctx_gauge_x + 1)..ctx_value_x).any(|x| {
-                buffer[(
+                half_buffer[(
                     u16::try_from(x).unwrap(),
                     u16::try_from(half_ctx_y).unwrap(),
                 )]
@@ -9808,16 +13594,52 @@ mod tests {
             "expected CTX usage bar to show grey empty track after the fill"
         );
         assert!(
-            ((half_cap_gauge_x + 1)..file_value_x).any(|x| {
-                buffer[(
+            ((half_slots_block_x + 1)..slots_value_x).any(|x| {
+                half_buffer[(
                     u16::try_from(x).unwrap(),
-                    u16::try_from(half_cap_y).unwrap(),
+                    u16::try_from(half_slots_y).unwrap(),
                 )]
                     .style()
                     .fg
                     == Some(theme.dim)
             }),
-            "expected FILE usage bar to show grey empty track after the fill"
+            "expected SLOTS row to show grey inactive blocks after the active lane"
+        );
+        assert!(
+            half_slots_line.contains("◼◼") && !half_slots_line.contains("◼ ◼"),
+            "expected slot blocks to render adjacently without separators: {half_slots_line}"
+        );
+    }
+
+    #[test]
+    fn tui_models_panel_renders_two_loaded_model_cards_in_compact_dashboard() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            260, 33,
+        )));
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            loaded_model_rows: vec![
+                sample_model_row("unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL", 37615),
+                sample_model_row("unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL", 34097),
+            ],
+            ..snapshot_fixture(0, 30)
+        }));
+
+        let rendered = render_tui_frame_snapshot(&state, 260, 33);
+
+        assert!(
+            rendered.contains("unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL"),
+            "expected first loaded model card in compact dashboard: {rendered}"
+        );
+        assert!(
+            rendered.contains("unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL"),
+            "expected second loaded model card in compact dashboard: {rendered}"
+        );
+        let (first_y, _) = find_rendered_line(&rendered, "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL");
+        let (second_y, _) = find_rendered_line(&rendered, "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL");
+        assert!(
+            second_y.saturating_sub(first_y) >= PRETTY_TUI_MODEL_CARD_HEIGHT,
+            "expected the first card to keep its full height before the second card: {rendered}"
         );
     }
 
@@ -9837,17 +13659,51 @@ mod tests {
                 slots: Some(8),
                 quantization: Some("Q8_0".to_string()),
                 ctx_size: Some(8192),
+                ctx_used_tokens: Some(8192),
+                lanes: Some(vec![
+                    DashboardModelLane {
+                        index: 0,
+                        active: true,
+                    },
+                    DashboardModelLane {
+                        index: 1,
+                        active: true,
+                    },
+                    DashboardModelLane {
+                        index: 2,
+                        active: true,
+                    },
+                    DashboardModelLane {
+                        index: 3,
+                        active: false,
+                    },
+                    DashboardModelLane {
+                        index: 4,
+                        active: false,
+                    },
+                    DashboardModelLane {
+                        index: 5,
+                        active: false,
+                    },
+                    DashboardModelLane {
+                        index: 6,
+                        active: false,
+                    },
+                    DashboardModelLane {
+                        index: 7,
+                        active: false,
+                    },
+                ]),
                 file_size_gb: Some(24.0),
             }],
             ..snapshot_fixture(0, 30)
         }));
 
         let (rendered, buffer) = render_tui_frame_snapshot_with_buffer(&state, 260, 24);
-        let theme = tui_theme();
         let (title_y, title_line) = find_rendered_line(&rendered, "Metadata-Model");
         assert!(
-            title_line.contains('╭') && title_line.contains('╮'),
-            "expected bordered card title line in {title_line}"
+            !title_line.contains("PORT:"),
+            "model name should be separated from metadata: {title_line}"
         );
         let (meta_y, meta_line) = find_rendered_line_after(&rendered, title_y, "STATUS");
         let (_, detail_line) = find_rendered_line_after(&rendered, title_y, "QUANT");
@@ -9860,8 +13716,8 @@ mod tests {
             "expected port in {meta_line}"
         );
         assert!(
-            meta_line.contains("DEVICE: n/a"),
-            "expected temporary device placeholder in {meta_line}"
+            meta_line.contains("DEVICE: CUDA0"),
+            "expected device in {meta_line}"
         );
         assert!(
             !meta_line.contains("DEV:"),
@@ -9875,18 +13731,18 @@ mod tests {
         let port_byte = models_meta_line
             .find("PORT:")
             .expect("expected PORT label x coordinate");
-        let device_byte = models_meta_line
-            .find("DEVICE:")
-            .expect("expected DEVICE label x coordinate");
         let status_byte = models_meta_line
             .find("STATUS:")
             .expect("expected STATUS label x coordinate");
+        let device_byte = models_meta_line
+            .find("DEVICE:")
+            .expect("expected DEVICE label x coordinate");
         let port_x = models_meta_line[..port_byte].chars().count();
-        let device_x = models_meta_line[..device_byte].chars().count();
         let status_x = models_meta_line[..status_byte].chars().count();
+        let device_x = models_meta_line[..device_byte].chars().count();
         assert!(
-            (device_x - port_x).abs_diff(status_x - device_x) <= 1,
-            "expected PORT, DEVICE, and STATUS to use equal three-column spacing in {models_meta_line}"
+            port_x < status_x && status_x < device_x,
+            "expected PORT, STATUS, and DEVICE to stay ordered in {models_meta_line}"
         );
         assert!(
             detail_line.contains("SLOTS: 8"),
@@ -9897,36 +13753,36 @@ mod tests {
             "expected quantization in {detail_line}"
         );
         assert!(
-            detail_line.contains("CTX: n/a"),
-            "expected temporary ctx placeholder in {detail_line}"
+            detail_line.contains("CTX: 8192"),
+            "expected runtime context size in {detail_line}"
         );
         assert!(
             !detail_line.contains("ROLE:"),
             "role should not render in model details: {detail_line}"
         );
-        let (ctx_y, ctx_line) = find_rendered_line_after(&rendered, title_y, "n/a / n/a");
+        let (ctx_y, ctx_line) = find_rendered_line_after(&rendered, title_y, "8192 / 8192");
         let (_, divider_line) = find_rendered_line_after(&rendered, title_y, "──");
-        let (file_y, file_line) = find_rendered_line_after(&rendered, title_y, "24.0 / 24.0 GB");
+        let (slots_y, slots_line) = find_rendered_line_after(&rendered, title_y, "3 / 8");
         assert!(
             !divider_line.contains('├') && !divider_line.contains('┤'),
             "expected subtle interior divider, not frame-joining divider, in {divider_line}"
         );
         assert!(
-            ctx_line.contains("CTX") && ctx_line.contains("n/a / n/a"),
+            ctx_line.contains("CTX") && ctx_line.contains("8192 / 8192"),
             "expected visible ctx stat with right label in {ctx_line}"
         );
         assert!(
-            file_line.contains("FILE") && file_line.contains("24.0 / 24.0 GB"),
-            "expected visible file size stat with right label in {file_line}"
+            slots_line.contains("SLOTS") && slots_line.contains("3 / 8"),
+            "expected visible slot stat with right label in {slots_line}"
         );
         let ctx_gauge_x = ctx_line
             .find('█')
             .map(|index| ctx_line[..index].chars().count())
             .expect("expected CTX usage bar x coordinate");
-        let file_gauge_x = file_line
-            .find('█')
-            .map(|index| file_line[..index].chars().count())
-            .expect("expected FILE usage bar x coordinate");
+        let slots_block_x = slots_line
+            .find('◼')
+            .map(|index| slots_line[..index].chars().count())
+            .expect("expected SLOTS block x coordinate");
         assert_eq!(
             buffer[(
                 u16::try_from(ctx_gauge_x).unwrap(),
@@ -9934,17 +13790,77 @@ mod tests {
             )]
                 .style()
                 .fg,
-            Some(theme.dim)
+            Some(tui_model_usage_color(1.0))
         );
         assert_eq!(
             buffer[(
-                u16::try_from(file_gauge_x).unwrap(),
-                u16::try_from(file_y).unwrap()
+                u16::try_from(slots_block_x).unwrap(),
+                u16::try_from(slots_y).unwrap()
             )]
                 .style()
                 .fg,
-            Some(tui_model_usage_color(1.0))
+            Some(tui_theme().warning)
         );
+    }
+
+    #[test]
+    fn tui_model_card_separates_name_from_metadata_columns() {
+        let mut state = DashboardState::default();
+        state.reduce(DashboardAction::Resize(dashboard_layout_for_terminal_size(
+            120, 24,
+        )));
+        state.reduce(DashboardAction::SnapshotUpdated(DashboardSnapshot {
+            loaded_model_rows: vec![DashboardModelRow {
+                name: "qwen2.5-0.5b-instruct-q4_k_m".to_string(),
+                role: Some("host".to_string()),
+                status: RuntimeStatus::Ready,
+                port: Some(49201),
+                device: Some("GPU0".to_string()),
+                slots: Some(4),
+                quantization: Some("Q4_K_M".to_string()),
+                ctx_size: Some(8192),
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: Some(0.5),
+            }],
+            ..snapshot_fixture(0, 30)
+        }));
+
+        let rendered = render_tui_frame_snapshot(&state, 120, 24);
+        let (name_y, name_line) = find_rendered_line(&rendered, "qwen2.5-0.5b");
+        let (meta_y, meta_line) = find_rendered_line_after(&rendered, name_y, "STATUS:");
+        let (_, detail_line) = find_rendered_line_after(&rendered, name_y, "QUANT:");
+
+        assert!(
+            !name_line.contains("PORT:")
+                && !name_line.contains("DEVICE:")
+                && !name_line.contains("STATUS:"),
+            "model name row should not share space with metadata columns: {name_line}"
+        );
+        assert!(
+            meta_y > name_y,
+            "metadata should render on a row after the model name"
+        );
+        assert!(
+            !meta_line.contains("qwen2.5"),
+            "metadata row should not include the model name: {meta_line}"
+        );
+        assert!(
+            meta_line.contains("PORT:")
+                && meta_line.contains("STATUS:")
+                && meta_line.contains("DEVICE:"),
+            "top metadata row should expose PORT, STATUS, and DEVICE: {meta_line}"
+        );
+        assert!(
+            detail_line.contains("SLOTS:")
+                && detail_line.contains("QUANT:")
+                && detail_line.contains("CTX:"),
+            "bottom metadata row should expose SLOTS, QUANT, and CTX: {detail_line}"
+        );
+    }
+
+    pub(crate) fn assert_tui_model_card_separates_name_from_metadata_columns() {
+        tui_model_card_separates_name_from_metadata_columns();
     }
 
     #[test]
@@ -9964,6 +13880,8 @@ mod tests {
                 slots: Some(4),
                 quantization: Some("Q4_K_M".to_string()),
                 ctx_size: Some(8192),
+                ctx_used_tokens: None,
+                lanes: None,
                 file_size_gb: Some(24.0),
             }],
             ..snapshot_fixture(0, 30)
@@ -9973,8 +13891,8 @@ mod tests {
         let (title_y, title_line) = rendered
             .lines()
             .enumerate()
-            .find(|(_, line)| line.contains('╭') && line.contains('…'))
-            .expect("expected truncated card title line");
+            .find(|(_, line)| line.contains('…'))
+            .expect("expected truncated model name line");
         let (meta_y, meta_line) = find_rendered_line_after(&rendered, title_y, "DEVICE");
         let (_, detail_line) = find_rendered_line_after(&rendered, title_y, "Q4_K_M");
         assert!(
@@ -9986,12 +13904,12 @@ mod tests {
             "expected quantization to remain visible: {detail_line}"
         );
         assert!(
-            meta_line.contains("n/a"),
-            "expected device placeholder: {meta_line}"
+            meta_line.contains("DEVICE: GPU0"),
+            "expected readable device column: {meta_line}"
         );
         assert!(
-            !meta_line.contains("GPU0"),
-            "raw device should not render while placeholder data is used: {meta_line}"
+            meta_line.contains("PORT:") && meta_line.contains("STATUS:"),
+            "top metadata row should keep three columns visible: {meta_line}"
         );
         assert!(meta_y > title_y, "expected metadata on a later card row");
         assert!(
@@ -10280,7 +14198,7 @@ mod tests {
     }
 
     #[test]
-    fn interactive_preterminal_render_uses_tui_snapshot_only() {
+    fn interactive_preterminal_render_uses_plain_event_output() {
         let mut formatter = InteractiveDashboardFormatter::default();
 
         let rendered = formatter
@@ -10294,14 +14212,60 @@ mod tests {
                 goose_command: None,
             })
             .expect("interactive pre-terminal render should succeed")
-            .expect("interactive formatter should emit initial textual snapshot");
+            .expect("interactive formatter should emit a normal console line");
 
-        assert!(rendered.contains("Incoming Requests"));
-        assert!(rendered.contains("READY"));
-        assert!(rendered.contains('─'));
-        assert!(rendered.contains('│'));
+        assert_eq!(rendered, "✅ Mesh runtime ready (1 model(s))\n");
+        assert!(!rendered.contains("Incoming Requests"));
+        assert!(!rendered.contains('─'));
+        assert!(!rendered.contains('│'));
         assert!(!rendered.contains("Running llama.cpp instances"));
         assert!(!rendered.contains("Running models"));
+    }
+
+    pub(crate) fn assert_interactive_preterminal_render_uses_plain_event_output() {
+        interactive_preterminal_render_uses_plain_event_output();
+    }
+
+    #[test]
+    fn interactive_post_terminal_exit_resumes_plain_event_output() {
+        let mut formatter = InteractiveDashboardFormatter {
+            terminal_active: true,
+            ..Default::default()
+        };
+
+        let active_shutdown = formatter
+            .handle_output_event(&OutputEvent::Shutdown { reason: None })
+            .expect("active TUI event formatting should succeed");
+        assert!(
+            active_shutdown.is_none(),
+            "active TUI should not emit normal console output"
+        );
+
+        formatter.terminal_active = false;
+
+        let shutdown = formatter
+            .handle_output_event(&OutputEvent::Shutdown { reason: None })
+            .expect("inactive post-exit event formatting should succeed")
+            .expect("post-exit event should resume normal pretty output");
+        assert_eq!(shutdown, "mesh-llm shutting down\n");
+        assert!(!shutdown.contains("Mesh Events"));
+        assert!(!shutdown.contains('─'));
+
+        let ready = formatter
+            .handle_output_event(&OutputEvent::RuntimeReady {
+                api_url: "http://localhost:9337".to_string(),
+                console_url: Some("http://localhost:3131".to_string()),
+                api_port: 9337,
+                console_port: Some(3131),
+                models_count: Some(1),
+                pi_command: None,
+                goose_command: None,
+            })
+            .expect("post-exit runtime event formatting should succeed")
+            .expect("post-exit runtime event should remain visible as plain output");
+        assert_eq!(ready, "✅ Mesh runtime ready (1 model(s))\n");
+        assert!(!ready.contains("Incoming Requests"));
+        assert!(!ready.contains('│'));
     }
 
     #[test]
@@ -10768,10 +14732,13 @@ mod tests {
             .expect("peer render should succeed");
 
         assert!(dashboard.contains("Running llama.cpp instances"));
+        assert!(dashboard.contains("Startup status"));
         assert!(dashboard.contains("Running models"));
         assert!(dashboard.contains("Running webserver"));
         assert!(dashboard.contains("Running API"));
         assert!(dashboard.contains("Mesh events (latest 2)"));
+        assert!(dashboard.contains("startup=ready"));
+        assert!(dashboard.contains("mesh=ready  api=ready  console=ready"));
         assert!(dashboard.contains("llama-server   starting   port=43683"));
         assert!(dashboard.contains("model=Qwen3.6-35B"));
         assert!(dashboard.contains("ctx=8192"));
@@ -10799,6 +14766,7 @@ mod tests {
                 .expect("pretty formatter should render every event variant");
             assert!(
                 dashboard_rendered.contains("Running llama.cpp instances")
+                    && dashboard_rendered.contains("Startup status")
                     && dashboard_rendered.contains("Running models")
                     && dashboard_rendered.contains("Running webserver")
                     && dashboard_rendered.contains("Running API")
@@ -10986,7 +14954,6 @@ mod tests {
         let long_model = "Qwen3.6-35B-A3B-UD-Q4_K_XL-with-extra-routing-suffix";
         let long_token =
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.super.long.mesh.invite.token.payload";
-        let long_rpc_log = "/Users/ndizazzo/.mesh-llm/runtime/3845607/logs/rpc-server-43683-with-a-very-long-name.log";
         let long_llama_log = "/Users/ndizazzo/.mesh-llm/runtime/3845607/logs/llama-server-8001-with-a-very-long-name.log";
         let mut formatter =
             DashboardFormatter::with_state(DashboardState::with_mesh_event_limit(8));
@@ -10998,13 +14965,6 @@ mod tests {
                 mesh_name: None,
             })
             .expect("invite render should succeed");
-        formatter
-            .format(&OutputEvent::RpcServerStarting {
-                port: 43683,
-                device: "CUDA0".to_string(),
-                log_path: Some(long_rpc_log.to_string()),
-            })
-            .expect("rpc render should succeed");
         formatter
             .format(&OutputEvent::LlamaStarting {
                 model: Some(long_model.to_string()),
@@ -11023,11 +14983,8 @@ mod tests {
 
         assert!(dashboard.contains(long_model));
         assert!(dashboard.contains(long_token));
-        assert!(dashboard.contains(long_rpc_log));
         assert!(dashboard.contains(long_llama_log));
         assert!(dashboard.contains("Mesh events (latest 8)"));
-        assert!(dashboard.contains("│ rpc-server   starting   port=43683   device=CUDA0"));
-        assert!(dashboard.contains("│              logs=/Users/ndizazzo/.mesh-llm/runtime/3845607/logs/rpc-server-43683-with-a-very-long-name.log"));
         assert!(dashboard.contains("│ llama-server   starting   port=8001"));
         assert!(dashboard.contains("model=Qwen3.6-35B-A3B-UD-Q4_K_XL-with-extra-routing-suffix"));
         assert!(dashboard.contains("ctx=8192"));

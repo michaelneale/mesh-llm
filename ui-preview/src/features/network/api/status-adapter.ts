@@ -1,6 +1,13 @@
 import { DASHBOARD_HARNESS } from '@/features/app-tabs/data'
 import type { StatusPayload, PeerInfo } from '@/lib/api/types'
-import type { DashboardHarnessData, Peer, PeerSummary, StatusMetric, MeshNode, ModelSummary } from '@/features/app-tabs/types'
+import type {
+  DashboardHarnessData,
+  Peer,
+  PeerSummary,
+  StatusMetric,
+  MeshNode,
+  ModelSummary
+} from '@/features/app-tabs/types'
 
 function mapNodeState(state: 'client' | 'standby' | 'loading' | 'serving'): 'online' | 'degraded' | 'offline' {
   if (state === 'serving') return 'online'
@@ -23,7 +30,7 @@ function adaptPeer(peer: PeerInfo): Peer {
     vramGB: peer.my_vram_gb,
     toksPerSec: peer.tok_per_sec,
     hardwareLabel: peer.hardware_label,
-    owner: peer.owner,
+    owner: peer.owner
   }
 }
 
@@ -33,7 +40,7 @@ function adaptSelfPeer(payload: StatusPayload): Peer {
     hostname: payload.hostname ?? 'localhost',
     region: payload.region ?? '',
     status: mapNodeState(payload.node_state),
-    hostedModels: payload.serving_models.map(m => m.name),
+    hostedModels: payload.serving_models.map((m) => m.name),
     sharePct: 0,
     latencyMs: 0,
     loadPct: payload.load_pct ?? 0,
@@ -41,12 +48,12 @@ function adaptSelfPeer(payload: StatusPayload): Peer {
     role: 'you' as const,
     version: payload.version,
     vramGB: payload.my_vram_gb,
-    toksPerSec: payload.tok_per_sec,
+    toksPerSec: payload.tok_per_sec
   }
 }
 
 function adaptPeerSummary(peers: Peer[]): PeerSummary {
-  const online = peers.filter(p => p.status === 'online').length
+  const online = peers.filter((p) => p.status === 'online').length
   const totalVram = peers.reduce((sum, p) => sum + (p.vramGB ?? 0), 0)
   return { total: peers.length, online, capacity: `${totalVram.toFixed(0)} GB` }
 }
@@ -59,26 +66,26 @@ function adaptStatusMetrics(payload: StatusPayload): StatusMetric[] {
       value: payload.node_state,
       badge: {
         label: payload.node_state,
-        tone: payload.node_state === 'serving' ? 'good' : payload.node_state === 'loading' ? 'warn' : 'muted',
-      },
+        tone: payload.node_state === 'serving' ? 'good' : payload.node_state === 'loading' ? 'warn' : 'muted'
+      }
     },
     {
       id: 'active-requests',
       label: 'Active Requests',
-      value: payload.active_requests ?? 0,
+      value: payload.active_requests ?? 0
     },
     {
       id: 'tok-per-sec',
       label: 'Tokens/sec',
       value: payload.tok_per_sec?.toFixed(1) ?? '0',
-      unit: 'tok/s',
+      unit: 'tok/s'
     },
     {
       id: 'vram',
       label: 'VRAM',
       value: payload.my_vram_gb?.toFixed(1) ?? '0',
-      unit: 'GB',
-    },
+      unit: 'GB'
+    }
   ]
 }
 
@@ -91,12 +98,12 @@ function adaptMeshNodes(payload: StatusPayload, peers: Peer[]): MeshNode[] {
     status: mapNodeState(payload.node_state),
     role: 'self',
     meshState: payload.node_state,
-    servingModels: payload.serving_models.map(m => m.name),
+    servingModels: payload.serving_models.map((m) => m.name),
     hostname: payload.hostname,
-    vramGB: payload.my_vram_gb,
+    vramGB: payload.my_vram_gb
   }
 
-  const remotePeers = peers.filter(p => p.role !== 'you')
+  const remotePeers = peers.filter((p) => p.role !== 'you')
   const peerCount = remotePeers.length
 
   const peerNodes: MeshNode[] = remotePeers.map((peer, i) => ({
@@ -109,7 +116,7 @@ function adaptMeshNodes(payload: StatusPayload, peers: Peer[]): MeshNode[] {
     meshState: peer.status === 'online' ? 'serving' : peer.status === 'degraded' ? 'loading' : 'standby',
     servingModels: peer.hostedModels,
     hostname: peer.hostname,
-    vramGB: peer.vramGB,
+    vramGB: peer.vramGB
   }))
 
   return [selfNode, ...peerNodes]
@@ -126,6 +133,6 @@ export function adaptStatusToDashboard(payload: StatusPayload, models: ModelSumm
     statusMetrics: adaptStatusMetrics(payload),
     meshNodeSeeds: adaptMeshNodes(payload, allPeers),
     meshId: payload.mesh_id ?? '',
-    models,
+    models
   }
 }

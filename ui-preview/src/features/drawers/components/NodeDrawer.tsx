@@ -60,7 +60,7 @@ function NodeDrawerContent({
   peer,
   models,
   onClose,
-  titleId,
+  titleId
 }: {
   node: DrawerNode
   peer?: Peer
@@ -87,10 +87,18 @@ function NodeDrawerContent({
         <div className="pb-5 pt-3">
           <SectionHead icon={drawerIcon(Cpu)}>Node metadata</SectionHead>
           <div className="grid grid-cols-2 gap-2 px-[18px]">
-            <KV icon={drawerIcon(Cpu)} label="CPU">{node.cpu}</KV>
-            <KV icon={drawerIcon(HardDrive)} label="RAM">{node.ramGB} GB</KV>
-            <KV icon={drawerIcon(HardDrive)} label="VRAM">{nodeTotalGB(node)} GB</KV>
-            <KV icon={drawerIcon(Cpu)} label="GPUs">{node.gpus.length}</KV>
+            <KV icon={drawerIcon(Cpu)} label="CPU">
+              {node.cpu}
+            </KV>
+            <KV icon={drawerIcon(HardDrive)} label="RAM">
+              {node.ramGB} GB
+            </KV>
+            <KV icon={drawerIcon(HardDrive)} label="VRAM">
+              {nodeTotalGB(node)} GB
+            </KV>
+            <KV icon={drawerIcon(Cpu)} label="GPUs">
+              {node.gpus.length}
+            </KV>
           </div>
 
           <SectionHead icon={drawerIcon(Cpu)}>Accelerators</SectionHead>
@@ -102,7 +110,9 @@ function NodeDrawerContent({
               >
                 <div className="font-mono text-[length:var(--density-type-caption-lg)] text-fg-dim">GPU {gpu.idx}</div>
                 <div className="mt-0.5 text-[length:var(--density-type-control)] text-foreground">{gpu.name}</div>
-                <div className="mt-1 font-mono text-[length:var(--density-type-label)] text-fg-faint">{gpu.totalGB} GB total</div>
+                <div className="mt-1 font-mono text-[length:var(--density-type-label)] text-fg-faint">
+                  {gpu.totalGB} GB total
+                </div>
               </div>
             ))}
           </div>
@@ -121,7 +131,9 @@ function NodeDrawerContent({
         badges={
           <>
             <DrawerBadge tone={role === 'You' ? 'accent' : 'muted'}>{role}</DrawerBadge>
-            <DrawerBadge dot tone="good">Serving</DrawerBadge>
+            <DrawerBadge dot tone="good">
+              Serving
+            </DrawerBadge>
           </>
         }
         onClose={onClose}
@@ -133,10 +145,18 @@ function NodeDrawerContent({
       <div className="pb-6 pt-3">
         <h3 className="sr-only">Node metadata</h3>
         <div className="flex gap-2 px-[18px]">
-          <KV icon={drawerIcon(Activity)} label="Latency">{peer ? `${formatLatency(peer.latencyMs)} ms` : 'N/A'}</KV>
-          <KV icon={drawerIcon(HardDrive)} label="Node VRAM">{peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : 'N/A'}</KV>
-          <KV icon={drawerIcon(Network)} label="Mesh share">{peer ? `${peer.sharePct}%` : 'N/A'}</KV>
-          <KV icon={drawerIcon(Cpu)} label="Models">{peer?.hostedModels.length ?? 0}</KV>
+          <KV icon={drawerIcon(Activity)} label="Latency">
+            {peer ? `${formatLatency(peer.latencyMs)} ms` : 'N/A'}
+          </KV>
+          <KV icon={drawerIcon(HardDrive)} label="Node VRAM">
+            {peer?.vramGB != null ? `${peer.vramGB.toFixed(1)} GB` : 'N/A'}
+          </KV>
+          <KV icon={drawerIcon(Network)} label="Mesh share">
+            {peer ? `${peer.sharePct}%` : 'N/A'}
+          </KV>
+          <KV icon={drawerIcon(Cpu)} label="Models">
+            {peer?.hostedModels.length ?? 0}
+          </KV>
         </div>
 
         {peer ? (
@@ -154,13 +174,18 @@ function NodeDrawerContent({
                 const hostedModel = modelForName(models, modelName)
                 const hostedStatus = modelStatusBadge(hostedModel?.status)
                 return (
-                  <div className="grid grid-cols-[1.6fr_1fr_0.6fr] items-center border-t border-border-soft px-3 py-[9px]" key={modelName}>
+                  <div
+                    className="grid grid-cols-[1.6fr_1fr_0.6fr] items-center border-t border-border-soft px-3 py-[9px]"
+                    key={modelName}
+                  >
                     <span className="truncate font-mono text-[length:var(--density-type-control)]">{modelName}</span>
                     <div className="flex flex-wrap gap-1">
                       {index === 0 ? <DrawerBadge tone="good">Serving</DrawerBadge> : null}
                       <DrawerBadge tone="accent">Hosted</DrawerBadge>
                     </div>
-                    <DrawerBadge dot tone={hostedStatus.tone}>{hostedStatus.label}</DrawerBadge>
+                    <DrawerBadge dot tone={hostedStatus.tone}>
+                      {hostedStatus.label}
+                    </DrawerBadge>
                   </div>
                 )
               })}
@@ -168,9 +193,15 @@ function NodeDrawerContent({
 
             <SectionHead icon={drawerIcon(Cpu)}>Hardware</SectionHead>
             <div className="space-y-2 px-[18px]">
-              <KV icon={drawerIcon(Hash)} label="Hostname">{peer.hostname}</KV>
-              <KV icon={drawerIcon(Hash)} label="Version">{peer.version ? `v${peer.version}` : 'N/A'}</KV>
-              <KV icon={drawerIcon(Cpu)} label="Device">{hardwareLabel(peer, node)}</KV>
+              <KV icon={drawerIcon(Hash)} label="Hostname">
+                {peer.hostname}
+              </KV>
+              <KV icon={drawerIcon(Hash)} label="Version">
+                {peer.version ? `v${peer.version}` : 'N/A'}
+              </KV>
+              <KV icon={drawerIcon(Cpu)} label="Device">
+                {hardwareLabel(peer, node)}
+              </KV>
             </div>
           </>
         ) : null}

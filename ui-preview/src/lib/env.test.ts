@@ -11,7 +11,9 @@ describe('router base path helpers', () => {
   it('builds public hrefs for root and nested routes', () => {
     expect(hrefWithBasePath('/', '/mesh/llm/ui-preview')).toBe('/mesh/llm/ui-preview/')
     expect(hrefWithBasePath('/chat', '/mesh/llm/ui-preview')).toBe('/mesh/llm/ui-preview/chat')
-    expect(hrefWithBasePath('configuration/defaults', '/mesh/llm/ui-preview/')).toBe('/mesh/llm/ui-preview/configuration/defaults')
+    expect(hrefWithBasePath('configuration/defaults', '/mesh/llm/ui-preview/')).toBe(
+      '/mesh/llm/ui-preview/configuration/defaults'
+    )
   })
 
   it('leaves hrefs root-relative when mounted at the origin root', () => {

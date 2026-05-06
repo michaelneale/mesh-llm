@@ -12,12 +12,12 @@ const messages: Record<DictionaryKey, string> = {
   'app.name': 'meshllm',
   'tabs.network': 'Network',
   'tabs.chat': 'Chat',
-  'tabs.configuration': 'Configuration',
+  'tabs.configuration': 'Configuration'
 }
 
 const I18nContext = createContext<I18nContextValue>({
   locale: 'en-US',
-  t: (key) => messages[key],
+  t: (key) => messages[key]
 })
 
 export function I18nProvider({ locale, children }: { locale: string; children: ReactNode }) {

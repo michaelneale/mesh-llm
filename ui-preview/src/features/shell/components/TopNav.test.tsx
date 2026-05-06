@@ -6,26 +6,26 @@ import { TopNav } from '@/features/shell/components/TopNav'
 function installClipboard(writeText: (text: string) => Promise<void>) {
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
-    value: { writeText },
+    value: { writeText }
   })
 }
 
 function installPointerCaptureShim() {
   Object.defineProperty(HTMLElement.prototype, 'hasPointerCapture', {
     configurable: true,
-    value: () => false,
+    value: () => false
   })
   Object.defineProperty(HTMLElement.prototype, 'setPointerCapture', {
     configurable: true,
-    value: () => undefined,
+    value: () => undefined
   })
   Object.defineProperty(HTMLElement.prototype, 'releasePointerCapture', {
     configurable: true,
-    value: () => undefined,
+    value: () => undefined
   })
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
     configurable: true,
-    value: () => undefined,
+    value: () => undefined
   })
 }
 
@@ -40,7 +40,7 @@ function renderTopNav(overrides: Partial<React.ComponentProps<typeof TopNav>> = 
       theme="auto"
       version="0.64.0"
       {...overrides}
-    />,
+    />
   )
 }
 
@@ -74,14 +74,18 @@ describe('TopNav', () => {
     await user.click(apiButton)
 
     expect(await screen.findByRole('heading', { name: 'API access' })).toBeInTheDocument()
-    const apiDescription = screen.getByText('The app is not using live backend data right now. The configured endpoint is still available below.')
+    const apiDescription = screen.getByText(
+      'The app is not using live backend data right now. The configured endpoint is still available below.'
+    )
     expect(apiDescription).toHaveClass('max-w-none')
     expect(apiDescription).not.toHaveClass('max-w-[44ch]')
 
     const endpointCopyButton = screen.getByLabelText('Copy API endpoint')
     const commandCopyButton = screen.getByLabelText('Copy List models command')
 
-    const activeDataSourceValue = screen.getAllByText('test harness').find((element) => element.classList.contains('break-words'))
+    const activeDataSourceValue = screen
+      .getAllByText('test harness')
+      .find((element) => element.classList.contains('break-words'))
     expect(activeDataSourceValue).toHaveClass('break-words')
     expect(activeDataSourceValue).not.toHaveClass('break-all')
     expect(screen.getByText('http://127.0.0.1:9337/v1')).toHaveClass('break-words')
@@ -110,7 +114,9 @@ describe('TopNav', () => {
     await user.click(joinButton)
 
     expect(await screen.findByRole('heading', { name: 'Join or invite' })).toBeInTheDocument()
-    const joinDescription = screen.getByText('Keep the common join flows close when you need to add a node, client, or agent quickly.')
+    const joinDescription = screen.getByText(
+      'Keep the common join flows close when you need to add a node, client, or agent quickly.'
+    )
     expect(joinDescription).toHaveClass('max-w-none')
     expect(joinDescription).not.toHaveClass('max-w-[44ch]')
 
@@ -132,7 +138,7 @@ describe('TopNav', () => {
 
     const { rerender } = renderTopNav({
       showDeveloperPlayground: false,
-      onOpenDeveloperPlayground: undefined,
+      onOpenDeveloperPlayground: undefined
     })
 
     expect(screen.queryByRole('button', { name: 'Open developer playground' })).not.toBeInTheDocument()
@@ -148,7 +154,7 @@ describe('TopNav', () => {
         tab={null}
         theme="auto"
         version="0.64.0"
-      />,
+      />
     )
 
     await user.click(screen.getByRole('button', { name: 'Open developer playground' }))
@@ -243,13 +249,16 @@ describe('TopNav', () => {
       tabHrefs: {
         network: '/mesh/llm/ui-preview/',
         chat: '/mesh/llm/ui-preview/chat',
-        configuration: '/mesh/llm/ui-preview/configuration/toml-review',
-      },
+        configuration: '/mesh/llm/ui-preview/configuration/toml-review'
+      }
     })
 
     expect(screen.getByRole('link', { name: 'Network' })).toHaveAttribute('href', '/mesh/llm/ui-preview/')
     expect(screen.getByRole('link', { name: 'Chat' })).toHaveAttribute('href', '/mesh/llm/ui-preview/chat')
-    expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute('href', '/mesh/llm/ui-preview/configuration/toml-review')
+    expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute(
+      'href',
+      '/mesh/llm/ui-preview/configuration/toml-review'
+    )
 
     fireEvent.click(screen.getByRole('link', { name: 'Chat' }), { button: 0, metaKey: true })
 

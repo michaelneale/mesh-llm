@@ -3,10 +3,7 @@ import type { ThreadMessage } from '@/features/app-tabs/types'
 
 export function uiMessagesToThreadMessages(messages: UIMessage[]): ThreadMessage[] {
   return messages
-    .filter(
-      (m): m is UIMessage & { role: 'user' | 'assistant' } =>
-        m.role === 'user' || m.role === 'assistant',
-    )
+    .filter((m): m is UIMessage & { role: 'user' | 'assistant' } => m.role === 'user' || m.role === 'assistant')
     .map((message) => {
       const textPart = message.parts.find((part) => part.type === 'text')
       const body = textPart?.type === 'text' ? textPart.content : ''
@@ -14,7 +11,7 @@ export function uiMessagesToThreadMessages(messages: UIMessage[]): ThreadMessage
         id: message.id,
         messageRole: message.role,
         timestamp: message.createdAt ? message.createdAt.toISOString() : new Date().toISOString(),
-        body,
+        body
       }
     })
 }

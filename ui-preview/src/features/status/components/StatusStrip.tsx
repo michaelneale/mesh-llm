@@ -20,7 +20,14 @@ function Sparkline({ values, color = 'var(--color-accent)' }: { values: number[]
   const pts = values.map((v, i) => `${(i / denominator) * w},${h - ((v - min) / range) * (h - 2) - 1}`).join(' ')
   return (
     <svg className="shrink-0" width={w} height={h} style={{ display: 'block' }} aria-hidden="true">
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline
+        points={pts}
+        fill="none"
+        stroke={color}
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
       <polyline points={`0,${h} ${pts} ${w},${h}`} fill={color} opacity="0.08" stroke="none" />
     </svg>
   )
@@ -29,27 +36,42 @@ function Sparkline({ values, color = 'var(--color-accent)' }: { values: number[]
 export function StatusTile({ metric }: { metric: StatusMetric }) {
   const { sparkline, badge } = metric
   return (
-    <div className="grid min-w-0 flex-1 grid-rows-[14px_22px_18px] gap-y-1 border-r border-border-soft px-3.5 py-[12px] last:border-r-0" style={{ minHeight: 70 }}>
+    <div
+      className="grid min-w-0 flex-1 grid-rows-[14px_22px_18px] gap-y-1 border-r border-border-soft px-3.5 py-[12px] last:border-r-0"
+      style={{ minHeight: 70 }}
+    >
       <div className="flex min-w-0 items-center gap-1.5 text-[length:var(--density-type-label)] font-medium uppercase leading-none tracking-[0.6px] text-fg-faint">
         {metric.icon}
         <span className="truncate">{metric.label}</span>
       </div>
       <div className="flex min-w-0 items-baseline gap-1.5 overflow-hidden">
-        <span className="truncate font-mono text-[length:var(--density-type-title)] font-medium leading-none tracking-tight" style={{ letterSpacing: -0.4 }}>
+        <span
+          className="truncate font-mono text-[length:var(--density-type-title)] font-medium leading-none tracking-tight"
+          style={{ letterSpacing: -0.4 }}
+        >
           {metric.value}
         </span>
-        {metric.unit && <span className="shrink-0 font-mono text-[length:var(--density-type-label)] uppercase leading-none text-fg-faint">{metric.unit}</span>}
+        {metric.unit && (
+          <span className="shrink-0 font-mono text-[length:var(--density-type-label)] uppercase leading-none text-fg-faint">
+            {metric.unit}
+          </span>
+        )}
       </div>
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
         {sparkline && sparkline.length > 0 && (
-          <Sparkline values={sparkline} color={metric.id === 'inflight' ? 'var(--color-warn)' : 'var(--color-accent)'} />
+          <Sparkline
+            values={sparkline}
+            color={metric.id === 'inflight' ? 'var(--color-warn)' : 'var(--color-accent)'}
+          />
         )}
         {badge && (
-          <span className={cn(
-            'inline-flex items-center gap-[5px] text-[length:var(--density-type-label)] font-medium',
-            'before:size-[5px] before:shrink-0 before:rounded-full before:content-[""]',
-            toneClass(badge.tone),
-          )}>
+          <span
+            className={cn(
+              'inline-flex items-center gap-[5px] text-[length:var(--density-type-label)] font-medium',
+              'before:size-[5px] before:shrink-0 before:rounded-full before:content-[""]',
+              toneClass(badge.tone)
+            )}
+          >
             {badge.label}
           </span>
         )}
@@ -61,8 +83,13 @@ export function StatusTile({ metric }: { metric: StatusMetric }) {
 
 export function StatusStrip({ metrics }: { metrics: StatusMetric[] }) {
   return (
-    <section aria-label="Network status" className="panel-shell grid grid-cols-2 overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel sm:grid-cols-3 lg:flex">
-      {metrics.map((metric) => <StatusTile key={metric.id} metric={metric} />)}
+    <section
+      aria-label="Network status"
+      className="panel-shell grid grid-cols-2 overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel sm:grid-cols-3 lg:flex"
+    >
+      {metrics.map((metric) => (
+        <StatusTile key={metric.id} metric={metric} />
+      ))}
     </section>
   )
 }

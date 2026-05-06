@@ -45,6 +45,10 @@ impl CacheBytes {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn as_cow(&self) -> Result<Cow<'_, [u8]>> {
         match &self.repr {
             CacheBytesRepr::Inline(bytes) => Ok(Cow::Borrowed(bytes.as_slice())),

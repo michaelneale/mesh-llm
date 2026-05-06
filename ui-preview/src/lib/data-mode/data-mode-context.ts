@@ -10,5 +10,5 @@ export type DataModeContextValue = {
 
 export const DataModeContext = createContext<DataModeContextValue>({
   mode: 'harness',
-  setMode: () => undefined,
+  setMode: () => undefined
 })

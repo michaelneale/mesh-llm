@@ -152,11 +152,15 @@ fn family_policy_for_normalized_family_id(
 ) -> FamilyPolicy {
     match family_id {
         "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
-        | "olmo" | "gemma2" | "gemma" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
-        | "minimax_m27" | "qwen2moe" | "qwen3moe" => resident_kv_policy(activation_wire_dtype),
-        "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7" => {
-            kv_recurrent_policy(activation_wire_dtype)
+        | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma2" | "gemma" | "gemma3"
+        | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe"
+        | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "gptneox" | "bloom"
+        | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
+        | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon" => {
+            resident_kv_policy(activation_wire_dtype)
         }
+        "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7"
+        | "granite_hybrid" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -451,8 +455,12 @@ mod tests {
 
             match family_id {
                 "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
-                | "glm4" | "olmo" | "gemma" | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b"
-                | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe" => {
+                | "glm4" | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma" | "gemma2"
+                | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27"
+                | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe" | "hunyuan_dense"
+                | "hunyuan_moe" | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt"
+                | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral" | "internlm2" | "baichuan"
+                | "exaone" | "exaone4" | "cohere2" | "falcon" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -464,7 +472,7 @@ mod tests {
                     )
                 }
                 "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
-                | "rwkv7" => assert_eq!(
+                | "rwkv7" | "granite_hybrid" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,

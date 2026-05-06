@@ -11,7 +11,7 @@ export function badgeStyle(tone: DrawerBadgeTone) {
     return {
       background: 'color-mix(in oklab, var(--color-accent) 10%, var(--color-panel))',
       border: '1px solid color-mix(in oklab, var(--color-accent) 24%, var(--color-background))',
-      color: 'var(--color-accent)',
+      color: 'var(--color-accent)'
     }
   }
 
@@ -19,7 +19,7 @@ export function badgeStyle(tone: DrawerBadgeTone) {
     return {
       background: 'color-mix(in oklab, var(--color-good) 18%, var(--color-background))',
       border: '1px solid color-mix(in oklab, var(--color-good) 30%, var(--color-background))',
-      color: 'var(--color-good)',
+      color: 'var(--color-good)'
     }
   }
 
@@ -27,7 +27,7 @@ export function badgeStyle(tone: DrawerBadgeTone) {
     return {
       background: 'color-mix(in oklab, var(--color-warn) 18%, var(--color-background))',
       border: '1px solid color-mix(in oklab, var(--color-warn) 32%, var(--color-background))',
-      color: 'var(--color-warn)',
+      color: 'var(--color-warn)'
     }
   }
 
@@ -35,13 +35,13 @@ export function badgeStyle(tone: DrawerBadgeTone) {
     return {
       background: 'color-mix(in oklab, var(--color-bad) 14%, var(--color-background))',
       border: '1px solid color-mix(in oklab, var(--color-bad) 24%, var(--color-background))',
-      color: 'var(--color-bad)',
+      color: 'var(--color-bad)'
     }
   }
 
   return {
     background: 'var(--color-background)',
     border: '1px solid var(--color-border)',
-    color: 'var(--color-fg-faint)',
+    color: 'var(--color-fg-faint)'
   }
 }

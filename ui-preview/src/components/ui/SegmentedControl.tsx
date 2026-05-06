@@ -31,12 +31,13 @@ type SegmentedControlProps = {
 
 const rootClassNameByVariant = {
   buttons: 'flex flex-wrap gap-1.5',
-  pill: 'segmented-control inline-flex h-[28px] items-center rounded-full border p-[2px]',
+  pill: 'segmented-control inline-flex h-[28px] items-center rounded-full border p-[2px]'
 } satisfies Record<SegmentedControlVariant, string>
 
 const itemClassNameByVariant = {
-  buttons: 'ui-control inline-flex h-[30px] items-center rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-medium leading-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
-  pill: 'segmented-control__item inline-flex h-6 min-w-[65px] items-center justify-center rounded-full border border-transparent px-3 text-[length:var(--density-type-caption)] font-medium leading-none outline-none transition-[background,color,box-shadow] duration-150 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
+  buttons:
+    'ui-control inline-flex h-[30px] items-center rounded-[var(--radius)] border px-2.5 text-[length:var(--density-type-control)] font-medium leading-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent',
+  pill: 'segmented-control__item inline-flex h-6 min-w-[65px] items-center justify-center rounded-full border border-transparent px-3 text-[length:var(--density-type-caption)] font-medium leading-none outline-none transition-[background,color,box-shadow] duration-150 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent'
 } satisfies Record<SegmentedControlVariant, string>
 
 export function SegmentedControl({
@@ -53,7 +54,7 @@ export function SegmentedControl({
   renderOption,
   value,
   variant = 'buttons',
-  onValueChange,
+  onValueChange
 }: SegmentedControlProps) {
   return (
     <RadioGroup.Root
@@ -73,11 +74,19 @@ export function SegmentedControl({
 
         return (
           <RadioGroup.Item
-            className={cn(itemClassNameByVariant[variant], variant === 'pill' && optionDisabled && 'cursor-not-allowed hover:bg-transparent', itemClassName)}
+            className={cn(
+              itemClassNameByVariant[variant],
+              variant === 'pill' && optionDisabled && 'cursor-not-allowed hover:bg-transparent',
+              itemClassName
+            )}
             data-active={variant === 'buttons' && selected ? 'true' : undefined}
             data-fixed-selected={variant === 'pill' && selected && optionDisabled ? 'true' : undefined}
             data-selected={variant === 'pill' && selected && !optionDisabled ? 'true' : undefined}
-            data-selected-tone={variant === 'pill' && selected && !optionDisabled && option.selectedTone === 'accent' ? 'accent' : undefined}
+            data-selected-tone={
+              variant === 'pill' && selected && !optionDisabled && option.selectedTone === 'accent'
+                ? 'accent'
+                : undefined
+            }
             disabled={optionDisabled}
             key={option.value}
             tabIndex={itemTabIndex}

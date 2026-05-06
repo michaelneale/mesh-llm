@@ -36,7 +36,7 @@ function meshLinkLimit(node: MeshNode, getNodePeer?: (node: MeshNode) => Peer | 
 function linkConsumesCapacity(
   node: MeshNode,
   linkedNode: MeshNode,
-  getNodePeer?: (node: MeshNode) => Peer | undefined,
+  getNodePeer?: (node: MeshNode) => Peer | undefined
 ) {
   return isClientMeshNode(node, getNodePeer) || !isClientMeshNode(linkedNode, getNodePeer)
 }
@@ -73,8 +73,8 @@ export function buildMeshLinks(nodes: MeshNode[], getNodePeer?: (node: MeshNode)
     const consumesTargetCapacity = linkConsumesCapacity(candidate.target, candidate.source, getNodePeer)
 
     if (
-      (consumesSourceCapacity && sourceCount >= meshLinkLimit(candidate.source, getNodePeer))
-      || (consumesTargetCapacity && targetCount >= meshLinkLimit(candidate.target, getNodePeer))
+      (consumesSourceCapacity && sourceCount >= meshLinkLimit(candidate.source, getNodePeer)) ||
+      (consumesTargetCapacity && targetCount >= meshLinkLimit(candidate.target, getNodePeer))
     ) {
       return
     }
@@ -82,7 +82,7 @@ export function buildMeshLinks(nodes: MeshNode[], getNodePeer?: (node: MeshNode)
     links.set(candidate.key, {
       id: `${candidate.source.id}-${candidate.target.id}`,
       source: candidate.source,
-      target: candidate.target,
+      target: candidate.target
     })
 
     if (consumesSourceCapacity) {
@@ -104,7 +104,7 @@ export function buildMeshLinks(nodes: MeshNode[], getNodePeer?: (node: MeshNode)
       source: clientNode,
       target: nearestNonClient,
       distance: nodeDistanceSquared(clientNode, nearestNonClient),
-      key,
+      key
     })
   }
 
@@ -117,18 +117,19 @@ export function buildMeshLinks(nodes: MeshNode[], getNodePeer?: (node: MeshNode)
         source,
         target,
         distance: nodeDistanceSquared(source, target),
-        key,
+        key
       })
     }
   }
 
-  const sortCandidates = (candidates: MeshLinkCandidate[]) => candidates.sort((first, second) => {
-    const distanceDelta = first.distance - second.distance
+  const sortCandidates = (candidates: MeshLinkCandidate[]) =>
+    candidates.sort((first, second) => {
+      const distanceDelta = first.distance - second.distance
 
-    if (distanceDelta !== 0) return distanceDelta
+      if (distanceDelta !== 0) return distanceDelta
 
-    return first.key.localeCompare(second.key)
-  })
+      return first.key.localeCompare(second.key)
+    })
 
   for (const candidate of sortCandidates(clientCandidates)) {
     addLink(candidate)

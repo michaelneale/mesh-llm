@@ -48,7 +48,7 @@ export function viewportsMatch(first: Viewport, second: Viewport) {
 export function pointToScreen(point: Point, width: number, height: number, viewport: Viewport) {
   return {
     x: (point.x / 100) * width * viewport.zoom + viewport.panX,
-    y: (point.y / 100) * height * viewport.zoom + viewport.panY,
+    y: (point.y / 100) * height * viewport.zoom + viewport.panY
   }
 }
 
@@ -66,7 +66,7 @@ export function viewportLayerTransform(fromViewport: Viewport, toViewport: Viewp
   return {
     x: toViewport.panX - fromViewport.panX * scale,
     y: toViewport.panY - fromViewport.panY * scale,
-    scale,
+    scale
   }
 }
 
@@ -79,10 +79,12 @@ export function nodeFitsInsideViewport(node: MeshNode, size: CanvasSize, viewpor
   const horizontalPadding = Math.min(NODE_VISUAL_BOUNDS_PADDING_PX, size.width * 0.25)
   const verticalPadding = Math.min(NODE_VISUAL_BOUNDS_PADDING_PX, size.height * 0.25)
 
-  return screenPoint.x >= horizontalPadding
-    && screenPoint.x <= size.width - horizontalPadding
-    && screenPoint.y >= verticalPadding
-    && screenPoint.y <= size.height - verticalPadding
+  return (
+    screenPoint.x >= horizontalPadding &&
+    screenPoint.x <= size.width - horizontalPadding &&
+    screenPoint.y >= verticalPadding &&
+    screenPoint.y <= size.height - verticalPadding
+  )
 }
 
 export function calculateNodeBounds(nodes: MeshNode[], size: CanvasSize): NodeBounds | undefined {
@@ -90,10 +92,10 @@ export function calculateNodeBounds(nodes: MeshNode[], size: CanvasSize): NodeBo
     return undefined
   }
 
-  const minX = Math.min(...nodes.map((node) => node.x)) / 100 * size.width
-  const maxX = Math.max(...nodes.map((node) => node.x)) / 100 * size.width
-  const minY = Math.min(...nodes.map((node) => node.y)) / 100 * size.height
-  const maxY = Math.max(...nodes.map((node) => node.y)) / 100 * size.height
+  const minX = (Math.min(...nodes.map((node) => node.x)) / 100) * size.width
+  const maxX = (Math.max(...nodes.map((node) => node.x)) / 100) * size.width
+  const minY = (Math.min(...nodes.map((node) => node.y)) / 100) * size.height
+  const maxY = (Math.max(...nodes.map((node) => node.y)) / 100) * size.height
 
   return {
     minX,
@@ -103,7 +105,7 @@ export function calculateNodeBounds(nodes: MeshNode[], size: CanvasSize): NodeBo
     width: Math.max(1, maxX - minX),
     height: Math.max(1, maxY - minY),
     centerX: (minX + maxX) * 0.5,
-    centerY: (minY + maxY) * 0.5,
+    centerY: (minY + maxY) * 0.5
   }
 }
 
@@ -118,10 +120,12 @@ export function focusPointWithinNodeBounds(nodes: MeshNode[], size: CanvasSize, 
     return false
   }
 
-  return focusPoint.x >= bounds.minX
-    && focusPoint.x <= bounds.maxX
-    && focusPoint.y >= bounds.minY
-    && focusPoint.y <= bounds.maxY
+  return (
+    focusPoint.x >= bounds.minX &&
+    focusPoint.x <= bounds.maxX &&
+    focusPoint.y >= bounds.minY &&
+    focusPoint.y <= bounds.maxY
+  )
 }
 
 function activeZoomFocus(nodes: MeshNode[], size: CanvasSize, focusPoint: WorldPoint | undefined) {
@@ -146,7 +150,7 @@ export function calculatePanBounds(
   nodes: MeshNode[],
   size: CanvasSize,
   zoom: number,
-  focusPoint?: WorldPoint,
+  focusPoint?: WorldPoint
 ): PanBounds | undefined {
   const bounds = calculateNodeBounds(nodes, size)
 
@@ -165,7 +169,7 @@ export function calculatePanBounds(
     size.width,
     zoom,
     useIntersectionBounds,
-    focusPoint?.x,
+    focusPoint?.x
   )
   const yBounds = calculateAxisPanBounds(
     yVisualBounds,
@@ -173,14 +177,14 @@ export function calculatePanBounds(
     size.height,
     zoom,
     useIntersectionBounds,
-    focusPoint?.y,
+    focusPoint?.y
   )
 
   return {
     minPanX: xBounds.min,
     maxPanX: xBounds.max,
     minPanY: yBounds.min,
-    maxPanY: yBounds.max,
+    maxPanY: yBounds.max
   }
 }
 
@@ -188,7 +192,7 @@ function constrainAxisToFocus(
   bounds: { min: number; max: number },
   focusPosition: number | undefined,
   size: number,
-  zoom: number,
+  zoom: number
 ) {
   if (focusPosition === undefined) {
     return bounds
@@ -196,7 +200,7 @@ function constrainAxisToFocus(
 
   const focusBounds = {
     min: -focusPosition * zoom,
-    max: size - focusPosition * zoom,
+    max: size - focusPosition * zoom
   }
   const min = Math.max(bounds.min, focusBounds.min)
   const max = Math.min(bounds.max, focusBounds.max)
@@ -211,7 +215,7 @@ function calculateVisualAxisBounds(min: number, max: number, zoom: number): Visu
   return {
     min: visualMin,
     max: visualMax,
-    size: visualMax - visualMin,
+    size: visualMax - visualMin
   }
 }
 
@@ -223,7 +227,7 @@ function calculateCenteredVisualAxisBounds(visualBounds: VisualAxisBounds): Visu
   return {
     min: visualMin,
     max: visualMax,
-    size: visualMax - visualMin,
+    size: visualMax - visualMin
   }
 }
 
@@ -232,7 +236,7 @@ export function centerScreenRect(rect: ScreenRect): ScreenRect {
     x: rect.x + rect.width / 4,
     y: rect.y + rect.height / 4,
     width: rect.width / 2,
-    height: rect.height / 2,
+    height: rect.height / 2
   }
 }
 
@@ -242,28 +246,38 @@ function calculateAxisPanBounds(
   size: number,
   zoom: number,
   useIntersectionBounds: boolean,
-  focusPosition?: number,
+  focusPosition?: number
 ) {
   const deadZoneSize = Math.max(0, size - PAN_DEAD_ZONE_PX * 2)
 
   if (useIntersectionBounds) {
     return {
       min: -centeredVisualBounds.max,
-      max: size - centeredVisualBounds.min,
+      max: size - centeredVisualBounds.min
     }
   }
 
   if (visualBounds.size > deadZoneSize) {
-    return constrainAxisToFocus({
-      min: -visualBounds.min,
-      max: size - visualBounds.max,
-    }, focusPosition, size, zoom)
+    return constrainAxisToFocus(
+      {
+        min: -visualBounds.min,
+        max: size - visualBounds.max
+      },
+      focusPosition,
+      size,
+      zoom
+    )
   }
 
-  return constrainAxisToFocus({
-    min: PAN_DEAD_ZONE_PX - visualBounds.min,
-    max: size - PAN_DEAD_ZONE_PX - visualBounds.max,
-  }, focusPosition, size, zoom)
+  return constrainAxisToFocus(
+    {
+      min: PAN_DEAD_ZONE_PX - visualBounds.min,
+      max: size - PAN_DEAD_ZONE_PX - visualBounds.max
+    },
+    focusPosition,
+    size,
+    zoom
+  )
 }
 
 export function clampViewportToPanBounds(
@@ -271,7 +285,7 @@ export function clampViewportToPanBounds(
   size: CanvasSize,
   viewport: Viewport,
   focusPoint?: WorldPoint,
-  minZoom = calculateMaxZoomOut(nodes, size),
+  minZoom = calculateMaxZoomOut(nodes, size)
 ): Viewport {
   const zoom = clamp(viewport.zoom, minZoom, MAX_ZOOM)
   const bounds = calculatePanBounds(nodes, size, zoom, activeZoomFocus(nodes, size, focusPoint))
@@ -283,7 +297,7 @@ export function clampViewportToPanBounds(
   return {
     zoom,
     panX: clamp(viewport.panX, bounds.minPanX, bounds.maxPanX),
-    panY: clamp(viewport.panY, bounds.minPanY, bounds.maxPanY),
+    panY: clamp(viewport.panY, bounds.minPanY, bounds.maxPanY)
   }
 }
 
@@ -296,7 +310,7 @@ export function nodeBoundsToScreenRect(bounds: NodeBounds | undefined, viewport:
     x: bounds.minX * viewport.zoom + viewport.panX - NODE_VISUAL_BOUNDS_PADDING_PX,
     y: bounds.minY * viewport.zoom + viewport.panY - NODE_VISUAL_BOUNDS_PADDING_PX,
     width: bounds.width * viewport.zoom + NODE_VISUAL_BOUNDS_PADDING_PX * 2,
-    height: bounds.height * viewport.zoom + NODE_VISUAL_BOUNDS_PADDING_PX * 2,
+    height: bounds.height * viewport.zoom + NODE_VISUAL_BOUNDS_PADDING_PX * 2
   }
 }
 

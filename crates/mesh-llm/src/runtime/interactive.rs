@@ -25,6 +25,12 @@ pub(crate) enum InitialPromptMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InteractiveEntryKind {
+    Tui,
+    Line,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InteractiveCommand {
     Help,
     Quit,
@@ -97,20 +103,62 @@ pub(crate) fn spawn_handler(
     output_manager: &'static OutputManager,
     initial_prompt_mode: InitialPromptMode,
 ) {
-    match output_manager.console_session_mode() {
-        Some(ConsoleSessionMode::InteractiveDashboard) => spawn_tui_handler(
+    spawn_handler_with_first_paint_ack(
+        control_tx,
+        console_state,
+        output_manager,
+        initial_prompt_mode,
+        None,
+    );
+}
+
+pub(crate) fn spawn_handler_with_first_paint_ack(
+    control_tx: tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>,
+    console_state: MeshApi,
+    output_manager: &'static OutputManager,
+    initial_prompt_mode: InitialPromptMode,
+    first_paint_ack: Option<tokio::sync::oneshot::Sender<std::io::Result<()>>>,
+) {
+    match interactive_entry_kind(output_manager.console_session_mode()) {
+        InteractiveEntryKind::Tui => spawn_tui_handler(
             control_tx,
             console_state,
             output_manager,
             initial_prompt_mode,
+            first_paint_ack,
         ),
-        _ => spawn_line_handler(
-            control_tx,
-            console_state,
-            output_manager,
-            initial_prompt_mode,
-        ),
+        InteractiveEntryKind::Line => {
+            if let Some(ack) = first_paint_ack {
+                let _ = ack.send(Ok(()));
+            }
+            spawn_line_handler(
+                control_tx,
+                console_state,
+                output_manager,
+                initial_prompt_mode,
+            );
+        }
     }
+}
+
+pub(crate) fn interactive_entry_kind(
+    console_session_mode: Option<ConsoleSessionMode>,
+) -> InteractiveEntryKind {
+    match console_session_mode {
+        Some(ConsoleSessionMode::InteractiveDashboard) => InteractiveEntryKind::Tui,
+        _ => InteractiveEntryKind::Line,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_deferred_initial_prompt_waits_for_runtime_ready() {
+    let mut output = Vec::new();
+    maybe_write_initial_prompt(&mut output, InitialPromptMode::Deferred)
+        .expect("deferred prompt should remain a no-op until RuntimeReady");
+    assert!(
+        output.is_empty(),
+        "deferred prompt mode must not write the ready prompt during early interactive startup"
+    );
 }
 
 fn spawn_line_handler(
@@ -205,13 +253,16 @@ fn spawn_tui_handler(
     console_state: MeshApi,
     output_manager: &'static OutputManager,
     initial_prompt_mode: InitialPromptMode,
+    first_paint_ack: Option<tokio::sync::oneshot::Sender<std::io::Result<()>>>,
 ) {
     let runtime_handle = tokio::runtime::Handle::current();
     if let Err(err) = std::thread::Builder::new()
         .name("mesh-llm-interactive-tui".to_string())
         .spawn(move || {
             let fallback_control_tx = control_tx.clone();
-            if let Err(err) = run_tui_loop(&runtime_handle, control_tx, output_manager) {
+            if let Err(err) =
+                run_tui_loop(&runtime_handle, control_tx, output_manager, first_paint_ack)
+            {
                 let should_fallback = err.should_fallback_to_line_handler();
                 tracing::warn!("interactive pretty loop failed: {err}");
                 if should_fallback {
@@ -237,6 +288,7 @@ fn run_tui_loop(
     runtime_handle: &tokio::runtime::Handle,
     control_tx: tokio::sync::mpsc::UnboundedSender<RuntimeControlRequest>,
     output_manager: &'static OutputManager,
+    mut first_paint_ack: Option<tokio::sync::oneshot::Sender<std::io::Result<()>>>,
 ) -> Result<(), TuiLoopError> {
     enable_raw_mode()
         .map_err(std::io::Error::other)
@@ -246,13 +298,22 @@ fn run_tui_loop(
     let mut shutdown_sent = false;
 
     let result = (|| -> Result<(), TuiLoopError> {
-        runtime_handle
-            .block_on(output_manager.enter_tui())
-            .map_err(TuiLoopError::startup)?;
+        if let Err(err) = runtime_handle.block_on(output_manager.enter_tui()) {
+            send_first_paint_ack(&mut first_paint_ack, Err(clone_io_error(&err)));
+            return Err(TuiLoopError::startup(err));
+        }
 
         if let Ok((columns, rows)) = size() {
             let _ = runtime_handle
                 .block_on(output_manager.dispatch_tui_event(TuiEvent::Resize { columns, rows }));
+        }
+
+        match runtime_handle.block_on(output_manager.render_tui_if_dirty()) {
+            Ok(_) => send_first_paint_ack(&mut first_paint_ack, Ok(())),
+            Err(err) => {
+                send_first_paint_ack(&mut first_paint_ack, Err(clone_io_error(&err)));
+                return Err(TuiLoopError::startup(err));
+            }
         }
 
         loop {
@@ -315,6 +376,19 @@ fn run_tui_loop(
     result?;
     exit_result.map_err(TuiLoopError::runtime)?;
     raw_result.map_err(TuiLoopError::runtime)
+}
+
+fn send_first_paint_ack(
+    first_paint_ack: &mut Option<tokio::sync::oneshot::Sender<std::io::Result<()>>>,
+    result: std::io::Result<()>,
+) {
+    if let Some(ack) = first_paint_ack.take() {
+        let _ = ack.send(result);
+    }
+}
+
+fn clone_io_error(err: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(err.kind(), err.to_string())
 }
 
 #[derive(Debug)]
@@ -452,9 +526,10 @@ fn map_key_event(code: KeyCode, modifiers: KeyModifiers) -> Option<TuiEvent> {
 #[cfg(test)]
 mod tests {
     use super::{
-        console_session_mode_for_term, map_key_event, maybe_write_initial_prompt, parse_command,
-        read_tui_event, restore_tui_terminal_after_loop, write_ready_prompt, InitialPromptMode,
-        InteractiveCommand, TuiLoopError, HELP_TEXT, READY_PROMPT,
+        console_session_mode_for_term, interactive_entry_kind, map_key_event,
+        maybe_write_initial_prompt, parse_command, read_tui_event, restore_tui_terminal_after_loop,
+        write_ready_prompt, InitialPromptMode, InteractiveCommand, InteractiveEntryKind,
+        TuiLoopError, HELP_TEXT, READY_PROMPT,
     };
     use crate::cli::output::{ConsoleSessionMode, TuiEvent, TuiKeyEvent};
     use crossterm::event::{Event, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -527,6 +602,19 @@ mod tests {
             console_session_mode_for_term(false, false, Some("xterm-256color")),
             ConsoleSessionMode::Fallback
         );
+    }
+
+    #[test]
+    fn interactive_entry_kind_matches_console_session_mode() {
+        assert_eq!(
+            interactive_entry_kind(Some(ConsoleSessionMode::InteractiveDashboard)),
+            InteractiveEntryKind::Tui
+        );
+        assert_eq!(
+            interactive_entry_kind(Some(ConsoleSessionMode::Fallback)),
+            InteractiveEntryKind::Line
+        );
+        assert_eq!(interactive_entry_kind(None), InteractiveEntryKind::Line);
     }
 
     #[test]

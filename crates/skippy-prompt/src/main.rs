@@ -22,7 +22,8 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use serde_json::Value;
 use skippy_protocol::binary::{
     recv_reply, state_flags, write_stage_message, StageReplyStats, StageStateHeader,
-    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, READY_MAGIC,
+    StageWireMessage, WireActivationDType, WireMessageKind, WireReplyKind, LLAMA_TOKEN_NULL,
+    READY_MAGIC,
 };
 use skippy_protocol::{
     FlashAttentionType as StageFlashAttentionType, LoadMode, PeerConfig, StageConfig,
@@ -48,6 +49,7 @@ const DEFAULT_COUNT_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MARGIN_STEP_TOKENS: usize = usize::MAX;
 const DEFAULT_MESH_CTX_SIZE: u32 = 4096;
 const DEFAULT_MESH_PROMPT_MAX_NEW_TOKENS: usize = 0;
+const PROMPT_EXACT_PREFIX_RESTORE_MIN_TOKENS: usize = 512;
 
 #[derive(Parser)]
 #[command(about = "Prompt CLI for skippy binary servers")]
@@ -221,8 +223,6 @@ pub struct PromptArgs {
     pub no_think: bool,
     #[arg(long)]
     pub thinking_token_budget: Option<usize>,
-    #[arg(long)]
-    pub show_thinking: bool,
 }
 
 #[derive(Parser)]
@@ -312,8 +312,6 @@ pub struct BinaryReplArgs {
     pub no_think: bool,
     #[arg(long)]
     pub thinking_token_budget: Option<usize>,
-    #[arg(long)]
-    pub show_thinking: bool,
     #[arg(skip)]
     pub diagnostics_hint: Option<String>,
     #[arg(skip)]
@@ -341,6 +339,43 @@ struct PromptInterruptState {
 
 struct ActivePromptStream {
     state: Arc<PromptInterruptState>,
+}
+
+#[derive(Default)]
+struct PromptLiveSession {
+    messages: Vec<ChatTemplateMessage>,
+    resident_tokens: Vec<i32>,
+    stream: Option<TcpStream>,
+    dirty: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PromptSessionReuseStats {
+    outcome: &'static str,
+    reused_tokens: usize,
+    appended_prefill_tokens: usize,
+    resident_tokens_before: usize,
+    resident_tokens_after: usize,
+}
+
+impl Default for PromptSessionReuseStats {
+    fn default() -> Self {
+        Self {
+            outcome: "disabled",
+            reused_tokens: 0,
+            appended_prefill_tokens: 0,
+            resident_tokens_before: 0,
+            resident_tokens_after: 0,
+        }
+    }
+}
+
+impl PromptLiveSession {
+    fn mark_dirty(&mut self) {
+        self.resident_tokens.clear();
+        self.stream.take();
+        self.dirty = true;
+    }
 }
 
 impl PromptInterruptState {
@@ -791,7 +826,6 @@ fn prompt_repl_launch(args: PromptArgs) -> Result<()> {
         raw_prompt: args.raw_prompt,
         no_think: args.no_think,
         thinking_token_budget: args.thinking_token_budget,
-        show_thinking: args.show_thinking,
         diagnostics_hint: Some(stage_diagnostics_hint(&run_dir, &stages)),
         log_context,
     });
@@ -938,14 +972,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             None => eprintln!("thinking: model template default"),
         }
     }
-    eprintln!(
-        "thinking output: {}",
-        if args.show_thinking {
-            "showing <think> blocks"
-        } else {
-            "hiding visible <think> blocks"
-        }
-    );
+    eprintln!("thinking output: raw returned tokens");
     let default_session_id = args.session_id.clone().unwrap_or_else(default_session_id);
     let default_wire_session_id = stable_wire_id(&[default_session_id.as_bytes()]);
     eprintln!("session_id={default_session_id} wire_session_id={default_wire_session_id}");
@@ -975,13 +1002,15 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     let mut editor = prompt_editor(&history)?;
     if args.log_context.is_some() {
         eprintln!(
-            "Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :logs [name] [lines], :rerun N, or :quit."
+            "Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :logs [name] [lines], :rerun N, :noappend, :append, or :quit."
         );
     } else {
-        eprintln!("Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :rerun N, or :quit.");
+        eprintln!("Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :rerun N, :noappend, :append, or :quit.");
     }
 
     let mut prompt_index = 0usize;
+    let mut live_session = PromptLiveSession::default();
+    let mut append_transcript = true;
     loop {
         let Some(input) = read_history_prompt(&mut editor, "> ")? else {
             break;
@@ -1009,6 +1038,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 wire_session_id,
                 prompt_index,
                 prompt: &prompt,
+                live_session: None,
             })
             .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
             prompt_index += 1;
@@ -1023,6 +1053,25 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         }
         if input == ":history" {
             history.print();
+            continue;
+        }
+        if input == ":noappend" {
+            if append_transcript {
+                stop_live_prompt_session(
+                    &mut live_session,
+                    &args,
+                    wire_dtype,
+                    prompt_index,
+                    default_wire_session_id,
+                )?;
+            }
+            append_transcript = false;
+            eprintln!("prompt mode: noappend; each prompt is sent as a fresh request");
+            continue;
+        }
+        if input == ":append" {
+            append_transcript = true;
+            eprintln!("prompt mode: append; prompts continue the live chat transcript");
             continue;
         }
         if input == ":logs" || input.starts_with(":logs ") {
@@ -1054,6 +1103,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
                 wire_session_id: default_wire_session_id,
                 prompt_index,
                 prompt: &prompt,
+                live_session: None,
             })
             .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
             prompt_index += 1;
@@ -1061,7 +1111,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
         }
         history.push(input)?;
         let _ = editor.add_history_entry(input);
-        run_prompt(PromptRun {
+        let prompt_result = run_prompt(PromptRun {
             args: &args,
             tokenizer: &tokenizer,
             chat_template_model: chat_template_model.as_ref(),
@@ -1073,10 +1123,22 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             wire_session_id: default_wire_session_id,
             prompt_index,
             prompt: input,
-        })
-        .or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
+            live_session: append_transcript.then_some(&mut live_session),
+        });
+        if prompt_result.is_err() {
+            live_session.mark_dirty();
+        }
+        prompt_result.or_else(|error| handle_prompt_error(error, &interrupt, prompt_index))?;
         prompt_index += 1;
     }
+
+    stop_live_prompt_session(
+        &mut live_session,
+        &args,
+        wire_dtype,
+        prompt_index,
+        default_wire_session_id,
+    )?;
 
     Ok(())
 }
@@ -1267,136 +1329,6 @@ fn tail_remote_log(host: &str, path: &str, lines: usize) -> Result<Vec<String>> 
         .collect())
 }
 
-struct ThinkingOutputFilter {
-    enabled: bool,
-    hidden: bool,
-    suppress_leading_ws: bool,
-    pending: String,
-}
-
-struct FilteredOutput {
-    text: String,
-    suppressed_thinking: bool,
-}
-
-impl ThinkingOutputFilter {
-    const OPEN: &'static str = "<think>";
-    const CLOSE: &'static str = "</think>";
-    const KEEP_BYTES: usize = 7;
-
-    fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            hidden: false,
-            suppress_leading_ws: false,
-            pending: String::new(),
-        }
-    }
-
-    fn push(&mut self, piece: &str) -> FilteredOutput {
-        if !self.enabled {
-            return FilteredOutput {
-                text: piece.to_string(),
-                suppressed_thinking: false,
-            };
-        }
-        self.pending.push_str(piece);
-        let mut output = String::new();
-        let mut suppressed_thinking = false;
-        loop {
-            if self.hidden {
-                let Some(end) = find_ascii_case_insensitive(&self.pending, Self::CLOSE) else {
-                    let keep_bytes = self.pending.len().min(Self::KEEP_BYTES);
-                    let drain_to =
-                        previous_char_boundary(&self.pending, self.pending.len() - keep_bytes);
-                    suppressed_thinking |= drain_to > 0;
-                    self.pending.drain(..drain_to);
-                    break;
-                };
-                let drain_to = end + Self::CLOSE.len();
-                suppressed_thinking |= drain_to > 0;
-                self.pending.drain(..drain_to);
-                self.hidden = false;
-                self.suppress_leading_ws = true;
-                continue;
-            }
-
-            if self.suppress_leading_ws {
-                let trimmed = self.pending.trim_start().len();
-                let trim_bytes = self.pending.len().saturating_sub(trimmed);
-                if trim_bytes > 0 {
-                    self.pending.drain(..trim_bytes);
-                }
-                self.suppress_leading_ws = false;
-            }
-
-            if let Some(start) = find_ascii_case_insensitive(&self.pending, Self::OPEN) {
-                output.push_str(&self.pending[..start]);
-                let drain_to = start + Self::OPEN.len();
-                suppressed_thinking = true;
-                self.pending.drain(..drain_to);
-                self.hidden = true;
-                continue;
-            }
-
-            let emit_bytes = self.pending.len().saturating_sub(Self::KEEP_BYTES);
-            if emit_bytes == 0 {
-                break;
-            }
-            let emit_bytes = previous_char_boundary(&self.pending, emit_bytes);
-            output.push_str(&self.pending[..emit_bytes]);
-            self.pending.drain(..emit_bytes);
-            break;
-        }
-        FilteredOutput {
-            text: output,
-            suppressed_thinking,
-        }
-    }
-
-    fn finish(&mut self) -> FilteredOutput {
-        if !self.enabled {
-            return FilteredOutput {
-                text: String::new(),
-                suppressed_thinking: false,
-            };
-        }
-        if self.hidden {
-            self.pending.clear();
-            self.hidden = false;
-            self.suppress_leading_ws = false;
-            return FilteredOutput {
-                text: String::new(),
-                suppressed_thinking: true,
-            };
-        }
-        let mut output = std::mem::take(&mut self.pending);
-        if self.suppress_leading_ws {
-            output = output.trim_start().to_string();
-            self.suppress_leading_ws = false;
-        }
-        FilteredOutput {
-            text: output,
-            suppressed_thinking: false,
-        }
-    }
-}
-
-fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
-}
-
-fn previous_char_boundary(value: &str, index: usize) -> usize {
-    let mut index = index.min(value.len());
-    while index > 0 && !value.is_char_boundary(index) {
-        index -= 1;
-    }
-    index
-}
-
 fn format_prompt_for_model(
     tokenizer: &StageModel,
     chat_template_model: Option<&StageModel>,
@@ -1406,14 +1338,42 @@ fn format_prompt_for_model(
     if args.raw_prompt {
         return Ok(prompt.to_string());
     }
+
+    format_messages_for_model(
+        tokenizer,
+        chat_template_model,
+        &[ChatTemplateMessage::new("user", prompt)],
+        args,
+    )
+}
+
+fn format_messages_for_model(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    messages: &[ChatTemplateMessage],
+    args: &BinaryReplArgs,
+) -> Result<String> {
+    format_messages_for_model_with_options(tokenizer, chat_template_model, messages, args, true)
+}
+
+fn format_messages_for_model_with_options(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    messages: &[ChatTemplateMessage],
+    args: &BinaryReplArgs,
+    add_assistant: bool,
+) -> Result<String> {
+    if args.raw_prompt {
+        bail!("raw prompt mode does not support chat message formatting");
+    }
     let enable_thinking = prompt_thinking_override(args)?;
 
     chat_template_model
         .unwrap_or(tokenizer)
         .apply_chat_template_with_options(
-            &[ChatTemplateMessage::new("user", prompt)],
+            messages,
             ChatTemplateOptions {
-                add_assistant: true,
+                add_assistant,
                 enable_thinking,
             },
         )
@@ -1444,7 +1404,7 @@ fn prompt_openai_reasoning_config(
     no_think: bool,
     thinking_token_budget: Option<usize>,
 ) -> Result<Option<ReasoningConfig>> {
-    if no_think || thinking_token_budget.unwrap_or(0) == 0 {
+    if no_think || thinking_token_budget == Some(0) {
         return Ok(Some(ReasoningConfig {
             enabled: Some(false),
             max_tokens: Some(0),
@@ -1501,6 +1461,7 @@ struct PromptRun<'a> {
     wire_session_id: u64,
     prompt_index: usize,
     prompt: &'a str,
+    live_session: Option<&'a mut PromptLiveSession>,
 }
 
 fn run_prompt(run: PromptRun<'_>) -> Result<()> {
@@ -1516,6 +1477,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         wire_session_id,
         prompt_index,
         prompt,
+        mut live_session,
     } = run;
 
     if args.prefill_chunk_size == 0 {
@@ -1524,7 +1486,15 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     interrupt.begin_request();
     let wall_started = Instant::now();
     let tokenize_started = Instant::now();
-    let prompt_for_model = format_prompt_for_model(tokenizer, chat_template_model, prompt, args)?;
+    let live_enabled = live_session.is_some() && !args.raw_prompt;
+    let mut live_messages = Vec::new();
+    let prompt_for_model = if let Some(live) = live_session.as_ref().filter(|_| !args.raw_prompt) {
+        live_messages = live.messages.clone();
+        live_messages.push(ChatTemplateMessage::new("user", prompt));
+        format_messages_for_model(tokenizer, chat_template_model, &live_messages, args)?
+    } else {
+        format_prompt_for_model(tokenizer, chat_template_model, prompt, args)?
+    };
     let token_ids = tokenizer
         .tokenize(&prompt_for_model, true)
         .with_context(|| format!("tokenize prompt {prompt_for_model:?}"))?;
@@ -1549,40 +1519,187 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     let prompt_index_bytes = prompt_index.to_le_bytes();
     let request_id = stable_wire_id(&[session_id.as_bytes(), &prompt_index_bytes]);
 
-    eprintln!(
-        "request {prompt_index}: connecting to {}",
-        args.first_stage_addr
-    );
-    let mut stream = connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
-        .context("first binary stage did not become ready")?;
-    let _interrupt_guard = interrupt.activate(&stream)?;
+    let mut session_reuse = PromptSessionReuseStats::default();
+    let mut one_shot_stream = None;
+    if let Some(live) = live_session.as_deref_mut() {
+        let resident_before = live.resident_tokens.len();
+        session_reuse.resident_tokens_before = resident_before;
+        if live.dirty {
+            eprintln!("request {prompt_index}: resetting dirty live session");
+            reset_live_prompt_runtime(
+                live,
+                args,
+                wire_dtype,
+                prompt_index,
+                request_id,
+                wire_session_id,
+            )?;
+            session_reuse.outcome = "reset";
+        }
+        let prefix_match =
+            live_resident_prefix_matches(&live.resident_tokens, &token_ids, prefill_token_count);
+        if !live.resident_tokens.is_empty() && !prefix_match {
+            let common_prefix = common_token_prefix_len(&live.resident_tokens, &token_ids);
+            eprintln!(
+                "request {prompt_index}: live session prefix mismatch common_prefix={} resident_len={} prompt_len={} resident_tail={:?} prompt_tail={:?}",
+                common_prefix,
+                live.resident_tokens.len(),
+                token_ids.len(),
+                token_window(&live.resident_tokens, common_prefix),
+                token_window(&token_ids, common_prefix)
+            );
+            if common_prefix > 0 {
+                let stream = live
+                    .stream
+                    .as_mut()
+                    .context("live prompt stream was not connected")?;
+                send_trim_session(
+                    stream,
+                    wire_dtype,
+                    prompt_index,
+                    request_id,
+                    wire_session_id,
+                    common_prefix,
+                )
+                .with_context(|| stage_chain_error_context(args))?;
+                live.resident_tokens.truncate(common_prefix);
+                session_reuse.outcome = "partial";
+            } else {
+                eprintln!(
+                    "request {prompt_index}: live session prefix mismatch; resetting runtime lane"
+                );
+                reset_live_prompt_runtime(
+                    live,
+                    args,
+                    wire_dtype,
+                    prompt_index,
+                    request_id,
+                    wire_session_id,
+                )?;
+                session_reuse.outcome = "mismatch";
+            }
+        }
+        if live.stream.is_none() {
+            eprintln!(
+                "request {prompt_index}: connecting to {}",
+                args.first_stage_addr
+            );
+            live.stream = Some(
+                connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                    .context("first binary stage did not become ready")?,
+            );
+            eprintln!("request {prompt_index}: connected");
+            if session_reuse.outcome == "disabled" {
+                session_reuse.outcome = "miss";
+            }
+        } else if prefix_match {
+            session_reuse.outcome = "hit";
+        } else if session_reuse.outcome == "disabled" {
+            session_reuse.outcome = "miss";
+        }
+        session_reuse.reused_tokens = if prefix_match {
+            live.resident_tokens.len()
+        } else if session_reuse.outcome == "partial" {
+            live.resident_tokens.len()
+        } else {
+            0
+        };
+    } else {
+        eprintln!(
+            "request {prompt_index}: connecting to {}",
+            args.first_stage_addr
+        );
+        one_shot_stream = Some(
+            connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                .context("first binary stage did not become ready")?,
+        );
+        eprintln!("request {prompt_index}: connected");
+    }
+    let mut prefill_start = session_reuse.reused_tokens.min(prefill_token_count);
+    let stream = if let Some(live) = live_session.as_deref_mut() {
+        live.stream
+            .as_mut()
+            .context("live prompt stream was not connected")?
+    } else {
+        one_shot_stream
+            .as_mut()
+            .context("one-shot prompt stream was not connected")?
+    };
+    let _interrupt_guard = interrupt.activate(stream)?;
     let io_timeout = Duration::from_secs(args.decode_timeout_secs.max(1));
     stream.set_read_timeout(Some(io_timeout)).ok();
     stream.set_write_timeout(Some(io_timeout)).ok();
-    eprintln!("request {prompt_index}: connected");
+    let mut reply_stats = StageReplyStats::default();
+    if should_try_exact_prefix_restore(live_enabled, prefill_start, prefill_token_count) {
+        let restore_tokens = &token_ids[..prefill_token_count];
+        eprintln!(
+            "request {prompt_index}: checking exact-prefix cache tokens={}",
+            restore_tokens.len()
+        );
+        let restore = send_try_restore_prefill(
+            stream,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            restore_tokens,
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+        let hit_stage_count = stage_mask_count(restore.stats.kv_hit_stage_mask);
+        let cached_prompt_tokens_est = if hit_stage_count > 0 {
+            restore.stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
+        } else {
+            0
+        };
+        let restored_full_prefix = restore.stats.kv_lookup_hits > 0
+            && restore.stats.kv_lookup_misses == 0
+            && restore.stats.kv_lookup_errors == 0
+            && cached_prompt_tokens_est >= prefill_token_count as u64;
+        if restored_full_prefix {
+            prefill_start = prefill_token_count;
+            eprintln!(
+                "request {prompt_index}: exact-prefix cache hit stages={} imported_tokens={} elapsed_ms={:.2}",
+                format_stage_mask(restore.stats.kv_hit_stage_mask),
+                restore.stats.kv_imported_tokens.max(0),
+                restore.elapsed_ms
+            );
+        } else {
+            eprintln!(
+                "request {prompt_index}: exact-prefix cache miss hit={} miss={} error={} stages={} elapsed_ms={:.2}",
+                restore.stats.kv_lookup_hits,
+                restore.stats.kv_lookup_misses,
+                restore.stats.kv_lookup_errors,
+                format_stage_mask(restore.stats.kv_hit_stage_mask),
+                restore.elapsed_ms
+            );
+        }
+        reply_stats.merge(restore.stats);
+    }
     let prefill_started = Instant::now();
     let mut prefill_chunk_count = 0usize;
-    let prefill_tokens = &token_ids[..prefill_token_count];
+    let prefill_tokens = &token_ids[prefill_start..prefill_token_count];
+    session_reuse.appended_prefill_tokens = prefill_tokens.len();
     if !prefill_tokens.is_empty() {
         for (chunk_index, chunk) in prefill_tokens.chunks(args.prefill_chunk_size).enumerate() {
             if interrupt.interrupt_requested() {
                 bail!("prompt interrupted");
             }
             prefill_chunk_count += 1;
+            let pos_start = prefill_start + chunk_index * args.prefill_chunk_size;
             eprintln!(
                 "request {prompt_index}: prefill chunk {} tokens={} pos={}",
-                chunk_index,
+                prefill_chunk_count - 1,
                 chunk.len(),
-                chunk_index * args.prefill_chunk_size
+                pos_start
             );
             send_prefill_chunk(
-                &mut stream,
+                stream,
                 wire_dtype,
                 ReplPrefillChunk {
                     prompt_index,
                     request_id,
                     session_id: wire_session_id,
-                    pos_start: chunk_index * args.prefill_chunk_size,
+                    pos_start,
                     prefill_token_count,
                     tokens: chunk,
                 },
@@ -1602,10 +1719,9 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     let mut first_decode_ms = None;
     let mut first_time_to_token_ms = None;
     let mut saw_visible_output = false;
-    let mut suppressed_thinking_tokens = 0usize;
-    let mut reply_stats = StageReplyStats::default();
     let mut speculative_stats = SpeculativeStats::default();
-    let mut output_filter = ThinkingOutputFilter::new(!args.show_thinking);
+    let mut assistant_raw_text = String::new();
+    let mut generation_reached_eog = false;
     let mut context_tokens = token_ids.clone();
     if let Some(draft) = draft.as_deref_mut() {
         draft.reset_to_context(&context_tokens)?;
@@ -1653,7 +1769,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         if draft_tokens.is_empty() {
             let decode_index = generated.len();
             let reply = send_decode_step(
-                &mut stream,
+                stream,
                 wire_dtype,
                 prompt_index,
                 request_id,
@@ -1675,17 +1791,15 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             }
             first_time_to_token_ms.get_or_insert_with(|| elapsed_ms(wall_started));
             if tokenizer.token_is_eog(current)? {
+                generation_reached_eog = true;
                 break;
             }
             let piece = tokenizer.detokenize(&[current])?;
-            let filtered = output_filter.push(&piece);
-            if filtered.suppressed_thinking {
-                suppressed_thinking_tokens += 1;
-            }
-            if filtered.text.chars().any(|ch| !ch.is_whitespace()) {
+            assistant_raw_text.push_str(&piece);
+            if piece.chars().any(|ch| !ch.is_whitespace()) {
                 saw_visible_output = true;
             }
-            print!("{}", filtered.text);
+            print!("{piece}");
             io::stdout().flush().ok();
             continue;
         }
@@ -1701,7 +1815,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         let decode_index = generated.len();
         let verify_inputs = verify_inputs_for_proposals(current, &draft_tokens);
         let reply = send_verify_span(
-            &mut stream,
+            stream,
             wire_dtype,
             prompt_index,
             request_id,
@@ -1740,7 +1854,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
                 .context("missing rejected span index")?;
             speculative_stats.recovery_restores += 1;
             let restore = send_session_control(
-                &mut stream,
+                stream,
                 wire_dtype,
                 prompt_index,
                 request_id,
@@ -1755,7 +1869,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
 
             if repair_input_count == 1 {
                 let repair = send_decode_step(
-                    &mut stream,
+                    stream,
                     wire_dtype,
                     prompt_index,
                     request_id,
@@ -1775,7 +1889,7 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             } else {
                 let repair_inputs = &verify_inputs[..repair_input_count];
                 let repair = send_verify_span(
-                    &mut stream,
+                    stream,
                     wire_dtype,
                     prompt_index,
                     request_id,
@@ -1820,16 +1934,14 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             }
             if tokenizer.token_is_eog(current)? {
                 reached_eog = true;
+                generation_reached_eog = true;
             }
             let piece = tokenizer.detokenize(&[current])?;
-            let filtered = output_filter.push(&piece);
-            if filtered.suppressed_thinking {
-                suppressed_thinking_tokens += 1;
-            }
-            if filtered.text.chars().any(|ch| !ch.is_whitespace()) {
+            assistant_raw_text.push_str(&piece);
+            if piece.chars().any(|ch| !ch.is_whitespace()) {
                 saw_visible_output = true;
             }
-            print!("{}", filtered.text);
+            print!("{piece}");
             io::stdout().flush().ok();
             if reached_eog || generated.len() >= max_new_tokens {
                 break;
@@ -1845,14 +1957,6 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             break;
         }
     }
-    let tail = output_filter.finish();
-    if tail.suppressed_thinking {
-        suppressed_thinking_tokens += 1;
-    }
-    if tail.text.chars().any(|ch| !ch.is_whitespace()) {
-        saw_visible_output = true;
-    }
-    print!("{}", tail.text);
     println!();
 
     if !saw_visible_output {
@@ -1861,21 +1965,26 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
             generated.iter().take(16).collect::<Vec<_>>()
         );
     }
-    if suppressed_thinking_tokens > 0 {
-        eprintln!(
-            "warning: suppressed {suppressed_thinking_tokens} generated tokens inside <think> blocks"
-        );
+    if live_enabled {
+        rematerialize_live_transcript(
+            stream,
+            tokenizer,
+            chat_template_model,
+            args,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            &live_messages,
+            &token_ids,
+            &generated,
+            &assistant_raw_text,
+            generation_reached_eog,
+        )?;
     }
 
-    write_stage_message(
-        &mut stream,
-        &StageWireMessage::stop_with_identity(wire_dtype, request_id, wire_session_id),
-        wire_dtype,
-    )
-    .with_context(|| stage_chain_error_context(args))?;
-    let stop_reply = recv_reply(&mut stream).with_context(|| stage_chain_error_context(args))?;
-    if stop_reply.kind != WireReplyKind::Ack {
-        bail!("expected stop ACK, got {:?}", stop_reply.kind);
+    if !live_enabled {
+        stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)?;
     }
 
     let wallblock_ms = elapsed_ms(wall_started);
@@ -1890,12 +1999,26 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
     } else {
         (decode_ms - first_decode_ms.unwrap_or(0.0)) / (generated_tokens - 1) as f64
     };
+    let mut resident_tokens_after = 0usize;
+    if let Some(live) = live_session.as_deref_mut() {
+        live.messages = live_messages;
+        if let Some(last) = live.messages.last_mut() {
+            if last.role == "user" {
+                live.messages
+                    .push(ChatTemplateMessage::new("assistant", &assistant_raw_text));
+            }
+        }
+        live.resident_tokens =
+            live_transcript_tokens(tokenizer, chat_template_model, args, &live.messages)?;
+        live.dirty = !generation_reached_eog;
+        resident_tokens_after = live.resident_tokens.len();
+    }
+    session_reuse.resident_tokens_after = resident_tokens_after;
     print_stats(Stats {
         prompt_tokens: token_ids.len(),
         prefill_tokens: prefill_token_count,
         prefill_chunks: prefill_chunk_count,
         generated_tokens,
-        suppressed_thinking_tokens,
         tokenize_ms,
         prefill_ms,
         decode_ms,
@@ -1905,9 +2028,32 @@ fn run_prompt(run: PromptRun<'_>) -> Result<()> {
         tpot_after_first_ms,
         reply_stats,
         speculative_stats,
+        session_reuse,
     });
 
     Ok(())
+}
+
+fn live_resident_prefix_matches(
+    resident_tokens: &[i32],
+    token_ids: &[i32],
+    prefill_token_count: usize,
+) -> bool {
+    !resident_tokens.is_empty()
+        && resident_tokens.len() <= prefill_token_count
+        && token_ids
+            .get(..resident_tokens.len())
+            .is_some_and(|prefix| prefix == resident_tokens)
+}
+
+fn should_try_exact_prefix_restore(
+    live_enabled: bool,
+    prefill_start: usize,
+    prefill_token_count: usize,
+) -> bool {
+    !live_enabled
+        && prefill_start == 0
+        && prefill_token_count >= PROMPT_EXACT_PREFIX_RESTORE_MIN_TOKENS
 }
 
 struct Stats {
@@ -1915,7 +2061,6 @@ struct Stats {
     prefill_tokens: usize,
     prefill_chunks: usize,
     generated_tokens: usize,
-    suppressed_thinking_tokens: usize,
     tokenize_ms: f64,
     prefill_ms: f64,
     decode_ms: f64,
@@ -1925,6 +2070,7 @@ struct Stats {
     tpot_after_first_ms: f64,
     reply_stats: StageReplyStats,
     speculative_stats: SpeculativeStats,
+    session_reuse: PromptSessionReuseStats,
 }
 
 fn stage_chain_error_context(args: &BinaryReplArgs) -> String {
@@ -1937,6 +2083,216 @@ fn stage_chain_error_context(args: &BinaryReplArgs) -> String {
         message.push_str(hint);
     }
     message
+}
+
+fn reset_live_prompt_runtime(
+    live: &mut PromptLiveSession,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    wire_session_id: u64,
+) -> Result<()> {
+    if live.stream.is_none() {
+        live.stream = Some(
+            connect_ready(&args.first_stage_addr, args.startup_timeout_secs)
+                .context("first binary stage did not become ready")?,
+        );
+    }
+    if let Some(stream) = live.stream.as_mut() {
+        let io_timeout = Duration::from_secs(args.decode_timeout_secs.max(1));
+        stream.set_read_timeout(Some(io_timeout)).ok();
+        stream.set_write_timeout(Some(io_timeout)).ok();
+        stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)
+            .context("reset live prompt runtime session")?;
+    }
+    live.resident_tokens.clear();
+    live.dirty = false;
+    eprintln!("request {prompt_index}: live session runtime reset");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rematerialize_live_transcript(
+    stream: &mut TcpStream,
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    wire_session_id: u64,
+    live_messages: &[ChatTemplateMessage],
+    token_ids: &[i32],
+    generated: &[i32],
+    assistant_raw_text: &str,
+    generation_reached_eog: bool,
+) -> Result<()> {
+    if !generation_reached_eog {
+        return Ok(());
+    }
+    let mut closed_messages = live_messages.to_vec();
+    closed_messages.push(ChatTemplateMessage::new("assistant", assistant_raw_text));
+    let transcript_tokens =
+        live_transcript_tokens(tokenizer, chat_template_model, args, &closed_messages)?;
+    let mut runtime_tokens = token_ids.to_vec();
+    runtime_tokens.extend_from_slice(generated);
+    let common_prefix = common_token_prefix_len(&runtime_tokens, &transcript_tokens);
+    if common_prefix < runtime_tokens.len() {
+        send_trim_session(
+            stream,
+            wire_dtype,
+            prompt_index,
+            request_id,
+            wire_session_id,
+            common_prefix,
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+    }
+    let suffix = &transcript_tokens[common_prefix..];
+    for (chunk_index, chunk) in suffix.chunks(args.prefill_chunk_size).enumerate() {
+        if chunk.is_empty() {
+            continue;
+        }
+        let pos_start = common_prefix + chunk_index * args.prefill_chunk_size;
+        send_prefill_chunk(
+            stream,
+            wire_dtype,
+            ReplPrefillChunk {
+                prompt_index,
+                request_id,
+                session_id: wire_session_id,
+                pos_start,
+                prefill_token_count: transcript_tokens.len(),
+                tokens: chunk,
+            },
+        )
+        .with_context(|| stage_chain_error_context(args))?;
+    }
+    Ok(())
+}
+
+fn live_transcript_tokens(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    messages: &[ChatTemplateMessage],
+) -> Result<Vec<i32>> {
+    let left = live_transcript_probe_tokens(tokenizer, chat_template_model, args, messages, "A")?;
+    let right = live_transcript_probe_tokens(tokenizer, chat_template_model, args, messages, "B")?;
+    let prefix_len = common_token_prefix_len(&left, &right);
+    Ok(left[..prefix_len].to_vec())
+}
+
+fn live_transcript_probe_tokens(
+    tokenizer: &StageModel,
+    chat_template_model: Option<&StageModel>,
+    args: &BinaryReplArgs,
+    messages: &[ChatTemplateMessage],
+    probe_user: &str,
+) -> Result<Vec<i32>> {
+    let mut probed_messages = messages.to_vec();
+    probed_messages.push(ChatTemplateMessage::new("user", probe_user));
+    let probed_prompt = format_messages_for_model_with_options(
+        tokenizer,
+        chat_template_model,
+        &probed_messages,
+        args,
+        true,
+    )?;
+    tokenizer
+        .tokenize(&probed_prompt, true)
+        .with_context(|| format!("tokenize probed live prompt {probed_prompt:?}"))
+}
+
+fn stop_live_prompt_session(
+    live: &mut PromptLiveSession,
+    args: &BinaryReplArgs,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    wire_session_id: u64,
+) -> Result<()> {
+    let Some(stream) = live.stream.as_mut() else {
+        return Ok(());
+    };
+    let prompt_index_bytes = prompt_index.to_le_bytes();
+    let request_id = stable_wire_id(&[b"prompt-live-stop".as_slice(), &prompt_index_bytes]);
+    stop_prompt_stream(stream, wire_dtype, request_id, wire_session_id, args)
+        .context("stop live prompt session")?;
+    live.resident_tokens.clear();
+    live.stream.take();
+    Ok(())
+}
+
+fn stop_prompt_stream(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    request_id: u64,
+    wire_session_id: u64,
+    args: &BinaryReplArgs,
+) -> Result<()> {
+    write_stage_message(
+        &mut *stream,
+        &StageWireMessage::stop_with_identity(wire_dtype, request_id, wire_session_id),
+        wire_dtype,
+    )
+    .with_context(|| stage_chain_error_context(args))?;
+    let stop_reply = recv_reply(stream).with_context(|| stage_chain_error_context(args))?;
+    if stop_reply.kind != WireReplyKind::Ack {
+        bail!("expected stop ACK, got {:?}", stop_reply.kind);
+    }
+    Ok(())
+}
+
+fn send_trim_session(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    session_id: u64,
+    token_count: usize,
+) -> Result<SessionControlReply> {
+    let started = Instant::now();
+    let mut state = StageStateHeader::new(WireMessageKind::TrimSession, wire_dtype);
+    state.seq_id = i32::try_from(prompt_index).context("prompt index exceeds i32")?;
+    state.source_stage_index = -1;
+    let message = StageWireMessage {
+        kind: WireMessageKind::TrimSession,
+        pos_start: 0,
+        token_count: i32::try_from(token_count).context("trim token count exceeds i32")?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: Vec::new(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    write_stage_message(&mut *stream, &message, wire_dtype)
+        .with_context(|| format!("send trim session to {token_count} token(s)"))?;
+    let reply = recv_reply(&mut *stream)
+        .with_context(|| format!("receive trim session ACK for {token_count} token(s)"))?;
+    if reply.kind != WireReplyKind::Ack {
+        bail!("expected trim-session ACK, got {:?}", reply.kind);
+    }
+    Ok(SessionControlReply {
+        stats: reply.stats,
+        elapsed_ms: elapsed_ms(started),
+    })
+}
+
+fn common_token_prefix_len(left: &[i32], right: &[i32]) -> usize {
+    left.iter()
+        .zip(right)
+        .take_while(|(left, right)| left == right)
+        .count()
+}
+
+fn token_window(tokens: &[i32], center: usize) -> Vec<i32> {
+    let start = center.saturating_sub(4);
+    let end = (center + 8).min(tokens.len());
+    tokens[start..end].to_vec()
 }
 
 #[derive(Default)]
@@ -2238,13 +2594,12 @@ fn print_stats(stats: Stats) {
     };
     eprintln!("stats:");
     eprintln!(
-        "  tokens   prompt={} prefill={} ({} {}) generated={} hidden_think={}",
+        "  tokens   prompt={} prefill={} ({} {}) generated={}",
         stats.prompt_tokens,
         stats.prefill_tokens,
         stats.prefill_chunks,
         chunk_label,
-        stats.generated_tokens,
-        stats.suppressed_thinking_tokens
+        stats.generated_tokens
     );
     eprintln!(
         "  time     tokenize={:.2}ms prefill={:.2}ms decode={:.2}ms wallblock={:.2}ms",
@@ -2255,6 +2610,16 @@ fn print_stats(stats: Stats) {
         prompt_tps, decode_tps, stats.tpot_ms, stats.tpot_after_first_ms
     );
     eprintln!("  latency  ttft={:.2}ms", stats.first_time_to_token_ms);
+    if stats.session_reuse.outcome != "disabled" {
+        eprintln!(
+            "  reuse    live_session={} reused_tokens={} appended_prefill_tokens={} resident_tokens={}->{}",
+            stats.session_reuse.outcome,
+            stats.session_reuse.reused_tokens,
+            stats.session_reuse.appended_prefill_tokens,
+            stats.session_reuse.resident_tokens_before,
+            stats.session_reuse.resident_tokens_after
+        );
+    }
     if !stats.reply_stats.is_empty() {
         let lookups = stats.reply_stats.kv_lookup_hits + stats.reply_stats.kv_lookup_misses;
         let hit_rate = if lookups > 0 {
@@ -2262,6 +2627,33 @@ fn print_stats(stats: Stats) {
         } else {
             0.0
         };
+        let hit_stage_count = stage_mask_count(stats.reply_stats.kv_hit_stage_mask);
+        let cached_prompt_tokens_est = if hit_stage_count > 0 {
+            stats.reply_stats.kv_imported_tokens.max(0) as u64 / hit_stage_count
+        } else {
+            0
+        };
+        let exact_prefix_reuse = if stats.reply_stats.kv_lookup_hits > 0 {
+            "hit"
+        } else if stats.reply_stats.kv_lookup_misses > 0 {
+            "miss"
+        } else if stats.reply_stats.kv_lookup_errors > 0 {
+            "error"
+        } else {
+            "not_checked"
+        };
+        let record_status = if stats.reply_stats.kv_recorded_pages > 0 {
+            "recorded"
+        } else {
+            "not_recorded"
+        };
+        eprintln!(
+            "  reuse    exact_prefix={} cached_prompt_tokens_est={} stage_imported_tokens={} record={}",
+            exact_prefix_reuse,
+            cached_prompt_tokens_est,
+            stats.reply_stats.kv_imported_tokens.max(0),
+            record_status
+        );
         eprintln!(
             "  kv       lookup hit={} miss={} hit_rate={:.1}% error={} imported_pages={} imported_tokens={}",
             stats.reply_stats.kv_lookup_hits,
@@ -2303,6 +2695,7 @@ fn print_stats(stats: Stats) {
             );
         }
     } else {
+        eprintln!("  reuse    exact_prefix=not_reported record=not_reported");
         eprintln!("  kv       no lookup/record events reported");
     }
     if stats.speculative_stats.windows > 0 {
@@ -2666,6 +3059,49 @@ fn send_session_control(
     })
 }
 
+fn send_try_restore_prefill(
+    stream: &mut TcpStream,
+    wire_dtype: WireActivationDType,
+    prompt_index: usize,
+    request_id: u64,
+    session_id: u64,
+    tokens: &[i32],
+) -> Result<SessionControlReply> {
+    if tokens.is_empty() {
+        bail!("exact-prefix restore requires at least one token");
+    }
+    let started = Instant::now();
+    let mut state = StageStateHeader::new(WireMessageKind::TryRestorePrefill, wire_dtype);
+    state.seq_id = i32::try_from(prompt_index).context("prompt index exceeds i32")?;
+    state.prompt_token_count =
+        i32::try_from(tokens.len()).context("prefix token count exceeds i32")?;
+    state.current_token = tokens.last().copied().unwrap_or(LLAMA_TOKEN_NULL);
+    state.source_stage_index = -1;
+    let message = StageWireMessage {
+        kind: WireMessageKind::TryRestorePrefill,
+        pos_start: 0,
+        token_count: i32::try_from(tokens.len()).context("prefix token count exceeds i32")?,
+        state,
+        request_id,
+        session_id,
+        sampling: None,
+        chat_sampling_metadata: None,
+        tokens: tokens.to_vec(),
+        activation: Vec::new(),
+        raw_bytes: Vec::new(),
+    };
+    write_stage_message(&mut *stream, &message, wire_dtype)
+        .context("send exact-prefix restore request")?;
+    let reply = recv_reply(&mut *stream).context("receive exact-prefix restore ACK")?;
+    if reply.kind != WireReplyKind::Ack {
+        bail!("expected exact-prefix restore ACK, got {:?}", reply.kind);
+    }
+    Ok(SessionControlReply {
+        stats: reply.stats,
+        elapsed_ms: elapsed_ms(started),
+    })
+}
+
 struct ReplPrefillChunk<'a> {
     prompt_index: usize,
     request_id: u64,
@@ -2996,6 +3432,22 @@ mod prompt_json_tests {
         assert_eq!(effective_prompt_max_new_tokens(128, 4096, 1024)?, 128);
         assert_eq!(format_prompt_max_new_tokens(128), "128");
         Ok(())
+    }
+
+    #[test]
+    fn exact_prefix_restore_only_runs_for_one_shot_large_prefixes() {
+        assert!(!should_try_exact_prefix_restore(false, 0, 511));
+        assert!(should_try_exact_prefix_restore(false, 0, 512));
+        assert!(!should_try_exact_prefix_restore(true, 0, 512));
+        assert!(!should_try_exact_prefix_restore(false, 1, 512));
+    }
+
+    #[test]
+    fn live_resident_prefix_match_requires_nonempty_full_resident_prefix() {
+        assert!(!live_resident_prefix_matches(&[], &[1, 2, 3], 2));
+        assert!(live_resident_prefix_matches(&[1, 2], &[1, 2, 3, 4], 3));
+        assert!(!live_resident_prefix_matches(&[1, 9], &[1, 2, 3, 4], 3));
+        assert!(!live_resident_prefix_matches(&[1, 2, 3], &[1, 2, 3, 4], 2));
     }
 }
 
@@ -4343,6 +4795,13 @@ fn format_stage_mask(mask: i64) -> String {
     }
 }
 
+fn stage_mask_count(mask: i64) -> u64 {
+    if mask <= 0 {
+        return 0;
+    }
+    (mask as u64).count_ones() as u64
+}
+
 fn run_status(command: &mut Command, description: &str) -> Result<()> {
     let status = command
         .status()
@@ -4715,29 +5174,8 @@ mod speculative_tests {
     }
 
     #[test]
-    fn thinking_filter_strips_complete_block() {
-        let mut filter = ThinkingOutputFilter::new(true);
-        let mut output = String::new();
-        output.push_str(&filter.push("hello <think>private").text);
-        output.push_str(&filter.push(" trace</think>\n\nworld").text);
-        output.push_str(&filter.finish().text);
-        assert_eq!(output, "hello world");
-    }
-
-    #[test]
-    fn thinking_filter_handles_split_tags() {
-        let mut filter = ThinkingOutputFilter::new(true);
-        let mut output = String::new();
-        for piece in ["a <", "thi", "nk>x</th", "ink> b"] {
-            output.push_str(&filter.push(piece).text);
-        }
-        output.push_str(&filter.finish().text);
-        assert_eq!(output, "a b");
-    }
-
-    #[test]
     fn thinking_override_respects_no_think_and_budget_zero() {
-        assert_eq!(normalized_prompt_thinking(false, None), Some(false));
+        assert_eq!(normalized_prompt_thinking(false, None), None);
         assert_eq!(normalized_prompt_thinking(true, None), Some(false));
         assert_eq!(normalized_prompt_thinking(false, Some(0)), Some(false));
         assert_eq!(normalized_prompt_thinking(false, Some(128)), Some(true));

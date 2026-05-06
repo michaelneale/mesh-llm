@@ -13,7 +13,7 @@ import {
   renderKind,
   roleLabel,
   statusFill,
-  statusTone,
+  statusTone
 } from './MeshViz.helpers'
 
 const servingNode: MeshNode = {
@@ -26,7 +26,7 @@ const servingNode: MeshNode = {
   servingModels: ['llama-mesh-q4'],
   subLabel: 'EU West',
   vramGB: 24,
-  latencyMs: 3.4,
+  latencyMs: 3.4
 }
 
 const hostPeer: Peer = {
@@ -40,7 +40,7 @@ const hostPeer: Peer = {
   loadPct: 41,
   shortId: 'peer-1',
   role: 'host',
-  vramGB: 48,
+  vramGB: 48
 }
 
 describe('MeshViz helpers', () => {
@@ -53,7 +53,7 @@ describe('MeshViz helpers', () => {
       { id: 'model', label: 'Model', value: 'peer-model-q8' },
       { id: 'latency', label: 'Latency', value: '<1 ms' },
       { id: 'compute', label: 'Compute', value: 'us-east' },
-      { id: 'vram', label: 'VRAM', value: '48.0 GB' },
+      { id: 'vram', label: 'VRAM', value: '48.0 GB' }
     ])
   })
 
@@ -63,7 +63,7 @@ describe('MeshViz helpers', () => {
     expect(statusTone('offline')).toEqual({
       background: 'color-mix(in oklab, var(--color-bad) 14%, var(--color-background))',
       borderColor: 'color-mix(in oklab, var(--color-bad) 24%, var(--color-background))',
-      color: 'var(--color-bad)',
+      color: 'var(--color-bad)'
     })
 
     const debugHost = createDebugNode(3, getDebugNodeShortcutBlueprint(3), { x: 20, y: 40 })
@@ -72,13 +72,13 @@ describe('MeshViz helpers', () => {
       fill: 'var(--color-accent)',
       haloSize: 36,
       coreSize: 16,
-      labelColor: 'var(--color-foreground)',
+      labelColor: 'var(--color-foreground)'
     })
     expect(nodeVisuals(debugHost, hostPeer, false, false)).toEqual({
       fill: 'var(--color-warn)',
       haloSize: 48,
       coreSize: 17,
-      labelColor: 'var(--color-warn)',
+      labelColor: 'var(--color-warn)'
     })
 
     const schemeNodeColors = ['muted-node', 'default-node', 'tertiary-node', 'self-node'] as const
@@ -97,7 +97,7 @@ describe('MeshViz helpers', () => {
       label: 'DEBUG-CLIENT-1',
       client: true,
       hostname: 'debug-client-1.mesh.test',
-      latencyMs: null,
+      latencyMs: null
     })
     expect(workerNode).toMatchObject({
       id: 'debug-worker-2',
@@ -105,7 +105,7 @@ describe('MeshViz helpers', () => {
       renderKind: 'worker',
       hostname: 'debug-worker-2.mesh.test',
       vramGB: 24,
-      latencyMs: 7.2,
+      latencyMs: 7.2
     })
     expect(debugNodeMatchesShortcut(clientNode, 1)).toBe(true)
     expect(debugNodeMatchesShortcut(workerNode, 2)).toBe(true)

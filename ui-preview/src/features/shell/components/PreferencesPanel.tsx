@@ -21,7 +21,7 @@ type PreferencesPanelProps = {
 const themes: { value: Theme; label: string; Icon: LucideIcon }[] = [
   { value: 'auto', label: 'Auto', Icon: Monitor },
   { value: 'dark', label: 'Dark', Icon: Moon },
-  { value: 'light', label: 'Light', Icon: Sun },
+  { value: 'light', label: 'Light', Icon: Sun }
 ]
 
 const accents: { value: Accent; color: string }[] = [
@@ -29,23 +29,23 @@ const accents: { value: Accent; color: string }[] = [
   { value: 'cyan', color: 'oklch(0.76 0.16 195)' },
   { value: 'violet', color: 'oklch(0.75 0.14 292)' },
   { value: 'green', color: 'oklch(0.76 0.16 132)' },
-  { value: 'amber', color: 'oklch(0.78 0.15 76)' },
+  { value: 'amber', color: 'oklch(0.78 0.15 76)' }
 ]
 
 const densities: { value: Density; label: string }[] = [
   { value: 'compact', label: 'Compact' },
   { value: 'normal', label: 'Normal' },
-  { value: 'sparse', label: 'Sparse' },
+  { value: 'sparse', label: 'Sparse' }
 ]
 
 const panelStyles: { value: PanelStyle; label: string }[] = [
   { value: 'solid', label: 'Solid' },
-  { value: 'soft', label: 'Soft' },
+  { value: 'soft', label: 'Soft' }
 ]
 
 const dataModes: { value: DataMode; label: string }[] = [
   { value: 'harness', label: 'Harness' },
-  { value: 'live', label: 'Live API' },
+  { value: 'live', label: 'Live API' }
 ]
 
 const themeOptions = themes.map(({ value, label, Icon }) => ({
@@ -55,7 +55,7 @@ const themeOptions = themes.map(({ value, label, Icon }) => ({
       <Icon aria-hidden="true" className="size-[var(--preferences-icon-size)]" strokeWidth={1.8} />
       {label}
     </>
-  ),
+  )
 }))
 
 const densityOptions = densities.map(({ value, label }) => ({ value, label }))
@@ -92,7 +92,7 @@ export function PreferencesPanel({
   onAccentChange,
   onDensityChange,
   onPanelStyleChange,
-  onClose,
+  onClose
 }: PreferencesPanelProps) {
   const { mode, setMode } = useDataMode()
 
@@ -104,7 +104,9 @@ export function PreferencesPanel({
       className="panel-shell shadow-surface-modal fixed right-[var(--preferences-offset-right)] top-[var(--preferences-offset-top)] z-40 w-[var(--preferences-width)] rounded-[var(--radius-lg)] border border-border bg-panel pb-[var(--preferences-bottom-pad)]"
     >
       <div className="flex h-[var(--preferences-header-height)] items-center justify-between border-b border-border-soft px-[var(--preferences-pad-x)]">
-        <h2 className="text-[length:var(--preferences-title-size)] font-semibold leading-none text-foreground">Preferences</h2>
+        <h2 className="text-[length:var(--preferences-title-size)] font-semibold leading-none text-foreground">
+          Preferences
+        </h2>
         <button
           aria-label="Close preferences"
           className="ui-control grid size-[var(--preferences-close-size)] place-items-center rounded-[var(--radius)] border"
@@ -161,7 +163,7 @@ export function PreferencesPanel({
                     'h-[var(--preferences-swatch-height)] rounded-[var(--radius)] outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent active:translate-y-px',
                     selected
                       ? 'border border-foreground shadow-[var(--shadow-surface-selected)]'
-                      : 'border border-border hover:border-foreground/70 hover:shadow-[var(--shadow-surface-hover)]',
+                      : 'border border-border hover:border-foreground/70 hover:shadow-[var(--shadow-surface-hover)]'
                   )}
                   key={value}
                   style={{ backgroundColor: color }}

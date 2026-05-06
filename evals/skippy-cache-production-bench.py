@@ -45,7 +45,6 @@ class Case:
     state_stage_index: int | None = None
     resident_kv_bytes_per_token: int | None = None
     skip_llama_server_reason: str | None = None
-    activation_wire_dtype: str = "f16"
 
 
 @dataclass(frozen=True)
@@ -193,17 +192,6 @@ CASES = [
         resident_kv_bytes_per_token=26_624,
     ),
     Case(
-        "gemma",
-        "Gemma text",
-        "ggml-org/gemma-3-270m-it-GGUF:Q8_0",
-        HOME
-        / ".cache/huggingface/hub/models--ggml-org--gemma-3-270m-it-GGUF/snapshots/e7647be17ae1108f2f605ed061ca0608b171afff/gemma-3-270m-it-Q8_0.gguf",
-        "resident-kv",
-        18,
-        640,
-        activation_wire_dtype="f32",
-    ),
-    Case(
         "gemma2",
         "Gemma2",
         "bartowski/gemma-2-2b-it-GGUF:Q4_K_M",
@@ -223,70 +211,6 @@ CASES = [
         "kv-recurrent",
         24,
         2048,
-    ),
-    Case(
-        "jamba",
-        "Jamba",
-        "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--bartowski--ai21labs_AI21-Jamba2-3B-GGUF/snapshots/02d70acd708332ec4e78e9ceefe116851a307411/ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
-        "kv-recurrent",
-        28,
-        2560,
-        prefix_tokens=16,
-    ),
-    Case(
-        "lfm2",
-        "LFM2",
-        "meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--meshllm--lfm2-350m-parity-q4_k_m-gguf/snapshots/8ee744b5e828d851b872fc5ac5dc6724976e8203/lfm2-350m-q4_k_m.gguf",
-        "kv-recurrent",
-        16,
-        1024,
-    ),
-    Case(
-        "mamba",
-        "Mamba",
-        "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--mradermacher--mamba-130m-hf-GGUF/snapshots/ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1/mamba-130m-hf.Q4_K_M.gguf",
-        "kv-recurrent",
-        24,
-        768,
-    ),
-    Case(
-        "mamba2",
-        "Mamba2",
-        "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--mradermacher--mamba-2.8b-hf-GGUF/snapshots/c71444344da0c2fd57d8e11d4d8b4b5debd16ca7/mamba-2.8b-hf.Q4_K_M.gguf",
-        "kv-recurrent",
-        64,
-        2560,
-        prefix_tokens=16,
-    ),
-    Case(
-        "rwkv6",
-        "RWKV6",
-        "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
-        HOME
-        / ".cache/huggingface/hub/models--latestissue--rwkv-6-finch-1b6-gguf/snapshots/9f4420bafb8fe463599b9983d81e12e1868c3746/rwkv-6-finch-1b6-Q4_K.gguf",
-        "kv-recurrent",
-        24,
-        2048,
-        prefix_tokens=16,
-    ),
-    Case(
-        "rwkv7",
-        "RWKV7",
-        "Mungert/rwkv7-191M-world-GGUF:Q4_K",
-        HOME
-        / ".cache/huggingface/hub/models--Mungert--rwkv7-191M-world-GGUF/snapshots/e49a4381662e78e48ca3079770a6a47e203c22ab/rwkv7-191M-world-f16-q4_k.gguf",
-        "kv-recurrent",
-        12,
-        768,
-        prefix_tokens=16,
     ),
     Case(
         "olmo",
@@ -311,218 +235,6 @@ CASES = [
         3072,
         prefix_tokens=16,
         resident_kv_bytes_per_token=253_952,
-    ),
-    Case(
-        "mistral3",
-        "Mistral3",
-        "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF",
-        HOME
-        / ".cache/huggingface/hub/models--lmstudio-community--Ministral-3-3B-Instruct-2512-GGUF/snapshots/94b49547f1931930f002226bc0a68b5f10a4ee25/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-        "resident-kv",
-        26,
-        3072,
-    ),
-    Case(
-        "gpt2",
-        "GPT-2",
-        "QuantFactory/gpt2-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--QuantFactory--gpt2-GGUF/snapshots/7eae6f079f0164bff66b86eea5159f7a368f9381/gpt2.Q4_K_M.gguf",
-        "resident-kv",
-        12,
-        768,
-    ),
-    Case(
-        "mpt",
-        "MPT",
-        "mradermacher/mpt-7b-chat-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--mradermacher--mpt-7b-chat-GGUF/snapshots/ece0fae7b970c1f8af1c7a53a36d141b1744ad54/mpt-7b-chat.Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        4096,
-    ),
-    Case(
-        "olmo2",
-        "OLMo2",
-        "allenai/OLMo-2-1124-7B-Instruct-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--allenai--OLMo-2-1124-7B-Instruct-GGUF/snapshots/410e0069f64869e4b1d17d8de04810b881fd824b/olmo-2-1124-7B-instruct-Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        4096,
-    ),
-    Case(
-        "olmoe",
-        "OLMoE",
-        "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--bartowski--OLMoE-1B-7B-0924-Instruct-GGUF/snapshots/7448e4317d367a3d6838fe367fe996758da6fc6e/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
-        "resident-kv",
-        16,
-        2048,
-    ),
-    Case(
-        "phi3",
-        "Phi3",
-        "bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--bartowski--Phi-3.5-mini-instruct-GGUF/snapshots/6d70da17e749a471ccb62ade694486011a75cda3/Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        3072,
-    ),
-    Case(
-        "phi2",
-        "Phi2",
-        "TheBloke/phi-2-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--TheBloke--phi-2-GGUF/snapshots/5a454d977c6438bb9fb2df233c8ca70f21c87420/phi-2.Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        2560,
-        resident_kv_bytes_per_token=327_680,
-    ),
-    Case(
-        "granite",
-        "Granite",
-        "bartowski/ibm-granite_granite-3.2-2b-instruct-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--bartowski--ibm-granite_granite-3.2-2b-instruct-GGUF/snapshots/9be2c106c8c073f5a140ec03c8c7a6a6e72d097b/ibm-granite_granite-3.2-2b-instruct-Q4_K_M.gguf",
-        "resident-kv",
-        40,
-        2048,
-    ),
-    Case(
-        "bloom",
-        "BLOOM",
-        "QuantFactory/bloomz-560m-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--QuantFactory--bloomz-560m-GGUF/snapshots/e6bb9d1223649e37470868933633c7be8b802b0d/bloomz-560m.Q4_K_M.gguf",
-        "resident-kv",
-        24,
-        1024,
-    ),
-    Case(
-        "gptneox",
-        "GPT-NeoX",
-        "warriorknight3/pythia-70m-Q4_K_M-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--warriorknight3--pythia-70m-Q4_K_M-GGUF/snapshots/ba4a120b4593c70f38bb7a0b788d564266f9a4f1/pythia-70m-q4_k_m.gguf",
-        "resident-kv",
-        6,
-        512,
-    ),
-    Case(
-        "baichuan",
-        "Baichuan",
-        "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--lucasxx--Baichuan2-7B-Chat-Q4_K_M-GGUF/snapshots/bd228a8d85e496c023b4ef04552cce2765bafb81/baichuan2-7b-chat.Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        4096,
-    ),
-    Case(
-        "exaone",
-        "EXAONE",
-        "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--lmstudio-community--EXAONE-3.5-2.4B-Instruct-GGUF/snapshots/347ad15365d7e4c4fb0d206e07b87bdefe9e67d9/EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
-        "resident-kv",
-        30,
-        2560,
-    ),
-    Case(
-        "exaone4",
-        "EXAONE4",
-        "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--bartowski--LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF/snapshots/4e4f843c37937a5d43a2f391f59da27d90b45152/LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M.gguf",
-        "resident-kv",
-        30,
-        2048,
-    ),
-    Case(
-        "command_r",
-        "Command-R",
-        "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--Lumia101--c4ai-command-r7b-12-2024-Q4_K_M-GGUF/snapshots/dc804ce37a456c449d1306ca3d875f5fb01b4a9b/c4ai-command-r7b-12-2024-q4_k_m.gguf",
-        "resident-kv",
-        32,
-        4096,
-    ),
-    Case(
-        "cohere2",
-        "Cohere2",
-        "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--Lumia101--c4ai-command-r7b-12-2024-Q4_K_M-GGUF/snapshots/dc804ce37a456c449d1306ca3d875f5fb01b4a9b/c4ai-command-r7b-12-2024-q4_k_m.gguf",
-        "resident-kv",
-        32,
-        4096,
-    ),
-    Case(
-        "falcon",
-        "Falcon",
-        "Kondara/falcon-7b-instruct-Q4_K_M-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--Kondara--falcon-7b-instruct-Q4_K_M-GGUF/snapshots/7b901012e9e715c2f64e537e6331af0cdb424a21/falcon-7b-instruct-q4_k_m.gguf",
-        "resident-kv",
-        32,
-        4544,
-    ),
-    Case(
-        "internlm2",
-        "InternLM2",
-        "lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--lmstudio-community--internlm2_5-1_8b-chat-GGUF/snapshots/f5dbdc487d2fa53d1fd75251e7414d102e983467/internlm2_5-1_8b-chat-Q4_K_M.gguf",
-        "resident-kv",
-        24,
-        2048,
-    ),
-    Case(
-        "stablelm",
-        "StableLM",
-        "TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--TheBloke--stablelm-zephyr-3b-GGUF/snapshots/465310e5eb914190e89f531cc1c348812e27dcea/stablelm-zephyr-3b.Q4_K_M.gguf",
-        "resident-kv",
-        32,
-        2560,
-    ),
-    Case(
-        "starcoder2",
-        "StarCoder2",
-        "combos/starcoder2-3b-Q4_K_M-GGUF:Q4_K_M",
-        Path(
-            "/Volumes/External/models/huggingface/hub/models--combos--starcoder2-3b-Q4_K_M-GGUF/snapshots/b1e2a600035f177377307ec4f83bb121dddc72da/starcoder2-3b-q4_k_m.gguf"
-        ),
-        "resident-kv",
-        30,
-        3072,
-    ),
-    Case(
-        "qwen2moe",
-        "Qwen2-MoE",
-        "mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S",
-        HOME
-        / ".cache/huggingface/hub/models--mradermacher--Qwen2-1.5B-2x-MoE-GGUF/snapshots/414ad2bb294cb29d2281ffa3e09a0293ae5d9f94/Qwen2-1.5B-2x-MoE.Q4_K_S.gguf",
-        "resident-kv",
-        28,
-        1536,
-    ),
-    Case(
-        "qwen3moe",
-        "Qwen3-MoE",
-        "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M",
-        HOME
-        / ".cache/huggingface/hub/models--mradermacher--Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF/snapshots/7bde5ba921ce6969f494d75b6c98b8c211ca4d45/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M.gguf",
-        "resident-kv",
-        28,
-        1024,
     ),
     Case(
         "qwen3next",
@@ -622,16 +334,12 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path, prompt
         f"--n-gpu-layers={case.n_gpu_layers}",
         "--stage-load-mode",
         case.stage_load_mode,
-        "--activation-wire-dtype",
-        case.activation_wire_dtype,
         "--state-layer-end",
         str(case.state_layer_end or case.layer_end),
         "--state-payload-kind",
         case.payload,
         "--prefix-token-count",
         str(case.prefix_tokens),
-        "--suffix-token-count",
-        str(args.suffix_token_count),
         "--cache-hit-repeats",
         str(cache_hit_repeats),
         "--report-out",
@@ -874,9 +582,7 @@ def run_case(case: Case, args: argparse.Namespace, use_case: UseCase | None = No
             payload=case.payload,
             layer_end=case.layer_end,
             activation_width=case.activation_width,
-            ctx_size=max(case.ctx_size, prefix_tokens + args.suffix_token_count + 128)
-            if prefix_tokens is not None
-            else case.ctx_size,
+            ctx_size=max(case.ctx_size, prefix_tokens + 128) if prefix_tokens is not None else case.ctx_size,
             n_gpu_layers=n_gpu_layers,
             prefix_tokens=prefix_tokens if prefix_tokens is not None else case.prefix_tokens,
             cache_hit_repeats=cache_hit_repeats,
@@ -977,7 +683,6 @@ def main() -> int:
     parser.add_argument("--borrow-resident-hits", action="store_true")
     parser.add_argument("--cache-decoded-result-hits", action="store_true")
     parser.add_argument("--prefix-tokens", type=int, help="Override the production prefix-token count for every selected case.")
-    parser.add_argument("--suffix-token-count", type=int, default=0)
     parser.add_argument("--use-case", action="append", help="Run one named use case from the corpus; use 'all' for every use case.")
     parser.add_argument(
         "--use-case-corpus",

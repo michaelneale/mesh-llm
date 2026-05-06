@@ -128,7 +128,6 @@ struct BinaryStateHandoffConfig {
     activation_wire_dtype: String,
     state_payload_kind: StatePayloadKind,
     prefix_token_count: Option<usize>,
-    suffix_token_count: usize,
     cache_hit_repeats: usize,
     runtime_lane_count: Option<u32>,
     borrow_resident_hits: bool,
@@ -157,15 +156,12 @@ struct BinaryStateHandoffResult {
     activation_width: i32,
     source_predicted_token: i32,
     restored_predicted_token: i32,
-    source_native_seq_id: i32,
-    restore_native_seq_id: i32,
     state_bytes: usize,
     cache_storage_bytes: Option<usize>,
     resident_state_bytes: Option<usize>,
     roundtrip_state_bytes: usize,
     payload_digest: StatePayloadDigestReport,
     tokenize_ms: f64,
-    suffix_token_count: usize,
     source_prefill_ms: f64,
     source_export_ms: f64,
     source_decode_ms: f64,
@@ -178,7 +174,7 @@ struct BinaryStateHandoffResult {
     predicted_token_matches: bool,
     roundtrip_state_matches: bool,
     restored_output_matches: Option<bool>,
-    suffix_prefill_matches: bool,
+    suffix_prefill_matches: Option<bool>,
     cache_hit_matches: bool,
     stage_models: Vec<StageModelReport>,
 }
@@ -192,7 +188,7 @@ enum LocalStatePayload {
     FullState(Vec<u8>),
     RecurrentOnly(Vec<u8>),
     KvRecurrent {
-        kv_desc: Option<RuntimeKvPageDesc>,
+        kv_desc: RuntimeKvPageDesc,
         kv: Vec<u8>,
         recurrent: Vec<u8>,
     },
@@ -476,7 +472,6 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         activation_wire_dtype: args.activation_wire_dtype,
         state_payload_kind: args.state_payload_kind,
         prefix_token_count: args.prefix_token_count,
-        suffix_token_count: args.suffix_token_count,
         cache_hit_repeats: args.cache_hit_repeats,
         runtime_lane_count: args.runtime_lane_count,
         borrow_resident_hits: args.borrow_resident_hits,
@@ -495,6 +490,7 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         predicted_token_matches: handoff.predicted_token_matches,
         roundtrip_state_matches: handoff.roundtrip_state_matches,
         restored_output_matches: handoff.restored_output_matches,
+        suffix_prefill_matches: handoff.suffix_prefill_matches,
         cache_hit_matches: handoff.cache_hit_matches,
         stage_index: handoff.stage_index,
         layer_start: handoff.layer_start,
@@ -507,12 +503,7 @@ pub fn state_handoff(args: StateHandoffArgs) -> Result<()> {
         cached_decoded_result_hits: handoff.cached_decoded_result_hits,
         source_predicted_token: handoff.source_predicted_token,
         restored_predicted_token: handoff.restored_predicted_token,
-        source_native_seq_id: handoff.source_native_seq_id,
-        restore_native_seq_id: handoff.restore_native_seq_id,
-        native_seq_remapped: handoff.source_native_seq_id != handoff.restore_native_seq_id,
         prompt_token_count: handoff.prompt_token_count,
-        suffix_token_count: handoff.suffix_token_count,
-        suffix_prefill_matches: handoff.suffix_prefill_matches,
         benchmark_prompt_token_count: handoff.benchmark_prompt_token_count,
         benchmark_prompt_text: handoff.benchmark_prompt_text,
         requested_prefix_token_count: handoff.requested_prefix_token_count,
@@ -764,14 +755,11 @@ fn run_binary_split(args: BinarySplitConfig) -> Result<BinarySplitResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    state.flags |=
-        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
-    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
+    let activation = skippy_protocol::binary::encode_f32_activation_payload(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
-        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -1012,14 +1000,11 @@ fn run_binary_chain(args: BinaryChainConfig) -> Result<BinaryChainResult> {
     state.decode_step = 0;
     state.current_token = token_id;
     state.source_stage_index = 0;
-    state.flags |=
-        skippy_protocol::binary::activation_state_flags_from_frame_flags(boundary.desc.flags);
-    let activation = skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
+    let activation = skippy_protocol::binary::encode_f32_activation_payload(
         wire_dtype,
         1,
         activation_width,
         &boundary.payload,
-        state.flags,
     )
     .context("failed to encode boundary activation for wire")?;
     let message = StageWireMessage {
@@ -1100,22 +1085,13 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
             tokenizer_path.display()
         )
     })?;
-    let tokens = state_handoff_tokens(
-        &tokenizer,
-        &args.prompt,
-        args.prefix_token_count,
-        args.suffix_token_count,
-    )
-    .context("failed to tokenize state handoff prompt")?;
-    let split = args
-        .prefix_token_count
-        .unwrap_or(tokens.len() - args.suffix_token_count - 1);
-    let suffix_end = split + args.suffix_token_count;
+    let tokens = state_handoff_tokens(&tokenizer, &args.prompt, args.prefix_token_count)
+        .context("failed to tokenize state handoff prompt")?;
+    let split = args.prefix_token_count.unwrap_or(tokens.len() - 1);
     let prefix = tokens[..split].to_vec();
-    let suffix = tokens[split..suffix_end].to_vec();
-    let continuation = tokens[suffix_end];
+    let continuation = tokens[split];
     let benchmark_prompt_text = tokenizer
-        .detokenize(&tokens[..=suffix_end])
+        .detokenize(&tokens[..=split])
         .context("failed to detokenize state handoff benchmark prompt")?;
     drop(tokenizer);
     let tokenize_ms = elapsed_ms(tokenize_started);
@@ -1139,33 +1115,22 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
             },
         )?)
     };
-    let (prefill_input, suffix_input, decode_input, stage_activation_width) =
-        build_state_handoff_inputs(
-            &args,
-            input_resolution.as_ref(),
-            &prefix,
-            &suffix,
-            continuation,
-        )
-        .context("build state handoff input activations")?;
+    let (prefill_input, decode_input, stage_activation_width) =
+        build_state_handoff_inputs(&args, input_resolution.as_ref(), &prefix, continuation)
+            .context("build state handoff input activations")?;
     let input_build_ms = elapsed_ms(input_started);
     let use_binary_control = args.binary_control
         && include_output
         && args.state_payload_kind == StatePayloadKind::FullState;
-    if use_binary_control && !suffix.is_empty() {
-        bail!("--suffix-token-count is only supported by the local-runtime state handoff path");
-    }
     if !use_binary_control {
         return run_local_state_handoff(
             &args,
             stage_resolution,
             input_resolution,
             prefix,
-            suffix,
             continuation,
             benchmark_prompt_text,
             prefill_input,
-            suffix_input,
             decode_input,
             tokenize_ms + input_build_ms,
             stage_activation_width,
@@ -1368,7 +1333,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
     let roundtrip_state_matches = state_bytes == roundtrip_state_bytes;
     Ok(BinaryStateHandoffResult {
         prompt_token_count: prefix.len(),
-        benchmark_prompt_token_count: prefix.len().saturating_add(suffix.len()).saturating_add(1),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
         benchmark_prompt_text: benchmark_prompt_text.clone(),
         requested_prefix_token_count: args.prefix_token_count,
         stage_index: args.state_stage_index,
@@ -1383,8 +1348,6 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         activation_width: stage_activation_width,
         source_predicted_token,
         restored_predicted_token,
-        source_native_seq_id: 0,
-        restore_native_seq_id: 0,
         state_bytes: state_bytes.len(),
         cache_storage_bytes: Some(state_bytes.len()),
         resident_state_bytes: None,
@@ -1396,7 +1359,6 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
             None,
         ),
         tokenize_ms: tokenize_ms + input_build_ms,
-        suffix_token_count: 0,
         source_prefill_ms,
         source_export_ms,
         source_decode_ms,
@@ -1409,7 +1371,7 @@ fn run_binary_state_handoff(args: BinaryStateHandoffConfig) -> Result<BinaryStat
         predicted_token_matches,
         roundtrip_state_matches,
         restored_output_matches: None,
-        suffix_prefill_matches: true,
+        suffix_prefill_matches: None,
         cache_hit_matches,
         stage_models,
     })
@@ -1452,13 +1414,9 @@ fn state_handoff_tokens(
     tokenizer: &StageModel,
     prompt: &str,
     prefix_token_count: Option<usize>,
-    suffix_token_count: usize,
 ) -> Result<Vec<i32>> {
     let mut text = prompt.to_string();
-    let needed = prefix_token_count
-        .unwrap_or(1)
-        .saturating_add(suffix_token_count)
-        .saturating_add(1);
+    let needed = prefix_token_count.unwrap_or(1).saturating_add(1);
     let mut tokens = tokenizer
         .tokenize(&text, true)
         .context("failed to tokenize prompt")?;
@@ -1491,11 +1449,9 @@ fn run_local_state_handoff(
     stage_resolution: StageModelResolution,
     input_resolution: Option<StageModelResolution>,
     prefix: Vec<i32>,
-    suffix: Vec<i32>,
     continuation: i32,
     benchmark_prompt_text: String,
     prefill_input: Option<ActivationFrame>,
-    suffix_input: Option<ActivationFrame>,
     decode_input: Option<ActivationFrame>,
     tokenize_ms: f64,
     activation_width: i32,
@@ -1534,11 +1490,9 @@ fn run_local_state_handoff(
             stage_resolution,
             input_resolution,
             prefix,
-            suffix,
             continuation,
             benchmark_prompt_text,
             prefill_input,
-            suffix_input,
             decode_input,
             tokenize_ms,
             activation_width,
@@ -1547,80 +1501,39 @@ fn run_local_state_handoff(
         );
     }
 
-    let (
-        state_payload,
-        resident_state_bytes,
-        source_predicted_token,
-        source_output,
-        source_native_seq_id,
-        source_prefill_ms,
-        source_export_ms,
-        source_decode_ms,
-    ) = {
-        let mut source = model
-            .create_session()
-            .context("failed to create local state handoff source session")?;
-        let source_native_seq_id = source.native_seq_id();
-        let source_prefill_started = Instant::now();
-        if prefill_input.is_some() {
-            source
-                .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
-                .context("local state handoff source prefill failed")?;
-        } else {
-            source
-                .prefill_chunked(&prefix)
-                .context("local state handoff source prefill failed")?;
-        }
-        let source_prefill_ms = elapsed_ms(source_prefill_started);
-
-        let source_export_started = Instant::now();
-        let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
-            .context("local state handoff source export failed")?;
-        let source_export_ms = elapsed_ms(source_export_started);
-
-        if !suffix.is_empty() {
-            if suffix_input.is_some() {
-                source
-                    .prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                    .context("local state handoff source suffix prefill failed")?;
-            } else {
-                source
-                    .prefill_chunked(&suffix)
-                    .context("local state handoff source suffix prefill failed")?;
-            }
-        }
-
-        let source_decode_started = Instant::now();
-        let (source_predicted_token, source_output) = source
-            .decode_step_frame(continuation, decode_input.as_ref(), 0)
-            .context("local state handoff source decode failed")?;
-        let source_decode_ms = elapsed_ms(source_decode_started);
-
-        let resident_state_bytes =
-            measure_resident_state_bytes(&mut source, args, prefix.len() as u64)
-                .context("local state handoff resident KV size measurement failed")?;
-
-        (
-            state_payload,
-            resident_state_bytes,
-            source_predicted_token,
-            source_output,
-            source_native_seq_id,
-            source_prefill_ms,
-            source_export_ms,
-            source_decode_ms,
-        )
-    };
-
-    let _source_lane_pin = model
+    let mut source = model
         .create_session()
-        .context("failed to pin source native sequence during restore remap check")?;
+        .context("failed to create local state handoff source session")?;
+    let source_prefill_started = Instant::now();
+    if prefill_input.is_some() {
+        source
+            .prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
+            .context("local state handoff source prefill failed")?;
+    } else {
+        source
+            .prefill_chunked(&prefix)
+            .context("local state handoff source prefill failed")?;
+    }
+    let source_prefill_ms = elapsed_ms(source_prefill_started);
+
+    let source_export_started = Instant::now();
+    let state_payload = export_local_state_payload(&mut source, args, prefix.len() as u64)
+        .context("local state handoff source export failed")?;
+    let source_export_ms = elapsed_ms(source_export_started);
+
+    let source_decode_started = Instant::now();
+    let (source_predicted_token, source_output) = source
+        .decode_step_frame(continuation, decode_input.as_ref(), 0)
+        .context("local state handoff source decode failed")?;
+    let source_decode_ms = elapsed_ms(source_decode_started);
+
+    let resident_state_bytes = measure_resident_state_bytes(&mut source, args, prefix.len() as u64)
+        .context("local state handoff resident KV size measurement failed")?;
 
     let (
         roundtrip_state_payload,
         restored_predicted_token,
         restored_output,
-        restore_native_seq_id,
         restore_import_ms,
         restore_export_ms,
         restore_decode_ms,
@@ -1634,7 +1547,6 @@ fn run_local_state_handoff(
             &prefix,
         )
         .context("local state handoff restore import failed")?;
-        let restore_native_seq_id = restore.native_seq_id();
         let restore_import_ms = elapsed_ms(restore_import_started);
 
         let restore_export_started = Instant::now();
@@ -1643,23 +1555,12 @@ fn run_local_state_handoff(
         {
             state_payload.clone()
         } else {
-            export_local_state_payload_like(&mut restore, args, prefix.len() as u64, &state_payload)
+            export_local_state_payload(&mut restore, args, prefix.len() as u64)
                 .context("local state handoff restore export failed")?
         };
         let restore_export_ms = elapsed_ms(restore_export_started);
 
         let restore_decode_started = Instant::now();
-        if !suffix.is_empty() {
-            if suffix_input.is_some() {
-                restore
-                    .prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                    .context("local state handoff restore suffix prefill failed")?;
-            } else {
-                restore
-                    .prefill_chunked(&suffix)
-                    .context("local state handoff restore suffix prefill failed")?;
-            }
-        }
         let (restored_predicted_token, restored_output) = restore
             .decode_step_frame(continuation, decode_input.as_ref(), 0)
             .context("local state handoff restore decode failed")?;
@@ -1668,7 +1569,6 @@ fn run_local_state_handoff(
             roundtrip_state_payload,
             restored_predicted_token,
             restored_output,
-            restore_native_seq_id,
             restore_import_ms,
             restore_export_ms,
             restore_decode_ms,
@@ -1691,15 +1591,6 @@ fn run_local_state_handoff(
         .context("local state handoff repeat import failed")?;
         cache_hit_import_ms.push(elapsed_ms(import_started));
         let decode_started = Instant::now();
-        if !suffix.is_empty() {
-            if suffix_input.is_some() {
-                hit.prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                    .context("local state handoff repeat suffix prefill failed")?;
-            } else {
-                hit.prefill_chunked(&suffix)
-                    .context("local state handoff repeat suffix prefill failed")?;
-            }
-        }
         let (predicted, output) = hit
             .decode_step_frame(continuation, decode_input.as_ref(), 0)
             .context("local state handoff repeat decode failed")?;
@@ -1707,6 +1598,20 @@ fn run_local_state_handoff(
         cache_hit_matches &=
             predicted == source_predicted_token && output.payload == source_output.payload;
     }
+    let mut suffix_restored =
+        create_local_cache_hit_session(&model, args, &state_payload, prefix.len() as u64, &prefix)
+            .context("local state handoff suffix-prefill restore import failed")?;
+    drop(source);
+    let suffix_prefill_matches = run_local_suffix_prefill_remap_check(
+        &model,
+        &mut suffix_restored,
+        &prefix,
+        continuation,
+        prefill_input.as_ref(),
+        decode_input.as_ref(),
+        include_output,
+    )
+    .context("local state handoff suffix-prefill remap check failed")?;
 
     let mut stage_models = Vec::new();
     if let Some(input_resolution) = input_resolution {
@@ -1717,7 +1622,7 @@ fn run_local_state_handoff(
     let roundtrip_state_matches = state_payload.same_payload(&roundtrip_state_payload);
     Ok(BinaryStateHandoffResult {
         prompt_token_count: prefix.len(),
-        benchmark_prompt_token_count: prefix.len().saturating_add(suffix.len()).saturating_add(1),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
         benchmark_prompt_text,
         requested_prefix_token_count: args.prefix_token_count,
         stage_index: args.state_stage_index,
@@ -1733,8 +1638,6 @@ fn run_local_state_handoff(
         activation_width,
         source_predicted_token,
         restored_predicted_token,
-        source_native_seq_id,
-        restore_native_seq_id,
         state_bytes: state_payload.byte_len(),
         cache_storage_bytes: match args.state_payload_kind {
             StatePayloadKind::ResidentKv => resident_state_bytes,
@@ -1744,7 +1647,6 @@ fn run_local_state_handoff(
         roundtrip_state_bytes: roundtrip_state_payload.byte_len(),
         payload_digest: state_payload.digest_report(),
         tokenize_ms,
-        suffix_token_count: suffix.len(),
         source_prefill_ms,
         source_export_ms,
         source_decode_ms,
@@ -1755,16 +1657,12 @@ fn run_local_state_handoff(
         cache_hit_decode_ms,
         matches: predicted_token_matches
             && restored_output_matches
-            && cache_hit_matches
-            && source_native_seq_id != restore_native_seq_id,
+            && suffix_prefill_matches
+            && cache_hit_matches,
         predicted_token_matches,
         roundtrip_state_matches,
         restored_output_matches: Some(restored_output_matches),
-        suffix_prefill_matches: if suffix.is_empty() {
-            true
-        } else {
-            predicted_token_matches && restored_output_matches
-        },
+        suffix_prefill_matches: Some(suffix_prefill_matches),
         cache_hit_matches,
         stage_models,
     })
@@ -1777,11 +1675,9 @@ fn run_local_resident_slot_handoff(
     stage_resolution: StageModelResolution,
     input_resolution: Option<StageModelResolution>,
     prefix: Vec<i32>,
-    suffix: Vec<i32>,
     continuation: i32,
     benchmark_prompt_text: String,
     prefill_input: Option<ActivationFrame>,
-    suffix_input: Option<ActivationFrame>,
     decode_input: Option<ActivationFrame>,
     tokenize_ms: f64,
     activation_width: i32,
@@ -1791,7 +1687,6 @@ fn run_local_resident_slot_handoff(
     let mut slot = model
         .create_session()
         .context("failed to create local resident slot session")?;
-    let source_native_seq_id = slot.native_seq_id();
     let source_prefill_started = Instant::now();
     if prefill_input.is_some() {
         slot.prefill_chunk_frame(&prefix, prefill_input.as_ref(), 0)
@@ -1813,15 +1708,6 @@ fn run_local_resident_slot_handoff(
     };
 
     let source_export_ms = 0.0;
-    if !suffix.is_empty() {
-        if suffix_input.is_some() {
-            slot.prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                .context("local resident slot source suffix prefill failed")?;
-        } else {
-            slot.prefill_chunked(&suffix)
-                .context("local resident slot source suffix prefill failed")?;
-        }
-    }
     let source_decode_started = Instant::now();
     let (source_predicted_token, source_output) = slot
         .decode_step_frame(continuation, decode_input.as_ref(), 0)
@@ -1832,23 +1718,11 @@ fn run_local_resident_slot_handoff(
     let mut restore = model
         .create_session_from_resident_prefix(cache_seq_id, &prefix)
         .context("local resident slot restore borrow failed")?;
-    let restore_native_seq_id = restore.native_seq_id();
     let restore_import_ms = elapsed_ms(restore_import_started);
     let restore_export_ms = 0.0;
     let restore_decode_started = Instant::now();
-    if !suffix.is_empty() {
-        if suffix_input.is_some() {
-            restore
-                .prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                .context("local resident slot restore suffix prefill failed")?;
-        } else {
-            restore
-                .prefill_chunked(&suffix)
-                .context("local resident slot restore suffix prefill failed")?;
-        }
-    }
     let (restored_predicted_token, restored_output) =
-        if args.cache_decoded_result_hits && decode_input.is_none() && suffix.is_empty() {
+        if args.cache_decoded_result_hits && decode_input.is_none() {
             (
                 restore
                     .sample_current(None)
@@ -1889,44 +1763,48 @@ fn run_local_resident_slot_handoff(
             .context("local resident slot repeat borrow failed")?;
         cache_hit_import_ms.push(elapsed_ms(import_started));
         let decode_started = Instant::now();
-        if !suffix.is_empty() {
-            if suffix_input.is_some() {
-                hit.prefill_chunk_frame(&suffix, suffix_input.as_ref(), 0)
-                    .context("local resident slot repeat suffix prefill failed")?;
-            } else {
-                hit.prefill_chunked(&suffix)
-                    .context("local resident slot repeat suffix prefill failed")?;
-            }
-        }
-        let (predicted, output) =
-            if args.cache_decoded_result_hits && decode_input.is_none() && suffix.is_empty() {
-                (
-                    hit.sample_current(None)
-                        .context("local resident slot repeat sample failed")?,
-                    ActivationFrame {
-                        desc: skippy_runtime::ActivationDesc {
-                            version: 0,
-                            dtype: skippy_runtime::RuntimeActivationDType::Unknown,
-                            layout: skippy_runtime::RuntimeActivationLayout::Opaque,
-                            producer_stage_index: args.state_stage_index as i32,
-                            layer_start: args.state_layer_start as i32,
-                            layer_end: args.state_layer_end as i32,
-                            token_count: 0,
-                            sequence_count: 0,
-                            payload_bytes: 0,
-                            flags: 0,
-                        },
-                        payload: Vec::new(),
+        let (predicted, output) = if args.cache_decoded_result_hits && decode_input.is_none() {
+            (
+                hit.sample_current(None)
+                    .context("local resident slot repeat sample failed")?,
+                ActivationFrame {
+                    desc: skippy_runtime::ActivationDesc {
+                        version: 0,
+                        dtype: skippy_runtime::RuntimeActivationDType::Unknown,
+                        layout: skippy_runtime::RuntimeActivationLayout::Opaque,
+                        producer_stage_index: args.state_stage_index as i32,
+                        layer_start: args.state_layer_start as i32,
+                        layer_end: args.state_layer_end as i32,
+                        token_count: 0,
+                        sequence_count: 0,
+                        payload_bytes: 0,
+                        flags: 0,
                     },
-                )
-            } else {
-                hit.decode_step_frame(continuation, decode_input.as_ref(), 0)
-                    .context("local resident slot repeat decode failed")?
-            };
+                    payload: Vec::new(),
+                },
+            )
+        } else {
+            hit.decode_step_frame(continuation, decode_input.as_ref(), 0)
+                .context("local resident slot repeat decode failed")?
+        };
         cache_hit_decode_ms.push(elapsed_ms(decode_started));
         cache_hit_matches &=
             predicted == source_predicted_token && output.payload == source_output.payload;
     }
+    let mut suffix_restored =
+        create_local_cache_hit_session(&model, args, &state_payload, prefix.len() as u64, &prefix)
+            .context("local resident slot suffix-prefill restore import failed")?;
+    drop(slot);
+    let suffix_prefill_matches = run_local_suffix_prefill_remap_check(
+        &model,
+        &mut suffix_restored,
+        &prefix,
+        continuation,
+        prefill_input.as_ref(),
+        decode_input.as_ref(),
+        include_output,
+    )
+    .context("local resident slot suffix-prefill remap check failed")?;
 
     let mut stage_models = Vec::new();
     if let Some(input_resolution) = input_resolution {
@@ -1936,7 +1814,7 @@ fn run_local_resident_slot_handoff(
 
     Ok(BinaryStateHandoffResult {
         prompt_token_count: prefix.len(),
-        benchmark_prompt_token_count: prefix.len().saturating_add(suffix.len()).saturating_add(1),
+        benchmark_prompt_token_count: prefix.len().saturating_add(1),
         benchmark_prompt_text,
         requested_prefix_token_count: args.prefix_token_count,
         stage_index: args.state_stage_index,
@@ -1951,15 +1829,12 @@ fn run_local_resident_slot_handoff(
         activation_width,
         source_predicted_token,
         restored_predicted_token,
-        source_native_seq_id,
-        restore_native_seq_id,
         state_bytes: state_payload.byte_len(),
         cache_storage_bytes: resident_state_bytes,
         resident_state_bytes,
         roundtrip_state_bytes: state_payload.byte_len(),
         payload_digest: state_payload.digest_report(),
         tokenize_ms,
-        suffix_token_count: suffix.len(),
         source_prefill_ms,
         source_export_ms,
         source_decode_ms,
@@ -1970,19 +1845,67 @@ fn run_local_resident_slot_handoff(
         cache_hit_decode_ms,
         matches: predicted_token_matches
             && restored_output_matches
-            && cache_hit_matches
-            && source_native_seq_id != restore_native_seq_id,
+            && suffix_prefill_matches
+            && cache_hit_matches,
         predicted_token_matches,
         roundtrip_state_matches: true,
         restored_output_matches: Some(restored_output_matches),
-        suffix_prefill_matches: if suffix.is_empty() {
-            true
-        } else {
-            predicted_token_matches && restored_output_matches
-        },
+        suffix_prefill_matches: Some(suffix_prefill_matches),
         cache_hit_matches,
         stage_models,
     })
+}
+
+fn run_local_suffix_prefill_remap_check(
+    model: &StageModel,
+    restored: &mut StageSession,
+    prefix: &[i32],
+    suffix_token: i32,
+    prefill_input: Option<&ActivationFrame>,
+    decode_input: Option<&ActivationFrame>,
+    include_output: bool,
+) -> Result<bool> {
+    let mut source = model
+        .create_session()
+        .context("failed to create suffix-prefill source session")?;
+    if prefill_input.is_some() {
+        source
+            .prefill_chunk_frame(prefix, prefill_input, 0)
+            .context("suffix-prefill source prefix prefill failed")?;
+    } else {
+        source
+            .prefill_chunked(prefix)
+            .context("suffix-prefill source prefix prefill failed")?;
+    }
+    let (source_predicted, source_frame) = if include_output {
+        let (predicted, frame) = source
+            .verify_tokens_frame(&[suffix_token], decode_input, 0)
+            .context("suffix-prefill source suffix verify failed")?;
+        (Some(predicted), frame)
+    } else {
+        (
+            None,
+            source
+                .prefill_chunk_frame(&[suffix_token], decode_input, 0)
+                .context("suffix-prefill source suffix prefill failed")?,
+        )
+    };
+
+    let (restored_predicted, restored_frame) = if include_output {
+        let (predicted, frame) = restored
+            .verify_tokens_frame(&[suffix_token], decode_input, 0)
+            .context("suffix-prefill restored suffix verify failed")?;
+        (Some(predicted), frame)
+    } else {
+        (
+            None,
+            restored
+                .prefill_chunk_frame(&[suffix_token], decode_input, 0)
+                .context("suffix-prefill restored suffix prefill failed")?,
+        )
+    };
+
+    Ok(source_frame.payload == restored_frame.payload && source_predicted == restored_predicted)
 }
 
 fn create_local_cache_hit_session(
@@ -2039,43 +1962,20 @@ fn export_local_state_payload(
             session.export_recurrent_state()?,
         )),
         StatePayloadKind::KvRecurrent => {
-            let recurrent = session.export_recurrent_state()?;
-            let (kv_desc, kv) = match session.export_kv_page(
+            let page = session.export_kv_page(
                 args.state_layer_start as i32,
                 args.state_layer_end as i32,
                 0,
                 token_count,
-            ) {
-                Ok(page) => (Some(page.desc), page.payload),
-                Err(error) if is_absent_native_kv_page_export(&error) => (None, Vec::new()),
-                Err(error) => return Err(error),
-            };
+            )?;
+            let recurrent = session.export_recurrent_state()?;
             Ok(LocalStatePayload::KvRecurrent {
-                kv_desc,
-                kv,
+                kv_desc: page.desc,
+                kv: page.payload,
                 recurrent,
             })
         }
     }
-}
-
-fn export_local_state_payload_like(
-    session: &mut StageSession,
-    args: &BinaryStateHandoffConfig,
-    token_count: u64,
-    template: &LocalStatePayload,
-) -> Result<LocalStatePayload> {
-    if matches!(
-        template,
-        LocalStatePayload::KvRecurrent { kv_desc: None, .. }
-    ) {
-        return Ok(LocalStatePayload::KvRecurrent {
-            kv_desc: None,
-            kv: Vec::new(),
-            recurrent: session.export_recurrent_state()?,
-        });
-    }
-    export_local_state_payload(session, args, token_count)
 }
 
 fn measure_resident_state_bytes(
@@ -2120,11 +2020,10 @@ fn import_local_state_payload(
             }
             session.restore_prefix(*cache_seq_id, token_ids)
         }
-        LocalStatePayload::FullState(bytes) => session.import_full_state_for_token_count(
+        LocalStatePayload::FullState(bytes) => session.import_full_state(
             args.state_layer_start as i32,
             args.state_layer_end as i32,
             bytes,
-            token_count,
         ),
         LocalStatePayload::RecurrentOnly(bytes) => {
             session.import_recurrent_state_for_token_count(bytes, token_count)
@@ -2134,20 +2033,10 @@ fn import_local_state_payload(
             kv,
             recurrent,
         } => {
-            if let Some(kv_desc) = kv_desc {
-                session.import_kv_page(kv_desc, kv)?;
-            }
+            session.import_kv_page(kv_desc, kv)?;
             session.import_recurrent_state_for_token_count(recurrent, token_count)
         }
     }
-}
-
-fn is_absent_native_kv_page_export(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("runtime memory type is not supported for native KV pages")
-            || message.contains("no KV cache layers selected by layer range")
-    })
 }
 
 fn state_payload_kind_name(kind: StatePayloadKind) -> &'static str {
@@ -2254,38 +2143,22 @@ fn build_state_handoff_inputs(
     args: &BinaryStateHandoffConfig,
     input_resolution: Option<&StageModelResolution>,
     prefix: &[i32],
-    suffix: &[i32],
     continuation: i32,
-) -> Result<(
-    Option<ActivationFrame>,
-    Option<ActivationFrame>,
-    Option<ActivationFrame>,
-    i32,
-)> {
+) -> Result<(Option<ActivationFrame>, Option<ActivationFrame>, i32)> {
     if args.synthetic_input_activation {
         if args.state_layer_start == 0 {
             bail!("--synthetic-input-activation requires --state-layer-start greater than zero");
         }
         let prefill_input = synthetic_activation_frame(args, prefix.len() as u32, 0);
-        let suffix_input = if suffix.is_empty() {
-            None
-        } else {
-            Some(synthetic_activation_frame(
-                args,
-                suffix.len() as u32,
-                suffix.first().copied().unwrap_or_default(),
-            ))
-        };
         let decode_input = synthetic_activation_frame(args, 1, continuation);
         return Ok((
             Some(prefill_input),
-            suffix_input,
             Some(decode_input),
             args.activation_width,
         ));
     }
     let Some(input_resolution) = input_resolution else {
-        return Ok((None, None, None, args.activation_width));
+        return Ok((None, None, args.activation_width));
     };
     let input_config = RuntimeConfig {
         stage_index: args.state_stage_index.saturating_sub(1),
@@ -2316,41 +2189,17 @@ fn build_state_handoff_inputs(
     let prefill_input = input_session
         .prefill_chunk_frame(prefix, None, 0)
         .context("state handoff input producer failed to prefill prefix")?;
-    let suffix_input = if suffix.is_empty() {
-        None
-    } else {
-        Some(
-            input_session
-                .prefill_chunk_frame(suffix, None, 0)
-                .context("state handoff input producer failed to prefill suffix")?,
-        )
-    };
     let (_, decode_input) = input_session
         .decode_step_frame(continuation, None, 0)
         .context("state handoff input producer failed to decode continuation")?;
     let prefill_width = activation_width(&prefill_input)?;
     let decode_width = activation_width(&decode_input)?;
-    let suffix_width = suffix_input
-        .as_ref()
-        .map(activation_width)
-        .transpose()?
-        .unwrap_or(prefill_width);
     if prefill_width != decode_width {
         bail!(
             "state handoff input width changed between prefill ({prefill_width}) and decode ({decode_width})"
         );
     }
-    if prefill_width != suffix_width {
-        bail!(
-            "state handoff input width changed between prefill ({prefill_width}) and suffix ({suffix_width})"
-        );
-    }
-    Ok((
-        Some(prefill_input),
-        suffix_input,
-        Some(decode_input),
-        prefill_width,
-    ))
+    Ok((Some(prefill_input), Some(decode_input), prefill_width))
 }
 
 fn synthetic_activation_frame(
@@ -2406,18 +2255,7 @@ fn send_prefill_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
-    state.flags |= input
-        .map(|frame| {
-            skippy_protocol::binary::activation_state_flags_from_frame_flags(frame.desc.flags)
-        })
-        .unwrap_or(0);
-    let activation = encode_handoff_activation(
-        input,
-        token_count,
-        wire_dtype,
-        activation_width,
-        state.flags,
-    )?;
+    let activation = encode_handoff_activation(input, token_count, wire_dtype, activation_width)?;
     let message = StageWireMessage {
         kind: WireMessageKind::PrefillEmbd,
         pos_start: 0,
@@ -2521,13 +2359,7 @@ fn decode_for_state_handoff(
     state.source_stage_index = input
         .map(|frame| frame.desc.producer_stage_index)
         .unwrap_or(-1);
-    state.flags |= input
-        .map(|frame| {
-            skippy_protocol::binary::activation_state_flags_from_frame_flags(frame.desc.flags)
-        })
-        .unwrap_or(0);
-    let activation =
-        encode_handoff_activation(input, 1, wire_dtype, activation_width, state.flags)?;
+    let activation = encode_handoff_activation(input, 1, wire_dtype, activation_width)?;
     let message = StageWireMessage {
         kind: WireMessageKind::DecodeEmbd,
         pos_start: i32::try_from(pos_start).context("decode position exceeds i32")?,
@@ -2554,17 +2386,15 @@ fn encode_handoff_activation(
     token_count: i32,
     wire_dtype: skippy_protocol::binary::WireActivationDType,
     activation_width: i32,
-    state_flags: i32,
 ) -> Result<Vec<u8>> {
     let Some(input) = input else {
         return Ok(Vec::new());
     };
-    skippy_protocol::binary::encode_f32_activation_payload_with_state_flags(
+    skippy_protocol::binary::encode_f32_activation_payload(
         wire_dtype,
         token_count,
         activation_width,
         &input.payload,
-        state_flags,
     )
     .context("failed to encode state handoff input activation")
 }

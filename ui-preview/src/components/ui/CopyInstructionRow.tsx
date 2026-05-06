@@ -13,7 +13,14 @@ type CopyInstructionRowProps = {
   noWrapValue?: boolean
 }
 
-export function CopyInstructionRow({ label, value, copyValue = value, prefix, hint, noWrapValue = false }: CopyInstructionRowProps) {
+export function CopyInstructionRow({
+  label,
+  value,
+  copyValue = value,
+  prefix,
+  hint,
+  noWrapValue = false
+}: CopyInstructionRowProps) {
   const { copyState, copyText } = useClipboardCopy()
 
   return (
@@ -22,18 +29,28 @@ export function CopyInstructionRow({ label, value, copyValue = value, prefix, hi
         <div className="min-w-0 flex-1">
           <div className="type-label text-fg-faint">{label}</div>
           <div className="mt-1 flex items-start gap-2">
-            {prefix ? <span className="shrink-0 font-mono text-[length:var(--density-type-caption-lg)] text-accent">{prefix}</span> : null}
-            <span className={cn(
-              'min-w-0 font-mono text-[length:var(--density-type-caption-lg)] text-foreground',
-              noWrapValue ? 'block max-w-full overflow-x-auto whitespace-nowrap' : 'break-words',
-            )}>{value}</span>
+            {prefix ? (
+              <span className="shrink-0 font-mono text-[length:var(--density-type-caption-lg)] text-accent">
+                {prefix}
+              </span>
+            ) : null}
+            <span
+              className={cn(
+                'min-w-0 font-mono text-[length:var(--density-type-caption-lg)] text-foreground',
+                noWrapValue ? 'block max-w-full overflow-x-auto whitespace-nowrap' : 'break-words'
+              )}
+            >
+              {value}
+            </span>
           </div>
           {hint ? <div className="mt-1 text-[length:var(--density-type-caption)] text-fg-faint">{hint}</div> : null}
         </div>
         <button
           aria-label={`Copy ${label}`}
           className="ui-control inline-flex shrink-0 items-center gap-1.5 rounded-[var(--radius)] border px-2.5 py-1 text-[length:var(--density-type-caption)] font-medium"
-          onClick={() => { void copyText(copyValue) }}
+          onClick={() => {
+            void copyText(copyValue)
+          }}
           type="button"
         >
           <Copy className="size-[11px]" aria-hidden="true" />

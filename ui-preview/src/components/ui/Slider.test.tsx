@@ -6,7 +6,18 @@ describe('Slider', () => {
   it('emits string values from the native range input', () => {
     const handleValueChange = vi.fn()
 
-    render(<Slider ariaLabel="Memory margin" max={4} min={0} name="memory-margin" onValueChange={handleValueChange} step={0.5} unit="GB" value="2" />)
+    render(
+      <Slider
+        ariaLabel="Memory margin"
+        max={4}
+        min={0}
+        name="memory-margin"
+        onValueChange={handleValueChange}
+        step={0.5}
+        unit="GB"
+        value="2"
+      />
+    )
 
     fireEvent.change(screen.getByRole('slider', { name: 'Memory margin' }), { target: { value: '2.5' } })
 
@@ -14,7 +25,17 @@ describe('Slider', () => {
   })
 
   it('renders caller-provided value labels including zero', () => {
-    render(<Slider ariaLabel="Draft tokens" max={128} min={0} name="draft-max-tokens" onValueChange={vi.fn()} value="0" valueLabel={0} />)
+    render(
+      <Slider
+        ariaLabel="Draft tokens"
+        max={128}
+        min={0}
+        name="draft-max-tokens"
+        onValueChange={vi.fn()}
+        value="0"
+        valueLabel={0}
+      />
+    )
 
     expect(screen.getByText('0')).toBeInTheDocument()
   })
@@ -36,7 +57,7 @@ describe('Slider', () => {
         value="0.7"
         valueLabelAlign="center"
         valueLabelPlacement="bottom"
-      />,
+      />
     )
 
     expect(screen.getByText('Draft acceptance')).toBeInTheDocument()

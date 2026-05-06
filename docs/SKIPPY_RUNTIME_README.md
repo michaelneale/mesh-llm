@@ -53,9 +53,6 @@ flowchart LR
     Mesh -->|LoadStage<br/>downstream-to-upstream| S1
     Mesh -->|LoadStage| SN
     Mesh -->|LoadStage| SF
-    Cache["mesh materialized stage cache<br/>derived package slices"] --> S0
-    Cache --> S1
-    Cache --> SF
 
     S0 -.->|OTLP summaries| M["metrics-server"]
     S1 -.->|OTLP summaries| M
@@ -79,14 +76,16 @@ ownership to the serving path.
 Stage configs describe the chain:
 
 - `stage_id`, `stage_index`, `layer_start`, and `layer_end` identify the shard.
-- `model_path` points at the per-stage GGUF slice, usually `stage-N.gguf`.
+- for package-backed stages, `model_path` points at the package ref/directory;
+  the runtime selects the manifest parts for the stage range and loads them
+  directly, without composing a per-stage GGUF file.
 - `upstream` and `downstream` describe the neighboring stages.
 - cache-related fields are runtime-owned and must remain tied to exact
   model/topology/stage identity when reintroduced.
 
 Historical standalone prompt runs materialized a complete runnable topology
-under a run directory. Mesh now owns materialization as derived stage cache, but
-the old local layout looked like:
+under a run directory. Mesh package-backed serving no longer materializes
+per-stage GGUF shards; the old local layout looked like:
 
 ```text
 /tmp/skippy-prompt/model-cache/<cache-key>/stage-N.gguf

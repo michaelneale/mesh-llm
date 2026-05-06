@@ -4,20 +4,20 @@ import {
   clampViewportToPanBounds,
   DEFAULT_VIEWPORT,
   gridPatternTransform,
-  pointToScreen,
+  pointToScreen
 } from '@/features/network/lib/mesh-viewport'
 import type { MeshNode } from '@/features/app-tabs/types'
 
 const nodes: MeshNode[] = [
   { id: 'left', label: 'Left', x: 10, y: 20, status: 'online' },
-  { id: 'right', label: 'Right', x: 90, y: 80, status: 'online' },
+  { id: 'right', label: 'Right', x: 90, y: 80, status: 'online' }
 ]
 
 describe('mesh viewport math', () => {
   it('projects world coordinates into screen coordinates', () => {
     expect(pointToScreen({ x: 50, y: 25 }, 800, 400, { zoom: 1.5, panX: 10, panY: -20 })).toEqual({
       x: 610,
-      y: 130,
+      y: 130
     })
   })
 

@@ -40,7 +40,7 @@ export function DataModeProvider({
   children,
   initialMode = 'harness',
   persist = true,
-  storageKey = DATA_MODE_STORAGE_KEY,
+  storageKey = DATA_MODE_STORAGE_KEY
 }: DataModeProviderProps) {
   const [mode, setModeState] = useState<DataMode>(() => readStoredDataMode(storageKey, initialMode, persist))
 
@@ -55,9 +55,5 @@ export function DataModeProvider({
     })
   }
 
-  return (
-    <DataModeContext.Provider value={{ mode, setMode }}>
-      {children}
-    </DataModeContext.Provider>
-  )
+  return <DataModeContext.Provider value={{ mode, setMode }}>{children}</DataModeContext.Provider>
 }

@@ -248,6 +248,10 @@ impl KvStageIntegration {
         self.candidate_policy
             .record_candidate_token_counts(token_count)
     }
+
+    fn lookup_candidate_token_counts(&self, token_count: u64) -> Vec<u64> {
+        self.candidate_policy.candidate_token_counts(token_count)
+    }
 }
 
 fn local_trust_checksum(page_id: &str, byte_size: u64) -> Checksum {

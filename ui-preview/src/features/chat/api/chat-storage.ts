@@ -26,7 +26,7 @@ async function openChatDB() {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME)
       }
-    },
+    }
   })
 }
 
@@ -47,7 +47,7 @@ export async function saveChatState(state: ChatState): Promise<void> {
       conversations:
         state.conversations.length > MAX_CONVERSATIONS
           ? state.conversations.slice(state.conversations.length - MAX_CONVERSATIONS)
-          : state.conversations,
+          : state.conversations
     }
     await db.put(STORE_NAME, trimmed, STATE_KEY)
   } catch (_) {

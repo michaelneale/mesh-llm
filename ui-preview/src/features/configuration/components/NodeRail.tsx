@@ -4,12 +4,33 @@ import { configurationNavigationIconClassName } from '@/features/configuration/c
 import { containerUsedGB, nodeUsableGB } from '@/features/configuration/lib/config-math'
 import type { ConfigAssign, ConfigModel, ConfigNode } from '@/features/app-tabs/types'
 
-type NodeRailProps = { nodes: ConfigNode[]; assigns: ConfigAssign[]; models?: ConfigModel[]; collapsedMap: Record<string, boolean>; setCollapsedMap: Dispatch<SetStateAction<Record<string, boolean>>>; onJump: (nodeId: string) => void; keyboardHint?: ReactNode }
-export function NodeRail({ nodes, assigns, models, collapsedMap: _collapsedMap, setCollapsedMap, onJump, keyboardHint }: NodeRailProps) {
+type NodeRailProps = {
+  nodes: ConfigNode[]
+  assigns: ConfigAssign[]
+  models?: ConfigModel[]
+  collapsedMap: Record<string, boolean>
+  setCollapsedMap: Dispatch<SetStateAction<Record<string, boolean>>>
+  onJump: (nodeId: string) => void
+  keyboardHint?: ReactNode
+}
+export function NodeRail({
+  nodes,
+  assigns,
+  models,
+  collapsedMap: _collapsedMap,
+  setCollapsedMap,
+  onJump,
+  keyboardHint
+}: NodeRailProps) {
   void _collapsedMap
   return (
-    <nav className="panel-shell static self-start rounded-[var(--radius-lg)] border border-border bg-panel p-2.5 lg:sticky lg:top-[70px]" aria-label="Configuration nodes">
-      <div className="mb-2 px-0.5 text-[length:var(--density-type-annotation)] font-semibold uppercase tracking-[0.06em] text-fg-faint">Nodes · {nodes.length}</div>
+    <nav
+      className="panel-shell static self-start rounded-[var(--radius-lg)] border border-border bg-panel p-2.5 lg:sticky lg:top-[70px]"
+      aria-label="Configuration nodes"
+    >
+      <div className="mb-2 px-0.5 text-[length:var(--density-type-annotation)] font-semibold uppercase tracking-[0.06em] text-fg-faint">
+        Nodes · {nodes.length}
+      </div>
       {nodes.map((node) => {
         const usable = nodeUsableGB(node)
         const used = node.gpus.reduce((sum, gpu) => sum + containerUsedGB(assigns, node.id, gpu.idx, models), 0)
@@ -18,17 +39,30 @@ export function NodeRail({ nodes, assigns, models, collapsedMap: _collapsedMap, 
         return (
           <div key={node.id} className="mb-1.5">
             <div className="flex items-center gap-1.5 rounded-[var(--radius)] px-2 py-1.5">
-              <button className="ui-control-ghost flex min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius)] px-1 py-0.5 text-left" onClick={() => onJump(node.id)} tabIndex={-1} type="button">
+              <button
+                className="ui-control-ghost flex min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius)] px-1 py-0.5 text-left"
+                onClick={() => onJump(node.id)}
+                tabIndex={-1}
+                type="button"
+              >
                 <span
                   className="size-1.5 shrink-0 rounded-full"
                   style={{
                     background: node.status === 'online' ? 'var(--color-good)' : 'var(--color-fg-faint)',
-                    boxShadow: node.status === 'online' ? 'var(--shadow-status-good)' : 'none',
+                    boxShadow: node.status === 'online' ? 'var(--shadow-status-good)' : 'none'
                   }}
                 />
-                <span className="flex-1 truncate font-mono text-[length:var(--density-type-caption-lg)] font-medium">{node.hostname}</span>
+                <span className="flex-1 truncate font-mono text-[length:var(--density-type-caption-lg)] font-medium">
+                  {node.hostname}
+                </span>
               </button>
-              <button className="ui-control-ghost rounded-[var(--radius)] p-0.5" onClick={() => setCollapsedMap((map) => ({ ...map, [node.id]: !map[node.id] }))} tabIndex={-1} type="button" aria-label={`Toggle ${node.hostname}`}>
+              <button
+                className="ui-control-ghost rounded-[var(--radius)] p-0.5"
+                onClick={() => setCollapsedMap((map) => ({ ...map, [node.id]: !map[node.id] }))}
+                tabIndex={-1}
+                type="button"
+                aria-label={`Toggle ${node.hostname}`}
+              >
                 <ChevronDown className={configurationNavigationIconClassName} />
               </button>
             </div>
@@ -41,7 +75,11 @@ export function NodeRail({ nodes, assigns, models, collapsedMap: _collapsedMap, 
           </div>
         )
       })}
-      {keyboardHint ? <div className="panel-divider mt-2 border-t border-border-soft px-0.5 pt-2 text-[length:var(--density-type-caption)] text-fg-faint">{keyboardHint}</div> : null}
+      {keyboardHint ? (
+        <div className="panel-divider mt-2 border-t border-border-soft px-0.5 pt-2 text-[length:var(--density-type-caption)] text-fg-faint">
+          {keyboardHint}
+        </div>
+      ) : null}
     </nav>
   )
 }

@@ -27,7 +27,7 @@ function buildMeshVizPerfNodes(count: number): MeshNode[] {
         renderKind: 'self',
         meshState: 'serving',
         latencyMs: 1,
-        vramGB: 64,
+        vramGB: 64
       }
     }
 
@@ -52,7 +52,7 @@ function buildMeshVizPerfNodes(count: number): MeshNode[] {
       servingModels: isClient ? undefined : [`perf-model-${index % 8}`],
       latencyMs: isClient ? null : 1 + (index % 19),
       hostname: `perf-node-${index.toString().padStart(3, '0')}.local`,
-      vramGB: isClient ? undefined : 16 + (index % 6) * 8,
+      vramGB: isClient ? undefined : 16 + (index % 6) * 8
     }
   })
 }

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { canFitModelInContainer, containerAvailableGB, findModel, findPreferredModelFitContainerIdx, hasConfigurablePlacement, nodeReservedGB, nodeUsableGB } from '@/features/configuration/lib/config-math'
+import {
+  canFitModelInContainer,
+  containerAvailableGB,
+  findModel,
+  findPreferredModelFitContainerIdx,
+  hasConfigurablePlacement,
+  nodeReservedGB,
+  nodeUsableGB
+} from '@/features/configuration/lib/config-math'
 import type { ConfigAssign, ConfigNode } from '@/features/app-tabs/types'
 
 describe('configuration memory math', () => {
@@ -13,7 +21,7 @@ describe('configuration memory math', () => {
       cpu: 'test cpu',
       ramGB: 64,
       placement: 'separate',
-      gpus: [{ idx: 0, name: 'test gpu', totalGB: 3, reservedGB: 0.5 }],
+      gpus: [{ idx: 0, name: 'test gpu', totalGB: 3, reservedGB: 0.5 }]
     }
 
     if (!model) throw new Error('Expected qwen4 test model')
@@ -34,13 +42,13 @@ describe('configuration memory math', () => {
       ramGB: 64,
       placement: 'separate',
       memoryTopology: 'discrete',
-      gpus: [{ idx: 0, name: 'test gpu', totalGB: 24 }],
+      gpus: [{ idx: 0, name: 'test gpu', totalGB: 24 }]
     }
     const multiGpuNode: ConfigNode = {
       ...singleGpuNode,
       id: 'node-multi',
       hostname: 'multi-node',
-      gpus: [...singleGpuNode.gpus, { idx: 1, name: 'test gpu', totalGB: 24 }],
+      gpus: [...singleGpuNode.gpus, { idx: 1, name: 'test gpu', totalGB: 24 }]
     }
     const unifiedNode: ConfigNode = {
       ...singleGpuNode,
@@ -49,7 +57,7 @@ describe('configuration memory math', () => {
       region: 'unified',
       placement: 'pooled',
       memoryTopology: 'unified',
-      gpus: [{ idx: 0, name: 'unified memory', totalGB: 48 }],
+      gpus: [{ idx: 0, name: 'unified memory', totalGB: 48 }]
     }
 
     expect(hasConfigurablePlacement(singleGpuNode)).toBe(false)
@@ -67,7 +75,10 @@ describe('configuration memory math', () => {
       cpu: 'test cpu',
       ramGB: 64,
       placement: 'separate',
-      gpus: [{ idx: 0, name: 'small gpu', totalGB: 8 }, { idx: 1, name: 'selected gpu', totalGB: 8 }],
+      gpus: [
+        { idx: 0, name: 'small gpu', totalGB: 8 },
+        { idx: 1, name: 'selected gpu', totalGB: 8 }
+      ]
     }
 
     if (!model) throw new Error('Expected qwen4 test model')
@@ -85,7 +96,10 @@ describe('configuration memory math', () => {
       cpu: 'test cpu',
       ramGB: 64,
       placement: 'separate',
-      gpus: [{ idx: 0, name: 'full gpu', totalGB: 5, reservedGB: 0.1 }, { idx: 1, name: 'open gpu', totalGB: 8 }],
+      gpus: [
+        { idx: 0, name: 'full gpu', totalGB: 5, reservedGB: 0.1 },
+        { idx: 1, name: 'open gpu', totalGB: 8 }
+      ]
     }
 
     if (!model) throw new Error('Expected phi4 test model')
@@ -103,7 +117,10 @@ describe('configuration memory math', () => {
       cpu: 'test cpu',
       ramGB: 64,
       placement: 'separate',
-      gpus: [{ idx: 0, name: 'small gpu', totalGB: 24 }, { idx: 1, name: 'other gpu', totalGB: 24 }],
+      gpus: [
+        { idx: 0, name: 'small gpu', totalGB: 24 },
+        { idx: 1, name: 'other gpu', totalGB: 24 }
+      ]
     }
     const assigns: ConfigAssign[] = []
 

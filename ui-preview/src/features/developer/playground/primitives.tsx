@@ -2,13 +2,25 @@ import { useState, type ReactNode } from 'react'
 import { SidebarNavigation } from '@/components/ui/SidebarNavigation'
 import type { TabPanelItem } from '@/components/ui/TabPanel'
 
-export function PlaygroundPanel({ title, description, actions, children }: { title: string; description?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+export function PlaygroundPanel({
+  title,
+  description,
+  actions,
+  children
+}: {
+  title: string
+  description?: ReactNode
+  actions?: ReactNode
+  children: ReactNode
+}) {
   return (
     <section className="overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border-soft px-3.5 py-2.5">
         <div>
           <h2 className="type-panel-title text-foreground">{title}</h2>
-          {description ? <div className="mt-1 text-[length:var(--density-type-caption-lg)] text-fg-dim">{description}</div> : null}
+          {description ? (
+            <div className="mt-1 text-[length:var(--density-type-caption-lg)] text-fg-dim">{description}</div>
+          ) : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </header>
@@ -21,7 +33,7 @@ export function OptionGroup<T extends string>({
   label,
   value,
   options,
-  onChange,
+  onChange
 }: {
   label: string
   value: T
@@ -49,7 +61,15 @@ export function OptionGroup<T extends string>({
   )
 }
 
-export function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+export function TextField({
+  label,
+  value,
+  onChange
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
   return (
     <label className="block space-y-1.5">
       <span className="type-label text-fg-faint">{label}</span>
@@ -64,7 +84,17 @@ export function TextField({ label, value, onChange }: { label: string; value: st
   )
 }
 
-export function TextAreaField({ label, value, onChange, rows = 3 }: { label: string; value: string; onChange: (value: string) => void; rows?: number }) {
+export function TextAreaField({
+  label,
+  value,
+  onChange,
+  rows = 3
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  rows?: number
+}) {
   return (
     <label className="block space-y-1.5">
       <span className="type-label text-fg-faint">{label}</span>
@@ -96,14 +126,15 @@ export function ToggleChip({ label, pressed, onToggle }: { label: string; presse
 export function SidebarTabs<TValue extends string>({
   ariaLabel,
   tabs,
-  defaultValue,
+  defaultValue
 }: {
   ariaLabel: string
   tabs: TabPanelItem<TValue>[]
   defaultValue: TValue
 }) {
   const [activeValue, setActiveValue] = useState<TValue>(defaultValue)
-  const activeTab = tabs.find((tab) => tab.value === activeValue && !tab.disabled) ?? tabs.find((tab) => !tab.disabled) ?? tabs[0]
+  const activeTab =
+    tabs.find((tab) => tab.value === activeValue && !tab.disabled) ?? tabs.find((tab) => !tab.disabled) ?? tabs[0]
 
   if (!activeTab) return null
 
@@ -123,7 +154,7 @@ export function SidebarTabs<TValue extends string>({
             summary: tab.description,
             icon: Icon ? <Icon aria-hidden={true} className="size-3.5" strokeWidth={1.7} /> : undefined,
             count: typeof tab.accessory === 'function' ? undefined : tab.accessory,
-            disabled: tab.disabled,
+            disabled: tab.disabled
           }
         })}
         onSelect={setActiveValue}

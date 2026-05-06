@@ -3,7 +3,7 @@ import {
   getCommandBarErrorMessage,
   isCommandBarAsyncSource,
   resolveCommandBarModeSource,
-  type CommandBarResolvedMode,
+  type CommandBarResolvedMode
 } from './command-bar-helpers'
 import type { CommandBarBehavior, CommandBarMode } from './command-bar-types'
 
@@ -28,7 +28,7 @@ export function useCommandBarAsyncResults<T>({
   modeById,
   modes,
   query,
-  resolvedDistinctModeId,
+  resolvedDistinctModeId
 }: UseCommandBarAsyncResultsOptions<T>): UseCommandBarAsyncResultsResult<T> {
   const abortControllersRef = useRef(new Map<string, AbortController>())
   const requestTokensByModeIdRef = useRef(new Map<string, number>())
@@ -42,7 +42,7 @@ export function useCommandBarAsyncResults<T>({
   const resolvedModes = useMemo<CommandBarResolvedMode<T>[]>(() => {
     return modes.map((mode) => ({
       ...mode,
-      source: resolveCommandBarModeSource(mode, asyncItemsByModeId),
+      source: resolveCommandBarModeSource(mode, asyncItemsByModeId)
     }))
   }, [asyncItemsByModeId, modes])
 
@@ -67,57 +67,63 @@ export function useCommandBarAsyncResults<T>({
     })
   }, [])
 
-  const fetchAsyncResults = useCallback((modeIds: readonly string[], nextQuery: string) => {
-    if (modeIds.length === 0) return
+  const fetchAsyncResults = useCallback(
+    (modeIds: readonly string[], nextQuery: string) => {
+      if (modeIds.length === 0) return
 
-    modeIds.forEach((modeId) => {
-      const mode = modeById.get(modeId)
-      if (!mode || !isCommandBarAsyncSource(mode.source)) return
+      modeIds.forEach((modeId) => {
+        const mode = modeById.get(modeId)
+        if (!mode || !isCommandBarAsyncSource(mode.source)) return
 
-      abortInFlightRequests([modeId])
+        abortInFlightRequests([modeId])
 
-      const controller = new AbortController()
-      const requestToken = (requestTokensByModeIdRef.current.get(modeId) ?? 0) + 1
+        const controller = new AbortController()
+        const requestToken = (requestTokensByModeIdRef.current.get(modeId) ?? 0) + 1
 
-      requestTokensByModeIdRef.current.set(modeId, requestToken)
-      abortControllersRef.current.set(modeId, controller)
-      setAsyncItemsByModeId((current) => ({ ...current, [modeId]: [] }))
-      setAsyncLoadingByModeId((current) => ({ ...current, [modeId]: true }))
-      setAsyncErrorByModeId((current) => ({ ...current, [modeId]: null }))
+        requestTokensByModeIdRef.current.set(modeId, requestToken)
+        abortControllersRef.current.set(modeId, controller)
+        setAsyncItemsByModeId((current) => ({ ...current, [modeId]: [] }))
+        setAsyncLoadingByModeId((current) => ({ ...current, [modeId]: true }))
+        setAsyncErrorByModeId((current) => ({ ...current, [modeId]: null }))
 
-      mode.source(nextQuery, controller.signal)
-        .then((items) => {
-          if (controller.signal.aborted) return
-          if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
+        mode
+          .source(nextQuery, controller.signal)
+          .then((items) => {
+            if (controller.signal.aborted) return
+            if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
 
-          abortControllersRef.current.delete(modeId)
-          setAsyncItemsByModeId((current) => ({ ...current, [modeId]: items }))
-          setAsyncErrorByModeId((current) => ({ ...current, [modeId]: null }))
-        })
-        .catch((error: unknown) => {
-          if (controller.signal.aborted) return
-          if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
+            abortControllersRef.current.delete(modeId)
+            setAsyncItemsByModeId((current) => ({ ...current, [modeId]: items }))
+            setAsyncErrorByModeId((current) => ({ ...current, [modeId]: null }))
+          })
+          .catch((error: unknown) => {
+            if (controller.signal.aborted) return
+            if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
 
-          abortControllersRef.current.delete(modeId)
-          setAsyncItemsByModeId((current) => ({ ...current, [modeId]: [] }))
-          setAsyncErrorByModeId((current) => ({
-            ...current,
-            [modeId]: getCommandBarErrorMessage(error),
-          }))
-        })
-        .finally(() => {
-          if (controller.signal.aborted) return
-          if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
-          setAsyncLoadingByModeId((current) => ({ ...current, [modeId]: false }))
-        })
-    })
-  }, [abortInFlightRequests, modeById])
+            abortControllersRef.current.delete(modeId)
+            setAsyncItemsByModeId((current) => ({ ...current, [modeId]: [] }))
+            setAsyncErrorByModeId((current) => ({
+              ...current,
+              [modeId]: getCommandBarErrorMessage(error)
+            }))
+          })
+          .finally(() => {
+            if (controller.signal.aborted) return
+            if (requestToken !== requestTokensByModeIdRef.current.get(modeId)) return
+            setAsyncLoadingByModeId((current) => ({ ...current, [modeId]: false }))
+          })
+      })
+    },
+    [abortInFlightRequests, modeById]
+  )
 
   useEffect(() => {
     const previouslyOpen = previousIsOpenRef.current
     const previousQuery = previousQueryRef.current
     const previousAsyncModeIds = previousAsyncModeIdsRef.current
-    const modesChanged = previousAsyncModeIds.length !== activeAsyncModeIds.length || previousAsyncModeIds.some((modeId, index) => modeId !== activeAsyncModeIds[index])
+    const modesChanged =
+      previousAsyncModeIds.length !== activeAsyncModeIds.length ||
+      previousAsyncModeIds.some((modeId, index) => modeId !== activeAsyncModeIds[index])
 
     previousIsOpenRef.current = isOpen
     previousQueryRef.current = query
@@ -159,6 +165,6 @@ export function useCommandBarAsyncResults<T>({
     isLoading: activeAsyncModeIds.some((modeId) => asyncLoadingByModeId[modeId]),
     asyncErrorMessage: activeAsyncModeIds
       .map((modeId) => asyncErrorByModeId[modeId])
-      .find((message): message is string => Boolean(message)),
+      .find((message): message is string => Boolean(message))
   }
 }

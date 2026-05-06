@@ -12,10 +12,16 @@ import {
   resolveFeatureFlags,
   writeStoredFeatureFlagOverrides,
   type FeatureFlagOverrides,
-  type FeatureFlagPath,
+  type FeatureFlagPath
 } from './definitions'
 
-export function FeatureFlagProvider({ children, storageKey = APP_STORAGE_KEYS.featureFlagOverrides }: { children: ReactNode; storageKey?: string }) {
+export function FeatureFlagProvider({
+  children,
+  storageKey = APP_STORAGE_KEYS.featureFlagOverrides
+}: {
+  children: ReactNode
+  storageKey?: string
+}) {
   const [overrides, setOverrides] = useState<FeatureFlagOverrides>(() => readStoredFeatureFlagOverrides(storageKey))
   const flags = useMemo(() => resolveFeatureFlags(overrides), [overrides])
 
@@ -37,22 +43,30 @@ export function FeatureFlagProvider({ children, storageKey = APP_STORAGE_KEYS.fe
     return () => window.removeEventListener('storage', handleStorage)
   }, [storageKey])
 
-  const getEffectiveValue = useCallback((path: FeatureFlagPath) => {
-    const definition = findFeatureFlagDefinition(path)
-    if (!definition) return false
-    return overrides[definition.sectionId]?.[definition.key] ?? getBaseFeatureFlagValue(path)
-  }, [overrides])
+  const getEffectiveValue = useCallback(
+    (path: FeatureFlagPath) => {
+      const definition = findFeatureFlagDefinition(path)
+      if (!definition) return false
+      return overrides[definition.sectionId]?.[definition.key] ?? getBaseFeatureFlagValue(path)
+    },
+    [overrides]
+  )
 
-  const isOverridden = useCallback((path: FeatureFlagPath) => {
-    const definition = findFeatureFlagDefinition(path)
-    if (!definition) return false
-    return overrides[definition.sectionId]?.[definition.key] !== undefined
-  }, [overrides])
+  const isOverridden = useCallback(
+    (path: FeatureFlagPath) => {
+      const definition = findFeatureFlagDefinition(path)
+      if (!definition) return false
+      return overrides[definition.sectionId]?.[definition.key] !== undefined
+    },
+    [overrides]
+  )
 
   const resetOverride = useCallback((path: FeatureFlagPath) => {
     const definition = findFeatureFlagDefinition(path)
     if (!definition) return
-    setOverrides((currentOverrides) => removeFeatureFlagOverride(currentOverrides, definition.sectionId, definition.key))
+    setOverrides((currentOverrides) =>
+      removeFeatureFlagOverride(currentOverrides, definition.sectionId, definition.key)
+    )
   }, [])
 
   const setOverride = useCallback((path: FeatureFlagPath, enabled: boolean) => {
@@ -60,30 +74,34 @@ export function FeatureFlagProvider({ children, storageKey = APP_STORAGE_KEYS.fe
     if (!definition) return
 
     setOverrides((currentOverrides) => {
-      if (enabled === getBaseFeatureFlagValue(path)) return removeFeatureFlagOverride(currentOverrides, definition.sectionId, definition.key)
+      if (enabled === getBaseFeatureFlagValue(path))
+        return removeFeatureFlagOverride(currentOverrides, definition.sectionId, definition.key)
 
       return {
         ...currentOverrides,
         [definition.sectionId]: {
           ...(currentOverrides[definition.sectionId] ?? {}),
-          [definition.key]: enabled,
-        },
+          [definition.key]: enabled
+        }
       }
     })
   }, [])
 
-  const value = useMemo<FeatureFlagSettingsContextValue>(() => ({
-    flags,
-    overrides,
-    sections: FEATURE_FLAG_SECTIONS,
-    storageKey,
-    getBaseValue: getBaseFeatureFlagValue,
-    getEffectiveValue,
-    isOverridden,
-    resetAllOverrides: () => setOverrides({}),
-    resetOverride,
-    setOverride,
-  }), [flags, getEffectiveValue, isOverridden, overrides, resetOverride, setOverride, storageKey])
+  const value = useMemo<FeatureFlagSettingsContextValue>(
+    () => ({
+      flags,
+      overrides,
+      sections: FEATURE_FLAG_SECTIONS,
+      storageKey,
+      getBaseValue: getBaseFeatureFlagValue,
+      getEffectiveValue,
+      isOverridden,
+      resetAllOverrides: () => setOverrides({}),
+      resetOverride,
+      setOverride
+    }),
+    [flags, getEffectiveValue, isOverridden, overrides, resetOverride, setOverride, storageKey]
+  )
 
   return (
     <FeatureFlagSettingsContext.Provider value={value}>

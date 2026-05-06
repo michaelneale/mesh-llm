@@ -166,8 +166,6 @@ pub struct StateHandoffArgs {
     pub state_payload_kind: StatePayloadKind,
     #[arg(long)]
     pub prefix_token_count: Option<usize>,
-    #[arg(long, default_value_t = 0)]
-    pub suffix_token_count: usize,
     #[arg(long, default_value_t = 1)]
     pub cache_hit_repeats: usize,
     #[arg(long)]

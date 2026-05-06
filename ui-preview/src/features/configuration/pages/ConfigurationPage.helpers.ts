@@ -1,4 +1,8 @@
-import { findModel, findPreferredModelFitContainerIdx, containerAssigns } from '@/features/configuration/lib/config-math'
+import {
+  findModel,
+  findPreferredModelFitContainerIdx,
+  containerAssigns
+} from '@/features/configuration/lib/config-math'
 import type { ConfigAssign, ConfigModel, ConfigNode } from '@/features/app-tabs/types'
 import type { SeparatePlacementSnapshot } from '@/features/configuration/hooks/useConfigurationHistory'
 
@@ -9,7 +13,9 @@ export function isTextEditingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
 
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+  return (
+    target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+  )
 }
 
 export function getNodeTargetContainerIdx(node: ConfigNode, containerIdx: number): number {
@@ -29,7 +35,12 @@ export function createSeparatePlacementSnapshot(assigns: ConfigAssign[], nodeId:
   }, {})
 }
 
-export function restoreSeparatePlacement(assigns: ConfigAssign[], node: ConfigNode, snapshot: SeparatePlacementSnapshot, models?: ConfigModel[]): ConfigAssign[] {
+export function restoreSeparatePlacement(
+  assigns: ConfigAssign[],
+  node: ConfigNode,
+  snapshot: SeparatePlacementSnapshot,
+  models?: ConfigModel[]
+): ConfigAssign[] {
   const separateNode: ConfigNode = { ...node, placement: 'separate' }
   const otherAssigns = assigns.filter((assign) => assign.nodeId !== node.id)
   const nodeAssigns = assigns.filter((assign) => assign.nodeId === node.id)
@@ -41,8 +52,17 @@ export function restoreSeparatePlacement(assigns: ConfigAssign[], node: ConfigNo
   const restoreAssign = (assign: ConfigAssign, preferredContainerIdx: number | null) => {
     const model = findModel(assign.modelId, models)
     const containerIdx = model
-      ? findPreferredModelFitContainerIdx(model, separateNode, restoredForFit, preferredContainerIdx, assign.ctx, models) ?? preferredContainerIdx ?? assign.containerIdx
-      : preferredContainerIdx ?? assign.containerIdx
+      ? (findPreferredModelFitContainerIdx(
+          model,
+          separateNode,
+          restoredForFit,
+          preferredContainerIdx,
+          assign.ctx,
+          models
+        ) ??
+        preferredContainerIdx ??
+        assign.containerIdx)
+      : (preferredContainerIdx ?? assign.containerIdx)
 
     placementByAssignId.set(assign.id, containerIdx)
     restoredForFit.push({ ...assign, containerIdx })

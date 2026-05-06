@@ -13,41 +13,54 @@ use skippy_runtime::{
     StageSessionCheckpoint, TokenSignal,
 };
 
-use crate::package::materialize_layer_package;
+use crate::package::select_package_parts;
 
 pub struct RuntimeState {
     pub model: StageModel,
     layer_start: u32,
     layer_end: u32,
     lane_count: u32,
-    sessions: BTreeMap<String, StageSession>,
-    idle_sessions: Vec<IdleStageSession>,
+    next_lane_index: usize,
+    sessions: BTreeMap<String, RuntimeLaneSession>,
+    idle_sessions: Vec<RuntimeLaneSession>,
     session_token_counts: BTreeMap<String, u64>,
     session_checkpoints: BTreeMap<String, StageSessionCheckpoint>,
     session_resident_prefixes: BTreeMap<String, ResidentLanePrefix>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RuntimeLaneSession {
+    index: usize,
+    session: StageSession,
+    resident_prefix: Option<ResidentLanePrefix>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeSessionLaneStats {
+    pub index: usize,
+    pub active: bool,
+    pub session_id: Option<String>,
+    pub token_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeSessionStats {
     pub lane_count: usize,
     pub active_sessions: usize,
     pub idle_sessions: usize,
     pub idle_resident_prefixes: usize,
     pub tracked_token_counts: usize,
+    pub max_session_tokens: u64,
+    pub total_session_tokens: u64,
     pub checkpoints: usize,
+    pub lanes: Vec<RuntimeSessionLaneStats>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RuntimeSessionDropStats {
     pub reset_session: bool,
     pub reset_ms: f64,
     pub preserved_resident_prefix: bool,
     pub stats_after: RuntimeSessionStats,
-}
-
-struct IdleStageSession {
-    session: StageSession,
-    resident_prefix: Option<ResidentLanePrefix>,
 }
 
 #[derive(Debug, Clone)]
@@ -233,20 +246,29 @@ impl RuntimeState {
         Ok(())
     }
 
+    pub fn trim_session(&mut self, session_id: &str, token_count: u64) -> Result<()> {
+        let session = self.session(session_id)?;
+        session.trim_session(token_count)?;
+        self.session_token_counts
+            .insert(session_id.to_string(), token_count);
+        Ok(())
+    }
+
     fn session(&mut self, session_id: &str) -> Result<&mut StageSession> {
         if !self.sessions.contains_key(session_id) {
-            let session = self.take_idle_session().map(Ok).unwrap_or_else(|| {
+            let lane_session = self.take_idle_session().map(Ok).unwrap_or_else(|| {
                 if self.sessions.len() >= self.lane_count as usize {
                     bail!("all execution lanes are busy");
                 }
-                self.model.create_session()
+                self.create_lane_session()
             })?;
-            self.sessions.insert(session_id.to_string(), session);
+            self.sessions.insert(session_id.to_string(), lane_session);
         }
-        Ok(self
+        Ok(&mut self
             .sessions
             .get_mut(session_id)
-            .expect("session inserted above"))
+            .expect("session inserted above")
+            .session)
     }
 
     pub fn prewarm_idle_sessions(
@@ -257,10 +279,8 @@ impl RuntimeState {
             if self.sessions.len() + self.idle_sessions.len() >= self.lane_count as usize {
                 break;
             }
-            self.idle_sessions.push(IdleStageSession {
-                session: self.model.create_session()?,
-                resident_prefix: None,
-            });
+            let lane_session = self.create_lane_session()?;
+            self.idle_sessions.push(lane_session);
         }
         Ok(self.session_stats())
     }
@@ -269,32 +289,26 @@ impl RuntimeState {
         let reset_started = Instant::now();
         let mut reset_session = false;
         let mut preserved_resident_prefix = false;
-        if let Some(mut session) = self.sessions.remove(session_id) {
+        if let Some(mut lane_session) = self.sessions.remove(session_id) {
             if let Some(prefix) = self.session_resident_prefixes.remove(session_id) {
-                match session.trim_session(prefix.token_count) {
+                match lane_session.session.trim_session(prefix.token_count) {
                     Ok(()) => {
                         preserved_resident_prefix = true;
-                        self.idle_sessions.push(IdleStageSession {
-                            session,
-                            resident_prefix: Some(prefix),
-                        });
+                        lane_session.resident_prefix = Some(prefix);
+                        self.idle_sessions.push(lane_session);
                     }
                     Err(_) => {
                         reset_session = true;
-                        session.reset()?;
-                        self.idle_sessions.push(IdleStageSession {
-                            session,
-                            resident_prefix: None,
-                        });
+                        lane_session.session.reset()?;
+                        lane_session.resident_prefix = None;
+                        self.idle_sessions.push(lane_session);
                     }
                 }
             } else {
                 reset_session = true;
-                session.reset()?;
-                self.idle_sessions.push(IdleStageSession {
-                    session,
-                    resident_prefix: None,
-                });
+                lane_session.session.reset()?;
+                lane_session.resident_prefix = None;
+                self.idle_sessions.push(lane_session);
             }
         }
         self.session_token_counts.remove(session_id);
@@ -308,6 +322,29 @@ impl RuntimeState {
     }
 
     pub fn session_stats(&self) -> RuntimeSessionStats {
+        let mut max_session_tokens = 0u64;
+        let mut total_session_tokens = 0u64;
+        let mut lanes = (0..self.lane_count as usize)
+            .map(|index| RuntimeSessionLaneStats {
+                index,
+                active: false,
+                session_id: None,
+                token_count: None,
+            })
+            .collect::<Vec<_>>();
+
+        for (session_id, lane_session) in &self.sessions {
+            if let Some(token_count) = self.session_token_counts.get(session_id).copied() {
+                max_session_tokens = max_session_tokens.max(token_count);
+                total_session_tokens = total_session_tokens.saturating_add(token_count);
+            }
+            if let Some(lane) = lanes.get_mut(lane_session.index) {
+                lane.active = true;
+                lane.session_id = Some(session_id.clone());
+                lane.token_count = self.session_token_counts.get(session_id).copied();
+            }
+        }
+
         RuntimeSessionStats {
             lane_count: self.lane_count as usize,
             active_sessions: self.sessions.len(),
@@ -318,19 +355,22 @@ impl RuntimeState {
                 .filter(|idle| idle.resident_prefix.is_some())
                 .count(),
             tracked_token_counts: self.session_token_counts.len(),
+            max_session_tokens,
+            total_session_tokens,
             checkpoints: self.session_checkpoints.len(),
+            lanes,
         }
     }
 
-    fn take_idle_session(&mut self) -> Option<StageSession> {
+    fn take_idle_session(&mut self) -> Option<RuntimeLaneSession> {
         if let Some(index) = self
             .idle_sessions
             .iter()
             .position(|idle| idle.resident_prefix.is_none())
         {
-            return Some(self.idle_sessions.swap_remove(index).session);
+            return Some(self.idle_sessions.swap_remove(index));
         }
-        self.idle_sessions.pop().map(|idle| idle.session)
+        self.idle_sessions.pop()
     }
 
     pub fn retain_resident_prefix_on_drop(
@@ -375,8 +415,9 @@ impl RuntimeState {
         }) else {
             return Ok(false);
         };
-        let idle = self.idle_sessions.swap_remove(index);
-        self.sessions.insert(session_id.to_string(), idle.session);
+        let mut idle = self.idle_sessions.swap_remove(index);
+        idle.resident_prefix = None;
+        self.sessions.insert(session_id.to_string(), idle);
         self.session_token_counts
             .insert(session_id.to_string(), token_count);
         self.session_resident_prefixes.insert(
@@ -561,10 +602,17 @@ impl RuntimeState {
         if self.sessions.contains_key(session_id) {
             bail!("session {session_id} already exists");
         }
-        let session = self
-            .model
-            .create_session_from_resident_prefix(cache_seq_id, token_ids)?;
-        self.sessions.insert(session_id.to_string(), session);
+        let model = &self.model;
+        let (index, session) =
+            create_indexed_lane_resource(&mut self.next_lane_index, self.lane_count, || {
+                model.create_session_from_resident_prefix(cache_seq_id, token_ids)
+            })?;
+        let lane_session = RuntimeLaneSession {
+            index,
+            session,
+            resident_prefix: None,
+        };
+        self.sessions.insert(session_id.to_string(), lane_session);
         self.session_token_counts
             .insert(session_id.to_string(), token_ids.len() as u64);
         Ok(())
@@ -614,6 +662,33 @@ impl RuntimeState {
     fn model_layer_end(&self) -> u32 {
         self.layer_end
     }
+
+    fn create_lane_session(&mut self) -> Result<RuntimeLaneSession> {
+        let model = &self.model;
+        let (index, session) =
+            create_indexed_lane_resource(&mut self.next_lane_index, self.lane_count, || {
+                model.create_session()
+            })?;
+        Ok(RuntimeLaneSession {
+            index,
+            session,
+            resident_prefix: None,
+        })
+    }
+}
+
+fn create_indexed_lane_resource<T>(
+    next_lane_index: &mut usize,
+    lane_count: u32,
+    create: impl FnOnce() -> Result<T>,
+) -> Result<(usize, T)> {
+    if *next_lane_index >= lane_count as usize {
+        bail!("all execution lanes are busy");
+    }
+    let index = *next_lane_index;
+    let resource = create()?;
+    *next_lane_index = index + 1;
+    Ok((index, resource))
 }
 
 impl Drop for RuntimeState {
@@ -628,9 +703,9 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
 
     let model = match config.load_mode {
         LoadMode::LayerPackage => {
-            let materialized_path =
-                materialize_layer_package(config).context("materialize layer package for stage")?;
-            open_stage_model(&materialized_path, &runtime_config)?
+            let selected =
+                select_package_parts(config).context("select layer package parts for stage")?;
+            open_stage_model_from_parts(&selected.absolute_paths, &runtime_config)?
         }
         _ => {
             let Some(model_path) = config.model_path.as_ref().map(std::path::Path::new) else {
@@ -645,6 +720,7 @@ pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeStat
         layer_start: config.layer_start,
         layer_end: config.layer_end,
         lane_count: config.lane_count,
+        next_lane_index: 0,
         sessions: BTreeMap::new(),
         idle_sessions: Vec::new(),
         session_token_counts: BTreeMap::new(),
@@ -686,7 +762,7 @@ fn runtime_config_from_stage_config(config: &StageConfig) -> Result<RuntimeConfi
             LoadMode::ArtifactSlice => RuntimeLoadMode::ArtifactSlice,
         },
         projector_path: config.projector_path.clone(),
-        include_embeddings: config.stage_index == 0,
+        include_embeddings: config.stage_index == 0 || config.downstream.is_none(),
         include_output: config.downstream.is_none(),
         filter_tensors_on_load: config.filter_tensors_on_load,
     })
@@ -696,12 +772,41 @@ fn open_stage_model(path: &std::path::Path, runtime_config: &RuntimeConfig) -> R
     StageModel::open(path, runtime_config)
 }
 
+fn open_stage_model_from_parts(
+    paths: &[std::path::PathBuf],
+    runtime_config: &RuntimeConfig,
+) -> Result<StageModel> {
+    StageModel::open_from_parts(paths, runtime_config)
+}
+
 #[cfg(test)]
 mod tests {
-    use skippy_protocol::{FlashAttentionType, LoadMode, StageConfig, StageDevice};
+    use anyhow::{bail, Result};
+    use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
     use skippy_runtime::FlashAttentionType as RuntimeFlashAttentionType;
 
-    use super::runtime_config_from_stage_config;
+    use super::{create_indexed_lane_resource, runtime_config_from_stage_config};
+
+    #[test]
+    fn create_indexed_lane_resource_keeps_index_available_when_creation_fails() {
+        let mut next_lane_index = 0;
+
+        let error = create_indexed_lane_resource(&mut next_lane_index, 2, || -> Result<()> {
+            bail!("transient session creation failure")
+        })
+        .expect_err("failed creation should propagate the original error");
+
+        assert_eq!(error.to_string(), "transient session creation failure");
+        assert_eq!(next_lane_index, 0);
+
+        let (index, resource) =
+            create_indexed_lane_resource(&mut next_lane_index, 2, || Ok("lane"))
+                .expect("successful retry should reuse the unconsumed lane index");
+
+        assert_eq!(index, 0);
+        assert_eq!(resource, "lane");
+        assert_eq!(next_lane_index, 1);
+    }
 
     #[test]
     fn runtime_config_preserves_selected_backend_device() {
@@ -757,5 +862,51 @@ mod tests {
             runtime_config.flash_attn_type,
             RuntimeFlashAttentionType::Enabled
         );
+    }
+
+    #[test]
+    fn runtime_config_keeps_embeddings_for_final_layer_package_stage() {
+        let config = StageConfig {
+            run_id: "run-a".to_string(),
+            topology_id: "topology-a".to_string(),
+            model_id: "model-a".to_string(),
+            package_ref: Some("/tmp/package".to_string()),
+            manifest_sha256: Some("manifest".to_string()),
+            source_model_path: None,
+            source_model_sha256: None,
+            source_model_bytes: None,
+            materialized_path: None,
+            materialized_pinned: false,
+            model_path: Some("/tmp/package".to_string()),
+            projector_path: None,
+            stage_id: "stage-2".to_string(),
+            stage_index: 2,
+            layer_start: 20,
+            layer_end: 30,
+            ctx_size: 512,
+            lane_count: 1,
+            n_batch: None,
+            n_ubatch: None,
+            n_gpu_layers: -1,
+            cache_type_k: "f16".to_string(),
+            cache_type_v: "f16".to_string(),
+            flash_attn_type: FlashAttentionType::Auto,
+            filter_tensors_on_load: true,
+            selected_device: None,
+            kv_cache: None,
+            load_mode: LoadMode::LayerPackage,
+            bind_addr: "127.0.0.1:0".to_string(),
+            upstream: Some(PeerConfig {
+                stage_id: "stage-1".to_string(),
+                stage_index: 1,
+                endpoint: "tcp://127.0.0.1:19001".to_string(),
+            }),
+            downstream: None,
+        };
+
+        let runtime_config = runtime_config_from_stage_config(&config).unwrap();
+
+        assert!(runtime_config.include_embeddings);
+        assert!(runtime_config.include_output);
     }
 }

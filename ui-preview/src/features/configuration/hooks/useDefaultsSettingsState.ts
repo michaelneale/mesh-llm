@@ -1,7 +1,14 @@
 import { useMemo, useState } from 'react'
-import type { ConfigurationDefaultsCategoryId, ConfigurationDefaultsHarnessData, ConfigurationDefaultsValues } from '@/features/app-tabs/types'
+import type {
+  ConfigurationDefaultsCategoryId,
+  ConfigurationDefaultsHarnessData,
+  ConfigurationDefaultsValues
+} from '@/features/app-tabs/types'
 
-function isDefaultsCategory(value: string, data: ConfigurationDefaultsHarnessData): value is ConfigurationDefaultsCategoryId {
+function isDefaultsCategory(
+  value: string,
+  data: ConfigurationDefaultsHarnessData
+): value is ConfigurationDefaultsCategoryId {
   return data.categories.some((category) => category.id === value)
 }
 
@@ -11,12 +18,12 @@ export function useDefaultsSettingsState(data: ConfigurationDefaultsHarnessData)
 
   const activeCategory = useMemo(
     () => data.categories.find((category) => category.id === activeCategoryId) ?? data.categories[0],
-    [activeCategoryId, data.categories],
+    [activeCategoryId, data.categories]
   )
 
   const activeSettings = useMemo(
     () => data.settings.filter((setting) => setting.categoryId === activeCategoryId),
-    [activeCategoryId, data.settings],
+    [activeCategoryId, data.settings]
   )
 
   return {
@@ -25,7 +32,7 @@ export function useDefaultsSettingsState(data: ConfigurationDefaultsHarnessData)
     activeSettings,
     setActiveCategoryId: (value: string) => {
       if (isDefaultsCategory(value, data)) setActiveCategoryId(value)
-    },
+    }
   }
 }
 

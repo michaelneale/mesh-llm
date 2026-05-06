@@ -477,6 +477,7 @@ async fn openai_http_telemetry(
 }
 
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 enum OpenAiBackendMode {
     LocalRuntime,
     BinaryChain {
@@ -918,16 +919,18 @@ struct OpenAiGenerationIds {
     session_label: String,
     session_id: u64,
     request_id: u64,
+    cache: OpenAiCacheHints,
 }
 
 impl OpenAiGenerationIds {
-    fn new() -> Self {
+    fn new(cache: OpenAiCacheHints) -> Self {
         let sequence = OPENAI_GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed);
         let session_label = format!("openai-session-{}-{sequence}", now_unix_millis());
         Self {
             session_id: stable_wire_id(&[session_label.as_bytes()]),
             request_id: stable_wire_id(&[session_label.as_bytes(), b"request"]),
             session_label,
+            cache,
         }
     }
 
@@ -938,6 +941,70 @@ impl OpenAiGenerationIds {
     fn request_id_string(&self) -> String {
         self.request_id.to_string()
     }
+}
+
+#[derive(Clone, Default)]
+struct OpenAiCacheHints {
+    prompt_cache_key: Option<String>,
+    prompt_cache_retention: Option<String>,
+}
+
+impl OpenAiCacheHints {
+    fn from_chat_request(request: &ChatCompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn from_completion_request(request: &CompletionRequest) -> Self {
+        Self {
+            prompt_cache_key: request
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            prompt_cache_retention: request
+                .prompt_cache_retention
+                .map(prompt_cache_retention_label)
+                .map(ToString::to_string),
+        }
+    }
+
+    fn namespace(&self) -> Option<String> {
+        self.prompt_cache_key
+            .as_ref()
+            .map(|key| format!("openai:prompt_cache_key:{key}"))
+    }
+}
+
+fn prompt_cache_retention_label(retention: openai_frontend::PromptCacheRetention) -> &'static str {
+    match retention {
+        openai_frontend::PromptCacheRetention::InMemory => "in_memory",
+        openai_frontend::PromptCacheRetention::TwentyFourHours => "24h",
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct GenerationCacheStats {
+    cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    hit_kind: Option<&'static str>,
+}
+
+struct ChainPrefixRestore {
+    restored_tokens: usize,
+    stats: StageReplyStats,
 }
 
 struct PhaseTimer {
@@ -1101,7 +1168,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         &self,
         mut request: ChatCompletionRequest,
     ) -> OpenAiResult<ChatCompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         let request_timer = PhaseTimer::start();
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
@@ -1189,7 +1256,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         mut request: ChatCompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<ChatCompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_chat_request(&request));
         self.apply_before_chat_hooks(&mut request).await?;
         self.ensure_model(&request.model)?;
         ensure_chat_runtime_features_supported(&request)?;
@@ -1239,7 +1306,7 @@ impl OpenAiBackend for StageOpenAiBackend {
     }
 
     async fn completion(&self, request: CompletionRequest) -> OpenAiResult<CompletionResponse> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         let request_timer = PhaseTimer::start();
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
@@ -1271,8 +1338,8 @@ impl OpenAiBackend for StageOpenAiBackend {
         let response_timer = PhaseTimer::start();
         let response = CompletionResponse::new_with_reason(
             request.model,
-            output.text,
-            Usage::new(output.prompt_tokens, output.completion_tokens),
+            output.text.clone(),
+            output.usage(),
             output.finish_reason,
         );
         let mut response_attrs = self.openai_attrs(&ids);
@@ -1316,7 +1383,7 @@ impl OpenAiBackend for StageOpenAiBackend {
         request: CompletionRequest,
         context: OpenAiRequestContext,
     ) -> OpenAiResult<CompletionStream> {
-        let ids = OpenAiGenerationIds::new();
+        let ids = OpenAiGenerationIds::new(OpenAiCacheHints::from_completion_request(&request));
         self.ensure_model(&request.model)?;
         ensure_completion_runtime_features_supported(&request)?;
         let sampling = completion_sampling_config(&request)?;
@@ -1369,6 +1436,15 @@ impl StageOpenAiBackend {
             "llama_stage.openai_backend".to_string(),
             json!(self.mode.label()),
         );
+        if let Some(cache_key) = ids.cache.prompt_cache_key.as_deref() {
+            attrs.insert("openai.prompt_cache_key".to_string(), json!(cache_key));
+        }
+        if let Some(retention) = ids.cache.prompt_cache_retention.as_deref() {
+            attrs.insert(
+                "openai.prompt_cache_retention".to_string(),
+                json!(retention),
+            );
+        }
         attrs
     }
 
@@ -1383,7 +1459,7 @@ impl StageOpenAiBackend {
             topology_id: self.config.topology_id.clone(),
             model_id: Some(self.config.model_id.clone()),
             tokenizer_id: None,
-            chat_template_id: None,
+            chat_template_id: ids.cache.namespace(),
             seq: Some(ids.session_id),
         }
     }
@@ -1610,7 +1686,7 @@ impl StageOpenAiBackend {
         session_key: &str,
         downstream: &mut TcpStream,
         prefill_tokens: &[i32],
-    ) -> OpenAiResult<Option<StageReplyStats>> {
+    ) -> OpenAiResult<Option<ChainPrefixRestore>> {
         let Some(kv) = self.kv.as_ref() else {
             return Ok(None);
         };
@@ -1618,35 +1694,39 @@ impl StageOpenAiBackend {
             return Ok(None);
         }
         let base = self.local_kv_message_base(session_key, request.ids);
-        let identity = kv.prefill_identity(request.config, &base, 0, prefill_tokens);
+        let identities = kv.lookup_identities(request.config, &base, 0, prefill_tokens);
         let mut restore_stats = StageReplyStats::default();
         let local_restore = {
             let mut runtime = self
                 .runtime
                 .lock()
                 .map_err(|_| OpenAiError::backend("runtime lock poisoned"))?;
-            kv.restore_resident_prefix(
-                &mut runtime,
-                session_key,
-                std::slice::from_ref(&identity),
-                prefill_tokens,
-            )
-            .map_err(openai_backend_error)?
+            match kv
+                .restore_exact_state(&mut runtime, session_key, &identities)
+                .map_err(openai_backend_error)?
+            {
+                Some(restored) => Some(restored.token_count),
+                None => kv
+                    .restore_resident_prefix(&mut runtime, session_key, &identities, prefill_tokens)
+                    .map_err(openai_backend_error)?
+                    .map(|restored| restored.token_count),
+            }
         };
         let Some(local_restore) = local_restore else {
             return Ok(None);
         };
-        if local_restore.token_count < prefill_tokens.len() {
+        if local_restore == 0 {
             return Ok(None);
         }
+        let restored_tokens = local_restore.min(prefill_tokens.len());
         restore_stats.kv_lookup_hits += 1;
         restore_stats.kv_imported_pages += 1;
-        restore_stats.kv_imported_tokens += local_restore.token_count as i64;
+        restore_stats.kv_imported_tokens += restored_tokens as i64;
         restore_stats.kv_hit_stage_mask |= openai_stage_mask(request.config.stage_index);
         let restore = embedded_prefix_cache_message(
             WireMessageKind::TryRestorePrefill,
             request.wire_dtype,
-            prefill_tokens,
+            &prefill_tokens[..restored_tokens],
             request.ids.request_id,
             request.ids.session_id,
         )?;
@@ -1676,7 +1756,11 @@ impl StageOpenAiBackend {
         attrs.insert("skippy.kv.decision".to_string(), json!("chain_restore_hit"));
         attrs.insert(
             "skippy.kv.restored_tokens".to_string(),
-            json!(prefill_tokens.len()),
+            json!(restored_tokens),
+        );
+        attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(prefill_tokens.len().saturating_sub(restored_tokens)),
         );
         attrs.insert(
             "skippy.kv.lookup_hits".to_string(),
@@ -1688,7 +1772,10 @@ impl StageOpenAiBackend {
         );
         self.telemetry
             .emit("stage.openai_kv_lookup_decision", attrs);
-        Ok(Some(restore_stats))
+        Ok(Some(ChainPrefixRestore {
+            restored_tokens,
+            stats: restore_stats,
+        }))
     }
 
     fn try_restore_embedded_split_prefill_and_decode(
@@ -1879,7 +1966,7 @@ impl StageOpenAiBackend {
     fn insert_runtime_session_stats(
         attrs: &mut BTreeMap<String, Value>,
         prefix: &str,
-        stats: RuntimeSessionStats,
+        stats: &RuntimeSessionStats,
     ) {
         attrs.insert(
             format!("{prefix}.active_sessions"),
@@ -1988,6 +2075,7 @@ impl StageOpenAiBackend {
         .map_err(|error| OpenAiError::backend(format!("generation task failed: {error}")))?
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_generation_stream(
         &self,
         prompt: PreparedGenerationPrompt,
@@ -2204,6 +2292,7 @@ impl StageOpenAiBackend {
         Ok(parsed_tool_calls_from_message_json(&parsed_json, request))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_text(
         &self,
         prompt: PreparedGenerationPrompt,
@@ -2256,7 +2345,7 @@ impl StageOpenAiBackend {
 
         let mut collector =
             TextGenerationCollector::new(self.runtime.clone(), stop_values, on_text_chunk);
-        match self.mode.clone() {
+        let cache_stats = match self.mode.clone() {
             OpenAiBackendMode::LocalRuntime => self.generate_local_tokens(
                 LocalGeneration {
                     prompt_token_ids: &prompt_token_ids,
@@ -2321,7 +2410,7 @@ impl StageOpenAiBackend {
             )?,
         };
 
-        let output = collector.finish(prompt_token_ids.len())?;
+        let output = collector.finish(prompt_token_ids.len(), cache_stats)?;
         let mut summary_attrs = self.openai_attrs(&ids);
         summary_attrs.insert(
             "llama_stage.prompt_token_count".to_string(),
@@ -2331,6 +2420,21 @@ impl StageOpenAiBackend {
             "llama_stage.completion_token_count".to_string(),
             json!(output.completion_tokens),
         );
+        summary_attrs.insert(
+            "skippy.kv.cached_prompt_tokens".to_string(),
+            json!(output.cached_prompt_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.matched_prefix_tokens".to_string(),
+            json!(output.matched_prefix_tokens),
+        );
+        summary_attrs.insert(
+            "skippy.kv.suffix_prefill_tokens".to_string(),
+            json!(output.suffix_prefill_tokens),
+        );
+        if let Some(hit_kind) = output.cache_hit_kind {
+            summary_attrs.insert("skippy.kv.hit_kind".to_string(), json!(hit_kind));
+        }
         summary_attrs.insert(
             "llama_stage.detokenize_ms".to_string(),
             json!(output.detokenize_ms),
@@ -2460,12 +2564,12 @@ impl StageOpenAiBackend {
             Self::insert_runtime_session_stats(
                 &mut attrs,
                 "llama_stage.runtime_sessions_before",
-                runtime_sessions_before,
+                &runtime_sessions_before,
             );
             Self::insert_runtime_session_stats(
                 &mut attrs,
                 "llama_stage.runtime_sessions_after",
-                runtime_sessions_after,
+                &runtime_sessions_after,
             );
             self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
             (prefill, token_signal, signal_window)
@@ -2592,14 +2696,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(runtime_lock_acquires),
             );
-            if let Some(stats) = runtime_sessions_before {
+            if let Some(stats) = runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = runtime_sessions_after {
+            if let Some(stats) = runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
@@ -2629,14 +2733,14 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
             }
         }
         result?;
-        collector.finish(prefill.token_count)
+        collector.finish(prefill.token_count, GenerationCacheStats::default())
     }
 
     fn generate_split_multimodal_text(
@@ -2704,12 +2808,12 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
-                    runtime_sessions_before,
+                    &runtime_sessions_before,
                 );
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    runtime_sessions_after,
+                    &runtime_sessions_after,
                 );
                 self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
                 prefill
@@ -2997,7 +3101,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
@@ -3013,7 +3117,7 @@ impl StageOpenAiBackend {
             stop_result?;
         }
         result?;
-        collector.finish(prompt_tokens)
+        collector.finish(prompt_tokens, GenerationCacheStats::default())
     }
 
     fn tokenize(&self, prompt: &str) -> OpenAiResult<Vec<i32>> {
@@ -3127,8 +3231,9 @@ impl StageOpenAiBackend {
         &self,
         request: LocalGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let session_id = request.ids.session_label.clone();
+        let mut cache_stats = GenerationCacheStats::default();
         let result = (|| {
             if request.prompt_token_ids.len() > 1 {
                 let prefill_timer = PhaseTimer::start();
@@ -3154,6 +3259,7 @@ impl StageOpenAiBackend {
                     match kv.restore_exact_state(&mut runtime, &session_id, &identities) {
                         Ok(Some(restored)) => {
                             restored_prefill = true;
+                            cache_stats.hit_kind = Some("exact_prefix");
                             let mut attrs = self.openai_attrs(request.ids);
                             attrs.insert("skippy.kv.decision".to_string(), json!("exact_hit"));
                             attrs.insert(
@@ -3168,7 +3274,17 @@ impl StageOpenAiBackend {
                                 "skippy.exact_cache.restored_tokens".to_string(),
                                 json!(restored.token_count),
                             );
+                            attrs.insert(
+                                "skippy.kv.matched_prefix_tokens".to_string(),
+                                json!(restored.token_count),
+                            );
+                            attrs.insert(
+                                "skippy.kv.suffix_prefill_tokens".to_string(),
+                                json!(prefill_tokens.len().saturating_sub(restored.token_count)),
+                            );
                             restored_prefill_tokens = restored.token_count;
+                            cache_stats.cached_prompt_tokens =
+                                saturating_u32(restored_prefill_tokens);
                             attrs.insert(
                                 "skippy.exact_cache.logical_bytes".to_string(),
                                 json!(restored.logical_bytes),
@@ -3200,6 +3316,7 @@ impl StageOpenAiBackend {
                         ) {
                             Ok(Some(restored)) => {
                                 restored_prefill = true;
+                                cache_stats.hit_kind = Some("resident_prefix");
                                 let mut attrs = self.openai_attrs(request.ids);
                                 attrs.insert(
                                     "skippy.kv.decision".to_string(),
@@ -3213,7 +3330,19 @@ impl StageOpenAiBackend {
                                     "skippy.kv.restored_tokens".to_string(),
                                     json!(restored.token_count),
                                 );
+                                attrs.insert(
+                                    "skippy.kv.matched_prefix_tokens".to_string(),
+                                    json!(restored.token_count),
+                                );
+                                attrs.insert(
+                                    "skippy.kv.suffix_prefill_tokens".to_string(),
+                                    json!(prefill_tokens
+                                        .len()
+                                        .saturating_sub(restored.token_count)),
+                                );
                                 restored_prefill_tokens = restored.token_count;
+                                cache_stats.cached_prompt_tokens =
+                                    saturating_u32(restored_prefill_tokens);
                                 attrs.insert(
                                     "skippy.kv.resident_seq_id".to_string(),
                                     json!(restored.seq_id),
@@ -3278,6 +3407,9 @@ impl StageOpenAiBackend {
                         .prefill(&session_id, &prefill_tokens[restored_prefill_tokens..])
                         .map_err(openai_backend_error)?;
                 }
+                cache_stats.matched_prefix_tokens = saturating_u32(restored_prefill_tokens);
+                cache_stats.suffix_prefill_tokens =
+                    saturating_u32(prefill_tokens.len().saturating_sub(restored_prefill_tokens));
                 if !restored_prefill || decoded_prefill_suffix {
                     if let Some(kv) = self.kv.as_ref() {
                         let base = self.local_kv_message_base(&session_id, request.ids);
@@ -3381,7 +3513,7 @@ impl StageOpenAiBackend {
                 }
                 let runtime_sessions_after = runtime.session_stats();
                 let runtime_lock_hold_ms = runtime_lock_hold_timer.elapsed_ms();
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.prefill_token_count".to_string(),
                     json!(prefill_tokens.len()),
@@ -3415,12 +3547,12 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
-                    runtime_sessions_before,
+                    &runtime_sessions_before,
                 );
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    runtime_sessions_after,
+                    &runtime_sessions_after,
                 );
                 self.emit_openai_phase("stage.openai_prefill", prefill_timer, attrs);
             }
@@ -3517,7 +3649,7 @@ impl StageOpenAiBackend {
                     continue;
                 }
                 decoded_tokens += 1;
-                let mut token_attrs = self.openai_attrs(&request.ids);
+                let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -3549,7 +3681,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut attrs = self.openai_attrs(&request.ids);
+            let mut attrs = self.openai_attrs(request.ids);
             attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -3574,14 +3706,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(runtime_lock_acquires),
             );
-            if let Some(stats) = runtime_sessions_before {
+            if let Some(stats) = runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = runtime_sessions_after {
+            if let Some(stats) = runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
@@ -3595,7 +3727,7 @@ impl StageOpenAiBackend {
         if let Ok(mut runtime) = self.runtime.lock() {
             let runtime_lock_wait_ms = lock_timer.elapsed_ms();
             if let Ok(drop_stats) = runtime.drop_session_timed(&session_id) {
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),
@@ -3611,20 +3743,21 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
             }
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn generate_binary_chain_tokens(
         &self,
         request: BinaryChainGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         let wire_sampling = wire_sampling_config(request.sampling);
         let session_id = request.ids.session_id;
         let request_id = request.ids.request_id;
@@ -3632,7 +3765,7 @@ impl StageOpenAiBackend {
         let mut stream =
             connect_endpoint_ready(request.first_stage_addr, request.startup_timeout_secs)
                 .map_err(openai_backend_error)?;
-        let mut connect_attrs = self.openai_attrs(&request.ids);
+        let mut connect_attrs = self.openai_attrs(request.ids);
         connect_attrs.insert(
             "llama_stage.first_stage_addr".to_string(),
             json!(request.first_stage_addr),
@@ -3686,7 +3819,7 @@ impl StageOpenAiBackend {
                     chunk_index += 1;
                 }
             }
-            let mut prefill_attrs = self.openai_attrs(&request.ids);
+            let mut prefill_attrs = self.openai_attrs(request.ids);
             prefill_attrs.insert(
                 "llama_stage.prefill_token_count".to_string(),
                 json!(prefill_token_count),
@@ -3773,7 +3906,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut decode_attrs = self.openai_attrs(&request.ids);
+            let mut decode_attrs = self.openai_attrs(request.ids);
             decode_attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -3800,14 +3933,15 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result.map_err(openai_io_error)?;
         }
-        result
+        result?;
+        Ok(GenerationCacheStats::default())
     }
 
     fn generate_embedded_stage_zero_tokens(
         &self,
         request: EmbeddedStageZeroGeneration<'_>,
         mut on_token: impl FnMut(i32) -> OpenAiResult<TokenControl>,
-    ) -> OpenAiResult<()> {
+    ) -> OpenAiResult<GenerationCacheStats> {
         if request.config.downstream.is_none() {
             return self.generate_local_tokens(
                 LocalGeneration {
@@ -3832,7 +3966,8 @@ impl StageOpenAiBackend {
             .lane_pool
             .as_ref()
             .ok_or_else(|| OpenAiError::backend("embedded stage 0 has no downstream lane pool"))?;
-        let mut lane = lane_pool.checkout(&request.ids)?;
+        let mut lane = lane_pool.checkout(request.ids)?;
+        let mut cache_stats = GenerationCacheStats::default();
 
         let result = (|| {
             let downstream = &mut lane.stream;
@@ -3857,6 +3992,7 @@ impl StageOpenAiBackend {
             let mut prefill_stage0_cache_misses = 0usize;
             let mut prefill_stage0_cache_errors = 0usize;
             let mut prefill_chain_cache_restored = false;
+            let mut prefill_chain_restored_tokens = 0usize;
             let mut prefill_chain_cache_stats = StageReplyStats::default();
             let mut prefill_stage0_full_recorded = false;
             let mut fused_first_decode = None;
@@ -3880,24 +4016,41 @@ impl StageOpenAiBackend {
                         wire_sampling.clone(),
                     )? {
                         prefill_chain_cache_restored = true;
+                        prefill_chain_restored_tokens = prefill_token_count;
                         prefill_chain_cache_stats = fused.reply_stats;
+                        cache_stats.cached_prompt_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.matched_prefix_tokens = saturating_u32(prefill_token_count);
+                        cache_stats.suffix_prefill_tokens = 0;
+                        cache_stats.hit_kind = Some("chain_fused_exact_prefix");
                         fused_first_decode = Some(fused);
                     }
                 }
                 if !prefill_chain_cache_restored {
-                    if let Some(stats) = self.try_restore_embedded_split_prefill(
+                    if let Some(restore) = self.try_restore_embedded_split_prefill(
                         &request,
                         &session_key,
                         downstream,
                         prefill_tokens,
                     )? {
-                        prefill_chain_cache_restored = true;
-                        prefill_chain_cache_stats = stats;
+                        prefill_chain_restored_tokens = restore.restored_tokens;
+                        prefill_chain_cache_restored =
+                            prefill_chain_restored_tokens >= prefill_tokens.len();
+                        prefill_chain_cache_stats = restore.stats;
+                        cache_stats.cached_prompt_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.matched_prefix_tokens =
+                            saturating_u32(prefill_chain_restored_tokens);
+                        cache_stats.suffix_prefill_tokens = saturating_u32(
+                            prefill_tokens
+                                .len()
+                                .saturating_sub(prefill_chain_restored_tokens),
+                        );
+                        cache_stats.hit_kind = Some("chain_prefix");
                     }
                 }
-                let mut pos_start = 0usize;
+                let mut pos_start = prefill_chain_restored_tokens.min(prefill_tokens.len());
                 let mut chunk_index = 0usize;
-                while !prefill_chain_cache_restored && pos_start < prefill_tokens.len() {
+                while pos_start < prefill_tokens.len() {
                     if request
                         .cancellation
                         .is_some_and(openai_frontend::CancellationToken::is_cancelled)
@@ -4038,7 +4191,7 @@ impl StageOpenAiBackend {
                     )?;
                 }
             }
-            let mut prefill_attrs = self.openai_attrs(&request.ids);
+            let mut prefill_attrs = self.openai_attrs(request.ids);
             prefill_attrs.insert(
                 "llama_stage.prefill_token_count".to_string(),
                 json!(prefill_token_count),
@@ -4077,14 +4230,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(prefill_runtime_lock_acquires),
             );
-            if let Some(stats) = prefill_runtime_sessions_before {
+            if let Some(stats) = prefill_runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut prefill_attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = prefill_runtime_sessions_after {
+            if let Some(stats) = prefill_runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut prefill_attrs,
                     "llama_stage.runtime_sessions_after",
@@ -4126,6 +4279,14 @@ impl StageOpenAiBackend {
             prefill_attrs.insert(
                 "skippy.kv.chain_cache_restored".to_string(),
                 json!(prefill_chain_cache_restored),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.matched_prefix_tokens".to_string(),
+                json!(prefill_chain_restored_tokens),
+            );
+            prefill_attrs.insert(
+                "skippy.kv.suffix_prefill_tokens".to_string(),
+                json!(prefill_token_count.saturating_sub(prefill_chain_restored_tokens)),
             );
             prefill_attrs.insert(
                 "skippy.kv.chain_cache_hits".to_string(),
@@ -4209,7 +4370,7 @@ impl StageOpenAiBackend {
                     .saturating_add(fused.execution.forward_activation_bytes);
                 decode_forward_write_ms += fused.execution.forward_write_ms;
                 decode_downstream_wait_ms += fused.execution.downstream_wait_ms;
-                let mut token_attrs = self.openai_attrs(&request.ids);
+                let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(0));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -4289,7 +4450,7 @@ impl StageOpenAiBackend {
                         .reset_to_context(&context_tokens)
                         .map_err(openai_backend_error)?;
                     speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
-                    let mut attrs = self.openai_attrs(&request.ids);
+                    let mut attrs = self.openai_attrs(request.ids);
                     attrs.insert(
                         "llama_stage.draft_model_path".to_string(),
                         json!(draft.path.display().to_string()),
@@ -4552,7 +4713,7 @@ impl StageOpenAiBackend {
                                 speculative_stats.draft_reset_ms += draft_reset_timer.elapsed_ms();
                             }
                         }
-                        let mut token_attrs = self.openai_attrs(&request.ids);
+                        let mut token_attrs = self.openai_attrs(request.ids);
                         token_attrs
                             .insert("llama_stage.decode_step".to_string(), json!(decode_step));
                         token_attrs
@@ -4723,7 +4884,7 @@ impl StageOpenAiBackend {
                 current = reply.predicted;
                 decoded_tokens += 1;
                 context_tokens.push(current);
-                let mut token_attrs = self.openai_attrs(&request.ids);
+                let mut token_attrs = self.openai_attrs(request.ids);
                 token_attrs.insert("llama_stage.decode_step".to_string(), json!(decode_step));
                 token_attrs.insert(
                     "llama_stage.decode_token_phase".to_string(),
@@ -4768,7 +4929,7 @@ impl StageOpenAiBackend {
                     break;
                 }
             }
-            let mut decode_attrs = self.openai_attrs(&request.ids);
+            let mut decode_attrs = self.openai_attrs(request.ids);
             decode_attrs.insert(
                 "llama_stage.decode_token_count".to_string(),
                 json!(decoded_tokens),
@@ -4797,14 +4958,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(decode_runtime_lock_acquires),
             );
-            if let Some(stats) = decode_runtime_sessions_before {
+            if let Some(stats) = decode_runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut decode_attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = decode_runtime_sessions_after {
+            if let Some(stats) = decode_runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut decode_attrs,
                     "llama_stage.runtime_sessions_after",
@@ -4856,7 +5017,7 @@ impl StageOpenAiBackend {
         if let Ok(mut runtime) = self.runtime.lock() {
             let runtime_lock_wait_ms = lock_timer.elapsed_ms();
             if let Ok(drop_stats) = runtime.drop_session_timed(&session_key) {
-                let mut attrs = self.openai_attrs(&request.ids);
+                let mut attrs = self.openai_attrs(request.ids);
                 attrs.insert(
                     "llama_stage.runtime_lock_wait_ms".to_string(),
                     json!(runtime_lock_wait_ms),
@@ -4872,7 +5033,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
@@ -4887,7 +5048,8 @@ impl StageOpenAiBackend {
         if result.is_ok() {
             stop_result?;
         }
-        result
+        result?;
+        Ok(cache_stats)
     }
 
     fn execute_embedded_stage_message(
@@ -5904,11 +6066,19 @@ where
         Ok(())
     }
 
-    fn finish(mut self, prompt_token_count: usize) -> OpenAiResult<GeneratedText> {
+    fn finish(
+        mut self,
+        prompt_token_count: usize,
+        cache_stats: GenerationCacheStats,
+    ) -> OpenAiResult<GeneratedText> {
         self.emit_safe_delta(true)?;
         Ok(GeneratedText {
             prompt_tokens: saturating_u32(prompt_token_count),
             completion_tokens: saturating_u32(self.completion_tokens),
+            cached_prompt_tokens: cache_stats.cached_prompt_tokens,
+            matched_prefix_tokens: cache_stats.matched_prefix_tokens,
+            suffix_prefill_tokens: cache_stats.suffix_prefill_tokens,
+            cache_hit_kind: cache_stats.hit_kind,
             text: self.text,
             finish_reason: self.finish_reason,
             detokenize_ms: self.metrics.detokenize_ms,
@@ -5921,6 +6091,10 @@ where
 struct GeneratedText {
     prompt_tokens: u32,
     completion_tokens: u32,
+    cached_prompt_tokens: u32,
+    matched_prefix_tokens: u32,
+    suffix_prefill_tokens: u32,
+    cache_hit_kind: Option<&'static str>,
     text: String,
     finish_reason: FinishReason,
     detokenize_ms: f64,
@@ -5931,6 +6105,7 @@ struct GeneratedText {
 impl GeneratedText {
     fn usage(&self) -> Usage {
         Usage::new(self.prompt_tokens, self.completion_tokens)
+            .with_cached_tokens(self.cached_prompt_tokens)
     }
 }
 
