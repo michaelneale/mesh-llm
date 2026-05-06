@@ -1,6 +1,6 @@
 use super::super::http::{respond_error, respond_json};
 use crate::models::{
-    catalog, search_catalog_json_payload, search_catalog_models, search_huggingface,
+    remote_catalog, search_catalog_json_payload, search_catalog_models, search_huggingface,
     search_huggingface_json_payload, SearchArtifactFilter, SearchSort,
 };
 use url::form_urlencoded;
@@ -24,10 +24,15 @@ pub(super) async fn handle(stream: &mut tokio::net::TcpStream, path: &str) -> an
     };
 
     if request.catalog_only {
-        let results = search_catalog_models(&request.query)
-            .into_iter()
-            .filter(|model| catalog_model_matches_artifact(model, request.artifact))
-            .collect::<Vec<_>>();
+        let results = match search_catalog_models(&request.query) {
+            Ok(results) => results
+                .into_iter()
+                .filter(|model| catalog_model_matches_artifact(model, request.artifact))
+                .collect::<Vec<_>>(),
+            Err(err) => {
+                return respond_error(stream, 502, &format!("Catalog search failed: {err}")).await;
+            }
+        };
         let response = search_catalog_json_payload(
             &request.query,
             request.artifact,
@@ -142,16 +147,13 @@ fn parse_sort(value: &str) -> Result<SearchSort, String> {
 }
 
 fn catalog_model_matches_artifact(
-    model: &catalog::CatalogModel,
+    model: &remote_catalog::RemoteCatalogModel,
     artifact: SearchArtifactFilter,
 ) -> bool {
-    let is_mlx = model
-        .source_file()
-        .map(|file| {
-            file.ends_with("model.safetensors") || file.ends_with("model.safetensors.index.json")
-        })
-        .unwrap_or(false)
-        || model.url.contains("model.safetensors");
+    let is_mlx = model.source_file().ends_with("model.safetensors")
+        || model
+            .source_file()
+            .ends_with("model.safetensors.index.json");
     match artifact {
         SearchArtifactFilter::Gguf => !is_mlx,
         SearchArtifactFilter::Mlx => is_mlx,

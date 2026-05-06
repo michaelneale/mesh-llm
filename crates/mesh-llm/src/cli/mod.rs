@@ -259,7 +259,7 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) auto: bool,
 
-    /// Model to serve (path, catalog name, HF exact ref, or HuggingFace URL).
+    /// Model to serve (path, remote catalog name, or Hugging Face ref).
     #[arg(long)]
     pub(crate) model: Vec<PathBuf>,
 
@@ -422,7 +422,7 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: models::ModelsCommand,
     },
-    /// Download a model from the catalog
+    /// Download a model from the remote catalog or Hugging Face
     Download {
         /// Model name (e.g. "Qwen2.5-32B-Instruct-Q4_K_M" or just "32b")
         name: Option<String>,

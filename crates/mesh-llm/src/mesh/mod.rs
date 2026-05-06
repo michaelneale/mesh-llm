@@ -400,10 +400,9 @@ fn descriptor_from_identity(
 ) -> ServedModelDescriptor {
     identity.model_name = model_name.to_string();
     let path = crate::models::find_model_path(model_name);
-    let catalog = crate::models::find_catalog_model_exact(model_name);
-    let topology = crate::models::infer_local_model_topology(&path, catalog);
+    let topology = crate::models::infer_local_model_topology(&path);
     let mut capabilities =
-        crate::models::capabilities::infer_local_model_capabilities(model_name, &path, catalog);
+        crate::models::capabilities::infer_local_model_capabilities(model_name, &path);
     capabilities.moe = false;
     ServedModelDescriptor {
         identity,
@@ -811,8 +810,8 @@ fn canonical_demand_model_ref(model: &str) -> String {
     if let Ok(model_ref) = model_ref::ModelRef::parse(model) {
         return model_ref.display_id();
     }
-    crate::models::find_catalog_model_exact(model)
-        .map(crate::models::catalog_model_ref)
+    crate::models::find_remote_catalog_model_exact(model)
+        .map(|remote_model| crate::models::remote_catalog_model_ref(&remote_model))
         .unwrap_or_else(|| model.to_string())
 }
 

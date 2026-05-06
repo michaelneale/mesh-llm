@@ -6,11 +6,12 @@ use crate::cli::models::ModelSearchSort;
 use crate::cli::models::ModelsCommand;
 use crate::cli::terminal_progress::{clear_stderr_line, start_spinner, DeterminateProgressLine};
 use crate::models::{
-    catalog, catalog_model_ref, delete, download_model_ref_with_progress_details,
-    find_catalog_model_exact, installed_model_capabilities, load_model_usage_record_for_path,
-    model_usage_cache_dir, plan_model_cleanup, scan_installed_models, search_catalog_models,
-    search_huggingface, show_exact_model, show_model_variants_with_progress, ModelCleanupPlan,
-    ModelCleanupResult, SearchArtifactFilter, SearchProgress, SearchSort, ShowVariantsProgress,
+    delete, download_model_ref_with_progress_details, find_remote_catalog_model_exact,
+    installed_model_capabilities, load_model_usage_record_for_path, model_usage_cache_dir,
+    plan_model_cleanup, remote_catalog, remote_catalog_model_ref, scan_installed_models,
+    search_catalog_models, search_huggingface, show_exact_model, show_model_variants_with_progress,
+    ModelCleanupPlan, ModelCleanupResult, SearchArtifactFilter, SearchProgress, SearchSort,
+    ShowVariantsProgress,
 };
 use anyhow::{anyhow, bail, Result};
 use serde_json::json;
@@ -42,7 +43,7 @@ pub async fn run_model_search(
     let search_sort = map_search_sort(sort);
 
     if catalog_only {
-        let results: Vec<_> = search_catalog_models(&query)
+        let results: Vec<_> = search_catalog_models(&query)?
             .into_iter()
             .filter(|model| match filter {
                 SearchArtifactFilter::Gguf => !catalog_model_is_mlx(model),
@@ -129,7 +130,8 @@ pub async fn run_model_search(
 
 pub fn run_model_recommended(json_output: bool) -> Result<()> {
     let formatter = models_formatter(json_output);
-    let models: Vec<_> = catalog::MODEL_CATALOG.iter().collect();
+    remote_catalog::ensure_catalog()?;
+    let models = remote_catalog::loaded_models()?;
     formatter.render_recommended(&models)
 }
 
@@ -139,12 +141,12 @@ fn build_installed_rows() -> Vec<InstalledRow> {
         .map(|name| {
             let path = crate::models::find_model_path(&name);
             let display_name = crate::models::installed_model_display_name(&name);
-            let catalog_model = find_catalog_model_exact(&name);
+            let catalog_model = find_remote_catalog_model_exact(&name);
             let layer_count = crate::models::layered_package_layer_count_for_path(&path);
             let model_ref = if layer_count.is_some() {
                 name.clone()
-            } else if let Some(model) = catalog_model {
-                catalog_model_ref(model)
+            } else if let Some(model) = catalog_model.as_ref() {
+                remote_catalog_model_ref(model)
             } else if let Some(identity) = crate::models::huggingface_identity_for_path(&path) {
                 crate::models::installed_model_huggingface_ref(&identity)
             } else {
@@ -293,9 +295,11 @@ pub async fn run_model_download(
     let mut draft_out: Option<(String, std::path::PathBuf)> = None;
     if let Some(details_ref) = details.as_ref() {
         if let Some(draft_name) = details_ref.draft.as_deref() {
-            let draft_model = find_catalog_model_exact(draft_name)
-                .ok_or_else(|| anyhow!("Draft model '{}' not found in catalog", draft_name))?;
-            let draft_path = catalog::download_model(draft_model).await?;
+            let draft_ref = find_remote_catalog_model_exact(draft_name)
+                .map(|model| remote_catalog_model_ref(&model))
+                .unwrap_or_else(|| draft_name.to_string());
+            let (draft_path, _) =
+                download_model_ref_with_progress_details(&draft_ref, !json_output).await?;
             draft_out = Some((draft_name.to_string(), draft_path));
         } else if !json_output {
             eprintln!(
