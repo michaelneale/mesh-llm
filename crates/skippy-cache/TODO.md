@@ -20,6 +20,12 @@
   loading or merging the full 406.8 GB source GGUF. The gate covers real-input
   `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late-layer
   package stages `30..31` and `60..61`.
+- Source/target native-sequence cache correctness is now covered by
+  `evals/skippy-cache-correctness-gate.py`. The latest local Metal run passed
+  `21/21` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1, and
+  Qwen3Next for one-stage, split-middle, and split-final topologies. All rows
+  restored `0 -> 1`, suffix-prefill matched, repeated hits were stable, and
+  recurrent payload bytes were non-zero for `KvRecurrent` families.
 
 ## DeepSeek3 Exact-State Certification
 
@@ -43,33 +49,10 @@ with q8 activation wire.
 
 ## Follow-Up Certification
 
-- Add a serving-path cache correctness gate by family/state-layout class before
-  marking this branch done. This must prove source-to-target native sequence
-  remapping: record a cache prefix from one runtime session/lane and restore or
-  borrow it into a different runtime session/lane with a different backend
-  sequence id.
-- Dense `ResidentKv` gate: test representative local GGUFs for Llama, Qwen
-  dense, Gemma, GLM, OLMo, or the closest locally available dense reviewed
-  families. Use `ResidentKv` only. Verify immediate next token/logits and
-  suffix-prefill-then-decode against normal no-cache prefill. Cover one-stage
-  and at least one split-stage topology.
-- Hybrid/recurrent `KvRecurrent` gate: test Falcon-H1 and Qwen3Next/Qwen3.6
-  recurrent when available, plus MiniMax/RWKV/Mamba-like/Jamba/LFM2
-  representatives where local GGUFs exist. Use `KvRecurrent` only. Verify KV
-  plus recurrent/SSM state restore into a different target session/lane,
-  immediate decode, suffix-prefill-then-decode, payload bytes, imported tokens,
-  hit/miss counters, and non-zero recurrent bytes where expected.
 - Negative policy gate: assert recurrent/stateful GGUFs do not select
   `ResidentKv`. Check that tensor-name guards catch `.ssm`, `ssm_`, `time_mix`,
   `recurrent`, and `rwkv`; add proposed detection rules for any stateful family
   with different naming before enabling cache.
-- Split-stage gate: verify cache restore under staged serving, including stage
-  0, middle-stage, and final-stage restore where observable. Vary layer ranges
-  enough to catch stage-local state shape issues.
-- Evidence output must include a table by family/model ref with payload mode,
-  one-stage result, split-stage result, source native seq id, target native seq
-  id, imported tokens, payload bytes, recurrent bytes, hit/miss counters,
-  repeated-hit stability, suffix-prefill result, and promotion decision.
 - DeepSeek3 remains package-only for benchmark evidence. If a machine with
   enough memory can run the monolithic full GGUF under llama-server, add that as
   a separate baseline, but do not block package-backed serving or cache strategy

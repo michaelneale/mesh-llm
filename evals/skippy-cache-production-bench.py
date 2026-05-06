@@ -340,6 +340,8 @@ def run_correctness(case: Case, args: argparse.Namespace, case_dir: Path, prompt
         case.payload,
         "--prefix-token-count",
         str(case.prefix_tokens),
+        "--suffix-token-count",
+        str(args.suffix_token_count),
         "--cache-hit-repeats",
         str(cache_hit_repeats),
         "--report-out",
@@ -582,7 +584,9 @@ def run_case(case: Case, args: argparse.Namespace, use_case: UseCase | None = No
             payload=case.payload,
             layer_end=case.layer_end,
             activation_width=case.activation_width,
-            ctx_size=max(case.ctx_size, prefix_tokens + 128) if prefix_tokens is not None else case.ctx_size,
+            ctx_size=max(case.ctx_size, prefix_tokens + args.suffix_token_count + 128)
+            if prefix_tokens is not None
+            else case.ctx_size,
             n_gpu_layers=n_gpu_layers,
             prefix_tokens=prefix_tokens if prefix_tokens is not None else case.prefix_tokens,
             cache_hit_repeats=cache_hit_repeats,
@@ -683,6 +687,7 @@ def main() -> int:
     parser.add_argument("--borrow-resident-hits", action="store_true")
     parser.add_argument("--cache-decoded-result-hits", action="store_true")
     parser.add_argument("--prefix-tokens", type=int, help="Override the production prefix-token count for every selected case.")
+    parser.add_argument("--suffix-token-count", type=int, default=0)
     parser.add_argument("--use-case", action="append", help="Run one named use case from the corpus; use 'all' for every use case.")
     parser.add_argument(
         "--use-case-corpus",

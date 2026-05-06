@@ -288,6 +288,8 @@ extern "C" {
 
     pub fn skippy_session_position(session: *const Session) -> i32;
 
+    pub fn skippy_session_native_seq_id(session: *const Session) -> i32;
+
     pub fn skippy_session_batch_size(session: *const Session) -> i32;
 
     pub fn skippy_session_set_position(

@@ -262,6 +262,54 @@ Raw run directories:
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
 - `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`
 - `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
+
+## Cache Correctness Evidence
+
+The source/target native-sequence remap gate is reproducible with:
+
+```bash
+LLAMA_STAGE_BUILD_DIR=$PWD/.deps/llama-build/build-stage-abi-metal \
+  python3 evals/skippy-cache-correctness-gate.py \
+    --output-dir /tmp/skippy-cache-correctness-gate \
+    --llama-stage-build-dir $PWD/.deps/llama-build/build-stage-abi-metal \
+    --topology one-stage \
+    --topology split-middle \
+    --topology split-final \
+    --prefix-tokens 16 \
+    --suffix-token-count 3 \
+    --runtime-lane-count 4 \
+    --cache-hit-repeats 2 \
+    --n-gpu-layers 999
+```
+
+Latest local result: `21/21` rows passed. Every row restored into a different
+native sequence (`0 -> 1`), suffix-prefill-then-decode matched normal prefill,
+and repeated hits stayed stable. Recurrent payloads were non-zero for the
+`KvRecurrent` rows.
+
+| Family | Model ref | Payload | Topology | Result | Seq remap | Source -> target seq | Suffix prefill | Payload bytes | Recurrent bytes | Repeated hits |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Qwen3 dense | `Qwen/Qwen3-0.6B:Q8_0` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Llama | `hugging-quants/Llama-3.2-1B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| GLM4 | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `76923484` | `76530268` | pass |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
+| Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
+| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | split-middle | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| OLMo | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `79430524` | `79037308` | pass |
+| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `79168380` | `79037308` | pass |
+| Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `79168380` | `79037308` | pass |
 - `target/family-certify/llama-parity-rwkv6-runtime-slice-3`
 - `target/family-certify/cache-smoke/reports`
 

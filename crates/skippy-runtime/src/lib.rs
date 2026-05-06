@@ -1221,6 +1221,10 @@ impl StageSession {
         self.token_count
     }
 
+    pub fn native_seq_id(&self) -> i32 {
+        unsafe { skippy_ffi::skippy_session_native_seq_id(self.raw) }
+    }
+
     fn set_position(&mut self, token_count: u64) -> Result<()> {
         let n_past = i32::try_from(token_count).context("session token count exceeds i32")?;
         let mut error = ptr::null_mut();

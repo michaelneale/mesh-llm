@@ -1,0 +1,42 @@
+From 825ba75a9d51df5b7e6b783da90b1282e8556328 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 6 May 2026 10:39:06 +1000
+Subject: [PATCH] Remap recurrent state on import
+
+---
+ src/skippy.cpp | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index cc36af21..1010874c 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2666,14 +2666,22 @@ enum skippy_status skippy_import_recurrent_state(
+         return SKIPPY_STATUS_UNSUPPORTED;
+     }
+ 
++    std::vector<uint8_t> remapped(static_cast<const uint8_t *>(input), static_cast<const uint8_t *>(input) + input_bytes);
++    constexpr size_t seq_id_offset = sizeof(uint32_t);
++    if (remapped.size() < seq_id_offset + sizeof(llama_seq_id)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "recurrent state input is too small");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    std::memcpy(remapped.data() + seq_id_offset, &session->seq_id, sizeof(session->seq_id));
++
+     session->ctx->synchronize();
+     const size_t read = llama_state_seq_set_data_ext(
+             session->ctx,
+-            static_cast<const uint8_t *>(input),
+-            input_bytes,
++            remapped.data(),
++            remapped.size(),
+             session->seq_id,
+             LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+-    if (read != input_bytes) {
++    if (read != remapped.size()) {
+         skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import recurrent state");
+         return SKIPPY_STATUS_RUNTIME_ERROR;
+     }
+-- 
+2.50.1 (Apple Git-155)
+
