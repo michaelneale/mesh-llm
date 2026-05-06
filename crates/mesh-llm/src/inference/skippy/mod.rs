@@ -306,16 +306,30 @@ impl SkippyModelHandle {
         hook_policy: Option<Arc<dyn OpenAiHookPolicy>>,
     ) -> Result<Self> {
         configure_materialized_stage_cache();
-        let materialized = materialize_stage_config(&config)?;
-        let materialized_pin = materialized.map(|(artifact, pin)| {
-            config.manifest_sha256 = Some(artifact.manifest_sha256);
-            config.source_model_path = Some(artifact.source_model_path);
-            config.source_model_sha256 = Some(artifact.source_model_sha256);
-            config.source_model_bytes = artifact.source_model_bytes;
-            config.materialized_path = Some(artifact.path.to_string_lossy().to_string());
-            config.materialized_pinned = true;
-            pin
-        });
+        let materialized_pin = if config.load_mode == LoadMode::LayerPackage {
+            if let Some(model_path) = config.model_path.as_deref() {
+                let local_ref = materialization::resolve_hf_package_to_local(
+                    model_path,
+                    config.layer_start,
+                    config.layer_end,
+                    config.layer_start == 0,
+                    config.downstream.is_none(),
+                )?;
+                config.model_path = Some(local_ref);
+            }
+            None
+        } else {
+            let materialized = materialize_stage_config(&config)?;
+            materialized.map(|(artifact, pin)| {
+                config.manifest_sha256 = Some(artifact.manifest_sha256);
+                config.source_model_path = Some(artifact.source_model_path);
+                config.source_model_sha256 = Some(artifact.source_model_sha256);
+                config.source_model_bytes = artifact.source_model_bytes;
+                config.materialized_path = Some(artifact.path.to_string_lossy().to_string());
+                config.materialized_pinned = true;
+                pin
+            })
+        };
         let family_policy = family_policy_for_stage_config(&config);
         config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
