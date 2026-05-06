@@ -447,5 +447,50 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF:MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "source_repo": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF",
+    "source_revision": "5076cc11784d16955b423a22c767838bbe14d9ad",
+    "source_file": "f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K.gguf",
+    "canonical_ref": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF@5076cc11784d16955b423a22c767838bbe14d9ad/f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K.gguf",
+    "distribution_id": "f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "selector": "MXFP4_MOE-output_q6_K-router_gate_emb_q6_K",
+    "capability": {
+      "family_id": "granite_hybrid",
+      "layer_count": 32,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 32
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/tiny-random-granite-moe-GGUF",
+    "source_revision": "6cd39b53264cda53dc81462b8be16ff903f2366a",
+    "source_file": "tiny-random-granite-moe.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/tiny-random-granite-moe-GGUF@6cd39b53264cda53dc81462b8be16ff903f2366a/tiny-random-granite-moe.Q4_K_M.gguf",
+    "distribution_id": "tiny-random-granite-moe.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "granite_moe",
+      "layer_count": 6,
+      "activation_width": 64,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

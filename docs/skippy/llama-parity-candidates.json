@@ -203,14 +203,19 @@
     {
       "llama_model": "granite-hybrid",
       "family": "granite_hybrid",
-      "status": "needs_candidate",
-      "search": "Granite hybrid GGUF small"
+      "status": "certified",
+      "repo": "magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF",
+      "include": "f16-hybrid-granite-4.0-h-350m-unsloth-MXFP4_MOE-output_q6_K-router_gate_emb_q6_K.gguf",
+      "recurrent": "all",
+      "notes": "text lane passed in llama-parity-granite-hybrid-runtime-slice-2 after adding Granite-Hybrid graph stage filtering; q8 activation wire validated; use KvRecurrent and keep recurrent ownership sticky because full-state mobility is rejected as too large"
     },
     {
       "llama_model": "granite-moe",
       "family": "granite_moe",
-      "status": "needs_candidate",
-      "search": "Granite MoE GGUF small"
+      "status": "certified",
+      "repo": "mradermacher/tiny-random-granite-moe-GGUF",
+      "include": "tiny-random-granite-moe.Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-granite-moe-runtime-slice-2 after adding Granite-MoE to the skippy ABI allowlist; tiny random GGUF certifies graph/tensor layout only, so replace with a real small artifact when available"
     },
     {
       "llama_model": "gptneox",

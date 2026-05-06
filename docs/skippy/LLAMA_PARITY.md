@@ -176,6 +176,8 @@ or a blocker is discovered.
 | `phi` | `phi3` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `phi2` | `phi2` | selected | yes | pass | rejected-too-large | `ResidentKv` | pass | runtime-slice and resident cache ready; full-state payload is too large for mobility |
 | `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
+| `granite_hybrid` | `granite-hybrid` | selected | yes | pass | rejected-too-large | `KvRecurrent` | pass | runtime-slice and recurrent cache restore ready; keep normal decode ownership sticky |
+| `granite_moe` | `granite-moe` | layout probe selected | yes | pass | pass | `ResidentKv` | pass | tiny random layout probe only; replace with a real small artifact when available |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `baichuan` | `baichuan` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -223,6 +225,8 @@ themselves until the reviewed topology records are updated.
 | `phi2` | see `target/family-certify/llama-parity-phi2-runtime-slice-2`, `target/family-certify/llama-parity-phi2-resident-kv-1`, and `/Volumes/External/tmp/skippy-phi2-resident-kv-stage1-20260506.json` | `single-step`, `chain`, and dtype matrix passed | validated | rejected-too-large for full-state | `ResidentKv` one-stage and split-final cache restore passed; stage0 cache probe remaps resident KV but cannot produce logits because it is a non-output slice |
 | `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `internlm2`, `mistral3` | see `target/family-certify/llama-parity-dense-tranche-2` and `/tmp/skippy-cache-correctness-dense-*` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
 | `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed staged activation rescaling |
+| `granite_hybrid` | see `target/family-certify/llama-parity-granite-hybrid-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | rejected-too-large for full-state | `KvRecurrent` cache smoke passed; fixed Granite-Hybrid graph stage filtering |
+| `granite_moe` | see `target/family-certify/llama-parity-granite-moe-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on tiny random layout probe; fixed Granite-MoE ABI allowlist |
 | `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
 | `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` and `/tmp/skippy-cache-correctness-dense-small` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed mid-stage position input registration |
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
@@ -261,6 +265,8 @@ Raw run directories:
 - `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
+- `target/family-certify/llama-parity-granite-hybrid-runtime-slice-2`
+- `target/family-certify/llama-parity-granite-moe-runtime-slice-2`
 - `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`
 - `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
 - `target/family-certify/rwkv7-sideband-single-step.json`
@@ -327,6 +333,8 @@ through mesh family policy and server-side auto-payload inference.
 | Gemma3 | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Phi2 | `TheBloke/phi-2-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Phi2 | `TheBloke/phi-2-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Granite-Hybrid | `magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF:MXFP4_MOE-output_q6_K-router_gate_emb_q6_K` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `22885052` | `22622908` | pass |
+| Granite-MoE | `mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `76923484` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
@@ -361,8 +369,15 @@ through mesh family policy and server-side auto-payload inference.
 
 - Runtime-slice expansion and cache restore now pass for `baichuan`, `bloom`,
   `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32`
-  wire, `gpt2`, `gptneox`, `granite`, `internlm2`, `mistral3`, `mpt`, `olmo2`,
-  `phi2`, `phi3`, `stablelm`, and `starcoder2`.
+  wire, `gpt2`, `gptneox`, `granite`, `granite_hybrid`, `granite_moe`,
+  `internlm2`, `mistral3`, `mpt`, `olmo2`, `phi2`, `phi3`, `stablelm`, and
+  `starcoder2`.
+- `granite_hybrid` required a llama.cpp stage-filter fix for its hybrid graph
+  and uses `KvRecurrent`; the exact full-state payload is too large to move as a
+  production cache value.
+- `granite_moe` reuses the Granite graph and only needed the skippy ABI
+  allowlist. Current evidence uses a tiny random GGUF, so it certifies graph and
+  tensor-layout support rather than model quality.
 - `phi2` required a llama.cpp stage-filter fix for filtered fused-QKV tensors:
   when a merged QKV weight is skipped for a slice, the matching merged QKV bias
   must also be accounted for instead of falling back to separate Q/K/V tensors.
