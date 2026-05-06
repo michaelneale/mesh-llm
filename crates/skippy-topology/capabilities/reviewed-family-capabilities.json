@@ -672,5 +672,105 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF",
+    "source_revision": "bd228a8d85e496c023b4ef04552cce2765bafb81",
+    "source_file": "baichuan2-7b-chat.Q4_K_M.gguf",
+    "canonical_ref": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF@bd228a8d85e496c023b4ef04552cce2765bafb81/baichuan2-7b-chat.Q4_K_M.gguf",
+    "distribution_id": "baichuan2-7b-chat.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "baichuan",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF",
+    "source_revision": "347ad15365d7e4c4fb0d206e07b87bdefe9e67d9",
+    "source_file": "EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF@347ad15365d7e4c4fb0d206e07b87bdefe9e67d9/EXAONE-3.5-2.4B-Instruct-Q4_K_M.gguf",
+    "distribution_id": "EXAONE-3.5-2.4B-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "exaone",
+      "layer_count": 30,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF:Q4_K_M",
+    "source_repo": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF",
+    "source_revision": "4e4f843c37937a5d43a2f391f59da27d90b45152",
+    "source_file": "LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF@4e4f843c37937a5d43a2f391f59da27d90b45152/LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M.gguf",
+    "distribution_id": "LGAI-EXAONE_EXAONE-4.0-1.2B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "exaone4",
+      "layer_count": 30,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
+    "source_revision": "dc804ce37a456c449d1306ca3d875f5fb01b4a9b",
+    "source_file": "c4ai-command-r7b-12-2024-q4_k_m.gguf",
+    "canonical_ref": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF@dc804ce37a456c449d1306ca3d875f5fb01b4a9b/c4ai-command-r7b-12-2024-q4_k_m.gguf",
+    "distribution_id": "c4ai-command-r7b-12-2024-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "cohere2",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF",
+    "source_revision": "7b901012e9e715c2f64e537e6331af0cdb424a21",
+    "source_file": "falcon-7b-instruct-q4_k_m.gguf",
+    "canonical_ref": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF@7b901012e9e715c2f64e537e6331af0cdb424a21/falcon-7b-instruct-q4_k_m.gguf",
+    "distribution_id": "falcon-7b-instruct-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "falcon",
+      "layer_count": 32,
+      "activation_width": 4544,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

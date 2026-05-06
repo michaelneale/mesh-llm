@@ -237,25 +237,24 @@
     {
       "llama_model": "baichuan",
       "family": "baichuan",
-      "status": "candidate",
+      "status": "certified",
       "repo": "lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF",
-      "include": "*.gguf"
+      "include": "*.gguf",
+      "notes": "text lane passed in llama-parity-baichuan-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "command-r",
       "family": "command_r",
-      "status": "candidate",
-      "repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
-      "include": "*.gguf",
-      "notes": "replaces non-GGUF source repo"
+      "status": "needs_candidate",
+      "notes": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF reports GGUF architecture cohere2, so it certifies cohere2 rather than the legacy command-r llama.cpp graph"
     },
     {
       "llama_model": "cohere2",
       "family": "cohere2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "Lumia101/c4ai-command-r7b-12-2024-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "replaces stale lmstudio-community/c4ai-command-r7b-12-2024-GGUF"
+      "notes": "text lane passed in llama-parity-cohere2-runtime-slice-1; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "jamba",
@@ -313,10 +312,10 @@
     {
       "llama_model": "falcon",
       "family": "falcon",
-      "status": "candidate",
+      "status": "certified",
       "repo": "Kondara/falcon-7b-instruct-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "replaces stale TheBloke/falcon-7b-instruct-GGUF; dry-run shows falcon-7b-instruct-q4_k_m.gguf at 5.0GB"
+      "notes": "text lane passed in llama-parity-falcon-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "olmo",
@@ -390,16 +389,18 @@
     {
       "llama_model": "exaone",
       "family": "exaone",
-      "status": "candidate",
+      "status": "certified",
       "repo": "lmstudio-community/EXAONE-3.5-2.4B-Instruct-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-exaone-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "exaone4",
       "family": "exaone4",
-      "status": "candidate",
+      "status": "certified",
       "repo": "bartowski/LGAI-EXAONE_EXAONE-4.0-1.2B-GGUF",
-      "include": "*Q4_K_M.gguf"
+      "include": "*Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-exaone4-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "bert",
