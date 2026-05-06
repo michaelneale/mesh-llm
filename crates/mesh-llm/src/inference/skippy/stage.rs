@@ -21,6 +21,10 @@ pub(crate) enum StageControlRequest {
     Load(StageLoadRequest),
     Stop(StageStopRequest),
     Status(StageStatusFilter),
+    Inventory(StageInventoryRequest),
+    Prepare(StagePrepareRequest),
+    CancelPrepare(StageCancelPrepareRequest),
+    StatusUpdate(StagePreparationStatus),
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +32,10 @@ pub(crate) enum StageControlRequest {
 pub(crate) enum StageControlResponse {
     Ready(StageReadyResponse),
     Status(Vec<StageStatusSnapshot>),
+    Inventory(StageLayerInventory),
+    PrepareAccepted(StagePrepareAcceptedResponse),
+    PreparationStatus(StagePreparationStatus),
+    StatusAck(StageStatusAck),
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +86,56 @@ pub(crate) struct StageStatusFilter {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct StageInventoryRequest {
+    pub(crate) model_id: String,
+    pub(crate) package_ref: String,
+    pub(crate) manifest_sha256: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StagePrepareRequest {
+    pub(crate) load: StageLoadRequest,
+    pub(crate) coordinator_id: Option<iroh::EndpointId>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StageCancelPrepareRequest {
+    pub(crate) topology_id: String,
+    pub(crate) run_id: String,
+    pub(crate) stage_id: String,
+    pub(crate) shutdown_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LayerRange {
+    pub(crate) layer_start: u32,
+    pub(crate) layer_end: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StageLayerInventory {
+    pub(crate) model_id: String,
+    pub(crate) package_ref: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) layer_count: u32,
+    pub(crate) ready_ranges: Vec<LayerRange>,
+    pub(crate) available_ranges: Vec<LayerRange>,
+    pub(crate) missing_ranges: Vec<LayerRange>,
+    pub(crate) preparing_ranges: Vec<StagePreparationStatus>,
+    pub(crate) source_model_path: Option<String>,
+    pub(crate) source_model_bytes: Option<u64>,
+    pub(crate) source_model_kind: SourceModelKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceModelKind {
+    Unknown,
+    LayerPackage,
+    PlainGguf,
+    SplitGguf,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct StagePeerDescriptor {
     pub(crate) stage_id: String,
     pub(crate) stage_index: u32,
@@ -99,6 +157,18 @@ pub(crate) enum StageRuntimeState {
     Stopping,
     Stopped,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StagePreparationState {
+    Assigned,
+    Downloading,
+    Available,
+    Resolving,
+    Loading,
+    Ready,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +210,39 @@ pub(crate) struct StageStatusSnapshot {
     pub(crate) shutdown_generation: u64,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct StagePreparationStatus {
+    pub(crate) topology_id: String,
+    pub(crate) run_id: String,
+    pub(crate) model_id: String,
+    pub(crate) backend: String,
+    pub(crate) package_ref: String,
+    pub(crate) manifest_sha256: String,
+    pub(crate) stage_id: String,
+    pub(crate) stage_index: u32,
+    pub(crate) layer_start: u32,
+    pub(crate) layer_end: u32,
+    pub(crate) state: StagePreparationState,
+    pub(crate) bytes_done: Option<u64>,
+    pub(crate) bytes_total: Option<u64>,
+    pub(crate) bind_addr: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) shutdown_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StagePrepareAcceptedResponse {
+    pub(crate) accepted: bool,
+    pub(crate) status: StagePreparationStatus,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StageStatusAck {
+    pub(crate) accepted: bool,
+    pub(crate) error: Option<String>,
+}
+
 struct RunningStage {
     load: StageLoadRequest,
     server: EmbeddedServerHandle,
@@ -176,7 +279,50 @@ impl StageControlState {
             StageControlRequest::Status(filter) => {
                 Ok(StageControlResponse::Status(self.statuses(&filter)))
             }
+            StageControlRequest::Inventory(request) => {
+                Ok(StageControlResponse::Inventory(self.inventory(request)))
+            }
+            StageControlRequest::Prepare(request) => Ok(StageControlResponse::PrepareAccepted(
+                self.prepare(request).await?,
+            )),
+            StageControlRequest::CancelPrepare(cancel) => Ok(
+                StageControlResponse::PreparationStatus(preparation_status_from_cancel(cancel)),
+            ),
+            StageControlRequest::StatusUpdate(_status) => {
+                Ok(StageControlResponse::StatusAck(StageStatusAck {
+                    accepted: true,
+                    error: None,
+                }))
+            }
         }
+    }
+
+    fn inventory(&self, request: StageInventoryRequest) -> StageLayerInventory {
+        StageLayerInventory {
+            model_id: request.model_id,
+            package_ref: request.package_ref,
+            manifest_sha256: request.manifest_sha256,
+            layer_count: 0,
+            ready_ranges: Vec::new(),
+            available_ranges: Vec::new(),
+            missing_ranges: Vec::new(),
+            preparing_ranges: Vec::new(),
+            source_model_path: None,
+            source_model_bytes: None,
+            source_model_kind: SourceModelKind::Unknown,
+        }
+    }
+
+    async fn prepare(
+        &mut self,
+        request: StagePrepareRequest,
+    ) -> Result<StagePrepareAcceptedResponse> {
+        let status = preparation_status_from_load(&request.load, StagePreparationState::Assigned);
+        Ok(StagePrepareAcceptedResponse {
+            accepted: true,
+            status,
+            error: None,
+        })
     }
 
     async fn load(&mut self, load: StageLoadRequest) -> Result<StageReadyResponse> {
@@ -518,6 +664,51 @@ fn stopped_status(stop: &StageStopRequest) -> StageStatusSnapshot {
         flash_attn_type: FlashAttentionType::Auto,
         error: None,
         shutdown_generation: stop.shutdown_generation,
+    }
+}
+
+fn preparation_status_from_load(
+    load: &StageLoadRequest,
+    state: StagePreparationState,
+) -> StagePreparationStatus {
+    StagePreparationStatus {
+        topology_id: load.topology_id.clone(),
+        run_id: load.run_id.clone(),
+        model_id: load.model_id.clone(),
+        backend: load.backend.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+        stage_id: load.stage_id.clone(),
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        state,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error: None,
+        shutdown_generation: load.shutdown_generation,
+    }
+}
+
+fn preparation_status_from_cancel(cancel: StageCancelPrepareRequest) -> StagePreparationStatus {
+    StagePreparationStatus {
+        topology_id: cancel.topology_id,
+        run_id: cancel.run_id,
+        model_id: String::new(),
+        backend: "skippy".to_string(),
+        package_ref: String::new(),
+        manifest_sha256: String::new(),
+        stage_id: cancel.stage_id,
+        stage_index: 0,
+        layer_start: 0,
+        layer_end: 0,
+        state: StagePreparationState::Cancelled,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error: None,
+        shutdown_generation: cancel.shutdown_generation,
     }
 }
 

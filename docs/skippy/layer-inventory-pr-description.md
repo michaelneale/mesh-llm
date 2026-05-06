@@ -7,8 +7,8 @@ longer count against inference or stage-control timeouts.
 
 Nodes now report the layer ranges they can serve or prepare, the coordinator
 plans from currently usable capacity, and slower nodes can join later through a
-candidate topology once their assigned layers are downloaded, materialized, and
-loaded.
+candidate topology once their assigned inputs are local and the stage runtime is
+loaded directly from package parts or a local GGUF source.
 
 The protocol change is intentionally breaking and is scoped to the Skippy stage
 control protocol. `mesh.proto` gossip is not changed.
@@ -60,7 +60,7 @@ stage preparation.
 
 Today, `LoadStage` is synchronous from the coordinator's point of view: the
 coordinator sends one request and waits for the remote node to download or
-resolve model artifacts, materialize the assigned stage, start the binary stage,
+resolve model artifacts, prepare the assigned stage, start the binary stage,
 and return `StageReady`. That makes model download time part of the control RPC
 timeout.
 
@@ -77,7 +77,7 @@ sequenceDiagram
     Note over C,W: Old synchronous load
     C->>W: LoadStage(layers 12..24)
     W->>W: download package parts
-    W->>W: materialize stage GGUF
+    W->>W: prepare assigned layer/source inputs
     W->>W: start stage runtime
     W-->>C: StageReady
     Note over C,W: One RPC timeout covers all work
@@ -86,11 +86,11 @@ sequenceDiagram
     rect rgb(240, 248, 255)
     Note over C,W: New async preparation
     C->>W: GetLayerInventory(package, manifest)
-    W-->>C: LayerInventory(ready/materialized/available/missing)
+    W-->>C: LayerInventory(ready/available/missing/preparing)
     C->>W: PrepareStage(layers 12..24)
     W-->>C: PrepareAccepted(state=ASSIGNED)
     W-->>C: StageStatusUpdate(DOWNLOADING)
-    W-->>C: StageStatusUpdate(MATERIALIZING)
+    W-->>C: StageStatusUpdate(LOADING)
     W-->>C: StageStatusUpdate(READY)
     Note over C,W: Download is preparation, not control timeout
     end
@@ -100,7 +100,6 @@ New protocol concepts:
 
 - `LayerRange`
 - `LayerInventory`
-- `LayerRangeAvailability`
 - `GetLayerInventory`
 - `PrepareStage`
 - `CancelPrepareStage`
@@ -112,8 +111,7 @@ Preparation states:
 - `ASSIGNED`
 - `DOWNLOADING`
 - `AVAILABLE`
-- `MATERIALIZING`
-- `MATERIALIZED`
+- `RESOLVING`
 - `LOADING`
 - `READY`
 - `FAILED`
@@ -136,14 +134,14 @@ Preparation states:
 - `stage_status_ack`
 
 `StageRuntimeState` is replaced or expanded with preparation-specific states so
-callers do not need to overload `STARTING` for download, materialization, and
+callers do not need to overload `STARTING` for download, source resolution, and
 runtime startup.
 
 The existing `StageStatus` payload is extended into a preparation-aware status:
 
 - package identity: `package_ref`, `manifest_sha256`
 - assigned layer range: `layer_start`, `layer_end`
-- state: assignment/download/materialization/loading/ready/failure
+- state: assignment/download/source-resolution/loading/ready/failure
 - optional progress: `bytes_done`, `bytes_total`
 - runtime endpoint: `bind_addr`, present only when the stage is ready
 - error string for terminal failures
@@ -161,6 +159,102 @@ download-and-start operation. For split serving, the new flow is:
 `LoadStage` can either be removed in the protocol break or kept only as a
 compatibility shim for local/single-stage paths that already have local model
 artifacts. It must not be used for remote split layer downloads.
+
+### Source Model Scenarios
+
+The protocol must distinguish source layout from stage readiness. In particular,
+it must not reintroduce a pipeline where layer package parts are first joined
+into a materialized stage GGUF and then loaded. Stage runtime should load from
+the source form directly.
+
+Supported source kinds:
+
+- `LAYER_PACKAGE`: a package manifest and per-layer parts are available. Nodes
+  report which layer ranges are local, missing, or already loaded by a running
+  stage.
+- `PLAIN_GGUF`: the node has a normal GGUF model, either from a local path or a
+  plain Hugging Face model repository. The node cannot report per-layer package
+  files, but it can report that the source GGUF is local and that runtime slice
+  loading can filter the assigned layer range directly from that source.
+- `SPLIT_GGUF`: the node has a multi-file GGUF source. Inventory reports source
+  availability for the whole split set, not a layer-package cache.
+
+For `PLAIN_GGUF` and `SPLIT_GGUF`, `available_ranges` means "the source files
+needed to load these ranges are local." It does not imply a separate
+materialized stage artifact.
+
+For `LAYER_PACKAGE`, `available_ranges` means "the required package parts for
+these ranges are local." Loading should consume those parts directly.
+
+### Materialisation and Source Handling
+
+In this design, "materialisation" must not mean "join selected layer parts into
+a new stage GGUF." That path should not come back.
+
+Instead, preparation means making the source inputs available in the form the
+runtime can load directly.
+
+#### Layered model repository
+
+A layered repository already contains the model as package parts:
+
+```text
+model-package.json
+shared metadata / embeddings / output parts
+layer 0 part
+layer 1 part
+...
+```
+
+For a stage assigned `layers 12..24`, preparation is:
+
+1. Ensure `model-package.json` is local.
+2. Ensure required shared parts are local.
+3. Ensure layer parts `12..24` are local.
+4. Start the runtime with a package-backed stage config.
+5. Runtime loads directly from the package parts.
+
+No intermediate stage GGUF is written.
+
+Inventory semantics for layered repositories:
+
+- `MISSING`: required package parts are not local.
+- `DOWNLOADING`: fetching package manifest or parts.
+- `AVAILABLE`: required package parts are local.
+- `LOADING`: runtime is opening/loading those parts directly.
+- `READY`: stage runtime is listening.
+
+Layered repositories support range-specific preparation. A cold node can be
+asked to fetch only `layers 12..24` plus required shared parts.
+
+#### Non-layered model repository
+
+A non-layered repository is a plain GGUF repo, a local GGUF file, or a split
+GGUF file set. There are no independently downloadable per-layer package parts.
+
+Preparation is:
+
+1. Ensure the source GGUF file, or the complete split GGUF file set, is local.
+2. Inspect GGUF metadata to learn layer count and dimensions.
+3. Assign a layer range.
+4. Start the runtime in runtime-slice mode.
+5. Runtime filters tensors while loading the assigned range directly from the
+   source GGUF input.
+
+No intermediate stage GGUF is written.
+
+Inventory semantics for non-layered repositories:
+
+- `MISSING`: source GGUF file or split GGUF set is not local.
+- `DOWNLOADING`: fetching the full source GGUF repo or file set.
+- `AVAILABLE`: source GGUF inputs are local, so any valid layer range can be
+  loaded from them.
+- `LOADING`: runtime is loading/filtering the assigned range directly.
+- `READY`: stage runtime is listening.
+
+For plain or split GGUF sources, `available_ranges` is effectively
+`0..layer_count` once the complete source is local. For layered repositories,
+`available_ranges` can be sparse and range-specific.
 
 ### Why This Is Breaking
 
@@ -182,20 +276,18 @@ stateDiagram-v2
     ASSIGNED --> DOWNLOADING: package parts missing
     ASSIGNED --> AVAILABLE: layer files local
     DOWNLOADING --> AVAILABLE: files local
-    AVAILABLE --> MATERIALIZING
-    MATERIALIZING --> MATERIALIZED
-    MATERIALIZED --> LOADING
+    AVAILABLE --> RESOLVING
+    RESOLVING --> LOADING
     LOADING --> READY
 
     ASSIGNED --> FAILED
     DOWNLOADING --> FAILED
-    MATERIALIZING --> FAILED
+    RESOLVING --> FAILED
     LOADING --> FAILED
 
     ASSIGNED --> CANCELLED
     DOWNLOADING --> CANCELLED
-    MATERIALIZING --> CANCELLED
-    MATERIALIZED --> CANCELLED
+    RESOLVING --> CANCELLED
 ```
 
 ## Coordinator Flow
@@ -212,7 +304,7 @@ sequenceDiagram
     participant R as Runtime
 
     C->>A: GetLayerInventory(package_ref, manifest_sha256)
-    A-->>C: ready/materialized/available ranges
+    A-->>C: ready/available/missing/preparing ranges
     C->>B: GetLayerInventory(package_ref, manifest_sha256)
     B-->>C: missing or preparing ranges
 
@@ -226,7 +318,7 @@ sequenceDiagram
     C->>B: PrepareStage(candidate generation)
     B-->>C: PrepareAccepted
     B-->>C: StageStatusUpdate(DOWNLOADING)
-    B-->>C: StageStatusUpdate(MATERIALIZING)
+    B-->>C: StageStatusUpdate(LOADING)
     B-->>C: StageStatusUpdate(READY)
     C->>R: Cut over to candidate topology
 ```
@@ -236,9 +328,8 @@ sequenceDiagram
 The coordinator ranks topology inputs by readiness and cost:
 
 1. `READY`
-2. `MATERIALIZED`
-3. `AVAILABLE`
-4. `MISSING`, only for background candidates
+2. `AVAILABLE`
+3. `MISSING`, only for background candidates
 
 The initial active topology avoids required downloads. Background preparation is
 started only when a candidate is materially better.
@@ -284,7 +375,7 @@ Timeouts are split by responsibility:
 
 - Assignment/control timeout: short, covers accepting a control message.
 - Preparation timeout: long or disabled by default, covers download and
-  materialization.
+  source preparation.
 - Stage start timeout: bounded, starts after local artifacts are ready.
 - Inference first-byte timeout: starts only after a ready topology is active.
 
@@ -297,8 +388,8 @@ with backoff. The coordinator keeps serving the active topology if candidate
 preparation fails.
 
 `CancelPrepareStage` cancels stale candidate work. Workers may keep already
-downloaded package files because they are useful cache, but should stop
-materialization or runtime loading when practical.
+downloaded package files because they are useful cache, but should stop source
+resolution or runtime loading when practical.
 
 ## API and UI
 
@@ -316,7 +407,7 @@ Example user-visible states:
 
 - `stage-1: ready, layers 0..12`
 - `stage-2: downloading, layers 12..24`
-- `stage-3: materializing, layers 24..32`
+- `stage-3: loading, layers 24..32`
 - `stage-4: failed, checksum mismatch`
 
 ## Validation

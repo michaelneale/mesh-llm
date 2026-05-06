@@ -10,7 +10,7 @@ pub mod proto {
 
 pub const SCHEMA_VERSION: u32 = 1;
 pub const STAGE_ALPN_V1: &[u8] = b"skippy-stage/1";
-pub const STAGE_PROTOCOL_GENERATION: u32 = 1;
+pub const STAGE_PROTOCOL_GENERATION: u32 = 2;
 pub const STAGE_STREAM_CONTROL: u8 = 0x01;
 pub const STAGE_STREAM_TRANSPORT: u8 = 0x02;
 pub const MAX_STAGE_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -556,9 +556,10 @@ mod tests {
     use prost::Message as _;
 
     use super::proto::stage::{
-        stage_control_request, stage_control_response, GetStageStatus, LoadStage,
-        StageControlRequest, StageControlResponse, StageReady, StageRuntimeState, StageStatus,
-        StageTransportOpen, StageWireDType, StopStage,
+        stage_control_request, stage_control_response, GetLayerInventory, GetStageStatus,
+        LayerInventory, LayerRange, LoadStage, PrepareStageAccepted, StageControlRequest,
+        StageControlResponse, StagePreparationState, StagePreparationStatus, StageReady,
+        StageRuntimeState, StageStatus, StageTransportOpen, StageWireDType, StopStage,
     };
     use super::{
         validate_stage_control_request, validate_stage_control_response,
@@ -615,6 +616,18 @@ mod tests {
         };
         validate_stage_control_request(&stop).unwrap();
 
+        let inventory = StageControlRequest {
+            command: Some(stage_control_request::Command::GetLayerInventory(
+                GetLayerInventory {
+                    model_id: "qwen".to_string(),
+                    package_ref: "hf://repo/model".to_string(),
+                    manifest_sha256: "a5".repeat(32),
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_request(&inventory).unwrap();
+
         let missing_command = StageControlRequest {
             command: None,
             ..frame.clone()
@@ -624,10 +637,10 @@ mod tests {
             Err(StageFrameError::MissingStageControlCommand)
         ));
 
-        let wrong_gen = StageControlRequest { gen: 2, ..frame };
+        let wrong_gen = StageControlRequest { gen: 1, ..frame };
         assert!(matches!(
             validate_stage_control_request(&wrong_gen),
-            Err(StageFrameError::BadGeneration { got: 2 })
+            Err(StageFrameError::BadGeneration { got: 1 })
         ));
     }
 
@@ -673,6 +686,50 @@ mod tests {
             other => panic!("expected StageReady, got {other:?}"),
         }
 
+        let inventory_response = StageControlResponse {
+            response: Some(stage_control_response::Response::LayerInventory(
+                LayerInventory {
+                    model_id: "qwen".to_string(),
+                    package_ref: "hf://repo/model".to_string(),
+                    manifest_sha256: "a5".repeat(32),
+                    layer_count: 16,
+                    ready_ranges: vec![LayerRange {
+                        layer_start: 0,
+                        layer_end: 8,
+                    }],
+                    ..Default::default()
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_response(&inventory_response).unwrap();
+
+        let prepare_response = StageControlResponse {
+            response: Some(stage_control_response::Response::PrepareStageAccepted(
+                PrepareStageAccepted {
+                    accepted: true,
+                    status: Some(StagePreparationStatus {
+                        topology_id: "topology-a".to_string(),
+                        run_id: "run-a".to_string(),
+                        model_id: "qwen".to_string(),
+                        backend: "skippy".to_string(),
+                        package_ref: "hf://repo/model".to_string(),
+                        manifest_sha256: "a5".repeat(32),
+                        stage_id: "stage-1".to_string(),
+                        stage_index: 1,
+                        layer_start: 8,
+                        layer_end: 16,
+                        state: StagePreparationState::Assigned as i32,
+                        shutdown_generation: 7,
+                        ..Default::default()
+                    }),
+                    error: None,
+                },
+            )),
+            ..frame.clone()
+        };
+        validate_stage_control_response(&prepare_response).unwrap();
+
         let missing_response = StageControlResponse {
             response: None,
             ..frame.clone()
@@ -682,10 +739,10 @@ mod tests {
             Err(StageFrameError::MissingStageControlResponse)
         ));
 
-        let wrong_gen = StageControlResponse { gen: 2, ..frame };
+        let wrong_gen = StageControlResponse { gen: 1, ..frame };
         assert!(matches!(
             validate_stage_control_response(&wrong_gen),
-            Err(StageFrameError::BadGeneration { got: 2 })
+            Err(StageFrameError::BadGeneration { got: 1 })
         ));
     }
 
@@ -709,10 +766,10 @@ mod tests {
             Err(StageFrameError::MissingStageTransportTarget)
         ));
 
-        let wrong_gen = StageTransportOpen { gen: 2, ..frame };
+        let wrong_gen = StageTransportOpen { gen: 1, ..frame };
         assert!(matches!(
             validate_stage_transport_open(&wrong_gen),
-            Err(StageFrameError::BadGeneration { got: 2 })
+            Err(StageFrameError::BadGeneration { got: 1 })
         ));
     }
 }
