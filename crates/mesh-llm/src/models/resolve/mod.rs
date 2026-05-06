@@ -23,6 +23,8 @@ use tokio_stream::StreamExt;
 #[derive(Clone, Debug)]
 pub struct ResolvedModel {
     pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
+    pub derived_stage_paths: Vec<PathBuf>,
     pub display_name: String,
     pub is_exact_path: bool,
     pub matched_records: Vec<ModelUsageRecord>,
