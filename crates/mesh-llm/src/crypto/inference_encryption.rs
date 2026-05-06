@@ -102,6 +102,12 @@ impl EphemeralSession {
     }
 }
 
+impl Default for EphemeralSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── Encrypt / Decrypt ─────────────────────────────────────────────
 
 /// Parse a base64-encoded X25519 public key.
@@ -248,15 +254,12 @@ pub async fn write_encrypted_chunk<W: tokio::io::AsyncWriteExt + Unpin>(
     writer
         .write_all(&payload_len.to_le_bytes())
         .await
-        .map_err(|e| CryptoError::Io(e))?;
-    writer
-        .write_all(&nonce)
-        .await
-        .map_err(|e| CryptoError::Io(e))?;
+        .map_err(CryptoError::Io)?;
+    writer.write_all(&nonce).await.map_err(CryptoError::Io)?;
     writer
         .write_all(&ciphertext)
         .await
-        .map_err(|e| CryptoError::Io(e))?;
+        .map_err(CryptoError::Io)?;
     Ok(())
 }
 
@@ -267,7 +270,7 @@ pub async fn write_encrypted_end<W: tokio::io::AsyncWriteExt + Unpin>(
     writer
         .write_all(&0u32.to_le_bytes())
         .await
-        .map_err(|e| CryptoError::Io(e))?;
+        .map_err(CryptoError::Io)?;
     Ok(())
 }
 
@@ -281,7 +284,7 @@ pub async fn read_encrypted_chunk<R: tokio::io::AsyncReadExt + Unpin>(
     reader
         .read_exact(&mut len_buf)
         .await
-        .map_err(|e| CryptoError::Io(e))?;
+        .map_err(CryptoError::Io)?;
     let payload_len = u32::from_le_bytes(len_buf) as usize;
     if payload_len == 0 {
         return Ok(None); // end sentinel
@@ -297,7 +300,7 @@ pub async fn read_encrypted_chunk<R: tokio::io::AsyncReadExt + Unpin>(
     reader
         .read_exact(&mut payload)
         .await
-        .map_err(|e| CryptoError::Io(e))?;
+        .map_err(CryptoError::Io)?;
     let (nonce_bytes, ciphertext) = payload.split_at(24);
     let nonce = crypto_box::Nonce::from_slice(nonce_bytes);
     let plaintext = salsa_box
