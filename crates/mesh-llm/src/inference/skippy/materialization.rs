@@ -335,7 +335,8 @@ pub(crate) fn resolve_hf_package_to_local(
 }
 
 pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInfo> {
-    // Resolve hf:// to local (only downloads manifest for inspection)
+    // Resolve hf:// to local for inspection, downloading the manifest and any
+    // shared package metadata that resolver path needs.
     let local_ref = resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
     let info = package::inspect_layer_package(&local_ref)
         .with_context(|| format!("inspect skippy layer package {package_ref}"))?;
@@ -351,8 +352,8 @@ pub(crate) fn resolve_stage_load_package(load: &StageLoadRequest) -> Result<Opti
     }
     let is_first = load.layer_start == 0;
     let is_final = load.downstream.is_none();
-    // Resolve hf:// to local dir — verifies files exist but does NOT
-    // materialize (concatenate) them into a single GGUF on disk.
+    // Resolve hf:// to a local package directory, verifying the needed package
+    // files exist without materializing them into a single GGUF on disk.
     let local_ref = resolve_hf_package_to_local(
         &load.package_ref,
         load.layer_start,
@@ -755,13 +756,13 @@ mod tests {
         restore_env("XDG_CACHE_HOME", prev_xdg);
     }
 
-    /// Integration test: downloads only the manifest from a real layer package on HF.
-    /// Run with: cargo test -p mesh-llm resolve_hf_downloads_manifest_only -- --ignored
+    /// Integration test: resolves package metadata without downloading layer files from HF.
+    /// Run with: cargo test -p mesh-llm resolve_hf_downloads_metadata_only -- --ignored
     #[test]
     #[ignore]
-    fn resolve_hf_downloads_manifest_only() {
+    fn resolve_hf_downloads_metadata_only() {
         let package_ref = "hf://meshllm/Qwen3-235B-A22B-UD-Q4_K_XL-layers";
-        // Request 0 layers — should only download the manifest
+        // Request 0 layers — should download manifest/shared metadata, but no layer files.
         let local_path = resolve_hf_package_to_local(package_ref, 0, 0, false, false).unwrap();
         let manifest = std::path::Path::new(&local_path).join("model-package.json");
         assert!(

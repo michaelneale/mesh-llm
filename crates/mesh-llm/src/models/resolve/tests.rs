@@ -16,6 +16,22 @@ fn load_gemma_live_fixture() -> HfRepoFixture {
     .expect("parse live Hugging Face fixture")
 }
 
+#[tokio::test]
+async fn existing_model_path_resolves_to_canonical_path() {
+    let temp = tempfile::tempdir().expect("create temp model dir");
+    let model_dir = temp.path().join("models");
+    std::fs::create_dir_all(&model_dir).expect("create model dir");
+    let model_path = model_dir.join("model.gguf");
+    std::fs::write(&model_path, b"gguf").expect("write model file");
+
+    let non_canonical = model_dir.join("..").join("models").join("model.gguf");
+    let resolved = resolve_model_spec_with_progress(&non_canonical, false)
+        .await
+        .expect("resolve existing model path");
+
+    assert_eq!(resolved, model_path.canonicalize().unwrap());
+}
+
 #[test]
 fn primary_hf_ref_maps_to_full_catalog_download() {
     let model = matching_catalog_primary_for_huggingface(

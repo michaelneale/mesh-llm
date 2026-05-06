@@ -287,11 +287,12 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 /// Build a `SkippyPackageIdentity` from a remote HF layer package.
 ///
-/// Downloads the manifest and shared metadata (needed by `inspect_layer_package` to
-/// read model parameters), but not layer files. The actual layer files are downloaded
-/// later by each node for its assigned stage.
+/// Resolves the package into the local HF cache for inspection, downloading
+/// the manifest and shared metadata that the resolver requires, but not layer
+/// files. Layer artifacts are fetched later by the node that materializes or
+/// loads its assigned stage.
 pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPackageIdentity> {
-    // Resolve hf:// to local dir (downloads manifest + shared metadata for inspection)
+    // Resolve hf:// to a local package dir for lightweight package inspection.
     let local_ref =
         super::materialization::resolve_hf_package_to_local(package_ref, 0, 0, false, false)?;
     let info = skippy_runtime::package::inspect_layer_package(&local_ref)
@@ -302,8 +303,9 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
         .source_model_bytes
         .unwrap_or_else(|| info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>());
 
-    // For local paths inside an HF cache, convert to hf:// so all nodes can resolve
-    // independently. HF cache dirs look like: .../models--owner--name/snapshots/<hash>/
+    // For local paths inside an HF cache, convert to an exact hf:// ref so all
+    // nodes resolve the same snapshot independently. HF cache dirs look like:
+    // .../models--owner--name/snapshots/<hash>/
     let canonical_package_ref =
         hf_ref_from_cache_path(package_ref).unwrap_or_else(|| package_ref.to_string());
 
@@ -325,7 +327,7 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
 /// HF cache paths look like:
 ///   `.../hub/models--owner--name/snapshots/<hash>/`
 ///
-/// Returns `Some("hf://owner/name")` if detected, `None` otherwise.
+/// Returns `Some("hf://owner/name@hash")` if detected, `None` otherwise.
 fn hf_ref_from_cache_path(path: &str) -> Option<String> {
     // Walk path components looking for "models--*" followed by "snapshots"
     let path = std::path::Path::new(path);
@@ -339,12 +341,14 @@ fn hf_ref_from_cache_path(path: &str) -> Option<String> {
     for (i, comp) in components.iter().enumerate() {
         let s = comp.to_str()?;
         if let Some(repo_part) = s.strip_prefix("models--") {
-            // Verify next component is "snapshots"
+            // Verify next component is "snapshots" and preserve the exact
+            // snapshot revision/hash so peers fetch identical package content.
             if components.get(i + 1).and_then(|c| c.to_str()) == Some("snapshots") {
+                let revision = components.get(i + 2)?.to_str()?;
                 // repo_part is "owner--name", convert to "owner/name"
                 let repo = repo_part.replacen("--", "/", 1);
                 if repo.contains('/') {
-                    return Some(format!("hf://{repo}"));
+                    return Some(format!("hf://{repo}@{revision}"));
                 }
             }
         }
@@ -454,5 +458,16 @@ mod tests {
         let error = direct_gguf_source_files(&second).unwrap_err().to_string();
 
         assert!(error.contains("first shard"));
+    }
+
+    #[test]
+    fn hf_ref_from_cache_path_preserves_snapshot_revision() {
+        let package_ref =
+            "/cache/hub/models--meshllm--Qwen3-layers/snapshots/abc123/model-package.json";
+
+        assert_eq!(
+            hf_ref_from_cache_path(package_ref),
+            Some("hf://meshllm/Qwen3-layers@abc123".to_string())
+        );
     }
 }

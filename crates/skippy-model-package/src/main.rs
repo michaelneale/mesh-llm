@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use model_artifact::{ModelArtifactFile, ResolvedModelArtifact};
 use model_hf::HfModelRepository;
@@ -223,6 +223,9 @@ struct PackageValidateOutput {
     full_tensor_count: usize,
     layer_count: u32,
     manifest_layer_count_matches_model: bool,
+    activation_width_matches_model: bool,
+    expected_activation_width: u32,
+    manifest_activation_width: Option<u32>,
     source_sha256_matches_manifest: bool,
     required_owned_tensor_count: usize,
     missing_owned_tensors: Vec<String>,
@@ -537,6 +540,13 @@ fn write_package(model: String, out_dir: PathBuf, explicit: ExplicitSourceIdenti
     Ok(())
 }
 
+fn package_activation_width(tensors: &[TensorInfo]) -> Option<u32> {
+    tensors
+        .iter()
+        .find(|tensor| tensor.name.contains("attn_norm.weight"))
+        .map(|tensor| tensor.element_count as u32)
+}
+
 fn resolve_package_input(model: String, explicit: ExplicitSourceIdentity) -> Result<PackageInput> {
     let path = PathBuf::from(&model);
     if path.exists() {
@@ -764,6 +774,10 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
     .with_context(|| format!("parse {}", manifest_path.display()))?;
     let source_sha256_matches_manifest = file_sha256(&full)? == manifest.source_model.sha256;
     let manifest_layer_count_matches_model = manifest.layer_count == full_layer_count;
+    let expected_activation_width = activation_width(&full)?;
+    let manifest_activation_width = manifest.activation_width;
+    let activation_width_matches_model =
+        manifest_activation_width == Some(expected_activation_width);
 
     let expected_layers = (0..manifest.layer_count).collect::<BTreeSet<_>>();
     let mut layer_occurrences = BTreeMap::<u32, usize>::new();
@@ -825,6 +839,7 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
         .collect::<Vec<_>>();
     let valid = source_sha256_matches_manifest
         && manifest_layer_count_matches_model
+        && activation_width_matches_model
         && missing_layers.is_empty()
         && duplicate_layers.is_empty()
         && missing_owned_tensors.is_empty()
@@ -841,6 +856,9 @@ fn validate_package(full: PathBuf, package: PathBuf) -> Result<()> {
         full_tensor_count: full_tensors.len(),
         layer_count: manifest.layer_count,
         manifest_layer_count_matches_model,
+        activation_width_matches_model,
+        expected_activation_width,
+        manifest_activation_width,
         source_sha256_matches_manifest,
         required_owned_tensor_count: required_owned_tensors.len(),
         missing_owned_tensors,
@@ -1175,8 +1193,13 @@ fn layer_count(tensors: &[TensorInfo]) -> Result<u32> {
         .context("model has no layer tensors")
 }
 
+const MAX_GGUF_STRING_BYTES: u64 = 1_000_000;
+const MAX_GGUF_ARRAY_ELEMENTS: u64 = 1_000_000;
+const MAX_GGUF_ARRAY_DEPTH: u32 = 64;
+const MAX_GGUF_HEADER_KV_COUNT: u64 = 1_000_000;
+const MAX_GGUF_TENSOR_COUNT: u64 = 1_000_000;
+
 fn activation_width(model_path: &Path) -> Result<u32> {
-    const MAX_GGUF_KV_COUNT: u64 = 1_000_000;
     let mut file = File::open(model_path)
         .with_context(|| format!("open GGUF metadata {}", model_path.display()))?;
     let mut magic = [0u8; 4];
@@ -1192,14 +1215,8 @@ fn activation_width(model_path: &Path) -> Result<u32> {
             model_path.display()
         );
     }
-    let _tensor_count = read_gguf_u64(&mut file)?;
-    let kv_count = read_gguf_u64(&mut file)?;
-    if kv_count > MAX_GGUF_KV_COUNT {
-        bail!(
-            "GGUF metadata for {} has too many key-value entries: {kv_count}",
-            model_path.display()
-        );
-    }
+    let _tensor_count = read_gguf_header_count(&mut file, MAX_GGUF_TENSOR_COUNT, "tensor")?;
+    let kv_count = read_gguf_header_count(&mut file, MAX_GGUF_HEADER_KV_COUNT, "metadata")?;
 
     let mut architecture = None;
     let mut embedding_lengths = BTreeMap::<String, u32>::new();
@@ -1295,6 +1312,30 @@ fn read_gguf_u32(reader: &mut impl Read) -> Result<u32> {
     Ok(u32::from_le_bytes(bytes))
 }
 
+fn read_gguf_i32(reader: &mut impl Read) -> Result<i32> {
+    let mut bytes = [0u8; 4];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF i32 value")?;
+    Ok(i32::from_le_bytes(bytes))
+}
+
+fn read_gguf_u16(reader: &mut impl Read) -> Result<u16> {
+    let mut bytes = [0u8; 2];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF u16 value")?;
+    Ok(u16::from_le_bytes(bytes))
+}
+
+fn read_gguf_u8(reader: &mut impl Read) -> Result<u8> {
+    let mut bytes = [0u8; 1];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF u8 value")?;
+    Ok(bytes[0])
+}
+
 fn read_gguf_u64(reader: &mut impl Read) -> Result<u64> {
     let mut bytes = [0u8; 8];
     reader
@@ -1303,8 +1344,26 @@ fn read_gguf_u64(reader: &mut impl Read) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
+fn read_gguf_i64(reader: &mut impl Read) -> Result<i64> {
+    let mut bytes = [0u8; 8];
+    reader
+        .read_exact(&mut bytes)
+        .context("read GGUF i64 value")?;
+    Ok(i64::from_le_bytes(bytes))
+}
+
+fn read_gguf_header_count(reader: &mut impl Read, max: u64, label: &str) -> Result<u64> {
+    let count = read_gguf_i64(reader)?;
+    ensure!(count >= 0, "GGUF {label} count is negative: {count}");
+    let count = u64::try_from(count).context("GGUF header count does not fit u64")?;
+    ensure!(
+        count <= max,
+        "GGUF {label} count {count} exceeds safety limit {max}"
+    );
+    Ok(count)
+}
+
 fn read_gguf_string(reader: &mut impl Read) -> Result<String> {
-    const MAX_GGUF_STRING_BYTES: u64 = 1_000_000;
     let len = read_gguf_u64(reader)?;
     if len > MAX_GGUF_STRING_BYTES {
         bail!("GGUF metadata string is too long: {len} bytes");
@@ -1332,6 +1391,14 @@ fn read_gguf_string_value(
 fn read_gguf_u32_value(reader: &mut impl Read, value_type: GgufValueType) -> Result<Option<u32>> {
     match value_type {
         GgufValueType::Uint32 => Ok(Some(read_gguf_u32(reader)?)),
+        GgufValueType::Int32 => {
+            let value = read_gguf_i32(reader)?;
+            Ok(Some(
+                u32::try_from(value).context("GGUF embedding_length is negative")?,
+            ))
+        }
+        GgufValueType::Uint16 => Ok(Some(u32::from(read_gguf_u16(reader)?))),
+        GgufValueType::Uint8 => Ok(Some(u32::from(read_gguf_u8(reader)?))),
         _ => {
             skip_gguf_value(reader, value_type, 0)?;
             Ok(None)
@@ -1340,9 +1407,6 @@ fn read_gguf_u32_value(reader: &mut impl Read, value_type: GgufValueType) -> Res
 }
 
 fn skip_gguf_value(reader: &mut impl Read, value_type: GgufValueType, depth: u32) -> Result<()> {
-    const MAX_GGUF_ARRAY_ELEMENTS: u64 = 1_000_000;
-    const MAX_GGUF_ARRAY_DEPTH: u32 = 64;
-
     if let Some(size) = value_type.fixed_size() {
         let mut bytes = vec![0u8; size];
         reader
@@ -1669,11 +1733,7 @@ mod tests {
         let dir = unique_test_dir("activation-width");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("model.gguf");
-        let mut fixture = Vec::<u8>::new();
-        fixture.extend_from_slice(b"GGUF");
-        fixture.extend_from_slice(&3u32.to_le_bytes());
-        fixture.extend_from_slice(&0i64.to_le_bytes());
-        fixture.extend_from_slice(&2i64.to_le_bytes());
+        let mut fixture = gguf_header(2);
         push_string_kv(&mut fixture, "general.architecture", "qwen2");
         push_u32_kv(&mut fixture, "qwen2.embedding_length", 3584);
         std::fs::File::create(&path)
@@ -1685,6 +1745,72 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn activation_width_accepts_smaller_and_signed_integer_metadata() {
+        let dir = unique_test_dir("activation-width-int-forms");
+        std::fs::create_dir_all(&dir).unwrap();
+        let u16_model = dir.join("u16.gguf");
+        let i32_model = dir.join("i32.gguf");
+
+        let mut u16_bytes = gguf_header(2);
+        push_string_kv(&mut u16_bytes, "general.architecture", "tiny");
+        push_u16_kv(&mut u16_bytes, "tiny.embedding_length", 1024);
+        std::fs::write(&u16_model, u16_bytes).unwrap();
+
+        let mut i32_bytes = gguf_header(2);
+        push_string_kv(&mut i32_bytes, "general.architecture", "qwen2");
+        push_i32_kv(&mut i32_bytes, "qwen2.embedding_length", 4096);
+        std::fs::write(&i32_model, i32_bytes).unwrap();
+
+        assert_eq!(activation_width(&u16_model).unwrap(), 1024);
+        assert_eq!(activation_width(&i32_model).unwrap(), 4096);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activation_width_rejects_oversized_metadata_string() {
+        let dir = unique_test_dir("activation-width-big-string");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        let mut bytes = gguf_header(3);
+        push_string_kv(&mut bytes, "general.architecture", "qwen2");
+        push_oversized_string_kv(&mut bytes, "junk");
+        push_u32_kv(&mut bytes, "qwen2.embedding_length", 3584);
+        std::fs::write(&model, bytes).unwrap();
+
+        let error = activation_width(&model).unwrap_err().to_string();
+        assert!(
+            error.contains("too long") || error.contains("exceeds safety limit"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activation_width_rejects_too_deep_metadata_arrays() {
+        let dir = unique_test_dir("activation-width-deep-array");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        let mut bytes = gguf_header(3);
+        push_string_kv(&mut bytes, "general.architecture", "qwen2");
+        push_deep_array_kv(&mut bytes, "junk", 65);
+        push_u32_kv(&mut bytes, "qwen2.embedding_length", 3584);
+        std::fs::write(&model, bytes).unwrap();
+
+        let error = activation_width(&model).unwrap_err().to_string();
+        assert!(error.contains("array nesting"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn gguf_header(kv_count: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_i64.to_le_bytes());
+        bytes.extend_from_slice(&(kv_count as i64).to_le_bytes());
+        bytes
+    }
+
     fn push_gguf_string(bytes: &mut Vec<u8>, value: &str) {
         bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
         bytes.extend_from_slice(value.as_bytes());
@@ -1692,14 +1818,43 @@ mod tests {
 
     fn push_string_kv(bytes: &mut Vec<u8>, key: &str, value: &str) {
         push_gguf_string(bytes, key);
-        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&8_u32.to_le_bytes());
         push_gguf_string(bytes, value);
     }
 
     fn push_u32_kv(bytes: &mut Vec<u8>, key: &str, value: u32) {
         push_gguf_string(bytes, key);
-        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
         bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_i32_kv(bytes: &mut Vec<u8>, key: &str, value: i32) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&5_u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_u16_kv(bytes: &mut Vec<u8>, key: &str, value: u16) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_oversized_string_kv(bytes: &mut Vec<u8>, key: &str) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&8_u32.to_le_bytes());
+        bytes.extend_from_slice(&(super::MAX_GGUF_STRING_BYTES + 1).to_le_bytes());
+    }
+
+    fn push_deep_array_kv(bytes: &mut Vec<u8>, key: &str, depth: usize) {
+        push_gguf_string(bytes, key);
+        bytes.extend_from_slice(&9_u32.to_le_bytes());
+        for _ in 0..depth {
+            bytes.extend_from_slice(&9_u32.to_le_bytes());
+            bytes.extend_from_slice(&1_u64.to_le_bytes());
+        }
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
     }
 
     fn unique_test_dir(name: &str) -> PathBuf {

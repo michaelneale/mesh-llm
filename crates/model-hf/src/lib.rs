@@ -268,6 +268,14 @@ pub fn huggingface_identity_for_path_in_cache(
             }
         }
     }
+    if let Some(identity) = identity_from_snapshot_layout_ancestors(path) {
+        return Some(identity);
+    }
+    if resolved != path {
+        if let Some(identity) = identity_from_snapshot_layout_ancestors(&resolved) {
+            return Some(identity);
+        }
+    }
     scan_hf_cache_identity_for_path(path, cache_root)
 }
 
@@ -288,6 +296,33 @@ fn identity_from_cache_snapshot_path(path: &Path, cache_root: &Path) -> Option<H
         return None;
     }
     Some(identity_from_parts(repo_id, revision, file))
+}
+
+fn identity_from_snapshot_layout_ancestors(path: &Path) -> Option<HfModelIdentity> {
+    for revision_dir in path.ancestors() {
+        let Some(snapshots_dir) = revision_dir.parent() else {
+            continue;
+        };
+        if snapshots_dir.file_name()? != OsStr::new("snapshots") {
+            continue;
+        }
+        let repo_dir = snapshots_dir.parent()?;
+        let repo_folder = repo_dir.file_name()?.to_str()?;
+        let repo_id = parse_model_repo_folder_name(repo_folder)?;
+        let revision = revision_dir.file_name()?.to_str()?.to_string();
+        let file = path
+            .strip_prefix(revision_dir)
+            .ok()?
+            .components()
+            .map(|component| component.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/");
+        if file.is_empty() {
+            continue;
+        }
+        return Some(identity_from_parts(repo_id, revision, file));
+    }
+    None
 }
 
 fn scan_hf_cache_identity_for_path(path: &Path, cache_root: &Path) -> Option<HfModelIdentity> {
@@ -385,6 +420,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn cache_path_identity_matches_mesh_snapshot_layout() {
@@ -428,6 +464,24 @@ mod tests {
             identity.distribution_id.as_deref(),
             Some("GLM-5.1-UD-IQ2_M")
         );
+    }
+
+    #[test]
+    fn cache_path_identity_falls_back_to_snapshot_layout_ancestors() {
+        let path = PathBuf::from("/alternate/root")
+            .join("models--org--repo")
+            .join("snapshots")
+            .join("abc123")
+            .join("nested")
+            .join("Qwen3-8B-Q4_K_M.gguf");
+
+        let identity =
+            huggingface_identity_for_path_in_cache(&path, Path::new("/unrelated/cache")).unwrap();
+
+        assert_eq!(identity.model_id, "org/repo:Q4_K_M");
+        assert_eq!(identity.repo_id, "org/repo");
+        assert_eq!(identity.revision, "abc123");
+        assert_eq!(identity.file, "nested/Qwen3-8B-Q4_K_M.gguf");
     }
 
     #[test]

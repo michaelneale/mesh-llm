@@ -1920,7 +1920,13 @@ async fn resolve_startup_models(
         // before downloading the full monolithic GGUF. This avoids downloading
         // hundreds of GB that won't be used — each node only needs its layers.
         let resolved_path = if split {
-            if let Some(package_ref) = resolve_split_layer_package(&requested_ref, &spec.model_ref)
+            let requested_ref_for_catalog = requested_ref.to_string();
+            let model_ref_for_catalog = spec.model_ref.clone();
+            if let Some(package_ref) = tokio::task::spawn_blocking(move || {
+                resolve_split_layer_package(&requested_ref_for_catalog, &model_ref_for_catalog)
+            })
+            .await
+            .context("join resolve split layer package task")?
             {
                 PathBuf::from(package_ref)
             } else {

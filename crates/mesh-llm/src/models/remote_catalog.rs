@@ -7,8 +7,9 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::HashSet,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::RwLock,
     time::{Duration, SystemTime},
 };
@@ -101,7 +102,8 @@ pub fn is_catalog_stale() -> bool {
     if !entries_dir.is_dir() {
         return true;
     }
-    let Ok(metadata) = fs::metadata(&entries_dir) else {
+    let refresh_marker = entries_dir.join(".last_refresh");
+    let Ok(metadata) = fs::metadata(&refresh_marker) else {
         return true;
     };
     let Ok(modified) = metadata.modified() else {
@@ -176,7 +178,10 @@ pub fn refresh_catalog() -> Result<()> {
         }
     }
 
-    // Touch to update mtime for staleness check
+    prune_stale_catalog_entry_files(&cache_dir, &entry_files)?;
+
+    // Touch marker to update mtime for staleness check. Directory mtimes do
+    // not reliably change when existing entry files are overwritten.
     let _ = fs::File::create(entries_dir.join(".last_refresh"));
 
     load_catalog_from_disk()
@@ -227,19 +232,25 @@ pub fn ensure_catalog() -> Result<()> {
 /// - source_repo
 ///
 /// Returns the first matching layer-package repo as an `hf://` reference.
+/// Catalog entries, variants, and package repos are traversed in sorted order
+/// so overlapping contains-matches resolve deterministically.
 pub fn find_layer_package(model_query: &str) -> Option<String> {
     let lock = CATALOG_ENTRIES.read().ok()?;
     let entries = lock.as_ref()?;
     let query_lower = model_query.to_lowercase();
 
     for entry in entries {
-        for (variant_name, variant) in &entry.variants {
+        let mut variants: Vec<_> = entry.variants.iter().collect();
+        variants.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+        for (variant_name, variant) in variants {
             let matches = variant_name.to_lowercase().contains(&query_lower)
                 || variant.curated.name.to_lowercase().contains(&query_lower)
                 || entry.source_repo.to_lowercase().contains(&query_lower);
 
             if matches {
-                for package in &variant.packages {
+                let mut packages: Vec<_> = variant.packages.iter().collect();
+                packages.sort_by(|left, right| left.repo.cmp(&right.repo));
+                for package in packages {
                     if package.package_type == "layer-package" {
                         return Some(format!("hf://{}", package.repo));
                     }
@@ -273,7 +284,9 @@ pub fn resolve_model_download(query: &str) -> Option<RemoteModelRef> {
     let query_lower = query.to_lowercase();
 
     for entry in entries {
-        for (variant_name, variant) in &entry.variants {
+        let mut variants: Vec<_> = entry.variants.iter().collect();
+        variants.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
+        for (variant_name, variant) in variants {
             let matches = variant_name.to_lowercase().contains(&query_lower)
                 || variant.curated.name.to_lowercase().contains(&query_lower)
                 || entry.source_repo.to_lowercase().contains(&query_lower);
@@ -313,12 +326,50 @@ fn parse_entries_recursive(dir: &std::path::Path) -> Result<Vec<CatalogEntry>> {
     Ok(entries)
 }
 
+fn prune_stale_catalog_entry_files(cache_dir: &Path, entry_files: &[&str]) -> Result<()> {
+    let entries_dir = cache_dir.join("entries");
+    if !entries_dir.is_dir() {
+        return Ok(());
+    }
+
+    let expected_paths: HashSet<PathBuf> = entry_files
+        .iter()
+        .map(|path| cache_dir.join(path))
+        .collect();
+    prune_stale_json_files(&entries_dir, &expected_paths)
+}
+
+fn prune_stale_json_files(dir: &Path, expected_paths: &HashSet<PathBuf>) -> Result<()> {
+    let read_dir =
+        fs::read_dir(dir).with_context(|| format!("read catalog cache dir {}", dir.display()))?;
+    let mut dir_entries = read_dir
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read cached catalog entries under {}", dir.display()))?;
+    dir_entries.sort_by_key(|dir_entry| dir_entry.path());
+
+    for dir_entry in dir_entries {
+        let path = dir_entry.path();
+        if path.is_dir() {
+            prune_stale_json_files(&path, expected_paths)?;
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "json") && !expected_paths.contains(&path) {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove stale catalog entry {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn visit_json_files(dir: &std::path::Path, entries: &mut Vec<CatalogEntry>) -> Result<()> {
     let read_dir = fs::read_dir(dir)
         .with_context(|| format!("read catalog entries directory {}", dir.display()))?;
+    let mut dir_entries = read_dir
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("read catalog entries under {}", dir.display()))?;
+    dir_entries.sort_by_key(|dir_entry| dir_entry.path());
 
-    for dir_entry in read_dir {
-        let dir_entry = dir_entry?;
+    for dir_entry in dir_entries {
         let path = dir_entry.path();
         if path.is_dir() {
             visit_json_files(&path, entries)?;
@@ -348,6 +399,9 @@ fn parse_catalog_entry(path: &std::path::Path) -> Result<CatalogEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    use serial_test::serial;
 
     #[test]
     fn deserializes_catalog_entry() {
@@ -395,7 +449,122 @@ mod tests {
         assert!(!dir.as_os_str().is_empty());
     }
 
+    fn test_variant(curated_name: &str, repo: &str, package_repos: &[&str]) -> CatalogVariant {
+        CatalogVariant {
+            source: CatalogSource {
+                repo: repo.to_string(),
+                revision: Some("main".to_string()),
+                file: Some(format!("{curated_name}.gguf")),
+            },
+            curated: CatalogCurated {
+                name: curated_name.to_string(),
+                size: None,
+                description: None,
+                draft: None,
+                moe: None,
+                extra_files: Vec::new(),
+                mmproj: None,
+            },
+            packages: package_repos
+                .iter()
+                .map(|repo| CatalogPackage {
+                    package_type: "layer-package".to_string(),
+                    repo: (*repo).to_string(),
+                    layer_count: None,
+                    total_bytes: None,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
+    #[serial]
+    fn layer_package_lookup_uses_deterministic_variant_and_package_order() {
+        let previous = CATALOG_ENTRIES.write().unwrap().take();
+        let mut variants = HashMap::new();
+        variants.insert(
+            "z-variant".to_string(),
+            test_variant(
+                "Shared Match Z",
+                "example/shared-source",
+                &["meshllm/z-package"],
+            ),
+        );
+        variants.insert(
+            "a-variant".to_string(),
+            test_variant(
+                "Shared Match A",
+                "example/shared-source",
+                &["meshllm/b-package", "meshllm/a-package"],
+            ),
+        );
+        *CATALOG_ENTRIES.write().unwrap() = Some(vec![CatalogEntry {
+            schema_version: 1,
+            source_repo: "example/shared-source".to_string(),
+            variants,
+        }]);
+
+        assert_eq!(
+            find_layer_package("shared"),
+            Some("hf://meshllm/a-package".to_string())
+        );
+
+        *CATALOG_ENTRIES.write().unwrap() = previous;
+    }
+
+    #[test]
+    fn parse_entries_recursive_uses_sorted_directory_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let z_dir = temp.path().join("z");
+        let a_dir = temp.path().join("a");
+        fs::create_dir_all(&z_dir).unwrap();
+        fs::create_dir_all(&a_dir).unwrap();
+        fs::write(
+            z_dir.join("entry.json"),
+            r#"{
+                "schema_version": 1,
+                "source_repo": "z/source",
+                "variants": {}
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            a_dir.join("entry.json"),
+            r#"{
+                "schema_version": 1,
+                "source_repo": "a/source",
+                "variants": {}
+            }"#,
+        )
+        .unwrap();
+
+        let entries = parse_entries_recursive(temp.path()).unwrap();
+        let repos: Vec<_> = entries
+            .iter()
+            .map(|entry| entry.source_repo.as_str())
+            .collect();
+        assert_eq!(repos, vec!["a/source", "z/source"]);
+    }
+
+    #[test]
+    fn prune_stale_catalog_entry_files_removes_deleted_upstream_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let entries_dir = temp.path().join("entries");
+        fs::create_dir_all(entries_dir.join("current")).unwrap();
+        fs::create_dir_all(entries_dir.join("removed")).unwrap();
+        let current = entries_dir.join("current/entry.json");
+        let stale = entries_dir.join("removed/entry.json");
+        fs::write(&current, b"{}").unwrap();
+        fs::write(&stale, b"{}").unwrap();
+
+        prune_stale_catalog_entry_files(temp.path(), &["entries/current/entry.json"]).unwrap();
+
+        assert!(current.is_file());
+        assert!(!stale.exists());
+    }
+
+    #[test]
+    #[serial]
     fn stale_check_returns_true_for_nonexistent() {
         let prev = std::env::var_os("HF_HOME");
         std::env::set_var("HF_HOME", "/tmp/meshllm-test-nonexistent-dir-xyz");
@@ -405,5 +574,32 @@ mod tests {
             None => std::env::remove_var("HF_HOME"),
         }
         assert!(result);
+    }
+
+    #[test]
+    #[serial]
+    fn stale_check_uses_last_refresh_marker() {
+        let prev = std::env::var_os("HF_HOME");
+        let temp = std::env::temp_dir().join(format!(
+            "meshllm-catalog-stale-marker-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("HF_HOME", &temp);
+
+        let entries_dir = catalog_cache_dir().join("entries");
+        fs::create_dir_all(&entries_dir).unwrap();
+        assert!(is_catalog_stale());
+
+        fs::File::create(entries_dir.join(".last_refresh")).unwrap();
+        assert!(!is_catalog_stale());
+
+        let _ = fs::remove_dir_all(&temp);
+        match prev {
+            Some(val) => std::env::set_var("HF_HOME", val),
+            None => std::env::remove_var("HF_HOME"),
+        }
     }
 }

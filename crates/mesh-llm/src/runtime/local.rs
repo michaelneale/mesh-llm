@@ -583,7 +583,12 @@ async fn load_split_runtime_generation(
             stage_index: stage.stage_index,
             layer_start: stage.layer_start,
             layer_end: stage.layer_end,
-            model_path: Some(spec.package.package_ref.clone()),
+            model_path: Some(stage_load_model_path(
+                load_mode.clone(),
+                &spec.package.package_ref,
+                spec.model_path,
+            )),
+            source_model_bytes: Some(spec.package.source_model_bytes),
             projector_path: spec.projector_path.clone(),
             selected_device: None,
             bind_addr: "127.0.0.1:0".to_string(),
@@ -691,13 +696,20 @@ async fn load_split_runtime_generation(
         spec.pinned_gpu,
         load_mode.clone(),
     );
-    let handle = skippy::SkippyModelHandle::load_stage0_config(
-        config,
-        spec.package.activation_width as i32,
-        spec.slots,
-        skippy_server::openai::CONTEXT_BUDGET_MAX_TOKENS,
-        Some(skippy::MeshAutoHookPolicy::new(spec.node.clone())),
-    )?;
+    let activation_width = spec.package.activation_width as i32;
+    let slots = spec.slots;
+    let node_for_hook = spec.node.clone();
+    let handle = tokio::task::spawn_blocking(move || {
+        skippy::SkippyModelHandle::load_stage0_config(
+            config,
+            activation_width,
+            slots,
+            skippy_server::openai::CONTEXT_BUDGET_MAX_TOKENS,
+            Some(skippy::MeshAutoHookPolicy::new(node_for_hook)),
+        )
+    })
+    .await
+    .context("join load skippy stage0 config task")??;
     let http = handle.start_http(alloc_local_port().await?);
     let (death_tx, death_rx) = tokio::sync::oneshot::channel();
 
@@ -732,6 +744,15 @@ async fn load_split_runtime_generation(
         coordinator_rx: None,
         coordinator_task: None,
     })
+}
+
+fn stage_load_model_path(load_mode: LoadMode, package_ref: &str, model_path: &Path) -> String {
+    match load_mode {
+        LoadMode::LayerPackage => package_ref.to_string(),
+        LoadMode::RuntimeSlice | LoadMode::ArtifactSlice => {
+            model_path.to_string_lossy().to_string()
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1959,6 +1980,23 @@ mod tests {
 
         assert!(error.contains("stage-1"));
         assert!(error.contains("exceeds node capacity"));
+    }
+
+    #[test]
+    fn stage_load_model_path_uses_local_path_outside_layer_packages() {
+        let model_path = PathBuf::from("/models/runtime-slice.gguf");
+
+        let layer_package = stage_load_model_path(
+            LoadMode::LayerPackage,
+            "hf://meshllm/demo-package",
+            &model_path,
+        );
+        assert_eq!(layer_package, "hf://meshllm/demo-package");
+
+        for mode in [LoadMode::RuntimeSlice, LoadMode::ArtifactSlice] {
+            let path = stage_load_model_path(mode, "hf://meshllm/demo-package", &model_path);
+            assert_eq!(path, "/models/runtime-slice.gguf");
+        }
     }
 
     #[test]
