@@ -5,6 +5,7 @@ llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
 build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "mesh-llm"
 ui_dir := mesh_dir / "ui"
+ui_preview_dir := "crates/mesh-llm/ui-preview"
 benchmark_src_dir := mesh_dir / "benchmarks"
 home_dir := if os_family() == "windows" { env("USERPROFILE") } else { env("HOME") }
 xdg_cache_dir := env("XDG_CACHE_HOME", home_dir / ".cache")
@@ -276,8 +277,18 @@ ui-dev api="http://127.0.0.1:3131" port="5173":
     cd "{{ ui_dir }}"
     MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
 
+# Run the preview UI with Vite HMR and proxy /api to mesh-llm (default: http://127.0.0.1:3131)
+ui-dev-preview api="http://127.0.0.1:3131" port="5174" openai_api="http://127.0.0.1:9337":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{ ui_preview_dir }}"
+    MESH_UI_API_ORIGIN="{{ api }}" VITE_API_URL="{{ openai_api }}" npm run dev -- --port {{ port }}
+
 # Run the UI with Vite HMR proxying to the public anarchai.org API
 ui-dev-public: (ui-dev "https://www.anarchai.org")
+
+# Run the preview UI with Vite HMR proxying to the public meshllm.cloud API
+ui-preview-public: (ui-dev-preview "https://meshllm.cloud" "5174" "https://meshllm.cloud")
 
 # Run UI unit tests (vitest)
 ui-test:

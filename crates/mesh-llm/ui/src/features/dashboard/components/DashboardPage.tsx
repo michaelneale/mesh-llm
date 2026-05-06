@@ -464,10 +464,10 @@ export function DashboardPage({
         />
       </div>
 
-      <div className="grid items-start gap-4 lg:grid-cols-7">
-        <div className="lg:col-span-5">
-          <Card>
-            <CardHeader className="pb-2">
+      <div className="grid gap-4 lg:h-[34rem] lg:grid-cols-7 lg:items-stretch xl:h-[38rem]">
+        <div className="min-h-0 lg:col-span-5">
+          <Card className="flex h-full min-h-0 flex-col">
+            <CardHeader className="shrink-0 pb-2">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-sm">Mesh Overview</CardTitle>
                 <div className="flex items-center gap-2">
@@ -484,9 +484,9 @@ export function DashboardPage({
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="pt-0">
+            <CardContent className="flex min-h-0 flex-1 pt-0">
               {isMeshOverviewFullscreen ? (
-                <div className="flex h-[360px] items-center justify-center rounded-lg border border-dashed bg-muted/20 text-sm text-muted-foreground md:h-[420px] lg:h-[460px] xl:h-[520px]">
+                <div className="flex min-h-[360px] flex-1 items-center justify-center rounded-lg border border-dashed bg-muted/20 text-sm text-muted-foreground md:min-h-[420px] lg:min-h-0">
                   Mesh Overview is open in fullscreen.
                 </div>
               ) : (
@@ -498,15 +498,15 @@ export function DashboardPage({
                   onOpenNode={openNodeDetail}
                   highlightedNodeId={highlightedNodeId}
                   fullscreen={false}
-                  heightClass="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]"
+                  heightClass="min-h-[360px] flex-1 md:min-h-[420px] lg:min-h-0 lg:h-full"
                 />
               )}
             </CardContent>
           </Card>
         </div>
 
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
+        <Card className="flex h-full min-h-0 flex-col lg:col-span-2">
+          <CardHeader className="shrink-0 pb-2">
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle className="text-sm">Model Catalog</CardTitle>
               <div className="ml-auto flex shrink-0 items-center gap-2">
@@ -527,9 +527,9 @@ export function DashboardPage({
               </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-0">
+          <CardContent className="flex min-h-0 flex-1 pt-0">
             {filteredModels.length > 0 ? (
-              <div className="h-[360px] overflow-y-auto pr-2 md:h-[420px] lg:h-[460px] xl:h-[520px]">
+              <div className="min-h-[360px] flex-1 overflow-y-auto pr-2 md:min-h-[420px] lg:min-h-0">
                 <div className="space-y-2">
                   {filteredModels.map((model) => (
                     <ModelCard
@@ -547,7 +547,7 @@ export function DashboardPage({
                 </div>
               </div>
             ) : (
-              <div className="h-[360px] md:h-[420px] lg:h-[460px] xl:h-[520px]">
+              <div className="min-h-[360px] flex-1 md:min-h-[420px] lg:min-h-0">
                 <DashboardPanelEmpty
                   icon={<Sparkles className="h-4 w-4" />}
                   title={meshModels.length > 0 ? `No ${modelFilter} models` : "No model catalog data"}
