@@ -343,6 +343,7 @@ pub(super) async fn start_runtime_split_model(
         spec.node,
         model_ref,
         model_ref,
+        &package,
         spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
         Duration::from_secs(30),
     )
@@ -444,6 +445,7 @@ enum SplitParticipantExclusionReason {
     Client,
     MissingVram,
     MissingModelInterest,
+    MissingModelSource,
 }
 
 impl SplitParticipantExclusionReason {
@@ -452,6 +454,7 @@ impl SplitParticipantExclusionReason {
             Self::Client => "client",
             Self::MissingVram => "missing_vram",
             Self::MissingModelInterest => "missing_model_interest",
+            Self::MissingModelSource => "missing_model_source",
         }
     }
 }
@@ -778,6 +781,7 @@ impl SplitTopologyCoordinator {
             &self.node,
             &self.model_name,
             &self.model_ref,
+            &self.package,
             self.pinned_gpu.as_ref().map(|gpu| gpu.vram_bytes),
         )
         .await;
@@ -1012,6 +1016,7 @@ async fn wait_for_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
     timeout: Duration,
 ) -> Result<Vec<SplitParticipant>> {
@@ -1022,7 +1027,8 @@ async fn wait_for_split_participants(
     let mut stable_since = tokio::time::Instant::now();
     loop {
         let snapshot =
-            collect_split_participants(node, model_name, model_ref, local_vram_override).await;
+            collect_split_participants(node, model_name, model_ref, package, local_vram_override)
+                .await;
         let signature = split_participant_signature(&snapshot.participants);
         let now = tokio::time::Instant::now();
         if signature != last_signature {
@@ -1078,6 +1084,7 @@ async fn collect_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
 ) -> SplitParticipantSnapshot {
     let mut participants = vec![SplitParticipant {
@@ -1115,7 +1122,15 @@ async fn collect_split_participants(
                 .explicit_model_interests
                 .iter()
                 .any(|model| model == model_ref);
-        if wants_model {
+        if !wants_model {
+            excluded.push(SplitParticipantExclusion {
+                node_id: peer.id,
+                reason: SplitParticipantExclusionReason::MissingModelInterest,
+            });
+            continue;
+        }
+
+        if split_peer_source_available(node, peer.id, model_ref, package).await {
             participants.push(SplitParticipant {
                 node_id: peer.id,
                 vram_bytes: peer.vram_bytes,
@@ -1124,7 +1139,7 @@ async fn collect_split_participants(
         } else {
             excluded.push(SplitParticipantExclusion {
                 node_id: peer.id,
-                reason: SplitParticipantExclusionReason::MissingModelInterest,
+                reason: SplitParticipantExclusionReason::MissingModelSource,
             });
         }
     }
@@ -1136,6 +1151,30 @@ async fn collect_split_participants(
         participants,
         excluded,
     }
+}
+
+async fn split_peer_source_available(
+    node: &mesh::Node,
+    peer_id: iroh::EndpointId,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+) -> bool {
+    let request = skippy::StageInventoryRequest {
+        model_id: model_ref.to_string(),
+        package_ref: package.package_ref.clone(),
+        manifest_sha256: package.manifest_sha256.clone(),
+    };
+    let result = node
+        .send_stage_control(peer_id, skippy::StageControlRequest::Inventory(request))
+        .await;
+    let Ok(skippy::StageControlResponse::Inventory(inventory)) = result else {
+        return false;
+    };
+    inventory
+        .available_ranges
+        .iter()
+        .chain(inventory.ready_ranges.iter())
+        .any(|range| range.layer_start == 0 && range.layer_end >= package.layer_count)
 }
 
 fn split_participant_signature(participants: &[SplitParticipant]) -> Vec<(String, u64)> {
