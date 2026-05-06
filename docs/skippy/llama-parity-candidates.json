@@ -327,18 +327,18 @@
     {
       "llama_model": "olmo2",
       "family": "olmo2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "allenai/OLMo-2-1124-7B-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c"
+      "notes": "text lane passed in llama-parity-olmo2-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "olmoe",
       "family": "olmoe",
-      "status": "candidate",
+      "status": "certified",
       "repo": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c; MoE-specific serving/cache smoke still required"
+      "notes": "text lane passed in llama-parity-olmoe-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed; MoE expert-stage smoke passed for one-stage, split-middle, and split-final"
     },
     {
       "llama_model": "minimax-m2",
@@ -421,10 +421,10 @@
     {
       "llama_model": "starcoder2",
       "family": "starcoder2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "combos/starcoder2-3b-Q4_K_M-GGUF",
       "include": "*.gguf",
-      "notes": "replaces stale bigcode/starcoder2-3b-GGUF"
+      "notes": "replaces stale bigcode/starcoder2-3b-GGUF; text lane passed in llama-parity-starcoder2-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "stablelm",
@@ -445,10 +445,10 @@
     {
       "llama_model": "mpt",
       "family": "mpt",
-      "status": "candidate",
+      "status": "certified",
       "repo": "mradermacher/mpt-7b-chat-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-decoder-tranche-3c"
+      "notes": "text lane passed in llama-parity-mpt-runtime-slice-1; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "llama4",

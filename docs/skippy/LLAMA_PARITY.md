@@ -240,10 +240,12 @@ themselves until the reviewed topology records are updated.
 | `granite_moe` | see `target/family-certify/llama-parity-granite-moe-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on tiny random layout probe; fixed Granite-MoE ABI allowlist |
 | `hunyuan_dense` | see `target/family-certify/llama-parity-hunyuan-dense-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed Hunyuan-Dense graph stage filtering |
 | `hunyuan_moe` | see `target/family-certify/llama-parity-hunyuan-moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on real A13B MoE GGUF; fixed Hunyuan-MoE graph stage filtering |
-| `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
+| `starcoder2` | see `target/family-certify/llama-parity-starcoder2-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 198.10x cache-hit speedup |
 | `gpt2` | see `target/family-certify/llama-parity-gpt2-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1535.17x cache-hit speedup |
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
-| `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c`, `/tmp/skippy-cache-correctness-dense-*`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; `olmoe` MoE expert-stage smoke passed for one-stage, split-middle, and split-final |
+| `mpt` | see `target/family-certify/llama-parity-mpt-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1657.77x cache-hit speedup |
+| `olmo2` | see `target/family-certify/llama-parity-olmo2-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 159.19x cache-hit speedup |
+| `olmoe` | see `target/family-certify/llama-parity-olmoe-runtime-slice-1` and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 197.09x cache-hit speedup; MoE expert-stage smoke passed for one-stage, split-middle, and split-final |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, and dtype matrix passed; full-model local multimodal OpenAI smoke passed | validated for text; local projector validated | accepted for text/local runtime only | split multimodal still blocked: filtered stage-0 media prefill reaches `mtmd_helper_eval_chunks`, prints `embeddings required...`, then SIGSEGVs before activation forwarding |
 | `gemma3n` | `lmstudio-community/gemma-3n-E2B-it-GGUF` | blocked: llama.cpp reports `runtime-slice execution is not supported for this model architecture yet` | untested | untested | text and multimodal promotion blocked until Gemma3n graph support and media loader/projector strategy are implemented |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-4`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
@@ -269,6 +271,10 @@ Raw run directories:
 - `target/family-certify/llama-parity-dense-tranche-2`
 - `target/family-certify/llama-parity-dense-tranche-2-granite-fix2`
 - `target/family-certify/llama-parity-dense-tranche-2-external`
+- `target/family-certify/llama-parity-starcoder2-runtime-slice-1`
+- `target/family-certify/llama-parity-mpt-runtime-slice-1`
+- `target/family-certify/llama-parity-olmo2-runtime-slice-1`
+- `target/family-certify/llama-parity-olmoe-runtime-slice-1`
 - `target/family-certify/llama-parity-remaining-local-1`
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`

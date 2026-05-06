@@ -40,6 +40,8 @@ Last updated: 2026-05-06.
 | InternLM2 | Supported | `lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Phi3 | Supported | `bartowski/Phi-3.5-mini-instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
+| OLMo2 | Supported | `allenai/OLMo-2-1124-7B-Instruct-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| OLMoE | Supported | `bartowski/OLMoE-1B-7B-0924-Instruct-GGUF:Q4_K_M` | `layer_end=16`, `splits=5,10`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache restore and MoE expert-stage smoke passed. |
 | Mistral3 | Supported | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M` | `layer_end=26`, `splits=8,17`, activation width `3072` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Qwen2-MoE | Supported | `mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S` | `layer_end=28`, `splits=9,18`, activation width `1536` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | `ResidentKv` cache restore and MoE expert-stage smoke passed. |
 | Qwen3-MoE | Supported | `mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | `ResidentKv` cache restore and MoE expert-stage smoke passed. |
@@ -49,6 +51,8 @@ Last updated: 2026-05-06.
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
 | Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky for normal decode until exact recurrent layer metadata is available. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | StableLM | Supported | `TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| StarCoder2 | Supported | `combos/starcoder2-3b-Q4_K_M-GGUF:q4_k_m` | `layer_end=30`, `splits=10,20`, activation width `3072` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
+| MPT | Supported | `mradermacher/mpt-7b-chat-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 
 ## Text-Split Candidates
 
@@ -58,9 +62,9 @@ topology records, and family-specific policy notes are updated.
 
 ```text
 Command-R, Gemma text,
-Granite, Jamba, LFM2, Mamba, Mamba2, MPT,
-OLMo2, OLMoE, Qwen2-VL text, Qwen3-VL text,
-RWKV6, RWKV7, StarCoder2
+Granite, Jamba, LFM2, Mamba, Mamba2,
+Qwen2-VL text, Qwen3-VL text,
+RWKV6, RWKV7
 ```
 
 ## Exceptions
@@ -97,6 +101,9 @@ GLM-4.7 Flash
 Baichuan
 Bloom
 GPT-NeoX
+OLMo2
+OLMoE
+StarCoder2
 Mistral3
 Hunyuan-MoE
 InternLM2
@@ -148,10 +155,14 @@ activation handoff sizes for the recommended split.
 | Falcon | 9,088 | Accepted; `ResidentKv` 64-token smoke passed, 1753.04x cache-hit speedup |
 | RWKV6 | 4,096 | Accepted for `KvRecurrent` cache restore, 112.5x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
+| OLMo2 | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 159.19x cache-hit speedup |
+| OLMoE | 4,096 | Accepted; `ResidentKv` 64-token smoke passed, 197.09x cache-hit speedup |
 | Mistral3 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 88.40x cache-hit speedup |
 | MiniMax M2.7 | 6,144 | Accepted, 2.21x Qwen |
 | Qwen3Next | 4,096 | Accepted for `KvRecurrent` cache restore, 685.2x Qwen recurrent state |
 | StableLM | 5,120 | Accepted; `ResidentKv` 64-token smoke passed, 211.80x cache-hit speedup |
+| StarCoder2 | 6,144 | Accepted; `ResidentKv` 64-token smoke passed, 198.10x cache-hit speedup |
+| MPT | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 1657.77x cache-hit speedup |
 
 ## Neural Draft Status
 

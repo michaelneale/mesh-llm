@@ -339,6 +339,46 @@
     }
   },
   {
+    "model_id": "allenai/OLMo-2-1124-7B-Instruct-GGUF:Q4_K_M",
+    "source_repo": "allenai/OLMo-2-1124-7B-Instruct-GGUF",
+    "source_revision": "410e0069f64869e4b1d17d8de04810b881fd824b",
+    "source_file": "olmo-2-1124-7B-instruct-Q4_K_M.gguf",
+    "canonical_ref": "allenai/OLMo-2-1124-7B-Instruct-GGUF@410e0069f64869e4b1d17d8de04810b881fd824b/olmo-2-1124-7B-instruct-Q4_K_M.gguf",
+    "distribution_id": "olmo-2-1124-7B-instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "olmo2",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF:Q4_K_M",
+    "source_repo": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF",
+    "source_revision": "7448e4317d367a3d6838fe367fe996758da6fc6e",
+    "source_file": "OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/OLMoE-1B-7B-0924-Instruct-GGUF@7448e4317d367a3d6838fe367fe996758da6fc6e/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf",
+    "distribution_id": "OLMoE-1B-7B-0924-Instruct-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "olmoe",
+      "layer_count": 16,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL",
     "source_repo": "unsloth/MiniMax-M2.7-GGUF",
     "source_revision": "d2a05ccf69491b03db0cc40b335aec14bdaf7198",
@@ -565,6 +605,46 @@
       "family_id": "stablelm",
       "layer_count": 32,
       "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "rejected",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "combos/starcoder2-3b-Q4_K_M-GGUF:q4_k_m",
+    "source_repo": "combos/starcoder2-3b-Q4_K_M-GGUF",
+    "source_revision": "b1e2a600035f177377307ec4f83bb121dddc72da",
+    "source_file": "starcoder2-3b-q4_k_m.gguf",
+    "canonical_ref": "combos/starcoder2-3b-Q4_K_M-GGUF@b1e2a600035f177377307ec4f83bb121dddc72da/starcoder2-3b-q4_k_m.gguf",
+    "distribution_id": "starcoder2-3b-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "starcoder2",
+      "layer_count": 30,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mpt-7b-chat-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mpt-7b-chat-GGUF",
+    "source_revision": "ece0fae7b970c1f8af1c7a53a36d141b1744ad54",
+    "source_file": "mpt-7b-chat.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mpt-7b-chat-GGUF@ece0fae7b970c1f8af1c7a53a36d141b1744ad54/mpt-7b-chat.Q4_K_M.gguf",
+    "distribution_id": "mpt-7b-chat.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mpt",
+      "layer_count": 32,
+      "activation_width": 4096,
       "default_wire_dtype": "f16",
       "q8_wire_validation": "rejected",
       "exact_state_mobility": "accepted",
