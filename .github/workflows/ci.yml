@@ -152,23 +152,34 @@ jobs:
             exit 1
           fi
 
+      - name: SDK and API crate tests
+        run: |
+          cargo test -p mesh-llm-client
+          cargo test -p mesh-api
+          cargo test -p mesh-api-ffi
+
       - name: Prepare patched llama.cpp ABI checkout
         run: scripts/prepare-llama.sh pinned
 
       - name: Build patched llama.cpp ABI libraries
         run: scripts/build-llama.sh
 
+      - name: Skippy crate tests
+        run: |
+          cargo test -p skippy-protocol --lib
+          cargo test -p skippy-server --lib
+          cargo test -p openai-frontend --lib
+          cargo test -p skippy-runtime
+          cargo test -p skippy-topology
+          cargo test -p skippy-model-package
+          cargo test -p skippy-prompt
+          cargo test -p metrics-server
+
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
         run: cargo test -p mesh-llm --lib
-
-      - name: Skippy runtime crate tests
-        run: |
-          cargo test -p skippy-protocol --lib
-          cargo test -p skippy-server --lib
-          cargo test -p openai-frontend --lib
 
       - name: Protocol compatibility matrix
         run: |
