@@ -612,5 +612,45 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M",
+    "source_repo": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF",
+    "source_revision": "94b49547f1931930f002226bc0a68b5f10a4ee25",
+    "source_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "canonical_ref": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF@94b49547f1931930f002226bc0a68b5f10a4ee25/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "distribution_id": "Ministral-3-3B-Instruct-2512-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mistral",
+      "layer_count": 26,
+      "activation_width": 3072,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "unsloth/Hunyuan-A13B-Instruct-GGUF:UD-IQ2_XXS",
+    "source_repo": "unsloth/Hunyuan-A13B-Instruct-GGUF",
+    "source_revision": "62a00b68c1deb5fe630fe71b5db5530509b651fc",
+    "source_file": "Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
+    "canonical_ref": "unsloth/Hunyuan-A13B-Instruct-GGUF@62a00b68c1deb5fe630fe71b5db5530509b651fc/Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
+    "distribution_id": "Hunyuan-A13B-Instruct-UD-IQ2_XXS",
+    "selector": "UD-IQ2_XXS",
+    "capability": {
+      "family_id": "hunyuan_moe",
+      "layer_count": 32,
+      "activation_width": 4096,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

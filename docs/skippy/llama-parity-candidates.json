@@ -58,10 +58,10 @@
     {
       "llama_model": "qwen2moe",
       "family": "qwen2moe",
-      "status": "candidate",
+      "status": "certified",
       "repo": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF",
       "include": "Qwen2-1.5B-2x-MoE.Q4_K_S.gguf",
-      "notes": "text lane passed in llama-parity-qwen2moe-runtime-slice-3; q8 activation wire rejected"
+      "notes": "text lane passed in llama-parity-qwen2moe-runtime-slice-4; f16 activation wire validated; q8 activation wire rejected; ResidentKv native-sequence remap cache smoke passed; MoE expert-stage smoke already passed"
     },
     {
       "llama_model": "qwen3moe",
@@ -74,10 +74,10 @@
     {
       "llama_model": "mistral3",
       "family": "mistral",
-      "status": "candidate",
+      "status": "certified",
       "repo": "lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF",
       "include": "*Q4_K_M.gguf",
-      "notes": "candidate is 2.1 GB; download and verify GGUF architecture before certification"
+      "notes": "text lane passed in llama-parity-mistral3-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "mistral4",
@@ -368,10 +368,10 @@
     {
       "llama_model": "hunyuan-moe",
       "family": "hunyuan_moe",
-      "status": "candidate",
+      "status": "certified",
       "repo": "unsloth/Hunyuan-A13B-Instruct-GGUF",
       "include": "Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
-      "notes": "real public Hunyuan-MoE GGUF; smallest visible artifact is about 27.6GB"
+      "notes": "real A13B MoE artifact passed in llama-parity-hunyuan-moe-runtime-slice-1 after adding Hunyuan-MoE graph stage filtering; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
   {
     "llama_model": "hunyuan-vl",
