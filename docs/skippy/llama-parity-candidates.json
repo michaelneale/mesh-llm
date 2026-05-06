@@ -40,6 +40,14 @@
       "recurrent": "all"
     },
     {
+      "llama_model": "qwen35moe",
+      "family": "qwen35moe",
+      "status": "needs_candidate",
+      "search": "Qwen3.5 MoE GGUF small",
+      "recurrent": "all",
+      "notes": "llama.cpp stage ABI allowlist includes qwen35moe; find a cheap representative and certify KvRecurrent policy before promotion"
+    },
+    {
       "llama_model": "qwen2vl",
       "family": "qwen2vl",
       "status": "candidate_multimodal",
@@ -307,6 +315,14 @@
       "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF; text lane passed after adding the layer-0 v_first activation sideband; q8 activation wire validated on sampled artifact; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
+      "llama_model": "arwkv7",
+      "family": "rwkv7",
+      "status": "needs_candidate",
+      "search": "ARWKV7 GGUF small",
+      "recurrent": "all",
+      "notes": "stage ABI supports arwkv7 through the RWKV7 activation-sideband path; find a cheap representative to prove parity separately from rwkv7"
+    },
+    {
       "llama_model": "falcon-h1",
       "family": "falcon_h1",
       "status": "certified",
@@ -377,12 +393,12 @@
       "include": "Hunyuan-A13B-Instruct-UD-IQ2_XXS.gguf",
       "notes": "real A13B MoE artifact passed in llama-parity-hunyuan-moe-runtime-slice-1 after adding Hunyuan-MoE graph stage filtering; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
-  {
-    "llama_model": "hunyuan-vl",
-    "family": "hunyuan_vl",
-    "status": "needs_candidate",
-    "notes": "Previous candidate mradermacher/Hunyuan-Vision-GGUF is unavailable/not visible via HF search or download. Re-select a public Hunyuan-VL GGUF before adding this family to the local certification queue."
-  },
+    {
+      "llama_model": "hunyuan-vl",
+      "family": "hunyuan_vl",
+      "status": "candidate_multimodal",
+      "notes": "stage ABI now accepts Hunyuan-VL text runtime slices using the shared Hunyuan-Dense/VL graph filter; still needs a public GGUF plus projector/media certification before promotion"
+    },
     {
       "llama_model": "internlm2",
       "family": "internlm2",
@@ -462,6 +478,439 @@
       "repo": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF",
       "include": "Llama-4-Scout-17B-16E-Instruct-Q4_K_M-*.gguf",
       "notes": "no cheap small llama4 artifact found; local glogwa68/Llama-4-scout-GGUF reports general.architecture=llama, so it is not valid llama4 family evidence; use package/materialized stage evidence on a remote machine with enough storage"
+    },
+    {
+      "llama_model": "afmoe",
+      "family": "afmoe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "apertus",
+      "family": "apertus",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "arcee",
+      "family": "arcee",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "arctic",
+      "family": "arctic",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "bailingmoe",
+      "family": "bailingmoe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "bailingmoe2",
+      "family": "bailingmoe2",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "bitnet",
+      "family": "bitnet",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "chameleon",
+      "family": "chameleon",
+      "status": "candidate_multimodal",
+      "notes": "multimodal family; needs projector/media sideband certification before causal text or multimodal promotion"
+    },
+    {
+      "llama_model": "chatglm",
+      "family": "chatglm",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "codeshell",
+      "family": "codeshell",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "cogvlm",
+      "family": "cogvlm",
+      "status": "candidate_multimodal",
+      "notes": "vision-language family; needs projector/media sideband certification before promotion"
+    },
+    {
+      "llama_model": "dbrx",
+      "family": "dbrx",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "deci",
+      "family": "deci",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "deepseek2ocr",
+      "family": "deepseek2ocr",
+      "status": "candidate_multimodal",
+      "notes": "OCR multimodal/MLA family; needs media sideband and MLA split certification before promotion"
+    },
+    {
+      "llama_model": "delta-net-base",
+      "family": "delta_net_base",
+      "status": "implementation_base",
+      "notes": "shared llama.cpp implementation helper, not a standalone GGUF architecture row; certify the concrete derived families instead"
+    },
+    {
+      "llama_model": "dots1",
+      "family": "dots1",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "dream",
+      "family": "dream",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "ernie4-5",
+      "family": "ernie4_5",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "ernie4-5-moe",
+      "family": "ernie4_5_moe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "eurobert",
+      "family": "eurobert",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "exaone-moe",
+      "family": "exaone_moe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "gemma-embedding",
+      "family": "gemma_embedding",
+      "status": "non_causal_aux",
+      "notes": "embedding-only Gemma architecture; not a causal stage-split serving target"
+    },
+    {
+      "llama_model": "glm-dsa",
+      "family": "glm_dsa",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "grok",
+      "family": "grok",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "grovemoe",
+      "family": "grovemoe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "jais",
+      "family": "jais",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "jais2",
+      "family": "jais2",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "jina-bert-v2",
+      "family": "jina_bert_v2",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "jina-bert-v3",
+      "family": "jina_bert_v3",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "kimi-linear",
+      "family": "kimi_linear",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "lfm2moe",
+      "family": "lfm2moe",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "llada",
+      "family": "llada",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "llada-moe",
+      "family": "llada_moe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "llama-embed",
+      "family": "llama_embed",
+      "status": "non_causal_aux",
+      "notes": "embedding-only Llama architecture; not a causal stage-split serving target"
+    },
+    {
+      "llama_model": "maincoder",
+      "family": "maincoder",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "mamba-base",
+      "family": "mamba_base",
+      "status": "implementation_base",
+      "notes": "shared llama.cpp implementation helper, not a standalone GGUF architecture row; certify the concrete derived families instead"
+    },
+    {
+      "llama_model": "mimo2",
+      "family": "mimo2",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "minicpm",
+      "family": "minicpm",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "minicpm3",
+      "family": "minicpm3",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "modern-bert",
+      "family": "modern_bert",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "nemotron",
+      "family": "nemotron",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "nemotron-h",
+      "family": "nemotron_h",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "nemotron-h-moe",
+      "family": "nemotron_h_moe",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "neo-bert",
+      "family": "neo_bert",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "nomic-bert",
+      "family": "nomic_bert",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT-family architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "nomic-bert-moe",
+      "family": "nomic_bert_moe",
+      "status": "non_causal_aux",
+      "notes": "encoder-only BERT/MoE architecture; keep outside causal stage-split serving until embedding/encoder lanes are implemented"
+    },
+    {
+      "llama_model": "openai-moe",
+      "family": "openai_moe",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "openelm",
+      "family": "openelm",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "orion",
+      "family": "orion",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "paddleocr",
+      "family": "paddleocr",
+      "status": "candidate_multimodal",
+      "notes": "OCR multimodal family; needs OCR/media serving lane certification before promotion"
+    },
+    {
+      "llama_model": "pangu-embed",
+      "family": "pangu_embed",
+      "status": "non_causal_aux",
+      "notes": "embedding-only Pangu architecture; not a causal stage-split serving target"
+    },
+    {
+      "llama_model": "plamo",
+      "family": "plamo",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "plamo2",
+      "family": "plamo2",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "plamo3",
+      "family": "plamo3",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "plm",
+      "family": "plm",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "qwen",
+      "family": "qwen",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "qwen35",
+      "family": "qwen35",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts Qwen3.5 runtime slices after adding graph filtering; find a cheap representative and certify KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "qwen3vlmoe",
+      "family": "qwen3vlmoe",
+      "status": "candidate_multimodal",
+      "notes": "multimodal MoE family; needs projector/media sideband and MoE stage certification before promotion"
+    },
+    {
+      "llama_model": "refact",
+      "family": "refact",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "rnd1",
+      "family": "rnd1",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "rwkv6-base",
+      "family": "rwkv6_base",
+      "status": "implementation_base",
+      "notes": "shared llama.cpp implementation helper, not a standalone GGUF architecture row; certify the concrete derived families instead"
+    },
+    {
+      "llama_model": "rwkv6qwen2",
+      "family": "rwkv6qwen2",
+      "status": "needs_candidate",
+      "recurrent": "all",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus KvRecurrent cache restore before promotion"
+    },
+    {
+      "llama_model": "rwkv7-base",
+      "family": "rwkv7_base",
+      "status": "implementation_base",
+      "notes": "shared llama.cpp implementation helper, not a standalone GGUF architecture row; certify the concrete derived families instead"
+    },
+    {
+      "llama_model": "seed-oss",
+      "family": "seed_oss",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "smallthinker",
+      "family": "smallthinker",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "smollm3",
+      "family": "smollm3",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "starcoder",
+      "family": "starcoder",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "step35",
+      "family": "step35",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
+    },
+    {
+      "llama_model": "t5encoder",
+      "family": "t5encoder",
+      "status": "non_causal_aux",
+      "notes": "encoder-only T5 architecture; keep outside causal stage-split serving until encoder-decoder lanes are implemented"
+    },
+    {
+      "llama_model": "wavtokenizer-dec",
+      "family": "wavtokenizer_dec",
+      "status": "non_causal_aux",
+      "notes": "audio tokenizer decoder architecture; keep outside text causal stage-split serving"
+    },
+    {
+      "llama_model": "xverse",
+      "family": "xverse",
+      "status": "needs_candidate",
+      "notes": "stage ABI now accepts runtime slices for this family; find a cheap public GGUF representative and certify split execution plus ResidentKv cache restore before promotion"
     }
   ]
 }

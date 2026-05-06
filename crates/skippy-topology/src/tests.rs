@@ -1,4 +1,5 @@
 use super::*;
+use serde::Deserialize;
 
 fn nodes(count: u32) -> Vec<NodeSpec> {
     (0..count)
@@ -8,6 +9,10 @@ fn nodes(count: u32) -> Vec<NodeSpec> {
             vram_bytes: 0,
         })
         .collect()
+}
+
+fn compact_identity(value: &str) -> String {
+    value.to_ascii_lowercase().replace(['_', '-', '/', ' '], "")
 }
 
 fn weighted_node(node_id: &str, vram_bytes: u64) -> NodeSpec {
@@ -625,6 +630,92 @@ fn infers_known_family_capabilities_from_model_identity() {
         "minimax_m27"
     );
     assert!(infer_family_capability("unknown", 1, 1).is_none());
+}
+
+#[test]
+fn every_stage_runtime_llama_architecture_has_family_inference() {
+    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+        let capability = infer_family_capability(expected.llama_architecture, 12, 768)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing family inference for {}",
+                    expected.llama_architecture
+                )
+            });
+
+        assert_eq!(
+            capability.family_id, expected.family_id,
+            "{}",
+            expected.llama_architecture
+        );
+        assert_eq!(
+            !capability.recurrent_ranges.is_empty(),
+            expected.recurrent_or_hybrid,
+            "{}",
+            expected.llama_architecture
+        );
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ParityCandidateManifest {
+    candidates: Vec<ParityCandidate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParityCandidate {
+    llama_model: String,
+    status: String,
+}
+
+#[test]
+fn parity_candidate_manifest_covers_stage_runtime_architectures() {
+    let manifest: ParityCandidateManifest = serde_json::from_str(include_str!(
+        "../../../docs/skippy/llama-parity-candidates.json"
+    ))
+    .expect("parity candidate manifest must parse");
+    let candidates: Vec<String> = manifest
+        .candidates
+        .into_iter()
+        .map(|candidate| compact_identity(&candidate.llama_model))
+        .collect();
+
+    for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+        assert!(
+            candidates.contains(&compact_identity(expected.llama_architecture)),
+            "missing parity candidate row for {}",
+            expected.llama_architecture
+        );
+    }
+}
+
+#[test]
+fn parity_candidate_manifest_uses_known_statuses() {
+    let manifest: ParityCandidateManifest = serde_json::from_str(include_str!(
+        "../../../docs/skippy/llama-parity-candidates.json"
+    ))
+    .expect("parity candidate manifest must parse");
+
+    for candidate in manifest.candidates {
+        assert!(
+            matches!(
+                candidate.status.as_str(),
+                "candidate"
+                    | "candidate_stateful"
+                    | "candidate_multimodal"
+                    | "certified"
+                    | "certified_package_only"
+                    | "implementation_base"
+                    | "needs_candidate"
+                    | "needs_runtime_slice_support"
+                    | "non_causal_aux"
+                    | "package_or_remote_only"
+            ),
+            "{} has unknown status {}",
+            candidate.llama_model,
+            candidate.status
+        );
+    }
 }
 
 #[test]

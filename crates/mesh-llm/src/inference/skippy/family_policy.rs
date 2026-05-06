@@ -150,16 +150,29 @@ fn family_policy_for_normalized_family_id(
     family_id: &str,
     activation_wire_dtype: StageWireDType,
 ) -> FamilyPolicy {
+    if let Some(expected) = skippy_topology::STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS
+        .iter()
+        .find(|expected| expected.family_id == family_id)
+    {
+        return if expected.recurrent_or_hybrid {
+            kv_recurrent_policy(activation_wire_dtype)
+        } else {
+            resident_kv_policy(activation_wire_dtype)
+        };
+    }
+
     match family_id {
         "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
-        | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma2" | "gemma" | "gemma3"
+        | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma2" | "gemma" | "gemma3" | "gemma4"
         | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe"
-        | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "gptneox" | "bloom"
-        | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
-        | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon" | "qwen2vl"
-        | "qwen3vl" => resident_kv_policy(activation_wire_dtype),
+        | "granite" | "granite_moe" | "hunyuan_dense" | "hunyuan_moe" | "hunyuan_vl"
+        | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe"
+        | "gpt2" | "mistral" | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2"
+        | "command_r" | "falcon" | "qwen2vl" | "qwen3vl" => {
+            resident_kv_policy(activation_wire_dtype)
+        }
         "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6" | "rwkv7"
-        | "granite_hybrid" => kv_recurrent_policy(activation_wire_dtype),
+        | "granite_hybrid" | "qwen35" | "qwen35moe" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
 }
@@ -286,7 +299,7 @@ fn ggml_block_bytes(elements: u64, block_size: u64, type_size: u64) -> Option<u6
 mod tests {
     use super::*;
     use skippy_protocol::{FlashAttentionType, LoadMode};
-    use skippy_topology::reviewed_capability_records;
+    use skippy_topology::{reviewed_capability_records, STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS};
 
     fn meta(architecture: &str) -> GgufCompactMeta {
         GgufCompactMeta {
@@ -457,9 +470,10 @@ mod tests {
                 | "glm4" | "glm4_moe" | "olmo" | "olmo2" | "olmoe" | "gemma" | "gemma2"
                 | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash" | "minimax_m27"
                 | "qwen2moe" | "qwen3moe" | "granite" | "granite_moe" | "hunyuan_dense"
-                | "hunyuan_moe" | "gptneox" | "bloom" | "stablelm" | "starcoder2" | "mpt"
-                | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral" | "internlm2" | "baichuan"
-                | "exaone" | "exaone4" | "cohere2" | "falcon" | "qwen2vl" | "qwen3vl" => {
+                | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom" | "stablelm"
+                | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
+                | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon"
+                | "qwen2vl" | "qwen3vl" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -471,7 +485,7 @@ mod tests {
                     )
                 }
                 "qwen3next" | "falcon_h1" | "jamba" | "lfm2" | "mamba" | "mamba2" | "rwkv6"
-                | "rwkv7" | "granite_hybrid" => assert_eq!(
+                | "rwkv7" | "granite_hybrid" | "qwen35" | "qwen35moe" => assert_eq!(
                     policy.prefix_cache,
                     FamilyPrefixCachePolicy::Auto {
                         payload: FamilyPrefixCachePayload::KvRecurrent,
@@ -482,6 +496,30 @@ mod tests {
                 ),
                 other => panic!("reviewed family {other} has no explicit policy assertion"),
             }
+        }
+    }
+
+    #[test]
+    fn every_stage_runtime_llama_architecture_has_cache_policy() {
+        for expected in STAGE_RUNTIME_LLAMA_FAMILY_EXPECTATIONS {
+            let policy = family_policy_for_model_id(expected.llama_architecture);
+            let expected_payload = if expected.recurrent_or_hybrid {
+                FamilyPrefixCachePayload::KvRecurrent
+            } else {
+                FamilyPrefixCachePayload::ResidentKv
+            };
+
+            assert_eq!(
+                policy.prefix_cache,
+                FamilyPrefixCachePolicy::Auto {
+                    payload: expected_payload,
+                    min_tokens: 256,
+                    max_entries: 128,
+                },
+                "{} ({})",
+                expected.llama_architecture,
+                expected.family_id
+            );
         }
     }
 

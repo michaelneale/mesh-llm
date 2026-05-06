@@ -17,6 +17,17 @@ work together.
    scripts/skippy-llama-parity.py inventory
    ```
 
+   The manifest must classify every pinned `src/models/*.cpp` implementation:
+
+   ```bash
+   scripts/skippy-llama-parity.py validate
+   ```
+
+   When `.deps/llama.cpp` is prepared, validation also checks that every
+   staged graph implementation is admitted by the Skippy stage ABI allowlist
+   and that every allowlisted family has a staged graph or shared staged
+   implementation.
+
 2. See which cheap representatives are not downloaded yet:
 
    ```bash
@@ -137,7 +148,10 @@ counters, repeated-hit stability, suffix-prefill result, and promotion decision.
 | `candidate_multimodal` | Text lane can be checked cheaply; projector/image/audio lanes must pass before multimodal promotion. |
 | `certified` | Already in the reviewed support matrix. Re-running is allowed when llama.cpp or the ABI changes. |
 | `certified_package_only` | Full source model is too large; package/stage evidence is the support contract. |
+| `implementation_base` | Shared llama.cpp implementation helper, not a standalone GGUF architecture row. Certify concrete derived families instead. |
+| `needs_runtime_slice_support` | Causal llama.cpp family exists, but skippy's stage ABI does not yet support its graph/tensor filtering. Add runtime-slice support before certification. |
 | `non_causal_aux` | Encoder, embedding, decoder-only audio, or other auxiliary path; do not certify as causal stage-split serving. |
+| `package_or_remote_only` | No cheap local representative exists; certification needs package/stage evidence on larger hardware. |
 | `needs_candidate` | No cheap representative has been selected yet. |
 
 ## Policy
@@ -155,6 +169,29 @@ requires projector/token-sideband evidence.
 
 The candidate manifest lives at
 `docs/skippy/llama-parity-candidates.json`.
+
+## Current Coverage Summary
+
+`scripts/skippy-llama-parity.py validate` now requires every pinned
+llama.cpp `src/models/*.cpp` implementation to have a manifest row, and it
+checks stage ABI allowlist drift when the prepared llama.cpp checkout is
+available. Current classification:
+
+| Status | Count | Meaning |
+| --- | ---: | --- |
+| `certified` | 48 | Cheap representative passed the promoted text/cache evidence for this branch. |
+| `certified_package_only` | 1 | Huge model has package/stage evidence rather than a monolithic local baseline. |
+| `needs_candidate` | 54 | Stage/runtime shape is known or already allowed, but we still need a real cheap representative. |
+| `candidate_multimodal` | 9 | Needs projector/media sideband certification before multimodal promotion. |
+| `needs_runtime_slice_support` | 0 | No currently tracked causal llama.cpp family is missing stage ABI graph/tensor-filtering support. |
+| `non_causal_aux` | 14 | Encoder, embedding, audio, or other non-causal serving lane. |
+| `implementation_base` | 4 | Shared implementation helper, not a standalone GGUF architecture. |
+| `package_or_remote_only` | 1 | No cheap local representative; certify on larger hardware or package artifacts. |
+
+The immediate full-parity gap has moved out of runtime-slice support. The
+remaining `needs_candidate` and `candidate_multimodal` rows need one
+representative artifact and the normal split/cache certification run before
+promotion.
 
 ## Family Board
 
@@ -206,9 +243,10 @@ implementation.
 
 ## Next Batch
 
-1. Finish the missing causal sweep for `llama4` where applicable.
-2. Keep downloaded `bert` and `t5` representatives in the non-causal aux lane
-   instead of promoting them as causal stage-split serving.
+1. Resolve `needs_candidate` rows that are already in the stage ABI allowlist,
+   such as `qwen35`, `qwen35moe`, `arwkv7`, and true `command-r` artifacts.
+2. Keep non-causal auxiliary rows in their own serving lanes instead of
+   promoting them as causal stage-split serving.
 3. Promote multimodal only after projector/media sideband evidence, even when
    text-lane split support passes.
 

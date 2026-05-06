@@ -13,6 +13,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -333,6 +334,123 @@ def print_table(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def validate_inventory(rows: list[dict[str, Any]]) -> int:
+    failures = 0
+    missing = [row for row in rows if row.get("status") == "missing_candidate"]
+    if missing:
+        failures += len(missing)
+        print("Missing parity manifest rows:", file=sys.stderr)
+        for row in missing:
+            print(f"  - {row['llama_model']}", file=sys.stderr)
+
+    allowed_statuses = {
+        "candidate",
+        "candidate_stateful",
+        "candidate_multimodal",
+        "certified",
+        "certified_package_only",
+        "implementation_base",
+        "needs_candidate",
+        "needs_runtime_slice_support",
+        "non_causal_aux",
+        "package_or_remote_only",
+    }
+    unknown_statuses = [
+        row
+        for row in rows
+        if row.get("status") not in allowed_statuses
+        and row.get("status") != "missing_candidate"
+    ]
+    if unknown_statuses:
+        failures += len(unknown_statuses)
+        print("Unknown parity statuses:", file=sys.stderr)
+        for row in unknown_statuses:
+            print(
+                f"  - {row['llama_model']}: {row.get('status')}",
+                file=sys.stderr,
+            )
+
+    failures += validate_stage_abi_allowlist()
+
+    return failures
+
+
+def validate_stage_abi_allowlist() -> int:
+    llama_src = ROOT / ".deps/llama.cpp/src"
+    skippy_cpp = llama_src / "skippy.cpp"
+    arch_cpp = llama_src / "llama-arch.cpp"
+    models_dir = llama_src / "models"
+    if not skippy_cpp.exists() or not arch_cpp.exists() or not models_dir.is_dir():
+        return 0
+
+    def normalized(name: str) -> str:
+        return name.replace("_", "").replace("-", "")
+
+    arch_names: dict[str, str] = {}
+    for match in re.finditer(
+        r'\{\s*LLM_ARCH_([A-Z0-9_]+),\s+"([^"]+)"\s*\}',
+        arch_cpp.read_text(encoding="utf-8"),
+    ):
+        arch_names[match.group(1).lower()] = match.group(2)
+
+    allowed = {
+        arch_names.get(match.group(1).lower(), match.group(1).lower())
+        for match in re.finditer(
+            r"model->arch != LLM_ARCH_([A-Z0-9_]+)",
+            skippy_cpp.read_text(encoding="utf-8"),
+        )
+    }
+    if "gpt-oss" in allowed:
+        allowed.add("openai-moe")
+
+    stage_hooked = set()
+    for path in models_dir.glob("*.cpp"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "skippy_graph_get_filter" in text and "stage_boundary" in text:
+            stage_hooked.add(path.stem)
+
+    # llama.cpp dispatches these architectures through another staged graph, or
+    # uses a model file name that differs from the architecture string.
+    stage_hooked.update(
+        {
+            "gpt-oss",
+            "mamba2",
+            "granite_moe",
+            "hunyuan_dense",
+            "phimoe",
+            "glm-dsa",
+            "lfm2moe",
+            "minicpm",
+            "nemotron_h_moe",
+        }
+    )
+
+    allowed_by_norm = {normalized(name): name for name in allowed}
+    hooked_by_norm = {normalized(name): name for name in stage_hooked}
+    allowed_without_hook = sorted(set(allowed_by_norm) - set(hooked_by_norm))
+    hooked_but_not_allowed = sorted(set(hooked_by_norm) - set(allowed_by_norm))
+
+    failures = 0
+    if allowed_without_hook:
+        failures += len(allowed_without_hook)
+        print(
+            "Stage ABI allowlist contains architectures without detected staged graph support:",
+            file=sys.stderr,
+        )
+        for key in allowed_without_hook:
+            print(f"  - {allowed_by_norm[key]}", file=sys.stderr)
+    if hooked_but_not_allowed:
+        failures += len(hooked_but_not_allowed)
+        print(
+            "Staged graph implementations are missing from the stage ABI allowlist:",
+            file=sys.stderr,
+        )
+        for key in hooked_but_not_allowed:
+            print(f"  - {hooked_by_norm[key]}", file=sys.stderr)
+
+    return failures
+
+
 def run_certifications(args: argparse.Namespace, rows: list[dict[str, Any]]) -> int:
     defaults = load_json(args.manifest).get("defaults", {})
     statuses = set(args.status) if args.status else {
@@ -442,6 +560,8 @@ def main() -> int:
     commands = sub.add_parser("download-commands", help="print hf download commands for missing candidates")
     commands.add_argument("--all", action="store_true", help="include non-candidate/package-only rows")
 
+    sub.add_parser("validate", help="fail if the pinned llama.cpp inventory is not fully classified")
+
     run_parser = sub.add_parser("run", help="run family-certify for local candidates")
     run_parser.add_argument("--status", action="append")
     run_parser.add_argument("--family", action="append")
@@ -490,6 +610,8 @@ def main() -> int:
             seen.add(command)
             print(command)
         return 0
+    if args.command == "validate":
+        return 1 if validate_inventory(rows) else 0
     if args.command == "run":
         return 1 if run_certifications(args, rows) else 0
     return 2
