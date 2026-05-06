@@ -1,0 +1,71 @@
+[package]
+name = "mesh-llm"
+version = "0.65.1"
+edition = "2021"
+
+[dependencies]
+ansi-to-tui = "8"
+mesh-llm-plugin = { path = "../mesh-llm-plugin" }
+mesh-client = { package = "mesh-llm-client", path = "../mesh-client", features = ["host-io"] }
+model-artifact = { path = "../model-artifact" }
+model-ref = { path = "../model-ref" }
+openai-frontend = { path = "../openai-frontend" }
+skippy-protocol = { path = "../skippy-protocol" }
+skippy-runtime = { path = "../skippy-runtime" }
+skippy-server = { path = "../skippy-server" }
+skippy-topology = { path = "../skippy-topology" }
+iroh = "0.98"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+async-trait = "0.1"
+arboard = "3"
+rand = "0.10"
+base64 = "0.22"
+biip = "0.9.2"
+dirs = "6.0.0"
+hex = "0.4.3"
+include_dir = "0.7"
+nostr-sdk = { version = "0.44.1", default-features = false }
+rustls = "0.23.36"
+reqwest = { version = "0.12", features = ["stream", "json"] }
+semver = "1"
+sha2 = "0.10"
+ed25519-dalek = { version = "=3.0.0-pre.6", features = ["rand_core"] }
+crypto_box = "0.9"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+rpassword = "5"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+chrono = { version = "0.4", features = ["serde"] }
+httparse = "1"
+tokio-stream = "0.1"
+crossterm = "0.28"
+ratatui = "0.30"
+url = "2"
+urlencoding = "2"
+libc = "0.2.183"
+regex-lite = "0.1"
+rmcp = { version = "1.2", features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+schemars = "1"
+prost = "0.14"
+toml = "0.9"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+hf_hub = { package = "huggingface-hub", git = "https://github.com/huggingface/huggingface_hub_rust.git", rev = "c9749ef76a294d5e97acae6b644071e39854aeb8", default-features = false, features = ["blocking", "xet"] }
+tabwriter = "1"
+
+[dev-dependencies]
+axum = "0.8"
+serial_test = "3"
+mesh-client = { package = "mesh-llm-client", path = "../mesh-client" }
+tempfile = "3"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"

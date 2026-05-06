@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -12,13 +13,10 @@ concurrency:
 
 env:
   CACHE_NAMESPACE: mesh-llm
-  # Tiny model for integration tests (~138MB Q8_0, has chat template)
-  MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q8_0.gguf
+  MODEL_URL: https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/9e6855bc4be717fca1ef21360a1db4b29d5c559a/SmolLM2-135M-Instruct-Q8_0.gguf
   MODEL_FILE: SmolLM2-135M-Instruct-Q8_0.gguf
-  # Small MoE model for MoE split tests (~598MB Q2_K, qwen35moe architecture)
-  MOE_MODEL_URL: https://huggingface.co/Flexan/kshitijthakkar-qwen3.5-moe-0.87B-d0.8B-GGUF/resolve/main/qwen3.5-moe-0.87B-d0.8B.Q2_K.gguf
-  MOE_MODEL_FILE: qwen3.5-moe-0.87B-d0.8B-Q2_K.gguf
   SCCACHE_GHA_ENABLED: "true"
+  LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-static
 
 jobs:
   changes:
@@ -30,6 +28,8 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       ui: ${{ steps.filter.outputs.ui }}
       benchmarks: ${{ steps.filter.outputs.benchmarks }}
+      sdk: ${{ steps.filter.outputs.sdk }}
+      docker: ${{ steps.filter.outputs.docker }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -39,29 +39,46 @@ jobs:
         with:
           filters: |
             rust:
-              - 'mesh-llm/src/**'
-              - 'mesh-llm/build.rs'
-              - 'mesh-llm/plugin/**'
-              - 'mesh-llm/tests/**'
-              - 'mesh-llm/proto/**'
+              - 'crates/**'
               - 'tools/xtask/**'
-              - 'mesh-llm/Cargo.toml'
-              - 'mesh-llm/Cargo.lock'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'Justfile'
               - 'scripts/**'
+              - 'third_party/llama.cpp/**'
               - '.github/cache-version.txt'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/smoke.yml'
               - '.github/workflows/warm-caches.yml'
               - '.github/workflows/gpu-warm-cache-job.yml'
               - '.github/workflows/llama-cache-keys.yml'
-              - '.github/workflows/smoke.yml'
-            benchmarks:
-              - 'mesh-llm/benchmarks/**'
-              - '.github/workflows/ci.yml'
             ui:
-              - 'mesh-llm/ui/**'
+              - 'crates/mesh-llm/ui/**'
+            benchmarks:
+              - 'crates/skippy-bench/**'
+              - 'crates/llama-spec-bench/**'
+              - 'crates/mesh-llm/benchmarks/**'
+              - '.github/workflows/benchmark-smoke.yml'
+              - '.github/workflows/ci.yml'
+            sdk:
+              - 'crates/mesh-api/**'
+              - 'crates/mesh-api-ffi/**'
+              - 'crates/mesh-client/**'
+              - 'sdk/**'
+              - 'Package.swift'
+              - 'scripts/ci-native-sdk-smoke.sh'
+              - 'scripts/ci-kotlin-sdk-smoke.sh'
+              - 'scripts/ci-swift-sdk-smoke.sh'
+              - 'scripts/ci-sdk-fixture.sh'
+              - '.github/workflows/ci.yml'
+            docker:
+              - '.dockerignore'
+              - 'docker/**'
+              - 'fly/Dockerfile'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/docker.yml'
 
   resolve_llama_cache_keys:
     needs: changes
@@ -75,14 +92,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # ── UI ──
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
+            crates/mesh-llm/ui/package-lock.json
 
       - uses: actions/setup-python@v6
         with:
@@ -93,36 +109,37 @@ jobs:
             ci/requirements-ci-python.txt
 
       - name: Build UI
-        working-directory: mesh-llm/ui
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: crates/mesh-llm/ui
         run: npm ci && npm run build
+
+      - name: Test UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: crates/mesh-llm/ui
+        run: npm test
 
       - name: Install Python SDKs
         run: python -m pip install --upgrade pip -r ci/requirements-ci-python.txt
 
-      # ── System dependencies ──
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+      - name: Install Hugging Face CLI
+        run: python -m pip install --upgrade "huggingface_hub[cli]"
 
-      # ── Rust ──
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev curl jq lsof
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      # Workspace `. -> target` because the cargo workspace is at repo root
-      # (`Cargo.toml` members = ["mesh-llm", ...]) and cargo writes to
-      # `./target/`, NOT `mesh-llm/target/`. Using `workspaces: mesh-llm`
-      # silently caches an empty dir and gives zero PR cache hits — we
-      # measured a 4-minute regression from this exact misconfiguration.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: . -> target
           prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Early-fail gate: runs before expensive compile/test work.
-      - name: Check formatting
+      - name: Format check
         run: cargo fmt --all -- --check
 
       - name: Check release-target repo consistency
@@ -137,21 +154,41 @@ jobs:
             grep -E "^[[:space:]│├└─-]*($FORBIDDEN)([[:space:]]|$)" /tmp/mesh-client-deps.txt
             exit 1
           fi
-          echo "PASS: No forbidden dependencies found"
 
-      # Build in dev/debug profile, NOT release. Two reasons:
-      #  1. Build + Unit tests steps share one target/ subdir and one
-      #     incremental cache — zero duplicated codegen.
-      #  2. debug has `incremental = true`; release has `incremental = false`.
-      #     Warm rebuild after a lib edit: release ~43s, debug ~4s (M4 Pro).
-      # mesh-llm is a thin orchestrator around llama-server; the hot loop is
-      # inside llama-server C++, so debug vs release binary perf is
-      # negligible for smoke tests. Integration steps below use target/debug.
+      - name: SDK and API crate tests
+        run: |
+          cargo test -p mesh-llm-client
+          cargo test -p mesh-api
+          cargo test -p mesh-api-ffi
+
+      - name: Prepare patched llama.cpp ABI checkout
+        run: scripts/prepare-llama.sh pinned
+
+      - name: Build patched llama.cpp ABI libraries
+        run: scripts/build-llama.sh
+
+      - name: Skippy crate tests
+        run: |
+          cargo test -p skippy-protocol --lib
+          cargo test -p skippy-server --lib
+          cargo test -p openai-frontend --lib
+          cargo test -p skippy-runtime
+          cargo test -p skippy-topology
+          cargo test -p skippy-model-package
+          cargo test -p skippy-prompt
+          cargo test -p metrics-server
+
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
 
       - name: Unit tests
-        run: cargo test --lib --tests
+        run: cargo test -p mesh-llm --lib
+
+      - name: Skippy smoke tests
+        timeout-minutes: 45
+        env:
+          WORK_DIR: ${{ runner.temp }}/skippy-ci-smoke
+        run: scripts/skippy-ci-smoke.sh
 
       - name: Protocol compatibility matrix
         run: |
@@ -159,39 +196,7 @@ jobs:
           cargo test -p mesh-llm --test protocol_convert_matrix
 
       - name: Clippy
-        working-directory: mesh-llm
-        run: cargo clippy -- -D warnings || true
-
-      # ── llama.cpp (CPU-only for CI) ──
-      - name: Clone llama.cpp fork
-        run: |
-          git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git llama.cpp
-          if [[ -f LLAMA_CPP_SHA ]]; then
-            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
-            cd llama.cpp
-            git fetch --depth 1 origin "$SHA"
-            git checkout "$SHA"
-            cd ..
-          fi
-
-      - name: Build llama.cpp (CPU + RPC)
-        run: |
-          CACHE_FLAGS=()
-          if command -v sccache >/dev/null 2>&1; then
-            CACHE_FLAGS+=(
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-            )
-          fi
-          cmake -B llama.cpp/build -S llama.cpp \
-            -DGGML_METAL=OFF \
-            -DGGML_CUDA=OFF \
-            -DGGML_NATIVE=OFF \
-            -DGGML_RPC=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_OPENSSL=OFF \
-            "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(nproc) --target rpc-server llama-server llama-moe-analyze llama-moe-split
+        run: cargo clippy -p mesh-llm -- -D warnings
 
       - name: CLI smoke test
         run: |
@@ -201,16 +206,11 @@ jobs:
       - name: Client-auto boot test
         run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
 
-      - name: Upload Linux inference binaries
+      - name: Upload Linux inference binary
         uses: actions/upload-artifact@v6
         with:
           name: ci-linux-inference-binaries
-          path: |
-            target/debug/mesh-llm
-            llama.cpp/build/bin/rpc-server
-            llama.cpp/build/bin/llama-server
-            llama.cpp/build/bin/llama-moe-analyze
-            llama.cpp/build/bin/llama-moe-split
+          path: target/debug/mesh-llm
           if-no-files-found: error
 
       - name: Show sccache stats
@@ -218,8 +218,8 @@ jobs:
         run: sccache --show-stats || true
 
   inference_smoke_tests:
-    needs: linux
-    if: ${{ needs.linux.result == 'success' }}
+    needs: [changes, linux]
+    if: ${{ needs.linux.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') }}
     uses: ./.github/workflows/smoke.yml
     with:
       artifact_name: ci-linux-inference-binaries
@@ -229,184 +229,120 @@ jobs:
 
   native_sdk_smoke:
     needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
         with:
-          workspaces: . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-
-      - name: Download Linux inference binaries
-        uses: actions/download-artifact@v7
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev curl jq lsof
+      - uses: actions/download-artifact@v7
         with:
           name: ci-linux-inference-binaries
           path: ci-artifacts/linux
-
-      - name: Stage binaries for native SDK smoke
+      - name: Stage binary
         run: |
-          mkdir -p target/debug llama.cpp/build/bin
-          cp ci-artifacts/linux/target/debug/mesh-llm target/debug/mesh-llm
-          cp ci-artifacts/linux/llama.cpp/build/bin/rpc-server llama.cpp/build/bin/rpc-server
-          cp ci-artifacts/linux/llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-server
-          chmod +x target/debug/mesh-llm llama.cpp/build/bin/rpc-server llama.cpp/build/bin/llama-server
-
+          mkdir -p target/debug
+          cp ci-artifacts/linux/mesh-llm target/debug/mesh-llm
+          chmod +x target/debug/mesh-llm
       - name: Cache integration model
-        id: cache-model-native-sdk
-        uses: actions/cache@v5
+        id: cache-model
+        uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
       - name: Download integration model
-        if: steps.cache-model-native-sdk.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
-          ls -lh ~/.models/$MODEL_FILE
-
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
+      - name: Save integration model cache
+        if: ${{ github.ref == 'refs/heads/main' && steps.cache-model.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.models/${{ env.MODEL_FILE }}
+          key: ${{ steps.cache-model.outputs.cache-primary-key }}
       - name: Native SDK smoke test
-        run: |
-          scripts/ci-native-sdk-smoke.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MODEL_FILE
+        run: scripts/ci-native-sdk-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   kotlin_sdk_smoke:
     needs: [changes, linux, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-
       - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-
-      - name: Download Linux inference binaries
-        uses: actions/download-artifact@v7
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev curl jq lsof
+      - uses: actions/download-artifact@v7
         with:
           name: ci-linux-inference-binaries
           path: ci-artifacts/linux
-
-      - name: Stage binaries for Kotlin SDK smoke
+      - name: Stage binary
         run: |
-          mkdir -p target/debug llama.cpp/build/bin
-          cp ci-artifacts/linux/target/debug/mesh-llm target/debug/mesh-llm
-          cp ci-artifacts/linux/llama.cpp/build/bin/rpc-server llama.cpp/build/bin/rpc-server
-          cp ci-artifacts/linux/llama.cpp/build/bin/llama-server llama.cpp/build/bin/llama-server
-          chmod +x target/debug/mesh-llm llama.cpp/build/bin/rpc-server llama.cpp/build/bin/llama-server
-
+          mkdir -p target/debug
+          cp ci-artifacts/linux/mesh-llm target/debug/mesh-llm
+          chmod +x target/debug/mesh-llm
       - name: Cache integration model
-        id: cache-model-kotlin-sdk
-        uses: actions/cache@v5
+        id: cache-model
+        uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-kotlin-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
       - name: Download integration model
-        if: steps.cache-model-kotlin-sdk.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
-          ls -lh ~/.models/$MODEL_FILE
-
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
       - name: Kotlin SDK smoke test
-        run: |
-          scripts/ci-kotlin-sdk-smoke.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MODEL_FILE
+        run: scripts/ci-kotlin-sdk-smoke.sh target/debug/mesh-llm ci-artifacts/linux "$HOME/.models/$MODEL_FILE"
 
   swift_sdk_smoke:
     needs: [changes, inference_smoke_tests]
-    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') }}
-    runs-on: macos-latest
+    if: ${{ needs.inference_smoke_tests.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.sdk == 'true') }}
+    runs-on: macos-14
+    env:
+      LLAMA_STAGE_BACKEND: metal
+      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     steps:
       - uses: actions/checkout@v5
-
       - uses: dtolnay/rust-toolchain@stable
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-
+      - name: Install tools
+        run: brew install cmake ninja jq
+      - name: Build UI placeholder
+        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+      - name: Prepare patched llama.cpp ABI checkout
+        run: scripts/prepare-llama.sh pinned
+      - name: Build patched llama.cpp ABI libraries
+        run: scripts/build-llama.sh
       - name: Build mesh-llm binary (debug)
         run: cargo build -p mesh-llm --bin mesh-llm
-
-      - name: Clone llama.cpp fork
-        run: |
-          git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git llama.cpp
-          if [[ -f LLAMA_CPP_SHA ]]; then
-            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
-            cd llama.cpp
-            git fetch --depth 1 origin "$SHA"
-            git checkout "$SHA"
-          fi
-
-      - name: Build llama.cpp (CPU + RPC)
-        run: |
-          CACHE_FLAGS=()
-          if command -v sccache >/dev/null 2>&1; then
-            CACHE_FLAGS+=(
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-            )
-          fi
-          cmake -B llama.cpp/build -S llama.cpp \
-            -DGGML_METAL=OFF \
-            -DGGML_NATIVE=OFF \
-            -DGGML_RPC=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_OPENSSL=OFF \
-            "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server
-
       - name: Cache integration model
-        id: cache-model-swift-sdk
-        uses: actions/cache@v5
+        id: cache-model
+        uses: actions/cache/restore@v5
         with:
           path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
+          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-swift-sdk-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
       - name: Download integration model
-        if: steps.cache-model-swift-sdk.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
-          ls -lh ~/.models/$MODEL_FILE
-
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: mkdir -p ~/.models && curl -fSL "$MODEL_URL" -o "$HOME/.models/$MODEL_FILE"
       - name: Swift SDK smoke test
-        run: |
-          scripts/ci-swift-sdk-smoke.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MODEL_FILE
+        run: scripts/ci-swift-sdk-smoke.sh target/debug/mesh-llm target/debug "$HOME/.models/$MODEL_FILE"
 
   macos:
     needs: changes
     if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.benchmarks == 'true' }}
-    runs-on: macos-latest
+    runs-on: macos-14
+    env:
+      LLAMA_STAGE_BACKEND: metal
+      LLAMA_STAGE_BUILD_DIR: .deps/llama.cpp/build-stage-abi-metal
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
     steps:
       - uses: actions/checkout@v5
-
       - name: Benchmark gate
         id: benchmark_gate
         run: |
@@ -415,193 +351,49 @@ jobs:
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
-
-      # ── UI ──
       - uses: actions/setup-node@v5
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: |
             .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
-
+            crates/mesh-llm/ui/package-lock.json
       - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        working-directory: mesh-llm/ui
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: crates/mesh-llm/ui
         run: npm ci && npm run build
-
-      # ── Rust ──
+      - name: Test UI
+        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.ui == 'true' }}
+        working-directory: crates/mesh-llm/ui
+        run: npm test
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-
-      # See linux job for explanation of `. -> target`.
-      - uses: Swatinem/rust-cache@v2
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        with:
-          workspaces: . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # Early-fail gate: runs before expensive compile/test work.
-      - name: Check formatting
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
+      - name: Install build dependencies
+        run: brew install cmake ninja jq
+      - name: Format check
         run: cargo fmt --all -- --check
-
-      # See linux job for rationale on building in dev/debug, not release.
+      - name: Prepare patched llama.cpp ABI checkout
+        run: scripts/prepare-llama.sh pinned
+      - name: Build patched llama.cpp ABI libraries
+        run: scripts/build-llama.sh
       - name: Build mesh-llm binary (debug)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: cargo build -p mesh-llm --bin mesh-llm
-
       - name: Unit tests
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: cargo test -p mesh-llm --lib --tests
-
-      # ── llama.cpp (Metal + RPC) ──
-      - name: Clone llama.cpp fork
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          git clone -b master --depth 1 https://github.com/Mesh-LLM/llama.cpp.git llama.cpp
-          if [[ -f LLAMA_CPP_SHA ]]; then
-            SHA=$(tr -d '[:space:]' < LLAMA_CPP_SHA)
-            cd llama.cpp
-            git fetch --depth 1 origin "$SHA"
-            git checkout "$SHA"
-            cd ..
-          fi
-
-      - name: Build llama.cpp (CPU + RPC)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          CACHE_FLAGS=()
-          if command -v sccache >/dev/null 2>&1; then
-            CACHE_FLAGS+=(
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-            )
-          fi
-          cmake -B llama.cpp/build -S llama.cpp \
-            -DGGML_METAL=OFF \
-            -DGGML_NATIVE=OFF \
-            -DGGML_RPC=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_OPENSSL=OFF \
-            "${CACHE_FLAGS[@]}"
-          cmake --build llama.cpp/build --config Release -j$(sysctl -n hw.ncpu) --target rpc-server llama-server llama-moe-analyze llama-moe-split
-
-      # ── Download model ──
-      - name: Cache model
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        id: cache-model
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
-      - name: Download model
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-model.outputs.cache-hit != 'true' }}
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MODEL_URL" -o ~/.models/$MODEL_FILE
-          ls -lh ~/.models/$MODEL_FILE
-
-      - name: Save model cache
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-model.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.models/${{ env.MODEL_FILE }}
-          key: ${{ steps.cache-model.outputs.cache-primary-key }}
-
-      # ── Integration smoke test ──
-      - name: Smoke test (real inference)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-smoke-test.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MODEL_FILE
-
-      - name: Split-mode test (host/worker routing)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-split-test.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MODEL_FILE
-
-      # ── MoE split test ──
-      - name: Cache MoE model
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        id: cache-moe-model
-        uses: actions/cache/restore@v5
-        with:
-          path: ~/.models/${{ env.MOE_MODEL_FILE }}
-          key: ${{ env.CACHE_NAMESPACE }}-${{ runner.os }}-model-${{ env.MOE_MODEL_FILE }}-${{ hashFiles('.github/cache-version.txt', '.github/workflows/ci.yml') }}
-
-      - name: Download MoE model
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-moe-model.outputs.cache-hit != 'true' }}
-        run: |
-          mkdir -p ~/.models
-          curl -fSL "$MOE_MODEL_URL" -o ~/.models/$MOE_MODEL_FILE
-          ls -lh ~/.models/$MOE_MODEL_FILE
-
-      - name: Save MoE model cache
-        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true') && steps.cache-moe-model.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ~/.models/${{ env.MOE_MODEL_FILE }}
-          key: ${{ steps.cache-moe-model.outputs.cache-primary-key }}
-
-      - name: MoE split test (expert sharding)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-moe-split-test.sh \
-            llama.cpp/build/bin \
-            ~/.models/$MOE_MODEL_FILE
-
-      - name: MoE mesh test (expert sharding end-to-end)
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: |
-          scripts/ci-moe-mesh-test.sh \
-            target/debug/mesh-llm \
-            llama.cpp/build/bin \
-            ~/.models/$MOE_MODEL_FILE
-
-      - name: Virtual LLM hook test
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        run: cargo test -p mesh-llm --test virtual_llm_injection -- --nocapture
-        timeout-minutes: 5
-
+        run: cargo test -p mesh-llm --lib
       - name: CLI smoke test
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
         run: |
           target/debug/mesh-llm --version
           target/debug/mesh-llm --help | head -5
-
-      - name: Client-auto boot test
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.ui == 'true' }}
-        run: scripts/ci-client-auto-test.sh target/debug/mesh-llm
-
       - name: Build Swift benchmark binary
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         run: |
           mkdir -p target/release
-          swiftc -O mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
-
+          swiftc -O crates/mesh-llm/benchmarks/membench-fingerprint.swift -o target/release/membench-fingerprint
       - name: Upload Swift benchmark artifact
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: ci-benchmark-swift
           path: target/release/membench-fingerprint
-          if-no-files-found: error
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
 
   linux_cuda:
     needs: [changes, resolve_llama_cache_keys]
@@ -609,202 +401,71 @@ jobs:
     name: Linux CUDA slim
     runs-on: ubuntu-latest
     container:
-      # CUDA_VERSION is a repository Actions variable and the single source of truth
-      # for both workflow CUDA image tags and warm-cache key suffixes.
-      # It should contain the exact CUDA tag version fragment to use.
       image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
+    env:
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-cuda-sm89
+      LLAMA_STAGE_BACKEND: cuda
+      LLAMA_STAGE_CUDA_ARCHITECTURES: "89"
+      MESH_LLM_SKIP_UI: "1"
+      GGML_CUDA_NO_VMM: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
-
     steps:
       - name: Install base packages
-        shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            ca-certificates \
-            curl \
-            git \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libssl-dev \
-            libdbus-1-dev \
-            python3
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           rm -rf /var/lib/apt/lists/*
-
       - uses: actions/checkout@v5
-
       - name: Benchmark gate
         id: benchmark_gate
-        shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - uses: taiki-e/install-action@just
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
-      - uses: actions/setup-node@v5
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
-
-      - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        working-directory: mesh-llm/ui
-        shell: bash
-        run: |
-          npm ci
-          npm run build
-
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
+      - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
-      - uses: Swatinem/rust-cache@v2
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+      - name: Prepare UI placeholder
+        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+      - uses: actions/cache/restore@v5
+        id: llama_cache
         with:
-          workspaces: |
-            . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      # ── Cross-PR llama.cpp / CUDA slim artifact cache (read-only consumer) ──
-      #
-      # Goal: every PR gets a "warm" llama.cpp CUDA build for free. Without
-      # this cache the CUDA job pays ~194s warm (sccache hit) or ~26m cold
-      # (sccache eviction) on every PR. With it, the llama.cpp build is
-      # skipped entirely on cache hit and the only remaining work is the
-      # mesh-llm cargo build.
-      #
-      # This job RESTORES ONLY. It never writes the cache. All writes
-      # happen in .github/workflows/warm-caches.yml, which runs on push
-      # to main (paths-filtered) and on workflow_dispatch. Splitting the
-      # writer into its own workflow prevents PR runs from polluting
-      # PR-scoped cache storage with a ~500 MB `llama.cpp/build/bin`
-      # entry on every push, and lets the warmup workflow prune old
-      # versions (see warm-caches.yml for the retention policy).
-      #
-      # This restore step consumes the exact key rendered by
-      # .github/workflows/llama-cache-keys.yml via
-      # `needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key`.
-      # That reusable workflow is the single source of truth for key
-      # composition, and warm-caches.yml consumes the same shared outputs.
-      #
-      # Cross-branch read: pushes to `main` write the cache under
-      # `refs/heads/main`. PR runs on `refs/pull/<N>/merge` automatically
-      # fall back to the base branch's cache scope, so PRs hit the
-      # main-warmed cache without needing any cache to exist on the PR
-      # ref itself.
-      #
-      # The shared workflow resolves the upstream llama.cpp SHA, computes the
-      # relevant hashFiles() inputs, and renders the CUDA/ROCm slim/fat keys.
-      # If cache-key inputs change, update llama-cache-keys.yml rather than
-      # re-inlining key construction in this caller.
-      # `actions/cache/restore@v5` (NOT `actions/cache@v5`): restore-only,
-      # never saves. PR runs on `refs/pull/<N>/merge` never write anything
-      # to PR-scoped cache storage. The only writer is warm-caches.yml.
-      # On cache miss the full llama.cpp build still runs to prove the
-      # change works, but the result is discarded at job end.
-      - name: Restore llama.cpp CUDA cache
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        id: llama_cuda_cache
-        uses: actions/cache/restore@v5
-        with:
-          path: llama.cpp/build/bin
+          path: .deps/llama-build/build-stage-abi-cuda-sm89
           key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key }}
-
-      # CI is a validation build only: we only need to prove CUDA compiles
-      # and the Rust binary runs. User-facing release artifacts are produced
-      # by release.yml which keeps the full default cuda_arch list, release
-      # profile, and GGML_CUDA_FA_ALL_QUANTS=ON. Here we pass four CI-only
-      # opt-outs, all documented in scripts/build-linux.sh:
-      #   1. single cuda_arch 89 (Ada Lovelace) — ~3.7x faster llama.cpp build
-      #   2. MESH_LLM_BUILD_PROFILE=dev — debug profile for mesh-llm itself
-      #   3. MESH_LLM_CUDA_FA_ALL_QUANTS=off — skip the full FlashAttention
-      #      kernel matrix. Safe ONLY because the CUDA smoke test is
-      #      `mesh-llm --version` — the asymmetric K/V cache path that would
-      #      crash rpc-server with BEST_FATTN_KERNEL_NONE is never exercised.
-      #      NEVER set this in release.yml.
-      #   4. MESH_LLM_LLAMA_PIN_SHA — pin the llama.cpp checkout to the SHA
-      #      embedded in the artifact cache key (above). NEVER set this in
-      #      release.yml; release artifacts must build the current
-      #      master tip.
-      #
-      # Split into two mutually exclusive steps keyed off the artifact cache:
-      #
-      #   - Cache miss → do the fast PR-only llama.cpp + mesh-llm build via the
-      #     build script. This validates the same arch89/fa-off shape that
-      #     main warms, but PR runs never write the shared cache.
-      #   - Cache hit  → skip llama.cpp entirely (we already proved it builds
-      #     at this SHA + flag combo) and run only the mesh-llm cargo build.
-      #     This is the warm path every PR hits when main has already run.
-      - name: Build Linux CUDA backend (cache miss — full llama.cpp build)
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_cuda_cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        env:
-          MESH_LLM_BUILD_PROFILE: dev
-          MESH_LLM_CUDA_FA_ALL_QUANTS: off
-          MESH_LLM_LLAMA_PIN_SHA: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
-          MESH_LLM_LLAMA_TARGETS: "rpc-server llama-server llama-moe-analyze llama-moe-split"
-        run: |
-          just --shell bash --shell-arg -lc release-build-cuda 89
-
-      - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_cuda_cache.outputs.cache-hit == 'true' }}
-        shell: bash
-        env:
-          MESH_LLM_BUILD_PROFILE: dev
-        run: |
-          set -euo pipefail
-          echo "✓ llama.cpp CUDA build restored from cache (SHA ${{ needs.resolve_llama_cache_keys.outputs.sha }})"
-          if [[ ! -d llama.cpp/build/bin ]]; then
-            echo "ERROR: cache hit but llama.cpp/build/bin is missing" >&2
-            exit 1
-          fi
-          if ! find llama.cpp/build/bin -maxdepth 1 -type f | grep -q .; then
-            echo "ERROR: cache hit but llama.cpp/build/bin contains no cached binaries" >&2
-            exit 1
-          fi
-          ls -lh llama.cpp/build/bin/ | head -20
-          cargo build -p mesh-llm --bin mesh-llm
-          ls -lh target/debug/mesh-llm
-
+      - name: Build Linux CUDA backend
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        run: just --shell bash --shell-arg -lc release-build-cuda 89
+      - name: Build mesh-llm binary only
+        if: steps.llama_cache.outputs.cache-hit == 'true'
+        run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        shell: bash
         run: |
-          target/debug/mesh-llm --version
-          target/debug/mesh-llm --help | head -5
-
+          CUDA_STUB="$(find -L /usr/local/cuda /usr/local/cuda-* -path '*/stubs/libcuda.so' -print -quit 2>/dev/null || true)"
+          if [ -n "$CUDA_STUB" ]; then
+            mkdir -p /tmp/cuda-stubs
+            ln -sf "$CUDA_STUB" /tmp/cuda-stubs/libcuda.so.1
+            export LD_LIBRARY_PATH="/tmp/cuda-stubs:$(dirname "$CUDA_STUB"):${LD_LIBRARY_PATH:-}"
+          fi
+          target/release/mesh-llm --version
       - name: Build CUDA benchmark binary
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
-        shell: bash
-        run: |
-          mkdir -p target/release
-          nvcc -O3 -o target/release/membench-fingerprint-cuda mesh-llm/benchmarks/membench-fingerprint.cu
-
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
+        run: nvcc -O3 -o target/release/membench-fingerprint-cuda crates/mesh-llm/benchmarks/membench-fingerprint.cu
       - name: Upload CUDA benchmark artifact
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: ci-benchmark-cuda
           path: target/release/membench-fingerprint-cuda
-          if-no-files-found: error
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
 
   linux_rocm:
     needs: [changes, resolve_llama_cache_keys]
@@ -813,139 +474,90 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.0-complete
+    env:
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-rocm-gfx1100
+      LLAMA_STAGE_BACKEND: rocm
+      LLAMA_STAGE_AMDGPU_TARGETS: gfx1100
+      MESH_LLM_SKIP_UI: "1"
     outputs:
       benchmark_artifact_ready: ${{ steps.benchmark_gate.outputs.ready }}
-
     steps:
       - name: Install base packages
-        shell: bash
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            ca-certificates \
-            curl \
-            git \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libssl-dev \
-            libdbus-1-dev \
-            python3
+          for attempt in 1 2 3; do
+            apt-get -o Acquire::Retries=5 update &&
+              DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --fix-missing ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential &&
+              break
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           rm -rf /var/lib/apt/lists/*
-
       - uses: actions/checkout@v5
-
       - name: Benchmark gate
         id: benchmark_gate
-        shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ needs.changes.outputs.benchmarks }}" == "true" ]]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
           else
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - uses: taiki-e/install-action@just
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
-      - uses: actions/setup-node@v5
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
-
-      - name: Build UI
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        working-directory: mesh-llm/ui
-        shell: bash
-        run: |
-          npm ci
-          npm run build
-
       - uses: dtolnay/rust-toolchain@stable
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
+      - uses: taiki-e/install-action@just
       - uses: mozilla-actions/sccache-action@v0.0.9
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-
-      - uses: Swatinem/rust-cache@v2
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+      - name: Prepare UI placeholder
+        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+      - uses: actions/cache/restore@v5
+        id: llama_cache
         with:
-          workspaces: |
-            . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-
-      - name: Restore llama.cpp ROCm cache
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        id: llama_rocm_cache
-        uses: actions/cache/restore@v5
-        with:
-          path: llama.cpp/build/bin
+          path: .deps/llama-build/build-stage-abi-rocm-gfx1100
           key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_slim_cache_key }}
-
-      # This lane is compile-only plus a CLI smoke check (`--version`/`--help`).
-      # It does not exercise ROCm inference on real AMD hardware, so restrict
-      # the build to one representative target instead of compiling the full
-      # default AMDGPU target matrix.
-      - name: Build Linux ROCm backend (cache miss — full llama.cpp build)
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_rocm_cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        env:
-          MESH_LLM_LLAMA_PIN_SHA: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
-        run: |
-          just --shell bash --shell-arg -lc release-build-rocm gfx1100
-
-      - name: Build mesh-llm binary only (cache hit — llama.cpp skipped)
-        if: ${{ (github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true') && steps.llama_rocm_cache.outputs.cache-hit == 'true' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "✓ llama.cpp ROCm build restored from cache (SHA ${{ needs.resolve_llama_cache_keys.outputs.sha }})"
-          if [[ ! -d llama.cpp/build/bin ]]; then
-            echo "ERROR: cache hit but llama.cpp/build/bin is missing" >&2
-            exit 1
-          fi
-          if ! find llama.cpp/build/bin -maxdepth 1 -type f | grep -q .; then
-            echo "ERROR: cache hit but llama.cpp/build/bin contains no cached binaries" >&2
-            exit 1
-          fi
-          ls -lh llama.cpp/build/bin/ | head -20
-          cargo build --release --locked -p mesh-llm --bin mesh-llm
-          ls -lh target/release/mesh-llm
-
+      - name: Build Linux ROCm backend
+        if: steps.llama_cache.outputs.cache-hit != 'true'
+        run: just --shell bash --shell-arg -lc release-build-rocm gfx1100
+      - name: Build mesh-llm binary only
+        if: steps.llama_cache.outputs.cache-hit == 'true'
+        run: cargo build --release -p mesh-llm
       - name: CLI smoke test
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-        shell: bash
         run: |
+          export LD_LIBRARY_PATH="/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
           target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
-
       - name: Build ROCm benchmark binary
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
-        shell: bash
-        run: |
-          mkdir -p target/release
-          hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip mesh-llm/benchmarks/membench-fingerprint.hip
-
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
+        run: hipcc -O3 -std=c++17 -o target/release/membench-fingerprint-hip crates/mesh-llm/benchmarks/membench-fingerprint.hip
       - name: Upload ROCm benchmark artifact
-        if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.benchmarks == 'true' }}
+        if: ${{ steps.benchmark_gate.outputs.ready == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: ci-benchmark-hip
           path: target/release/membench-fingerprint-hip
-          if-no-files-found: error
 
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
+  linux_vulkan:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
+    name: Linux Vulkan
+    runs-on: ubuntu-latest
+    env:
+      LLAMA_STAGE_BACKEND: vulkan
+      LLAMA_STAGE_BUILD_DIR: .deps/llama-build/build-stage-abi-vulkan
+      MESH_LLM_SKIP_UI: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Vulkan build packages
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build pkg-config libssl-dev libdbus-1-dev glslc libvulkan-dev spirv-headers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@just
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Prepare UI placeholder
+        run: mkdir -p crates/mesh-llm/ui/dist && printf '<html></html>' > crates/mesh-llm/ui/dist/index.html
+      - name: Build Linux Vulkan backend
+        run: just --shell bash --shell-arg -lc release-build-vulkan
+      - name: CLI smoke test
+        run: target/release/mesh-llm --version
 
   macos_benchmark_smoke:
-    needs: [macos]
+    needs: macos
     if: ${{ needs.macos.result == 'success' && needs.macos.outputs.benchmark_artifact_ready == 'true' }}
     name: macOS benchmark smoke
     uses: ./.github/workflows/benchmark-smoke.yml
@@ -953,10 +565,10 @@ jobs:
       artifact_name: ci-benchmark-swift
       artifact_path: ci-artifacts/swift-benchmark
       benchmark_binary: membench-fingerprint
-      runs_on: '["macos-latest"]'
+      runs_on: '"macos-14"'
 
   linux_cuda_benchmark_smoke:
-    needs: [linux_cuda]
+    needs: linux_cuda
     if: ${{ needs.linux_cuda.result == 'success' && needs.linux_cuda.outputs.benchmark_artifact_ready == 'true' && vars.CUDA_BENCHMARK_RUNNER != '' }}
     name: Linux CUDA benchmark smoke
     uses: ./.github/workflows/benchmark-smoke.yml
@@ -964,12 +576,12 @@ jobs:
       artifact_name: ci-benchmark-cuda
       artifact_path: ci-artifacts/cuda-benchmark
       benchmark_binary: membench-fingerprint-cuda
-      runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
-      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.8.0' }}-devel-ubuntu22.04
+      runs_on: ${{ vars.CUDA_BENCHMARK_RUNNER }}
+      container_image: nvidia/cuda:${{ vars.CUDA_VERSION || '12.6.3' }}-devel-ubuntu22.04
       container_options: --gpus all
 
   linux_rocm_benchmark_smoke:
-    needs: [linux_rocm]
+    needs: linux_rocm
     if: ${{ needs.linux_rocm.result == 'success' && needs.linux_rocm.outputs.benchmark_artifact_ready == 'true' && vars.ROCM_BENCHMARK_RUNNER != '' }}
     name: Linux ROCm benchmark smoke
     uses: ./.github/workflows/benchmark-smoke.yml
@@ -977,78 +589,4 @@ jobs:
       artifact_name: ci-benchmark-hip
       artifact_path: ci-artifacts/hip-benchmark
       benchmark_binary: membench-fingerprint-hip
-      runs_on: ${{ vars.ROCM_BENCHMARK_RUNNER || '["ubuntu-latest"]' }}
-      container_image: rocm/dev-ubuntu-24.04:7.0-complete
-      container_options: --device /dev/kfd --device /dev/dri --group-add video --ipc=host --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
-
-  linux_vulkan:
-    needs: changes
-    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true' }}
-    name: Linux Vulkan
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Install Vulkan build packages
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            ca-certificates \
-            curl \
-            git \
-            cmake \
-            ninja-build \
-            pkg-config \
-            libssl-dev \
-            libdbus-1-dev \
-            libvulkan-dev \
-            glslc \
-            python3
-          sudo rm -rf /var/lib/apt/lists/*
-
-      - uses: actions/checkout@v5
-
-      - uses: taiki-e/install-action@just
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            .github/cache-version.txt
-            mesh-llm/ui/package-lock.json
-
-      - name: Build UI
-        working-directory: mesh-llm/ui
-        shell: bash
-        run: |
-          npm ci
-          npm run build
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-          prefix-key: ${{ env.CACHE_NAMESPACE }}-rust-${{ hashFiles('.github/cache-version.txt') }}
-
-      - name: Build Linux Vulkan backend
-        shell: bash
-        run: |
-          just --shell bash --shell-arg -lc release-build-vulkan
-
-      - name: CLI smoke test
-        shell: bash
-        run: |
-          target/release/mesh-llm --version
-          target/release/mesh-llm --help | head -5
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats || true
-
-  # Windows CI builds disabled for now. Keep release.yml and ci.yml aligned so
-  # Windows stays an explicit opt-in until the workflow is intentionally restored.
+      runs_on: ${{ vars.ROCM_BENCHMARK_RUNNER }}

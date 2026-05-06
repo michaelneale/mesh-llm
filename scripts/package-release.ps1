@@ -9,7 +9,6 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
-$buildBinDir = Join-Path $repoRoot "llama.cpp\build\bin"
 $releaseBinDir = Join-Path $repoRoot "target\release"
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -56,9 +55,26 @@ function Normalize-RecipeArgument {
     return $normalized.Trim()
 }
 
+function Get-ReleaseFlavor {
+    param([string]$RequestedFlavor)
+
+    if ($RequestedFlavor) {
+        switch ($RequestedFlavor.ToLowerInvariant()) {
+            "hip" { return "rocm" }
+            default { return $RequestedFlavor.ToLowerInvariant() }
+        }
+    }
+
+    return "cpu"
+}
+
 function Get-BinaryFlavor {
     param([string]$RequestedFlavor)
 
+    # The "release flavor" (outer archive name) and the "binary flavor"
+    # (inner executable suffix / runtime BinaryFlavor lookup) are not
+    # always the same. hip archives contain -rocm binaries, while
+    # cuda-blackwell keeps its distinct runtime flavor suffix.
     if ($RequestedFlavor) {
         switch ($RequestedFlavor.ToLowerInvariant()) {
             "hip" { return "rocm" }
@@ -107,14 +123,6 @@ function Get-BundleBinaryName {
     return "$BaseName.exe"
 }
 
-function Copy-RuntimeLibs {
-    param([string]$BundleDir)
-
-    Get-ChildItem -Path $buildBinDir -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item $_.FullName -Destination (Join-Path $BundleDir $_.Name) -Force
-    }
-}
-
 function Copy-BenchmarkBinaries {
     param([string]$BundleDir)
 
@@ -158,19 +166,18 @@ $Version = Normalize-RecipeArgument $Version @("version")
 $OutputDir = Normalize-RecipeArgument $OutputDir @("output", "output_dir", "outputdir")
 $Flavor = Normalize-RecipeArgument $Flavor @("flavor", "backend")
 
+$releaseFlavor = Get-ReleaseFlavor $Flavor
 $binaryFlavor = Get-BinaryFlavor $Flavor
 $targetTriple = "x86_64-pc-windows-msvc"
 $archiveExt = "zip"
-$stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
-$versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
+# Outer archive names use the release flavor (e.g. cuda-blackwell); inner
+# binary names use the binary flavor (e.g. cuda) so the runtime finds them.
+$stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $releaseFlavor
+$versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $releaseFlavor
 
 $meshBinary = Join-Path $releaseBinDir "mesh-llm.exe"
-$rpcBinary = Join-Path $buildBinDir "rpc-server.exe"
-$llamaBinary = Join-Path $buildBinDir "llama-server.exe"
 
 Require-File $meshBinary
-Require-File $rpcBinary
-Require-File $llamaBinary
 
 $resolvedOutputDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     [System.IO.Path]::GetFullPath($OutputDir)
@@ -185,9 +192,6 @@ New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
 
 try {
     Copy-Item $meshBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "mesh-llm" $binaryFlavor)) -Force
-    Copy-Item $rpcBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "rpc-server" $binaryFlavor)) -Force
-    Copy-Item $llamaBinary -Destination (Join-Path $bundleDir (Get-BundleBinaryName "llama-server" $binaryFlavor)) -Force
-    Copy-RuntimeLibs $bundleDir
     Copy-BenchmarkBinaries $bundleDir
 
     $versionedPath = Join-Path $resolvedOutputDir $versionedAsset

@@ -97,21 +97,21 @@ while IFS= read -r manifest; do
 done < <(
     cd "$REPO_ROOT"
     git ls-files \
-        'mesh-llm/Cargo.toml' \
-        'mesh-llm/**/Cargo.toml' \
-        'mesh-api/Cargo.toml' \
-        'mesh-client/Cargo.toml' \
+        'crates/mesh-llm/Cargo.toml' \
+        'crates/mesh-llm-plugin/Cargo.toml' \
+        'crates/mesh-api/Cargo.toml' \
+        'crates/mesh-client/Cargo.toml' \
         | sort -u
 )
 
 if [[ "${#manifests[@]}" -eq 0 ]]; then
-    echo "no Cargo.toml manifests found under mesh-llm/" >&2
+    echo "no Cargo.toml manifests found under crates/" >&2
     exit 1
 fi
 
 versioned_files=()
 
-lib_file="$REPO_ROOT/mesh-llm/src/lib.rs"
+lib_file="$REPO_ROOT/crates/mesh-llm/src/lib.rs"
 require_file "$lib_file"
 update_lib_version "$lib_file" "$version"
 versioned_files+=("$lib_file")

@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         generate_swift_sources: true,
         generate_headers: true,
         generate_modulemap: true,
-        source: Utf8PathBuf::from("$REPO_ROOT/mesh-api-ffi/src/mesh_ffi.udl"),
+        source: Utf8PathBuf::from("$REPO_ROOT/crates/mesh-api-ffi/src/mesh_ffi.udl"),
         out_dir,
         xcframework: false,
         module_name: Some("$FFI_MODULE_NAME".into()),

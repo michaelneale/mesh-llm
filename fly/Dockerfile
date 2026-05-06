@@ -1,80 +1,75 @@
 # mesh-llm Fly.io console image
 #
-# This is a self-contained copy of docker/Dockerfile.client, kept in fly/
-# to preserve the `fly deploy --config fly/console/fly.toml --dockerfile fly/Dockerfile`
-# invocation used by the existing deployment.
-#
-# If you modify this file, also update docker/Dockerfile.client and vice versa.
-# They should be structurally identical to avoid drift between the Fly deploy
-# and the published ghcr.io/mesh-llm/mesh-llm:client image.
-#
 # Deploy:
 #   fly deploy --config fly/console/fly.toml --dockerfile fly/Dockerfile
+#   Set MESH_HEADLESS=1 in fly.toml [env] to run API-only (no web UI)
 
 # syntax=docker/dockerfile:1.7
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
-COPY mesh-llm/ui/package.json mesh-llm/ui/package-lock.json ./
+COPY crates/mesh-llm/ui/package.json crates/mesh-llm/ui/package-lock.json ./
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
-COPY mesh-llm/ui/ ./
+COPY crates/mesh-llm/ui/ ./
 RUN npm run build
-# Output: /app/dist
 
-FROM debian:bookworm-slim AS rust-deps
+FROM debian:bookworm-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git cmake ninja-build pkg-config libssl-dev libdbus-1-dev python3 build-essential \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:$PATH"
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    cargo install cargo-chef --version 0.1.68 --locked
 WORKDIR /src
-COPY Cargo.toml ./
-COPY Cargo.lock ./
-COPY mesh-llm/Cargo.toml mesh-llm/Cargo.toml
-COPY mesh-llm/build.rs mesh-llm/build.rs
-COPY mesh-llm/plugin/Cargo.toml mesh-llm/plugin/Cargo.toml
-COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
-COPY mesh-llm/proto/ mesh-llm/proto/
-COPY mesh-llm/src/ mesh-llm/src/
-COPY mesh-llm/plugin/src/ mesh-llm/plugin/src/
-COPY tools/xtask/Cargo.toml tools/xtask/Cargo.toml
-COPY tools/xtask/src/ tools/xtask/src/
-RUN mkdir -p mesh-llm/ui/dist && echo '<html></html>' > mesh-llm/ui/dist/index.html
-RUN cargo chef prepare --recipe-path recipe.json
-RUN --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/src/target \
-    cargo chef cook --release --locked --recipe-path recipe.json
-
-FROM rust-deps AS rust-builder
-WORKDIR /src
-RUN rm -rf mesh-llm/ui/dist
-COPY --from=ui-builder /app/dist mesh-llm/ui/dist
-# Restore real build scripts (cargo-chef stubs them during cook)
-COPY mesh-llm/build.rs mesh-llm/build.rs
-COPY mesh-llm/plugin/build.rs mesh-llm/plugin/build.rs
-COPY mesh-llm/src/ mesh-llm/src/
-COPY mesh-llm/plugin/src/ mesh-llm/plugin/src/
-COPY mesh-llm/skills/ mesh-llm/skills/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
+COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
+COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
+COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY crates/model-ref/ crates/model-ref/
+COPY crates/model-artifact/ crates/model-artifact/
+COPY crates/model-hf/ crates/model-hf/
+COPY crates/skippy-protocol/ crates/skippy-protocol/
+COPY crates/skippy-topology/ crates/skippy-topology/
+COPY crates/skippy-metrics/ crates/skippy-metrics/
+COPY crates/openai-frontend/ crates/openai-frontend/
+COPY crates/skippy-ffi/ crates/skippy-ffi/
+COPY crates/skippy-runtime/ crates/skippy-runtime/
+COPY crates/skippy-server/ crates/skippy-server/
+COPY crates/metrics-server/ crates/metrics-server/
+COPY crates/skippy-model-package/ crates/skippy-model-package/
+COPY crates/skippy-correctness/ crates/skippy-correctness/
+COPY crates/llama-spec-bench/ crates/llama-spec-bench/
+COPY crates/skippy-bench/ crates/skippy-bench/
+COPY crates/skippy-prompt/ crates/skippy-prompt/
+COPY tools/xtask/ tools/xtask/
+COPY scripts/prepare-llama.sh scripts/build-llama.sh scripts/
+COPY third_party/llama.cpp/upstream.txt third_party/llama.cpp/upstream.txt
+COPY third_party/llama.cpp/patches/ third_party/llama.cpp/patches/
+RUN LLAMA_STAGE_USE_SCCACHE=0 scripts/prepare-llama.sh pinned && \
+    LLAMA_STAGE_USE_SCCACHE=0 scripts/build-llama.sh
+COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p mesh-llm && \
-    mkdir -p /out && \
-    cp /src/target/release/mesh-llm /out/mesh-llm
+    cp target/release/mesh-llm /usr/local/bin/mesh-llm
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgomp1 libdbus-1-3 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=rust-builder /out/mesh-llm /usr/local/bin/mesh-llm
+COPY --from=builder /usr/local/bin/mesh-llm /usr/local/bin/mesh-llm
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-ARG CMD=console
-ENV APP_MODE=${CMD}
+ENV APP_MODE=console
 EXPOSE 3131 9337
 ENTRYPOINT ["/entrypoint.sh"]

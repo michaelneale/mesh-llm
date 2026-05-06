@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "seed": 2458,
+  "tiers": {
+    "smoke": {
+      "description": "Small HF-sourced benchmark corpus for fast benchmark plumbing checks."
+    },
+    "long": {
+      "description": "Larger HF-sourced benchmark corpus for routing and performance policy runs."
+    },
+    "coding-loop": {
+      "description": "HF-sourced repeated coding-edit loops for warm-session speculative decoding benchmarks."
+    },
+    "long-context": {
+      "description": "HF-sourced long prompt corpus for 32k context stress runs.",
+      "max_prompt_chars": 47000,
+      "target_prompt_chars": 43000
+    }
+  },
+  "sources": [
+    {
+      "name": "commitpackft-python",
+      "dataset": "bigcode/commitpackft",
+      "config": "python",
+      "split": "train",
+      "revision": "fc56fe33c030c6daa414c2b112c932b8eed085e6",
+      "family": "coding_edit",
+      "adapter": "commitpack_edit",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 50,
+        "long-context": 20
+      }
+    },
+    {
+      "name": "commitpackft-rust",
+      "dataset": "bigcode/commitpackft",
+      "config": "rust",
+      "split": "train",
+      "revision": "fc56fe33c030c6daa414c2b112c932b8eed085e6",
+      "family": "coding_edit",
+      "adapter": "commitpack_edit",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 25,
+        "long-context": 10
+      }
+    },
+    {
+      "name": "codexglue-refinement-small",
+      "dataset": "google/code_x_glue_cc_code_refinement",
+      "config": "small",
+      "split": "test",
+      "revision": "07ab797a018d0d5c448b56eb26b5e11aa5ad7659",
+      "family": "coding_edit",
+      "adapter": "code_refinement",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "swe-smith-trajectories",
+      "dataset": "SWE-bench/SWE-smith-trajectories",
+      "config": "default",
+      "split": "train",
+      "revision": "08e109b4a59eaeebf80e4675cd125d42e7ac99a4",
+      "family": "coding_edit_loop",
+      "adapter": "swe_smith_trajectory_loop",
+      "routing_hint": "ngram",
+      "quota": {
+        "coding-loop": 20
+      }
+    },
+    {
+      "name": "swebench-verified",
+      "dataset": "SWE-bench/SWE-bench_Verified",
+      "config": "default",
+      "split": "test",
+      "revision": "91aa3ed51b709be6457e12d00300a6a596d4c6a3",
+      "family": "coding_issue",
+      "adapter": "swe_bench_issue",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 40,
+        "long-context": 20
+      }
+    },
+    {
+      "name": "apps-codegen",
+      "dataset": "codeparrot/apps",
+      "config": "all",
+      "split": "test",
+      "revision": "21e74ddf8de1a21436da12e3e653065c5213e9d1",
+      "family": "coding_generate",
+      "adapter": "apps_codegen",
+      "routing_hint": "draft",
+      "quota": {
+        "smoke": 2,
+        "long": 50,
+        "long-context": 20
+      }
+    },
+    {
+      "name": "codesearchnet-pair",
+      "dataset": "sentence-transformers/codesearchnet",
+      "config": "pair",
+      "split": "train",
+      "revision": "079a958b01dc87cf07b66a68414c4b4196d889cc",
+      "family": "code_explain",
+      "adapter": "codesearchnet_explain",
+      "routing_hint": "draft",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "xlam-function-calling",
+      "dataset": "product-science/xlam-function-calling-60k-raw",
+      "config": "default",
+      "split": "train",
+      "revision": "dfbd3c669354c27f2727870d39a4d86c32381448",
+      "family": "structured_tool_call",
+      "adapter": "xlam_tool_call",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "spider-text2sql",
+      "dataset": "SuperMax991/spider-text2sql",
+      "config": "default",
+      "split": "test",
+      "revision": "890c458c18c000c0faf995aa62ee04cc91476c98",
+      "family": "structured_sql",
+      "adapter": "spider_sql",
+      "routing_hint": "ngram",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "oasst2-chat",
+      "dataset": "OpenAssistant/oasst2",
+      "config": "default",
+      "split": "train",
+      "revision": "179dd21fc55192153d94adb0e0ce8f69e222bf75",
+      "family": "chat_open",
+      "adapter": "oasst_prompt",
+      "routing_hint": "baseline",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "dolly-instruct",
+      "dataset": "databricks/databricks-dolly-15k",
+      "config": "default",
+      "split": "train",
+      "revision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+      "family": "instruction_general",
+      "adapter": "dolly_instruction",
+      "routing_hint": "draft",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "gsm8k",
+      "dataset": "openai/gsm8k",
+      "config": "main",
+      "split": "test",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "family": "reasoning_math",
+      "adapter": "gsm8k_reasoning",
+      "routing_hint": "baseline",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    },
+    {
+      "name": "xsum",
+      "dataset": "EdinburghNLP/xsum",
+      "config": "default",
+      "split": "test",
+      "revision": "7d4d486c2f8ef850b1a11aead99b894ff3dd7da9",
+      "family": "summarization",
+      "adapter": "xsum_summarize",
+      "routing_hint": "draft",
+      "quota": {
+        "smoke": 2,
+        "long": 50
+      }
+    }
+  ]
+}

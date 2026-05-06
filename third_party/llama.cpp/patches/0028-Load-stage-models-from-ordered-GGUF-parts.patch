@@ -1,0 +1,420 @@
+From 32a33062c77ee113d0290e0678f8140e2bce02d4 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 29 Apr 2026 11:45:50 +1000
+Subject: [PATCH 28/45] Load stage models from ordered GGUF parts
+
+---
+ include/llama.h            |   7 ++
+ include/skippy.h           |  10 ++-
+ src/llama-model-loader.cpp |  42 ++++++++++-
+ src/llama-model-loader.h   |   1 +
+ src/llama-quant.cpp        |   2 +-
+ src/llama.cpp              |  36 +++++++---
+ src/skippy.cpp             | 138 ++++++++++++++++++++++++++-----------
+ 7 files changed, 186 insertions(+), 50 deletions(-)
+
+diff --git a/include/llama.h b/include/llama.h
+index 2ea22672..111f569e 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -490,6 +490,13 @@ extern "C" {
+                                  size_t    n_paths,
+               struct llama_model_params    params);
+ 
++    // Load a model from multiple GGUF parts without requiring native split metadata.
++    // The first path provides model metadata; tensors are resolved from all paths in order.
++    LLAMA_API struct llama_model * llama_model_load_from_parts(
++                       const char * const * paths,
++                                 size_t    n_paths,
++              struct llama_model_params    params);
++
+     LLAMA_API void llama_model_save_to_file(
+             const struct llama_model * model,
+                         const char * path_model);
+diff --git a/include/skippy.h b/include/skippy.h
+index 69293d6d..4dd985da 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 10
++#define SKIPPY_ABI_VERSION_PATCH 11
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -49,6 +49,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
+     SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
+     SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
++    SKIPPY_FEATURE_PACKAGE_PART_LOAD      = 1 << 18,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -193,6 +194,13 @@ LLAMA_API enum skippy_status skippy_model_open(
+         struct skippy_model ** out_model,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_model_open_from_parts(
++        const char * const * paths,
++        size_t path_count,
++        const struct skippy_runtime_config * config,
++        struct skippy_model ** out_model,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_model_free(
+         struct skippy_model * model,
+         struct skippy_error ** out_error);
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index d15de1c4..5c00d487 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -523,6 +523,7 @@ llama_model_loader::llama_model_loader(
+         void * set_tensor_data_ud,
+         const std::string & fname,
+         std::vector<std::string> & splits,
++        bool ordered_parts,
+         FILE * file,
+         bool use_mmap,
+         bool use_direct_io,
+@@ -591,11 +592,50 @@ llama_model_loader::llama_model_loader(
+             n_bytes    += ggml_nbytes(cur);
+             weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, metadata, cur));
+         }
++
++        if (ordered_parts) {
++            if (splits.empty() || splits.front() != fname) {
++                throw std::runtime_error(format("ordered GGUF parts must include the primary file as the first path"));
++            }
++            if (splits.size() > UINT16_MAX) {
++                throw std::runtime_error(format("too many ordered GGUF parts: %zu", splits.size()));
++            }
++
++            for (size_t part_idx = 1; part_idx < splits.size(); ++part_idx) {
++                const char * fname_part = splits[part_idx].c_str();
++
++                struct gguf_init_params part_params = {
++                    /*.no_alloc = */ true,
++                    /*.ctx      = */ &ctx,
++                };
++                gguf_context_ptr ctx_gguf { gguf_init_from_file(fname_part, part_params) };
++                if (!ctx_gguf) {
++                    throw std::runtime_error(format("%s: failed to load GGUF part from %s", __func__, fname_part));
++                }
++
++                files.emplace_back(new llama_file(fname_part, "rb", use_direct_io));
++                contexts.emplace_back(ctx);
++
++                for (ggml_tensor * cur = ggml_get_first_tensor(ctx); cur; cur = ggml_get_next_tensor(ctx, cur)) {
++                    std::string tensor_name = std::string(cur->name);
++                    if (weights_map.find(tensor_name) != weights_map.end()) {
++                        continue;
++                    }
++                    n_elements += ggml_nelements(cur);
++                    n_bytes    += ggml_nbytes(cur);
++                    weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), part_idx, ctx_gguf.get(), cur));
++                }
++            }
++
++            if (trace > 0) {
++                LLAMA_LOG_INFO("%s: loaded %zu ordered GGUF parts\n", __func__, splits.size());
++            }
++        }
+         uint16_t n_split = 0;
+         get_key(llm_kv(LLM_KV_SPLIT_COUNT), n_split, false);
+ 
+         // Load additional GGML contexts
+-        if (n_split > 1) {
++        if (!ordered_parts && n_split > 1) {
+             // make sure the main file is loaded first
+             uint16_t idx = 0;
+             const std::string kv_split_no = llm_kv(LLM_KV_SPLIT_NO);
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index be15e32b..b7b054d1 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -136,6 +136,7 @@ struct llama_model_loader {
+         void * set_tensor_data_ud,
+         const std::string & fname,
+         std::vector<std::string> & splits, // optional, only need if the split does not follow naming scheme
++        bool ordered_parts,
+         FILE * file,
+         bool use_mmap,
+         bool use_direct_io,
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index 43e05c3d..ad99e726 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -879,7 +879,7 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
+     const llama_model_kv_override * kv_overrides = params->kv_overrides;
+     std::vector<std::string> splits = {};
+     llama_model_loader ml(/*metadata*/ nullptr, /*set_tensor_data*/ nullptr, /*set_tensor_data_ud*/ nullptr,
+-        fname_inp, splits, /*file*/ nullptr, use_mmap, /*use_direct_io*/ false, /*check_tensors*/ true, /*no_alloc*/ false, kv_overrides, nullptr);
++        fname_inp, splits, /*ordered_parts*/ false, /*file*/ nullptr, use_mmap, /*use_direct_io*/ false, /*check_tensors*/ true, /*no_alloc*/ false, kv_overrides, nullptr);
+     ml.init_mappings(false); // no prefetching
+ 
+     auto mparams = llama_model_default_params();
+diff --git a/src/llama.cpp b/src/llama.cpp
+index 97529d8b..86f7577c 100644
+--- a/src/llama.cpp
++++ b/src/llama.cpp
+@@ -264,9 +264,9 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
+ 
+ // Returns 0 on success, -1 on error, and -2 on cancellation via llama_progress_callback
+ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * metadata, llama_model_set_tensor_data_t set_tensor_data, void * set_tensor_data_ud,
+-        const std::string & fname, std::vector<std::string> & splits, FILE * file, llama_model_params & params) {
++        const std::string & fname, std::vector<std::string> & splits, bool ordered_parts, FILE * file, llama_model_params & params) {
+     try {
+-        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, file, params.use_mmap, params.use_direct_io,
++        llama_model_loader ml(metadata, set_tensor_data, set_tensor_data_ud, fname, splits, ordered_parts, file, params.use_mmap, params.use_direct_io,
+             params.check_tensors, params.no_alloc, params.kv_overrides, params.tensor_buft_overrides);
+ 
+         ml.print_info();
+@@ -331,6 +331,7 @@ static struct llama_model * llama_model_load_from_file_impl(
+         void * set_tensor_data_ud,
+         const std::string & path_model,
+         std::vector<std::string> & splits,
++        bool ordered_parts,
+         FILE * file,
+         struct llama_model_params params) {
+     {
+@@ -373,7 +374,7 @@ static struct llama_model * llama_model_load_from_file_impl(
+         };
+     }
+ 
+-    const auto [status, model] = llama_model_load(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, file, params);
++    const auto [status, model] = llama_model_load(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, ordered_parts, file, params);
+     GGML_ASSERT(status <= 0);
+     if (status < 0) {
+         if (status == -1) {
+@@ -401,7 +402,7 @@ struct llama_model * llama_model_init_from_user(
+     std::vector<std::string> splits = {};
+     params.use_mmap = false;
+     params.use_extra_bufts = false;
+-    return llama_model_load_from_file_impl(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, /*file*/ nullptr, params);
++    return llama_model_load_from_file_impl(metadata, set_tensor_data, set_tensor_data_ud, path_model, splits, /*ordered_parts*/ false, /*file*/ nullptr, params);
+ }
+ // deprecated
+ struct llama_model * llama_load_model_from_file(
+@@ -414,7 +415,7 @@ struct llama_model * llama_model_load_from_file(
+         const char * path_model,
+         struct llama_model_params params) {
+     std::vector<std::string> splits = {};
+-    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*file*/ nullptr, params);
++    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*ordered_parts*/ false, /*file*/ nullptr, params);
+ }
+ 
+ struct llama_model * llama_model_load_from_splits(
+@@ -430,7 +431,27 @@ struct llama_model * llama_model_load_from_splits(
+     for (size_t i = 0; i < n_paths; ++i) {
+         splits.push_back(paths[i]);
+     }
+-    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, splits.front(), splits, /*file*/ nullptr, params);
++    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, splits.front(), splits, /*ordered_parts*/ false, /*file*/ nullptr, params);
++}
++
++struct llama_model * llama_model_load_from_parts(
++        const char * const * paths,
++        size_t n_paths,
++        struct llama_model_params params) {
++    std::vector<std::string> parts;
++    if (n_paths == 0) {
++        LLAMA_LOG_ERROR("%s: list of parts is empty\n", __func__);
++        return nullptr;
++    }
++    parts.reserve(n_paths);
++    for (size_t i = 0; i < n_paths; ++i) {
++        if (paths[i] == nullptr) {
++            LLAMA_LOG_ERROR("%s: part path %zu is NULL\n", __func__, i);
++            return nullptr;
++        }
++        parts.push_back(paths[i]);
++    }
++    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, parts.front(), parts, /*ordered_parts*/ true, /*file*/ nullptr, params);
+ }
+ 
+ struct llama_model * llama_model_load_from_file_ptr(FILE * file, struct llama_model_params params) {
+@@ -440,7 +461,7 @@ struct llama_model * llama_model_load_from_file_ptr(FILE * file, struct llama_mo
+     }
+     std::string path_model;
+     std::vector<std::string> splits = {};
+-    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, file, params);
++    return llama_model_load_from_file_impl(nullptr, nullptr, nullptr, path_model, splits, /*ordered_parts*/ false, file, params);
+ }
+ 
+ void llama_model_save_to_file(const struct llama_model * model, const char * path_model) {
+@@ -565,4 +586,3 @@ const char * llama_print_system_info(void) {
+ 
+     return s.c_str();
+ }
+-
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 5abc8776..ab5a147c 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1005,7 +1005,8 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_RECURRENT_STATE |
+            SKIPPY_FEATURE_LOGIT_BIAS |
+            SKIPPY_FEATURE_SESSION_TRIM |
+-           SKIPPY_FEATURE_SESSION_CHECKPOINT;
++           SKIPPY_FEATURE_SESSION_CHECKPOINT |
++           SKIPPY_FEATURE_PACKAGE_PART_LOAD;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -1032,47 +1033,11 @@ void skippy_error_free(struct skippy_error * error) {
+     delete error;
+ }
+ 
+-enum skippy_status skippy_model_open(
+-        const char * path,
++static enum skippy_status skippy_finish_model_open(
++        llama_model * model,
+         const struct skippy_runtime_config * config,
+         struct skippy_model ** out_model,
+         struct skippy_error ** out_error) {
+-    if (path == nullptr || out_model == nullptr) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "path and out_model are required");
+-        return SKIPPY_STATUS_INVALID_ARGUMENT;
+-    }
+-
+-    *out_model = nullptr;
+-
+-    if (config != nullptr && config->filter_tensors_on_load && (config->layer_start < 0 || config->layer_start >= config->layer_end)) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "layer_start must be non-negative and less than layer_end");
+-        return SKIPPY_STATUS_INVALID_ARGUMENT;
+-    }
+-
+-    if (!skippy_is_full_model_config(config) && (config == nullptr || !config->filter_tensors_on_load)) {
+-        skippy_set_error(
+-                out_error,
+-                SKIPPY_STATUS_UNSUPPORTED,
+-                "runtime tensor filtering is not implemented yet; use a full-model single-stage config");
+-        return SKIPPY_STATUS_UNSUPPORTED;
+-    }
+-
+-    llama_model_params params = llama_model_default_params();
+-    if (config != nullptr) {
+-        params.n_gpu_layers = config->n_gpu_layers;
+-        if (config->disable_repack || config->filter_tensors_on_load) {
+-            params.use_extra_bufts = false;
+-        }
+-    }
+-
+-    llama_backend_init();
+-    skippy_filter_scope filter_scope(config);
+-    llama_model * model = llama_model_load_from_file(path, params);
+-    if (model == nullptr) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load llama model");
+-        return SKIPPY_STATUS_MODEL_ERROR;
+-    }
+-
+     if (config != nullptr && config->filter_tensors_on_load) {
+         const int32_t n_layer = llama_model_n_layer(model);
+         if (model->arch != LLM_ARCH_LLAMA &&
+@@ -1126,6 +1091,101 @@ enum skippy_status skippy_model_open(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_model_open(
++        const char * path,
++        const struct skippy_runtime_config * config,
++        struct skippy_model ** out_model,
++        struct skippy_error ** out_error) {
++    if (path == nullptr || out_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "path and out_model are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    *out_model = nullptr;
++
++    if (config != nullptr && config->filter_tensors_on_load && (config->layer_start < 0 || config->layer_start >= config->layer_end)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "layer_start must be non-negative and less than layer_end");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    if (!skippy_is_full_model_config(config) && (config == nullptr || !config->filter_tensors_on_load)) {
++        skippy_set_error(
++                out_error,
++                SKIPPY_STATUS_UNSUPPORTED,
++                "runtime tensor filtering is not implemented yet; use a full-model single-stage config");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    llama_model_params params = llama_model_default_params();
++    if (config != nullptr) {
++        params.n_gpu_layers = config->n_gpu_layers;
++        if (config->disable_repack || config->filter_tensors_on_load) {
++            params.use_extra_bufts = false;
++        }
++    }
++
++    llama_backend_init();
++    skippy_filter_scope filter_scope(config);
++    llama_model * model = llama_model_load_from_file(path, params);
++    if (model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load llama model");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    return skippy_finish_model_open(model, config, out_model, out_error);
++}
++
++enum skippy_status skippy_model_open_from_parts(
++        const char * const * paths,
++        size_t path_count,
++        const struct skippy_runtime_config * config,
++        struct skippy_model ** out_model,
++        struct skippy_error ** out_error) {
++    if (paths == nullptr || path_count == 0 || out_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "paths, path_count, and out_model are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    for (size_t i = 0; i < path_count; ++i) {
++        if (paths[i] == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "package part path is null");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
++        }
++    }
++
++    *out_model = nullptr;
++
++    if (config != nullptr && config->filter_tensors_on_load && (config->layer_start < 0 || config->layer_start >= config->layer_end)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "layer_start must be non-negative and less than layer_end");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    if (!skippy_is_full_model_config(config) && (config == nullptr || !config->filter_tensors_on_load)) {
++        skippy_set_error(
++                out_error,
++                SKIPPY_STATUS_UNSUPPORTED,
++                "runtime tensor filtering is not implemented yet; use a full-model single-stage config");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    llama_model_params params = llama_model_default_params();
++    if (config != nullptr) {
++        params.n_gpu_layers = config->n_gpu_layers;
++        if (config->disable_repack || config->filter_tensors_on_load) {
++            params.use_extra_bufts = false;
++        }
++    }
++
++    llama_backend_init();
++    skippy_filter_scope filter_scope(config);
++    llama_model * model = llama_model_load_from_parts(paths, path_count, params);
++    if (model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load llama model from GGUF parts");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    return skippy_finish_model_open(model, config, out_model, out_error);
++}
++
+ enum skippy_status skippy_model_free(
+         struct skippy_model * model,
+         struct skippy_error ** out_error) {
+-- 
+2.50.1 (Apple Git-155)
+

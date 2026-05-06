@@ -197,7 +197,7 @@ Config precedence:
 
 ## Lemonade integration
 
-mesh-llm includes a built-in `lemonade` plugin for routing requests to a local [Lemonade Server](https://lemonade-server.ai) through the same `http://localhost:9337/v1` API that mesh-llm already exposes.
+Use the `openai-endpoint` plugin to route requests to a local [Lemonade Server](https://lemonade-server.ai) through the same `http://localhost:9337/v1` API that mesh-llm exposes.
 
 Start Lemonade first, either with the Lemonade Desktop app or with the CLI:
 
@@ -206,18 +206,12 @@ lemonade-server serve
 curl -s http://localhost:8000/api/v1/models | jq '.data[].id'
 ```
 
-The plugin uses `http://localhost:8000/api/v1` by default. To point at a different Lemonade endpoint, set:
-
-```bash
-export MESH_LLM_LEMONADE_BASE_URL=http://127.0.0.1:8000/api/v1
-```
-
 Then enable the plugin in `~/.mesh-llm/config.toml`:
 
 ```toml
 [[plugin]]
-name = "lemonade"
-enabled = true
+name = "openai-endpoint"
+url = "http://localhost:8000/api/v1"
 ```
 
 Start mesh-llm normally:
@@ -249,7 +243,7 @@ Notes:
 
 - mesh-llm does not start or supervise Lemonade; run it separately with the Desktop app or CLI.
 - Use the exact model ID returned by Lemonade's `/api/v1/models`.
-- If you use the mesh-llm background service, add `MESH_LLM_LEMONADE_BASE_URL=...` to `~/.config/mesh-llm/service.env`.
+- The URL can also be set via `MESH_LLM_OPENAI_ENDPOINT_URL` env var (config takes precedence).
 
 Useful model commands:
 
@@ -270,7 +264,6 @@ mesh-llm models updates Qwen/Qwen3-8B-GGUF
 - Hugging Face repo snapshots are the canonical managed model store.
 - Flat `~/.models/` storage is no longer scanned for managed models.
 - Arbitrary local GGUF files still work through `mesh-llm serve --gguf`.
-- MoE split artifacts are cached under `~/.cache/mesh-llm/splits/`.
 
 ## Inspect local GPUs
 

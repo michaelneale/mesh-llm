@@ -1,0 +1,207 @@
+From 3cffe5cedc591b659bce9043dee16613caab5b2f Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 19:14:50 +1000
+Subject: [PATCH 17/45] Expose stage chat template ABI
+
+---
+ common/CMakeLists.txt |   1 +
+ common/stage-chat.cpp | 122 ++++++++++++++++++++++++++++++++++++++++++
+ include/skippy.h      |  14 +++++
+ src/skippy.cpp        |   8 +++
+ 4 files changed, 145 insertions(+)
+ create mode 100644 common/stage-chat.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 1a56c258..b51b6f55 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -100,6 +100,7 @@ add_library(${TARGET}
+     regex-partial.h
+     sampling.cpp
+     sampling.h
++    stage-chat.cpp
+     speculative.cpp
+     speculative.h
+     unicode.cpp
+diff --git a/common/stage-chat.cpp b/common/stage-chat.cpp
+new file mode 100644
+index 00000000..39d6331a
+--- /dev/null
++++ b/common/stage-chat.cpp
+@@ -0,0 +1,122 @@
++#include "chat.h"
++#include "skippy.h"
++
++#include <cstdlib>
++#include <cstring>
++#include <exception>
++#include <limits>
++#include <string>
++
++static skippy_error * skippy_common_make_error(enum skippy_status status, const char * message) {
++    skippy_error * error = new skippy_error{};
++    error->status = status;
++
++    if (message == nullptr) {
++        error->message = nullptr;
++        return error;
++    }
++
++    const size_t len = std::strlen(message);
++    char * owned = static_cast<char *>(std::malloc(len + 1));
++    if (owned == nullptr) {
++        error->status = SKIPPY_STATUS_ERROR;
++        error->message = nullptr;
++        return error;
++    }
++
++    std::memcpy(owned, message, len + 1);
++    error->message = owned;
++    return error;
++}
++
++static void skippy_common_set_error(
++        skippy_error ** out_error,
++        enum skippy_status status,
++        const char * message) {
++    if (out_error != nullptr) {
++        *out_error = skippy_common_make_error(status, message);
++    }
++}
++
++static enum skippy_status skippy_common_success(skippy_error ** out_error) {
++    if (out_error != nullptr) {
++        *out_error = nullptr;
++    }
++    return SKIPPY_STATUS_OK;
++}
++
++enum skippy_status skippy_apply_chat_template(
++        struct skippy_model * model,
++        const struct llama_chat_message * messages,
++        size_t message_count,
++        bool add_assistant,
++        char * output_text,
++        size_t output_text_capacity,
++        size_t * out_text_bytes,
++        struct skippy_error ** out_error) {
++    if (out_text_bytes == nullptr) {
++        skippy_common_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "out_text_bytes is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (message_count > 0 && messages == nullptr) {
++        skippy_common_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "messages are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (output_text_capacity > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_common_set_error(
++                out_error,
++                SKIPPY_STATUS_INVALID_ARGUMENT,
++                "chat template output capacity exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const llama_model * native_model = skippy_model_native_model(model);
++    if (native_model == nullptr) {
++        skippy_common_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    common_chat_templates_ptr tmpls;
++    common_chat_templates_inputs inputs;
++    inputs.add_generation_prompt = add_assistant;
++    inputs.use_jinja             = true;
++    inputs.messages.reserve(message_count);
++
++    for (size_t i = 0; i < message_count; ++i) {
++        if (messages[i].role == nullptr || messages[i].content == nullptr) {
++            skippy_common_set_error(
++                    out_error,
++                    SKIPPY_STATUS_INVALID_ARGUMENT,
++                    "message role and content are required");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
++        }
++        common_chat_msg msg;
++        msg.role = messages[i].role;
++        msg.content = messages[i].content;
++        inputs.messages.emplace_back(std::move(msg));
++    }
++
++    std::string prompt;
++    try {
++        tmpls = common_chat_templates_init(native_model, "");
++        prompt = common_chat_templates_apply(tmpls.get(), inputs).prompt;
++    } catch (const std::exception & e) {
++        skippy_common_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, e.what());
++        return SKIPPY_STATUS_UNSUPPORTED;
++    } catch (...) {
++        skippy_common_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "failed to apply chat template");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    *out_text_bytes = prompt.size();
++    if (output_text == nullptr || output_text_capacity < prompt.size()) {
++        skippy_common_set_error(
++                out_error,
++                SKIPPY_STATUS_BUFFER_TOO_SMALL,
++                "chat template output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++    if (!prompt.empty()) {
++        std::memcpy(output_text, prompt.data(), prompt.size());
++    }
++    return skippy_common_success(out_error);
++}
+diff --git a/include/skippy.h b/include/skippy.h
+index 97ce352f..6dc5af7b 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -40,6 +40,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_NATIVE_KV_PAGE         = 1 << 8,
+     SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
+     SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
++    SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -300,6 +301,19 @@ LLAMA_API enum skippy_status skippy_token_is_eog(
+         bool * out_is_eog,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API const struct llama_model * skippy_model_native_model(
++        const struct skippy_model * model);
++
++LLAMA_API enum skippy_status skippy_apply_chat_template(
++        struct skippy_model * model,
++        const struct llama_chat_message * messages,
++        size_t message_count,
++        bool add_assistant,
++        char * output_text,
++        size_t output_text_capacity,
++        size_t * out_text_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_model_info_open(
+         const char * path,
+         struct skippy_model_info ** out_info,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 712aec9f..f0b70b96 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1427,6 +1427,14 @@ enum skippy_status skippy_token_is_eog(
+     return skippy_success(out_error);
+ }
+ 
++const struct llama_model * skippy_model_native_model(
++        const struct skippy_model * model) {
++    if (model == nullptr) {
++        return nullptr;
++    }
++    return model->model;
++}
++
+ enum skippy_status skippy_model_info_open(
+         const char * path,
+         struct skippy_model_info ** out_info,
+-- 
+2.50.1 (Apple Git-155)
+

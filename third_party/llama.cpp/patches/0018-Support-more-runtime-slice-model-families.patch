@@ -1,0 +1,1248 @@
+From 65d3d2c069a712faa02fc1fa9af1f1bac8f55ffa Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 16:07:00 +1000
+Subject: [PATCH 18/45] Support more runtime-slice model families
+
+---
+ include/skippy.h           |  17 +++
+ src/llama-graph.cpp        |  25 ++++
+ src/llama-graph.h          |  20 +++
+ src/llama-model-loader.cpp |   7 ++
+ src/llama-model.cpp        |   6 +-
+ src/models/deepseek2.cpp   |  22 +++-
+ src/models/falcon-h1.cpp   |  20 ++-
+ src/models/gemma.cpp       |  26 +++-
+ src/models/gemma2.cpp      |  26 +++-
+ src/models/gemma3.cpp      |  26 +++-
+ src/models/gemma4.cpp      |  61 +++++++--
+ src/models/glm4.cpp        |  32 +++--
+ src/models/minimax-m2.cpp  |  20 ++-
+ src/models/olmo.cpp        |  20 ++-
+ src/models/qwen2.cpp       |  20 ++-
+ src/models/qwen3.cpp       |  20 ++-
+ src/models/qwen3next.cpp   |  29 ++++-
+ src/skippy.cpp             | 250 ++++++++++++++++++++++++++++++++++---
+ 18 files changed, 560 insertions(+), 87 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 6dc5af7b..23a46e0f 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -258,6 +258,23 @@ LLAMA_API enum skippy_status skippy_import_state(
+         size_t input_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_export_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_kv_page(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 627064b7..784e0726 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -19,6 +19,7 @@
+ #include <unordered_set>
+ 
+ static thread_local skippy_graph_filter g_skippy_graph_filter;
++static thread_local skippy_activation_tokens g_skippy_activation_tokens;
+ 
+ void skippy_graph_set_filter(const skippy_graph_filter & filter) {
+     g_skippy_graph_filter = filter;
+@@ -32,6 +33,18 @@ const skippy_graph_filter & skippy_graph_get_filter() {
+     return g_skippy_graph_filter;
+ }
+ 
++void skippy_graph_set_activation_tokens(const skippy_activation_tokens & tokens) {
++    g_skippy_activation_tokens = tokens;
++}
++
++void skippy_graph_clear_activation_tokens() {
++    g_skippy_activation_tokens = {};
++}
++
++const skippy_activation_tokens & skippy_graph_get_activation_tokens() {
++    return g_skippy_activation_tokens;
++}
++
+ // dedup helpers
+ 
+ static ggml_tensor * build_attn_inp_kq_mask(
+@@ -116,6 +129,18 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
+     return res;
+ }
+ 
++void llm_graph_input_stage_tokens::set_input(const llama_ubatch * ubatch) {
++    const skippy_activation_tokens & stage_tokens = skippy_graph_get_activation_tokens();
++    GGML_ASSERT(stage_tokens.tokens != nullptr);
++    GGML_ASSERT(stage_tokens.token_count == ubatch->n_tokens);
++
++    ggml_backend_tensor_set(tokens, stage_tokens.tokens, 0, stage_tokens.token_count*ggml_element_size(tokens));
++}
++
++bool llm_graph_input_stage_tokens::can_reuse(const llm_graph_params & params) {
++    return tokens && tokens->ne[0] == params.ubatch.n_tokens;
++}
++
+ void llm_graph_input_pos::set_input(const llama_ubatch * ubatch) {
+     if (ubatch->pos && pos) {
+         const int64_t n_tokens = ubatch->n_tokens;
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index e7fd09fd..d2ba2188 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -35,9 +35,17 @@ struct skippy_graph_filter {
+     bool include_output = false;
+ };
+ 
++struct skippy_activation_tokens {
++    const llama_token * tokens = nullptr;
++    uint32_t token_count = 0;
++};
++
+ void skippy_graph_set_filter(const skippy_graph_filter & filter);
+ void skippy_graph_clear_filter();
+ const skippy_graph_filter & skippy_graph_get_filter();
++void skippy_graph_set_activation_tokens(const skippy_activation_tokens & tokens);
++void skippy_graph_clear_activation_tokens();
++const skippy_activation_tokens & skippy_graph_get_activation_tokens();
+ 
+ // certain models (typically multi-modal) can produce different types of graphs
+ enum llm_graph_type {
+@@ -132,6 +140,18 @@ public:
+     const int64_t n_embd = 0;
+ };
+ 
++class llm_graph_input_stage_tokens : public llm_graph_input_i {
++public:
++    llm_graph_input_stage_tokens() = default;
++    virtual ~llm_graph_input_stage_tokens() = default;
++
++    void set_input(const llama_ubatch * ubatch) override;
++
++    bool can_reuse(const llm_graph_params & params) override;
++
++    ggml_tensor * tokens = nullptr; // I32 [n_batch]
++};
++
+ class llm_graph_input_pos : public llm_graph_input_i {
+ public:
+     llm_graph_input_pos(uint32_t n_pos_per_embd) : n_pos_per_embd(n_pos_per_embd) {}
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index ee44dd00..d15de1c4 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1119,6 +1119,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+                     break;
+             }
+ 
++            if (!keep && llm_kv.arch == LLM_ARCH_GEMMA4 && hparams.n_embd_per_layer > 0) {
++                keep = tn.tensor == LLM_TENSOR_TOKEN_EMBD ||
++                       tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD ||
++                       tn.tensor == LLM_TENSOR_PER_LAYER_MODEL_PROJ ||
++                       tn.tensor == LLM_TENSOR_PER_LAYER_PROJ_NORM;
++            }
++
+             if (!keep) {
+                 if (t_meta) {
+                     const size_t nbytes = ggml_nbytes(t_meta);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 9a5802e3..9365db5e 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1315,13 +1315,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+             }
+ 
+             // MoE expert weight scales (per-expert, shape {n_expert})
+-            if (!layer.ffn_gate_exps_s && layer.ffn_gate_exps) {
++            if (!layer.ffn_gate_exps_s && (layer.ffn_gate_exps || ml.get_tensor_meta(tn(LLM_TENSOR_FFN_GATE_EXPS, "scale", i).str().c_str()) != nullptr)) {
+                 layer.ffn_gate_exps_s = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "scale", i), {n_expert}, TENSOR_NOT_REQUIRED);
+             }
+-            if (!layer.ffn_down_exps_s && layer.ffn_down_exps) {
++            if (!layer.ffn_down_exps_s && (layer.ffn_down_exps || ml.get_tensor_meta(tn(LLM_TENSOR_FFN_DOWN_EXPS, "scale", i).str().c_str()) != nullptr)) {
+                 layer.ffn_down_exps_s = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "scale", i), {n_expert}, TENSOR_NOT_REQUIRED);
+             }
+-            if (!layer.ffn_up_exps_s && layer.ffn_up_exps) {
++            if (!layer.ffn_up_exps_s && (layer.ffn_up_exps || ml.get_tensor_meta(tn(LLM_TENSOR_FFN_UP_EXPS, "scale", i).str().c_str()) != nullptr)) {
+                 layer.ffn_up_exps_s = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS, "scale", i), {n_expert}, TENSOR_NOT_REQUIRED);
+             }
+ 
+diff --git a/src/models/deepseek2.cpp b/src/models/deepseek2.cpp
+index 53574df4..a539f94d 100644
+--- a/src/models/deepseek2.cpp
++++ b/src/models/deepseek2.cpp
+@@ -173,8 +173,14 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
++    const int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : effective_n_layers;
++
+     // {n_embd, n_tokens}
+-    inpL = build_inp_embd(model.tok_embd);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // (optional) temperature tuning - used by mistral-large
+     ggml_tensor * inp_attn_scale = nullptr;
+@@ -188,10 +194,9 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
+     auto * inp_attn_kv = !is_mla ? build_attn_inp_kv() : nullptr;
+     auto * inp_attn_k  =  is_mla ? build_attn_inp_k()  : nullptr;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
+-    for (int il = 0; il < effective_n_layers; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -365,7 +370,7 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
+                             Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+             }
+         }
+-        if (il == effective_n_layers - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -423,6 +428,13 @@ llama_model_deepseek2::graph::graph(const llama_model & model, const llm_graph_p
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/models/falcon-h1.cpp b/src/models/falcon-h1.cpp
+index d353befd..472f40b3 100644
+--- a/src/models/falcon-h1.cpp
++++ b/src/models/falcon-h1.cpp
+@@ -116,7 +116,12 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -127,9 +132,9 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
+     const float kq_scale =
+         hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+@@ -166,7 +171,7 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
+         inpSA = ggml_add(ctx0, cur, inpSA);
+         cb(cur, "layer_out", il);
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -194,6 +199,13 @@ llama_model_falcon_h1::graph::graph(const llama_model & model, const llm_graph_p
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+diff --git a/src/models/gemma.cpp b/src/models/gemma.cpp
+index 06731670..48b16c74 100644
+--- a/src/models/gemma.cpp
++++ b/src/models/gemma.cpp
+@@ -44,19 +44,26 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
+ 
+-    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
+-    cb(inpL, "inp_scaled", -1);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
++
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         // norm
+         cur = build_norm(inpL,
+                 model.layers[il].attn_norm, NULL,
+@@ -90,7 +97,7 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -122,6 +129,13 @@ llama_model_gemma::graph::graph(const llama_model & model, const llm_graph_param
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma2.cpp b/src/models/gemma2.cpp
+index 6255bf74..2b18e46c 100644
+--- a/src/models/gemma2.cpp
++++ b/src/models/gemma2.cpp
+@@ -65,19 +65,26 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
+ 
+-    inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
+-    cb(inpL, "inp_scaled", -1);
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
++
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, sqrtf(n_embd));
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv_iswa();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const float freq_base_l  = model.get_rope_freq_base (cparams, il);
+         const float freq_scale_l = model.get_rope_freq_scale(cparams, il);
+ 
+@@ -113,7 +120,7 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -155,6 +162,13 @@ llama_model_gemma2::graph::graph(const llama_model & model, const llm_graph_para
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma3.cpp b/src/models/gemma3.cpp
+index ee510fe3..15d27e6d 100644
+--- a/src/models/gemma3.cpp
++++ b/src/models/gemma3.cpp
+@@ -87,11 +87,18 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // important: do not normalize weights for raw embeddings input (i.e. encoded image embeddings)
+-    inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+-    cb(inpL, "inp_scaled", -1);
++    if (!stage_filtered || il_start == 0) {
++        inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
++        cb(inpL, "inp_scaled", -1);
++    }
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+@@ -106,9 +113,9 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
+         inp_attn = build_attn_inp_kv();
+     }
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         float freq_base_l  = 0.0f;
+         float freq_scale_l = 0.0f;
+ 
+@@ -157,7 +164,7 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -199,6 +206,13 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/gemma4.cpp b/src/models/gemma4.cpp
+index 5026b0ac..db92c2bf 100644
+--- a/src/models/gemma4.cpp
++++ b/src/models/gemma4.cpp
+@@ -98,8 +98,9 @@ void llama_model_gemma4::load_arch_tensors(llama_model_loader &) {
+         layer.ffn_post_norm = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM, "weight", i), {n_embd}, 0);
+ 
+         // MoE router
++        const std::string ffn_gate_inp_name = tn(LLM_TENSOR_FFN_GATE_INP, "weight", i).str();
+         layer.ffn_gate_inp = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP, "weight", i), {n_embd, n_expert}, TENSOR_NOT_REQUIRED);
+-        bool has_expert = layer.ffn_gate_inp != nullptr;
++        bool has_expert = layer.ffn_gate_inp != nullptr || ml->get_tensor_meta(ffn_gate_inp_name.c_str()) != nullptr;
+ 
+         // norm
+         if (has_expert) {
+@@ -143,7 +144,12 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // important: do not normalize weights for raw embeddings input (i.e. encoded image emdeddings)
+     inpL = ggml_scale(ctx0, inpL, ubatch.token ? sqrtf(n_embd) : 1.0f);
+@@ -155,18 +161,39 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
+     // TODO: is causal == true correct? might need some changes
+     auto * inp_attn = build_attn_inp_kv_iswa();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+     ggml_tensor * inp_per_layer = nullptr;
+     if (model.per_layer_tok_embd) {
++        ggml_tensor * inp_per_layer_proj = inpL;
++        const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
++        const bool use_activation_token_sideband =
++            stage_filtered && il_start > 0 &&
++            activation_tokens.tokens != nullptr &&
++            activation_tokens.token_count == ubatch.n_tokens &&
++            model.tok_embd != nullptr;
++
++        if (use_activation_token_sideband) {
++            auto inp = std::make_unique<llm_graph_input_stage_tokens>();
++            inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
++            cb(inp->tokens, "inp_stage_tokens", -1);
++            ggml_set_input(inp->tokens);
++
++            inp_per_layer_proj = ggml_get_rows(ctx0, model.tok_embd, inp->tokens);
++            inp_per_layer_proj = ggml_scale(ctx0, inp_per_layer_proj, sqrtf(n_embd));
++            cb(inp_per_layer_proj, "inp_per_layer_proj_embd", -1);
++
++            res->add_input(std::move(inp));
++        }
++
+         inp_per_layer = build_inp_per_layer();
+         ggml_build_forward_expand(gf, inp_per_layer);
+ 
+         // inp_per_layer shape: [n_embd_per_layer, n_tokens, n_layer]
+-        inp_per_layer = project_per_layer_inputs(inpL, inp_per_layer);
++        inp_per_layer = project_per_layer_inputs(inp_per_layer_proj, inp_per_layer);
+     }
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         const int64_t n_embd_head = hparams.n_embd_head_k(il);
+         GGML_ASSERT(n_embd_head == hparams.n_embd_head_v(il));
+ 
+@@ -239,7 +266,7 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
+         }
+ 
+         // TODO @ngxson : strip unused token right after the last KV layer to speed up prompt processing
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
+             inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
+         }
+@@ -366,6 +393,13 @@ llama_model_gemma4::graph::graph(const llama_model & model, const llm_graph_para
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, nullptr,
+             LLM_NORM_RMS, -1);
+@@ -395,7 +429,12 @@ ggml_tensor * llama_model_gemma4::graph::build_inp_per_layer() {
+ 
+     ggml_tensor * inp_per_layer;
+     float tok_embd_scale = sqrtf((float) n_embd_per_layer);
+-    if (ubatch.token) {
++    const skippy_activation_tokens & activation_tokens = skippy_graph_get_activation_tokens();
++    const bool use_activation_token_sideband =
++        activation_tokens.tokens != nullptr &&
++        activation_tokens.token_count == ubatch.n_tokens;
++
++    if (ubatch.token || use_activation_token_sideband) {
+         inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, ubatch.n_tokens);
+         ggml_set_input(inp->tokens);
+         res->t_inp_tokens = inp->tokens;
+@@ -405,7 +444,13 @@ ggml_tensor * llama_model_gemma4::graph::build_inp_per_layer() {
+         inp_per_layer = ggml_scale     (ctx0, inp_per_layer, tok_embd_scale);
+         cb(inp_per_layer, "inp_per_layer_selected", -1);
+ 
+-        res->add_input(std::move(inp));
++        if (ubatch.token) {
++            res->add_input(std::move(inp));
++        } else {
++            auto stage_inp = std::make_unique<llm_graph_input_stage_tokens>();
++            stage_inp->tokens = inp->tokens;
++            res->add_input(std::move(stage_inp));
++        }
+     } else {
+         // Multimodal embedding path: use padding token (ID=0) embedding
+         // TODO: verify if this is the correct behavior in transformers implementation
+diff --git a/src/models/glm4.cpp b/src/models/glm4.cpp
+index d6ef76e2..627e1a21 100644
+--- a/src/models/glm4.cpp
++++ b/src/models/glm4.cpp
+@@ -83,10 +83,18 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    // Only process up to last layer (skip final NextN layer)
++    // Final layer tensors are loaded but not processed in forward pass
++    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? std::min(stage_filter.layer_end, n_transformer_layers) : n_transformer_layers;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     bool use_mrope = hparams.use_mrope();
+-    if (ubatch.embd && !use_mrope) {
++    if (ubatch.embd && !use_mrope && !stage_filtered) {
+         // unfortunately, we need to forcefully stop here, to avoid users complaining about wrong results
+         GGML_ABORT("This GGUF does not support multimodal. Please reconvert it.");
+     }
+@@ -96,12 +104,9 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    // Only process up to last layer (skip final NextN layer)
+-    // Final layer tensors are loaded but not processed in forward pass
+-    const int n_transformer_layers = n_layer - hparams.nextn_predict_layers;
+-    for (int il = 0; il < n_transformer_layers; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // Pre-attention norm
+@@ -140,7 +145,7 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
+                     model.layers[il].wo, NULL, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f / sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_transformer_layers - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -178,8 +183,17 @@ llama_model_glm4::graph::graph(const llama_model & model, const llm_graph_params
+         // input for next layer
+         inpL = cur;
+     }
++    cur = inpL;
++
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     // Final norm
+-    cur = build_norm(inpL, model.output_norm, NULL, LLM_NORM_RMS, -1);
++    cur = build_norm(cur, model.output_norm, NULL, LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+     res->t_embd = cur;
+diff --git a/src/models/minimax-m2.cpp b/src/models/minimax-m2.cpp
+index 0dee8934..e35ac258 100644
+--- a/src/models/minimax-m2.cpp
++++ b/src/models/minimax-m2.cpp
+@@ -53,13 +53,18 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     ggml_tensor * inp_pos = build_inp_pos();
+     auto inp_attn = build_attn_inp_kv();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = inpL;
+@@ -112,7 +117,7 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -150,6 +155,13 @@ llama_model_minimax_m2::graph::graph(const llama_model & model, const llm_graph_
+ 
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/olmo.cpp b/src/models/olmo.cpp
+index 161035e7..2f3d6760 100644
+--- a/src/models/olmo.cpp
++++ b/src/models/olmo.cpp
+@@ -49,16 +49,21 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -93,7 +98,7 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
+                     model.layers[il].wo, nullptr, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -125,6 +130,13 @@ llama_model_olmo::graph::graph(const llama_model & model, const llm_graph_params
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             NULL, NULL,
+             LLM_NORM, -1);
+diff --git a/src/models/qwen2.cpp b/src/models/qwen2.cpp
+index 6320458a..245b99dc 100644
+--- a/src/models/qwen2.cpp
++++ b/src/models/qwen2.cpp
+@@ -58,16 +58,21 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -102,7 +107,7 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -133,6 +138,13 @@ llama_model_qwen2::graph::graph(const llama_model & model, const llm_graph_param
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/qwen3.cpp b/src/models/qwen3.cpp
+index fa656c84..eaf5fb5c 100644
+--- a/src/models/qwen3.cpp
++++ b/src/models/qwen3.cpp
+@@ -58,16 +58,21 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+ 
+     // inp_pos - contains the positions
+     ggml_tensor * inp_pos = build_inp_pos();
+ 
+     auto * inp_attn = build_attn_inp_kv();
+ 
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         // norm
+@@ -108,7 +113,7 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+                     model.layers[il].wo, model.layers[il].wo_b, model.layers[il].wo_s,
+                     Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+         }
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -139,6 +144,13 @@ llama_model_qwen3::graph::graph(const llama_model & model, const llm_graph_param
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     cur = build_norm(cur,
+             model.output_norm, NULL,
+             LLM_NORM_RMS, -1);
+diff --git a/src/models/qwen3next.cpp b/src/models/qwen3next.cpp
+index cb1b4814..97a14e15 100644
+--- a/src/models/qwen3next.cpp
++++ b/src/models/qwen3next.cpp
+@@ -112,15 +112,27 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
+     ggml_tensor * cur;
+     ggml_tensor * inpL;
+ 
+-    inpL = build_inp_embd(model.tok_embd);
++    const skippy_graph_filter & stage_filter = skippy_graph_get_filter();
++    const bool stage_filtered = stage_filter.enabled;
++    const int il_start = stage_filtered ? stage_filter.layer_start : 0;
++    const int il_end   = stage_filtered ? stage_filter.layer_end   : n_layer;
++    bool has_attention_layer = false;
++    for (int il = il_start; il < il_end; ++il) {
++        if (!hparams.is_recurrent(il)) {
++            has_attention_layer = true;
++            break;
++        }
++    }
++
++    inpL = build_inp_embd(stage_filtered && il_start > 0 ? nullptr : model.tok_embd);
+     cb(inpL, "model.embed_tokens", -1);
+ 
+     auto * inp = build_inp_mem_hybrid();
+ 
+-    ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_pos     = has_attention_layer ? build_inp_pos() : nullptr;
++    ggml_tensor * inp_out_ids = (!stage_filtered || stage_filter.include_output) ? build_inp_out_ids() : nullptr;
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il_start; il < il_end; ++il) {
+         ggml_tensor * inpSA = inpL;
+ 
+         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+@@ -137,7 +149,7 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
+             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
+         }
+ 
+-        if (il == n_layer - 1 && inp_out_ids) {
++        if (il == il_end - 1 && inp_out_ids) {
+             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
+             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+         }
+@@ -169,6 +181,13 @@ llama_model_qwen3next::graph::graph(const llama_model & model, const llm_graph_p
+     }
+     cur = inpL;
+ 
++    if (stage_filtered && !stage_filter.include_output) {
++        cb(cur, "stage_boundary", il_end - 1);
++        res->t_embd = cur;
++        ggml_build_forward_expand(gf, cur);
++        return;
++    }
++
+     // Final norm
+     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index f0b70b96..50e25c8f 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -500,6 +500,26 @@ struct skippy_graph_filter_scope {
+     bool enabled = false;
+ };
+ 
++struct skippy_activation_tokens_scope {
++    skippy_activation_tokens_scope(const llama_token * tokens, size_t token_count) {
++        if (tokens != nullptr && token_count > 0 && token_count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
++            skippy_activation_tokens stage_tokens;
++            stage_tokens.tokens = tokens;
++            stage_tokens.token_count = static_cast<uint32_t>(token_count);
++            skippy_graph_set_activation_tokens(stage_tokens);
++            enabled = true;
++        }
++    }
++
++    ~skippy_activation_tokens_scope() {
++        if (enabled) {
++            skippy_graph_clear_activation_tokens();
++        }
++    }
++
++    bool enabled = false;
++};
++
+ static bool skippy_is_filtered(const skippy_session * session) {
+     return session != nullptr &&
+            session->stage_model != nullptr &&
+@@ -771,6 +791,7 @@ static enum skippy_status skippy_decode_activation_frame(
+         skippy_session * session,
+         const skippy_activation_desc * input_desc,
+         const void * input_payload,
++        const llama_token * token_ids,
+         size_t token_count,
+         bool request_logits,
+         struct skippy_error ** out_error) {
+@@ -796,6 +817,7 @@ static enum skippy_status skippy_decode_activation_frame(
+         batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
+     }
+ 
++    skippy_activation_tokens_scope activation_tokens_scope(token_ids, token_count);
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     llama_batch_free(batch);
+     return status;
+@@ -815,6 +837,7 @@ uint64_t skippy_abi_features(void) {
+     return SKIPPY_FEATURE_RUNTIME_SLICE |
+            SKIPPY_FEATURE_MODEL_INTROSPECTION |
+            SKIPPY_FEATURE_GGUF_SLICE_WRITE |
++           SKIPPY_FEATURE_STATE_IMPORT_EXPORT |
+            SKIPPY_FEATURE_TOKENIZE_DETOKENIZE |
+            SKIPPY_FEATURE_ACTIVATION_FRAME |
+            SKIPPY_FEATURE_NATIVE_KV_PAGE |
+@@ -889,9 +912,22 @@ enum skippy_status skippy_model_open(
+ 
+     if (config != nullptr && config->filter_tensors_on_load) {
+         const int32_t n_layer = llama_model_n_layer(model);
+-        if (model->arch != LLM_ARCH_LLAMA && model->arch != LLM_ARCH_QWEN35MOE) {
++        if (model->arch != LLM_ARCH_LLAMA &&
++            model->arch != LLM_ARCH_QWEN2 &&
++            model->arch != LLM_ARCH_QWEN3 &&
++            model->arch != LLM_ARCH_QWEN3NEXT &&
++            model->arch != LLM_ARCH_QWEN35MOE &&
++            model->arch != LLM_ARCH_GEMMA &&
++            model->arch != LLM_ARCH_GEMMA2 &&
++            model->arch != LLM_ARCH_GEMMA3 &&
++            model->arch != LLM_ARCH_GEMMA4 &&
++            model->arch != LLM_ARCH_GLM4 &&
++            model->arch != LLM_ARCH_DEEPSEEK2 &&
++            model->arch != LLM_ARCH_FALCON_H1 &&
++            model->arch != LLM_ARCH_MINIMAX_M2 &&
++            model->arch != LLM_ARCH_OLMO) {
+             llama_model_free(model);
+-            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime-slice execution is currently supported for LLaMA-family and Qwen35MoE graphs only");
++            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime-slice execution is not supported for this model architecture yet");
+             return SKIPPY_STATUS_UNSUPPORTED;
+         }
+         if (config->layer_end > n_layer) {
+@@ -1143,7 +1179,7 @@ enum skippy_status skippy_prefill_chunk_frame(
+     }
+ 
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+-        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_count, false, out_error);
++        status = skippy_decode_activation_frame(session, input_desc, input_payload, token_ids, token_count, false, out_error);
+     } else {
+         status = skippy_decode_tokens(session, token_ids, token_count, false, out_error);
+     }
+@@ -1188,7 +1224,7 @@ enum skippy_status skippy_decode_step_frame(
+     }
+ 
+     if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
+-        status = skippy_decode_activation_frame(session, input_desc, input_payload, 1, true, out_error);
++        status = skippy_decode_activation_frame(session, input_desc, input_payload, &token_id, 1, true, out_error);
+     } else {
+         status = skippy_decode_tokens(session, &token_id, 1, true, out_error);
+     }
+@@ -1211,14 +1247,51 @@ enum skippy_status skippy_export_state(
+         size_t output_capacity,
+         size_t * out_bytes,
+         struct skippy_error ** out_error) {
+-    (void) session;
+-    (void) layer_start;
+-    (void) layer_end;
+-    (void) output;
+-    (void) output_capacity;
+-    (void) out_bytes;
+-    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "state export is not implemented yet");
+-    return SKIPPY_STATUS_UNSUPPORTED;
++    if (out_bytes != nullptr) {
++        *out_bytes = 0;
++    }
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const skippy_runtime_config & config = session->stage_model->config;
++    const int32_t expected_layer_start = config.filter_tensors_on_load ? config.layer_start : 0;
++    const int32_t expected_layer_end = config.filter_tensors_on_load ?
++            config.layer_end : llama_model_n_layer(session->stage_model->model);
++    if (layer_start != expected_layer_start || layer_end != expected_layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state range must match the session layer range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    session->ctx->synchronize();
++    const size_t required = llama_state_seq_get_size_ext(session->ctx, 0, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (out_bytes != nullptr) {
++        *out_bytes = required;
++    }
++    if (required == 0) {
++        return skippy_success(out_error);
++    }
++    if (output == nullptr || output_capacity < required) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "state output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    const size_t written = llama_state_seq_get_data_ext(
++            session->ctx,
++            static_cast<uint8_t *>(output),
++            output_capacity,
++            0,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (written != required) {
++        if (out_bytes != nullptr) {
++            *out_bytes = written;
++        }
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to export sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    return skippy_success(out_error);
+ }
+ 
+ enum skippy_status skippy_import_state(
+@@ -1228,13 +1301,152 @@ enum skippy_status skippy_import_state(
+         const void * input,
+         size_t input_bytes,
+         struct skippy_error ** out_error) {
+-    (void) session;
+-    (void) layer_start;
+-    (void) layer_end;
+-    (void) input;
+-    (void) input_bytes;
+-    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "state import is not implemented yet");
+-    return SKIPPY_STATUS_UNSUPPORTED;
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (input == nullptr && input_bytes > 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state input is required when input_bytes is non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const skippy_runtime_config & config = session->stage_model->config;
++    const int32_t expected_layer_start = config.filter_tensors_on_load ? config.layer_start : 0;
++    const int32_t expected_layer_end = config.filter_tensors_on_load ?
++            config.layer_end : llama_model_n_layer(session->stage_model->model);
++    if (layer_start != expected_layer_start || layer_end != expected_layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state range must match the session layer range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    uint32_t imported_cells = 0;
++    if (input_bytes >= sizeof(imported_cells)) {
++        std::memcpy(&imported_cells, input, sizeof(imported_cells));
++    }
++
++    session->ctx->synchronize();
++    const size_t read = llama_state_seq_set_data_ext(
++            session->ctx,
++            static_cast<const uint8_t *>(input),
++            input_bytes,
++            0,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (read != input_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->n_past = std::max<int32_t>(
++            session->n_past,
++            static_cast<int32_t>(std::min<uint32_t>(
++                    imported_cells,
++                    static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))));
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_export_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    if (out_bytes != nullptr) {
++        *out_bytes = 0;
++    }
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const skippy_runtime_config & config = session->stage_model->config;
++    const int32_t expected_layer_start = config.filter_tensors_on_load ? config.layer_start : 0;
++    const int32_t expected_layer_end = config.filter_tensors_on_load ?
++            config.layer_end : llama_model_n_layer(session->stage_model->model);
++    if (layer_start != expected_layer_start || layer_end != expected_layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state range must match the session layer range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    session->ctx->synchronize();
++    const size_t required = llama_state_seq_get_size(session->ctx, 0);
++    if (out_bytes != nullptr) {
++        *out_bytes = required;
++    }
++    if (required == 0) {
++        return skippy_success(out_error);
++    }
++    if (output == nullptr || output_capacity < required) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "full state output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    const size_t written = llama_state_seq_get_data(
++            session->ctx,
++            static_cast<uint8_t *>(output),
++            output_capacity,
++            0);
++    if (written != required) {
++        if (out_bytes != nullptr) {
++            *out_bytes = written;
++        }
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to export full sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_import_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (input == nullptr && input_bytes > 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state input is required when input_bytes is non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const skippy_runtime_config & config = session->stage_model->config;
++    const int32_t expected_layer_start = config.filter_tensors_on_load ? config.layer_start : 0;
++    const int32_t expected_layer_end = config.filter_tensors_on_load ?
++            config.layer_end : llama_model_n_layer(session->stage_model->model);
++    if (layer_start != expected_layer_start || layer_end != expected_layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state range must match the session layer range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    uint32_t imported_cells = 0;
++    if (input_bytes >= 2 * sizeof(uint32_t)) {
++        std::memcpy(&imported_cells, static_cast<const uint8_t *>(input) + sizeof(uint32_t), sizeof(imported_cells));
++    }
++
++    session->ctx->synchronize();
++    const size_t read = llama_state_seq_set_data(
++            session->ctx,
++            static_cast<const uint8_t *>(input),
++            input_bytes,
++            0);
++    if (read != input_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import full sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->n_past = std::max<int32_t>(
++            session->n_past,
++            static_cast<int32_t>(std::min<uint32_t>(
++                    imported_cells,
++                    static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))));
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
+ }
+ 
+ static llama_kv_cache * skippy_get_kv_cache(
+-- 
+2.50.1 (Apple Git-155)

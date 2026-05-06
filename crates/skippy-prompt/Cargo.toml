@@ -1,0 +1,18 @@
+[package]
+name = "skippy-prompt"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+ctrlc = "3.5"
+skippy-protocol = { path = "../skippy-protocol" }
+skippy-runtime = { path = "../skippy-runtime" }
+skippy-topology = { path = "../skippy-topology" }
+openai-frontend = { path = "../openai-frontend" }
+mesh-client = { package = "mesh-llm-client", path = "../mesh-client" }
+rustyline = "18"
+serde_json.workspace = true

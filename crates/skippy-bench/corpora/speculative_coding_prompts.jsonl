@@ -1,0 +1,12 @@
+{"prompt_id":"spec-code-001","category":"rust_edit","prompt":"In Rust, write a function named sum_i32 that returns the sum of an &[i32]. Include one unit test."}
+{"prompt_id":"spec-code-002","category":"rust_edit","prompt":"Revise the Rust sum_i32 function so it handles an empty slice explicitly. Include one unit test."}
+{"prompt_id":"spec-code-003","category":"rust_edit","prompt":"Add a Rust function named mean_i32 that returns Option<f64> for an &[i32]. Include one unit test."}
+{"prompt_id":"spec-code-004","category":"rust_edit","prompt":"Refactor the Rust mean_i32 function to reuse sum_i32. Include one unit test."}
+{"prompt_id":"spec-code-005","category":"rust_edit","prompt":"Write a Rust function named clamp_i32(value, min, max) that clamps a value. Include one unit test."}
+{"prompt_id":"spec-code-006","category":"rust_edit","prompt":"Revise clamp_i32 to return Result<i32, &'static str> when min is greater than max. Include one unit test."}
+{"prompt_id":"spec-code-007","category":"typescript_edit","prompt":"Write a TypeScript function named uniqueStrings that preserves first occurrence order. Include one tiny test."}
+{"prompt_id":"spec-code-008","category":"typescript_edit","prompt":"Revise uniqueStrings to ignore empty strings while preserving order. Include one tiny test."}
+{"prompt_id":"spec-code-009","category":"typescript_edit","prompt":"Write a TypeScript function named groupByPrefix that groups strings by the text before ':'. Include one tiny test."}
+{"prompt_id":"spec-code-010","category":"typescript_edit","prompt":"Revise groupByPrefix to put strings without ':' into an 'ungrouped' bucket. Include one tiny test."}
+{"prompt_id":"spec-code-011","category":"doc_edit","prompt":"Draft a concise changelog entry for adding session_id to a binary inference protocol."}
+{"prompt_id":"spec-code-012","category":"doc_edit","prompt":"Revise the changelog entry to mention n-gram speculative pools keyed by session_id."}

@@ -1,0 +1,99 @@
+From 4f39a521808e8daf203f4f767a5afc6ba93b9ad1 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sat, 2 May 2026 14:14:40 +1000
+Subject: [PATCH 32/45] Expose selected backend device ABI
+
+---
+ include/skippy.h |  5 +++++
+ src/skippy.cpp   | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 4f1c8805..2f8f8466 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -121,6 +121,11 @@ struct skippy_runtime_config {
+     bool filter_tensors_on_load;
+     bool include_embeddings;
+     bool include_output;
++
++    // Optional ggml backend device name, for example "CUDA0", "MTL0",
++    // "Vulkan1", or "CPU". When set, skippy loads the model only on that
++    // backend device instead of relying on llama.cpp default device ordering.
++    const char * selected_backend_device;
+ };
+ 
+ struct skippy_tensor_info {
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 4b4bf8eb..26209b45 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -471,6 +471,41 @@ static bool skippy_is_full_model_config(const struct skippy_runtime_config * con
+     return !config->filter_tensors_on_load && config->layer_start == 0;
+ }
+ 
++static enum skippy_status skippy_apply_selected_backend_device(
++        const struct skippy_runtime_config * config,
++        llama_model_params & params,
++        std::vector<ggml_backend_dev_t> & selected_devices,
++        struct skippy_error ** out_error) {
++    if (config == nullptr || config->selected_backend_device == nullptr || config->selected_backend_device[0] == '\0') {
++        return SKIPPY_STATUS_OK;
++    }
++
++    const std::string device_name(config->selected_backend_device);
++    if (device_name == "CPU" || device_name == "CPU0") {
++        params.devices = nullptr;
++        params.main_gpu = -1;
++        params.n_gpu_layers = 0;
++        return SKIPPY_STATUS_OK;
++    }
++
++    ggml_backend_dev_t dev = ggml_backend_dev_by_name(device_name.c_str());
++    if (dev == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, ("unknown selected backend device: " + device_name).c_str());
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, ("selected backend device is CPU; use CPU or CPU0: " + device_name).c_str());
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    selected_devices.clear();
++    selected_devices.push_back(dev);
++    selected_devices.push_back(nullptr);
++    params.devices = selected_devices.data();
++    params.main_gpu = 0;
++    return SKIPPY_STATUS_OK;
++}
++
+ struct skippy_filter_scope {
+     explicit skippy_filter_scope(const skippy_runtime_config * config) {
+         if (config != nullptr && config->filter_tensors_on_load) {
+@@ -1211,6 +1246,11 @@ enum skippy_status skippy_model_open(
+     }
+ 
+     llama_backend_init();
++    std::vector<ggml_backend_dev_t> selected_devices;
++    enum skippy_status device_status = skippy_apply_selected_backend_device(config, params, selected_devices, out_error);
++    if (device_status != SKIPPY_STATUS_OK) {
++        return device_status;
++    }
+     skippy_filter_scope filter_scope(config);
+     llama_model * model = llama_model_load_from_file(path, params);
+     if (model == nullptr) {
+@@ -1262,6 +1302,11 @@ enum skippy_status skippy_model_open_from_parts(
+     }
+ 
+     llama_backend_init();
++    std::vector<ggml_backend_dev_t> selected_devices;
++    enum skippy_status device_status = skippy_apply_selected_backend_device(config, params, selected_devices, out_error);
++    if (device_status != SKIPPY_STATUS_OK) {
++        return device_status;
++    }
+     skippy_filter_scope filter_scope(config);
+     llama_model * model = llama_model_load_from_parts(paths, path_count, params);
+     if (model == nullptr) {
+-- 
+2.50.1 (Apple Git-155)
+

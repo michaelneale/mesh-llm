@@ -1,0 +1,264 @@
+From 507ccf47fc3181aa3cd0b533536d0bce4ef4b5e6 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 10:28:54 +1000
+Subject: [PATCH 02/45] Implement skippy model info ABI
+
+---
+ CMakeLists.txt     |   1 +
+ src/CMakeLists.txt |   1 +
+ src/skippy.cpp     | 219 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 221 insertions(+)
+ create mode 100644 src/skippy.cpp
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 310a3dcf..d56e2f9a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -241,6 +241,7 @@ set(LLAMA_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location o
+ 
+ set(LLAMA_PUBLIC_HEADERS
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/llama.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/include/skippy.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/include/llama-cpp.h)
+ 
+ set_target_properties(llama
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 7b1fcfca..8f3aa8c1 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -34,6 +34,7 @@ add_library(llama
+             llama-model.cpp
+             llama-quant.cpp
+             llama-sampler.cpp
++            skippy.cpp
+             llama-vocab.cpp
+             unicode-data.cpp
+             unicode.cpp
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+new file mode 100644
+index 00000000..bd94fa37
+--- /dev/null
++++ b/src/skippy.cpp
+@@ -0,0 +1,219 @@
++#include "skippy.h"
++
++#include "gguf.h"
++
++#include <cerrno>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <exception>
++#include <regex>
++#include <string>
++
++struct skippy_model_info {
++    gguf_context * ctx = nullptr;
++};
++
++static skippy_error * skippy_make_error(enum skippy_status status, const char * message) {
++    skippy_error * error = new skippy_error{};
++    error->status = status;
++
++    if (message == nullptr) {
++        error->message = nullptr;
++        return error;
++    }
++
++    const size_t len = std::strlen(message);
++    char * owned = static_cast<char *>(std::malloc(len + 1));
++    if (owned == nullptr) {
++        error->status = SKIPPY_STATUS_ERROR;
++        error->message = nullptr;
++        return error;
++    }
++
++    std::memcpy(owned, message, len + 1);
++    error->message = owned;
++    return error;
++}
++
++static void skippy_set_error(
++        skippy_error ** out_error,
++        enum skippy_status status,
++        const char * message) {
++    if (out_error != nullptr) {
++        *out_error = skippy_make_error(status, message);
++    }
++}
++
++static enum skippy_status skippy_success(skippy_error ** out_error) {
++    if (out_error != nullptr) {
++        *out_error = nullptr;
++    }
++    return SKIPPY_STATUS_OK;
++}
++
++static int32_t skippy_layer_from_name(const char * name) {
++    if (name == nullptr) {
++        return -1;
++    }
++
++    static const std::regex blk_pattern("^blk\\.([0-9]+)\\.");
++    static const std::regex cache_pattern("^cache_.*_l([0-9]+)$");
++
++    std::cmatch match;
++    if (std::regex_search(name, match, blk_pattern)) {
++        return static_cast<int32_t>(std::stol(match[1].str()));
++    }
++    if (std::regex_search(name, match, cache_pattern)) {
++        return static_cast<int32_t>(std::stol(match[1].str()));
++    }
++
++    return -1;
++}
++
++static enum skippy_tensor_role skippy_role_from_name(const char * name, int32_t layer_index) {
++    if (name == nullptr) {
++        return SKIPPY_TENSOR_ROLE_UNKNOWN;
++    }
++
++    const std::string tensor_name(name);
++    if (layer_index >= 0) {
++        return SKIPPY_TENSOR_ROLE_LAYER;
++    }
++    if (tensor_name == "token_embd.weight" || tensor_name == "per_layer_token_embd.weight") {
++        return SKIPPY_TENSOR_ROLE_EMBEDDING;
++    }
++    if (tensor_name == "output.weight" || tensor_name == "output.bias") {
++        return SKIPPY_TENSOR_ROLE_OUTPUT;
++    }
++    if (tensor_name == "output_norm.weight" || tensor_name == "output_norm.bias") {
++        return SKIPPY_TENSOR_ROLE_FINAL_NORM;
++    }
++
++    return SKIPPY_TENSOR_ROLE_METADATA;
++}
++
++extern "C" {
++
++struct skippy_abi_version skippy_abi_version(void) {
++    return {
++        SKIPPY_ABI_VERSION_MAJOR,
++        SKIPPY_ABI_VERSION_MINOR,
++        SKIPPY_ABI_VERSION_PATCH,
++    };
++}
++
++uint64_t skippy_abi_features(void) {
++    return SKIPPY_FEATURE_MODEL_INTROSPECTION;
++}
++
++const char * skippy_status_string(enum skippy_status status) {
++    switch (status) {
++        case SKIPPY_STATUS_OK:               return "ok";
++        case SKIPPY_STATUS_ERROR:            return "error";
++        case SKIPPY_STATUS_INVALID_ARGUMENT: return "invalid_argument";
++        case SKIPPY_STATUS_UNSUPPORTED:      return "unsupported";
++        case SKIPPY_STATUS_BUFFER_TOO_SMALL: return "buffer_too_small";
++        case SKIPPY_STATUS_IO_ERROR:         return "io_error";
++        case SKIPPY_STATUS_MODEL_ERROR:      return "model_error";
++        case SKIPPY_STATUS_RUNTIME_ERROR:    return "runtime_error";
++    }
++
++    return "unknown";
++}
++
++void skippy_error_free(struct skippy_error * error) {
++    if (error == nullptr) {
++        return;
++    }
++
++    std::free(const_cast<char *>(error->message));
++    delete error;
++}
++
++enum skippy_status skippy_model_info_open(
++        const char * path,
++        struct skippy_model_info ** out_info,
++        struct skippy_error ** out_error) {
++    if (path == nullptr || out_info == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "path and out_info are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    *out_info = nullptr;
++
++    gguf_init_params params = {
++        /*.no_alloc =*/ true,
++        /*.ctx      =*/ nullptr,
++    };
++    gguf_context * ctx = gguf_init_from_file(path, params);
++    if (ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to open GGUF model metadata");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    skippy_model_info * info = new skippy_model_info{};
++    info->ctx = ctx;
++    *out_info = info;
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_model_info_free(
++        struct skippy_model_info * info,
++        struct skippy_error ** out_error) {
++    if (info != nullptr) {
++        gguf_free(info->ctx);
++        delete info;
++    }
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_model_info_tensor_count(
++        struct skippy_model_info * info,
++        size_t * out_count,
++        struct skippy_error ** out_error) {
++    if (info == nullptr || info->ctx == nullptr || out_count == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "info and out_count are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int64_t n_tensors = gguf_get_n_tensors(info->ctx);
++    if (n_tensors < 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "GGUF reported negative tensor count");
++        return SKIPPY_STATUS_MODEL_ERROR;
++    }
++
++    *out_count = static_cast<size_t>(n_tensors);
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_model_info_tensor_at(
++        struct skippy_model_info * info,
++        size_t index,
++        struct skippy_tensor_info * out_tensor,
++        struct skippy_error ** out_error) {
++    if (info == nullptr || info->ctx == nullptr || out_tensor == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "info and out_tensor are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int64_t n_tensors = gguf_get_n_tensors(info->ctx);
++    if (index >= static_cast<size_t>(n_tensors)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "tensor index is out of range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int64_t tensor_id = static_cast<int64_t>(index);
++    const char * name = gguf_get_tensor_name(info->ctx, tensor_id);
++    const int32_t layer_index = skippy_layer_from_name(name);
++
++    out_tensor->name = name;
++    out_tensor->layer_index = layer_index;
++    out_tensor->role = skippy_role_from_name(name, layer_index);
++    out_tensor->ggml_type = static_cast<uint32_t>(gguf_get_tensor_type(info->ctx, tensor_id));
++    out_tensor->byte_size = static_cast<uint64_t>(gguf_get_tensor_size(info->ctx, tensor_id));
++    out_tensor->element_count = 0;
++    return skippy_success(out_error);
++}
++
++}
+-- 
+2.50.1 (Apple Git-155)
+

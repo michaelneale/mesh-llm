@@ -1,0 +1,277 @@
+From 47ba95c8730a0ebe65df0c6a7f797db56804b2bd Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 13:47:51 +1000
+Subject: [PATCH 20/45] Add staged batched verification frame ABI
+
+---
+ include/skippy.h |  18 ++++-
+ src/skippy.cpp   | 177 +++++++++++++++++++++++++++++++++++++++++++----
+ 2 files changed, 180 insertions(+), 15 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 79027cd0..f461ee51 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 4
++#define SKIPPY_ABI_VERSION_PATCH 5
+ 
+ enum skippy_feature {
+     SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+@@ -42,6 +42,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
+     SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
+     SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
++    SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -280,6 +281,21 @@ LLAMA_API enum skippy_status skippy_decode_step_frame_sampled(
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_verify_tokens_frame(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        size_t * out_token_count,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 894ad093..e3c1f4a7 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -709,6 +709,40 @@ static enum skippy_status skippy_decode_tokens(
+     return status;
+ }
+ 
++static enum skippy_status skippy_verify_token_batch(
++        skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || token_ids == nullptr || token_count == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and at least one token are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "non-first runtime slices require activation input");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int32_t n_tokens = static_cast<int32_t>(token_count);
++    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
++    batch.n_tokens = n_tokens;
++    for (int32_t i = 0; i < n_tokens; ++i) {
++        batch.token[i] = token_ids[i];
++        batch.pos[i] = session->n_past + i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = 1;
++    }
++
++    enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
++    llama_batch_free(batch);
++    return status;
++}
++
+ static llama_token skippy_greedy_sample(skippy_session * session) {
+     const llama_vocab * vocab = llama_model_get_vocab(session->stage_model->model);
+     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+@@ -887,6 +921,39 @@ static enum skippy_status skippy_decode_activation_frame(
+     return status;
+ }
+ 
++static enum skippy_status skippy_verify_activation_frame(
++        skippy_session * session,
++        const skippy_activation_desc * input_desc,
++        const void * input_payload,
++        size_t token_count,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || input_desc == nullptr || input_payload == nullptr || token_count == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session and activation frame input are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    const int32_t n_tokens = static_cast<int32_t>(token_count);
++    const int32_t n_embd = llama_model_n_embd(session->stage_model->model);
++    llama_batch batch = llama_batch_init(n_tokens, n_embd, 1);
++    batch.n_tokens = n_tokens;
++    std::memcpy(batch.embd, input_payload, static_cast<size_t>(input_desc->payload_bytes));
++
++    for (int32_t i = 0; i < n_tokens; ++i) {
++        batch.pos[i] = session->n_past + i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = 1;
++    }
++
++    enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
++    llama_batch_free(batch);
++    return status;
++}
++
+ extern "C" {
+ 
+ struct skippy_abi_version skippy_abi_version(void) {
+@@ -906,7 +973,8 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_ACTIVATION_FRAME |
+            SKIPPY_FEATURE_NATIVE_KV_PAGE |
+            SKIPPY_FEATURE_SESSION_RESET |
+-           SKIPPY_FEATURE_BATCH_VERIFY;
++           SKIPPY_FEATURE_BATCH_VERIFY |
++           SKIPPY_FEATURE_BATCH_VERIFY_FRAME;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -1204,24 +1272,13 @@ enum skippy_status skippy_verify_tokens(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    const int32_t n_tokens = static_cast<int32_t>(token_count);
+-    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
+-    batch.n_tokens = n_tokens;
+-    for (int32_t i = 0; i < n_tokens; ++i) {
+-        batch.token[i] = token_ids[i];
+-        batch.pos[i] = session->n_past + i;
+-        batch.n_seq_id[i] = 1;
+-        batch.seq_id[i][0] = 0;
+-        batch.logits[i] = 1;
+-    }
+-
+-    enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
++    enum skippy_status status = skippy_verify_token_batch(session, token_ids, token_count, out_error);
+     if (status == SKIPPY_STATUS_OK) {
++        const int32_t n_tokens = static_cast<int32_t>(token_count);
+         for (int32_t i = 0; i < n_tokens; ++i) {
+             output_tokens[i] = skippy_greedy_sample_ith(session, i);
+         }
+     }
+-    llama_batch_free(batch);
+     return status;
+ }
+ 
+@@ -1354,6 +1411,98 @@ enum skippy_status skippy_decode_step_frame_sampled(
+     return skippy_copy_output_activation_frame(session, 1, output_payload, out_error);
+ }
+ 
++enum skippy_status skippy_verify_tokens_frame(
++        struct skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * output_tokens,
++        size_t output_token_capacity,
++        size_t * out_token_count,
++        struct skippy_error ** out_error) {
++    if (out_token_count != nullptr) {
++        *out_token_count = 0;
++    }
++    if (token_count == 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count must be greater than zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds activation descriptor range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (session == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    enum skippy_status status = skippy_validate_frame_input(
++            session,
++            input_desc,
++            input_payload,
++            token_count,
++            out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    status = skippy_prepare_output_activation_frame(
++            session,
++            token_count,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            output_desc,
++            out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    if (session->stage_model->config.include_output) {
++        if (out_token_count == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "out_token_count is required for output stages");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
++        }
++        *out_token_count = token_count;
++        if (output_tokens == nullptr || output_token_capacity < token_count) {
++            skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "token output buffer is too small");
++            return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++        }
++    }
++
++    if (skippy_is_filtered(session) && session->stage_model->config.layer_start > 0) {
++        status = session->stage_model->config.include_output ?
++                skippy_verify_activation_frame(session, input_desc, input_payload, token_count, out_error) :
++                skippy_decode_activation_frame(session, input_desc, input_payload, token_count, false, out_error);
++    } else {
++        status = session->stage_model->config.include_output ?
++                skippy_verify_token_batch(session, token_ids, token_count, out_error) :
++                skippy_decode_tokens(session, token_ids, token_count, false, out_error);
++    }
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    status = skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    if (session->stage_model->config.include_output) {
++        const int32_t n_tokens = static_cast<int32_t>(token_count);
++        for (int32_t i = 0; i < n_tokens; ++i) {
++            output_tokens[i] = skippy_greedy_sample_ith(session, i);
++        }
++    }
++
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+-- 
+2.50.1 (Apple Git-155)
+

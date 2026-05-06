@@ -1,0 +1,126 @@
+From 217923dd1c1fa739fbf8aa7d5ebb140b1e42b23e Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 15:42:15 +1000
+Subject: [PATCH 23/45] Add stage session trim ABI
+
+---
+ include/skippy.h |  8 ++++++-
+ src/skippy.cpp   | 61 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index bf54c23e..ef4022b9 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 7
++#define SKIPPY_ABI_VERSION_PATCH 8
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -47,6 +47,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
+     SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
+     SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
++    SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -350,6 +351,11 @@ LLAMA_API enum skippy_status skippy_import_recurrent_state(
+         size_t input_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_trim_session(
++        struct skippy_session * session,
++        uint64_t token_count,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_kv_page(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index b7188fb4..5f5d33b4 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -990,8 +990,12 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_NATIVE_KV_PAGE |
+            SKIPPY_FEATURE_SESSION_RESET |
+            SKIPPY_FEATURE_BATCH_VERIFY |
++           SKIPPY_FEATURE_CHAT_TEMPLATE |
++           SKIPPY_FEATURE_SAMPLING_CONFIG |
+            SKIPPY_FEATURE_BATCH_VERIFY_FRAME |
+-           SKIPPY_FEATURE_RECURRENT_STATE;
++           SKIPPY_FEATURE_RECURRENT_STATE |
++           SKIPPY_FEATURE_LOGIT_BIAS |
++           SKIPPY_FEATURE_SESSION_TRIM;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -1852,6 +1856,61 @@ enum skippy_status skippy_import_recurrent_state(
+     return skippy_success(out_error);
+ }
+ 
++static llama_kv_cache * skippy_get_kv_cache(
++        skippy_session * session,
++        skippy_error ** out_error);
++
++enum skippy_status skippy_trim_session(
++        struct skippy_session * session,
++        uint64_t token_count,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "token_count exceeds int32_t range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    if (token_count > static_cast<uint64_t>(session->n_past)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "cannot trim session beyond current token count");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    session->ctx->synchronize();
++    llama_memory_t memory = session->ctx->get_memory();
++    if (memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "runtime memory is unavailable");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    const llama_pos p0 = static_cast<llama_pos>(token_count);
++    if (auto * hybrid = dynamic_cast<llama_memory_hybrid *>(memory)) {
++        llama_kv_cache * kv = hybrid->get_mem_attn();
++        if (kv != nullptr && !kv->seq_rm(0, p0, -1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim hybrid attention KV suffix");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++    } else if (auto * hybrid_iswa = dynamic_cast<llama_memory_hybrid_iswa *>(memory)) {
++        llama_kv_cache_iswa * kv = hybrid_iswa->get_mem_attn();
++        if (kv != nullptr && !kv->seq_rm(0, p0, -1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim hybrid ISWA attention KV suffix");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++    } else if (auto * kv = dynamic_cast<llama_kv_cache *>(memory)) {
++        if (!kv->seq_rm(0, p0, -1)) {
++            skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to trim native KV suffix");
++            return SKIPPY_STATUS_RUNTIME_ERROR;
++        }
++    } else if (dynamic_cast<llama_memory_recurrent *>(memory) == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime memory type is not supported for trim");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++    session->n_past = static_cast<int32_t>(token_count);
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
+ static llama_kv_cache * skippy_get_kv_cache(
+         skippy_session * session,
+         skippy_error ** out_error) {
+-- 
+2.50.1 (Apple Git-155)
+

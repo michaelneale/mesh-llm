@@ -1,0 +1,13 @@
+[package]
+name = "skippy-protocol"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+prost = "0.14"
+serde.workspace = true
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"

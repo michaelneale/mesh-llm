@@ -23,4 +23,4 @@ This fork uses local GGUF loading on peers, which cuts that to:
 - 0 bytes transferred
 - about 9 seconds to connect
 
-For deeper design and performance notes, see [mesh-llm/docs/DESIGN.md](../mesh-llm/docs/DESIGN.md).
+For deeper design and performance notes, see [design/DESIGN.md](design/DESIGN.md).

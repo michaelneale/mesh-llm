@@ -1,0 +1,279 @@
+From 8f5deafaefac5cecfc8c544b46fbd3f4566229ff Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 20:15:33 +1000
+Subject: [PATCH 19/45] Add stage sampling config ABI
+
+---
+ include/skippy.h |  41 +++++++++++++++-
+ src/skippy.cpp   | 119 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 157 insertions(+), 3 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 23a46e0f..79027cd0 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 2
++#define SKIPPY_ABI_VERSION_PATCH 4
+ 
+ enum skippy_feature {
+     SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+@@ -41,6 +41,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
+     SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
+     SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
++    SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -133,6 +134,19 @@ struct skippy_activation_desc {
+     uint64_t flags;
+ };
+ 
++struct skippy_sampling_config {
++    uint32_t version;
++    uint32_t flags;
++    uint32_t seed;
++    int32_t top_k;
++    int32_t penalty_last_n;
++    float temperature;
++    float top_p;
++    float presence_penalty;
++    float frequency_penalty;
++    float repeat_penalty;
++};
++
+ struct skippy_kv_page_desc {
+     uint32_t version;
+     int32_t layer_start;
+@@ -217,6 +231,18 @@ LLAMA_API enum skippy_status skippy_verify_tokens(
+         size_t * out_token_count,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_decode_step_sampled(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_sampling_config * sampling,
++        const void * input_activation,
++        size_t input_activation_bytes,
++        void * output_activation,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_prefill_chunk_frame(
+         struct skippy_session * session,
+         const llama_token * token_ids,
+@@ -241,6 +267,19 @@ LLAMA_API enum skippy_status skippy_decode_step_frame(
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_decode_step_frame_sampled(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_export_state(
+         struct skippy_session * session,
+         int32_t layer_start,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 50e25c8f..894ad093 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -32,6 +32,7 @@ struct skippy_session {
+     skippy_model * stage_model = nullptr;
+     llama_context * ctx = nullptr;
+     int32_t n_past = 0;
++    std::vector<llama_token> token_history;
+ };
+ 
+ struct skippy_tensor_meta {
+@@ -659,6 +660,15 @@ static enum skippy_status skippy_decode_batch(
+     return skippy_success(out_error);
+ }
+ 
++static void skippy_record_tokens(
++        skippy_session * session,
++        const llama_token * token_ids,
++        size_t token_count) {
++    if (session != nullptr && token_ids != nullptr && token_count > 0) {
++        session->token_history.insert(session->token_history.end(), token_ids, token_ids + token_count);
++    }
++}
++
+ static enum skippy_status skippy_decode_tokens(
+         skippy_session * session,
+         const llama_token * token_ids,
+@@ -693,6 +703,9 @@ static enum skippy_status skippy_decode_tokens(
+ 
+     enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
+     llama_batch_free(batch);
++    if (status == SKIPPY_STATUS_OK) {
++        skippy_record_tokens(session, token_ids, token_count);
++    }
+     return status;
+ }
+ 
+@@ -733,6 +746,57 @@ static llama_token skippy_greedy_sample_ith(skippy_session * session, int32_t in
+     return best;
+ }
+ 
++static bool skippy_sampling_enabled(const skippy_sampling_config * sampling) {
++    if (sampling == nullptr || sampling->version == 0 || sampling->flags == 0) {
++        return false;
++    }
++    return sampling->temperature > 0.0f;
++}
++
++static llama_token skippy_sample_token(
++        skippy_session * session,
++        const skippy_sampling_config * sampling) {
++    if (!skippy_sampling_enabled(sampling)) {
++        return skippy_greedy_sample(session);
++    }
++
++    llama_sampler_chain_params chain_params = llama_sampler_chain_default_params();
++    llama_sampler * sampler = llama_sampler_chain_init(chain_params);
++    if (sampler == nullptr) {
++        return skippy_greedy_sample(session);
++    }
++
++    const int32_t penalty_last_n = sampling->penalty_last_n == 0 ? -1 : sampling->penalty_last_n;
++    const float repeat_penalty = sampling->repeat_penalty == 0.0f ? 1.0f : sampling->repeat_penalty;
++    if (repeat_penalty != 1.0f || sampling->frequency_penalty != 0.0f || sampling->presence_penalty != 0.0f) {
++        llama_sampler_chain_add(
++                sampler,
++                llama_sampler_init_penalties(
++                        penalty_last_n,
++                        repeat_penalty,
++                        sampling->frequency_penalty,
++                        sampling->presence_penalty));
++    }
++    if (sampling->top_k > 0) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_top_k(sampling->top_k));
++    }
++    if (sampling->top_p > 0.0f && sampling->top_p < 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(sampling->top_p, 1));
++    }
++    if (sampling->temperature != 1.0f) {
++        llama_sampler_chain_add(sampler, llama_sampler_init_temp(sampling->temperature));
++    }
++    const uint32_t seed = sampling->seed == 0 ? LLAMA_DEFAULT_SEED : sampling->seed + static_cast<uint32_t>(session->n_past);
++    llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
++
++    for (const llama_token token : session->token_history) {
++        llama_sampler_accept(sampler, token);
++    }
++    llama_token token = llama_sampler_sample(sampler, session->ctx, -1);
++    llama_sampler_free(sampler);
++    return token;
++}
++
+ static enum skippy_status skippy_prepare_empty_activation_frame(
+         skippy_session * session,
+         size_t token_count,
+@@ -1020,6 +1084,7 @@ enum skippy_status skippy_session_reset(
+ 
+     llama_memory_clear(memory, true);
+     session->n_past = 0;
++    session->token_history.clear();
+     session->ctx->synchronize();
+     return skippy_success(out_error);
+ }
+@@ -1066,6 +1131,30 @@ enum skippy_status skippy_decode_step(
+         size_t * out_output_activation_bytes,
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error) {
++    return skippy_decode_step_sampled(
++            session,
++            token_id,
++            nullptr,
++            input_activation,
++            input_activation_bytes,
++            output_activation,
++            output_activation_capacity,
++            out_output_activation_bytes,
++            out_predicted_token,
++            out_error);
++}
++
++enum skippy_status skippy_decode_step_sampled(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_sampling_config * sampling,
++        const void * input_activation,
++        size_t input_activation_bytes,
++        void * output_activation,
++        size_t output_activation_capacity,
++        size_t * out_output_activation_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
+     (void) input_activation;
+     (void) input_activation_bytes;
+     (void) output_activation;
+@@ -1081,7 +1170,7 @@ enum skippy_status skippy_decode_step(
+     }
+ 
+     if (out_predicted_token != nullptr) {
+-        *out_predicted_token = skippy_greedy_sample(session);
++        *out_predicted_token = skippy_sample_token(session, sampling);
+     }
+ 
+     return skippy_success(out_error);
+@@ -1201,6 +1290,32 @@ enum skippy_status skippy_decode_step_frame(
+         size_t * out_output_payload_bytes,
+         llama_token * out_predicted_token,
+         struct skippy_error ** out_error) {
++    return skippy_decode_step_frame_sampled(
++            session,
++            token_id,
++            nullptr,
++            input_desc,
++            input_payload,
++            output_desc,
++            output_payload,
++            output_payload_capacity,
++            out_output_payload_bytes,
++            out_predicted_token,
++            out_error);
++}
++
++enum skippy_status skippy_decode_step_frame_sampled(
++        struct skippy_session * session,
++        llama_token token_id,
++        const struct skippy_sampling_config * sampling,
++        const struct skippy_activation_desc * input_desc,
++        const void * input_payload,
++        struct skippy_activation_desc * output_desc,
++        void * output_payload,
++        size_t output_payload_capacity,
++        size_t * out_output_payload_bytes,
++        llama_token * out_predicted_token,
++        struct skippy_error ** out_error) {
+     enum skippy_status status = skippy_validate_frame_input(
+             session,
+             input_desc,
+@@ -1233,7 +1348,7 @@ enum skippy_status skippy_decode_step_frame(
+     }
+ 
+     if (out_predicted_token != nullptr) {
+-        *out_predicted_token = session->stage_model->config.include_output ? skippy_greedy_sample(session) : -1;
++        *out_predicted_token = session->stage_model->config.include_output ? skippy_sample_token(session, sampling) : -1;
+     }
+ 
+     return skippy_copy_output_activation_frame(session, 1, output_payload, out_error);
+-- 
+2.50.1 (Apple Git-155)
+
