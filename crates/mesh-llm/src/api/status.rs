@@ -513,13 +513,25 @@ pub(crate) fn build_runtime_status_payload(
     llama_port: Option<u16>,
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeStatusPayload {
-    local_processes.sort_by_key(|process| process.name.to_lowercase());
+    local_processes.sort_by(|left, right| {
+        (
+            left.name.to_lowercase(),
+            left.instance_id.as_deref().unwrap_or(""),
+            left.port,
+        )
+            .cmp(&(
+                right.name.to_lowercase(),
+                right.instance_id.as_deref().unwrap_or(""),
+                right.port,
+            ))
+    });
     let backend = primary_backend.clone();
 
     let mut models: Vec<RuntimeModelPayload> = local_processes
         .into_iter()
         .map(|process| RuntimeModelPayload {
             name: process.name,
+            instance_id: process.instance_id,
             backend: process.backend,
             status: process.status,
             port: Some(process.port),
@@ -532,6 +544,7 @@ pub(crate) fn build_runtime_status_payload(
             0,
             RuntimeModelPayload {
                 name: model_name.to_string(),
+                instance_id: None,
                 backend: primary_backend.unwrap_or_else(|| "unknown".into()),
                 status: "starting".into(),
                 port: llama_port,
@@ -642,7 +655,18 @@ pub(crate) fn runtime_stage_wire_dtype_label(
 pub(super) fn build_runtime_processes_payload(
     mut local_processes: Vec<RuntimeProcessPayload>,
 ) -> RuntimeProcessesPayload {
-    local_processes.sort_by_key(|process| process.name.to_lowercase());
+    local_processes.sort_by(|left, right| {
+        (
+            left.name.to_lowercase(),
+            left.instance_id.as_deref().unwrap_or(""),
+            left.port,
+        )
+            .cmp(&(
+                right.name.to_lowercase(),
+                right.instance_id.as_deref().unwrap_or(""),
+                right.port,
+            ))
+    });
     RuntimeProcessesPayload {
         processes: local_processes,
     }
@@ -730,7 +754,7 @@ fn runtime_llama_endpoint_status(status: runtime_data::RuntimeLlamaEndpointStatu
 pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
     if msg.contains("not loaded") {
         404
-    } else if msg.contains("already loaded") {
+    } else if msg.contains("already loaded") || msg.contains("multiple loaded instances") {
         409
     } else if msg.contains("fit locally") || msg.contains("runtime load only supports") {
         422
@@ -739,8 +763,8 @@ pub(crate) fn classify_runtime_error(msg: &str) -> u16 {
     }
 }
 
-pub(super) fn decode_runtime_model_path(path: &str) -> Option<String> {
-    let raw = path.strip_prefix("/api/runtime/models/")?;
+pub(super) fn decode_runtime_model_path(path: &str, prefix: &str) -> Option<String> {
+    let raw = path.strip_prefix(prefix)?;
     if raw.is_empty() {
         return None;
     }

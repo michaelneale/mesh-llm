@@ -27,7 +27,11 @@ const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
 const RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR: u64 = 10;
 
 pub(super) enum RuntimeEvent {
-    Exited { model: String, port: u16 },
+    Exited {
+        instance_id: String,
+        model: String,
+        port: u16,
+    },
 }
 
 pub(super) enum LocalRuntimeBackendHandle {
@@ -119,6 +123,7 @@ fn current_time_unix_ms() -> u64 {
 }
 
 pub(super) struct ManagedModelController {
+    pub(super) model_name: String,
     pub(super) stop_tx: tokio::sync::watch::Sender<bool>,
     pub(super) task: tokio::task::JoinHandle<()>,
 }
@@ -231,7 +236,9 @@ pub(super) fn add_runtime_local_target(
 ) {
     let mut targets = target_tx.borrow().clone();
     let entry = targets.targets.entry(model_name.to_string()).or_default();
-    entry.retain(|target| !matches!(target, election::InferenceTarget::Local(_)));
+    entry.retain(
+        |target| !matches!(target, election::InferenceTarget::Local(local_port) if *local_port == port),
+    );
     entry.insert(0, election::InferenceTarget::Local(port));
     target_tx.send_replace(targets);
 }
@@ -1731,17 +1738,28 @@ async fn start_runtime_skippy_model(
 
 pub(super) fn local_process_payload(
     model_name: &str,
+    instance_id: Option<&str>,
     backend: &str,
     port: u16,
     pid: u32,
     slots: usize,
     context_length: u32,
 ) -> api::RuntimeProcessPayload {
-    local_process_snapshot(model_name, backend, port, pid, slots, context_length).to_payload()
+    local_process_snapshot(
+        model_name,
+        instance_id,
+        backend,
+        port,
+        pid,
+        slots,
+        context_length,
+    )
+    .to_payload()
 }
 
 pub(super) fn local_process_snapshot(
     model_name: &str,
+    instance_id: Option<&str>,
     backend: &str,
     port: u16,
     pid: u32,
@@ -1750,6 +1768,7 @@ pub(super) fn local_process_snapshot(
 ) -> crate::runtime_data::RuntimeProcessSnapshot {
     crate::runtime_data::RuntimeProcessSnapshot {
         model: model_name.to_string(),
+        instance_id: instance_id.map(str::to_string),
         backend: backend.into(),
         pid,
         slots,
@@ -1785,6 +1804,26 @@ mod tests {
             activation_width: 2048,
             tensor_count: 100,
         }
+    }
+
+    #[test]
+    fn runtime_local_targets_keep_duplicate_same_model_ports() {
+        let (target_tx, _target_rx) =
+            tokio::sync::watch::channel(election::ModelTargets::default());
+        let target_tx = std::sync::Arc::new(target_tx);
+
+        add_runtime_local_target(&target_tx, "Qwen", 41001);
+        add_runtime_local_target(&target_tx, "Qwen", 41002);
+        add_runtime_local_target(&target_tx, "Qwen", 41002);
+
+        let targets = target_tx.borrow().candidates("Qwen");
+        assert_eq!(
+            targets,
+            vec![
+                election::InferenceTarget::Local(41002),
+                election::InferenceTarget::Local(41001),
+            ]
+        );
     }
 
     #[test]

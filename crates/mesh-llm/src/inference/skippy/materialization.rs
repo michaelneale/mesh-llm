@@ -538,15 +538,17 @@ mod tests {
             .join("model-package.json");
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::write(&source, b"{}").unwrap();
-        let artifact = root.join("stage-000.gguf");
+        let fixture_id = cache_key(&temp.path().to_string_lossy());
+        let artifact = root.join(format!("stage-{fixture_id}.gguf"));
         fs::write(&artifact, b"stage").unwrap();
         let index = SourceIndex {
             artifact_path: artifact.clone(),
             source_model_path: source.to_string_lossy().to_string(),
         };
-        let index_path = root.join("source-test.json");
+        let index_path = root.join(format!("source-{fixture_id}.json"));
         fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
-        fs::create_dir(root.join("source-unreadable.json")).unwrap();
+        let unreadable_index_path = root.join(format!("source-unreadable-{fixture_id}.json"));
+        fs::create_dir(&unreadable_index_path).unwrap();
 
         let preview = materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
         assert_eq!(preview, vec![artifact.clone()]);
@@ -556,6 +558,7 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!artifact.exists());
         assert!(!index_path.exists());
+        fs::remove_dir(unreadable_index_path).unwrap();
 
         restore_env("XDG_CACHE_HOME", prev_xdg);
     }

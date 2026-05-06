@@ -325,6 +325,7 @@ fn test_build_runtime_status_payload_uses_local_processes() {
         vec![
             RuntimeProcessPayload {
                 name: "Qwen".into(),
+                instance_id: None,
                 backend: "llama".into(),
                 status: "ready".into(),
                 port: 9337,
@@ -334,6 +335,7 @@ fn test_build_runtime_status_payload_uses_local_processes() {
             },
             RuntimeProcessPayload {
                 name: "Llama".into(),
+                instance_id: None,
                 backend: "llama".into(),
                 status: "ready".into(),
                 port: 9444,
@@ -350,10 +352,52 @@ fn test_build_runtime_status_payload_uses_local_processes() {
 }
 
 #[test]
+fn test_build_runtime_status_payload_keeps_duplicate_model_instances() {
+    let result = build_runtime_status_payload(
+        "Qwen",
+        Some("skippy".into()),
+        true,
+        true,
+        Some(9337),
+        vec![
+            RuntimeProcessPayload {
+                name: "Qwen".into(),
+                instance_id: Some("runtime-1".into()),
+                backend: "skippy".into(),
+                status: "ready".into(),
+                port: 41001,
+                pid: 100,
+                slots: 4,
+                context_length: Some(8192),
+            },
+            RuntimeProcessPayload {
+                name: "Qwen".into(),
+                instance_id: Some("runtime-2".into()),
+                backend: "skippy".into(),
+                status: "ready".into(),
+                port: 41002,
+                pid: 100,
+                slots: 4,
+                context_length: Some(8192),
+            },
+        ],
+    );
+
+    assert_eq!(result.models.len(), 2);
+    assert_eq!(result.models[0].name, "Qwen");
+    assert_eq!(result.models[0].instance_id.as_deref(), Some("runtime-1"));
+    assert_eq!(result.models[0].port, Some(41001));
+    assert_eq!(result.models[1].name, "Qwen");
+    assert_eq!(result.models[1].instance_id.as_deref(), Some("runtime-2"));
+    assert_eq!(result.models[1].port, Some(41002));
+}
+
+#[test]
 fn test_build_runtime_processes_payload_sorts_processes() {
     let payload = build_runtime_processes_payload(vec![
         RuntimeProcessPayload {
             name: "Zulu".into(),
+            instance_id: None,
             backend: "llama".into(),
             status: "ready".into(),
             port: 9444,
@@ -363,6 +407,7 @@ fn test_build_runtime_processes_payload_sorts_processes() {
         },
         RuntimeProcessPayload {
             name: "Alpha".into(),
+            instance_id: None,
             backend: "llama".into(),
             status: "ready".into(),
             port: 9337,
@@ -382,6 +427,7 @@ fn test_runtime_processes_payload_includes_context_length() {
     let payload = build_runtime_processes_payload(vec![
         RuntimeProcessPayload {
             name: "model-a".into(),
+            instance_id: None,
             backend: "llama".into(),
             status: "ready".into(),
             port: 9337,
@@ -391,6 +437,7 @@ fn test_runtime_processes_payload_includes_context_length() {
         },
         RuntimeProcessPayload {
             name: "model-b".into(),
+            instance_id: None,
             backend: "llama".into(),
             status: "ready".into(),
             port: 9444,
@@ -641,7 +688,7 @@ fn legacy_peer_fixture_uses_backend_state_fallback() {
 fn test_decode_runtime_model_path_decodes_percent_not_plus() {
     // %20 is a space; + is a literal plus in URL paths (not a space)
     assert_eq!(
-        decode_runtime_model_path("/api/runtime/models/Llama%203.2+1B"),
+        decode_runtime_model_path("/api/runtime/models/Llama%203.2+1B", "/api/runtime/models/"),
         Some("Llama 3.2+1B".into())
     );
 }
@@ -650,11 +697,14 @@ fn test_decode_runtime_model_path_decodes_percent_not_plus() {
 fn test_decode_runtime_model_path_decodes_utf8_multibyte() {
     // é is U+00E9, encoded in UTF-8 as 0xC3 0xA9
     assert_eq!(
-        decode_runtime_model_path("/api/runtime/models/mod%C3%A9le"),
+        decode_runtime_model_path("/api/runtime/models/mod%C3%A9le", "/api/runtime/models/"),
         Some("modéle".into())
     );
     // invalid UTF-8 sequence should return None
-    assert_eq!(decode_runtime_model_path("/api/runtime/models/%80"), None);
+    assert_eq!(
+        decode_runtime_model_path("/api/runtime/models/%80", "/api/runtime/models/"),
+        None
+    );
 }
 
 async fn build_test_mesh_api_with_api_port(api_port: u16) -> MeshApi {
@@ -1333,6 +1383,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         inner.llama_port = Some(9999);
         inner.local_processes = vec![RuntimeProcessPayload {
             name: "legacy-model".into(),
+            instance_id: None,
             backend: "legacy-backend".into(),
             status: "ready".into(),
             port: 9999,
@@ -1356,6 +1407,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
                 local_processes.clear();
                 local_processes.push(runtime_data::RuntimeProcessSnapshot {
                     model: "collector-model".into(),
+                    instance_id: None,
                     backend: "collector-backend".into(),
                     pid: 777,
                     port: 9337,
@@ -2975,6 +3027,7 @@ async fn api_runtime_reads_from_collector_snapshot() {
         inner.llama_port = Some(9999);
         inner.local_processes = vec![RuntimeProcessPayload {
             name: "legacy-model".into(),
+            instance_id: None,
             backend: "legacy-backend".into(),
             status: "ready".into(),
             port: 9999,
@@ -2999,6 +3052,7 @@ async fn api_runtime_reads_from_collector_snapshot() {
                 local_processes.clear();
                 local_processes.push(runtime_data::RuntimeProcessSnapshot {
                     model: "collector-model".into(),
+                    instance_id: None,
                     backend: "collector-backend".into(),
                     pid: 777,
                     port: 9337,

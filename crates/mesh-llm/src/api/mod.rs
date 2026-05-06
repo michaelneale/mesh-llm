@@ -16,6 +16,7 @@
 //!   GET  /api/runtime/stages — backend-neutral staged-serving state (JSON)
 //!   POST /api/runtime/models — load a local model
 //!   DELETE /api/runtime/models/{model} — unload a local model
+//!   DELETE /api/runtime/instances/{instance_id} — unload one local runtime instance
 //!   GET  /api/events    — SSE stream of status updates
 //!   GET  /api/discover  — browse Nostr-published meshes
 //!   POST /api/chat      — proxy to chat completions API
@@ -45,8 +46,8 @@ pub(crate) use self::server::start_with_listener;
 #[cfg(test)]
 pub(crate) use self::server::{handle_request, is_ui_only_route};
 pub use self::state::{
-    LocalModelInterest, MeshApi, PublicationState, RuntimeControlRequest, RuntimeModelPayload,
-    RuntimeProcessPayload,
+    LocalModelInterest, MeshApi, PublicationState, RuntimeControlRequest, RuntimeLoadResponse,
+    RuntimeModelPayload, RuntimeProcessPayload, RuntimeUnloadResponse,
 };
 pub(crate) use self::status::classify_runtime_error;
 
@@ -388,7 +389,9 @@ impl MeshApi {
     pub async fn upsert_local_process(&self, process: RuntimeProcessPayload) {
         {
             let mut inner = self.inner.lock().await;
-            inner.local_processes.retain(|p| p.name != process.name);
+            inner.local_processes.retain(|p| {
+                runtime_process_payload_identity(p) != runtime_process_payload_identity(&process)
+            });
             inner.local_processes.push(process.clone());
             inner
                 .runtime_data_producer
@@ -401,14 +404,24 @@ impl MeshApi {
         }
     }
 
-    pub async fn remove_local_process(&self, model_name: &str) {
+    pub async fn remove_local_process(&self, target: &str) {
         {
             let mut inner = self.inner.lock().await;
-            inner.local_processes.retain(|p| p.name != model_name);
+            let has_instance_match = inner
+                .local_processes
+                .iter()
+                .any(|process| process.instance_id.as_deref() == Some(target));
+            inner.local_processes.retain(|process| {
+                if has_instance_match {
+                    process.instance_id.as_deref() != Some(target)
+                } else {
+                    process.name != target
+                }
+            });
             inner
                 .runtime_data_producer
                 .publish_local_processes(|local_processes| {
-                    runtime_data::remove_runtime_process_snapshot(local_processes, model_name)
+                    runtime_data::remove_runtime_process_snapshot(local_processes, target)
                 });
         }
     }
@@ -879,6 +892,10 @@ impl MeshApi {
         inner.runtime_data_producer.mark_status_dirty();
         inner.sse_clients.retain(|tx| !tx.is_closed());
     }
+}
+
+fn runtime_process_payload_identity(process: &RuntimeProcessPayload) -> &str {
+    process.instance_id.as_deref().unwrap_or(&process.name)
 }
 
 fn current_unix_secs() -> u64 {

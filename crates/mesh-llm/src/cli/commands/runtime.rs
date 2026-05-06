@@ -121,11 +121,12 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
     println!();
 
     println!(
-        "{:<42} {:<8} {:<10} {:<8} {:<6}",
-        "Model", "Backend", "State", "Pid", "Port"
+        "{:<42} {:<12} {:<8} {:<10} {:<8} {:<6}",
+        "Model", "Instance", "Backend", "State", "Pid", "Port"
     );
     for model in models {
         let name = model["name"].as_str().unwrap_or("unknown");
+        let instance = model["instance_id"].as_str().unwrap_or("-");
         let backend = display_backend_label(model["backend"].as_str().unwrap_or("unknown"));
         let status = display_runtime_state(model["status"].as_str().unwrap_or("unknown"));
         let pid = find_pid(processes, model)
@@ -136,8 +137,8 @@ pub(crate) async fn run_status(port: u16) -> Result<()> {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".into());
         println!(
-            "{:<42} {:<8} {:<10} {:<8} {:<6}",
-            name, backend, status, pid, port
+            "{:<42} {:<12} {:<8} {:<10} {:<8} {:<6}",
+            name, instance, backend, status, pid, port
         );
     }
 
@@ -181,8 +182,18 @@ async fn fetch_runtime_payload(
 
 fn find_pid(processes: &[serde_json::Value], model: &serde_json::Value) -> Option<u64> {
     let name = model["name"].as_str()?;
+    let instance_id = model["instance_id"].as_str();
+    let port = model["port"].as_u64();
     processes
         .iter()
-        .find(|process| process["name"].as_str() == Some(name))
+        .find(|process| {
+            if let Some(instance_id) = instance_id {
+                return process["instance_id"].as_str() == Some(instance_id);
+            }
+            process["name"].as_str() == Some(name)
+                && port
+                    .map(|port| process["port"].as_u64() == Some(port))
+                    .unwrap_or(true)
+        })
         .and_then(|process| process["pid"].as_u64())
 }

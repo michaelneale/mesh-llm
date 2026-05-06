@@ -164,6 +164,7 @@ mod tests {
         let processes_changed = producer.publish_local_processes(|local_processes| {
             local_processes.push(RuntimeProcessSnapshot {
                 model: "Qwen3-8B".into(),
+                instance_id: None,
                 backend: "metal".into(),
                 pid: 4242,
                 port: 9337,
@@ -263,6 +264,7 @@ mod tests {
         let legacy_processes = vec![
             RuntimeProcessPayload {
                 name: "Zulu".into(),
+                instance_id: None,
                 backend: "llama".into(),
                 status: "ready".into(),
                 port: 9444,
@@ -272,6 +274,7 @@ mod tests {
             },
             RuntimeProcessPayload {
                 name: "Alpha".into(),
+                instance_id: None,
                 backend: "llama".into(),
                 status: "starting".into(),
                 port: 9337,

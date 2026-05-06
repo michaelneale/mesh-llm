@@ -86,7 +86,10 @@ pub(crate) async fn api_proxy(
                                 Ok(Ok(loaded)) => {
                                     let _ = proxy::send_json_ok(
                                         tcp_stream,
-                                        &serde_json::json!({"loaded": loaded}),
+                                        &serde_json::json!({
+                                            "loaded": loaded.model,
+                                            "instance_id": loaded.instance_id,
+                                        }),
                                     )
                                     .await;
                                 }
@@ -121,14 +124,17 @@ pub(crate) async fn api_proxy(
                         if let Some(ref name) = request.model_name {
                             let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                             let _ = control_tx.send(api::RuntimeControlRequest::Unload {
-                                model: name.clone(),
+                                target: name.clone(),
                                 resp: resp_tx,
                             });
                             match resp_rx.await {
-                                Ok(Ok(())) => {
+                                Ok(Ok(dropped)) => {
                                     let _ = proxy::send_json_ok(
                                         tcp_stream,
-                                        &serde_json::json!({"dropped": name}),
+                                        &serde_json::json!({
+                                            "dropped": dropped.model,
+                                            "instance_id": dropped.instance_id,
+                                        }),
                                     )
                                     .await;
                                 }
