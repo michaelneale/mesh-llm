@@ -8,10 +8,10 @@
 
 FROM node:24-alpine AS ui-builder
 WORKDIR /app
-COPY mesh-llm/ui/package.json mesh-llm/ui/package-lock.json ./
+COPY crates/mesh-llm/ui/package.json crates/mesh-llm/ui/package-lock.json ./
 RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
     npm ci
-COPY mesh-llm/ui/ ./
+COPY crates/mesh-llm/ui/ ./
 RUN npm run build
 
 FROM debian:bookworm-slim AS builder
@@ -21,8 +21,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:$PATH"
 WORKDIR /src
-COPY . .
-COPY --from=ui-builder /app/dist mesh-llm/ui/dist
+COPY Cargo.toml Cargo.lock ./
+COPY crates/mesh-llm/Cargo.toml crates/mesh-llm/Cargo.toml
+COPY crates/mesh-llm/build.rs crates/mesh-llm/build.rs
+COPY crates/mesh-llm-plugin/Cargo.toml crates/mesh-llm-plugin/Cargo.toml
+COPY crates/mesh-llm-plugin/build.rs crates/mesh-llm-plugin/build.rs
+COPY crates/mesh-llm/proto/ crates/mesh-llm/proto/
+COPY crates/mesh-llm/ crates/mesh-llm/
+COPY crates/mesh-llm-plugin/ crates/mesh-llm-plugin/
+COPY crates/mesh-client/ crates/mesh-client/
+COPY crates/mesh-api/ crates/mesh-api/
+COPY crates/mesh-host-core/ crates/mesh-host-core/
+COPY crates/mesh-api-ffi/ crates/mesh-api-ffi/
+COPY crates/mesh-llm-test-harness/ crates/mesh-llm-test-harness/
+COPY crates/model-ref/ crates/model-ref/
+COPY crates/model-artifact/ crates/model-artifact/
+COPY crates/model-hf/ crates/model-hf/
+COPY crates/skippy-protocol/ crates/skippy-protocol/
+COPY crates/skippy-topology/ crates/skippy-topology/
+COPY crates/skippy-metrics/ crates/skippy-metrics/
+COPY crates/openai-frontend/ crates/openai-frontend/
+COPY crates/skippy-ffi/ crates/skippy-ffi/
+COPY crates/skippy-runtime/ crates/skippy-runtime/
+COPY crates/skippy-server/ crates/skippy-server/
+COPY crates/metrics-server/ crates/metrics-server/
+COPY crates/skippy-model-package/ crates/skippy-model-package/
+COPY crates/skippy-correctness/ crates/skippy-correctness/
+COPY crates/llama-spec-bench/ crates/llama-spec-bench/
+COPY crates/skippy-bench/ crates/skippy-bench/
+COPY crates/skippy-prompt/ crates/skippy-prompt/
+COPY tools/xtask/ tools/xtask/
+COPY scripts/prepare-llama.sh scripts/build-llama.sh scripts/
+COPY third_party/llama.cpp/upstream.txt third_party/llama.cpp/upstream.txt
+COPY third_party/llama.cpp/patches/ third_party/llama.cpp/patches/
+RUN LLAMA_STAGE_USE_SCCACHE=0 scripts/prepare-llama.sh pinned && \
+    LLAMA_STAGE_USE_SCCACHE=0 scripts/build-llama.sh
+COPY --from=ui-builder /app/dist crates/mesh-llm/ui/dist
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/src/target \

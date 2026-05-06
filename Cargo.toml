@@ -1,16 +1,46 @@
 [workspace]
 members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
-    "mesh-client",
-    "mesh-api",
-    "mesh-host-core",
-    "mesh-api-ffi",
-    "mesh-llm-test-harness",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
+    "crates/mesh-client",
+    "crates/mesh-api",
+    "crates/mesh-host-core",
+    "crates/mesh-api-ffi",
+    "crates/mesh-llm-test-harness",
+    "crates/model-ref",
+    "crates/model-artifact",
+    "crates/model-hf",
+    "crates/skippy-protocol",
+    "crates/skippy-topology",
+    "crates/skippy-cache",
+    "crates/skippy-metrics",
+    "crates/openai-frontend",
+    "crates/skippy-ffi",
+    "crates/skippy-runtime",
+    "crates/skippy-server",
+    "crates/metrics-server",
+    "crates/skippy-model-package",
+    "crates/skippy-correctness",
+    "crates/llama-spec-bench",
+    "crates/skippy-bench",
+    "crates/skippy-prompt",
     "tools/xtask",
 ]
 default-members = [
-    "mesh-llm",
-    "mesh-llm/plugin",
+    "crates/mesh-llm",
+    "crates/mesh-llm-plugin",
 ]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

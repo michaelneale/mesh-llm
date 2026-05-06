@@ -1,0 +1,41 @@
+From d2420a330301a0ed3fec819806377dcb6f851295 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 27 Apr 2026 09:05:00 +1000
+Subject: [PATCH 14/45] Position stage token batches from session offset
+
+---
+ src/skippy.cpp | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 12c1f646..16d77e25 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -660,11 +660,20 @@ static enum skippy_status skippy_decode_tokens(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    llama_batch batch = llama_batch_get_one(
+-            const_cast<llama_token *>(token_ids),
+-            static_cast<int32_t>(token_count));
++    const int32_t n_tokens = static_cast<int32_t>(token_count);
++    llama_batch batch = llama_batch_init(n_tokens, 0, 1);
++    batch.n_tokens = n_tokens;
++    for (int32_t i = 0; i < n_tokens; ++i) {
++        batch.token[i] = token_ids[i];
++        batch.pos[i] = session->n_past + i;
++        batch.n_seq_id[i] = 1;
++        batch.seq_id[i][0] = 0;
++        batch.logits[i] = request_logits && i == n_tokens - 1 ? 1 : 0;
++    }
+ 
+-    return skippy_decode_batch(session, batch, token_count, out_error);
++    enum skippy_status status = skippy_decode_batch(session, batch, token_count, out_error);
++    llama_batch_free(batch);
++    return status;
+ }
+ 
+ static llama_token skippy_greedy_sample(skippy_session * session) {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,195 @@
+From 3c69513c2e538cebacca85df63b6b27c99d34d69 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 11:57:45 +1000
+Subject: [PATCH 04/45] Implement runtime-slice tensor filtering
+
+---
+ src/llama-model-loader.cpp | 44 ++++++++++++++++++++++++++++++++++++++
+ src/llama-model-loader.h   | 11 ++++++++++
+ src/skippy.cpp             | 41 ++++++++++++++++++++++++++++++++++-
+ 3 files changed, 95 insertions(+), 1 deletion(-)
+
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 4e65a45a..66ddf6c0 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -17,6 +17,16 @@ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+ static const size_t GiB = 1024*MiB;
+ 
++static thread_local llama_model_loader_stage_filter g_skippy_filter;
++
++void llama_model_loader_set_stage_filter(const llama_model_loader_stage_filter & filter) {
++    g_skippy_filter = filter;
++}
++
++void llama_model_loader_clear_stage_filter() {
++    g_skippy_filter = {};
++}
++
+ const char * llama_file_version_name(llama_fver version) {
+     switch (version) {
+         case GGUF_FILE_VERSION_V1: return "GGUF V1 (support until nov 2023)";
+@@ -1098,6 +1108,40 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             throw std::runtime_error(format("missing tensor info mapping for %s", tn.str().c_str()));
+         }
+ 
++        if (g_skippy_filter.enabled) {
++            bool keep = true;
++            switch (info.layer) {
++                case LLM_TENSOR_LAYER_INPUT:
++                    keep = g_skippy_filter.include_embeddings;
++                    break;
++                case LLM_TENSOR_LAYER_OUTPUT:
++                    keep = g_skippy_filter.include_output;
++                    break;
++                case LLM_TENSOR_LAYER_REPEATING:
++                    keep = tn.bid >= g_skippy_filter.layer_start &&
++                           tn.bid <  g_skippy_filter.layer_end;
++                    break;
++                default:
++                    keep = true;
++                    break;
++            }
++
++            if (!keep) {
++                const size_t nbytes = ggml_nbytes(t_meta);
++                LLAMA_LOG_DEBUG(
++                        "llama_model_loader: stage filter skipping tensor %s (size = %zu bytes)\n",
++                        tn.str().c_str(),
++                        nbytes);
++
++                size_data -= nbytes;
++                if (!(flags & TENSOR_DUPLICATED)) {
++                    n_created++;
++                }
++
++                return nullptr;
++            }
++        }
++
+         // skip unused tensors
+         if (info.op == GGML_OP_NONE || (flags & TENSOR_SKIP)) {
+             const size_t nbytes = ggml_nbytes(t_meta);
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index 7b3d6703..be15e32b 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -20,6 +20,17 @@ using llama_buf_map = std::unordered_map<uint32_t, ggml_backend_buffer_t>;
+ // lists of buffer types used for each layer
+ using buft_list_t = std::vector<std::pair<ggml_backend_dev_t, ggml_backend_buffer_type_t>>;
+ 
++struct llama_model_loader_stage_filter {
++    bool enabled = false;
++    int32_t layer_start = 0;
++    int32_t layer_end = 0;
++    bool include_embeddings = false;
++    bool include_output = false;
++};
++
++void llama_model_loader_set_stage_filter(const llama_model_loader_stage_filter & filter);
++void llama_model_loader_clear_stage_filter();
++
+ enum llama_fver {
+     GGUF_FILE_VERSION_V1 = 1,
+     GGUF_FILE_VERSION_V2 = 2,
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 4feca3b8..10876ee5 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1,6 +1,7 @@
+ #include "skippy.h"
+ 
+ #include "gguf.h"
++#include "llama-model-loader.h"
+ 
+ #include <algorithm>
+ #include <cerrno>
+@@ -15,6 +16,7 @@
+ struct skippy_model {
+     llama_model * model = nullptr;
+     skippy_runtime_config config = {};
++    bool executable = true;
+ };
+ 
+ struct skippy_session {
+@@ -114,6 +116,29 @@ static bool skippy_is_full_model_config(const struct skippy_runtime_config * con
+     return !config->filter_tensors_on_load && config->layer_start == 0;
+ }
+ 
++struct skippy_filter_scope {
++    explicit skippy_filter_scope(const skippy_runtime_config * config) {
++        if (config != nullptr && config->filter_tensors_on_load) {
++            llama_model_loader_stage_filter filter;
++            filter.enabled = true;
++            filter.layer_start = config->layer_start;
++            filter.layer_end = config->layer_end;
++            filter.include_embeddings = config->include_embeddings;
++            filter.include_output = config->include_output;
++            llama_model_loader_set_stage_filter(filter);
++            enabled = true;
++        }
++    }
++
++    ~skippy_filter_scope() {
++        if (enabled) {
++            llama_model_loader_clear_stage_filter();
++        }
++    }
++
++    bool enabled = false;
++};
++
+ static enum skippy_status skippy_decode_tokens(
+         skippy_session * session,
+         const llama_token * token_ids,
+@@ -213,7 +238,12 @@ enum skippy_status skippy_model_open(
+ 
+     *out_model = nullptr;
+ 
+-    if (!skippy_is_full_model_config(config)) {
++    if (config != nullptr && config->filter_tensors_on_load && config->layer_start >= config->layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "layer_start must be less than layer_end");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    if (!skippy_is_full_model_config(config) && (config == nullptr || !config->filter_tensors_on_load)) {
+         skippy_set_error(
+                 out_error,
+                 SKIPPY_STATUS_UNSUPPORTED,
+@@ -224,9 +254,13 @@ enum skippy_status skippy_model_open(
+     llama_model_params params = llama_model_default_params();
+     if (config != nullptr) {
+         params.n_gpu_layers = config->n_gpu_layers;
++        if (config->disable_repack || config->filter_tensors_on_load) {
++            params.use_extra_bufts = false;
++        }
+     }
+ 
+     llama_backend_init();
++    skippy_filter_scope filter_scope(config);
+     llama_model * model = llama_model_load_from_file(path, params);
+     if (model == nullptr) {
+         skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to load llama model");
+@@ -237,6 +271,7 @@ enum skippy_status skippy_model_open(
+     stage_model->model = model;
+     if (config != nullptr) {
+         stage_model->config = *config;
++        stage_model->executable = !config->filter_tensors_on_load;
+     }
+ 
+     *out_model = stage_model;
+@@ -261,6 +296,10 @@ enum skippy_status skippy_session_create(
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "model and out_session are required");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
++    if (!model->executable) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "filtered runtime-slice handles are not executable yet");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
+ 
+     *out_session = nullptr;
+ 
+-- 
+2.50.1 (Apple Git-155)
+

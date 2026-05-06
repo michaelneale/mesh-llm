@@ -1,0 +1,14 @@
+[package]
+name = "skippy-cache"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "skippy_cache"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+skippy-protocol = { path = "../skippy-protocol" }

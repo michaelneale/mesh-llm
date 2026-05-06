@@ -1,0 +1,252 @@
+# mesh-llm Message Protocol
+
+This document describes the wire protocol for control-plane communication between mesh-llm nodes over the `meshllm.node.v1` protobuf schema on QUIC ALPN `mesh-llm/1`.
+
+## ALPN
+
+Control-plane connections prefer ALPN `mesh-llm/1`.
+
+
+## Stream Types
+
+Each QUIC connection carries multiple logical streams, distinguished by a 1-byte prefix:
+
+| Byte | Name | Direction | Format |
+|------|------|-----------|--------|
+| 0x01 | GOSSIP | bidirectional | protobuf `GossipFrame` |
+| 0x02 | TUNNEL | bidirectional | raw TCP relay (not protobuf) |
+| 0x03 | TUNNEL_MAP | send | protobuf `TunnelMap` |
+| 0x04 | TUNNEL_HTTP | bidirectional | raw TCP relay (not protobuf) |
+| 0x05 | ROUTE_REQUEST | bidirectional | protobuf `RouteTableRequest` / `RouteTable` |
+| 0x06 | PEER_DOWN | send | protobuf `PeerDown` |
+| 0x07 | PEER_LEAVING | send | protobuf `PeerLeaving` |
+| 0x08 | BLACKBOARD | bidirectional | admission-gated auxiliary channel |
+| 0x09 | PLUGIN_CHANNEL | bidirectional | plugin protocol (see Out-of-Scope) |
+| 0x0a | PLUGIN_BULK_TRANSFER | send | plugin protocol bulk data (see Out-of-Scope) |
+
+Streams 0x02 and 0x04 are raw TCP relay tunnels. They carry llama.cpp RPC and HTTP traffic respectively and are not subject to protobuf framing or generation validation.
+
+## Framing
+
+All protobuf control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07) use the same framing:
+
+```
+[1 byte stream type][4 bytes LE length][N bytes protobuf body]
+```
+
+Maximum frame size: 8 MiB (`MAX_CONTROL_FRAME_BYTES`). Frames exceeding this limit are rejected.
+
+## Protocol Generation
+
+`NODE_PROTOCOL_GENERATION = 1`
+
+Every protobuf message that carries a `gen` field must have `gen == 1`. Frames with any other value are rejected with a `BadGeneration` error. This applies to:
+
+- `GossipFrame.gen`
+- `RouteTableRequest.gen`
+- `RouteTable.gen`
+- `PeerDown.gen`
+- `PeerLeaving.gen`
+
+## Admission (Quarantine-Until-Gossip)
+
+A newly connected peer is quarantined until it sends a valid `GossipFrame` with `gen = 1`. Until admission:
+
+- Only stream 0x01 (GOSSIP) and 0x05 (ROUTE_REQUEST) are accepted.
+- All other streams (0x02, 0x03, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0a) are rejected and the stream is closed.
+- The QUIC connection itself stays open so gossip can complete.
+
+A peer is admitted when its `GossipFrame` decodes successfully and passes validation checks.
+
+## Stream 0x01 — Gossip (`GossipFrame`)
+
+Carries peer announcements. Both sides send a `GossipFrame` and read the other's frame.
+
+```proto
+message GossipFrame {
+  uint32 gen = 1;                      // must equal NODE_PROTOCOL_GENERATION (1)
+  repeated PeerAnnouncement peers = 2; // all known peers including self
+  bytes sender_id = 3;                 // exactly 32 bytes; must match QUIC peer identity
+}
+```
+
+Validation:
+1. `gen == 1` — rejects legacy or future frames
+2. `sender_id.len() == 32` — structural check
+3. `sender_id == QUIC TLS peer identity` — anti-spoofing
+4. Per peer: `endpoint_id.len() == 32`; HOST role requires `http_port` present
+
+### PeerAnnouncement
+
+Each `PeerAnnouncement` describes one node's state. Fields:
+
+| Field | Description |
+|-------|-------------|
+| `endpoint_id` | 32-byte Ed25519 public key (node identity) |
+| `role` | `WORKER`, `HOST`, or `CLIENT` |
+| `http_port` | Required when role is HOST |
+| `version` | Software version string |
+| `gpu_name` | Comma-separated GPU model names when host enumeration is enabled |
+| `hostname` | Hostname of the node |
+| `is_soc` | `true` if running on a system-on-chip (e.g. Apple Silicon) |
+| `gpu_vram` | Comma-separated per-GPU VRAM values in bytes |
+| `gpu_reserved_bytes` | Comma-separated per-GPU reserved bytes when the platform reports a true reserved/unavailable metric |
+| `gpu_mem_bandwidth_gbps` | Comma-separated per-GPU memory-bandwidth values in GB/s (gigabytes/sec) when known; the field name is retained for wire compatibility |
+| `gpu_compute_tflops_fp32` | Comma-separated per-GPU FP32 compute-throughput hints when known |
+| `gpu_compute_tflops_fp16` | Comma-separated per-GPU FP16 compute-throughput hints when known |
+| `vram_bytes` | Total GPU VRAM in bytes |
+| `model_source` | Source identifier for the model (e.g. HuggingFace repo) |
+| `primary_serving` | Primary model being served; backward-compat alias for `serving` |
+| `serving_models` | Models currently being served |
+| `available_models` | Models on disk, available to serve |
+| `catalog_models` | This node's contribution to the mesh model catalog |
+| `mesh_id` | Stable mesh identity (self entry only) |
+| `requested_models` | Models this node has requested to load |
+| `experts_summary` | legacy expert usage summary (`ExpertsSummary`; self entry only) |
+| `rtt_ms` | Round-trip time to the reporting node in milliseconds |
+| `demand` | Per-model demand entries (self entry only) |
+| `available_model_metadata` | GGUF-derived metadata for each available model |
+| `available_model_sizes` | File sizes in bytes per model name |
+| `serialized_addr` | JSON-serialized `EndpointAddr` for peer discovery |
+
+These GPU telemetry fields are additive and optional. Older peers continue to interoperate by ignoring unknown `/1` protobuf fields, and the richer hardware reporting does not replace the existing model-metadata flow. For clarity, `gpu_mem_bandwidth_gbps` values are serialized in GB/s (gigabytes/sec), matching benchmark output and CLI formatting; only the field name still carries the older `gbps` suffix for backward compatibility. ROCm `rocm-smi --showmeminfo` and Intel `xpu-smi` discovery expose used-memory counters rather than a true reserved/system-memory value, so `gpu_reserved_bytes` is intentionally omitted for those backends.
+
+#### ExpertsSummary
+
+```proto
+message ExpertsSummary {
+  uint32 total_experts = 1;
+  uint32 expert_count_used = 2;
+  repeated uint32 top_expert_ids = 3;
+}
+```
+
+#### ModelDemandEntry
+
+```proto
+message ModelDemandEntry {
+  string model_name = 1;
+  uint64 last_active = 2;
+  uint32 request_count = 3;
+}
+```
+
+### GGUF Metadata in Gossip
+
+Model metadata derived from GGUF headers is transported via `CompactModelMetadata` in the `available_model_metadata` field of each `PeerAnnouncement`. This lets peers learn model capabilities without downloading the file.
+
+```proto
+message CompactModelMetadata {
+  string model_key = 1;
+  string architecture = 10;          // e.g. "llama", "qwen2", "glm"
+  string quantization_type = 18;     // e.g. "Q4_K_M", "IQ4_XS", "F16"
+  string tokenizer_model_name = 11;
+  repeated SpecialToken special_tokens = 12;
+  float rope_scale = 13;
+  float rope_freq_base = 14;
+  bool is_moe = 15;
+  uint32 expert_count = 16;
+  uint32 used_expert_count = 17;
+  // ... context_length, vocab_size, embedding_size, head_count, layer_count, etc.
+}
+```
+
+Fields covered: architecture, quantization type, tokenizer, special tokens, RoPE parameters, expert counts, and standard transformer dimensions.
+
+#### SpecialToken
+
+```proto
+message SpecialToken {
+  string name = 1;
+  int32 token_id = 2;
+}
+```
+
+## Stream 0x03 — Tunnel Map (`TunnelMap`)
+
+Sent after admission. Maps peer identities to local tunnel ports for B2B direct transfers.
+
+```proto
+message TunnelMap {
+  bytes owner_peer_id = 1;       // exactly 32 bytes; must match QUIC sender identity
+  repeated TunnelEntry entries = 2;
+}
+
+message TunnelEntry {
+  bytes target_peer_id = 1;      // exactly 32 bytes
+  optional bytes relay_peer_id = 2;
+  uint32 tunnel_port = 3;        // must be in range [1, 65535]
+}
+```
+
+`owner_peer_id` must match the QUIC connection identity. Frames with a mismatched owner are rejected.
+
+## Stream 0x05 — Route Table (`RouteTableRequest` / `RouteTable`)
+
+Used by passive clients and standby nodes to learn the current routing table without full gossip participation.
+
+**Request:**
+```proto
+message RouteTableRequest {
+  bytes requester_id = 1;  // 0 or exactly 32 bytes
+  uint32 gen = 2;          // must equal NODE_PROTOCOL_GENERATION (1)
+}
+```
+
+**Response:**
+```proto
+message RouteTable {
+  repeated RouteEntry entries = 1;
+  optional string mesh_id = 2;  // passive callers learn mesh identity here
+  uint32 gen = 3;               // must equal NODE_PROTOCOL_GENERATION (1)
+}
+
+message RouteEntry {
+  bytes endpoint_id = 1;  // exactly 32 bytes
+  string model = 2;       // model being served (empty if not serving)
+}
+```
+
+Serving a route table does not admit the requester. The requester is never added to `state.peers`.
+
+## Stream 0x06 — Peer Down (`PeerDown`)
+
+Broadcast when a node detects that another peer is unreachable. Requires reachability confirmation before the dead peer is removed from state.
+
+```proto
+message PeerDown {
+  bytes peer_id = 1;  // exactly 32 bytes; the peer being reported as unreachable
+  uint32 gen = 2;     // must equal NODE_PROTOCOL_GENERATION (1)
+}
+```
+
+A node never broadcasts `PeerDown` for itself. The receiver confirms reachability (3s timeout) before acting on the report.
+
+## Stream 0x07 — Peer Leaving (`PeerLeaving`)
+
+Sent on clean shutdown (ctrl-c). Only removes the sender from peer state — not any other peer.
+
+```proto
+message PeerLeaving {
+  bytes peer_id = 1;  // exactly 32 bytes; must match the QUIC sender identity
+  uint32 gen = 2;     // must equal NODE_PROTOCOL_GENERATION (1)
+}
+```
+
+`peer_id` must match the QUIC connection identity. Forged `PeerLeaving` frames (where `peer_id` names a different node) are rejected without any state change.
+
+## Out-of-Scope Streams
+
+The following are explicitly NOT protobuf and are not described here:
+
+- **0x02 / 0x04** — raw TCP relay for llama.cpp RPC and HTTP. No framing changes.
+- **Nostr discovery payloads** — remain JSON (NIP-89 kind 31990).
+- **Plugin streams (0x09 / 0x0a)** — PLUGIN_CHANNEL and PLUGIN_BULK_TRANSFER; separate protocol, unchanged.
+- **Invite/join token encoding** — unchanged.
+
+## Compatibility
+
+`mesh-llm/1` is the only supported control-plane protocol.
+
+- Nodes advertise `mesh-llm/1` on accept.
+- All five scoped control-plane streams (0x01, 0x03, 0x05, 0x06, 0x07) use protobuf framing.

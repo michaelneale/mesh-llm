@@ -58,6 +58,7 @@ if ui_build_is_stale; then
     cd "$UI_DIR"
 
     if npm_install_is_stale; then
+        export ONNXRUNTIME_NODE_INSTALL_CUDA="${ONNXRUNTIME_NODE_INSTALL_CUDA:-skip}"
         npm ci
     fi
 

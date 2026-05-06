@@ -1,0 +1,21 @@
+[package]
+name = "openai-frontend"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+axum = "0.8"
+futures-core = "0.3"
+futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["time"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tower = { version = "0.5", features = ["util"] }

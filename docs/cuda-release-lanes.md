@@ -62,12 +62,9 @@ The outer archive filename distinguishes the lanes:
 - `mesh-llm-x86_64-unknown-linux-gnu-cuda.tar.gz`
 - `mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz`
 
-**Inner binary filenames are identical across both bundles**
-(`llama-server-cuda`, `rpc-server-cuda`, etc.) because the mesh-llm
-runtime's `BinaryFlavor` enum treats both as the same CUDA flavor — only
-the cubin contents differ. You can swap one bundle for the other without
-changing anything in the mesh-llm invocation; `--llama-flavor cuda` is
-correct for both.
+Both archives contain the same `mesh-llm` runtime binary name. The outer
+archive filename is what distinguishes the CUDA lane, and the embedded
+runtime uses the selected bundle's ABI libraries.
 
 ## Installer behavior
 
@@ -119,18 +116,9 @@ You can override arches with a positional argument, e.g.:
   `cuda_blackwell_fat_cache_key` for the Blackwell lane so the warm
   caches do not collide.
 
-## Docker image
-
-The `mesh-llm:cuda` Docker image (built by
-`.github/workflows/docker.yml`, `docker/Dockerfile.cuda`) currently
-tracks the **primary lane only** (CUDA 12.6.3, sm_75..sm_90). A
-`mesh-llm:cuda-blackwell` tag is a planned follow-up; for now, Blackwell
-Docker users should build locally with
-`just docker-build-cuda mesh-llm:cuda-blackwell "75;80;86;87;89;90;100;120" 12.8.0`.
-
 ## History
 
-The split was introduced in [PR #309](https://github.com/Mesh-LLM/mesh-llm/pull/309)
+The split was introduced in [PR #355](https://github.com/Mesh-LLM/mesh-llm/pull/355)
 after a reproducible A30 crash on R535 drivers was traced to the nvcc
 12.8 / R535 cubin incompatibility. See issue
 [#304](https://github.com/Mesh-LLM/mesh-llm/issues/304) for the

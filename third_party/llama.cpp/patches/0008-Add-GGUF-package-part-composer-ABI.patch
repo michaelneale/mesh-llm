@@ -1,0 +1,438 @@
+From 06767dc644a6a2858ddeb6c86e0ace84b1ba5883 Mon Sep 17 00:00:00 2001
+From: James Dumay <jameswdumay@gmail.com>
+Date: Sat, 25 Apr 2026 14:51:18 +1000
+Subject: [PATCH 08/45] Add GGUF package part composer ABI
+
+---
+ include/skippy.h |   6 +
+ src/skippy.cpp   | 318 +++++++++++++++++++++++++++++++++--------------
+ 2 files changed, 230 insertions(+), 94 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index cd72379d..7ab93d35 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -284,6 +284,12 @@ LLAMA_API enum skippy_status skippy_write_slice_gguf(
+         const char * output_path,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_write_gguf_from_parts(
++        const char * const * input_paths,
++        size_t input_count,
++        const char * output_path,
++        struct skippy_error ** out_error);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 2b54a7db..26169320 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -14,6 +14,7 @@
+ #include <cstdio>
+ #include <limits>
+ #include <regex>
++#include <set>
+ #include <string>
+ #include <utility>
+ #include <vector>
+@@ -52,6 +53,11 @@ struct skippy_slice_plan {
+     std::vector<skippy_slice_range> ranges;
+ };
+ 
++struct skippy_source_tensor {
++    const skippy_model_info * source = nullptr;
++    const skippy_tensor_meta * tensor = nullptr;
++};
++
+ struct skippy_model_info {
+     gguf_context * ctx = nullptr;
+     std::string path;
+@@ -313,6 +319,130 @@ static size_t skippy_align(size_t value, size_t alignment) {
+     return alignment == 0 ? value : ((value + alignment - 1) / alignment) * alignment;
+ }
+ 
++static skippy_model_info * skippy_model_info_open_owned(const char * path) {
++    gguf_init_params params = {
++        /*.no_alloc =*/ true,
++        /*.ctx      =*/ nullptr,
++    };
++    gguf_context * ctx = gguf_init_from_file(path, params);
++    if (ctx == nullptr) {
++        return nullptr;
++    }
++
++    skippy_model_info * info = new skippy_model_info{};
++    info->ctx = ctx;
++    info->path = path;
++    if (!skippy_parse_tensor_metadata(info)) {
++        gguf_free(ctx);
++        delete info;
++        return nullptr;
++    }
++    return info;
++}
++
++static void skippy_model_info_delete(skippy_model_info * info) {
++    if (info != nullptr) {
++        gguf_free(info->ctx);
++        delete info;
++    }
++}
++
++static enum skippy_status skippy_add_tensor_to_context(
++        ggml_context * ggml_ctx,
++        gguf_context * out_ctx,
++        const skippy_tensor_meta & meta,
++        struct skippy_error ** out_error) {
++    int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
++    for (size_t dim = 0; dim < meta.ne.size() && dim < GGML_MAX_DIMS; ++dim) {
++        ne[dim] = meta.ne[dim];
++    }
++    ggml_tensor * tensor = ggml_new_tensor(
++            ggml_ctx,
++            meta.type,
++            static_cast<int>(meta.ne.size()),
++            ne);
++    if (tensor == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_ERROR, "failed to allocate output tensor metadata");
++        return SKIPPY_STATUS_ERROR;
++    }
++    ggml_set_name(tensor, meta.name.c_str());
++    gguf_add_tensor(out_ctx, tensor);
++    return SKIPPY_STATUS_OK;
++}
++
++static enum skippy_status skippy_copy_source_tensors(
++        const std::vector<skippy_source_tensor> & selected,
++        const char * output_path,
++        gguf_context * out_ctx,
++        struct skippy_error ** out_error) {
++    if (!gguf_write_to_file(out_ctx, output_path, true)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to write output GGUF metadata");
++        return SKIPPY_STATUS_IO_ERROR;
++    }
++
++    FILE * output = ggml_fopen(output_path, "ab");
++    if (output == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to open output GGUF for tensor copy");
++        return SKIPPY_STATUS_IO_ERROR;
++    }
++
++    const size_t output_alignment = gguf_get_alignment(out_ctx);
++    std::vector<uint8_t> buffer(1024 * 1024);
++    std::vector<uint8_t> zeroes(output_alignment, 0);
++    bool ok = true;
++
++    for (const skippy_source_tensor & item : selected) {
++        FILE * input = ggml_fopen(item.source->path.c_str(), "rb");
++        if (input == nullptr) {
++            ok = false;
++            break;
++        }
++
++        const size_t source_data_offset = gguf_get_data_offset(item.source->ctx);
++        if (std::fseek(input, static_cast<long>(source_data_offset + item.tensor->offset), SEEK_SET) != 0) {
++            std::fclose(input);
++            ok = false;
++            break;
++        }
++
++        uint64_t remaining = item.tensor->size;
++        while (remaining > 0) {
++            const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
++            if (std::fread(buffer.data(), 1, chunk, input) != chunk ||
++                    std::fwrite(buffer.data(), 1, chunk, output) != chunk) {
++                ok = false;
++                break;
++            }
++            remaining -= chunk;
++        }
++
++        if (std::fclose(input) != 0) {
++            ok = false;
++        }
++        if (!ok) {
++            break;
++        }
++
++        const size_t padded = skippy_align(static_cast<size_t>(item.tensor->size), output_alignment);
++        const size_t padding = padded - static_cast<size_t>(item.tensor->size);
++        if (padding > 0 && std::fwrite(zeroes.data(), 1, padding, output) != padding) {
++            ok = false;
++            break;
++        }
++    }
++
++    if (std::fclose(output) != 0) {
++        ok = false;
++    }
++
++    if (!ok) {
++        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to copy selected GGUF tensor data");
++        return SKIPPY_STATUS_IO_ERROR;
++    }
++
++    return SKIPPY_STATUS_OK;
++}
++
+ static bool skippy_is_full_model_config(const struct skippy_runtime_config * config) {
+     if (config == nullptr) {
+         return true;
+@@ -1086,25 +1216,12 @@ enum skippy_status skippy_model_info_open(
+ 
+     *out_info = nullptr;
+ 
+-    gguf_init_params params = {
+-        /*.no_alloc =*/ true,
+-        /*.ctx      =*/ nullptr,
+-    };
+-    gguf_context * ctx = gguf_init_from_file(path, params);
+-    if (ctx == nullptr) {
++    skippy_model_info * info = skippy_model_info_open_owned(path);
++    if (info == nullptr) {
+         skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to open GGUF model metadata");
+         return SKIPPY_STATUS_MODEL_ERROR;
+     }
+ 
+-    skippy_model_info * info = new skippy_model_info{};
+-    info->ctx = ctx;
+-    info->path = path;
+-    if (!skippy_parse_tensor_metadata(info)) {
+-        gguf_free(ctx);
+-        delete info;
+-        skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to parse GGUF tensor descriptors");
+-        return SKIPPY_STATUS_MODEL_ERROR;
+-    }
+     *out_info = info;
+     return skippy_success(out_error);
+ }
+@@ -1112,10 +1229,7 @@ enum skippy_status skippy_model_info_open(
+ enum skippy_status skippy_model_info_free(
+         struct skippy_model_info * info,
+         struct skippy_error ** out_error) {
+-    if (info != nullptr) {
+-        gguf_free(info->ctx);
+-        delete info;
+-    }
++    skippy_model_info_delete(info);
+     return skippy_success(out_error);
+ }
+ 
+@@ -1199,7 +1313,7 @@ enum skippy_status skippy_slice_plan_add_layer_range(
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "plan is required");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+-    if (stage_index < 0 || layer_start < 0 || layer_start >= layer_end) {
++    if (stage_index < 0 || layer_start < 0 || layer_start > layer_end) {
+         skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "stage_index and layer range are invalid");
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+@@ -1237,17 +1351,12 @@ enum skippy_status skippy_write_slice_gguf(
+         return SKIPPY_STATUS_INVALID_ARGUMENT;
+     }
+ 
+-    std::vector<const skippy_tensor_meta *> selected;
++    std::vector<skippy_source_tensor> selected;
+     for (const skippy_tensor_meta & tensor : info->tensors) {
+         if (skippy_tensor_selected(tensor, *range)) {
+-            selected.push_back(&tensor);
++            selected.push_back({ info, &tensor });
+         }
+     }
+-    if (selected.empty()) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "slice plan selected no tensors");
+-        return SKIPPY_STATUS_INVALID_ARGUMENT;
+-    }
+-
+     gguf_context * out_ctx = gguf_init_empty();
+     if (out_ctx == nullptr) {
+         skippy_set_error(out_error, SKIPPY_STATUS_ERROR, "failed to allocate output GGUF context");
+@@ -1275,95 +1384,116 @@ enum skippy_status skippy_write_slice_gguf(
+         return SKIPPY_STATUS_ERROR;
+     }
+ 
+-    for (const skippy_tensor_meta * meta : selected) {
+-        int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+-        for (size_t dim = 0; dim < meta->ne.size() && dim < GGML_MAX_DIMS; ++dim) {
+-            ne[dim] = meta->ne[dim];
+-        }
+-        ggml_tensor * tensor = ggml_new_tensor(
+-                ggml_ctx,
+-                meta->type,
+-                static_cast<int>(meta->ne.size()),
+-                ne);
+-        if (tensor == nullptr) {
++    for (const skippy_source_tensor & item : selected) {
++        const enum skippy_status status = skippy_add_tensor_to_context(ggml_ctx, out_ctx, *item.tensor, out_error);
++        if (status != SKIPPY_STATUS_OK) {
+             ggml_free(ggml_ctx);
+             gguf_free(out_ctx);
+-            skippy_set_error(out_error, SKIPPY_STATUS_ERROR, "failed to allocate output tensor metadata");
+-            return SKIPPY_STATUS_ERROR;
++            return status;
+         }
+-        ggml_set_name(tensor, meta->name.c_str());
+-        gguf_add_tensor(out_ctx, tensor);
+     }
+ 
+-    if (!gguf_write_to_file(out_ctx, output_path, true)) {
+-        ggml_free(ggml_ctx);
+-        gguf_free(out_ctx);
+-        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to write output GGUF metadata");
+-        return SKIPPY_STATUS_IO_ERROR;
++    const enum skippy_status status = skippy_copy_source_tensors(selected, output_path, out_ctx, out_error);
++    ggml_free(ggml_ctx);
++    gguf_free(out_ctx);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
+     }
+ 
+-    FILE * input = ggml_fopen(info->path.c_str(), "rb");
+-    FILE * output = ggml_fopen(output_path, "ab");
+-    if (input == nullptr || output == nullptr) {
+-        if (input != nullptr) {
+-            std::fclose(input);
+-        }
+-        if (output != nullptr) {
+-            std::fclose(output);
+-        }
+-        ggml_free(ggml_ctx);
+-        gguf_free(out_ctx);
+-        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to open GGUF files for tensor copy");
+-        return SKIPPY_STATUS_IO_ERROR;
+-    }
++    return skippy_success(out_error);
++}
+ 
+-    const size_t output_alignment = gguf_get_alignment(out_ctx);
+-    const size_t source_data_offset = gguf_get_data_offset(info->ctx);
+-    std::vector<uint8_t> buffer(1024 * 1024);
+-    std::vector<uint8_t> zeroes(output_alignment, 0);
+-    bool ok = true;
++enum skippy_status skippy_write_gguf_from_parts(
++        const char * const * input_paths,
++        size_t input_count,
++        const char * output_path,
++        struct skippy_error ** out_error) {
++    if (input_paths == nullptr || input_count == 0 || output_path == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "input paths and output_path are required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
+ 
+-    for (const skippy_tensor_meta * meta : selected) {
+-        if (std::fseek(input, static_cast<long>(source_data_offset + meta->offset), SEEK_SET) != 0) {
+-            ok = false;
+-            break;
++    std::vector<skippy_model_info *> sources;
++    sources.reserve(input_count);
++    for (size_t i = 0; i < input_count; ++i) {
++        if (input_paths[i] == nullptr) {
++            for (skippy_model_info * source : sources) {
++                skippy_model_info_delete(source);
++            }
++            skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "input path is null");
++            return SKIPPY_STATUS_INVALID_ARGUMENT;
+         }
+-
+-        uint64_t remaining = meta->size;
+-        while (remaining > 0) {
+-            const size_t chunk = static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
+-            if (std::fread(buffer.data(), 1, chunk, input) != chunk ||
+-                    std::fwrite(buffer.data(), 1, chunk, output) != chunk) {
+-                ok = false;
+-                break;
++        skippy_model_info * source = skippy_model_info_open_owned(input_paths[i]);
++        if (source == nullptr) {
++            for (skippy_model_info * opened : sources) {
++                skippy_model_info_delete(opened);
+             }
+-            remaining -= chunk;
++            skippy_set_error(out_error, SKIPPY_STATUS_MODEL_ERROR, "failed to open GGUF package part");
++            return SKIPPY_STATUS_MODEL_ERROR;
+         }
+-        if (!ok) {
+-            break;
++        sources.push_back(source);
++    }
++
++    std::vector<skippy_source_tensor> selected;
++    std::set<std::string> names;
++    for (const skippy_model_info * source : sources) {
++        for (const skippy_tensor_meta & tensor : source->tensors) {
++            if (names.insert(tensor.name).second) {
++                selected.push_back({ source, &tensor });
++            }
+         }
++    }
+ 
+-        const size_t padded = skippy_align(static_cast<size_t>(meta->size), output_alignment);
+-        const size_t padding = padded - static_cast<size_t>(meta->size);
+-        if (padding > 0 && std::fwrite(zeroes.data(), 1, padding, output) != padding) {
+-            ok = false;
+-            break;
++    gguf_context * out_ctx = gguf_init_empty();
++    if (out_ctx == nullptr) {
++        for (skippy_model_info * source : sources) {
++            skippy_model_info_delete(source);
+         }
++        skippy_set_error(out_error, SKIPPY_STATUS_ERROR, "failed to allocate output GGUF context");
++        return SKIPPY_STATUS_ERROR;
+     }
+ 
+-    if (std::fclose(input) != 0) {
+-        ok = false;
++    gguf_set_kv(out_ctx, sources.front()->ctx);
++    gguf_set_val_u32(out_ctx, GGUF_KEY_GENERAL_ALIGNMENT, static_cast<uint32_t>(gguf_get_alignment(out_ctx)));
++    gguf_set_val_bool(out_ctx, "skippy.package.materialized", true);
++    gguf_set_val_u32(out_ctx, "skippy.package.part_count", static_cast<uint32_t>(input_count));
++
++    const size_t tensor_mem = ggml_tensor_overhead() * (selected.size() + 1) + 1024 * 1024;
++    ggml_init_params ggml_params = {
++        /*.mem_size   =*/ tensor_mem,
++        /*.mem_buffer =*/ nullptr,
++        /*.no_alloc   =*/ true,
++    };
++    ggml_context * ggml_ctx = ggml_init(ggml_params);
++    if (ggml_ctx == nullptr) {
++        gguf_free(out_ctx);
++        for (skippy_model_info * source : sources) {
++            skippy_model_info_delete(source);
++        }
++        skippy_set_error(out_error, SKIPPY_STATUS_ERROR, "failed to allocate tensor metadata context");
++        return SKIPPY_STATUS_ERROR;
+     }
+-    if (std::fclose(output) != 0) {
+-        ok = false;
++
++    for (const skippy_source_tensor & item : selected) {
++        const enum skippy_status status = skippy_add_tensor_to_context(ggml_ctx, out_ctx, *item.tensor, out_error);
++        if (status != SKIPPY_STATUS_OK) {
++            ggml_free(ggml_ctx);
++            gguf_free(out_ctx);
++            for (skippy_model_info * source : sources) {
++                skippy_model_info_delete(source);
++            }
++            return status;
++        }
+     }
+ 
++    const enum skippy_status status = skippy_copy_source_tensors(selected, output_path, out_ctx, out_error);
+     ggml_free(ggml_ctx);
+     gguf_free(out_ctx);
+-
+-    if (!ok) {
+-        skippy_set_error(out_error, SKIPPY_STATUS_IO_ERROR, "failed to copy selected GGUF tensor data");
+-        return SKIPPY_STATUS_IO_ERROR;
++    for (skippy_model_info * source : sources) {
++        skippy_model_info_delete(source);
++    }
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
+     }
+ 
+     return skippy_success(out_error);
+-- 
+2.50.1 (Apple Git-155)
+

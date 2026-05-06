@@ -1,0 +1,58 @@
+From e4fd187052e8cdc74eb465388c690b89faa0e5ea Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Mon, 4 May 2026 11:39:01 -0400
+Subject: [PATCH 35/45] Expose stage batch and flash attention config
+
+---
+ include/skippy.h | 5 ++++-
+ src/skippy.cpp   | 4 +++-
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index 9e91519d..2b95ccc8 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 15
++#define SKIPPY_ABI_VERSION_PATCH 16
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -106,9 +106,12 @@ struct skippy_runtime_config {
+     int32_t layer_end;
+     int32_t ctx_size;
+     int32_t lane_count;
++    int32_t n_batch;
++    int32_t n_ubatch;
+     int32_t n_gpu_layers;
+     int32_t cache_type_k;
+     int32_t cache_type_v;
++    int32_t flash_attn_type;
+ 
+     enum skippy_load_mode load_mode;
+ 
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 0d128fc8..fd2cd3d0 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1216,11 +1216,13 @@ static enum skippy_status skippy_finish_model_open(
+ 
+     llama_context_params params = llama_context_default_params();
+     params.n_ctx = config != nullptr && config->ctx_size > 0 ? static_cast<uint32_t>(config->ctx_size) : 512;
+-    params.n_batch = params.n_ctx;
++    params.n_batch = config != nullptr && config->n_batch > 0 ? static_cast<uint32_t>(config->n_batch) : params.n_ctx;
++    params.n_ubatch = config != nullptr && config->n_ubatch > 0 ? static_cast<uint32_t>(config->n_ubatch) : 0u;
+     params.n_seq_max = stage_model->lane_count;
+     params.kv_unified = stage_model->lane_count > 1;
+     params.type_k = config != nullptr && config->cache_type_k > 0 ? static_cast<ggml_type>(config->cache_type_k) : GGML_TYPE_F16;
+     params.type_v = config != nullptr && config->cache_type_v > 0 ? static_cast<ggml_type>(config->cache_type_v) : GGML_TYPE_F16;
++    params.flash_attn_type = config != nullptr ? static_cast<llama_flash_attn_type>(config->flash_attn_type) : LLAMA_FLASH_ATTN_TYPE_AUTO;
+     params.embeddings = config != nullptr && config->filter_tensors_on_load && !config->include_output;
+     if (llm_arch_is_recurrent(model->arch) || llm_arch_is_hybrid(model->arch)) {
+         params.n_seq_max = std::max<uint32_t>(2, stage_model->lane_count * 2);
+-- 
+2.50.1 (Apple Git-155)
+

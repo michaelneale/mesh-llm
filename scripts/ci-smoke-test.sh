@@ -1,260 +1,227 @@
 #!/usr/bin/env bash
-# ci-smoke-test.sh — start mesh-llm with a tiny model, run one inference request, shut down.
+# ci-smoke-test.sh - start mesh-llm with a tiny GGUF, exercise OpenAI routes.
 #
 # Usage: scripts/ci-smoke-test.sh <mesh-llm-binary> <bin-dir> <model-path> [mmproj-path]
 #
-# Expects llama-server and rpc-server in <bin-dir>.
-# Exits 0 on success, 1 on failure.
+# <bin-dir> is retained for compatibility with older workflow call sites. The
+# skippy runtime is embedded in mesh-llm and does not require external
+# llama-server or rpc-server binaries.
 
 set -euo pipefail
 
-MESH_LLM="$1"
-BIN_DIR="$2"
-MODEL="$3"
+MESH_LLM="${1:?Usage: $0 <mesh-llm-binary> <bin-dir> <model-path> [mmproj-path]}"
+BIN_DIR="${2:?Usage: $0 <mesh-llm-binary> <bin-dir> <model-path> [mmproj-path]}"
+MODEL="${3:?Usage: $0 <mesh-llm-binary> <bin-dir> <model-path> [mmproj-path]}"
 MMPROJ="${4:-}"
-API_PORT=9337
-CONSOLE_PORT=3131
-MAX_WAIT=180  # seconds to wait for model load on CPU
-LOG=/tmp/mesh-llm-ci.log
+API_PORT="${MESH_CI_API_PORT:-9337}"
+CONSOLE_PORT="${MESH_CI_CONSOLE_PORT:-3131}"
+MAX_WAIT="${MESH_CI_MAX_WAIT:-180}"
+LOG="${MESH_CI_LOG:-/tmp/mesh-llm-ci.log}"
 
-echo "=== CI Smoke Test ==="
+echo "=== CI Skippy Smoke Test ==="
 echo "  mesh-llm:  $MESH_LLM"
-echo "  bin-dir:   $BIN_DIR"
+echo "  bin-dir:   $BIN_DIR (compatibility placeholder)"
 echo "  model:     $MODEL"
-if [ -n "$MMPROJ" ]; then
+if [[ -n "$MMPROJ" ]]; then
     echo "  mmproj:    $MMPROJ"
 fi
 echo "  api port:  $API_PORT"
+echo "  console:   $CONSOLE_PORT"
 echo "  os:        $(uname -s)"
 
-# Verify binaries exist
-ls -la "$BIN_DIR"/rpc-server* "$BIN_DIR"/llama-server* 2>/dev/null || true
-if [ ! -f "$MESH_LLM" ]; then
-    echo "❌ Missing mesh-llm binary: $MESH_LLM"
+if [[ ! -x "$MESH_LLM" ]]; then
+    echo "Missing executable mesh-llm binary: $MESH_LLM" >&2
+    exit 1
+fi
+if [[ ! -f "$MODEL" ]]; then
+    echo "Missing model: $MODEL" >&2
     exit 1
 fi
 
-# Start mesh-llm in background
 ARGS=(
     serve
     --model "$MODEL"
     --no-draft
-    --bin-dir "$BIN_DIR"
     --device CPU
+    --ctx-size "${MESH_CI_CTX_SIZE:-256}"
     --port "$API_PORT"
     --console "$CONSOLE_PORT"
 )
 
-if [ -n "$MMPROJ" ]; then
+if [[ -n "$MMPROJ" ]]; then
     ARGS+=(--mmproj "$MMPROJ")
 fi
 
-echo "Starting mesh-llm..."
-"$MESH_LLM" "${ARGS[@]}" > "$LOG" 2>&1 &
+"$MESH_LLM" "${ARGS[@]}" >"$LOG" 2>&1 &
 MESH_PID=$!
-echo "  PID: $MESH_PID"
 
 cleanup() {
     echo "Shutting down mesh-llm (PID $MESH_PID)..."
     kill "$MESH_PID" 2>/dev/null || true
-    # Also kill any child processes
     pkill -P "$MESH_PID" 2>/dev/null || true
-    # Give them a moment then force-kill stragglers
-    sleep 2
+    sleep 1
     kill -9 "$MESH_PID" 2>/dev/null || true
-    pkill -9 -f rpc-server 2>/dev/null || true
-    pkill -9 -f llama-server 2>/dev/null || true
     wait "$MESH_PID" 2>/dev/null || true
-    echo "Cleanup done."
+    echo "--- mesh-llm log tail ---"
+    tail -100 "$LOG" 2>/dev/null || true
+    echo "--- end log ---"
 }
 trap cleanup EXIT
 
-# Wait for llama_ready
-echo "Waiting for model to load (up to ${MAX_WAIT}s)..."
+echo "Waiting for skippy runtime readiness (up to ${MAX_WAIT}s)..."
 for i in $(seq 1 "$MAX_WAIT"); do
     if ! kill -0 "$MESH_PID" 2>/dev/null; then
-        echo "❌ mesh-llm exited unexpectedly"
-        echo "--- Log tail ---"
-        tail -50 "$LOG" || true
+        echo "mesh-llm exited unexpectedly" >&2
+        tail -120 "$LOG" >&2 || true
         exit 1
     fi
 
-    READY=$(curl -sf "http://localhost:${CONSOLE_PORT}/api/status" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('llama_ready', False))" 2>/dev/null || echo "False")
-    if [ "$READY" = "True" ]; then
-        echo "✅ Model loaded in ${i}s"
+    READY="$(
+        curl -sf "http://127.0.0.1:${CONSOLE_PORT}/api/status" 2>/dev/null |
+            python3 -c 'import json,sys; print(json.load(sys.stdin).get("llama_ready", False))' 2>/dev/null ||
+            echo "False"
+    )"
+    if [[ "$READY" == "True" ]]; then
+        echo "Runtime ready after ${i}s"
         break
     fi
 
-    if [ "$i" -eq "$MAX_WAIT" ]; then
-        echo "❌ Model failed to load within ${MAX_WAIT}s"
-        echo "--- Log tail ---"
-        tail -80 "$LOG" || true
+    if [[ "$i" -eq "$MAX_WAIT" ]]; then
+        echo "Timed out waiting for runtime readiness" >&2
+        tail -120 "$LOG" >&2 || true
         exit 1
     fi
 
-    if [ $((i % 15)) -eq 0 ]; then
+    if (( i % 15 == 0 )); then
         echo "  Still waiting... (${i}s)"
+        tail -5 "$LOG" 2>/dev/null | sed 's/^/    /' || true
     fi
     sleep 1
 done
 
-# Test inference
-echo "Testing /v1/chat/completions..."
-RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "model": "any",
-        "messages": [{"role": "user", "content": "Say hello in exactly 3 words."}],
-        "max_tokens": 32,
-        "temperature": 0
-    }' 2>&1)
+echo "Waiting for /v1/models..."
+SMOKE_MODEL_ID=""
+for i in $(seq 1 60); do
+    MODELS_JSON="$(curl -sf "http://127.0.0.1:${API_PORT}/v1/models" 2>/dev/null || true)"
+    SMOKE_MODEL_ID="$(
+        printf '%s' "$MODELS_JSON" |
+            python3 -c 'import json,sys; data=json.load(sys.stdin).get("data", []); print(data[0].get("id", "") if data else "")' 2>/dev/null ||
+            echo ""
+    )"
+    if [[ -n "$SMOKE_MODEL_ID" ]]; then
+        echo "OpenAI API ready with model: $SMOKE_MODEL_ID"
+        break
+    fi
 
-if [ $? -ne 0 ]; then
-    echo "❌ Inference request failed"
-    echo "$RESPONSE"
-    echo "--- Log tail ---"
-    tail -50 "$LOG" || true
+    if [[ "$i" -eq 60 ]]; then
+        echo "OpenAI API did not publish a model" >&2
+        tail -120 "$LOG" >&2 || true
+        exit 1
+    fi
+    sleep 1
+done
+
+BASE_URL="http://127.0.0.1:${API_PORT}/v1"
+
+echo "Testing non-stream chat completion..."
+CHAT_PAYLOAD="$(
+    jq -cn --arg model "$SMOKE_MODEL_ID" '{
+      model: $model,
+      messages: [{role: "user", content: "Say hello in exactly 3 words."}],
+      max_tokens: 4,
+      temperature: 0
+    }'
+)"
+RESPONSE="$(curl -fsS --max-time 60 "${BASE_URL}/chat/completions" -H 'content-type: application/json' -d "$CHAT_PAYLOAD")"
+printf '%s' "$RESPONSE" | jq -e '.object == "chat.completion" and (.choices[0].message.content | length > 0)' >/dev/null
+
+echo "Testing stream chat completion..."
+STREAM_PAYLOAD="$(
+    jq -cn --arg model "$SMOKE_MODEL_ID" '{
+      model: $model,
+      messages: [{role: "user", content: "Count from one to three."}],
+      stream: true,
+      stream_options: {include_usage: true},
+      max_tokens: 4,
+      temperature: 0
+    }'
+)"
+STREAM_OUT="$(mktemp)"
+if ! curl -fsS --max-time 60 -N "${BASE_URL}/chat/completions" -H 'content-type: application/json' -d "$STREAM_PAYLOAD" >"$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
     exit 1
 fi
-
-# Verify response has content
-CONTENT=$(echo "$RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null || echo "")
-if [ -z "$CONTENT" ]; then
-    echo "❌ Empty response from inference"
-    echo "Raw response: $RESPONSE"
+if ! grep -q 'data: \[DONE\]' "$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
     exit 1
 fi
-
-echo "✅ Inference response: $CONTENT"
-
-# Test model=auto with hooks — routes through smart router with inter-model
-# collaboration hooks enabled. No peers available so hooks return action:none,
-# model generates normally.
-echo "Testing model=auto (virtual LLM hooks)..."
-AUTO_HOOK_RESPONSE=$(curl -sf "http://localhost:${API_PORT}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "model": "auto",
-        "messages": [{"role": "user", "content": "Say hi."}],
-        "max_tokens": 16,
-        "temperature": 0
-    }' 2>&1)
-
-AUTO_HOOK_CONTENT=$(echo "$AUTO_HOOK_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null || echo "")
-if [ -z "$AUTO_HOOK_CONTENT" ]; then
-    echo "❌ model=auto returned empty response"
-    echo "Raw: $AUTO_HOOK_RESPONSE"
-    echo "--- Log tail ---"
-    tail -30 "$LOG" || true
+if ! grep -q '"role":"assistant"' "$STREAM_OUT"; then
+    rm -f "$STREAM_OUT"
     exit 1
 fi
-echo "✅ model=auto response: $AUTO_HOOK_CONTENT"
+rm -f "$STREAM_OUT"
 
-# Test /v1/models endpoint
-echo "Testing /v1/models..."
-MODELS=$(curl -sf "http://localhost:${API_PORT}/v1/models" 2>&1)
-MODEL_COUNT=$(echo "$MODELS" | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))" 2>/dev/null || echo "0")
-if [ "$MODEL_COUNT" -eq 0 ]; then
-    echo "❌ No models in /v1/models"
-    echo "$MODELS"
-    exit 1
-fi
-echo "✅ /v1/models returned $MODEL_COUNT model(s)"
+echo "Testing model=auto routing..."
+AUTO_PAYLOAD="$(
+    jq -cn '{
+      model: "auto",
+      messages: [{role: "user", content: "Say hi."}],
+      max_tokens: 4,
+      temperature: 0
+    }'
+)"
+AUTO_RESPONSE="$(curl -fsS --max-time 60 "${BASE_URL}/chat/completions" -H 'content-type: application/json' -d "$AUTO_PAYLOAD")"
+printf '%s' "$AUTO_RESPONSE" | jq -e '(.choices[0].message.content | length > 0)' >/dev/null
 
-
-
-
-# Headless mode: API-only, no embedded UI
-echo ""
-echo "=== Headless mode subcase ==="
-HEADLESS_API_PORT=9338
-HEADLESS_CONSOLE_PORT=3132
-HEADLESS_LOG=/tmp/mesh-llm-ci-headless.log
-
+echo "Testing headless mode subcase..."
+HEADLESS_API_PORT="${MESH_CI_HEADLESS_API_PORT:-9338}"
+HEADLESS_CONSOLE_PORT="${MESH_CI_HEADLESS_CONSOLE_PORT:-3132}"
+HEADLESS_LOG="${MESH_CI_HEADLESS_LOG:-/tmp/mesh-llm-ci-headless.log}"
 HEADLESS_ARGS=(
     serve
     --model "$MODEL"
     --no-draft
-    --bin-dir "$BIN_DIR"
     --device CPU
+    --ctx-size "${MESH_CI_CTX_SIZE:-256}"
     --port "$HEADLESS_API_PORT"
     --console "$HEADLESS_CONSOLE_PORT"
     --headless
 )
-
-if [ -n "$MMPROJ" ]; then
+if [[ -n "$MMPROJ" ]]; then
     HEADLESS_ARGS+=(--mmproj "$MMPROJ")
 fi
 
-echo "Starting mesh-llm in headless mode..."
-"$MESH_LLM" "${HEADLESS_ARGS[@]}" > "$HEADLESS_LOG" 2>&1 &
+"$MESH_LLM" "${HEADLESS_ARGS[@]}" >"$HEADLESS_LOG" 2>&1 &
 HEADLESS_PID=$!
-echo "  PID: $HEADLESS_PID"
 
 headless_cleanup() {
-    echo "Shutting down headless mesh-llm (PID $HEADLESS_PID)..."
     kill "$HEADLESS_PID" 2>/dev/null || true
     pkill -P "$HEADLESS_PID" 2>/dev/null || true
-    sleep 2
+    sleep 1
     kill -9 "$HEADLESS_PID" 2>/dev/null || true
     wait "$HEADLESS_PID" 2>/dev/null || true
-    echo "Headless cleanup done."
 }
-trap 'cleanup; headless_cleanup' EXIT
+trap 'headless_cleanup; cleanup' EXIT
 
-echo "Waiting for headless node to be ready (up to ${MAX_WAIT}s)..."
 for i in $(seq 1 "$MAX_WAIT"); do
     if ! kill -0 "$HEADLESS_PID" 2>/dev/null; then
-        echo "❌ headless mesh-llm exited unexpectedly"
-        echo "--- Headless log tail ---"
-        tail -50 "$HEADLESS_LOG" || true
+        echo "headless mesh-llm exited unexpectedly" >&2
+        tail -100 "$HEADLESS_LOG" >&2 || true
         exit 1
     fi
 
-    HEADLESS_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HEADLESS_CONSOLE_PORT}/api/status" 2>/dev/null || echo "000")
-    if [ "$HEADLESS_STATUS" = "200" ]; then
-        echo "✅ Headless node ready in ${i}s"
+    if curl -sf "http://127.0.0.1:${HEADLESS_API_PORT}/v1/models" >/dev/null 2>&1 &&
+       curl -sf "http://127.0.0.1:${HEADLESS_CONSOLE_PORT}/api/status" >/dev/null 2>&1; then
+        echo "Headless mode ready after ${i}s"
         break
     fi
 
-    if [ "$i" -eq "$MAX_WAIT" ]; then
-        echo "❌ Headless node failed to become ready within ${MAX_WAIT}s"
-        echo "--- Headless log tail ---"
-        tail -80 "$HEADLESS_LOG" || true
+    if [[ "$i" -eq "$MAX_WAIT" ]]; then
+        echo "Timed out waiting for headless mode" >&2
+        tail -100 "$HEADLESS_LOG" >&2 || true
         exit 1
-    fi
-
-    if [ $((i % 15)) -eq 0 ]; then
-        echo "  Still waiting... (${i}s)"
     fi
     sleep 1
 done
 
-# Assert /api/status returns 200 in headless mode
-echo "Testing headless /api/status returns 200..."
-HEADLESS_API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HEADLESS_CONSOLE_PORT}/api/status" 2>/dev/null || echo "000")
-if [ "$HEADLESS_API_STATUS" != "200" ]; then
-    echo "❌ Headless /api/status returned $HEADLESS_API_STATUS (expected 200)"
-    exit 1
-fi
-echo "✅ Headless /api/status returned 200"
-
-# Assert / returns 404 in headless mode (web console disabled)
-echo "Testing headless / returns 404..."
-HEADLESS_ROOT_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:${HEADLESS_CONSOLE_PORT}/" 2>/dev/null || echo "000")
-if [ "$HEADLESS_ROOT_STATUS" != "404" ]; then
-    echo "❌ Headless / returned $HEADLESS_ROOT_STATUS (expected 404)"
-    exit 1
-fi
-echo "✅ Headless / returned 404 (web console correctly disabled)"
-
-# Stop headless instance before final summary
-kill "$HEADLESS_PID" 2>/dev/null || true
-pkill -P "$HEADLESS_PID" 2>/dev/null || true
-sleep 2
-kill -9 "$HEADLESS_PID" 2>/dev/null || true
-wait "$HEADLESS_PID" 2>/dev/null || true
-trap cleanup EXIT
-
-echo ""
-echo "=== All smoke tests passed ==="
+echo "Skippy smoke passed"

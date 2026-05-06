@@ -8,11 +8,59 @@ $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir ".."))
-$llamaDir = Join-Path $repoRoot "llama.cpp"
-$buildDir = Join-Path $llamaDir "build"
-$meshUiDir = Join-Path $repoRoot "mesh-llm\ui"
+$llamaDir = if ($env:MESH_LLM_LLAMA_DIR) { $env:MESH_LLM_LLAMA_DIR } else { Join-Path $repoRoot ".deps\llama.cpp" }
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi" }
+$meshUiDir = Join-Path $repoRoot "crates\mesh-llm\ui"
 $compilerLauncherArgs = @()
 $compilerCacheBin = $null
+
+function Prepare-Llama {
+    $pinFile = Join-Path $repoRoot "third_party\llama.cpp\upstream.txt"
+    $patchDir = Join-Path $repoRoot "third_party\llama.cpp\patches"
+    $upstreamUrl = if ($env:LLAMA_UPSTREAM_URL) { $env:LLAMA_UPSTREAM_URL } else { "https://github.com/ggml-org/llama.cpp.git" }
+    $targetSha = if ($env:MESH_LLM_LLAMA_PIN_SHA) { $env:MESH_LLM_LLAMA_PIN_SHA } else { (Get-Content $pinFile -Raw).Trim() }
+
+    if (-not (Test-Path $pinFile)) {
+        throw "Missing llama.cpp upstream pin: $pinFile"
+    }
+    if (-not (Test-Path $patchDir)) {
+        throw "Missing llama.cpp patch directory: $patchDir"
+    }
+
+    $llamaParent = Split-Path -Parent $llamaDir
+    New-Item -ItemType Directory -Force -Path $llamaParent | Out-Null
+    if (-not (Test-Path (Join-Path $llamaDir ".git"))) {
+        if (Test-Path $llamaDir) {
+            Remove-Item -Recurse -Force $llamaDir
+        }
+        Invoke-NativeCommand "git" @("clone", "--filter=blob:none", $upstreamUrl, $llamaDir)
+    }
+
+    Push-Location $llamaDir
+    try {
+        & git am --abort *> $null
+        Invoke-NativeCommand "git" @("remote", "set-url", "origin", $upstreamUrl)
+        Invoke-NativeCommand "git" @("fetch", "origin", "master", "--tags")
+        Invoke-NativeCommand "git" @("config", "user.name", "Mesh-LLM CI")
+        Invoke-NativeCommand "git" @("config", "user.email", "ci@mesh-llm.local")
+        Invoke-NativeCommand "git" @("-c", "advice.detachedHead=false", "checkout", "--detach", "--quiet", $targetSha)
+        Invoke-NativeCommand "git" @("reset", "--hard", "--quiet", $targetSha)
+        Invoke-NativeCommand "git" @("clean", "-fdx", "-e", "build/")
+
+        $patches = Get-ChildItem -Path $patchDir -Filter "*.patch" | Sort-Object Name
+        foreach ($patch in $patches) {
+            Invoke-NativeCommand "git" @("am", "--3way", $patch.FullName)
+        }
+
+        $patchedSha = (& git rev-parse HEAD).Trim()
+        Write-Host "prepared llama.cpp"
+        Write-Host "  upstream: $targetSha"
+        Write-Host "  patched:  $patchedSha"
+        Write-Host "  workdir:  $llamaDir"
+    } finally {
+        Pop-Location
+    }
+}
 
 function Add-ToPath {
     param([string]$Directory)
@@ -558,6 +606,7 @@ $CudaArch = Normalize-RecipeArgument $CudaArch @("cuda_arch", "cudaarch")
 $RocmArch = Normalize-RecipeArgument $RocmArch @("rocm_arch", "rocmarch", "amd_arch", "amdarch")
 
 $backendName = Resolve-Backend $Backend
+$buildDir = if ($env:LLAMA_STAGE_BUILD_DIR) { $env:LLAMA_STAGE_BUILD_DIR } else { Join-Path $llamaDir "build-stage-abi-$backendName" }
 Write-Host "Using Windows backend: $backendName"
 
 Ensure-MsvcToolchain
@@ -590,35 +639,20 @@ switch ($backendName) {
 }
 
 Invoke-InRepo {
-    if (-not (Test-Path $llamaDir)) {
-        Write-Host "Cloning michaelneale/llama.cpp (upstream-latest branch)..."
-        Invoke-NativeCommand "git" @("clone", "-b", "upstream-latest", "https://github.com/michaelneale/llama.cpp.git", $llamaDir)
-    } else {
-        Push-Location $llamaDir
-        try {
-            $currentBranch = (& git branch --show-current).Trim()
-            if ($currentBranch -ne "upstream-latest") {
-                Write-Host "Switching llama.cpp from '$currentBranch' to upstream-latest..."
-                Invoke-NativeCommand "git" @("checkout", "upstream-latest")
-            }
-            Write-Host "Pulling latest upstream-latest from origin..."
-            Invoke-NativeCommand "git" @("pull", "--ff-only", "origin", "upstream-latest")
-        } finally {
-            Pop-Location
-        }
-    }
+    Prepare-Llama
 
     $cmakeArgs = @(
         "-B", $buildDir,
         "-S", $llamaDir,
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DGGML_RPC=ON",
+        "-DCMAKE_CXX_FLAGS=/DPATH_MAX=4096",
         "-DGGML_METAL=OFF",
         "-DGGML_CUDA=OFF",
         "-DGGML_HIP=OFF",
         "-DGGML_VULKAN=OFF",
         "-DBUILD_SHARED_LIBS=OFF",
-        "-DLLAMA_OPENSSL=OFF",
+        "-DLLAMA_CURL=OFF",
+        "-DLLAMA_BUILD_EXAMPLES=OFF",
         "-DLLAMA_BUILD_TESTS=OFF",
         "-DGGML_BUILD_TESTS=OFF"
     )
@@ -669,8 +703,8 @@ Invoke-InRepo {
 
     $parallelJobs = [Environment]::ProcessorCount
     Invoke-NativeCommand "cmake" $cmakeArgs
-    Invoke-NativeCommand "cmake" @("--build", $buildDir, "--config", "Release", "--parallel", "$parallelJobs")
-    Write-Host "Build complete: $buildDir\bin\"
+    Invoke-NativeCommand "cmake" @("--build", $buildDir, "--config", "Release", "--parallel", "$parallelJobs", "--target", "llama", "llama-common", "mtmd")
+    Write-Host "Patched llama.cpp ABI build complete: $buildDir"
 
     if (Test-Path $meshUiDir) {
         if (Test-UiBuildRequired -UiDirectory $meshUiDir) {
@@ -690,6 +724,7 @@ Invoke-InRepo {
     }
 
     Write-Host "Building mesh-llm..."
+    $env:LLAMA_STAGE_BUILD_DIR = $buildDir
     Invoke-NativeCommand "cargo" @("build", "--release", "--locked", "-p", "mesh-llm")
     Write-Host "Mesh binary: target\release\mesh-llm.exe"
 }

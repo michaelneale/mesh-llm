@@ -8,7 +8,6 @@ trap 'rm -rf "$_STAGING_DIR"' EXIT
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BUILD_BIN_DIR="$REPO_ROOT/llama.cpp/build/bin"
 RELEASE_BIN_DIR="$REPO_ROOT/target/release"
 
 python_bin() {
@@ -68,29 +67,6 @@ flavor_suffix() {
     esac
 }
 
-copy_runtime_libs() {
-    local bundle_dir="$1"
-    shopt -s nullglob
-    case "$(release_os_name)" in
-        Darwin)
-            for lib in "$BUILD_BIN_DIR"/*.dylib; do
-                cp "$lib" "$bundle_dir/"
-            done
-            ;;
-        Linux)
-            for lib in "$BUILD_BIN_DIR"/*.so "$BUILD_BIN_DIR"/*.so.*; do
-                cp "$lib" "$bundle_dir/"
-            done
-            ;;
-    esac
-    shopt -u nullglob
-}
-
-# Map an outer release flavor (used for archive naming) to the flavor
-# suffix baked into binary filenames. The mesh-llm runtime looks up
-# binaries by the BinaryFlavor enum (cpu/cuda/rocm/vulkan/metal); "lane"
-# variants that produce the same runtime binary must share the binary
-# suffix. Only the outer archive name distinguishes lanes.
 binary_flavor_for_release_flavor() {
     case "$1" in
         cuda-blackwell) printf 'cuda\n' ;;
@@ -361,14 +337,9 @@ main() {
     mkdir -p "$bundle_dir"
 
     cp "$RELEASE_BIN_DIR/mesh-llm${BIN_EXT}" "$bundle_dir/$(bundle_bin_name mesh-llm)"
-    cp "$BUILD_BIN_DIR/rpc-server${BIN_EXT}" "$bundle_dir/$(bundle_bin_name rpc-server)"
-    cp "$BUILD_BIN_DIR/llama-server${BIN_EXT}" "$bundle_dir/$(bundle_bin_name llama-server)"
-    cp "$BUILD_BIN_DIR/llama-moe-analyze${BIN_EXT}" "$bundle_dir/llama-moe-analyze"
-    cp "$BUILD_BIN_DIR/llama-moe-split${BIN_EXT}" "$bundle_dir/llama-moe-split"
-    copy_runtime_libs "$bundle_dir"
 
     if [[ "$os_name" == "Darwin" ]]; then
-        for bin in "$bundle_dir/$(bundle_bin_name mesh-llm)" "$bundle_dir/$(bundle_bin_name rpc-server)" "$bundle_dir/$(bundle_bin_name llama-server)" "$bundle_dir/llama-moe-analyze" "$bundle_dir/llama-moe-split"; do
+        for bin in "$bundle_dir/$(bundle_bin_name mesh-llm)"; do
             [[ -f "$bin" ]] || continue
             install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
         done

@@ -6,7 +6,7 @@ High-level directions for mesh-llm. Not promises — just things we're thinking 
 
 Implemented. Heuristic classifier detects Code/Reasoning/Chat/Creative/ToolCall with Quick/Moderate/Deep complexity. Task-dominant scoring ensures the right model handles each request. Tool capability is a hard filter. Multi-model per node with auto packs by VRAM tier.
 
-Next: static speed estimates in model profiles, response quality checks (retry on garbage), complexity-aware token budgets. See [mesh-llm/docs/ROUTER_V2.md](mesh-llm/docs/ROUTER_V2.md) for the full phased plan.
+Next: static speed estimates in model profiles, response quality checks (retry on garbage), complexity-aware token budgets. See [docs/design/ROUTER_V2.md](docs/design/ROUTER_V2.md) for the full phased plan.
 
 ## Mobile chat app (exemplar)
 
@@ -22,11 +22,15 @@ This is the best way to show what mesh-llm does: zero setup, zero config, just s
 
 ## Connection stability
 
-Relay connections degrade over hours on some nodes (Studio pattern: fresh=250ms, 10h=isolated). Need relay health monitoring, periodic reconnect, and better understanding of iroh's relay lifecycle. See [mesh-llm/TODO.md](mesh-llm/TODO.md) for investigation notes.
+Relay connections degrade over hours on some nodes (Studio pattern: fresh=250ms, 10h=isolated). Need relay health monitoring, periodic reconnect, and better understanding of iroh's relay lifecycle. See [crates/mesh-llm/TODO.md](crates/mesh-llm/TODO.md) for investigation notes.
 
 ## Production relay infrastructure
 
-Currently mesh-llm uses iroh's default public relays for NAT traversal. We have a self-hosted iroh-relay on Fly.io (`relay/`) but it's not the default yet. Dedicated relays in key regions would improve connectivity. May also help with the relay decay issue above.
+mesh-llm now uses managed iroh relays via [services.iroh.computer](https://services.iroh.computer) as the default:
+- `usw1-2.relay.michaelneale.mesh-llm.iroh.link` (US West)
+- `aps1-1.relay.michaelneale.mesh-llm.iroh.link` (Asia-Pacific South)
+
+The old self-hosted Fly.io relay (`tools/relay-fly-legacy/`) is no longer in use. Adding more relay regions may help with the relay decay issue above.
 
 ## Agent launcher
 
@@ -46,7 +50,7 @@ Currently ships as a 3-binary bundle (`mesh-llm` + `llama-server` + `rpc-server`
 
 ## MoE expert sharding ✅
 
-Implemented. Auto-detects MoE, computes overlapping expert assignments, splits locally, session-sticky routing. Zero cross-node traffic. See [MoE_PLAN.md](mesh-llm/docs/MoE_PLAN.md).
+Implemented. Auto-detects MoE, computes overlapping expert assignments, splits locally, session-sticky routing. Zero cross-node traffic. See [MoE_PLAN.md](docs/design/MoE_PLAN.md).
 
 Remaining: optimized rankings for unknown models, scale testing on Mixtral 8×22B / Qwen3-235B.
 

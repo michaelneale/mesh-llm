@@ -1,0 +1,87 @@
+From bc34e128464daa892699604a89416cacd43a54da Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Sun, 26 Apr 2026 13:20:03 +1000
+Subject: [PATCH 12/45] Add stage session reset ABI
+
+---
+ include/skippy.h |  7 ++++++-
+ src/skippy.cpp   | 24 +++++++++++++++++++++++-
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index b049150c..c355b844 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 0
++#define SKIPPY_ABI_VERSION_PATCH 1
+ 
+ enum skippy_feature {
+     SKIPPY_FEATURE_RUNTIME_SLICE          = 1 << 0,
+@@ -38,6 +38,7 @@ enum skippy_feature {
+     SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
+     SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
+     SKIPPY_FEATURE_NATIVE_KV_PAGE         = 1 << 8,
++    SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
+ };
+ 
+ enum skippy_kv_page_flag {
+@@ -175,6 +176,10 @@ LLAMA_API enum skippy_status skippy_session_create(
+         struct skippy_session ** out_session,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_session_reset(
++        struct skippy_session * session,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_session_free(
+         struct skippy_session * session,
+         struct skippy_error ** out_error);
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 820f37b4..fcd8576a 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -788,7 +788,8 @@ uint64_t skippy_abi_features(void) {
+            SKIPPY_FEATURE_GGUF_SLICE_WRITE |
+            SKIPPY_FEATURE_TOKENIZE_DETOKENIZE |
+            SKIPPY_FEATURE_ACTIVATION_FRAME |
+-           SKIPPY_FEATURE_NATIVE_KV_PAGE;
++           SKIPPY_FEATURE_NATIVE_KV_PAGE |
++           SKIPPY_FEATURE_SESSION_RESET;
+ }
+ 
+ const char * skippy_status_string(enum skippy_status status) {
+@@ -936,6 +937,27 @@ enum skippy_status skippy_session_create(
+     return skippy_success(out_error);
+ }
+ 
++enum skippy_status skippy_session_reset(
++        struct skippy_session * session,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    session->ctx->synchronize();
++    llama_memory_t memory = session->ctx->get_memory();
++    if (memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "runtime memory is unavailable");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    llama_memory_clear(memory, true);
++    session->n_past = 0;
++    session->ctx->synchronize();
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_session_free(
+         struct skippy_session * session,
+         struct skippy_error ** out_error) {
+-- 
+2.50.1 (Apple Git-155)
+

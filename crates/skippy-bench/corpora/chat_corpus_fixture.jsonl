@@ -1,0 +1,3 @@
+{"id":"plain-1","family":"qa","length_bucket":"short","prompt":"Summarize why staged serving needs a stable baseline."}
+{"id":"messages-1","family":"coding","length_bucket":"medium","messages":[{"role":"system","content":"You are concise."},{"role":"user","content":"Patch the request parser."}]}
+{"id":"turns-1","family":"analysis","length_bucket":"short","turns":["Explain the queueing risk.","Now make the report actionable."]}

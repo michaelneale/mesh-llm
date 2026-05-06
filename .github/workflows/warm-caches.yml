@@ -1,41 +1,13 @@
 name: Warm GPU CI caches
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Populates the cross-PR Linux GPU artifact caches on main and prunes old
-# versions so the repo-level GitHub Actions cache stays under the free-tier
-# storage budget.
-#
-# Why this workflow is separate from ci.yml:
-#
-#   - ci.yml PR jobs only RESTORE the slim caches via actions/cache/restore@v5.
-#     PR runs never write cache entries and never pollute PR-scoped storage.
-#   - warm-caches.yml runs on push to main (filtered to cache-key inputs) and
-#     on manual workflow_dispatch. It is the single writer for the main-scoped
-#     GPU caches consumed by PR CI.
-#   - The slim jobs warm the exact artifacts consumed by the current PR smoke
-#     lanes (`linux_cuda` arch89/fa-off and `linux_rocm` gfx1100).
-#   - The fat jobs warm the full default arch matrices for CUDA and ROCm so the
-#     heavier artifact shapes have stable main-scoped cache entries too.
-#   - The repeated warm-job body lives in `gpu-warm-cache-job.yml`; this file
-#     stays responsible for top-level triggers and cache pruning, while
-#     `llama-cache-keys.yml` owns SHA resolution and explicit key composition.
-#
-# Retention policy precedence:
-#   1. workflow_dispatch input `retention` (one-off manual override)
-#   2. repository variable `vars.LLAMA_GPU_CACHE_RETENTION` (persistent, set via
-#      Settings → Secrets and variables → Actions → Variables)
-#   3. hardcoded default of 2
-# ─────────────────────────────────────────────────────────────────────────────
-
 on:
   push:
     branches: [main]
     paths:
-      # Every file listed here is also part of one or more cache keys. A change
-      # to any of them invalidates the cache AND triggers this workflow to
-      # rebuild and re-warm in the same commit.
       - 'scripts/build-linux.sh'
       - 'scripts/build-linux-rocm.sh'
+      - 'scripts/build-llama.sh'
+      - 'third_party/llama.cpp/**'
       - 'Justfile'
       - '.github/workflows/ci.yml'
       - '.github/workflows/warm-caches.yml'
@@ -45,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       retention:
-        description: 'Number of warmed GPU cache versions to keep (overrides vars.LLAMA_GPU_CACHE_RETENTION; default 2)'
+        description: 'Number of warmed GPU cache versions to keep'
         required: false
         default: ''
 
@@ -69,40 +41,43 @@ jobs:
     needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
-      job_name: Warm Linux CUDA slim cache
+      job_name: Warm Linux CUDA slim ABI cache
       cache_label: CUDA slim
       container_image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
       cache_key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_slim_cache_key }}
+      cache_path: .deps/llama-build/build-stage-abi-cuda-sm89
+      backend: cuda
       build_recipe: release-build-cuda
       build_args: 89
-      extra_env: |
-        MESH_LLM_CUDA_FA_ALL_QUANTS=off
-        MESH_LLM_LLAMA_TARGETS=rpc-server llama-server llama-moe-analyze llama-moe-split
 
   warm_llama_cuda_fat:
     needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
-      job_name: Warm Linux CUDA fat cache
+      job_name: Warm Linux CUDA fat ABI cache
       cache_label: CUDA fat
       container_image: nvidia/cuda:${{ needs.resolve_llama_cache_keys.outputs.cuda_version }}-devel-ubuntu22.04
       llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: ${{ vars.CACHE_USE_SELF_HOSTED_RUNNER == '1' && '["self-hosted","gpu-nvidia"]' || '"ubuntu-latest"' }}
       cache_key: ${{ needs.resolve_llama_cache_keys.outputs.cuda_fat_cache_key }}
+      cache_path: .deps/llama-build/build-stage-abi-cuda-sm75_80_86_87_89_90_100_120
+      backend: cuda
       build_recipe: release-build-cuda
 
   warm_llama_rocm_slim:
     needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
-      job_name: Warm Linux ROCm slim cache
+      job_name: Warm Linux ROCm slim ABI cache
       cache_label: ROCm slim
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
       llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: '"ubuntu-latest"'
       cache_key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_slim_cache_key }}
+      cache_path: .deps/llama-build/build-stage-abi-rocm-gfx1100
+      backend: rocm
       build_recipe: release-build-rocm
       build_args: gfx1100
 
@@ -110,12 +85,14 @@ jobs:
     needs: resolve_llama_cache_keys
     uses: ./.github/workflows/gpu-warm-cache-job.yml
     with:
-      job_name: Warm Linux ROCm fat cache
+      job_name: Warm Linux ROCm fat ABI cache
       cache_label: ROCm fat
       container_image: rocm/dev-ubuntu-24.04:7.0-complete
       llama_sha: ${{ needs.resolve_llama_cache_keys.outputs.sha }}
       runs_on: '"ubuntu-latest"'
       cache_key: ${{ needs.resolve_llama_cache_keys.outputs.rocm_fat_cache_key }}
+      cache_path: .deps/llama-build/build-stage-abi-rocm-gfx90a_gfx942_gfx1100_gfx1101_gfx1102_gfx1200_gfx1201
+      backend: rocm
       build_recipe: release-build-rocm
 
   prune_llama_gpu_caches:
@@ -139,88 +116,43 @@ jobs:
             const retention = parseInt(process.env.RETENTION, 10);
             const ref = process.env.TARGET_REF;
             const prefixes = [
-              `${process.env.CACHE_NAMESPACE}-llama-cuda-slim-`,
-              `${process.env.CACHE_NAMESPACE}-llama-cuda-fat-`,
-              `${process.env.CACHE_NAMESPACE}-llama-rocm-slim-`,
-              `${process.env.CACHE_NAMESPACE}-llama-rocm-fat-`,
+              `${process.env.CACHE_NAMESPACE}-skippy-abi-cuda-slim-`,
+              `${process.env.CACHE_NAMESPACE}-skippy-abi-cuda-fat-`,
+              `${process.env.CACHE_NAMESPACE}-skippy-abi-rocm-slim-`,
+              `${process.env.CACHE_NAMESPACE}-skippy-abi-rocm-fat-`,
             ];
 
             if (!Number.isFinite(retention) || retention < 1) {
-              core.setFailed(
-                `LLAMA_GPU_CACHE_RETENTION must be a positive integer, got: "${process.env.RETENTION}"`
-              );
+              core.setFailed(`LLAMA_GPU_CACHE_RETENTION must be positive, got: "${process.env.RETENTION}"`);
               return;
             }
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-
             const allCaches = [];
             for (let page = 1; page <= 10; page++) {
-              const { data } = await github.request(
-                'GET /repos/{owner}/{repo}/actions/caches',
-                {
-                  owner,
-                  repo,
-                  ref,
-                  per_page: 100,
-                  page,
-                  sort: 'created_at',
-                  direction: 'desc',
-                }
-              );
+              const { data } = await github.request('GET /repos/{owner}/{repo}/actions/caches', {
+                owner,
+                repo,
+                ref,
+                per_page: 100,
+                page,
+                sort: 'created_at',
+                direction: 'desc',
+              });
               const pageCaches = data.actions_caches || [];
               allCaches.push(...pageCaches);
               if (pageCaches.length < 100) break;
             }
 
-            const failures = [];
-            const rows = [[
-              { data: 'Prefix', header: true },
-              { data: 'Before', header: true },
-              { data: 'Deleted', header: true },
-              { data: 'Failed', header: true },
-              { data: 'Freed', header: true },
-            ]];
-
             for (const prefix of prefixes) {
               const matching = allCaches.filter((c) => c.key.startsWith(prefix));
-              core.notice(`Found ${matching.length} ${prefix}* cache(s) on ${ref}, retention = ${retention}`);
-
-              const toDelete = matching.slice(retention);
-              let deleted = 0;
-              let freedBytes = 0;
-
-              for (const cache of toDelete) {
-                const sizeMiB = ((cache.size_in_bytes || 0) / (1024 * 1024)).toFixed(1);
-                core.info(`Deleting cache ${cache.id} — ${cache.key} (${sizeMiB} MiB, created ${cache.created_at})`);
-                try {
-                  await github.request(
-                    'DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}',
-                    { owner, repo, cache_id: cache.id }
-                  );
-                  deleted += 1;
-                  freedBytes += cache.size_in_bytes || 0;
-                } catch (err) {
-                  failures.push({ id: cache.id, key: cache.key, error: err.message });
-                  core.warning(`Failed to delete cache ${cache.id}: ${err.message}`);
-                }
+              for (const cache of matching.slice(retention)) {
+                await github.request('DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}', {
+                  owner,
+                  repo,
+                  cache_id: cache.id,
+                });
               }
-
-              rows.push([
-                prefix,
-                String(matching.length),
-                String(deleted),
-                String(toDelete.length - deleted),
-                `${(freedBytes / (1024 * 1024)).toFixed(1)} MiB`,
-              ]);
-            }
-
-            await core.summary
-              .addHeading('GPU cache prune summary', 2)
-              .addTable(rows)
-              .write();
-
-            if (failures.length > 0) {
-              core.setFailed(`Failed to delete ${failures.length} cache(s); see warnings above`);
+              core.notice(`Pruned ${Math.max(matching.length - retention, 0)} cache(s) for ${prefix}`);
             }

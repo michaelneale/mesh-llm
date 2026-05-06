@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+# Start a skippy-backed mesh-llm node and expose environment for SDK smoke tests.
+
 set -euo pipefail
 
-if [ "$#" -lt 5 ]; then
+if [[ "$#" -lt 5 ]]; then
     echo "Usage: $0 <mesh-llm-binary> <bin-dir> <model-path> -- <command...>" >&2
     exit 1
 fi
@@ -11,7 +13,7 @@ BIN_DIR="$2"
 MODEL="$3"
 shift 3
 
-if [ "${1:-}" != "--" ]; then
+if [[ "${1:-}" != "--" ]]; then
     echo "Usage: $0 <mesh-llm-binary> <bin-dir> <model-path> -- <command...>" >&2
     exit 1
 fi
@@ -21,23 +23,20 @@ API_PORT="${MESH_SDK_API_PORT:-9347}"
 CONSOLE_PORT="${MESH_SDK_CONSOLE_PORT:-3141}"
 MAX_WAIT="${MESH_SDK_MAX_WAIT:-180}"
 LOG="${MESH_SDK_LOG:-/tmp/mesh-llm-sdk-ci.log}"
-DEVICE="${MESH_SDK_DEVICE:-CPU}"
 
 echo "=== SDK Fixture ==="
 echo "  mesh-llm:  $MESH_LLM"
-echo "  bin-dir:   $BIN_DIR"
+echo "  bin-dir:   $BIN_DIR (compatibility placeholder)"
 echo "  model:     $MODEL"
 echo "  api port:  $API_PORT"
 echo "  console:   $CONSOLE_PORT"
-echo "  device:    $DEVICE"
 
-if [ ! -x "$MESH_LLM" ]; then
-    echo "Missing mesh-llm binary: $MESH_LLM" >&2
+if [[ ! -x "$MESH_LLM" ]]; then
+    echo "Missing executable mesh-llm binary: $MESH_LLM" >&2
     exit 1
 fi
-
-if [ ! -x "$BIN_DIR/llama-server" ] || [ ! -x "$BIN_DIR/rpc-server" ]; then
-    echo "Missing llama.cpp runtime binaries in $BIN_DIR" >&2
+if [[ ! -f "$MODEL" ]]; then
+    echo "Missing model: $MODEL" >&2
     exit 1
 fi
 
@@ -45,8 +44,8 @@ fi
     serve \
     --model "$MODEL" \
     --no-draft \
-    --bin-dir "$BIN_DIR" \
-    --device "$DEVICE" \
+    --device CPU \
+    --ctx-size "${MESH_SDK_CTX_SIZE:-256}" \
     --port "$API_PORT" \
     --console "$CONSOLE_PORT" \
     >"$LOG" 2>&1 &
@@ -65,25 +64,28 @@ descendant_pids() {
 cleanup() {
     local children
     children="$(descendant_pids "$MESH_PID" | sort -u || true)"
-
     kill "$MESH_PID" 2>/dev/null || true
-    if [ -n "$children" ]; then
+    if [[ -n "$children" ]]; then
         printf '%s\n' "$children" | xargs kill 2>/dev/null || true
     fi
-    sleep 2
+    sleep 1
     kill -9 "$MESH_PID" 2>/dev/null || true
-    if [ -n "$children" ]; then
+    if [[ -n "$children" ]]; then
         printf '%s\n' "$children" | xargs kill -9 2>/dev/null || true
     fi
     wait "$MESH_PID" 2>/dev/null || true
+    echo "--- SDK fixture log tail ---"
+    tail -100 "$LOG" 2>/dev/null || true
+    echo "--- end log ---"
 }
 trap cleanup EXIT
 
 STATUS_JSON=""
+TOKEN=""
 for i in $(seq 1 "$MAX_WAIT"); do
     if ! kill -0 "$MESH_PID" 2>/dev/null; then
         echo "mesh-llm exited unexpectedly" >&2
-        tail -80 "$LOG" || true
+        tail -120 "$LOG" >&2 || true
         exit 1
     fi
 
@@ -103,16 +105,15 @@ except Exception:
     print("")' 2>/dev/null || echo ""
     )"
 
-    if [ "$READY" = "True" ] && [ -n "$TOKEN" ]; then
+    if [[ "$READY" == "True" && -n "$TOKEN" ]]; then
         break
     fi
 
-    if [ "$i" -eq "$MAX_WAIT" ]; then
+    if [[ "$i" -eq "$MAX_WAIT" ]]; then
         echo "Timed out waiting for SDK fixture readiness" >&2
-        tail -80 "$LOG" || true
+        tail -120 "$LOG" >&2 || true
         exit 1
     fi
-
     sleep 1
 done
 
@@ -123,7 +124,7 @@ data = json.load(sys.stdin).get("data", [])
 print(data[0]["id"] if data else "")'
 )"
 
-if [ -z "$MODEL_ID" ]; then
+if [[ -z "$MODEL_ID" ]]; then
     echo "No models returned from /v1/models" >&2
     printf '%s\n' "$MODELS_JSON" >&2
     exit 1

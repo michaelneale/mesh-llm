@@ -1,7 +1,8 @@
 # Distributed LLM Inference — build & run tasks
 
-llama_dir := "llama.cpp"
-build_dir := llama_dir / "build"
+llama_dir := env("MESH_LLM_LLAMA_DIR", ".deps/llama.cpp")
+llama_build_root := env("MESH_LLM_LLAMA_BUILD_ROOT", ".deps/llama-build")
+build_dir := env("LLAMA_STAGE_BUILD_DIR", llama_build_root / "build-stage-abi-cpu")
 mesh_dir := "mesh-llm"
 ui_dir := mesh_dir / "ui"
 benchmark_src_dir := mesh_dir / "benchmarks"
@@ -11,7 +12,7 @@ hf_home := env("HF_HOME", xdg_cache_dir / "huggingface")
 models_dir := env("HF_HUB_CACHE", hf_home / "hub")
 model := models_dir / "GLM-4.7-Flash-Q4_K_M.gguf"
 
-# Build for the current platform (macOS→Metal, Linux/Windows→auto backend)
+# Build for the current platform (macOS Metal ABI, Linux/Windows auto ABI backend)
 [macos]
 build: build-mac
 
@@ -33,17 +34,22 @@ build backend="" cuda_arch="" rocm_arch="":
 build backend="" cuda_arch="" rocm_arch="":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend "{{backend}}" -CudaArch "{{cuda_arch}}" -RocmArch "{{rocm_arch}}"
 
-# Build on macOS Apple Silicon (Metal + RPC)
+# Build on macOS Apple Silicon (Metal ABI)
 build-mac:
     @scripts/build-mac.sh
 
-# Build on Linux with CUDA, ROCm, or Vulkan — delegates to scripts/build-linux.sh
+# Build patched llama.cpp ABI and mesh-llm on Linux
 build-linux backend="" cuda_arch="" rocm_arch="":
     @scripts/build-linux.sh --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
 
+# Build patched llama.cpp ABI and mesh-llm on Linux without rebuilding the UI.
+[linux]
+build-runtime backend="" cuda_arch="" rocm_arch="":
+    @scripts/build-linux.sh --skip-ui --backend "{{ backend }}" --cuda-arch "{{ cuda_arch }}" --rocm-arch "{{ rocm_arch }}"
+
 # Build release artifacts for the current platform.
 
-# GitHub release builds use CPU backends on Linux and Windows, and Metal on macOS.
+# GitHub release builds use embedded ABI libraries.
 release-build:
     @scripts/build-release.sh
 
@@ -51,24 +57,25 @@ release-build:
 release-build-arm64:
     @scripts/build-release.sh
 
+# Prepare the pinned llama.cpp checkout and apply the Mesh-LLM ABI patch queue.
+llama-prepare:
+    @scripts/prepare-llama.sh pinned
+
+# Prepare llama.cpp at upstream master and apply the Mesh-LLM ABI patch queue.
+llama-prepare-latest:
+    @scripts/prepare-llama.sh latest
+
+# Build the patched llama.cpp ABI static libraries.
+llama-build: llama-prepare
+    @scripts/build-llama.sh
+
 release-build-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cpu
 
 # Build a Linux CUDA release artifact (primary / R535-compatible lane).
-# Default arch list is Turing..Hopper (sm_75..sm_90); this matches the
-# CUDA 12.6.3 toolkit pinned by .github/workflows/release.yml. The
-# emitted cubins load on the R535 driver series (the install base of the
-# currently-deployed A30/A100 fleet). For Blackwell support see
-# release-build-cuda-blackwell. See docs/cuda-release-lanes.md.
 release-build-cuda cuda_arch="75;80;86;87;89;90":
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
-# Build a Linux CUDA release artifact (Blackwell lane).
-# Must be invoked under the CUDA 12.8 toolkit. Emitted sm_100/120 cubins
-# require the R550+ driver series at runtime; the produced bundle is
-# NOT compatible with R535. Note: nvcc 12.8.0 does not know sm_103
-# (that arch was introduced in a later CUDA release), so it's omitted
-# here. See docs/cuda-release-lanes.md.
 release-build-cuda-blackwell cuda_arch="75;80;86;87;89;90;100;120":
     @scripts/build-linux.sh --backend cuda --cuda-arch "{{ cuda_arch }}"
 
@@ -78,78 +85,44 @@ release-build-cuda-windows cuda_arch="75;80;86;87;89;90":
 release-build-cuda-blackwell-windows cuda_arch="75;80;86;87;89;90;100;120":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend cuda -CudaArch "{{cuda_arch}}"
 
-# Build a Linux ROCm release artifact with an explicit architecture list.
+# Build a Linux ROCm ABI release artifact with an explicit architecture list.
 release-build-rocm rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
     @scripts/build-linux-rocm.sh "{{ rocm_arch }}"
 
 release-build-rocm-windows rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend rocm -RocmArch "{{rocm_arch}}"
 
-# Build a Linux Vulkan release artifact.
+# Build a Linux Vulkan ABI release artifact.
 release-build-vulkan:
     @scripts/build-linux.sh --backend vulkan
 
 release-build-vulkan-windows:
     @powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1 -Backend vulkan
 
-# Bump release version consistently across source and Cargo manifests.
-release-version version:
-    @scripts/release-version.sh "{{ version }}"
+# Build the skippy benchmark/debug telemetry collector.
+metrics-server-build:
+    cargo build -p metrics-server
 
-# Tag and push a release. Bumps version, updates Cargo.lock, commits, tags, pushes.
-# CI builds and publishes the GitHub release automatically.
-release version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    current_branch="$(git branch --show-current)"
-    if [[ "$current_branch" != "main" ]]; then
-        echo "Error: release must be run from the 'main' branch (current: ${current_branch:-detached HEAD})" >&2
-        exit 1
-    fi
-    if [[ -n "$(git status --porcelain)" ]]; then
-        echo "Error: working tree is not clean. Commit or stash changes before releasing." >&2
-        exit 1
-    fi
-    just check-release
-    tag="{{ version }}"
-    if [[ "$tag" != v* ]]; then
-        tag="v$tag"
-    fi
-    scripts/release-version.sh "$tag"
-    git add -A
-    git commit -m "$tag: release"
-    git tag "$tag"
-    git push origin main
-    git push origin "$tag"
+# Generate a reproducible benchmark corpus for skippy bench tooling.
+bench-corpus tier="smoke" *ARGS:
+    scripts/generate-bench-corpus.py "{{ tier }}" {{ ARGS }}
 
-# Tag and push a prerelease from the current branch. Bumps version, updates
-# Cargo.lock, commits, tags, and pushes the branch plus prerelease tag.
-prerelease version:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    current_branch="$(git branch --show-current)"
-    if [[ -z "$current_branch" ]]; then
-        echo "Error: prerelease must be run from a branch, not detached HEAD." >&2
-        exit 1
-    fi
-    if [[ -n "$(git status --porcelain)" ]]; then
-        echo "Error: working tree is not clean. Commit or stash changes before prereleasing." >&2
-        exit 1
-    fi
-    tag="{{ version }}"
-    if [[ "$tag" != v* ]]; then
-        tag="v$tag"
-    fi
-    if [[ "$tag" != *-* ]]; then
-        echo "Error: prerelease tag must include a prerelease suffix such as -rc.1 (got: $tag)" >&2
-        exit 1
-    fi
-    scripts/release-version.sh "$tag"
-    git add -A
-    git commit -m "$tag: prerelease"
-    git tag "$tag"
-    git push origin "$current_branch"
-    git push origin "$tag"
+# Run skippy family certification checks.
+family-certify *ARGS:
+    scripts/family-certify.sh {{ ARGS }}
+
+# Run target/draft speculative compatibility checks.
+spec-bench target draft *ARGS:
+    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" cargo build -p llama-spec-bench
+    LLAMA_STAGE_BUILD_DIR=".deps/llama.cpp/build-stage-abi-static" target/debug/llama-spec-bench --target-model-path "{{ target }}" --draft-model-path "{{ draft }}" {{ ARGS }}
+
+# Smoke a standalone skippy OpenAI frontend stage.
+skippy-openai-smoke *ARGS:
+    scripts/skippy-openai-smoke.sh {{ ARGS }}
+
+# Run the skippy benchmark/debug telemetry collector.
+metrics-server db="/tmp/mesh-metrics.duckdb" http_addr="127.0.0.1:18080" otlp_addr="127.0.0.1:14317" *ARGS: metrics-server-build
+    target/debug/metrics-server serve --db "{{ db }}" --http-addr "{{ http_addr }}" --otlp-grpc-addr "{{ otlp_addr }}" {{ ARGS }}
 
 # Download the default model (GLM-4.7-Flash Q4_K_M, 17GB)
 download-model:
@@ -164,67 +137,19 @@ download-model:
             "https://huggingface.co/unsloth/GLM-4.7-Flash-GGUF/resolve/main/GLM-4.7-Flash-Q4_K_M.gguf"
     fi
 
-# ── Raw TCP (no mesh) ──────────────────────────────────────────
-
-# Start rpc-server (worker) with local GGUF loading
-worker host="0.0.0.0" port="50052" device="" gguf=model:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    DEVICE="{{ device }}"
-    if [ -z "$DEVICE" ]; then
-        DEVICE="$(scripts/detect-llama-device.sh "{{ build_dir }}/bin/rpc-server")"
-    fi
-    exec {{ build_dir }}/bin/rpc-server --host {{ host }} --port {{ port }} -d "$DEVICE" --gguf {{ gguf }}
-
-# Start llama-server (orchestrator) pointing at an RPC worker
-serve rpc="127.0.0.1:50052" port="8080" gguf=model:
-    {{ build_dir }}/bin/llama-server \
-        --model {{ gguf }} \
-        --rpc {{ rpc }} \
-        -ngl 99 -fit off \
-        --port {{ port }}
-
-# Start both worker + server on localhost for testing
-local: build download-model
-    #!/usr/bin/env bash
-    set -euo pipefail
-    DEVICE="$(scripts/detect-llama-device.sh "{{ build_dir }}/bin/rpc-server")"
-    echo "Starting rpc-server (worker)..."
-    {{ build_dir }}/bin/rpc-server --host 127.0.0.1 --port 50052 -d "$DEVICE" --gguf {{ model }} &
-    WORKER_PID=$!
-    sleep 3
-    echo "Starting llama-server (orchestrator)..."
-    {{ build_dir }}/bin/llama-server \
-        --model {{ model }} \
-        --rpc 127.0.0.1:50052 \
-        -ngl 99 -fit off \
-        --port 8080 &
-    SERVER_PID=$!
-    echo "Waiting for server..."
-    for i in $(seq 1 120); do
-        curl -s http://localhost:8080/health 2>/dev/null | grep -q '"ok"' && break
-        sleep 1
-    done
-    echo "Ready: http://localhost:8080"
-    echo "Worker PID: $WORKER_PID  Server PID: $SERVER_PID"
-    echo "Press Ctrl+C to stop"
-    wait
-
 # ── QUIC Mesh ──────────────────────────────────────────────────
 
 mesh_bin := "target/release/mesh-llm"
 
-# Start a mesh worker (no llama-server, just rpc-server + mesh)
-
 # Prints an invite token for other nodes to join.
 mesh-worker gguf=model:
-    {{ mesh_bin }} --model {{ gguf }} --bin-dir {{ build_dir }}/bin
+    {{ mesh_bin }} --model {{ gguf }}
 
-# Join an existing mesh. Auto-elects host, starts llama-server or contributes as worker.
+# Join an existing mesh and serve through the embedded runtime.
 mesh-join join="" port="9337" gguf=model split="":
     #!/usr/bin/env bash
     set -euo pipefail
-    ARGS="--model {{ gguf }} --bin-dir {{ build_dir }}/bin --port {{ port }}"
+    ARGS="--model {{ gguf }} --port {{ port }}"
     if [ -n "{{ join }}" ]; then
         ARGS="$ARGS --join {{ join }}"
     fi
@@ -240,27 +165,9 @@ bundle output="/tmp/mesh-bundle.tar.gz":
     DIR=$(mktemp -d)
     BUNDLE="$DIR/mesh-bundle"
     mkdir -p "$BUNDLE"
-    case "$(uname -s)" in
-        Darwin) LLAMA_FLAVOR="metal" ;;
-        Linux) LLAMA_FLAVOR="cpu" ;;
-        *) LLAMA_FLAVOR="" ;;
-    esac
-    rpc_name="rpc-server"
-    llama_name="llama-server"
-    if [ -n "$LLAMA_FLAVOR" ]; then
-        rpc_name="rpc-server-$LLAMA_FLAVOR"
-        llama_name="llama-server-$LLAMA_FLAVOR"
-    fi
     cp {{ mesh_bin }} "$BUNDLE/"
-    cp {{ build_dir }}/bin/rpc-server "$BUNDLE/$rpc_name"
-    cp {{ build_dir }}/bin/llama-server "$BUNDLE/$llama_name"
-    cp {{ build_dir }}/bin/llama-moe-analyze "$BUNDLE/"
-    cp {{ build_dir }}/bin/llama-moe-split "$BUNDLE/"
-    for lib in {{ build_dir }}/bin/*.dylib; do
-        cp "$lib" "$BUNDLE/" 2>/dev/null || true
-    done
     # Fix rpaths for portability
-    for bin in "$BUNDLE/mesh-llm" "$BUNDLE/$rpc_name" "$BUNDLE/$llama_name" "$BUNDLE/llama-moe-analyze" "$BUNDLE/llama-moe-split"; do
+    for bin in "$BUNDLE/mesh-llm"; do
         [ -f "$bin" ] || continue
         install_name_tool -add_rpath @executable_path/ "$bin" 2>/dev/null || true
     done
@@ -302,10 +209,6 @@ release-bundle-windows version output="dist":
 release-bundle-cuda version output="dist":
     MESH_RELEASE_FLAVOR=cuda scripts/package-release.sh "{{ version }}" "{{ output }}"
 
-# Create Linux CUDA (Blackwell) release archive(s). Paired with
-# release-build-cuda-blackwell above; emits the cuda-blackwell archive
-# suffix while keeping inner binary names as -cuda (runtime looks up
-# binaries by BinaryFlavor enum, which has one cuda variant).
 release-bundle-cuda-blackwell version output="dist":
     MESH_RELEASE_FLAVOR=cuda-blackwell scripts/package-release.sh "{{ version }}" "{{ output }}"
 
@@ -371,10 +274,14 @@ ui-dev api="http://127.0.0.1:3131" port="5173":
     #!/usr/bin/env bash
     set -euo pipefail
     cd "{{ ui_dir }}"
-    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 127.0.0.1 --port {{ port }}
+    MESH_UI_API_ORIGIN="{{ api }}" npm run dev -- --host 0.0.0.0 --port {{ port }}
 
 # Run the UI with Vite HMR proxying to the public anarchai.org API
 ui-dev-public: (ui-dev "https://www.anarchai.org")
+
+# Run UI unit tests (vitest)
+ui-test:
+    cd "{{ ui_dir }}" && npm test
 
 # Start a lite client — no GPU, no model, just a local HTTP proxy to the mesh host.
 
@@ -384,9 +291,17 @@ mesh-client join="" port="9337":
 
 # Build and auto-join a mesh (discover via Nostr)
 auto: build
-    {{ mesh_bin }} --auto --bin-dir {{ build_dir }}/bin
+    {{ mesh_bin }} --auto
 
 # ── Utilities ──────────────────────────────────────────────────
+
+# Update both tracked llama.cpp pin files from the prepared checkout.
+llama-update-pin:
+    scripts/update-llama-pin.sh
+
+# Render a Markdown summary for a llama.cpp upstream pin change.
+llama-summary old new:
+    scripts/summarize-llama-upstream.sh "{{ old }}" "{{ new }}"
 
 # Clean UI build artifacts (node_modules, dist). Fixes stale npm state.
 [unix]
@@ -398,11 +313,9 @@ clean-ui:
 clean-ui:
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location '{{ ui_dir }}'; Remove-Item -Recurse -Force node_modules,dist -ErrorAction SilentlyContinue"
     echo "Cleaned UI: node_modules + dist removed"
-# Stop all running servers
+# Stop mesh-llm processes
 stop:
     pkill -f "mesh-llm" 2>/dev/null || true
-    pkill -f "rpc-server" 2>/dev/null || true
-    pkill -f "llama-server" 2>/dev/null || true
     echo "Stopped"
 
 # Quick test inference (works with any running server on 8080 or 8090)
@@ -412,27 +325,11 @@ test port="9337":
         -d '{"model":"test","messages":[{"role":"user","content":"Hello! Write a haiku about distributed computing."}],"max_tokens":50}' \
         | python3 -c "import sys,json; d=json.load(sys.stdin); t=d['timings']; print(d['choices'][0]['message'].get('content','')[:200]); print(f\"  prompt: {t['prompt_per_second']:.1f} tok/s  gen: {t['predicted_per_second']:.1f} tok/s ({t['predicted_n']} tok)\")"
 
-# Optional SDK compatibility smoke: 2 mesh nodes + 1 lite client.
-compat-smoke model mmproj="":
-    scripts/ci-compat-smoke.sh "target/release/mesh-llm" "llama.cpp/build/bin" "{{ model }}" "{{ mmproj }}"
-
-# Direct splitter smoke for the MoE families we actively use.
-moe-split-smoke families="all":
-    scripts/moe-split-smoke.sh "llama.cpp/build/bin" {{ families }}
-
-# Validate an already-running MoE deployment end-to-end through one API/console pair.
-moe-live-smoke model api_url console_url expected_nodes="2" timeout="120":
-    scripts/moe-live-smoke.sh --expected-nodes {{ expected_nodes }} --timeout {{ timeout }} "{{ model }}" "{{ api_url }}" "{{ console_url }}"
-
-# Benchmark sticky-only vs prefix-only affinity on a 3-node local mesh.
-bench-prefix-affinity:
-    @scripts/benchmark-prefix-affinity.sh
-
-# Show our custom commits on top of upstream llama.cpp
+# Show the local llama.cpp ABI patch queue
 diff:
-    cd {{ llama_dir }} && git log --oneline --ancestry-path $(git merge-base HEAD upstream/master 2>/dev/null || echo HEAD~8)..HEAD
+    ls -1 third_party/llama.cpp/patches
 
-# Build the client-only Docker image (no GPU, no llama.cpp)
+# Build the client-only Docker image
 [unix]
 docker-build-client tag="mesh-llm:client":
     DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.client -t {{ tag }} .
@@ -441,57 +338,6 @@ docker-build-client tag="mesh-llm:client":
 docker-build-client tag="mesh-llm:client":
     @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.client -t '{{ tag }}' ."
 
-# Build the CPU full-node Docker image
-[unix]
-docker-build-cpu tag="mesh-llm:cpu":
-    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cpu -t {{ tag }} .
-
-[windows]
-docker-build-cpu tag="mesh-llm:cpu":
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cpu -t '{{ tag }}' ."
-
-# Build the CUDA full-node Docker image.
-# Default arch list targets the CUDA 12.6.3 toolkit baked into
-# docker/Dockerfile.cuda (Turing..Hopper). For Blackwell (sm_100/120)
-# override cuda_arch AND cuda_version: the 12.6.3 base image's nvcc cannot
-# emit those cubins. See docs/cuda-release-lanes.md.
-[unix]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90" cuda_version="12.6.3":
-    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.cuda \
-        --build-arg CUDA_ARCH="{{ cuda_arch }}" \
-        --build-arg CUDA_VERSION="{{ cuda_version }}" \
-        -t {{ tag }} .
-
-[windows]
-docker-build-cuda tag="mesh-llm:cuda" cuda_arch="75;80;86;87;89;90" cuda_version="12.6.3":
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.cuda --build-arg CUDA_ARCH='{{ cuda_arch }}' --build-arg CUDA_VERSION='{{ cuda_version }}' -t '{{ tag }}' ."
-
-# Build the ROCm full-node Docker image
-[unix]
-docker-build-rocm tag="mesh-llm:rocm" rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
-    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.rocm \
-        --build-arg ROCM_ARCH="{{ rocm_arch }}" \
-        -t {{ tag }} .
-
-[windows]
-docker-build-rocm tag="mesh-llm:rocm" rocm_arch="gfx90a;gfx942;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201":
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.rocm --build-arg ROCM_ARCH='{{ rocm_arch }}' -t '{{ tag }}' ."
-
-# Build the Vulkan full-node Docker image
-[unix]
-docker-build-vulkan tag="mesh-llm:vulkan":
-    DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile.vulkan -t {{ tag }} .
-
-[windows]
-docker-build-vulkan tag="mesh-llm:vulkan":
-    @powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:DOCKER_BUILDKIT='1'; docker build -f docker/Dockerfile.vulkan -t '{{ tag }}' ."
-
 # Run the client console image locally
 docker-run-client tag="mesh-llm:client":
     docker run --rm -p 3131:3131 -p 9337:9337 -e APP_MODE=console {{ tag }}
-
-# Run a CPU worker node locally (requires model volume mount)
-docker-run-cpu models=(home_dir / ".models") tag="mesh-llm:cpu":
-    docker run --rm -p 9337:9337 \
-        -v {{ models }}:/root/.models \
-        -e APP_MODE=worker {{ tag }}
