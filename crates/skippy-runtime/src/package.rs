@@ -275,6 +275,24 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let manifest_sha256 = sha256_bytes(&manifest_contents);
     let manifest = load_manifest(&manifest_path, &manifest_contents)?;
     validate_manifest_identity(&manifest)?;
+    // If the manifest doesn't specify activation_width, infer it from the
+    // first layer's attn_norm.weight tensor (a 1-D tensor of shape [n_embd]).
+    let activation_width = manifest.activation_width.or_else(|| {
+        manifest.layers.first().and_then(|layer| {
+            let layer_path = package_dir.join(&layer.path);
+            let info = crate::ModelInfo::open(&layer_path).ok()?;
+            let count = info.tensor_count().ok()?;
+            for i in 0..count {
+                if let Ok(t) = info.tensor_at(i) {
+                    if t.name.contains("attn_norm.weight") {
+                        return Some(t.element_count as u32);
+                    }
+                }
+            }
+            None
+        })
+    });
+
     Ok(LayerPackageInfo {
         package_dir,
         manifest_sha256,
@@ -296,7 +314,7 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
             })
             .flatten(),
         layer_count: manifest.layer_count,
-        activation_width: manifest.activation_width,
+        activation_width,
         layers: manifest
             .layers
             .into_iter()
