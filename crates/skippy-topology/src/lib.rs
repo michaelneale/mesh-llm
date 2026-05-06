@@ -2024,7 +2024,7 @@ pub fn infer_family_capability(
         } else {
             continue;
         };
-        if fallback.map_or(true, |(_, previous_len)| matched_len > previous_len) {
+        if fallback.is_none_or(|(_, previous_len)| matched_len > previous_len) {
             fallback = Some((expected, matched_len));
         }
     }

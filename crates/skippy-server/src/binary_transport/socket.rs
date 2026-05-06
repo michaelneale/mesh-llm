@@ -70,7 +70,7 @@ pub(super) fn connect_downstream_socket(
         connect_route_selected_blocking_with_timeout(downstream_addr, source_ip, timeout)
     );
 
-    Err(io::Error::new(io::ErrorKind::Other, errors.join("; ")))
+    Err(io::Error::other(errors.join("; ")))
 }
 
 pub(super) fn connect_route_selected_with_timeout(

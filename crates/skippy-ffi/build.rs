@@ -34,10 +34,7 @@ fn main() {
                 workspace_root.join(path)
             }
         })
-        .unwrap_or_else(|_| {
-            let default_dir = workspace_root.join(".deps/llama.cpp/build-stage-abi-static");
-            default_dir
-        });
+        .unwrap_or_else(|_| workspace_root.join(".deps/llama.cpp/build-stage-abi-static"));
 
     let search_dirs = [
         build_dir.join("tools/mtmd"),
