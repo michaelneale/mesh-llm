@@ -5,7 +5,7 @@ import { useClipboardCopy } from '@/lib/useClipboardCopy'
 function installClipboard(writeText: (text: string) => Promise<void>) {
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
-    value: { writeText },
+    value: { writeText }
   })
 }
 
@@ -38,7 +38,9 @@ describe('useClipboardCopy', () => {
 
   it('reports failed state when clipboard write is unavailable or rejected', async () => {
     vi.useFakeTimers()
-    const writeText = vi.fn<(text: string) => Promise<void>>().mockRejectedValue(new DOMException('Blocked', 'NotAllowedError'))
+    const writeText = vi
+      .fn<(text: string) => Promise<void>>()
+      .mockRejectedValue(new DOMException('Blocked', 'NotAllowedError'))
     installClipboard(writeText)
 
     const { result } = renderHook(() => useClipboardCopy({ resetDelayMs: 25 }))

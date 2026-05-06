@@ -8,7 +8,7 @@ const workerA: MeshNode = {
   x: 10,
   y: 10,
   status: 'online',
-  renderKind: 'worker',
+  renderKind: 'worker'
 }
 const workerB: MeshNode = {
   id: 'worker-b',
@@ -16,7 +16,7 @@ const workerB: MeshNode = {
   x: 90,
   y: 10,
   status: 'online',
-  renderKind: 'worker',
+  renderKind: 'worker'
 }
 const client: MeshNode = {
   id: 'client-a',
@@ -25,7 +25,7 @@ const client: MeshNode = {
   y: 12,
   status: 'online',
   renderKind: 'client',
-  client: true,
+  client: true
 }
 
 describe('buildMeshLinks', () => {

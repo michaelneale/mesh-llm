@@ -11,7 +11,15 @@ type LiveDataUnavailableOverlayProps = {
   onSwitchToTestData?: () => void
 }
 
-export function LiveDataUnavailableOverlay({ children, debugDescription, debugTitle, onRetry, onSwitchToTestData, productionDescription, title }: LiveDataUnavailableOverlayProps) {
+export function LiveDataUnavailableOverlay({
+  children,
+  debugDescription,
+  debugTitle,
+  onRetry,
+  onSwitchToTestData,
+  productionDescription,
+  title
+}: LiveDataUnavailableOverlayProps) {
   const isDebug = env.isDevelopment
 
   return (
@@ -25,7 +33,10 @@ export function LiveDataUnavailableOverlay({ children, debugDescription, debugTi
           role="alert"
         >
           <div className="inline-flex items-center gap-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-bad)_38%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-bad)_12%,transparent)] px-2 py-1 type-label text-bad">
-            <span aria-hidden="true" className="size-1.5 rounded-full bg-bad shadow-[0_0_10px_color-mix(in_oklab,var(--color-bad)_42%,transparent)]" />
+            <span
+              aria-hidden="true"
+              className="size-1.5 rounded-full bg-bad shadow-[0_0_10px_color-mix(in_oklab,var(--color-bad)_42%,transparent)]"
+            />
             Live API unavailable
           </div>
           <h2 className="mt-3 type-panel-title text-foreground">{isDebug && debugTitle ? debugTitle : title}</h2>
@@ -46,7 +57,9 @@ export function LiveDataUnavailableOverlay({ children, debugDescription, debugTi
               >
                 Switch to test data
               </button>
-            ) : <span aria-hidden="true" />}
+            ) : (
+              <span aria-hidden="true" />
+            )}
             <button
               className="ui-control-primary inline-flex h-8 items-center justify-center rounded-[var(--radius)] px-3 text-[length:var(--density-type-control)] font-semibold leading-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               type="button"

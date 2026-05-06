@@ -8,7 +8,11 @@ import { NetworkHeroBanner } from '@/features/network/components/NetworkHeroBann
 import { PeersTable } from '@/features/network/components/PeersTable'
 import { LiveDataUnavailableOverlay } from '@/components/ui/LiveDataUnavailableOverlay'
 import { DashboardLayout } from '@/features/network/layouts/DashboardLayout'
-import { buildDashboardMeshNodes, DASHBOARD_MESH_ID, meshNodeForPeer } from '@/features/network/lib/dashboard-mesh-nodes'
+import {
+  buildDashboardMeshNodes,
+  DASHBOARD_MESH_ID,
+  meshNodeForPeer
+} from '@/features/network/lib/dashboard-mesh-nodes'
 import { ModelDrawer } from '@/features/drawers/components/ModelDrawer'
 import { NodeDrawer } from '@/features/drawers/components/NodeDrawer'
 import { StatusStrip } from '@/features/status/components/StatusStrip'
@@ -44,7 +48,11 @@ function peerForNode(peers: Peer[], node: MeshNode | undefined) {
   return peers.find((peer) => peer.id === node.peerId || peer.id === node.id)
 }
 
-function DashboardPageContent({ data = DASHBOARD_HARNESS, liveFetchPaused, setLiveFetchPaused }: DashboardPageContentProps) {
+function DashboardPageContent({
+  data = DASHBOARD_HARNESS,
+  liveFetchPaused,
+  setLiveFetchPaused
+}: DashboardPageContentProps) {
   const { mode, setMode } = useDataMode()
   const liveMode = mode === 'live'
   const liveQueriesEnabled = liveMode && !liveFetchPaused
@@ -79,19 +87,19 @@ function DashboardPageContent({ data = DASHBOARD_HARNESS, liveFetchPaused, setLi
 
   const meshNodes = useMemo(
     () => buildDashboardMeshNodes(displayData.peers, displayData.meshId, displayData.meshNodeSeeds),
-    [displayData.meshId, displayData.meshNodeSeeds, displayData.peers],
+    [displayData.meshId, displayData.meshNodeSeeds, displayData.peers]
   )
   const selfId = meshNodes.find((node) => node.role === 'self')?.id ?? 'self'
   const [selectedModel, setSelectedModel] = useState<ModelSummary | undefined>(undefined)
   const [selectedNode, setSelectedNode] = useState<MeshNode | undefined>()
   const [drawer, setDrawer] = useState<DashboardDrawer>(null)
   const { copyState, copyText } = useClipboardCopy()
-  const selectedModelView = selectedModel && displayData.models.some((model) => model.name === selectedModel.name)
-    ? selectedModel
-    : undefined
-  const selectedNodeView = selectedNode && displayData.peers.some((peer) => peer.id === selectedNode.peerId || peer.id === selectedNode.id)
-    ? selectedNode
-    : undefined
+  const selectedModelView =
+    selectedModel && displayData.models.some((model) => model.name === selectedModel.name) ? selectedModel : undefined
+  const selectedNodeView =
+    selectedNode && displayData.peers.some((peer) => peer.id === selectedNode.peerId || peer.id === selectedNode.id)
+      ? selectedNode
+      : undefined
   const selectedPeer = peerForNode(displayData.peers, selectedNodeView)
 
   const selectModel = (model: ModelSummary) => {
@@ -140,15 +148,15 @@ function DashboardPageContent({ data = DASHBOARD_HARNESS, liveFetchPaused, setLi
     <>
       {showLiveRefresh ? <LiveRefreshPill className="mb-3">Refreshing live data</LiveRefreshPill> : null}
       <DashboardLayout
-        hero={(
+        hero={
           <NetworkHeroBanner
             title={displayData.hero.title}
             description={displayData.hero.description}
             actions={displayData.hero.actions}
           />
-        )}
+        }
         status={<StatusStrip metrics={displayData.statusMetrics} />}
-        topology={(
+        topology={
           <MeshViz
             nodes={meshNodes}
             selfId={selfId}
@@ -158,10 +166,24 @@ function DashboardPageContent({ data = DASHBOARD_HARNESS, liveFetchPaused, setLi
             onPick={selectNode}
             getNodePeer={(node) => peerForNode(displayData.peers, node)}
           />
-        )}
-        catalog={<ModelCatalog models={displayData.models} filterLabel="All" selectedModelName={selectedModelView?.name} onSelect={selectModel} />}
-        peers={<PeersTable peers={displayData.peers} summary={displayData.peerSummary} selectedPeerId={selectedPeer?.id} onSelect={selectPeer} />}
-        connect={(
+        }
+        catalog={
+          <ModelCatalog
+            models={displayData.models}
+            filterLabel="All"
+            selectedModelName={selectedModelView?.name}
+            onSelect={selectModel}
+          />
+        }
+        peers={
+          <PeersTable
+            peers={displayData.peers}
+            summary={displayData.peerSummary}
+            selectedPeerId={selectedPeer?.id}
+            onSelect={selectPeer}
+          />
+        }
+        connect={
           <ConnectBlock
             installHref={displayData.connect.installHref}
             apiUrl={env.apiUrl}
@@ -171,13 +193,24 @@ function DashboardPageContent({ data = DASHBOARD_HARNESS, liveFetchPaused, setLi
             copyState={copyState}
             onCopy={copyConnectCommand}
           />
-        )}
-        drawers={(
+        }
+        drawers={
           <>
-            <ModelDrawer open={drawer === 'model'} model={selectedModelView} peers={displayData.peers} onClose={closeModelDrawer} />
-            <NodeDrawer open={drawer === 'node'} node={selectedNodeView} peer={selectedPeer} models={displayData.models} onClose={closeDrawer} />
+            <ModelDrawer
+              open={drawer === 'model'}
+              model={selectedModelView}
+              peers={displayData.peers}
+              onClose={closeModelDrawer}
+            />
+            <NodeDrawer
+              open={drawer === 'node'}
+              node={selectedNodeView}
+              peer={selectedPeer}
+              models={displayData.models}
+              onClose={closeDrawer}
+            />
           </>
-        )}
+        }
       />
     </>
   )

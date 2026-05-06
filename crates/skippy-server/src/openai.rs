@@ -1946,7 +1946,7 @@ impl StageOpenAiBackend {
     fn insert_runtime_session_stats(
         attrs: &mut BTreeMap<String, Value>,
         prefix: &str,
-        stats: RuntimeSessionStats,
+        stats: &RuntimeSessionStats,
     ) {
         attrs.insert(
             format!("{prefix}.active_sessions"),
@@ -2527,12 +2527,12 @@ impl StageOpenAiBackend {
             Self::insert_runtime_session_stats(
                 &mut attrs,
                 "llama_stage.runtime_sessions_before",
-                runtime_sessions_before,
+                &runtime_sessions_before,
             );
             Self::insert_runtime_session_stats(
                 &mut attrs,
                 "llama_stage.runtime_sessions_after",
-                runtime_sessions_after,
+                &runtime_sessions_after,
             );
             self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
             (prefill, token_signal, signal_window)
@@ -2659,14 +2659,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(runtime_lock_acquires),
             );
-            if let Some(stats) = runtime_sessions_before {
+            if let Some(stats) = runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = runtime_sessions_after {
+            if let Some(stats) = runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
@@ -2696,7 +2696,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
@@ -2771,12 +2771,12 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
-                    runtime_sessions_before,
+                    &runtime_sessions_before,
                 );
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    runtime_sessions_after,
+                    &runtime_sessions_after,
                 );
                 self.emit_openai_phase("stage.openai_media_prefill", prefill_timer, attrs);
                 prefill
@@ -3064,7 +3064,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
@@ -3487,12 +3487,12 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
-                    runtime_sessions_before,
+                    &runtime_sessions_before,
                 );
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    runtime_sessions_after,
+                    &runtime_sessions_after,
                 );
                 self.emit_openai_phase("stage.openai_prefill", prefill_timer, attrs);
             }
@@ -3646,14 +3646,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(runtime_lock_acquires),
             );
-            if let Some(stats) = runtime_sessions_before {
+            if let Some(stats) = runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = runtime_sessions_after {
+            if let Some(stats) = runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
@@ -3683,7 +3683,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);
@@ -4154,14 +4154,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(prefill_runtime_lock_acquires),
             );
-            if let Some(stats) = prefill_runtime_sessions_before {
+            if let Some(stats) = prefill_runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut prefill_attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = prefill_runtime_sessions_after {
+            if let Some(stats) = prefill_runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut prefill_attrs,
                     "llama_stage.runtime_sessions_after",
@@ -4874,14 +4874,14 @@ impl StageOpenAiBackend {
                 "llama_stage.runtime_lock_acquires".to_string(),
                 json!(decode_runtime_lock_acquires),
             );
-            if let Some(stats) = decode_runtime_sessions_before {
+            if let Some(stats) = decode_runtime_sessions_before.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut decode_attrs,
                     "llama_stage.runtime_sessions_before",
                     stats,
                 );
             }
-            if let Some(stats) = decode_runtime_sessions_after {
+            if let Some(stats) = decode_runtime_sessions_after.as_ref() {
                 Self::insert_runtime_session_stats(
                     &mut decode_attrs,
                     "llama_stage.runtime_sessions_after",
@@ -4949,7 +4949,7 @@ impl StageOpenAiBackend {
                 Self::insert_runtime_session_stats(
                     &mut attrs,
                     "llama_stage.runtime_sessions_after",
-                    drop_stats.stats_after,
+                    &drop_stats.stats_after,
                 );
                 self.telemetry
                     .emit_debug("stage.openai_session_stop", attrs);

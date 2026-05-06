@@ -8,7 +8,7 @@ import { type FeatureFlagDefinition, type FeatureFlagSectionId, useFeatureFlagSe
 
 const FEATURE_FLAG_STATE_OPTIONS = [
   { value: 'disabled', label: 'Off' },
-  { value: 'enabled', label: 'On', selectedTone: 'accent' },
+  { value: 'enabled', label: 'On', selectedTone: 'accent' }
 ] satisfies readonly SegmentedControlOption[]
 
 function isFeatureFlagState(value: string): value is 'disabled' | 'enabled' {
@@ -32,13 +32,13 @@ function JsonSyntaxPreview({ json }: { json: string }) {
         stringToken && !keySuffix && 'text-good',
         literalToken && 'text-warn',
         !stringToken && !literalToken && /^[{}[\],]$/.test(token) && 'text-fg-faint',
-        !stringToken && !literalToken && !/^[{}[\],]$/.test(token) && 'text-foreground',
+        !stringToken && !literalToken && !/^[{}[\],]$/.test(token) && 'text-foreground'
       )
 
       parts.push(
         <span className={className} key={`${token}-${tokenIndex}`}>
           {token}
-        </span>,
+        </span>
       )
       tokenIndex += 1
       lastIndex = match.index + token.length
@@ -85,7 +85,9 @@ function FeatureFlagRow({ flag }: { flag: FeatureFlagDefinition }) {
           >
             <RotateCcw className="size-3" aria-hidden={true} />
           </button>
-        ) : <span aria-hidden={true} className="size-7" />}
+        ) : (
+          <span aria-hidden={true} className="size-7" />
+        )}
       </div>
     </SettingsRow>
   )
@@ -95,7 +97,10 @@ export function FeatureFlagsArea() {
   const { getEffectiveValue, overrides, resetAllOverrides, sections, storageKey } = useFeatureFlagSettings()
   const [activeSectionId, setActiveSectionId] = useState<FeatureFlagSectionId>(sections[0]?.id ?? 'global')
   const activeSection = sections.find((section) => section.id === activeSectionId) ?? sections[0]
-  const activeOverrides = Object.values(overrides).reduce((count, sectionOverrides) => count + Object.keys(sectionOverrides ?? {}).length, 0)
+  const activeOverrides = Object.values(overrides).reduce(
+    (count, sectionOverrides) => count + Object.keys(sectionOverrides ?? {}).length,
+    0
+  )
   const previewJson = useMemo(() => JSON.stringify(overrides, null, 2), [overrides])
 
   if (!activeSection) return null
@@ -107,10 +112,11 @@ export function FeatureFlagsArea() {
         ariaLabel="Feature flag groups"
         className="xl:sticky xl:top-[76px]"
         eyebrow="Flag groups"
-        footer={(
+        footer={
           <div className="space-y-2">
             <div>
-              <span className="font-mono text-foreground">{activeOverrides}</span> local override{activeOverrides === 1 ? '' : 's'} stored.
+              <span className="font-mono text-foreground">{activeOverrides}</span> local override
+              {activeOverrides === 1 ? '' : 's'} stored.
             </div>
             <button
               className="ui-control inline-flex items-center gap-1.5 rounded-[var(--radius)] border px-2.5 py-1 text-[length:var(--density-type-caption)] font-medium"
@@ -122,12 +128,17 @@ export function FeatureFlagsArea() {
               Reset all
             </button>
           </div>
-        )}
+        }
         items={sections.map((section) => ({
           id: section.id,
           label: section.label,
           count: section.flags.length,
-          icon: section.id === 'global' ? <Globe2 aria-hidden={true} className="size-3.5" strokeWidth={1.7} /> : <Flag aria-hidden={true} className="size-3.5" strokeWidth={1.7} />,
+          icon:
+            section.id === 'global' ? (
+              <Globe2 aria-hidden={true} className="size-3.5" strokeWidth={1.7} />
+            ) : (
+              <Flag aria-hidden={true} className="size-3.5" strokeWidth={1.7} />
+            )
         }))}
         onSelect={setActiveSectionId}
       />
@@ -135,32 +146,50 @@ export function FeatureFlagsArea() {
       <div className="min-w-0 space-y-4">
         <SettingsSection
           id={`feature-flags-${activeSection.id}`}
-          icon={activeSection.id === 'global' ? <Globe2 className="size-4" aria-hidden={true} /> : <Flag className="size-4" aria-hidden={true} />}
+          icon={
+            activeSection.id === 'global' ? (
+              <Globe2 className="size-4" aria-hidden={true} />
+            ) : (
+              <Flag className="size-4" aria-hidden={true} />
+            )
+          }
           title={`${activeSection.label} flags`}
           subtitle={activeSection.description}
         >
-          {activeSection.flags.map((flag) => <FeatureFlagRow flag={flag} key={flag.path} />)}
+          {activeSection.flags.map((flag) => (
+            <FeatureFlagRow flag={flag} key={flag.path} />
+          ))}
         </SettingsSection>
 
         <section className="rounded-[var(--radius-lg)] border border-border bg-panel p-3.5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h3 className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground">Storage layer</h3>
+              <h3 className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground">
+                Storage layer
+              </h3>
               <p className="mt-1 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">
-                Only changed flags are written to localStorage. Defaults continue to come from the checked-in feature flag config.
+                Only changed flags are written to localStorage. Defaults continue to come from the checked-in feature
+                flag config.
               </p>
             </div>
-            <span className="rounded-full border border-border-soft bg-background px-2 py-0.5 font-mono text-[length:var(--density-type-annotation)] text-fg-dim">{storageKey}</span>
+            <span className="rounded-full border border-border-soft bg-background px-2 py-0.5 font-mono text-[length:var(--density-type-annotation)] text-fg-dim">
+              {storageKey}
+            </span>
           </div>
           <pre className="mt-3 max-h-56 overflow-auto rounded-[var(--radius)] border border-border-soft bg-background p-3 font-mono text-[length:var(--density-type-caption)] leading-relaxed text-fg-dim">
             <JsonSyntaxPreview json={previewJson} />
           </pre>
           <div className="mt-3 flex flex-wrap gap-2 text-[length:var(--density-type-caption)] text-fg-faint">
             {activeSection.flags.map((flag) => (
-              <span key={flag.path} className="inline-flex rounded-full border border-border-soft bg-background px-2 py-0.5">
+              <span
+                key={flag.path}
+                className="inline-flex rounded-full border border-border-soft bg-background px-2 py-0.5"
+              >
                 <span className="font-mono text-foreground">{flag.path}</span>
                 <span className="px-1.5">is</span>
-                <span className={getEffectiveValue(flag.path) ? 'text-good' : 'text-fg-faint'}>{getEffectiveValue(flag.path) ? 'enabled' : 'disabled'}</span>
+                <span className={getEffectiveValue(flag.path) ? 'text-good' : 'text-fg-faint'}>
+                  {getEffectiveValue(flag.path) ? 'enabled' : 'disabled'}
+                </span>
               </span>
             ))}
           </div>

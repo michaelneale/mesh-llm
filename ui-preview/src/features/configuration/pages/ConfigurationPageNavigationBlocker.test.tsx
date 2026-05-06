@@ -5,7 +5,7 @@ import type { ShouldBlockFn } from '@tanstack/react-router'
 const mockUseBlocker = vi.hoisted(() => vi.fn())
 
 vi.mock('@tanstack/react-router', () => ({
-  useBlocker: mockUseBlocker,
+  useBlocker: mockUseBlocker
 }))
 
 import { UnsavedConfigurationNavigationBlocker } from '@/features/configuration/pages/ConfigurationPageNavigationBlocker'
@@ -13,8 +13,20 @@ import { UnsavedConfigurationNavigationBlocker } from '@/features/configuration/
 function blockerArgs(currentPathname: string, nextPathname: string): Parameters<ShouldBlockFn>[0] {
   return {
     action: 'PUSH',
-    current: { routeId: '/configuration/$configurationTab', fullPath: '/configuration/$configurationTab', pathname: currentPathname, params: { configurationTab: 'defaults' }, search: {} },
-    next: { routeId: '/configuration/$configurationTab', fullPath: '/configuration/$configurationTab', pathname: nextPathname, params: { configurationTab: 'toml-review' }, search: {} },
+    current: {
+      routeId: '/configuration/$configurationTab',
+      fullPath: '/configuration/$configurationTab',
+      pathname: currentPathname,
+      params: { configurationTab: 'defaults' },
+      search: {}
+    },
+    next: {
+      routeId: '/configuration/$configurationTab',
+      fullPath: '/configuration/$configurationTab',
+      pathname: nextPathname,
+      params: { configurationTab: 'toml-review' },
+      search: {}
+    }
   }
 }
 

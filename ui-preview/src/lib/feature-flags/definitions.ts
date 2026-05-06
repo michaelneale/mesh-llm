@@ -6,19 +6,23 @@ export type FeatureFlagGroup = {
 
 export const DEFAULT_FEATURE_FLAGS = {
   global: {
-    newConfigurationPage: false,
+    newConfigurationPage: false
   },
   configuration: {
     signingAttestation: false,
-    integrations: false,
+    integrations: false
   },
   chat: {
-    transparencyTab: false,
-  },
+    transparencyTab: false
+  }
 } as const satisfies FeatureFlagGroup
 
 export type FeatureFlagSectionId = 'global' | 'configuration' | 'chat'
-export type FeatureFlagPath = 'global/newConfigurationPage' | 'configuration/signingAttestation' | 'configuration/integrations' | 'chat/transparencyTab'
+export type FeatureFlagPath =
+  | 'global/newConfigurationPage'
+  | 'configuration/signingAttestation'
+  | 'configuration/integrations'
+  | 'chat/transparencyTab'
 
 export type FeatureFlagDefinition = {
   sectionId: FeatureFlagSectionId
@@ -46,9 +50,9 @@ export const FEATURE_FLAG_SECTIONS: readonly FeatureFlagSectionDefinition[] = [
         key: 'newConfigurationPage',
         path: 'global/newConfigurationPage',
         label: 'New configuration page',
-        description: 'Shows the Configuration app surface while the new configuration flow is being rolled out.',
-      },
-    ],
+        description: 'Shows the Configuration app surface while the new configuration flow is being rolled out.'
+      }
+    ]
   },
   {
     id: 'configuration',
@@ -60,16 +64,18 @@ export const FEATURE_FLAG_SECTIONS: readonly FeatureFlagSectionDefinition[] = [
         key: 'signingAttestation',
         path: 'configuration/signingAttestation',
         label: 'Signing / Attestation',
-        description: 'Shows the temporary signing, key binding, attestation receipt, and dirty-state checks section in Configuration.',
+        description:
+          'Shows the temporary signing, key binding, attestation receipt, and dirty-state checks section in Configuration.'
       },
       {
         sectionId: 'configuration',
         key: 'integrations',
         path: 'configuration/integrations',
         label: 'Integrations',
-        description: 'Shows the temporary integrations section in Configuration while integration management is being designed.',
-      },
-    ],
+        description:
+          'Shows the temporary integrations section in Configuration while integration management is being designed.'
+      }
+    ]
   },
   {
     id: 'chat',
@@ -81,10 +87,10 @@ export const FEATURE_FLAG_SECTIONS: readonly FeatureFlagSectionDefinition[] = [
         key: 'transparencyTab',
         path: 'chat/transparencyTab',
         label: 'Transparency tab',
-        description: 'Shows the chat sidebar transparency tab and per-message transparency inspection controls.',
-      },
-    ],
-  },
+        description: 'Shows the chat sidebar transparency tab and per-message transparency inspection controls.'
+      }
+    ]
+  }
 ]
 
 export type FeatureFlagOverrides = Partial<Record<FeatureFlagSectionId, Record<string, boolean>>>
@@ -94,7 +100,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isEmptyFeatureFlagOverrides(overrides: FeatureFlagOverrides) {
-  return Object.values(overrides).every((sectionOverrides) => !sectionOverrides || Object.keys(sectionOverrides).length === 0)
+  return Object.values(overrides).every(
+    (sectionOverrides) => !sectionOverrides || Object.keys(sectionOverrides).length === 0
+  )
 }
 
 export function findFeatureFlagDefinition(path: FeatureFlagPath) {
@@ -135,7 +143,7 @@ export function normalizeFeatureFlagOverrides(value: unknown): FeatureFlagOverri
 
       normalized[section.id] = {
         ...(normalized[section.id] ?? {}),
-        [flag.key]: rawFlagValue,
+        [flag.key]: rawFlagValue
       }
     }
   }
@@ -143,7 +151,9 @@ export function normalizeFeatureFlagOverrides(value: unknown): FeatureFlagOverri
   return normalized
 }
 
-export function readStoredFeatureFlagOverrides(storageKey = APP_STORAGE_KEYS.featureFlagOverrides): FeatureFlagOverrides {
+export function readStoredFeatureFlagOverrides(
+  storageKey = APP_STORAGE_KEYS.featureFlagOverrides
+): FeatureFlagOverrides {
   if (typeof window === 'undefined') return {}
 
   try {
@@ -185,7 +195,11 @@ export function resolveFeatureFlags(overrides: FeatureFlagOverrides): FeatureFla
   return flags
 }
 
-export function removeFeatureFlagOverride(overrides: FeatureFlagOverrides, sectionId: FeatureFlagSectionId, key: string): FeatureFlagOverrides {
+export function removeFeatureFlagOverride(
+  overrides: FeatureFlagOverrides,
+  sectionId: FeatureFlagSectionId,
+  key: string
+): FeatureFlagOverrides {
   const sectionOverrides = { ...(overrides[sectionId] ?? {}) }
   delete sectionOverrides[key]
 

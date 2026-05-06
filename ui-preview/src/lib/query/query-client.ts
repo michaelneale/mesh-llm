@@ -6,7 +6,7 @@ export const defaultQueryClient = new QueryClient({
       staleTime: 30_000,
       retry: 3,
       retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10000),
-      refetchOnWindowFocus: false,
-    },
-  },
+      refetchOnWindowFocus: false
+    }
+  }
 })

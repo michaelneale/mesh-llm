@@ -70,6 +70,8 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) projector_path: Option<String>,
     pub(crate) ctx_size: u32,
     pub(crate) lane_count: u32,
+    pub(crate) lanes: Vec<SkippySessionLaneStatus>,
+    pub(crate) max_session_tokens: u64,
     pub(crate) n_batch: Option<u32>,
     pub(crate) n_ubatch: Option<u32>,
     pub(crate) n_gpu_layers: i32,
@@ -83,6 +85,14 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) started_at_unix_nanos: i64,
     pub(crate) stopped_at_unix_nanos: Option<i64>,
     pub(crate) last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkippySessionLaneStatus {
+    pub(crate) index: usize,
+    pub(crate) active: bool,
+    pub(crate) session_id: Option<String>,
+    pub(crate) token_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -523,11 +533,11 @@ impl From<StageDevice> for SkippyDeviceDescriptor {
 }
 
 pub(crate) fn infer_layer_count(path: &Path) -> Result<u32> {
-    let info = ModelInfo::open(path)
-        .with_context(|| format!("open skippy model metadata {}", path.display()))?;
+    let info =
+        ModelInfo::open(path).with_context(|| format!("open model metadata {}", path.display()))?;
     let layer_count = info
         .tensors()
-        .with_context(|| format!("read skippy model tensors {}", path.display()))?
+        .with_context(|| format!("read model tensors {}", path.display()))?
         .into_iter()
         .filter_map(|tensor| tensor.layer_index)
         .max()
@@ -563,6 +573,18 @@ fn status_from_parts(
         projector_path: config.projector_path.clone(),
         ctx_size: config.ctx_size,
         lane_count: config.lane_count,
+        lanes: embedded
+            .sessions
+            .lanes
+            .iter()
+            .map(|lane| SkippySessionLaneStatus {
+                index: lane.index,
+                active: lane.active,
+                session_id: lane.session_id.clone(),
+                token_count: lane.token_count,
+            })
+            .collect(),
+        max_session_tokens: embedded.sessions.max_session_tokens,
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
         n_gpu_layers: config.n_gpu_layers,

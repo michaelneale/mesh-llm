@@ -25,7 +25,7 @@ export function CommandBarOptionRow<T>({
   optionClassName,
   optionRef,
   renderItem,
-  result,
+  result
 }: CommandBarOptionRowProps<T>) {
   return (
     <div
@@ -45,7 +45,7 @@ export function CommandBarOptionRow<T>({
         'mx-1 flex min-h-11 items-center gap-3 rounded-[var(--radius)] px-3 py-2 transition-colors',
         'cursor-pointer',
         isActive ? 'bg-[color:color-mix(in_oklch,var(--color-accent)_8%,var(--color-panel))]' : 'bg-transparent',
-        optionClassName,
+        optionClassName
       )}
     >
       <div className="min-w-0 flex-1">{renderItem(result, isActive)}</div>

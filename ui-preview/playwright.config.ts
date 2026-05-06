@@ -19,7 +19,7 @@ export default defineConfig({
     reuseExistingServer,
     timeout: 120000,
     stderr: 'pipe',
-    stdout: 'ignore',
+    stdout: 'ignore'
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
 })

@@ -15,12 +15,12 @@ mod subscriptions;
 
 pub(crate) use self::api_views::{collect_views, mesh_models, status_payload};
 pub(crate) use self::collector::RuntimeDataCollector;
-pub(crate) use self::metrics::{RuntimeLlamaEndpointStatus, RuntimeLlamaRuntimeSnapshot};
 #[cfg(test)]
+pub(crate) use self::metrics::RuntimeLlamaMetricSample;
 pub(crate) use self::metrics::{
-    RuntimeLlamaMetricItem, RuntimeLlamaMetricSample, RuntimeLlamaMetricsSnapshot,
-    RuntimeLlamaRuntimeItems, RuntimeLlamaSlotItem, RuntimeLlamaSlotSnapshot,
-    RuntimeLlamaSlotsSnapshot,
+    RuntimeLlamaEndpointStatus, RuntimeLlamaMetricItem, RuntimeLlamaMetricsSnapshot,
+    RuntimeLlamaRuntimeItems, RuntimeLlamaRuntimeSnapshot, RuntimeLlamaSlotItem,
+    RuntimeLlamaSlotSnapshot, RuntimeLlamaSlotsSnapshot,
 };
 pub(crate) use self::processes::{
     remove_runtime_process_snapshot, runtime_process_payloads, upsert_runtime_process_snapshot,
@@ -553,6 +553,7 @@ mod tests {
 
         producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
             status: RuntimeLlamaEndpointStatus::Ready,
+            model: Some("Qwen3-8B".to_string()),
             last_attempt_unix_ms: Some(1),
             last_success_unix_ms: Some(1),
             error: None,
@@ -581,6 +582,74 @@ mod tests {
         assert_eq!(snapshot.items.slots[1].index, 1);
         assert_eq!(snapshot.items.slots[1].id, Some(20));
         assert!(snapshot.items.slots[1].is_processing);
+    }
+
+    #[test]
+    fn runtime_data_llama_slots_keep_per_model_snapshots() {
+        let collector = RuntimeDataCollector::new();
+        let producer = collector.producer(RuntimeDataSource {
+            scope: "runtime",
+            plugin_data_key: None,
+            plugin_endpoint_key: None,
+        });
+
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-b".to_string()),
+            last_attempt_unix_ms: Some(1),
+            last_success_unix_ms: Some(1),
+            error: None,
+            slots: vec![RuntimeLlamaSlotSnapshot {
+                id: Some(0),
+                is_processing: Some(false),
+                ..RuntimeLlamaSlotSnapshot::default()
+            }],
+        });
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-a".to_string()),
+            last_attempt_unix_ms: Some(2),
+            last_success_unix_ms: Some(2),
+            error: None,
+            slots: vec![RuntimeLlamaSlotSnapshot {
+                id: Some(0),
+                is_processing: Some(true),
+                ..RuntimeLlamaSlotSnapshot::default()
+            }],
+        });
+
+        let by_model = collector.runtime_llama_snapshots_by_model();
+        assert_eq!(by_model.len(), 2);
+        assert_eq!(by_model["model-a"].items.slots_busy, 1);
+        assert_eq!(by_model["model-b"].items.slots_busy, 0);
+        assert_eq!(
+            collector.runtime_llama_snapshot().slots.model.as_deref(),
+            Some("model-a")
+        );
+
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Unavailable,
+            model: Some("model-a".to_string()),
+            last_attempt_unix_ms: Some(3),
+            last_success_unix_ms: None,
+            error: None,
+            slots: Vec::new(),
+        });
+
+        let by_model = collector.runtime_llama_snapshots_by_model();
+        assert_eq!(
+            by_model["model-a"].slots.status,
+            RuntimeLlamaEndpointStatus::Unavailable
+        );
+        assert_eq!(
+            by_model["model-b"].slots.status,
+            RuntimeLlamaEndpointStatus::Ready
+        );
+        assert_eq!(
+            collector.runtime_llama_snapshot().slots.model.as_deref(),
+            Some("model-b")
+        );
+        assert_eq!(collector.runtime_llama_snapshot().items.slots_total, 1);
     }
 
     #[test]

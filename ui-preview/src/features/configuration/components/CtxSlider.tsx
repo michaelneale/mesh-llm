@@ -1,9 +1,25 @@
 import * as SliderPrimitive from '@radix-ui/react-slider'
 import { animate } from 'animejs'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { CTX_MAX, CTX_MIN, CTX_TICKS, boundCtx, ctxToPct, fmtCtx, normalizeCtx, pctToCtx, stepCtx } from '@/features/configuration/components/ctx-slider-utils'
+import {
+  CTX_MAX,
+  CTX_MIN,
+  CTX_TICKS,
+  boundCtx,
+  ctxToPct,
+  fmtCtx,
+  normalizeCtx,
+  pctToCtx,
+  stepCtx
+} from '@/features/configuration/components/ctx-slider-utils'
 
-type CtxSliderProps = { value: number; onChange: (value: number) => void; maxCtx: number; invalid?: boolean; controlTabIndex?: number }
+type CtxSliderProps = {
+  value: number
+  onChange: (value: number) => void
+  maxCtx: number
+  invalid?: boolean
+  controlTabIndex?: number
+}
 
 export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTabIndex }: CtxSliderProps) {
   const trackAlertRef = useRef<HTMLSpanElement>(null)
@@ -17,9 +33,14 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
   const [draftCtx, setDraftCtx] = useState(value)
   const [hoveredTick, setHoveredTick] = useState<number | null>(null)
 
-  useEffect(() => () => {
-    alertAnimationsRef.current.forEach((animation) => { animation.pause() })
-  }, [])
+  useEffect(
+    () => () => {
+      alertAnimationsRef.current.forEach((animation) => {
+        animation.pause()
+      })
+    },
+    []
+  )
 
   useEffect(() => {
     if (dragging) return
@@ -27,55 +48,67 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
     latestEmittedCtx.current = value
   }, [dragging, value])
 
-  const commitCtx = useCallback((nextCtx: number) => {
-    if (!Number.isFinite(nextCtx)) return
-    const raw = boundCtx(nextCtx)
-    const next = normalizeCtx(raw)
-    latestRawCtx.current = raw
-    setDraftCtx(raw)
-    if (next === latestEmittedCtx.current) return
-    latestEmittedCtx.current = next
-    onChange(next)
-  }, [onChange])
+  const commitCtx = useCallback(
+    (nextCtx: number) => {
+      if (!Number.isFinite(nextCtx)) return
+      const raw = boundCtx(nextCtx)
+      const next = normalizeCtx(raw)
+      latestRawCtx.current = raw
+      setDraftCtx(raw)
+      if (next === latestEmittedCtx.current) return
+      latestEmittedCtx.current = next
+      onChange(next)
+    },
+    [onChange]
+  )
 
-  const commitPct = useCallback((nextPct: number) => {
-    if (!Number.isFinite(nextPct)) return
-    commitCtx(pctToCtx(nextPct))
-  }, [commitCtx])
+  const commitPct = useCallback(
+    (nextPct: number) => {
+      if (!Number.isFinite(nextPct)) return
+      commitCtx(pctToCtx(nextPct))
+    },
+    [commitCtx]
+  )
 
-  const handleValueChange = useCallback((nextValues: number[]) => {
-    const nextPct = nextValues[0]
-    if (!Number.isFinite(nextPct)) return
+  const handleValueChange = useCallback(
+    (nextValues: number[]) => {
+      const nextPct = nextValues[0]
+      if (!Number.isFinite(nextPct)) return
 
-    if (pointerInteractingRef.current) {
+      if (pointerInteractingRef.current) {
+        commitPct(nextPct)
+        return
+      }
+
+      if (nextPct <= 0) {
+        commitCtx(CTX_MIN)
+        return
+      }
+
+      if (nextPct >= 100) {
+        commitCtx(CTX_MAX)
+        return
+      }
+
+      const currentPct = ctxToPct(latestEmittedCtx.current)
+      if (nextPct === currentPct) return
+
+      commitCtx(stepCtx(latestEmittedCtx.current, nextPct > currentPct ? 1 : -1))
+    },
+    [commitCtx, commitPct]
+  )
+
+  const handleValueCommit = useCallback(
+    (nextValues: number[]) => {
+      const nextPct = nextValues[0]
+      if (!Number.isFinite(nextPct)) return
+      if (!pointerInteractingRef.current) return
       commitPct(nextPct)
-      return
-    }
-
-    if (nextPct <= 0) {
-      commitCtx(CTX_MIN)
-      return
-    }
-
-    if (nextPct >= 100) {
-      commitCtx(CTX_MAX)
-      return
-    }
-
-    const currentPct = ctxToPct(latestEmittedCtx.current)
-    if (nextPct === currentPct) return
-
-    commitCtx(stepCtx(latestEmittedCtx.current, nextPct > currentPct ? 1 : -1))
-  }, [commitCtx, commitPct])
-
-  const handleValueCommit = useCallback((nextValues: number[]) => {
-    const nextPct = nextValues[0]
-    if (!Number.isFinite(nextPct)) return
-    if (!pointerInteractingRef.current) return
-    commitPct(nextPct)
-    pointerInteractingRef.current = false
-    setDragging(false)
-  }, [commitPct])
+      pointerInteractingRef.current = false
+      setDragging(false)
+    },
+    [commitPct]
+  )
 
   const displayCtx = dragging ? draftCtx : value
 
@@ -83,27 +116,41 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
   const dangerStartPct = ctxToPct(maxCtx)
   const showDanger = maxCtx < CTX_MAX
   const overAllocated = invalid || displayCtx > maxCtx
-  const valueText = displayCtx > maxCtx ? `${fmtCtx(displayCtx)} context exceeds ${fmtCtx(maxCtx)} safe limit` : `${fmtCtx(displayCtx)} context`
+  const valueText =
+    displayCtx > maxCtx
+      ? `${fmtCtx(displayCtx)} context exceeds ${fmtCtx(maxCtx)} safe limit`
+      : `${fmtCtx(displayCtx)} context`
 
   useLayoutEffect(() => {
-    const alertTargets = [trackAlertRef.current, fillAlertRef.current, knobAlertRef.current].filter((target): target is HTMLElement => target !== null)
+    const alertTargets = [trackAlertRef.current, fillAlertRef.current, knobAlertRef.current].filter(
+      (target): target is HTMLElement => target !== null
+    )
     if (alertTargets.length === 0) return
 
-    alertAnimationsRef.current.forEach((animation) => { animation.pause() })
-    const reduceMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    alertAnimationsRef.current.forEach((animation) => {
+      animation.pause()
+    })
+    const reduceMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-    alertAnimationsRef.current = [animate(alertTargets, {
-      opacity: overAllocated ? 1 : 0,
-      duration: reduceMotion ? 0 : 180,
-      ease: 'out(4)',
-    })]
+    alertAnimationsRef.current = [
+      animate(alertTargets, {
+        opacity: overAllocated ? 1 : 0,
+        duration: reduceMotion ? 0 : 180,
+        ease: 'out(4)'
+      })
+    ]
   }, [overAllocated])
 
   return (
     <div className="select-none">
       <div className="mb-1.5 flex items-center justify-between gap-3">
         <span className="text-[length:var(--density-type-caption)] font-medium text-fg-dim">Context</span>
-        <span className={`font-mono text-[length:var(--density-type-caption)] ${invalid ? 'text-bad' : 'text-fg'}`}>{fmtCtx(displayCtx)} ctx</span>
+        <span className={`font-mono text-[length:var(--density-type-caption)] ${invalid ? 'text-bad' : 'text-fg'}`}>
+          {fmtCtx(displayCtx)} ctx
+        </span>
       </div>
       <SliderPrimitive.Root
         aria-invalid={overAllocated}
@@ -123,14 +170,26 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
         step={0.001}
         value={[valuePct]}
       >
-        <SliderPrimitive.Track data-ctx-slider-track className="relative h-full grow overflow-hidden rounded-[var(--radius)] border border-border-soft bg-muted transition-[border-color] duration-150">
+        <SliderPrimitive.Track
+          data-ctx-slider-track
+          className="relative h-full grow overflow-hidden rounded-[var(--radius)] border border-border-soft bg-muted transition-[border-color] duration-150"
+        >
           <SliderPrimitive.Range className="absolute inset-y-0 left-0 bg-accent" />
-          <span ref={fillAlertRef} aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 bg-bad opacity-0" style={{ width: `${valuePct}%` }} />
+          <span
+            ref={fillAlertRef}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-0 bg-bad opacity-0"
+            style={{ width: `${valuePct}%` }}
+          />
           {showDanger ? (
             <span
               aria-hidden="true"
               className="absolute inset-y-0 right-0 rounded-r-[var(--radius)] border-l border-dashed border-bad/80 opacity-75"
-              style={{ left: `${dangerStartPct}%`, backgroundImage: 'repeating-linear-gradient(135deg, color-mix(in oklch, var(--color-bad) 42%, transparent) 0 3px, transparent 3px 7px)' }}
+              style={{
+                left: `${dangerStartPct}%`,
+                backgroundImage:
+                  'repeating-linear-gradient(135deg, color-mix(in oklch, var(--color-bad) 42%, transparent) 0 3px, transparent 3px 7px)'
+              }}
             />
           ) : null}
           {CTX_TICKS.map((tick) => (
@@ -154,7 +213,11 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
         >
           <span ref={knobAlertRef} aria-hidden="true" className="absolute inset-0 rounded-full bg-bad opacity-0" />
         </SliderPrimitive.Thumb>
-        <span ref={trackAlertRef} aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-[var(--radius)] border border-bad opacity-0 shadow-[var(--shadow-slider-alert)]" />
+        <span
+          ref={trackAlertRef}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-[var(--radius)] border border-bad opacity-0 shadow-[var(--shadow-slider-alert)]"
+        />
       </SliderPrimitive.Root>
       <div className="relative mt-1 h-4">
         {CTX_TICKS.map((tick) => {
@@ -169,7 +232,7 @@ export function CtxSlider({ value, onChange, maxCtx, invalid = false, controlTab
               onMouseLeave={() => setHoveredTick(null)}
               style={{
                 left: `${ctxToPct(tick)}%`,
-                ...(active ? { background: 'var(--color-accent)', color: 'var(--color-accent-ink)' } : undefined),
+                ...(active ? { background: 'var(--color-accent)', color: 'var(--color-accent-ink)' } : undefined)
               }}
               tabIndex={controlTabIndex}
               title={`Set context to ${fmtCtx(tick)}`}

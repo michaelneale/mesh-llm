@@ -41,3 +41,6 @@ pub async fn run_main() -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+include!("exact_test_wrappers.rs");

@@ -14,7 +14,7 @@ export function LoadingGhostBlock({ className, panelShell = false, shimmer = fal
         'rounded-[var(--radius)] border',
         shimmer && 'relative overflow-hidden',
         panelShell ? 'panel-shell border-border bg-panel' : 'border-border-soft bg-panel-strong',
-        className,
+        className
       )}
     >
       {shimmer ? (

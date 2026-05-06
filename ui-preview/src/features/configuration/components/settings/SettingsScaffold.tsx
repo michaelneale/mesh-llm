@@ -54,13 +54,17 @@ export function SettingsSummaryBanner({ eyebrow, title, description, status, act
     <InfoBanner
       action={action}
       descriptionClassName="max-w-none whitespace-normal"
-      description={(
+      description={
         <>
           {eyebrow ? <span className="type-label mb-1 block text-fg-faint">{eyebrow}</span> : null}
           <span className="text-[length:var(--density-type-control)] leading-relaxed">{description}</span>
         </>
-      )}
-      status={<span className="inline-flex rounded-full border border-border-soft bg-transparent px-2 py-0.5 font-mono text-[length:var(--density-type-annotation)] leading-none text-fg-dim">{status}</span>}
+      }
+      status={
+        <span className="inline-flex rounded-full border border-border-soft bg-transparent px-2 py-0.5 font-mono text-[length:var(--density-type-annotation)] leading-none text-fg-dim">
+          {status}
+        </span>
+      }
       title={title}
       titleId="defaults-summary-heading"
     />
@@ -79,7 +83,7 @@ export function SettingsCategoryRail({ categories, activeId, footer, onSelect }:
         id: category.id,
         label: category.label,
         count: category.count,
-        icon: category.icon,
+        icon: category.icon
       }))}
       onSelect={onSelect}
     />
@@ -88,13 +92,21 @@ export function SettingsCategoryRail({ categories, activeId, footer, onSelect }:
 
 export function SettingsSection({ id, icon, title, subtitle, children }: SettingsSectionProps) {
   return (
-    <section id={id} aria-labelledby={`${id}-heading`} className="panel-shell scroll-mt-20 rounded-[var(--radius-lg)] border border-border bg-panel px-[18px] pb-[18px] pt-4 shadow-surface-panel" data-panel-soft-elevation="none">
+    <section
+      id={id}
+      aria-labelledby={`${id}-heading`}
+      className="panel-shell scroll-mt-20 rounded-[var(--radius-lg)] border border-border bg-panel px-[18px] pb-[18px] pt-4 shadow-surface-panel"
+      data-panel-soft-elevation="none"
+    >
       <header className="mb-1 flex items-start gap-2.5">
-        <AccentIconFrame className="size-9">
-          {icon}
-        </AccentIconFrame>
+        <AccentIconFrame className="size-9">{icon}</AccentIconFrame>
         <div>
-          <h3 id={`${id}-heading`} className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground">{title}</h3>
+          <h3
+            id={`${id}-heading`}
+            className="text-[length:var(--density-type-control-lg)] font-semibold leading-tight text-foreground"
+          >
+            {title}
+          </h3>
           <p className="mt-1 text-[length:var(--density-type-caption)] leading-snug text-fg-faint">{subtitle}</p>
         </div>
       </header>
@@ -105,7 +117,13 @@ export function SettingsSection({ id, icon, title, subtitle, children }: Setting
 
 export function SettingsRow({ className, label, hint, children }: SettingsRowProps) {
   return (
-    <div className={cn('grid gap-3 border-t border-border-soft py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center', className)} data-settings-row="true">
+    <div
+      className={cn(
+        'grid gap-3 border-t border-border-soft py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+        className
+      )}
+      data-settings-row="true"
+    >
       <div className="min-w-0">
         <p className="text-[length:var(--density-type-control)] font-medium leading-tight text-foreground">{label}</p>
         <p className="mt-1 text-[length:var(--density-type-caption)] leading-relaxed text-fg-faint">{hint}</p>
@@ -120,7 +138,10 @@ export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailPro
 
   return (
     <aside aria-label={title} className="sticky top-[76px] space-y-2.5">
-      <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3 shadow-surface-panel" data-panel-soft-elevation="none">
+      <section
+        className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3 shadow-surface-panel"
+        data-panel-soft-elevation="none"
+      >
         <h3 className="flex items-center gap-2 text-[length:var(--density-type-control)] font-semibold text-foreground">
           <span>Preview</span>
           <span className="font-mono text-fg-dim">{title}</span>
@@ -136,7 +157,9 @@ export function SettingsPreviewRail({ title, code, tip }: SettingsPreviewRailPro
           <textarea
             aria-label={`${title} preview code`}
             className="absolute inset-0 block h-full w-full resize-none overflow-auto bg-transparent p-3 font-mono leading-relaxed text-transparent caret-transparent outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            onScroll={(event) => setScrollOffset({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })}
+            onScroll={(event) =>
+              setScrollOffset({ left: event.currentTarget.scrollLeft, top: event.currentTarget.scrollTop })
+            }
             readOnly
             value={code}
             wrap="off"

@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RuntimeLlamaEndpointStatus {
-    #[cfg(test)]
     Ready,
     #[default]
     Unavailable,
@@ -41,6 +40,7 @@ pub(crate) struct RuntimeLlamaSlotSnapshot {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RuntimeLlamaSlotsSnapshot {
     pub status: RuntimeLlamaEndpointStatus,
+    pub model: Option<String>,
     pub last_attempt_unix_ms: Option<u64>,
     pub last_success_unix_ms: Option<u64>,
     pub error: Option<String>,

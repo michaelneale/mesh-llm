@@ -4,7 +4,9 @@ export const CTX_TICKS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 1310
 export const CTX_MIN = CTX_TICKS[0]
 export const CTX_MAX = CTX_TICKS[CTX_TICKS.length - 1]
 
-function clampPct(pct: number): number { return Math.min(100, Math.max(0, pct)) }
+function clampPct(pct: number): number {
+  return Math.min(100, Math.max(0, pct))
+}
 
 export function normalizeCtx(ctx: number): number {
   if (!Number.isFinite(ctx)) return CTX_MIN
@@ -46,7 +48,9 @@ export function pctToCtx(pct: number): number {
   return 2 ** (Math.log2(CTX_MIN) + (bounded / 100) * (Math.log2(CTX_MAX) - Math.log2(CTX_MIN)))
 }
 
-export function snapCtx(ctx: number): number { return CTX_TICKS[nearestTickIndex(ctx)] }
+export function snapCtx(ctx: number): number {
+  return CTX_TICKS[nearestTickIndex(ctx)]
+}
 
 export function fmtCtx(ctx: number): string {
   const tokens = Math.round(boundCtx(ctx))

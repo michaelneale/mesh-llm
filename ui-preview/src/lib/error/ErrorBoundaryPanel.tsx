@@ -17,7 +17,7 @@ export function ErrorBoundaryPanel({
   error,
   componentStack,
   scopeLabel,
-  recoveryActionLabel = 'Reload app',
+  recoveryActionLabel = 'Reload app'
 }: ErrorBoundaryPanelProps) {
   const titleId = useId()
   const errorMessage = env.isDevelopment ? error?.message : undefined
@@ -32,7 +32,10 @@ export function ErrorBoundaryPanel({
       <div className="grid gap-5 border-b border-border-soft px-6 py-5 md:grid-cols-[1fr_auto] md:items-start">
         <div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-bad)_42%,var(--color-border))] bg-background px-2.5 py-1 font-mono text-[length:var(--density-type-label)] font-semibold uppercase tracking-[0.12em] text-bad">
-            <span className="size-1.5 rounded-full bg-bad shadow-[0_0_8px_color-mix(in_oklab,var(--color-bad)_70%,transparent)]" aria-hidden="true" />
+            <span
+              className="size-1.5 rounded-full bg-bad shadow-[0_0_8px_color-mix(in_oklab,var(--color-bad)_70%,transparent)]"
+              aria-hidden="true"
+            />
             Render fault
           </div>
           <h1 id={titleId} className="type-display text-foreground">
@@ -61,7 +64,9 @@ export function ErrorBoundaryPanel({
         <div className="grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
           <div className="rounded-[var(--radius)] border border-border-soft bg-panel-strong px-3 py-2.5">
             <div className="type-label text-fg-faint">Boundary scope</div>
-            <div className="mt-1 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">{scopeLabel}</div>
+            <div className="mt-1 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">
+              {scopeLabel}
+            </div>
           </div>
           <div className="rounded-[var(--radius)] border border-border-soft bg-panel-strong px-3 py-2.5">
             <div className="type-label text-fg-faint">Suggested recovery</div>

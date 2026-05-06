@@ -1,5 +1,5 @@
-@import "tailwindcss";
-@import "tw-animate-css";
+@import 'tailwindcss';
+@import 'tw-animate-css';
 
 @source "../**/*.{ts,tsx}";
 
@@ -7,7 +7,7 @@
   --font-sans: 'Inter Tight', -apple-system, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
   --color-background: oklch(0.985 0.003 80);
-  --color-foreground: oklch(0.22 0.020 250);
+  --color-foreground: oklch(0.22 0.02 250);
   --color-muted: oklch(0.955 0.005 80);
   --color-muted-foreground: oklch(0.45 0.015 250);
   --color-border: oklch(0.88 0.005 80);
@@ -24,7 +24,7 @@
   --color-destructive: var(--color-bad);
   --color-destructive-foreground: oklch(0.985 0.003 80);
   --color-fg-dim: oklch(0.45 0.015 250);
-  --color-fg-faint: oklch(0.50 0.012 250);
+  --color-fg-faint: oklch(0.5 0.012 250);
   --model-family-text: oklch(0.985 0.003 80);
   --model-family-color-fallback: oklch(0.58 0.15 242);
   --model-family-color-family-0: color-mix(in oklch, oklch(0.55 0.16 350), black 42%);
@@ -50,7 +50,7 @@
   text-rendering: optimizeLegibility;
   font-kerning: normal;
   font-optical-sizing: auto;
-  font-feature-settings: "cv11", "ss01";
+  font-feature-settings: 'cv11', 'ss01';
   letter-spacing: -0.005em;
   /* Mockup density model: body font changes, while the center dashboard scales as a unit. */
   --density-font-size: 1.038rem;
@@ -116,12 +116,12 @@
   --radius-lg: 10px;
   --color-background: oklch(0.17 0.015 250);
   --color-foreground: oklch(0.96 0.005 80);
-  --color-muted: oklch(0.23 0.020 250);
-  --color-muted-foreground: oklch(0.75 0.010 250);
-  --color-border: oklch(0.30 0.020 250 / 0.9);
-  --color-border-soft: oklch(0.30 0.020 250 / 0.45);
-  --color-panel: oklch(0.20 0.018 250);
-  --color-panel-strong: oklch(0.23 0.020 250);
+  --color-muted: oklch(0.23 0.02 250);
+  --color-muted-foreground: oklch(0.75 0.01 250);
+  --color-border: oklch(0.3 0.02 250 / 0.9);
+  --color-border-soft: oklch(0.3 0.02 250 / 0.45);
+  --color-panel: oklch(0.2 0.018 250);
+  --color-panel-strong: oklch(0.23 0.02 250);
   --surface-chrome: color-mix(in oklab, var(--color-panel) 88%, transparent);
   --surface-chrome-blur: 10px;
   --surface-overlay: color-mix(in oklab, var(--color-background) 76%, transparent);
@@ -131,7 +131,9 @@
   --shadow-surface-low: 0 10px 28px color-mix(in oklab, var(--color-background) 70%, transparent);
   --shadow-surface-popover: 0 18px 44px color-mix(in oklab, var(--color-background) 72%, transparent);
   --shadow-surface-modal: 0 30px 90px color-mix(in oklab, var(--color-background) 82%, transparent);
-  --shadow-surface-drawer: -20px 0 64px color-mix(in oklab, var(--color-background) 62%, transparent), -6px 0 24px color-mix(in oklab, var(--color-background) 46%, transparent);
+  --shadow-surface-drawer:
+    -20px 0 64px color-mix(in oklab, var(--color-background) 62%, transparent),
+    -6px 0 24px color-mix(in oklab, var(--color-background) 46%, transparent);
   --shadow-surface-inset: inset 0 0 0 1px color-mix(in oklch, var(--color-background) 75%, transparent);
   --shadow-surface-inner: inset 0 2px 4px color-mix(in oklch, var(--color-background) 36%, transparent);
   --shadow-surface-selected: 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 45%);
@@ -140,24 +142,30 @@
   --shadow-surface-drag: 0 12px 30px color-mix(in oklch, var(--color-foreground), transparent 82%);
   --shadow-status-good: 0 0 6px var(--color-good);
   --shadow-focus-accent: 0 0 0 3px color-mix(in oklch, var(--color-accent) 20%, transparent);
-  --shadow-config-drop-valid: 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 40%), 0 0 0 4px color-mix(in oklch, var(--color-accent), transparent 88%);
-  --shadow-config-drop-invalid: 0 0 0 1px color-mix(in oklch, var(--color-bad), transparent 36%), 0 0 0 4px color-mix(in oklch, var(--color-bad), transparent 88%);
-  --shadow-config-reserved-selected: inset 0 0 0 1.5px var(--color-background), 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 38%);
-  --shadow-config-chip-selected: inset 0 0 0 1.5px var(--color-background), 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 40%);
+  --shadow-config-drop-valid:
+    0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 40%),
+    0 0 0 4px color-mix(in oklch, var(--color-accent), transparent 88%);
+  --shadow-config-drop-invalid:
+    0 0 0 1px color-mix(in oklch, var(--color-bad), transparent 36%),
+    0 0 0 4px color-mix(in oklch, var(--color-bad), transparent 88%);
+  --shadow-config-reserved-selected:
+    inset 0 0 0 1.5px var(--color-background), 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 38%);
+  --shadow-config-chip-selected:
+    inset 0 0 0 1.5px var(--color-background), 0 0 0 1px color-mix(in oklch, var(--color-accent), transparent 40%);
   --shadow-config-chip-resting: inset 0 0 0 1px color-mix(in oklch, var(--color-background), transparent 65%);
   --shadow-slider-thumb: 0 4px 12px color-mix(in oklch, var(--color-accent) 42%, transparent);
   --shadow-slider-alert: 0 0 0 3px color-mix(in oklch, var(--color-bad) 18%, transparent);
-  --color-accent: oklch(0.80 0.14 200);
+  --color-accent: oklch(0.8 0.14 200);
   --color-accent-contrast: oklch(0.78 0.14 322);
-  --color-accent-ink: oklch(0.20 0.04 220);
-  --color-accent-soft: oklch(0.30 0.06 200);
+  --color-accent-ink: oklch(0.2 0.04 220);
+  --color-accent-soft: oklch(0.3 0.06 200);
   --chat-user-message-background: color-mix(in oklab, var(--color-panel-strong) 36%, transparent);
   --color-good: oklch(0.78 0.14 150);
-  --color-warn: oklch(0.80 0.12 80);
-  --color-bad: oklch(0.70 0.18 25);
+  --color-warn: oklch(0.8 0.12 80);
+  --color-bad: oklch(0.7 0.18 25);
   --color-destructive: var(--color-bad);
   --color-destructive-foreground: oklch(0.985 0.003 80);
-  --color-fg-dim: oklch(0.75 0.010 250);
+  --color-fg-dim: oklch(0.75 0.01 250);
   --color-fg-faint: oklch(0.69 0.012 250);
   --model-family-text: oklch(0.985 0.003 80);
   --model-family-color-fallback: oklch(0.58 0.15 242);
@@ -174,7 +182,7 @@
 :root[data-theme='light'] {
   color-scheme: light;
   --color-background: oklch(0.985 0.003 80);
-  --color-foreground: oklch(0.22 0.020 250);
+  --color-foreground: oklch(0.22 0.02 250);
   --color-muted: oklch(0.955 0.005 80);
   --color-muted-foreground: oklch(0.45 0.015 250);
   --color-border: oklch(0.88 0.005 80);
@@ -192,7 +200,7 @@
   --color-destructive: var(--color-bad);
   --color-destructive-foreground: oklch(0.985 0.003 80);
   --color-fg-dim: oklch(0.45 0.015 250);
-  --color-fg-faint: oklch(0.50 0.012 250);
+  --color-fg-faint: oklch(0.5 0.012 250);
   --model-family-text: oklch(0.2 0.02 250);
   --model-family-color-fallback: oklch(0.82 0.09 242);
   --model-family-color-family-0: oklch(0.8 0.099 350);
@@ -209,23 +217,23 @@
   color-scheme: dark;
   --color-background: oklch(0.17 0.015 250);
   --color-foreground: oklch(0.96 0.005 80);
-  --color-muted: oklch(0.23 0.020 250);
-  --color-muted-foreground: oklch(0.75 0.010 250);
-  --color-border: oklch(0.30 0.020 250 / 0.9);
-  --color-border-soft: oklch(0.30 0.020 250 / 0.45);
-  --color-panel: oklch(0.20 0.018 250);
-  --color-panel-strong: oklch(0.23 0.020 250);
-  --color-accent: oklch(0.80 0.14 200);
+  --color-muted: oklch(0.23 0.02 250);
+  --color-muted-foreground: oklch(0.75 0.01 250);
+  --color-border: oklch(0.3 0.02 250 / 0.9);
+  --color-border-soft: oklch(0.3 0.02 250 / 0.45);
+  --color-panel: oklch(0.2 0.018 250);
+  --color-panel-strong: oklch(0.23 0.02 250);
+  --color-accent: oklch(0.8 0.14 200);
   --color-accent-contrast: oklch(0.78 0.14 322);
-  --color-accent-ink: oklch(0.20 0.04 220);
-  --color-accent-soft: oklch(0.30 0.06 200);
+  --color-accent-ink: oklch(0.2 0.04 220);
+  --color-accent-soft: oklch(0.3 0.06 200);
   --chat-user-message-background: color-mix(in oklab, var(--color-panel-strong) 36%, transparent);
   --color-good: oklch(0.78 0.14 150);
-  --color-warn: oklch(0.80 0.12 80);
-  --color-bad: oklch(0.70 0.18 25);
+  --color-warn: oklch(0.8 0.12 80);
+  --color-bad: oklch(0.7 0.18 25);
   --color-destructive: var(--color-bad);
   --color-destructive-foreground: oklch(0.985 0.003 80);
-  --color-fg-dim: oklch(0.75 0.010 250);
+  --color-fg-dim: oklch(0.75 0.01 250);
   --color-fg-faint: oklch(0.69 0.012 250);
   --model-family-text: oklch(0.985 0.003 80);
   --model-family-color-fallback: oklch(0.58 0.15 242);
@@ -247,21 +255,61 @@
   color: var(--model-family-text);
 }
 
-[data-model-family-color='family-0'] { background-color: var(--model-family-color-family-0); }
-[data-model-family-color='family-1'] { background-color: var(--model-family-color-family-1); }
-[data-model-family-color='family-2'] { background-color: var(--model-family-color-family-2); }
-[data-model-family-color='family-3'] { background-color: var(--model-family-color-family-3); }
-[data-model-family-color='family-4'] { background-color: var(--model-family-color-family-4); }
-[data-model-family-color='family-5'] { background-color: var(--model-family-color-family-5); }
-[data-model-family-color='family-6'] { background-color: var(--model-family-color-family-6); }
-[data-model-family-color='family-7'] { background-color: var(--model-family-color-family-7); }
+[data-model-family-color='family-0'] {
+  background-color: var(--model-family-color-family-0);
+}
+[data-model-family-color='family-1'] {
+  background-color: var(--model-family-color-family-1);
+}
+[data-model-family-color='family-2'] {
+  background-color: var(--model-family-color-family-2);
+}
+[data-model-family-color='family-3'] {
+  background-color: var(--model-family-color-family-3);
+}
+[data-model-family-color='family-4'] {
+  background-color: var(--model-family-color-family-4);
+}
+[data-model-family-color='family-5'] {
+  background-color: var(--model-family-color-family-5);
+}
+[data-model-family-color='family-6'] {
+  background-color: var(--model-family-color-family-6);
+}
+[data-model-family-color='family-7'] {
+  background-color: var(--model-family-color-family-7);
+}
 
-:root[data-accent='blue'] { --color-accent: oklch(0.68 0.18 258); --color-accent-contrast: oklch(0.78 0.15 36); --color-accent-soft: oklch(0.30 0.07 258); }
-:root[data-accent='cyan'] { --color-accent: oklch(0.76 0.16 195); --color-accent-contrast: oklch(0.78 0.14 322); --color-accent-soft: oklch(0.30 0.07 195); }
-:root[data-accent='violet'] { --color-accent: oklch(0.75 0.14 292); --color-accent-contrast: oklch(0.78 0.15 76); --color-accent-soft: oklch(0.30 0.07 292); }
-:root[data-accent='green'] { --color-accent: oklch(0.76 0.16 132); --color-accent-contrast: oklch(0.76 0.14 292); --color-accent-soft: oklch(0.30 0.07 132); }
-:root[data-accent='amber'] { --color-accent: oklch(0.78 0.15 76); --color-accent-contrast: oklch(0.72 0.16 258); --color-accent-soft: oklch(0.30 0.07 76); }
-:root[data-accent='pink'] { --color-accent: oklch(0.73 0.16 8); --color-accent-contrast: oklch(0.76 0.15 170); --color-accent-soft: oklch(0.30 0.07 8); }
+:root[data-accent='blue'] {
+  --color-accent: oklch(0.68 0.18 258);
+  --color-accent-contrast: oklch(0.78 0.15 36);
+  --color-accent-soft: oklch(0.3 0.07 258);
+}
+:root[data-accent='cyan'] {
+  --color-accent: oklch(0.76 0.16 195);
+  --color-accent-contrast: oklch(0.78 0.14 322);
+  --color-accent-soft: oklch(0.3 0.07 195);
+}
+:root[data-accent='violet'] {
+  --color-accent: oklch(0.75 0.14 292);
+  --color-accent-contrast: oklch(0.78 0.15 76);
+  --color-accent-soft: oklch(0.3 0.07 292);
+}
+:root[data-accent='green'] {
+  --color-accent: oklch(0.76 0.16 132);
+  --color-accent-contrast: oklch(0.76 0.14 292);
+  --color-accent-soft: oklch(0.3 0.07 132);
+}
+:root[data-accent='amber'] {
+  --color-accent: oklch(0.78 0.15 76);
+  --color-accent-contrast: oklch(0.72 0.16 258);
+  --color-accent-soft: oklch(0.3 0.07 76);
+}
+:root[data-accent='pink'] {
+  --color-accent: oklch(0.73 0.16 8);
+  --color-accent-contrast: oklch(0.76 0.15 170);
+  --color-accent-soft: oklch(0.3 0.07 8);
+}
 :root[data-density='compact'],
 :root[data-density='dense'] {
   --density-font-size: 0.962rem;
@@ -415,12 +463,20 @@
   --radius: 6px;
   --radius-lg: 10px;
 }
-* { box-sizing: border-box; }
-html, body, #root {
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
   min-height: 100%;
   background: var(--color-background);
 }
-html, body { margin: 0; padding: 0; }
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
 body {
   min-width: 320px;
   min-height: 100vh;
@@ -428,14 +484,29 @@ body {
   font-size: var(--density-font-size);
   line-height: var(--density-line-height);
 }
-code, pre, kbd, .mono, .font-mono, .type-machine {
+code,
+pre,
+kbd,
+.mono,
+.font-mono,
+.type-machine {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
-code, .mono, .type-machine { font-size: 0.92em; }
-h1, h2, h3 { text-wrap: balance; }
-p { text-wrap: pretty; }
+code,
+.mono,
+.type-machine {
+  font-size: 0.92em;
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+p {
+  text-wrap: pretty;
+}
 .type-display {
   font-size: var(--density-type-display);
   font-weight: 700;
@@ -472,11 +543,25 @@ p { text-wrap: pretty; }
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
-button { font-family: inherit; color: inherit; }
-a { color: inherit; }
-button:not(:disabled), a[href], [role='button']:not([aria-disabled='true']) { cursor: pointer; }
-button:disabled, [aria-disabled='true'] { cursor: not-allowed; }
-button, a[href], [role='button'] {
+button {
+  font-family: inherit;
+  color: inherit;
+}
+a {
+  color: inherit;
+}
+button:not(:disabled),
+a[href],
+[role='button']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+button:disabled,
+[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+button,
+a[href],
+[role='button'] {
   transition:
     background-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
     border-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -485,8 +570,20 @@ button, a[href], [role='button'] {
     opacity 140ms cubic-bezier(0.16, 1, 0.3, 1),
     transform 90ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-button, a, input, textarea, [role='slider'] { outline-offset: 3px; }
-button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, [role='slider']:focus-visible { outline: 2px solid var(--color-accent); }
+button,
+a,
+input,
+textarea,
+[role='slider'] {
+  outline-offset: 3px;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[role='slider']:focus-visible {
+  outline: 2px solid var(--color-accent);
+}
 
 .surface-chrome {
   background: var(--surface-chrome);
@@ -496,17 +593,39 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   background: var(--surface-overlay);
   backdrop-filter: blur(var(--surface-overlay-blur));
 }
-.surface-scrim { background: var(--surface-scrim); }
-.surface-panel-translucent { background: var(--surface-panel-translucent); }
-.shadow-surface-low { box-shadow: var(--shadow-surface-low); }
-.shadow-surface-popover { box-shadow: var(--shadow-surface-popover); }
-.shadow-surface-modal { box-shadow: var(--shadow-surface-modal); }
-.shadow-surface-drawer { box-shadow: var(--shadow-surface-drawer); }
-.shadow-surface-inset { box-shadow: var(--shadow-surface-inset); }
-.shadow-surface-inner { box-shadow: var(--shadow-surface-inner); }
-.shadow-surface-selected { box-shadow: var(--shadow-surface-selected); }
-.shadow-surface-error-inset { box-shadow: var(--shadow-surface-error-inset); }
-.shadow-surface-drag { box-shadow: var(--shadow-surface-drag); }
+.surface-scrim {
+  background: var(--surface-scrim);
+}
+.surface-panel-translucent {
+  background: var(--surface-panel-translucent);
+}
+.shadow-surface-low {
+  box-shadow: var(--shadow-surface-low);
+}
+.shadow-surface-popover {
+  box-shadow: var(--shadow-surface-popover);
+}
+.shadow-surface-modal {
+  box-shadow: var(--shadow-surface-modal);
+}
+.shadow-surface-drawer {
+  box-shadow: var(--shadow-surface-drawer);
+}
+.shadow-surface-inset {
+  box-shadow: var(--shadow-surface-inset);
+}
+.shadow-surface-inner {
+  box-shadow: var(--shadow-surface-inner);
+}
+.shadow-surface-selected {
+  box-shadow: var(--shadow-surface-selected);
+}
+.shadow-surface-error-inset {
+  box-shadow: var(--shadow-surface-error-inset);
+}
+.shadow-surface-drag {
+  box-shadow: var(--shadow-surface-drag);
+}
 
 .density-shell {
   width: 100%;
@@ -527,8 +646,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   --density-type-display-lg: 22.5px;
 }
 
-:root[data-density='sparse'] section > header { padding: 16px 20px; }
-:root[data-density='sparse'] .mono { letter-spacing: 0.01em; }
+:root[data-density='sparse'] section > header {
+  padding: 16px 20px;
+}
+:root[data-density='sparse'] .mono {
+  letter-spacing: 0.01em;
+}
 
 .panel-shell {
   border-color: var(--color-border);
@@ -588,7 +711,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   color: var(--color-foreground);
   box-shadow: 0 0 8px color-mix(in oklab, var(--color-accent) 18%, transparent);
 }
-.ui-control[aria-pressed='true'], .ui-control[data-active='true'] {
+.ui-control[aria-pressed='true'],
+.ui-control[data-active='true'] {
   border-color: color-mix(in oklab, var(--color-accent) 70%, var(--color-border));
   background: color-mix(in oklab, var(--color-accent) 12%, var(--color-panel));
   color: var(--color-accent);
@@ -609,12 +733,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   height: var(--slider-track-height);
   border: 1px solid var(--color-border-soft);
   border-radius: 999px;
-  background:
-    linear-gradient(
-      90deg,
-      var(--color-accent) 0 var(--slider-progress),
-      var(--color-panel-strong) var(--slider-progress) 100%
-    );
+  background: linear-gradient(
+    90deg,
+    var(--color-accent) 0 var(--slider-progress),
+    var(--color-panel-strong) var(--slider-progress) 100%
+  );
   box-shadow: inset 0 1px 1px color-mix(in oklch, var(--color-background) 48%, transparent);
   transition:
     border-color 140ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -751,9 +874,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   --segmented-control-text: oklch(0.69 0.012 250);
   --segmented-control-selected-bg: oklch(0.165 0.015 250);
   --segmented-control-selected-text: oklch(0.96 0.005 80);
-  --segmented-control-hover-bg: oklch(0.235 0.020 250);
+  --segmented-control-hover-bg: oklch(0.235 0.02 250);
   --segmented-control-shadow: inset 0 1px 1px color-mix(in oklch, var(--color-background) 48%, transparent);
-  --segmented-control-selected-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-background) 72%, transparent), 0 1px 1px color-mix(in oklch, var(--color-background) 42%, transparent);
+  --segmented-control-selected-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--color-background) 72%, transparent),
+    0 1px 1px color-mix(in oklch, var(--color-background) 42%, transparent);
   border-color: var(--segmented-control-border);
   background: var(--segmented-control-bg);
   box-shadow: var(--segmented-control-shadow);
@@ -765,9 +890,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   --segmented-control-text: oklch(0.69 0.012 250);
   --segmented-control-selected-bg: oklch(0.165 0.015 250);
   --segmented-control-selected-text: oklch(0.96 0.005 80);
-  --segmented-control-hover-bg: oklch(0.235 0.020 250);
+  --segmented-control-hover-bg: oklch(0.235 0.02 250);
   --segmented-control-shadow: inset 0 1px 1px color-mix(in oklch, var(--color-background) 48%, transparent);
-  --segmented-control-selected-shadow: inset 0 0 0 1px color-mix(in oklch, var(--color-background) 72%, transparent), 0 1px 1px color-mix(in oklch, var(--color-background) 42%, transparent);
+  --segmented-control-selected-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--color-background) 72%, transparent),
+    0 1px 1px color-mix(in oklch, var(--color-background) 42%, transparent);
 }
 
 :root[data-theme='light'] .segmented-control {
@@ -775,10 +902,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   --segmented-control-border: var(--color-border);
   --segmented-control-text: oklch(0.58 0.012 250);
   --segmented-control-selected-bg: oklch(0.995 0.002 80);
-  --segmented-control-selected-text: oklch(0.22 0.020 250);
+  --segmented-control-selected-text: oklch(0.22 0.02 250);
   --segmented-control-hover-bg: oklch(0.985 0.003 80);
   --segmented-control-shadow: inset 0 1px 1px color-mix(in oklch, var(--color-foreground) 5%, transparent);
-  --segmented-control-selected-shadow: 0 1px 2px color-mix(in oklch, var(--color-foreground) 12%, transparent), inset 0 0 0 1px color-mix(in oklch, var(--color-background) 90%, transparent);
+  --segmented-control-selected-shadow:
+    0 1px 2px color-mix(in oklch, var(--color-foreground) 12%, transparent),
+    inset 0 0 0 1px color-mix(in oklch, var(--color-background) 90%, transparent);
 }
 
 .segmented-control__item {
@@ -807,7 +936,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .segmented-control__item[data-selected='true'][data-selected-tone='accent'] {
   background: var(--color-accent);
   color: var(--color-accent-ink);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-background) 44%, transparent), 0 0 12px color-mix(in oklab, var(--color-accent) 18%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--color-background) 44%, transparent),
+    0 0 12px color-mix(in oklab, var(--color-accent) 18%, transparent);
 }
 
 .segmented-control__item[data-selected='true'][data-selected-tone='accent']:hover {
@@ -874,7 +1005,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .ui-row-action:active:not([data-active='true']):not([aria-selected='true']) {
   background: color-mix(in oklab, var(--color-accent) 9%, var(--color-panel));
 }
-.ui-row-action[data-active='true'], .ui-row-action[aria-selected='true'] {
+.ui-row-action[data-active='true'],
+.ui-row-action[aria-selected='true'] {
   color: var(--color-foreground);
 }
 
@@ -903,19 +1035,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 /* scrollbars */
-*::-webkit-scrollbar { width: 10px; height: 10px; }
-*::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
-*::-webkit-scrollbar-thumb:hover { background: var(--color-fg-faint); background-clip: padding-box; border: 2px solid transparent; }
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-fg-faint);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
 
 .mesh-canvas {
   background-color: oklch(from var(--color-background) calc(l - 0.02) c h);
-  background-image:
-    radial-gradient(color-mix(in oklch, var(--color-border), transparent 30%) 1px, transparent 1px);
+  background-image: radial-gradient(color-mix(in oklch, var(--color-border), transparent 30%) 1px, transparent 1px);
   background-size: 22px 22px;
 }
 .mesh-glow {
   filter: drop-shadow(0 0 4px color-mix(in oklch, currentColor, transparent 78%))
-          drop-shadow(0 0 10px color-mix(in oklch, currentColor, transparent 88%));
+    drop-shadow(0 0 10px color-mix(in oklch, currentColor, transparent 88%));
 }
 .mesh-node-orb {
   transform-origin: center;
@@ -943,13 +1086,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   opacity: 0.92;
   will-change: transform;
 }
-.mesh-live-pulse { animation: mesh-live-pulse 3.4s ease-in-out infinite; }
+.mesh-live-pulse {
+  animation: mesh-live-pulse 3.4s ease-in-out infinite;
+}
 .mesh-radar-ping {
   border: 1px solid color-mix(in oklab, currentColor 40%, transparent);
   transform-origin: center;
   will-change: transform, opacity;
 }
-@keyframes mesh-live-pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
+@keyframes mesh-live-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+}
 
 @media (max-width: 767px) {
   :root,
@@ -1003,11 +1156,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mesh-live-pulse { animation: none; opacity: 0.85; }
-  .mesh-node-core { opacity: 0.98; scale: 1; }
-  .mesh-palette-fade { transition: none; }
-  .mesh-radar-ping { display: none; }
-  .mesh-packet { will-change: auto; }
+  .mesh-live-pulse {
+    animation: none;
+    opacity: 0.85;
+  }
+  .mesh-node-core {
+    opacity: 0.98;
+    scale: 1;
+  }
+  .mesh-palette-fade {
+    transition: none;
+  }
+  .mesh-radar-ping {
+    display: none;
+  }
+  .mesh-packet {
+    will-change: auto;
+  }
 }
 
 .cmd-block::before {

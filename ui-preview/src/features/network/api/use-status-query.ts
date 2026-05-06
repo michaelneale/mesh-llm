@@ -8,6 +8,6 @@ export function useStatusQuery(options?: { enabled?: boolean }) {
     queryFn: fetchStatus,
     staleTime: 30_000,
     refetchInterval: 5_000,
-    enabled: options?.enabled ?? true,
+    enabled: options?.enabled ?? true
   })
 }

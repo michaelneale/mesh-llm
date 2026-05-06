@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test'
 const routes = [
   { path: '/', name: 'network dashboard' },
   { path: '/chat', name: 'chat workspace' },
-  { path: '/configuration', name: 'gated configuration route' },
+  { path: '/configuration', name: 'gated configuration route' }
 ] as const
 
 for (const route of routes) {

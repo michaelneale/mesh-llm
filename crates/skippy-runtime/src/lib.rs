@@ -1,6 +1,12 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::fs::{File, OpenOptions};
+use std::io::{LineWriter, Write};
 use std::path::Path;
 use std::ptr;
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 
 use anyhow::{anyhow, Context, Result};
 use skippy_ffi::{
@@ -36,15 +42,74 @@ pub use skippy_ffi::{
     ActivationDType as RuntimeActivationDType, ActivationLayout as RuntimeActivationLayout,
 };
 
-pub fn suppress_native_logs() {
-    unsafe {
-        skippy_ffi::llama_log_set(Some(discard_native_log), ptr::null_mut());
+static NATIVE_LOG_FILE: OnceLock<Mutex<Option<LineWriter<File>>>> = OnceLock::new();
+
+fn native_log_file() -> &'static Mutex<Option<LineWriter<File>>> {
+    NATIVE_LOG_FILE.get_or_init(|| Mutex::new(None))
+}
+
+fn flush_native_log_writer<W: Write>(writer: &mut Option<LineWriter<W>>) {
+    if let Some(writer) = writer.as_mut() {
+        let _ = writer.flush();
     }
 }
 
-pub fn restore_native_logs() {
+fn clear_native_log_file() {
+    if let Ok(mut guard) = native_log_file().lock() {
+        flush_native_log_writer(&mut guard);
+        *guard = None;
+    }
+}
+
+fn set_native_log_callback(callback: skippy_ffi::LlamaLogCallback) {
     unsafe {
-        skippy_ffi::llama_log_set(None, ptr::null_mut());
+        skippy_ffi::llama_log_set(callback, ptr::null_mut());
+        skippy_ffi::mtmd_helper_log_set(callback, ptr::null_mut());
+    }
+}
+
+pub fn redirect_native_logs_to_file(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let file = options
+        .open(path)
+        .with_context(|| format!("open skippy native log file {}", path.display()))?;
+    let mut guard = native_log_file()
+        .lock()
+        .map_err(|_| anyhow!("native log file mutex poisoned"))?;
+    flush_native_log_writer(&mut guard);
+    *guard = Some(LineWriter::new(file));
+    drop(guard);
+
+    set_native_log_callback(Some(write_native_log));
+
+    Ok(())
+}
+
+pub fn suppress_native_logs() {
+    clear_native_log_file();
+    set_native_log_callback(Some(discard_native_log));
+}
+
+pub fn restore_native_logs() {
+    clear_native_log_file();
+    set_native_log_callback(None);
+}
+
+unsafe extern "C" fn write_native_log(_level: c_int, text: *const c_char, _user_data: *mut c_void) {
+    if text.is_null() {
+        return;
+    }
+
+    let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
+    if let Ok(mut guard) = native_log_file().lock() {
+        if let Some(writer) = guard.as_mut() {
+            let _ = writer.write_all(bytes);
+        }
     }
 }
 
@@ -576,7 +641,7 @@ impl MediaProjector {
             .context("projector path contains an interior NUL byte")?;
         let raw_model = unsafe { skippy_ffi::skippy_model_llama_model(model) };
         if raw_model.is_null() {
-            return Err(anyhow!("skippy model did not expose a llama_model handle"));
+            return Err(anyhow!("model did not expose a llama_model handle"));
         }
         let mut params = unsafe { skippy_ffi::mtmd_context_params_default() };
         params.use_gpu = true;
@@ -2314,11 +2379,25 @@ fn free_error(error: *mut RawError) {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, path::PathBuf};
+    use std::{
+        env,
+        ffi::CString,
+        fs,
+        io::{LineWriter, Write},
+        path::PathBuf,
+        ptr,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{
-        parse_cache_type, ChatTemplateMessage, FlashAttentionType, ModelInfo, RuntimeConfig,
-        RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0,
+        flush_native_log_writer, parse_cache_type, redirect_native_logs_to_file,
+        restore_native_logs, write_native_log, ChatTemplateMessage, FlashAttentionType, ModelInfo,
+        RuntimeConfig, RuntimeLoadMode, StageModel, TensorRole, GGML_TYPE_F16, GGML_TYPE_Q4_0,
+        GGML_TYPE_Q8_0,
     };
 
     fn correctness_model() -> Option<PathBuf> {
@@ -2356,6 +2435,88 @@ mod tests {
         assert_eq!(parse_cache_type("f16")?, GGML_TYPE_F16);
         assert_eq!(parse_cache_type("q8_0")?, GGML_TYPE_Q8_0);
         assert_eq!(parse_cache_type("q4_0")?, GGML_TYPE_Q4_0);
+        Ok(())
+    }
+
+    struct FlushCountingWriter {
+        flush_count: Arc<AtomicUsize>,
+    }
+
+    impl Write for FlushCountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.flush_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn native_log_writer_flush_helper_explicitly_flushes_line_writer() {
+        let flush_count = Arc::new(AtomicUsize::new(0));
+        let writer = FlushCountingWriter {
+            flush_count: flush_count.clone(),
+        };
+        let mut writer = Some(LineWriter::new(writer));
+        writer
+            .as_mut()
+            .expect("writer should exist")
+            .write_all(b"buffered native log line\n")
+            .expect("write to buffered test writer should succeed");
+
+        flush_native_log_writer(&mut writer);
+
+        assert_eq!(flush_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn native_log_writer_flushes_newline_and_partial_line() -> anyhow::Result<()> {
+        struct RestoreNativeLogs;
+
+        impl Drop for RestoreNativeLogs {
+            fn drop(&mut self) {
+                restore_native_logs();
+            }
+        }
+
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = env::temp_dir().join(format!(
+            "skippy-native-log-buffer-test-{}-{nanos}.log",
+            std::process::id()
+        ));
+        let _guard = RestoreNativeLogs;
+        redirect_native_logs_to_file(&path)?;
+
+        let message = CString::new("buffered native log line\n")?;
+        unsafe {
+            write_native_log(0, message.as_ptr(), ptr::null_mut());
+        }
+
+        let contents = fs::read_to_string(&path)?;
+        restore_native_logs();
+
+        fs::remove_file(&path)?;
+        assert_eq!(contents, "buffered native log line\n");
+
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = env::temp_dir().join(format!(
+            "skippy-native-log-partial-line-test-{}-{nanos}.log",
+            std::process::id()
+        ));
+        let _guard = RestoreNativeLogs;
+        redirect_native_logs_to_file(&path)?;
+
+        let message = CString::new("partial native log line")?;
+        unsafe {
+            write_native_log(0, message.as_ptr(), ptr::null_mut());
+        }
+        restore_native_logs();
+
+        let contents = fs::read_to_string(&path)?;
+        fs::remove_file(&path)?;
+        assert_eq!(contents, "partial native log line");
         Ok(())
     }
 

@@ -16,7 +16,15 @@ function displayInstallHref(installHref: string) {
   return installHref.replace(/^https?:\/\//, '').replace(/\/$/, '')
 }
 
-export function ConnectBlock({ installHref, apiUrl, apiStatus, runCommand, description, onCopy, copyState }: ConnectBlockProps) {
+export function ConnectBlock({
+  installHref,
+  apiUrl,
+  apiStatus,
+  runCommand,
+  description,
+  onCopy,
+  copyState
+}: ConnectBlockProps) {
   const label = copyStateLabel(copyState)
   const installDisplay = displayInstallHref(installHref)
 
@@ -27,15 +35,21 @@ export function ConnectBlock({ installHref, apiUrl, apiStatus, runCommand, descr
           <h2 className="type-panel-title">Connect</h2>
           <span className="type-caption text-fg-faint">· {description}</span>
         </div>
-        <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">Full docs →</a>
+        <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">
+          Full docs →
+        </a>
       </header>
       <div className="p-3.5">
         <div className="grid gap-3.5 md:grid-cols-2">
           <div>
             <div className="type-label mb-1.5 text-fg-faint">1 · Install</div>
             <div className="flex min-w-0 items-center justify-between gap-2 rounded-[var(--radius)] border border-border bg-panel-strong px-3 py-[9px]">
-              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">{installDisplay}</span>
-              <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">open</a>
+              <span className="min-w-0 truncate font-mono text-[length:var(--density-type-control)]">
+                {installDisplay}
+              </span>
+              <a href={installHref} className="ui-link text-[length:var(--density-type-caption-lg)]">
+                open
+              </a>
             </div>
           </div>
           <div>
@@ -47,7 +61,7 @@ export function ConnectBlock({ installHref, apiUrl, apiStatus, runCommand, descr
                 style={{
                   background: 'color-mix(in oklab, var(--color-fg-faint) 12%, var(--color-background))',
                   color: 'var(--color-fg-dim)',
-                  border: '1px solid color-mix(in oklab, var(--color-border) 80%, var(--color-background))',
+                  border: '1px solid color-mix(in oklab, var(--color-border) 80%, var(--color-background))'
                 }}
               >
                 <span className="size-[5px] rounded-full bg-fg-faint" />
@@ -72,7 +86,8 @@ export function ConnectBlock({ installHref, apiUrl, apiStatus, runCommand, descr
             </button>
           </div>
           <p className="type-caption mt-2 text-fg-faint">
-            Previews the command that will auto-select a model, join the mesh, and serve an OpenAI-compatible API at <span className="font-mono text-fg-dim">{apiUrl}</span> once the system backend is connected.
+            Previews the command that will auto-select a model, join the mesh, and serve an OpenAI-compatible API at{' '}
+            <span className="font-mono text-fg-dim">{apiUrl}</span> once the system backend is connected.
           </p>
         </div>
       </div>

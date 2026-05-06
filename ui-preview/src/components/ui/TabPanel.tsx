@@ -70,11 +70,18 @@ export function TabPanel<TValue extends string = string>({
   tabs,
   triggerClassName,
   value,
-  onValueChange,
+  onValueChange
 }: TabPanelProps<TValue>) {
   const fallbackValue = hasEnabledTabValue(tabs, defaultValue) ? defaultValue : findEnabledValue(tabs)
   const [internalValue, setInternalValue] = useState<TValue | undefined>(fallbackValue)
-  const currentValue = value === undefined ? (hasEnabledTabValue(tabs, internalValue) ? internalValue : fallbackValue) : hasEnabledTabValue(tabs, value) ? value : undefined
+  const currentValue =
+    value === undefined
+      ? hasEnabledTabValue(tabs, internalValue)
+        ? internalValue
+        : fallbackValue
+      : hasEnabledTabValue(tabs, value)
+        ? value
+        : undefined
 
   return (
     <Tabs.Root
@@ -88,8 +95,17 @@ export function TabPanel<TValue extends string = string>({
       }}
       value={currentValue}
     >
-      <div className={cn('panel-divider flex min-h-[58px] items-stretch overflow-y-hidden border-b border-border bg-transparent px-2', tabBarClassName)}>
-        <Tabs.List aria-label={ariaLabel} aria-labelledby={ariaLabelledBy} className={cn('flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden', listClassName)}>
+      <div
+        className={cn(
+          'panel-divider flex min-h-[58px] items-stretch overflow-y-hidden border-b border-border bg-transparent px-2',
+          tabBarClassName
+        )}
+      >
+        <Tabs.List
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabelledBy}
+          className={cn('flex h-[56px] items-center gap-0 overflow-x-auto overflow-y-hidden', listClassName)}
+        >
           {tabs.map((item) => {
             const active = currentValue === item.value
             const disabled = Boolean(item.disabled)
@@ -97,7 +113,7 @@ export function TabPanel<TValue extends string = string>({
             const Icon = item.icon
             const triggerStyle: CSSProperties = {
               borderBottomColor: active ? 'var(--color-accent)' : 'transparent',
-              color: active ? 'var(--color-foreground)' : 'var(--color-fg-faint)',
+              color: active ? 'var(--color-foreground)' : 'var(--color-fg-faint)'
             }
 
             const trigger = (
@@ -105,7 +121,7 @@ export function TabPanel<TValue extends string = string>({
                 className={cn(
                   '-mb-px inline-flex h-[44px] items-center gap-[7px] whitespace-nowrap border-b-2 px-[14px] text-[12.5px] font-medium leading-none tracking-[-0.05px] outline-none transition-[border-color,color] hover:text-fg-dim focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50',
                   triggerClassName,
-                  item.triggerClassName,
+                  item.triggerClassName
                 )}
                 data-active={active ? 'true' : undefined}
                 disabled={disabled}
@@ -115,7 +131,15 @@ export function TabPanel<TValue extends string = string>({
                 value={item.value}
                 {...item.triggerAttributes}
               >
-                {item.renderIcon ? item.renderIcon(context) : Icon ? <Icon aria-hidden={true} className={cn('size-[13px] shrink-0', iconClassName, item.iconClassName)} strokeWidth={iconStrokeWidth} /> : null}
+                {item.renderIcon ? (
+                  item.renderIcon(context)
+                ) : Icon ? (
+                  <Icon
+                    aria-hidden={true}
+                    className={cn('size-[13px] shrink-0', iconClassName, item.iconClassName)}
+                    strokeWidth={iconStrokeWidth}
+                  />
+                ) : null}
                 {item.label}
                 {renderAccessory(item, context)}
               </Tabs.Trigger>
@@ -133,7 +157,11 @@ export function TabPanel<TValue extends string = string>({
         {tabBarAccessory ? <div className="ml-auto flex items-center pl-2">{tabBarAccessory}</div> : null}
       </div>
       {tabs.map((item) => (
-        <Tabs.Content className={cn('mt-0 px-5 pt-4 outline-none', contentClassName, item.contentClassName)} key={item.value} value={item.value}>
+        <Tabs.Content
+          className={cn('mt-0 px-5 pt-4 outline-none', contentClassName, item.contentClassName)}
+          key={item.value}
+          value={item.value}
+        >
           {item.content}
         </Tabs.Content>
       ))}

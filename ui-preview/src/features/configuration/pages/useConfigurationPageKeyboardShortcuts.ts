@@ -35,7 +35,7 @@ export function useConfigurationPageKeyboardShortcuts({
   stepSelectedContext,
   openCatalogForCurrentNode,
   setCurrentNodePlacement,
-  removeSelectedAssign,
+  removeSelectedAssign
 }: UseConfigurationPageKeyboardShortcutsParams) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -47,13 +47,31 @@ export function useConfigurationPageKeyboardShortcuts({
       if (event.key.toLowerCase() === 's' && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
         event.preventDefault()
         saveConfiguration()
-      } else if (event.key.toLowerCase() === 'x' && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      } else if (
+        event.key.toLowerCase() === 'x' &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
         event.preventDefault()
         revertConfiguration()
-      } else if (event.key.toLowerCase() === 'z' && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      } else if (
+        event.key.toLowerCase() === 'z' &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
         event.preventDefault()
         if (canUndo) undoConfigurationChange()
-      } else if (event.key.toLowerCase() === 'r' && event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      } else if (
+        event.key.toLowerCase() === 'r' &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
         event.preventDefault()
         if (canRedo) redoConfigurationChange()
       } else if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -82,7 +100,12 @@ export function useConfigurationPageKeyboardShortcuts({
       } else if (event.key.toLowerCase() === 'a' && !event.metaKey && !event.ctrlKey && !event.altKey) {
         event.preventDefault()
         openCatalogForCurrentNode()
-      } else if ((event.key.toLowerCase() === 'p' || event.key.toLowerCase() === 's') && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      } else if (
+        (event.key.toLowerCase() === 'p' || event.key.toLowerCase() === 's') &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
         const placement: Placement = event.key.toLowerCase() === 'p' ? 'pooled' : 'separate'
 
         if (setCurrentNodePlacement(placement)) event.preventDefault()
@@ -109,6 +132,6 @@ export function useConfigurationPageKeyboardShortcuts({
     selectedAssignId,
     setCurrentNodePlacement,
     stepSelectedContext,
-    undoConfigurationChange,
+    undoConfigurationChange
   ])
 }

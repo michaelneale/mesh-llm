@@ -1,7 +1,10 @@
 import { Navigate, useNavigate, useParams } from '@tanstack/react-router'
 import { useCallback } from 'react'
 import { ConfigurationPageContent } from '@/features/configuration/pages/ConfigurationPage'
-import { isConfigurationTabId, type ConfigurationTabId } from '@/features/configuration/components/configuration-tab-ids'
+import {
+  isConfigurationTabId,
+  type ConfigurationTabId
+} from '@/features/configuration/components/configuration-tab-ids'
 import { useBooleanFeatureFlag } from '@/lib/feature-flags'
 
 function configurationTabFromParams(params: object) {
@@ -16,9 +19,12 @@ export function ConfigurationRoutePage() {
   const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
   const integrationsEnabled = useBooleanFeatureFlag('configuration/integrations')
 
-  const navigateToTab = useCallback((configurationTab: ConfigurationTabId) => {
-    void navigate({ to: '/configuration/$configurationTab', params: { configurationTab }, replace: true })
-  }, [navigate])
+  const navigateToTab = useCallback(
+    (configurationTab: ConfigurationTabId) => {
+      void navigate({ to: '/configuration/$configurationTab', params: { configurationTab }, replace: true })
+    },
+    [navigate]
+  )
 
   if (!newConfigurationPageEnabled) {
     return (
@@ -26,7 +32,8 @@ export function ConfigurationRoutePage() {
         <div className="type-label text-fg-faint">Feature flag disabled</div>
         <h1 className="type-display mt-1 text-foreground">Configuration is gated</h1>
         <p className="type-body mt-2 max-w-[68ch] text-fg-dim">
-          Enable <span className="font-mono text-foreground">global/newConfigurationPage</span> in the developer playground to expose this app surface.
+          Enable <span className="font-mono text-foreground">global/newConfigurationPage</span> in the developer
+          playground to expose this app surface.
         </p>
       </section>
     )
@@ -36,7 +43,10 @@ export function ConfigurationRoutePage() {
     return <Navigate replace to="/configuration/$configurationTab" params={{ configurationTab: 'defaults' }} />
   }
 
-  if ((activeTab === 'signing' && !signingAttestationEnabled) || (activeTab === 'integrations' && !integrationsEnabled)) {
+  if (
+    (activeTab === 'signing' && !signingAttestationEnabled) ||
+    (activeTab === 'integrations' && !integrationsEnabled)
+  ) {
     return <Navigate replace to="/configuration/$configurationTab" params={{ configurationTab: 'defaults' }} />
   }
 

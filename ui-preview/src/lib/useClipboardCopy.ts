@@ -33,24 +33,27 @@ export function useClipboardCopy({ resetDelayMs = DEFAULT_RESET_DELAY_MS }: UseC
 
   useEffect(() => clearResetTimer, [clearResetTimer])
 
-  const copyText = useCallback(async (text: string) => {
-    if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') {
-      setCopyState('failed')
-      queueReset()
-      return false
-    }
+  const copyText = useCallback(
+    async (text: string) => {
+      if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') {
+        setCopyState('failed')
+        queueReset()
+        return false
+      }
 
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopyState('copied')
-      queueReset()
-      return true
-    } catch {
-      setCopyState('failed')
-      queueReset()
-      return false
-    }
-  }, [queueReset])
+      try {
+        await navigator.clipboard.writeText(text)
+        setCopyState('copied')
+        queueReset()
+        return true
+      } catch {
+        setCopyState('failed')
+        queueReset()
+        return false
+      }
+    },
+    [queueReset]
+  )
 
   return { copyState, copyText }
 }

@@ -1,4 +1,11 @@
-export type PlaygroundArea = 'shell-controls' | 'data-display' | 'chat-components' | 'configuration-controls' | 'tokens-foundations' | 'feature-flags' | 'meshviz-perf'
+export type PlaygroundArea =
+  | 'shell-controls'
+  | 'data-display'
+  | 'chat-components'
+  | 'configuration-controls'
+  | 'tokens-foundations'
+  | 'feature-flags'
+  | 'meshviz-perf'
 
 export type PlaygroundAreaDefinition = {
   value: PlaygroundArea
@@ -13,5 +20,5 @@ export const PLAYGROUND_AREAS: PlaygroundAreaDefinition[] = [
   { value: 'configuration-controls', label: 'Configuration controls', description: 'placement, VRAM, cards, TOML' },
   { value: 'tokens-foundations', label: 'Tokens and foundations', description: 'type, controls, machine strings' },
   { value: 'feature-flags', label: 'Feature flags', description: 'rollout switches, local overrides' },
-  { value: 'meshviz-perf', label: 'MeshViz 200', description: 'full-width topology stress scene' },
+  { value: 'meshviz-perf', label: 'MeshViz 200', description: 'full-width topology stress scene' }
 ]

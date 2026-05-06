@@ -11,13 +11,13 @@ export async function uploadAttachment(file: File): Promise<string> {
     request_id: generateRequestId(),
     mime_type: file.type,
     file_name: file.name,
-    bytes_base64,
+    bytes_base64
   }
 
   const response = await fetch(`${env.apiUrl}/api/objects`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(body)
   })
 
   if (!response.ok) {

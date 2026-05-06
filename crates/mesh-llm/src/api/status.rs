@@ -140,6 +140,8 @@ pub(crate) struct RuntimeLlamaMetricSamplePayload {
 pub(crate) struct RuntimeLlamaSlotsPayload {
     pub(crate) status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_attempt_unix_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_success_unix_ms: Option<u64>,
@@ -669,6 +671,7 @@ pub(crate) fn build_runtime_llama_payload(
         },
         slots: RuntimeLlamaSlotsPayload {
             status: runtime_llama_endpoint_status(snapshot.slots.status),
+            model: snapshot.slots.model,
             last_attempt_unix_ms: snapshot.slots.last_attempt_unix_ms,
             last_success_unix_ms: snapshot.slots.last_success_unix_ms,
             error: snapshot.slots.error,
@@ -719,7 +722,6 @@ pub(crate) fn build_runtime_llama_payload(
 
 fn runtime_llama_endpoint_status(status: runtime_data::RuntimeLlamaEndpointStatus) -> &'static str {
     match status {
-        #[cfg(test)]
         runtime_data::RuntimeLlamaEndpointStatus::Ready => "ready",
         runtime_data::RuntimeLlamaEndpointStatus::Unavailable => "unavailable",
     }

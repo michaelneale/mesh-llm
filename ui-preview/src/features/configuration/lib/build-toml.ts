@@ -1,6 +1,13 @@
 import { CFG_CATALOG } from '@/features/app-tabs/data'
 import { isUnifiedMemoryNode } from '@/features/configuration/lib/config-math'
-import type { ConfigAssign, ConfigModel, ConfigNode, ConfigurationDefaultsHarnessData, ConfigurationDefaultsSetting, ConfigurationDefaultsValues } from '@/features/app-tabs/types'
+import type {
+  ConfigAssign,
+  ConfigModel,
+  ConfigNode,
+  ConfigurationDefaultsHarnessData,
+  ConfigurationDefaultsSetting,
+  ConfigurationDefaultsValues
+} from '@/features/app-tabs/types'
 
 type BuildTomlOptions = {
   defaults?: ConfigurationDefaultsHarnessData
@@ -20,10 +27,12 @@ function tomlScalar(value: string): string {
 }
 
 function isBooleanToggleChoice(setting: ConfigurationDefaultsSetting): boolean {
-  return setting.control.kind === 'choice'
-    && setting.control.presentation === 'toggle'
-    && setting.control.options.length === 2
-    && setting.control.options.every((option) => option.value === 'on' || option.value === 'off')
+  return (
+    setting.control.kind === 'choice' &&
+    setting.control.presentation === 'toggle' &&
+    setting.control.options.length === 2 &&
+    setting.control.options.every((option) => option.value === 'on' || option.value === 'off')
+  )
 }
 
 function defaultTomlScalar(setting: ConfigurationDefaultsSetting, value: string): string {
@@ -48,16 +57,29 @@ function defaultValue(setting: ConfigurationDefaultsSetting, values: Configurati
   return values?.[setting.id] ?? setting.control.value
 }
 
-function shouldEmitDefaultSetting(setting: ConfigurationDefaultsSetting, settings: readonly ConfigurationDefaultsSetting[], values: ConfigurationDefaultsValues | undefined): boolean {
+function shouldEmitDefaultSetting(
+  setting: ConfigurationDefaultsSetting,
+  settings: readonly ConfigurationDefaultsSetting[],
+  values: ConfigurationDefaultsValues | undefined
+): boolean {
   if (setting.id !== incompatiblePairingBehaviorSettingId) return true
 
   const speculationModeSetting = settings.find((item) => item.id === draftModelModeSettingId)
   return speculationModeSetting ? defaultValue(speculationModeSetting, values) === draftModelModeValue : false
 }
 
-export function buildTOML(nodes: ConfigNode[], assigns: ConfigAssign[], models: ConfigModel[] = CFG_CATALOG, options: BuildTomlOptions = {}): string {
+export function buildTOML(
+  nodes: ConfigNode[],
+  assigns: ConfigAssign[],
+  models: ConfigModel[] = CFG_CATALOG,
+  options: BuildTomlOptions = {}
+): string {
   const localNode = nodes[0]
-  const lines: string[] = ['# MeshLLM generated local node config', '# Remote nodes are read-only context and are not written from this page.', '']
+  const lines: string[] = [
+    '# MeshLLM generated local node config',
+    '# Remote nodes are read-only context and are not written from this page.',
+    ''
+  ]
 
   if (options.defaults) {
     lines.push('[defaults]')
@@ -93,11 +115,22 @@ export function buildTOML(nodes: ConfigNode[], assigns: ConfigAssign[], models: 
 
   if (!localNode) return lines.join('\n').trimEnd()
 
-  lines.push('[node]', `id = ${tomlString(localNode.id)}`, `hostname = ${tomlString(localNode.hostname)}`, `region = ${tomlString(localNode.region)}`, `placement = ${tomlString(localNode.placement)}`)
+  lines.push(
+    '[node]',
+    `id = ${tomlString(localNode.id)}`,
+    `hostname = ${tomlString(localNode.hostname)}`,
+    `region = ${tomlString(localNode.region)}`,
+    `placement = ${tomlString(localNode.placement)}`
+  )
   const emitsGpuIndex = localNode.placement === 'separate' && !isUnifiedMemoryNode(localNode)
   for (const assign of assigns.filter((item) => item.nodeId === localNode.id)) {
     const model = models.find((catalogModel) => catalogModel.id === assign.modelId)
-    lines.push('', '[[models]]', `  id = ${tomlString(assign.id)}`, `  model = ${tomlString(model?.name ?? assign.modelId)}`)
+    lines.push(
+      '',
+      '[[models]]',
+      `  id = ${tomlString(assign.id)}`,
+      `  model = ${tomlString(model?.name ?? assign.modelId)}`
+    )
     if (emitsGpuIndex) lines.push(`  gpu_index = ${assign.containerIdx}`)
     lines.push(`  ctx = ${assign.ctx}`)
   }

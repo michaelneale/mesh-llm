@@ -678,6 +678,8 @@ extern "C" {
 
     pub fn mtmd_default_marker() -> *const c_char;
 
+    pub fn mtmd_helper_log_set(log_callback: LlamaLogCallback, user_data: *mut c_void);
+
     pub fn mtmd_context_params_default() -> MtmdContextParams;
 
     pub fn mtmd_init_from_file(

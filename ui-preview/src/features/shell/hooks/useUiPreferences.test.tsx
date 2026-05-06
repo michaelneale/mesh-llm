@@ -4,7 +4,7 @@ import {
   DEFAULT_UI_PREFERENCES,
   UI_PREFERENCES_STORAGE_KEY,
   UI_THEME_COLORS,
-  useUIPreferences,
+  useUIPreferences
 } from '@/features/shell/hooks/useUiPreferences'
 import { env } from '@/lib/env'
 
@@ -40,7 +40,7 @@ function installMatchMediaMock(initialMatches: boolean): MatchMediaController {
     dispatchEvent: (event: Event) => {
       Object.defineProperties(event, {
         matches: { value: matches },
-        media: { value: SYSTEM_THEME_QUERY },
+        media: { value: SYSTEM_THEME_QUERY }
       })
       listeners.forEach((listener) => {
         if (typeof listener === 'function') {
@@ -53,7 +53,7 @@ function installMatchMediaMock(initialMatches: boolean): MatchMediaController {
         listener.call(mediaQueryList, event as MediaQueryListEvent)
       })
       return true
-    },
+    }
   } satisfies MediaQueryList
 
   Object.defineProperty(window, 'matchMedia', {
@@ -61,14 +61,14 @@ function installMatchMediaMock(initialMatches: boolean): MatchMediaController {
     value: vi.fn((query: string) => {
       if (query !== SYSTEM_THEME_QUERY) throw new Error(`Unexpected media query: ${query}`)
       return mediaQueryList
-    }),
+    })
   })
 
   return {
     setMatches(nextMatches: boolean) {
       matches = nextMatches
       mediaQueryList.dispatchEvent(new Event('change'))
-    },
+    }
   }
 }
 
@@ -187,7 +187,10 @@ describe('useUIPreferences', () => {
   })
 
   it('ignores invalid saved preferences', () => {
-    window.localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify({ theme: 'solarized', accent: 'blue', density: 'normal' }))
+    window.localStorage.setItem(
+      UI_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ theme: 'solarized', accent: 'blue', density: 'normal' })
+    )
 
     const { result } = renderHook(() => useUIPreferences())
 
@@ -198,7 +201,10 @@ describe('useUIPreferences', () => {
   })
 
   it('preserves valid fields when saved preferences are partially invalid', () => {
-    window.localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify({ theme: 'light', accent: 'unknown', density: 'sparse', panelStyle: 'soft' }))
+    window.localStorage.setItem(
+      UI_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ theme: 'light', accent: 'unknown', density: 'sparse', panelStyle: 'soft' })
+    )
 
     const { result } = renderHook(() => useUIPreferences())
 
@@ -236,7 +242,9 @@ describe('useUIPreferences', () => {
       expect(document.documentElement.dataset.density).toBe('compact')
       expect(document.documentElement.dataset.panelStyle).toBe('soft')
       expect(runtimeThemeColorMeta()?.content).toBe(UI_THEME_COLORS.light)
-      expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(JSON.stringify({ theme: 'light', accent: 'violet', density: 'compact', panelStyle: 'soft' }))
+      expect(window.localStorage.getItem(UI_PREFERENCES_STORAGE_KEY)).toBe(
+        JSON.stringify({ theme: 'light', accent: 'violet', density: 'compact', panelStyle: 'soft' })
+      )
     })
   })
 
@@ -244,11 +252,13 @@ describe('useUIPreferences', () => {
     const { result } = renderHook(() => useUIPreferences())
 
     act(() => {
-      window.dispatchEvent(new StorageEvent('storage', {
-        key: UI_PREFERENCES_STORAGE_KEY,
-        newValue: JSON.stringify({ theme: 'light', accent: 'unknown', density: 'compact', panelStyle: 'soft' }),
-        storageArea: window.localStorage,
-      }))
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: UI_PREFERENCES_STORAGE_KEY,
+          newValue: JSON.stringify({ theme: 'light', accent: 'unknown', density: 'compact', panelStyle: 'soft' }),
+          storageArea: window.localStorage
+        })
+      )
     })
 
     await waitFor(() => {
@@ -266,7 +276,10 @@ describe('useUIPreferences', () => {
   })
 
   it('hydrates temporary configuration panel style preferences into the global panel style', () => {
-    window.localStorage.setItem(UI_PREFERENCES_STORAGE_KEY, JSON.stringify({ theme: 'dark', accent: 'blue', density: 'normal', configPanelStyle: 'soft' }))
+    window.localStorage.setItem(
+      UI_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({ theme: 'dark', accent: 'blue', density: 'normal', configPanelStyle: 'soft' })
+    )
 
     const { result } = renderHook(() => useUIPreferences())
 

@@ -14,14 +14,14 @@ const UI_THEME_COLOR_META_SELECTOR = 'meta[name="theme-color"][data-mesh-theme-c
 
 export const UI_THEME_COLORS: Record<ResolvedTheme, string> = {
   dark: '#171b24',
-  light: '#fbfaf7',
+  light: '#fbfaf7'
 }
 
 export const DEFAULT_UI_PREFERENCES: UiPreferences = {
   theme: 'auto',
   accent: 'blue',
   density: 'normal',
-  panelStyle: 'solid',
+  panelStyle: 'solid'
 }
 
 type LegacyMediaQueryList = {
@@ -34,7 +34,14 @@ function isTheme(value: unknown): value is Theme {
 }
 
 function isAccent(value: unknown): value is Accent {
-  return value === 'blue' || value === 'cyan' || value === 'violet' || value === 'green' || value === 'amber' || value === 'pink'
+  return (
+    value === 'blue' ||
+    value === 'cyan' ||
+    value === 'violet' ||
+    value === 'green' ||
+    value === 'amber' ||
+    value === 'pink'
+  )
 }
 
 function isDensity(value: unknown): value is Density {
@@ -57,7 +64,9 @@ function normalizeUiPreferences(value: unknown): UiPreferences {
     density: isDensity(value.density) ? value.density : DEFAULT_UI_PREFERENCES.density,
     panelStyle: isPanelStyle(value.panelStyle)
       ? value.panelStyle
-      : isPanelStyle(value.configPanelStyle) ? value.configPanelStyle : DEFAULT_UI_PREFERENCES.panelStyle,
+      : isPanelStyle(value.configPanelStyle)
+        ? value.configPanelStyle
+        : DEFAULT_UI_PREFERENCES.panelStyle
   }
 }
 
@@ -193,6 +202,6 @@ export function useUIPreferences() {
     setTheme,
     setAccent,
     setDensity,
-    setPanelStyle,
+    setPanelStyle
   }
 }

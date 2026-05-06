@@ -2,7 +2,10 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_DEVELOPER_PLAYGROUND_TAB, type DeveloperPlaygroundTabId } from '@/features/developer/playground/developer-playground-tabs'
+import {
+  DEFAULT_DEVELOPER_PLAYGROUND_TAB,
+  type DeveloperPlaygroundTabId
+} from '@/features/developer/playground/developer-playground-tabs'
 import { DeveloperPlaygroundPageContent } from '@/features/developer/pages/DeveloperPlaygroundPage'
 import { FeatureFlagProvider } from '@/lib/feature-flags'
 
@@ -12,7 +15,7 @@ function renderDeveloperPlaygroundPage() {
   return render(
     <FeatureFlagProvider storageKey={PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY}>
       <DeveloperPlaygroundPageHarness />
-    </FeatureFlagProvider>,
+    </FeatureFlagProvider>
   )
 }
 
@@ -28,10 +31,14 @@ function createMockDataTransfer() {
   return {
     dropEffect: 'none',
     effectAllowed: 'all',
-    get types() { return Array.from(data.keys()) },
+    get types() {
+      return Array.from(data.keys())
+    },
     getData: vi.fn((type: string) => data.get(type) ?? ''),
-    setData: vi.fn((type: string, value: string) => { data.set(type, value) }),
-    setDragImage: vi.fn(),
+    setData: vi.fn((type: string, value: string) => {
+      data.set(type, value)
+    }),
+    setDragImage: vi.fn()
   }
 }
 
@@ -125,7 +132,11 @@ describe('DeveloperPlaygroundPage', () => {
     renderDeveloperPlaygroundPage()
 
     await user.click(screen.getByRole('tab', { name: /data display/i }))
-    await user.click(within(screen.getByRole('navigation', { name: /data display previews/i })).getByRole('button', { name: /topology and drawers/i }))
+    await user.click(
+      within(screen.getByRole('navigation', { name: /data display previews/i })).getByRole('button', {
+        name: /topology and drawers/i
+      })
+    )
 
     const loadingToggle = screen.getByRole('button', { name: /show loading state/i })
     expect(loadingToggle).toHaveAttribute('aria-pressed', 'false')
@@ -195,7 +206,11 @@ describe('DeveloperPlaygroundPage', () => {
     renderDeveloperPlaygroundPage()
 
     await user.click(screen.getByRole('tab', { name: /configuration controls/i }))
-    await user.click(within(screen.getByRole('navigation', { name: /configuration control previews/i })).getByRole('button', { name: /config cards/i }))
+    await user.click(
+      within(screen.getByRole('navigation', { name: /configuration control previews/i })).getByRole('button', {
+        name: /config cards/i
+      })
+    )
 
     expect(screen.getAllByRole('button', { name: /remove .* from /i })).toHaveLength(4)
 
@@ -234,7 +249,9 @@ describe('DeveloperPlaygroundPage', () => {
     expect(screen.getByText(/"global"/)).toBeInTheDocument()
 
     await waitFor(() => {
-      expect(window.localStorage.getItem(PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY)).toBe('{"global":{"newConfigurationPage":true}}')
+      expect(window.localStorage.getItem(PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY)).toBe(
+        '{"global":{"newConfigurationPage":true}}'
+      )
     })
   })
 
@@ -244,7 +261,11 @@ describe('DeveloperPlaygroundPage', () => {
     renderDeveloperPlaygroundPage()
 
     await user.click(screen.getByRole('tab', { name: /feature flags/i }))
-    await user.click(within(screen.getByRole('navigation', { name: /feature flag groups/i })).getByRole('button', { name: /configuration/i }))
+    await user.click(
+      within(screen.getByRole('navigation', { name: /feature flag groups/i })).getByRole('button', {
+        name: /configuration/i
+      })
+    )
 
     expect(screen.getByText(/rollout switches for configuration sections/i)).toBeInTheDocument()
     expect(screen.getByText(/shows the temporary signing, key binding/i)).toBeInTheDocument()
@@ -260,7 +281,9 @@ describe('DeveloperPlaygroundPage', () => {
     expect(screen.getByRole('button', { name: /reset signing \/ attestation/i })).toBeInTheDocument()
 
     await waitFor(() => {
-      expect(window.localStorage.getItem(PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY)).toBe('{"configuration":{"signingAttestation":true}}')
+      expect(window.localStorage.getItem(PLAYGROUND_FEATURE_FLAGS_STORAGE_KEY)).toBe(
+        '{"configuration":{"signingAttestation":true}}'
+      )
     })
   })
 })

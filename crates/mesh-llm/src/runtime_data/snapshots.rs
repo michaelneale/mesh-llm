@@ -39,6 +39,7 @@ pub(crate) struct RuntimeStatusSnapshot {
     pub llama_port: Option<u16>,
     pub local_processes: Vec<RuntimeProcessSnapshot>,
     pub llama_runtime: RuntimeLlamaRuntimeSnapshot,
+    pub llama_runtime_by_model: BTreeMap<String, RuntimeLlamaRuntimeSnapshot>,
 }
 
 #[derive(Clone, Debug, Default)]

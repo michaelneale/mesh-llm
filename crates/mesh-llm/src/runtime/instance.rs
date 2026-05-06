@@ -10,6 +10,7 @@
 //! **ALLOWED** under `runtime_dir/`:
 //! - `lock` — `flock(2)` advisory lock file held by the owning mesh-llm
 //! - `owner.json` — metadata about the owning instance (pid, version, api_port, started_at)
+//! - `logs/` — process-local runtime logs, including embedded skippy/llama.cpp native logs
 //!
 //! **FORBIDDEN** under `runtime_dir/`:
 //! - Application state, configuration, or catalog caches (live elsewhere under `~/.mesh-llm/`)

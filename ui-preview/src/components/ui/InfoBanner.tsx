@@ -27,7 +27,7 @@ export function InfoBanner({
   leadingIcon,
   status,
   titleId,
-  titleLevel = 'h2',
+  titleLevel = 'h2'
 }: InfoBannerProps) {
   const Heading = titleLevel
 
@@ -36,21 +36,33 @@ export function InfoBanner({
       aria-labelledby={titleId}
       className={cn(
         'panel-shell flex items-center gap-4 rounded-[var(--radius-lg)] border border-border px-[19px] py-[15px]',
-        className,
+        className
       )}
-      style={{ background: 'linear-gradient(90deg, color-mix(in oklab, var(--color-accent) 10%, var(--color-panel)) 0%, var(--color-panel) 60%)' }}
+      style={{
+        background:
+          'linear-gradient(90deg, color-mix(in oklab, var(--color-accent) 10%, var(--color-panel)) 0%, var(--color-panel) 60%)'
+      }}
     >
       {leadingIcon ? <AccentIconFrame>{leadingIcon}</AccentIconFrame> : null}
       <div className={cn('min-w-0 flex-1', contentClassName)}>
         <div className="flex flex-wrap items-center gap-2">
-          <Heading id={titleId} className={cn(titleLevel === 'h1' ? 'type-headline' : 'text-[length:var(--density-type-title)] font-semibold leading-tight text-foreground')}>
+          <Heading
+            id={titleId}
+            className={cn(
+              titleLevel === 'h1'
+                ? 'type-headline'
+                : 'text-[length:var(--density-type-title)] font-semibold leading-tight text-foreground'
+            )}
+          >
             {title}
           </Heading>
           {status ? <div>{status}</div> : null}
         </div>
         <div className={cn('type-caption mt-1 text-fg-dim', descriptionClassName)}>{description}</div>
       </div>
-      {action ? <div className={cn('flex shrink-0 items-center justify-end self-center', actionClassName)}>{action}</div> : null}
+      {action ? (
+        <div className={cn('flex shrink-0 items-center justify-end self-center', actionClassName)}>{action}</div>
+      ) : null}
     </section>
   )
 }

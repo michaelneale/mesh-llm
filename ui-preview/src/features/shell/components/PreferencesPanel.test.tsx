@@ -20,7 +20,7 @@ describe('PreferencesPanel', () => {
         onDensityChange={vi.fn()}
         onPanelStyleChange={vi.fn()}
         onClose={vi.fn()}
-      />,
+      />
     )
 
     expect(screen.getByRole('radio', { name: 'Auto' })).toHaveAttribute('aria-checked', 'true')
@@ -47,7 +47,7 @@ describe('PreferencesPanel', () => {
         onDensityChange={onDensityChange}
         onPanelStyleChange={vi.fn()}
         onClose={vi.fn()}
-      />,
+      />
     )
 
     expect(screen.getByRole('heading', { name: 'Preferences' })).toBeInTheDocument()
@@ -78,7 +78,7 @@ describe('PreferencesPanel', () => {
         onDensityChange={vi.fn()}
         onPanelStyleChange={onPanelStyleChange}
         onClose={vi.fn()}
-      />,
+      />
     )
 
     expect(screen.getByRole('radio', { name: 'Solid' })).toHaveAttribute('aria-checked', 'true')
@@ -101,7 +101,7 @@ describe('PreferencesPanel', () => {
         onDensityChange={vi.fn()}
         onPanelStyleChange={vi.fn()}
         onClose={vi.fn()}
-      />,
+      />
     )
 
     expect(screen.queryByRole('radio', { name: 'Use pink accent' })).not.toBeInTheDocument()

@@ -1,5 +1,10 @@
 import { createContext } from 'react'
-import type { FeatureFlagGroup, FeatureFlagOverrides, FeatureFlagPath, FeatureFlagSectionDefinition } from './definitions'
+import type {
+  FeatureFlagGroup,
+  FeatureFlagOverrides,
+  FeatureFlagPath,
+  FeatureFlagSectionDefinition
+} from './definitions'
 
 export type FeatureFlagSettingsContextValue = {
   flags: FeatureFlagGroup

@@ -2,122 +2,122 @@
 name: MeshLLM App
 description: A compact operations console for distributed local AI inference.
 colors:
-  background-dark: "oklch(0.17 0.015 250)"
-  foreground-dark: "oklch(0.96 0.005 80)"
-  panel-dark: "oklch(0.20 0.018 250)"
-  panel-strong-dark: "oklch(0.23 0.020 250)"
-  muted-dark: "oklch(0.23 0.020 250)"
-  border-dark: "oklch(0.30 0.020 250 / 0.9)"
-  border-soft-dark: "oklch(0.30 0.020 250 / 0.45)"
-  accent-dark: "oklch(0.80 0.14 200)"
-  accent-soft-dark: "oklch(0.30 0.06 200)"
-  good-dark: "oklch(0.78 0.14 150)"
-  warn-dark: "oklch(0.80 0.12 80)"
-  bad-dark: "oklch(0.70 0.18 25)"
-  background-light: "oklch(0.985 0.003 80)"
-  foreground-light: "oklch(0.22 0.020 250)"
-  panel-light: "oklch(0.975 0.004 80)"
-  panel-strong-light: "oklch(0.955 0.005 80)"
-  muted-light: "oklch(0.955 0.005 80)"
-  border-light: "oklch(0.88 0.005 80)"
-  border-soft-light: "oklch(0.93 0.005 80)"
-  accent-light: "oklch(0.62 0.14 220)"
-  accent-soft-light: "oklch(0.92 0.05 198)"
-  good-light: "oklch(0.58 0.13 150)"
-  warn-light: "oklch(0.62 0.14 55)"
-  bad-light: "oklch(0.62 0.16 28)"
+  background-dark: 'oklch(0.17 0.015 250)'
+  foreground-dark: 'oklch(0.96 0.005 80)'
+  panel-dark: 'oklch(0.20 0.018 250)'
+  panel-strong-dark: 'oklch(0.23 0.020 250)'
+  muted-dark: 'oklch(0.23 0.020 250)'
+  border-dark: 'oklch(0.30 0.020 250 / 0.9)'
+  border-soft-dark: 'oklch(0.30 0.020 250 / 0.45)'
+  accent-dark: 'oklch(0.80 0.14 200)'
+  accent-soft-dark: 'oklch(0.30 0.06 200)'
+  good-dark: 'oklch(0.78 0.14 150)'
+  warn-dark: 'oklch(0.80 0.12 80)'
+  bad-dark: 'oklch(0.70 0.18 25)'
+  background-light: 'oklch(0.985 0.003 80)'
+  foreground-light: 'oklch(0.22 0.020 250)'
+  panel-light: 'oklch(0.975 0.004 80)'
+  panel-strong-light: 'oklch(0.955 0.005 80)'
+  muted-light: 'oklch(0.955 0.005 80)'
+  border-light: 'oklch(0.88 0.005 80)'
+  border-soft-light: 'oklch(0.93 0.005 80)'
+  accent-light: 'oklch(0.62 0.14 220)'
+  accent-soft-light: 'oklch(0.92 0.05 198)'
+  good-light: 'oklch(0.58 0.13 150)'
+  warn-light: 'oklch(0.62 0.14 55)'
+  bad-light: 'oklch(0.62 0.16 28)'
 typography:
   headline:
-    fontFamily: "Inter Tight, -apple-system, system-ui, sans-serif"
-    fontSize: "var(--density-text-15)"
+    fontFamily: 'Inter Tight, -apple-system, system-ui, sans-serif'
+    fontSize: 'var(--density-text-15)'
     fontWeight: 700
     lineHeight: 1.2
-    letterSpacing: "-0.02em"
+    letterSpacing: '-0.02em'
   title:
-    fontFamily: "Inter Tight, -apple-system, system-ui, sans-serif"
-    fontSize: "var(--density-text-12-5)"
+    fontFamily: 'Inter Tight, -apple-system, system-ui, sans-serif'
+    fontSize: 'var(--density-text-12-5)'
     fontWeight: 600
     lineHeight: 1.35
-    letterSpacing: "0.012em"
+    letterSpacing: '0.012em'
   body:
-    fontFamily: "Inter Tight, -apple-system, system-ui, sans-serif"
-    fontSize: "var(--density-font-size)"
+    fontFamily: 'Inter Tight, -apple-system, system-ui, sans-serif'
+    fontSize: 'var(--density-font-size)'
     fontWeight: 400
     lineHeight: 1.45
-    letterSpacing: "-0.005em"
+    letterSpacing: '-0.005em'
   label:
-    fontFamily: "Inter Tight, -apple-system, system-ui, sans-serif"
-    fontSize: "var(--density-text-10-5)"
+    fontFamily: 'Inter Tight, -apple-system, system-ui, sans-serif'
+    fontSize: 'var(--density-text-10-5)'
     fontWeight: 500
     lineHeight: 1.4
-    letterSpacing: "0.06em"
+    letterSpacing: '0.06em'
   mono:
-    fontFamily: "JetBrains Mono, ui-monospace, Menlo, monospace"
-    fontSize: "0.92em"
+    fontFamily: 'JetBrains Mono, ui-monospace, Menlo, monospace'
+    fontSize: '0.92em'
     fontWeight: 500
     lineHeight: 1.4
-    letterSpacing: "0"
+    letterSpacing: '0'
 rounded:
-  control: "6px"
-  panel: "10px"
+  control: '6px'
+  panel: '10px'
 spacing:
-  shell-x: "18px"
-  shell-top: "18px"
-  panel-x: "14px"
-  panel-y: "10px"
-  row-y: "11px"
-  control-x: "12px"
+  shell-x: '18px'
+  shell-top: '18px'
+  panel-x: '14px'
+  panel-y: '10px'
+  row-y: '11px'
+  control-x: '12px'
 components:
   button-primary-dark:
-    backgroundColor: "{colors.accent-dark}"
-    textColor: "oklch(0.20 0.04 220)"
-    rounded: "{rounded.control}"
-    padding: "7px 12px"
+    backgroundColor: '{colors.accent-dark}'
+    textColor: 'oklch(0.20 0.04 220)'
+    rounded: '{rounded.control}'
+    padding: '7px 12px'
   button-primary-light:
-    backgroundColor: "{colors.accent-light}"
-    textColor: "oklch(0.98 0.01 220)"
-    rounded: "{rounded.control}"
-    padding: "7px 12px"
+    backgroundColor: '{colors.accent-light}'
+    textColor: 'oklch(0.98 0.01 220)'
+    rounded: '{rounded.control}'
+    padding: '7px 12px'
   button-ghost-dark:
-    backgroundColor: "transparent"
-    textColor: "{colors.foreground-dark}"
-    rounded: "{rounded.control}"
-    padding: "6px 8px"
+    backgroundColor: 'transparent'
+    textColor: '{colors.foreground-dark}'
+    rounded: '{rounded.control}'
+    padding: '6px 8px'
   button-ghost-light:
-    backgroundColor: "transparent"
-    textColor: "{colors.foreground-light}"
-    rounded: "{rounded.control}"
-    padding: "6px 8px"
+    backgroundColor: 'transparent'
+    textColor: '{colors.foreground-light}'
+    rounded: '{rounded.control}'
+    padding: '6px 8px'
   status-pill-dark:
-    backgroundColor: "{colors.panel-dark}"
-    textColor: "{colors.good-dark}"
-    rounded: "999px"
-    padding: "1px 8px"
+    backgroundColor: '{colors.panel-dark}'
+    textColor: '{colors.good-dark}'
+    rounded: '999px'
+    padding: '1px 8px'
   status-pill-light:
-    backgroundColor: "{colors.panel-light}"
-    textColor: "{colors.good-light}"
-    rounded: "999px"
-    padding: "1px 8px"
+    backgroundColor: '{colors.panel-light}'
+    textColor: '{colors.good-light}'
+    rounded: '999px'
+    padding: '1px 8px'
   panel-dark:
-    backgroundColor: "{colors.panel-dark}"
-    textColor: "{colors.foreground-dark}"
-    rounded: "{rounded.panel}"
-    padding: "10px 14px"
+    backgroundColor: '{colors.panel-dark}'
+    textColor: '{colors.foreground-dark}'
+    rounded: '{rounded.panel}'
+    padding: '10px 14px'
   panel-light:
-    backgroundColor: "{colors.panel-light}"
-    textColor: "{colors.foreground-light}"
-    rounded: "{rounded.panel}"
-    padding: "10px 14px"
+    backgroundColor: '{colors.panel-light}'
+    textColor: '{colors.foreground-light}'
+    rounded: '{rounded.panel}'
+    padding: '10px 14px'
   input-dark:
-    backgroundColor: "{colors.background-dark}"
-    textColor: "{colors.foreground-dark}"
-    rounded: "{rounded.control}"
-    padding: "8px 12px"
+    backgroundColor: '{colors.background-dark}'
+    textColor: '{colors.foreground-dark}'
+    rounded: '{rounded.control}'
+    padding: '8px 12px'
   input-light:
-    backgroundColor: "{colors.background-light}"
-    textColor: "{colors.foreground-light}"
-    rounded: "{rounded.control}"
-    padding: "8px 12px"
+    backgroundColor: '{colors.background-light}'
+    textColor: '{colors.foreground-light}'
+    rounded: '{rounded.control}'
+    padding: '8px 12px'
 ---
 
 # Design System: MeshLLM App
@@ -133,6 +133,7 @@ The physical scene is an operator using a 27-inch display in a home lab, office,
 The system rejects generic SaaS dashboards, gaming-neon cyberpunk, consumer chat softness, and theatrical AI magic. It should be minimal but not empty, dense but not cluttered, technical but not hostile.
 
 **Key Characteristics:**
+
 - Compact app density with readable hierarchy.
 - Flat bordered panels separated by tonal layers, not heavy shadows.
 - Sparse, meaningful accent use for selection, focus, routes, and live signals.
@@ -144,15 +145,18 @@ The system rejects generic SaaS dashboards, gaming-neon cyberpunk, consumer chat
 The palette is a restrained operational neutral system with one active accent at a time. The accent can vary by user preference, but it must remain a control signal, not decoration.
 
 ### Primary
+
 - **Live Circuit Cyan** (`accent-dark`, `accent-light`): Used for active tabs, primary actions, selected rows, route paths, focus outlines, and live mesh signals. It is sparse by design.
 - **Soft Route Tint** (`accent-soft-dark`, `accent-soft-light`): Used for selected row backgrounds, quiet active fills, and low-intensity route context.
 
 ### Secondary
+
 - **Capacity Green** (`good-dark`, `good-light`): Used for serving, ready, online, healthy capacity, and successful state markers.
 - **Thermal Amber** (`warn-dark`, `warn-light`): Used for warning states that need operator attention without implying failure.
 - **Fault Red** (`bad-dark`, `bad-light`): Used for destructive actions, offline states, and failed health conditions.
 
 ### Neutral
+
 - **Console Field** (`background-dark`, `background-light`): The app background and deepest canvas layer.
 - **Panel Deck** (`panel-dark`, `panel-light`): Primary panels, sidebars, and app sections.
 - **Inset Deck** (`panel-strong-dark`, `panel-strong-light`): Inset controls, denser surfaces, and nested operational rows.
@@ -175,6 +179,7 @@ The palette is a restrained operational neutral system with one active accent at
 **Character:** The type system is sharp, compressed, and technical. Inter Tight keeps dense controls legible without becoming soft; JetBrains Mono separates machine values from prose.
 
 ### Hierarchy
+
 - **Display** (700, 20 to 22px, 1.2): Rare route headings, hero labels, and configuration section anchors. Keep it compact.
 - **Headline** (700, 15 to 16px, 1.2): Node names, major shell labels, and high-value operational titles.
 - **Title** (600, 12 to 13.5px, 1.35): Panel headers, drawer titles, section labels, and control groups.
@@ -191,6 +196,7 @@ The palette is a restrained operational neutral system with one active accent at
 MeshLLM is flat by default. Depth comes from borders, tonal surface changes, and compact grouping. Shadows are reserved for overlays and live visualization effects so that ordinary panels stay stable and operational.
 
 ### Shadow Vocabulary
+
 - **Control Glow** (`0 0 12px color-mix(in oklab, var(--color-accent) 10%, transparent)`): A hover response for controls that can act immediately.
 - **Primary Action Glow** (`0 0 14px color-mix(in oklab, var(--color-accent) 18%, transparent)`): A stronger hover response for primary actions.
 - **Overlay Lift** (`0 30px 90px rgba(0,0,0,0.55)`): Command palette and modal-level surfaces only.

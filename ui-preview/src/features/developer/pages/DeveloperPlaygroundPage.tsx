@@ -17,12 +17,15 @@ export function DeveloperPlaygroundPage() {
   const { tab } = useSearch({ from: '/__playground' })
   const navigate = useNavigate({ from: '/__playground' })
 
-  const handleTabChange = useCallback((nextTab: DeveloperPlaygroundTabId) => {
-    void navigate({
-      search: (previous) => ({ ...previous, tab: nextTab }),
-      replace: true,
-    })
-  }, [navigate])
+  const handleTabChange = useCallback(
+    (nextTab: DeveloperPlaygroundTabId) => {
+      void navigate({
+        search: (previous) => ({ ...previous, tab: nextTab }),
+        replace: true
+      })
+    },
+    [navigate]
+  )
 
   return <DeveloperPlaygroundPageContent activeTab={tab} onTabChange={handleTabChange} />
 }
@@ -42,7 +45,8 @@ export function DeveloperPlaygroundPageContent({ activeTab, onTabChange }: Devel
           <div className="type-label text-fg-faint">Development only</div>
           <h1 className="type-display mt-1 text-foreground">Developer playground</h1>
           <p className="type-body mt-2 text-fg-dim">
-            Rework previews by component use, keep the console compact, and drive each surface with editable harness-backed state before anything ships into the real app.
+            Rework previews by component use, keep the console compact, and drive each surface with editable
+            harness-backed state before anything ships into the real app.
           </p>
         </div>
       </header>
@@ -57,50 +61,50 @@ export function DeveloperPlaygroundPageContent({ activeTab, onTabChange }: Devel
             label: 'Shell controls',
             icon: PanelTop,
             description: PLAYGROUND_AREAS[0].description,
-            content: <ShellControlsArea state={playgroundState} />,
+            content: <ShellControlsArea state={playgroundState} />
           },
           {
             value: 'data-display',
             label: 'Data display',
             icon: Table2,
             description: PLAYGROUND_AREAS[1].description,
-            content: <DataDisplayArea state={playgroundState} />,
+            content: <DataDisplayArea state={playgroundState} />
           },
           {
             value: 'chat-components',
             label: 'Chat components',
             icon: MessageSquare,
             description: PLAYGROUND_AREAS[2].description,
-            content: <ChatComponentsArea state={playgroundState} />,
+            content: <ChatComponentsArea state={playgroundState} />
           },
           {
             value: 'configuration-controls',
             label: 'Configuration controls',
             icon: SlidersHorizontal,
             description: PLAYGROUND_AREAS[3].description,
-            content: <ConfigurationControlsArea state={playgroundState} />,
+            content: <ConfigurationControlsArea state={playgroundState} />
           },
           {
             value: 'tokens-foundations',
             label: 'Tokens and foundations',
             icon: Palette,
             description: PLAYGROUND_AREAS[4].description,
-            content: <TokensFoundationsArea />,
+            content: <TokensFoundationsArea />
           },
           {
             value: 'feature-flags',
             label: 'Feature flags',
             icon: Flag,
             description: PLAYGROUND_AREAS[5].description,
-            content: <FeatureFlagsArea />,
+            content: <FeatureFlagsArea />
           },
           {
             value: 'meshviz-perf',
             label: 'MeshViz 200',
             icon: Network,
             description: PLAYGROUND_AREAS[6].description,
-            content: <MeshVizPerfArea />,
-          },
+            content: <MeshVizPerfArea />
+          }
         ]}
         value={activeTab}
       />

@@ -29,7 +29,7 @@ export function HeaderHoverCard({
   align = 'end',
   contentClassName = 'space-y-3 p-4',
   showHeader = true,
-  triggerMode = 'hover',
+  triggerMode = 'hover'
 }: HeaderHoverCardProps) {
   const [open, setOpen] = useState(false)
   const handleOpenChange = (nextOpen: boolean) => {
@@ -41,7 +41,7 @@ export function HeaderHoverCard({
     onClick: () => setOpen((value) => !value),
     onKeyDown: (event) => {
       if (event.key === 'Escape') setOpen(false)
-    },
+    }
   }
   const renderedChildren = typeof children === 'function' ? children({ close: () => setOpen(false) }) : children
 
@@ -63,7 +63,9 @@ export function HeaderHoverCard({
             <div className="border-b border-border-soft px-4 py-3">
               <div className="type-label text-fg-faint">{eyebrow}</div>
               <h2 className="mt-1 type-panel-title text-foreground">{title}</h2>
-              <p className="mt-1 max-w-none text-pretty text-[length:var(--density-type-caption-lg)] text-fg-dim">{description}</p>
+              <p className="mt-1 max-w-none text-pretty text-[length:var(--density-type-caption-lg)] text-fg-dim">
+                {description}
+              </p>
             </div>
           ) : null}
           <div className={contentClassName}>{renderedChildren}</div>

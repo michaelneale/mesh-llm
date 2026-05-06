@@ -13,10 +13,25 @@ import { NodeRail } from '@/features/configuration/components/NodeRail'
 import { NodeSection } from '@/features/configuration/components/NodeSection'
 import { TomlView } from '@/features/configuration/components/TomlView'
 import { createDefaultsValues } from '@/features/configuration/hooks/useDefaultsSettingsState'
-import { cloneConfigurationState, createConfigurationSnapshot, createInitialConfigurationState, hasInvalidAllocation, type ConfigurationState, useConfigurationHistory } from '@/features/configuration/hooks/useConfigurationHistory'
-import { ConfigurationDeploymentLayout, ConfigurationLayout, ConfigurationPlaceholderPanel } from '@/features/configuration/layouts/ConfigurationLayout'
+import {
+  cloneConfigurationState,
+  createConfigurationSnapshot,
+  createInitialConfigurationState,
+  hasInvalidAllocation,
+  type ConfigurationState,
+  useConfigurationHistory
+} from '@/features/configuration/hooks/useConfigurationHistory'
+import {
+  ConfigurationDeploymentLayout,
+  ConfigurationLayout,
+  ConfigurationPlaceholderPanel
+} from '@/features/configuration/layouts/ConfigurationLayout'
 import { hasConfigurablePlacement } from '@/features/configuration/lib/config-math'
-import { getNodeTargetContainerIdx, createSeparatePlacementSnapshot, restoreSeparatePlacement } from '@/features/configuration/pages/ConfigurationPage.helpers'
+import {
+  getNodeTargetContainerIdx,
+  createSeparatePlacementSnapshot,
+  restoreSeparatePlacement
+} from '@/features/configuration/pages/ConfigurationPage.helpers'
 import { KeyboardLegend } from '@/features/configuration/pages/ConfigurationPageKeyboardLegend'
 import { UnsavedConfigurationNavigationBlocker } from '@/features/configuration/pages/ConfigurationPageNavigationBlocker'
 import { useConfigurationPageSelection } from '@/features/configuration/pages/useConfigurationPageSelection'
@@ -56,7 +71,7 @@ function ConfigurationLiveLoadingGhost() {
 
   return (
     <ConfigurationLayout
-      header={(
+      header={
         <header className="sticky top-0 z-20 bg-transparent">
           <div className="flex min-h-[76px] flex-wrap items-center justify-between gap-3 px-5 py-3">
             <div className="min-w-0">
@@ -72,13 +87,15 @@ function ConfigurationLiveLoadingGhost() {
             </div>
           </div>
         </header>
-      )}
+      }
     >
       <div className="grid gap-3.5 px-5" style={{ gridTemplateColumns: '220px minmax(0, 1fr)' }}>
         <aside className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3">
           <LoadingGhostBlock className="h-4 w-28" />
           <div className="mt-3 space-y-2">
-            {railRows.map((row) => <LoadingGhostBlock key={row} className="h-12" />)}
+            {railRows.map((row) => (
+              <LoadingGhostBlock key={row} className="h-12" />
+            ))}
           </div>
         </aside>
         <section className="space-y-3">
@@ -103,7 +120,9 @@ function ConfigurationLiveLoadingGhost() {
           <div className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-4">
             <LoadingGhostBlock className="h-4 w-40" />
             <div className="mt-3 space-y-2">
-              {settingsRows.map((row) => <LoadingGhostBlock key={row} className="h-10" />)}
+              {settingsRows.map((row) => (
+                <LoadingGhostBlock key={row} className="h-10" />
+              ))}
             </div>
           </div>
         </section>
@@ -112,7 +131,13 @@ function ConfigurationLiveLoadingGhost() {
   )
 }
 
-export function ConfigurationPageContent({ activeTab: controlledActiveTab, data = CONFIGURATION_HARNESS, enableNavigationBlocker = true, initialTab = 'defaults', onTabChange }: ConfigurationPageProps = {}) {
+export function ConfigurationPageContent({
+  activeTab: controlledActiveTab,
+  data = CONFIGURATION_HARNESS,
+  enableNavigationBlocker = true,
+  initialTab = 'defaults',
+  onTabChange
+}: ConfigurationPageProps = {}) {
   const { mode, setMode } = useDataMode()
   const liveMode = mode === 'live'
   const signingAttestationEnabled = useBooleanFeatureFlag('configuration/signingAttestation')
@@ -125,32 +150,59 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
   const showLiveRefresh = liveMode && Boolean(liveData) && isFetching
 
   const initialDefaultsValues = useMemo(() => createDefaultsValues(displayData.defaults), [displayData.defaults])
-  const initialConfiguration = useMemo(() => createInitialConfigurationState(displayData.nodes, displayData.assigns, initialDefaultsValues), [displayData.assigns, displayData.nodes, initialDefaultsValues])
-  const configurationSourceKey = useMemo(() => createConfigurationSnapshot(displayData.nodes, displayData.assigns, initialDefaultsValues), [displayData.assigns, displayData.nodes, initialDefaultsValues])
+  const initialConfiguration = useMemo(
+    () => createInitialConfigurationState(displayData.nodes, displayData.assigns, initialDefaultsValues),
+    [displayData.assigns, displayData.nodes, initialDefaultsValues]
+  )
+  const configurationSourceKey = useMemo(
+    () => createConfigurationSnapshot(displayData.nodes, displayData.assigns, initialDefaultsValues),
+    [displayData.assigns, displayData.nodes, initialDefaultsValues]
+  )
   const latestInitialConfigurationRef = useRef(initialConfiguration)
   useEffect(() => {
     latestInitialConfigurationRef.current = initialConfiguration
   }, [initialConfiguration])
-  const { configuration, setAssigns, updateConfiguration, resetConfiguration, canUndo, canRedo, undoConfigurationChange, redoConfigurationChange } = useConfigurationHistory(initialConfiguration)
+  const {
+    configuration,
+    setAssigns,
+    updateConfiguration,
+    resetConfiguration,
+    canUndo,
+    canRedo,
+    undoConfigurationChange,
+    redoConfigurationChange
+  } = useConfigurationHistory(initialConfiguration)
   const nodes = configuration.nodes
   const assigns = configuration.assigns
   const defaultsValues = configuration.defaultsValues
   const localNodeId = nodes[0]?.id ?? displayData.nodes[0]?.id ?? null
-  const localNodes = useMemo(() => (localNodeId ? nodes.filter((node) => node.id === localNodeId) : []), [localNodeId, nodes])
-  const remoteNodes = useMemo(() => (localNodeId ? nodes.filter((node) => node.id !== localNodeId) : []), [localNodeId, nodes])
-  const localAssigns = useMemo(() => (localNodeId ? assigns.filter((assign) => assign.nodeId === localNodeId) : []), [assigns, localNodeId])
+  const localNodes = useMemo(
+    () => (localNodeId ? nodes.filter((node) => node.id === localNodeId) : []),
+    [localNodeId, nodes]
+  )
+  const remoteNodes = useMemo(
+    () => (localNodeId ? nodes.filter((node) => node.id !== localNodeId) : []),
+    [localNodeId, nodes]
+  )
+  const localAssigns = useMemo(
+    () => (localNodeId ? assigns.filter((assign) => assign.nodeId === localNodeId) : []),
+    [assigns, localNodeId]
+  )
   const localInitialConfiguration = useMemo(
-    () => createInitialConfigurationState(
-      initialConfiguration.nodes.filter((node) => node.id === localNodeId),
-      initialConfiguration.assigns.filter((assign) => assign.nodeId === localNodeId),
-      initialConfiguration.defaultsValues,
-    ),
-    [initialConfiguration, localNodeId],
+    () =>
+      createInitialConfigurationState(
+        initialConfiguration.nodes.filter((node) => node.id === localNodeId),
+        initialConfiguration.assigns.filter((assign) => assign.nodeId === localNodeId),
+        initialConfiguration.defaultsValues
+      ),
+    [initialConfiguration, localNodeId]
   )
   const [activeTabState, setActiveTabState] = useState<ConfigurationTabId>(initialTab)
   const activeTab = controlledActiveTab ?? activeTabState
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({})
-  const [savedConfiguration, setSavedConfiguration] = useState<ConfigurationState>(() => cloneConfigurationState(initialConfiguration))
+  const [savedConfiguration, setSavedConfiguration] = useState<ConfigurationState>(() =>
+    cloneConfigurationState(initialConfiguration)
+  )
   const appliedConfigurationSourceKeyRef = useRef(configurationSourceKey)
   useEffect(() => {
     if (appliedConfigurationSourceKeyRef.current === configurationSourceKey) return
@@ -181,57 +233,110 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
     moveSelectedAssignByGpuOffset,
     removeAssignById,
     pickNodeAssignment,
-    selectCatalogModel,
-  } = useConfigurationPageSelection({ nodes: localNodes, assigns: localAssigns, models: displayData.catalog, initialConfiguration: localInitialConfiguration, preferredAssignId: displayData.preferredAssignId, setAssigns })
+    selectCatalogModel
+  } = useConfigurationPageSelection({
+    nodes: localNodes,
+    assigns: localAssigns,
+    models: displayData.catalog,
+    initialConfiguration: localInitialConfiguration,
+    preferredAssignId: displayData.preferredAssignId,
+    setAssigns
+  })
 
-  const setNodePlacement = useCallback((nodeId: string, placement: Placement) => {
-    updateConfiguration((current) => {
-      if (nodeId !== localNodeId) return current
-      const node = current.nodes.find((item) => item.id === nodeId)
-      if (!node || !hasConfigurablePlacement(node) || node.placement === placement) return current
+  const setNodePlacement = useCallback(
+    (nodeId: string, placement: Placement) => {
+      updateConfiguration((current) => {
+        if (nodeId !== localNodeId) return current
+        const node = current.nodes.find((item) => item.id === nodeId)
+        if (!node || !hasConfigurablePlacement(node) || node.placement === placement) return current
 
-      const separatePlacementSnapshot = current.separatePlacementSnapshots[nodeId] ?? {}
-      const nextSeparatePlacementSnapshots = placement === 'pooled' && node.placement === 'separate'
-        ? { ...current.separatePlacementSnapshots, [nodeId]: createSeparatePlacementSnapshot(current.assigns, nodeId) }
-        : current.separatePlacementSnapshots
-      const nextNodes = current.nodes.map((item) => (item.id === nodeId ? { ...item, placement } : item))
-      const nextNode = nextNodes.find((item) => item.id === nodeId) ?? node
-      const nextAssigns = placement === 'pooled'
-        ? current.assigns.map((assign) => (assign.nodeId === nodeId ? { ...assign, containerIdx: 0 } : assign))
-        : restoreSeparatePlacement(current.assigns, nextNode, separatePlacementSnapshot, displayData.catalog)
+        const separatePlacementSnapshot = current.separatePlacementSnapshots[nodeId] ?? {}
+        const nextSeparatePlacementSnapshots =
+          placement === 'pooled' && node.placement === 'separate'
+            ? {
+                ...current.separatePlacementSnapshots,
+                [nodeId]: createSeparatePlacementSnapshot(current.assigns, nodeId)
+              }
+            : current.separatePlacementSnapshots
+        const nextNodes = current.nodes.map((item) => (item.id === nodeId ? { ...item, placement } : item))
+        const nextNode = nextNodes.find((item) => item.id === nodeId) ?? node
+        const nextAssigns =
+          placement === 'pooled'
+            ? current.assigns.map((assign) => (assign.nodeId === nodeId ? { ...assign, containerIdx: 0 } : assign))
+            : restoreSeparatePlacement(current.assigns, nextNode, separatePlacementSnapshot, displayData.catalog)
 
-      return {
-        nodes: nextNodes,
-        assigns: nextAssigns,
-        defaultsValues: current.defaultsValues,
-        separatePlacementSnapshots: nextSeparatePlacementSnapshots,
-      }
-    })
-  }, [displayData.catalog, localNodeId, updateConfiguration])
-
-  const hasInvalidNode = useMemo(() => hasInvalidAllocation(localNodes, localAssigns, displayData.catalog), [displayData.catalog, localAssigns, localNodes])
-  const currentSnapshot = useMemo(() => createConfigurationSnapshot(nodes, assigns, defaultsValues), [assigns, defaultsValues, nodes])
-  const savedSnapshot = useMemo(() => createConfigurationSnapshot(savedConfiguration.nodes, savedConfiguration.assigns, savedConfiguration.defaultsValues), [savedConfiguration])
-  const hasUnsavedChanges = currentSnapshot !== savedSnapshot
-  const defaultsDirty = useMemo(() => JSON.stringify(defaultsValues) !== JSON.stringify(savedConfiguration.defaultsValues), [defaultsValues, savedConfiguration.defaultsValues])
-  const localDeploymentDirty = useMemo(
-    () => createConfigurationSnapshot(nodes, assigns, savedConfiguration.defaultsValues) !== createConfigurationSnapshot(savedConfiguration.nodes, savedConfiguration.assigns, savedConfiguration.defaultsValues),
-    [assigns, nodes, savedConfiguration],
+        return {
+          nodes: nextNodes,
+          assigns: nextAssigns,
+          defaultsValues: current.defaultsValues,
+          separatePlacementSnapshots: nextSeparatePlacementSnapshots
+        }
+      })
+    },
+    [displayData.catalog, localNodeId, updateConfiguration]
   )
 
-  const updateDefaultSetting = useCallback((settingId: string, value: string) => {
-    updateConfiguration((current) => ({ ...current, defaultsValues: { ...current.defaultsValues, [settingId]: value } }))
-  }, [updateConfiguration])
+  const hasInvalidNode = useMemo(
+    () => hasInvalidAllocation(localNodes, localAssigns, displayData.catalog),
+    [displayData.catalog, localAssigns, localNodes]
+  )
+  const currentSnapshot = useMemo(
+    () => createConfigurationSnapshot(nodes, assigns, defaultsValues),
+    [assigns, defaultsValues, nodes]
+  )
+  const savedSnapshot = useMemo(
+    () =>
+      createConfigurationSnapshot(
+        savedConfiguration.nodes,
+        savedConfiguration.assigns,
+        savedConfiguration.defaultsValues
+      ),
+    [savedConfiguration]
+  )
+  const hasUnsavedChanges = currentSnapshot !== savedSnapshot
+  const defaultsDirty = useMemo(
+    () => JSON.stringify(defaultsValues) !== JSON.stringify(savedConfiguration.defaultsValues),
+    [defaultsValues, savedConfiguration.defaultsValues]
+  )
+  const localDeploymentDirty = useMemo(
+    () =>
+      createConfigurationSnapshot(nodes, assigns, savedConfiguration.defaultsValues) !==
+      createConfigurationSnapshot(
+        savedConfiguration.nodes,
+        savedConfiguration.assigns,
+        savedConfiguration.defaultsValues
+      ),
+    [assigns, nodes, savedConfiguration]
+  )
+
+  const updateDefaultSetting = useCallback(
+    (settingId: string, value: string) => {
+      updateConfiguration((current) => ({
+        ...current,
+        defaultsValues: { ...current.defaultsValues, [settingId]: value }
+      }))
+    },
+    [updateConfiguration]
+  )
 
   const resetDefaultSettings = useCallback(() => {
     updateConfiguration((current) => ({ ...current, defaultsValues: initialDefaultsValues }))
   }, [initialDefaultsValues, updateConfiguration])
 
-  const stepSelectedContext = useCallback((direction: -1 | 1, jumpToPower = false) => {
-    if (!selectedAssign) return
+  const stepSelectedContext = useCallback(
+    (direction: -1 | 1, jumpToPower = false) => {
+      if (!selectedAssign) return
 
-    setAssigns((items) => items.map((assign) => (assign.id === selectedAssign.id ? { ...assign, ctx: jumpToPower ? jumpCtxPower(assign.ctx, direction) : stepCtx(assign.ctx, direction) } : assign)))
-  }, [selectedAssign, setAssigns])
+      setAssigns((items) =>
+        items.map((assign) =>
+          assign.id === selectedAssign.id
+            ? { ...assign, ctx: jumpToPower ? jumpCtxPower(assign.ctx, direction) : stepCtx(assign.ctx, direction) }
+            : assign
+        )
+      )
+    },
+    [selectedAssign, setAssigns]
+  )
 
   const revertConfiguration = useCallback(() => {
     const restoredConfiguration = cloneConfigurationState(savedConfiguration)
@@ -251,19 +356,27 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
 
   const currentKeyboardNode = useMemo(
     () => localNodes.find((item) => item.id === (selectedNodeId ?? selectedAssign?.nodeId)) ?? null,
-    [localNodes, selectedAssign, selectedNodeId],
+    [localNodes, selectedAssign, selectedNodeId]
   )
 
   const openCatalogForCurrentNode = useCallback(() => {
     if (currentKeyboardNode) openCatalogForNode(currentKeyboardNode)
   }, [currentKeyboardNode, openCatalogForNode])
 
-  const setCurrentNodePlacement = useCallback((placement: Placement) => {
-    if (!currentKeyboardNode || !hasConfigurablePlacement(currentKeyboardNode) || currentKeyboardNode.placement === placement) return false
+  const setCurrentNodePlacement = useCallback(
+    (placement: Placement) => {
+      if (
+        !currentKeyboardNode ||
+        !hasConfigurablePlacement(currentKeyboardNode) ||
+        currentKeyboardNode.placement === placement
+      )
+        return false
 
-    setNodePlacement(currentKeyboardNode.id, placement)
-    return true
-  }, [currentKeyboardNode, setNodePlacement])
+      setNodePlacement(currentKeyboardNode.id, placement)
+      return true
+    },
+    [currentKeyboardNode, setNodePlacement]
+  )
   const ignoreReadOnlyAction = useCallback(() => undefined, [])
 
   useConfigurationPageKeyboardShortcuts({
@@ -281,30 +394,50 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
     stepSelectedContext,
     openCatalogForCurrentNode,
     setCurrentNodePlacement,
-    removeSelectedAssign: removeAssignById,
+    removeSelectedAssign: removeAssignById
   })
 
-  const jump = (nodeId: string) => document.getElementById(`node-${nodeId}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  const jump = (nodeId: string) =>
+    document.getElementById(`node-${nodeId}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
 
   const keyboardHint: ReactNode = <KeyboardLegend />
 
-  const rail = <NodeRail nodes={nodes} assigns={assigns} models={displayData.catalog} collapsedMap={collapsedMap} setCollapsedMap={setCollapsedMap} onJump={jump} keyboardHint={keyboardHint} />
+  const rail = (
+    <NodeRail
+      nodes={nodes}
+      assigns={assigns}
+      models={displayData.catalog}
+      collapsedMap={collapsedMap}
+      setCollapsedMap={setCollapsedMap}
+      onJump={jump}
+      keyboardHint={keyboardHint}
+    />
+  )
 
   const localDeployment = (
     <ConfigurationDeploymentLayout rail={rail}>
       {localNodes.map((node) => (
-        <div key={node.id} ref={(element) => { setNodeRef(node.id, element) }}>
+        <div
+          key={node.id}
+          ref={(element) => {
+            setNodeRef(node.id, element)
+          }}
+        >
           <NodeSection
             node={node}
             assigns={assigns}
             models={displayData.catalog}
             setAssigns={setAssigns}
             selectedId={selectedId}
-            selectedContainerIdx={selectedContainerTarget?.nodeId === node.id ? selectedContainerTarget.containerIdx : null}
+            selectedContainerIdx={
+              selectedContainerTarget?.nodeId === node.id ? selectedContainerTarget.containerIdx : null
+            }
             selectedNode={selectedNodeId === node.id}
             onFocusNode={() => setSelectedNodeId(node.id)}
             onPick={(id) => pickNodeAssignment(node, id)}
-            onSelectContainer={(containerIdx) => selectContainerTarget(node.id, getNodeTargetContainerIdx(node, containerIdx))}
+            onSelectContainer={(containerIdx) =>
+              selectContainerTarget(node.id, getNodeTargetContainerIdx(node, containerIdx))
+            }
             collapsed={Boolean(collapsedMap[node.id])}
             setCollapsed={(collapsed) => setCollapsedMap((map) => ({ ...map, [node.id]: collapsed }))}
             onOpenCatalog={openCatalogForNode}
@@ -337,18 +470,87 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
   )
 
   const tabs: ConfigurationTabItem[] = [
-    { id: 'defaults', label: 'Defaults', icon: Binary, dirty: defaultsDirty, content: <DefaultsTab data={displayData.defaults} values={defaultsValues} onResetAll={resetDefaultSettings} onSettingValueChange={updateDefaultSetting} configFilePath={displayData.configFilePath} /> },
-    { id: 'local-deployment', label: 'Model Deployment', icon: Computer, dirty: localDeploymentDirty, content: localDeployment },
-    ...(signingAttestationEnabled ? [{ id: 'signing', label: 'Signing / Attestation', icon: ShieldCheck, dirty: hasUnsavedChanges, content: <ConfigurationPlaceholderPanel title="Signing / Attestation" icon={ShieldCheck}>Unsigned local configuration. This pass reserves the review surface for key binding, attestation receipts, and dirty-state signing checks.</ConfigurationPlaceholderPanel> } satisfies ConfigurationTabItem] : []),
-    ...(integrationsEnabled ? [{ id: 'integrations', label: 'Integrations', icon: Blocks, content: <ConfigurationPlaceholderPanel title="Integrations" icon={Blocks}>Plugin and external endpoint defaults will live here once the underlying TOML fields are available.</ConfigurationPlaceholderPanel> } satisfies ConfigurationTabItem] : []),
-    { id: 'toml-review', label: 'TOML Output', icon: Brackets, dirty: hasUnsavedChanges, content: <TomlView nodes={localNodes} assigns={localAssigns} models={displayData.catalog} defaults={displayData.defaults} defaultsValues={defaultsValues} reviewMode configPath={displayData.configFilePath} validationWarnings={displayData.validationWarnings} launchSummaryConfig={displayData.launchSummaryConfig} /> },
+    {
+      id: 'defaults',
+      label: 'Defaults',
+      icon: Binary,
+      dirty: defaultsDirty,
+      content: (
+        <DefaultsTab
+          data={displayData.defaults}
+          values={defaultsValues}
+          onResetAll={resetDefaultSettings}
+          onSettingValueChange={updateDefaultSetting}
+          configFilePath={displayData.configFilePath}
+        />
+      )
+    },
+    {
+      id: 'local-deployment',
+      label: 'Model Deployment',
+      icon: Computer,
+      dirty: localDeploymentDirty,
+      content: localDeployment
+    },
+    ...(signingAttestationEnabled
+      ? [
+          {
+            id: 'signing',
+            label: 'Signing / Attestation',
+            icon: ShieldCheck,
+            dirty: hasUnsavedChanges,
+            content: (
+              <ConfigurationPlaceholderPanel title="Signing / Attestation" icon={ShieldCheck}>
+                Unsigned local configuration. This pass reserves the review surface for key binding, attestation
+                receipts, and dirty-state signing checks.
+              </ConfigurationPlaceholderPanel>
+            )
+          } satisfies ConfigurationTabItem
+        ]
+      : []),
+    ...(integrationsEnabled
+      ? [
+          {
+            id: 'integrations',
+            label: 'Integrations',
+            icon: Blocks,
+            content: (
+              <ConfigurationPlaceholderPanel title="Integrations" icon={Blocks}>
+                Plugin and external endpoint defaults will live here once the underlying TOML fields are available.
+              </ConfigurationPlaceholderPanel>
+            )
+          } satisfies ConfigurationTabItem
+        ]
+      : []),
+    {
+      id: 'toml-review',
+      label: 'TOML Output',
+      icon: Brackets,
+      dirty: hasUnsavedChanges,
+      content: (
+        <TomlView
+          nodes={localNodes}
+          assigns={localAssigns}
+          models={displayData.catalog}
+          defaults={displayData.defaults}
+          defaultsValues={defaultsValues}
+          reviewMode
+          configPath={displayData.configFilePath}
+          validationWarnings={displayData.validationWarnings}
+          launchSummaryConfig={displayData.launchSummaryConfig}
+        />
+      )
+    }
   ]
   const renderedActiveTab = tabs.some((tab) => tab.id === activeTab) ? activeTab : 'defaults'
 
-  const setActiveTab = useCallback((tab: ConfigurationTabId) => {
-    if (controlledActiveTab === undefined) setActiveTabState(tab)
-    onTabChange?.(tab)
-  }, [controlledActiveTab, onTabChange])
+  const setActiveTab = useCallback(
+    (tab: ConfigurationTabId) => {
+      if (controlledActiveTab === undefined) setActiveTabState(tab)
+      onTabChange?.(tab)
+    },
+    [controlledActiveTab, onTabChange]
+  )
 
   if (showLiveError) {
     return (
@@ -373,7 +575,7 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
     <>
       {showLiveRefresh ? <LiveRefreshPill className="mx-5 mb-2">Refreshing live configuration</LiveRefreshPill> : null}
       <ConfigurationLayout
-        header={(
+        header={
           <ConfigurationHeader
             title={displayData.title}
             description={displayData.description}
@@ -387,12 +589,22 @@ export function ConfigurationPageContent({ activeTab: controlledActiveTab, data 
             onRevert={revertConfiguration}
             onSave={saveConfiguration}
           />
-        )}
+        }
       >
         <ConfigurationTabs value={renderedActiveTab} onValueChange={setActiveTab} tabs={tabs} />
       </ConfigurationLayout>
       {enableNavigationBlocker ? <UnsavedConfigurationNavigationBlocker hasUnsavedChanges={hasUnsavedChanges} /> : null}
-      {catalogFor && selectedCatalogNode ? <CatalogPopover open={Boolean(catalogFor)} onClose={closeCatalog} selectedNode={selectedCatalogNode} assigns={assigns} models={displayData.catalog} errorMessage={catalogError} onSelectModel={selectCatalogModel} /> : null}
+      {catalogFor && selectedCatalogNode ? (
+        <CatalogPopover
+          open={Boolean(catalogFor)}
+          onClose={closeCatalog}
+          selectedNode={selectedCatalogNode}
+          assigns={assigns}
+          models={displayData.catalog}
+          errorMessage={catalogError}
+          onSelectModel={selectCatalogModel}
+        />
+      ) : null}
     </>
   )
 }

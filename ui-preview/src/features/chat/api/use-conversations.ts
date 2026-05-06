@@ -11,16 +11,19 @@ function normalizeChatState(state: ResolvedChatState | undefined, fallback: Chat
 
   return {
     conversations: Array.isArray(state.conversations) ? state.conversations : fallback.conversations,
-    conversationGroups: Array.isArray(state.conversationGroups) ? state.conversationGroups : fallback.conversationGroups,
-    threads: state.threads && typeof state.threads === 'object' && !Array.isArray(state.threads) ? state.threads : fallback.threads,
+    conversationGroups: Array.isArray(state.conversationGroups)
+      ? state.conversationGroups
+      : fallback.conversationGroups,
+    threads:
+      state.threads && typeof state.threads === 'object' && !Array.isArray(state.threads)
+        ? state.threads
+        : fallback.threads
   }
 }
 
 export function useConversations(fallback: ChatHarnessData) {
   const [conversations, setConversations] = useState<Conversation[]>(fallback.conversations)
-  const [conversationGroups, setConversationGroups] = useState<ConversationGroup[]>(
-    fallback.conversationGroups,
-  )
+  const [conversationGroups, setConversationGroups] = useState<ConversationGroup[]>(fallback.conversationGroups)
   const [threads, setThreads] = useState<Record<string, ThreadMessage[]>>(fallback.threads)
 
   useEffect(() => {

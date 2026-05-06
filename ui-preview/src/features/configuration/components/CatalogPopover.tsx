@@ -5,7 +5,10 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { CommandBarModal } from '@/features/app-shell/components/command-bar/CommandBarModal'
 import { CommandBarProvider } from '@/features/app-shell/components/command-bar/CommandBarProvider'
 import { Badge } from '@/features/app-shell/components/command-bar/command-bar-primitives'
-import type { CommandBarMode, CommandBarResultContainerProps } from '@/features/app-shell/components/command-bar/command-bar-types'
+import type {
+  CommandBarMode,
+  CommandBarResultContainerProps
+} from '@/features/app-shell/components/command-bar/command-bar-types'
 import { useCommandBar } from '@/features/app-shell/components/command-bar/useCommandBar'
 import { CFG_CATALOG } from '@/features/app-tabs/data'
 import { ModelCatalogRow } from '@/features/configuration/components/ModelCatalogRow'
@@ -30,19 +33,28 @@ function isCatalogFilter(value: string): value is (typeof filters)[number] {
 }
 
 function matchesCatalogFilter(model: ConfigModel, filter: (typeof filters)[number]) {
-  return filter === 'All'
-    || (filter === 'MoE' && model.moe)
-    || (filter === 'Vision' && model.vision)
-    || (filter === '<8' && model.paramsB < 8)
-    || (filter === '8-32' && model.paramsB >= 8 && model.paramsB <= 32)
-    || (filter === '>32' && model.paramsB > 32)
+  return (
+    filter === 'All' ||
+    (filter === 'MoE' && model.moe) ||
+    (filter === 'Vision' && model.vision) ||
+    (filter === '<8' && model.paramsB < 8) ||
+    (filter === '8-32' && model.paramsB >= 8 && model.paramsB <= 32) ||
+    (filter === '>32' && model.paramsB > 32)
+  )
 }
 
 function CatalogResultContainer<T>({ children }: CommandBarResultContainerProps<T>) {
   return <div className="space-y-2 px-1 py-1">{children}</div>
 }
 
-function CatalogPopoverDialog({ onClose, selectedNode, assigns, models = CFG_CATALOG, errorMessage, onSelectModel }: Omit<CatalogPopoverProps, 'open'>) {
+function CatalogPopoverDialog({
+  onClose,
+  selectedNode,
+  assigns,
+  models = CFG_CATALOG,
+  errorMessage,
+  onSelectModel
+}: Omit<CatalogPopoverProps, 'open'>) {
   const { openCommandBar } = useCommandBar()
   const [draggingModel, setDraggingModel] = useState(false)
   const [filter, setFilter] = useState<(typeof filters)[number]>('All')
@@ -58,39 +70,44 @@ function CatalogPopoverDialog({ onClose, selectedNode, assigns, models = CFG_CAT
     window.setTimeout(onClose, 0)
   }, [onClose])
 
-  const modes = useMemo<readonly CommandBarMode<ConfigModel>[]>(() => [{
-    id: CATALOG_MODE_ID,
-    label: 'Catalog',
-    leadingIcon: Search,
-    source: filteredModels,
-    getItemKey: (model) => model.id,
-    getSearchText: (model) => model.name,
-    getKeywords: (model) => [
-      model.family,
-      model.quant,
-      model.paramsLabel ?? `${model.paramsB}B`,
-      `${model.paramsB}`,
-      `${model.paramsB}b`,
-      ...model.tags,
+  const modes = useMemo<readonly CommandBarMode<ConfigModel>[]>(
+    () => [
+      {
+        id: CATALOG_MODE_ID,
+        label: 'Catalog',
+        leadingIcon: Search,
+        source: filteredModels,
+        getItemKey: (model) => model.id,
+        getSearchText: (model) => model.name,
+        getKeywords: (model) => [
+          model.family,
+          model.quant,
+          model.paramsLabel ?? `${model.paramsB}B`,
+          `${model.paramsB}`,
+          `${model.paramsB}b`,
+          ...model.tags
+        ],
+        ResultContainer: CatalogResultContainer,
+        ResultItem: ({ item, selected }) => (
+          <ModelCatalogRow
+            model={item}
+            node={selectedNode}
+            assigns={assigns}
+            models={models}
+            selected={selected}
+            onDragEnd={() => {
+              setDraggingModel(false)
+              onClose()
+            }}
+            onDragStart={closeAfterDragStarts}
+          />
+        ),
+        onSelect: (model) => onSelectModel?.(model),
+        optionClassName: 'mx-0 px-0 py-0 bg-transparent'
+      }
     ],
-    ResultContainer: CatalogResultContainer,
-    ResultItem: ({ item, selected }) => (
-      <ModelCatalogRow
-        model={item}
-        node={selectedNode}
-        assigns={assigns}
-        models={models}
-        selected={selected}
-        onDragEnd={() => {
-          setDraggingModel(false)
-          onClose()
-        }}
-        onDragStart={closeAfterDragStarts}
-      />
-    ),
-    onSelect: (model) => onSelectModel?.(model),
-    optionClassName: 'mx-0 px-0 py-0 bg-transparent',
-  }], [assigns, closeAfterDragStarts, filteredModels, models, onClose, onSelectModel, selectedNode])
+    [assigns, closeAfterDragStarts, filteredModels, models, onClose, onSelectModel, selectedNode]
+  )
 
   const interstitial = (
     <div className="space-y-2">
@@ -98,10 +115,15 @@ function CatalogPopoverDialog({ onClose, selectedNode, assigns, models = CFG_CAT
         <Badge>
           {filteredModels.length} / {models.length}
         </Badge>
-        <span className="text-[length:var(--density-type-caption)] text-muted-foreground">Drag a model onto a VRAM bar</span>
+        <span className="text-[length:var(--density-type-caption)] text-muted-foreground">
+          Drag a model onto a VRAM bar
+        </span>
       </div>
       {errorMessage ? (
-        <div className="rounded-[var(--radius)] border border-[color:color-mix(in_oklab,var(--color-warn)_36%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_10%,var(--color-panel))] px-3 py-2 text-[length:var(--density-type-caption)] leading-relaxed text-warn" role="alert">
+        <div
+          className="rounded-[var(--radius)] border border-[color:color-mix(in_oklab,var(--color-warn)_36%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-warn)_10%,var(--color-panel))] px-3 py-2 text-[length:var(--density-type-caption)] leading-relaxed text-warn"
+          role="alert"
+        >
           {errorMessage}
         </div>
       ) : null}
@@ -136,12 +158,27 @@ function CatalogPopoverDialog({ onClose, selectedNode, assigns, models = CFG_CAT
   )
 }
 
-export function CatalogPopover({ open, onClose, selectedNode, assigns, models = CFG_CATALOG, errorMessage, onSelectModel }: CatalogPopoverProps) {
+export function CatalogPopover({
+  open,
+  onClose,
+  selectedNode,
+  assigns,
+  models = CFG_CATALOG,
+  errorMessage,
+  onSelectModel
+}: CatalogPopoverProps) {
   if (!open) return null
 
   return (
     <CommandBarProvider>
-      <CatalogPopoverDialog onClose={onClose} selectedNode={selectedNode} assigns={assigns} models={models} errorMessage={errorMessage} onSelectModel={onSelectModel} />
+      <CatalogPopoverDialog
+        onClose={onClose}
+        selectedNode={selectedNode}
+        assigns={assigns}
+        models={models}
+        errorMessage={errorMessage}
+        onSelectModel={onSelectModel}
+      />
     </CommandBarProvider>
   )
 }

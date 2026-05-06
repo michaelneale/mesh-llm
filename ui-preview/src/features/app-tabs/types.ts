@@ -41,7 +41,15 @@ export type Peer = {
   owner?: string
 }
 export type PeerSummary = { total: number; online: number; capacity: string }
-export type ModelFamilyColorKey = 'family-0' | 'family-1' | 'family-2' | 'family-3' | 'family-4' | 'family-5' | 'family-6' | 'family-7'
+export type ModelFamilyColorKey =
+  | 'family-0'
+  | 'family-1'
+  | 'family-2'
+  | 'family-3'
+  | 'family-4'
+  | 'family-5'
+  | 'family-6'
+  | 'family-7'
 export type ModelSummary = {
   name: string
   family: string
@@ -87,13 +95,47 @@ export type ModelSelectStatus = { label: string; tone?: StatusBadgeTone }
 export type ModelSelectOption = { value: string; label: string; meta?: string; status?: ModelSelectStatus }
 export type MessageRole = 'user' | 'assistant'
 export type Conversation = { id: string; title: string; subtitle: string; updatedAt: string; active?: boolean }
-export type TransparencyNode = { id: string; label: string; region?: string; status?: 'online' | 'degraded' | 'offline'; isLocal?: boolean }
+export type TransparencyNode = {
+  id: string
+  label: string
+  region?: string
+  status?: 'online' | 'degraded' | 'offline'
+  isLocal?: boolean
+}
 export type TomlValidationWarning = { kind: 'ok' | 'warn' | 'info'; text: string }
-export type TopNavJoinCommand = { label: string; value: string; prefix?: string; hint?: string; noWrapValue?: boolean; copyValue?: string }
+export type TopNavJoinCommand = {
+  label: string
+  value: string
+  prefix?: string
+  hint?: string
+  noWrapValue?: boolean
+  copyValue?: string
+}
 export type Decision = { id: string; ok: boolean; label: string; detail?: string }
 export type TraceSegment = { id: string; label: string; ms: number; tone?: 'neutral' | 'good' | 'warn' | 'bad' }
-export type InboundTransparencyMessage = { kind: 'assistant'; id: string; text: string; at: string; servedBy: string; route: string[]; model: string; receipt: string; metrics: { rttMs: number; ttftMs: number; throughput: string; tokens: number }; decisions: Decision[]; trace: TraceSegment[] }
-export type OutboundTransparencyMessage = { kind: 'user'; id: string; text: string; at: string; requestId: string; dispatch: { picked: string; candidates: number; bytes: number; tokens: number; model: string }; security: Decision[]; route: string[] }
+export type InboundTransparencyMessage = {
+  kind: 'assistant'
+  id: string
+  text: string
+  at: string
+  servedBy: string
+  route: string[]
+  model: string
+  receipt: string
+  metrics: { rttMs: number; ttftMs: number; throughput: string; tokens: number }
+  decisions: Decision[]
+  trace: TraceSegment[]
+}
+export type OutboundTransparencyMessage = {
+  kind: 'user'
+  id: string
+  text: string
+  at: string
+  requestId: string
+  dispatch: { picked: string; candidates: number; bytes: number; tokens: number; model: string }
+  security: Decision[]
+  route: string[]
+}
 export type TransparencyMessage = InboundTransparencyMessage | OutboundTransparencyMessage
 export type ThreadMessage = {
   id: string
@@ -143,18 +185,68 @@ export type ChatHarnessData = {
 }
 export type ConfigGpu = { idx: number; name: string; totalGB: number; reservedGB?: number }
 export type Placement = 'separate' | 'pooled'
-export type ConfigNode = { id: string; hostname: string; region: string; status: 'online' | 'degraded' | 'offline'; cpu: string; ramGB: number; gpus: ConfigGpu[]; placement: Placement; memoryTopology?: 'discrete' | 'unified' }
-export type ConfigModel = { id: string; name: string; family: string; familyColor?: ModelFamilyColorKey; paramsB: number; paramsLabel?: string; quant: string; sizeGB: number; diskGB: number; ctxMaxK: number; ctxPerGB?: number; layers?: number; heads?: number; embed?: number; tokenizer?: string; moe: boolean; vision: boolean; tags: string[] }
+export type ConfigNode = {
+  id: string
+  hostname: string
+  region: string
+  status: 'online' | 'degraded' | 'offline'
+  cpu: string
+  ramGB: number
+  gpus: ConfigGpu[]
+  placement: Placement
+  memoryTopology?: 'discrete' | 'unified'
+}
+export type ConfigModel = {
+  id: string
+  name: string
+  family: string
+  familyColor?: ModelFamilyColorKey
+  paramsB: number
+  paramsLabel?: string
+  quant: string
+  sizeGB: number
+  diskGB: number
+  ctxMaxK: number
+  ctxPerGB?: number
+  layers?: number
+  heads?: number
+  embed?: number
+  tokenizer?: string
+  moe: boolean
+  vision: boolean
+  tags: string[]
+}
 export type ConfigAssign = { id: string; modelId: string; nodeId: string; containerIdx: number; ctx: number }
 export type ConfigurationDefaultsCategoryId = 'runtime' | 'memory' | 'speculative-decoding' | 'advanced'
-export type ConfigurationDefaultsCategory = { id: ConfigurationDefaultsCategoryId; label: string; summary: string; help: string }
+export type ConfigurationDefaultsCategory = {
+  id: ConfigurationDefaultsCategoryId
+  label: string
+  summary: string
+  help: string
+}
 export type ConfigurationDefaultsChoice = { value: string; label: string; description?: string }
 export type ConfigurationDefaultsControl =
-  | { kind: 'choice'; name: string; options: readonly ConfigurationDefaultsChoice[]; value: string; presentation?: 'segmented' | 'select' | 'toggle' }
+  | {
+      kind: 'choice'
+      name: string
+      options: readonly ConfigurationDefaultsChoice[]
+      value: string
+      presentation?: 'segmented' | 'select' | 'toggle'
+    }
   | { kind: 'text'; name: string; value: string; placeholder?: string }
   | { kind: 'range'; name: string; value: string; min: number; max: number; step: number; unit?: string }
   | { kind: 'metric'; value: string; unit?: string }
-export type ConfigurationDefaultsSettingIcon = 'brain' | 'cpu' | 'layers' | 'memory' | 'binary' | 'folder' | 'gauge' | 'shield' | 'cog' | 'filter'
+export type ConfigurationDefaultsSettingIcon =
+  | 'brain'
+  | 'cpu'
+  | 'layers'
+  | 'memory'
+  | 'binary'
+  | 'folder'
+  | 'gauge'
+  | 'shield'
+  | 'cog'
+  | 'filter'
 export type ConfigurationDefaultsSetting = {
   id: string
   categoryId: ConfigurationDefaultsCategoryId

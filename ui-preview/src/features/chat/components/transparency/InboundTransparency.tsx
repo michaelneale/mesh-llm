@@ -17,7 +17,13 @@ function Metric({ label, value, unit }: { label: string; value: string; unit?: s
   )
 }
 
-export function InboundTransparency({ message, nodes }: { message: InboundTransparencyMessage; nodes: TransparencyNode[] }) {
+export function InboundTransparency({
+  message,
+  nodes
+}: {
+  message: InboundTransparencyMessage
+  nodes: TransparencyNode[]
+}) {
   const servedNode = nodes.find((node) => node.id === message.servedBy)
   const isLocal = servedNode?.id === nodes[0]?.id
   const totalMs = message.trace.reduce((sum, seg) => sum + seg.ms, 0)
@@ -34,15 +40,23 @@ export function InboundTransparency({ message, nodes }: { message: InboundTransp
             <Server className="size-[13px]" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-mono text-[length:var(--density-type-control-lg)] font-medium">{servedNode?.label ?? message.servedBy}</div>
-            <div className="truncate font-mono text-[length:var(--density-type-label)] text-fg-faint">{message.servedBy}</div>
+            <div className="font-mono text-[length:var(--density-type-control-lg)] font-medium">
+              {servedNode?.label ?? message.servedBy}
+            </div>
+            <div className="truncate font-mono text-[length:var(--density-type-label)] text-fg-faint">
+              {message.servedBy}
+            </div>
           </div>
           <span
             className="inline-flex items-center rounded-full px-2 py-px text-[length:var(--density-type-label)] font-medium"
             style={{
-              background: isLocal ? 'color-mix(in oklab, var(--color-accent) 16%, var(--color-background))' : 'color-mix(in oklab, var(--color-good) 18%, var(--color-background))',
+              background: isLocal
+                ? 'color-mix(in oklab, var(--color-accent) 16%, var(--color-background))'
+                : 'color-mix(in oklab, var(--color-good) 18%, var(--color-background))',
               color: isLocal ? 'var(--color-accent)' : 'var(--color-good)',
-              border: isLocal ? '1px solid color-mix(in oklab, var(--color-accent) 28%, var(--color-background))' : '1px solid color-mix(in oklab, var(--color-good) 30%, var(--color-background))',
+              border: isLocal
+                ? '1px solid color-mix(in oklab, var(--color-accent) 28%, var(--color-background))'
+                : '1px solid color-mix(in oklab, var(--color-good) 30%, var(--color-background))'
             }}
           >
             {isLocal ? 'local' : 'peer'}
@@ -63,7 +77,9 @@ export function InboundTransparency({ message, nodes }: { message: InboundTransp
       <div>
         <SectionLabel>Why this node</SectionLabel>
         <div className="rounded-[var(--radius)] border border-border-soft bg-background px-3 py-1">
-          {message.decisions.map((decision) => <DecisionRow key={decision.id} ok={decision.ok} label={decision.label} detail={decision.detail} />)}
+          {message.decisions.map((decision) => (
+            <DecisionRow key={decision.id} ok={decision.ok} label={decision.label} detail={decision.detail} />
+          ))}
         </div>
       </div>
 
@@ -77,8 +93,12 @@ export function InboundTransparency({ message, nodes }: { message: InboundTransp
           <Hash className="size-[11px] text-fg-dim" />
           <span className="text-[length:var(--density-type-caption-lg)] text-fg-dim">Signed routing receipt</span>
         </div>
-        <button type="button" className="inline-flex items-center gap-[5px] text-[length:var(--density-type-caption)] font-medium text-accent">
-          <Copy className="size-[11px]" />Verify
+        <button
+          type="button"
+          className="inline-flex items-center gap-[5px] text-[length:var(--density-type-caption)] font-medium text-accent"
+        >
+          <Copy className="size-[11px]" />
+          Verify
         </button>
       </div>
     </div>

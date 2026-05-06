@@ -11,8 +11,8 @@ export function useSendMessage(chat: UseChatReturn) {
     await chat.sendMessage({
       content: [
         { type: 'text', content: text },
-        { type: 'image', source: { type: 'url', value: `mesh://blob/${token}` } },
-      ],
+        { type: 'image', source: { type: 'url', value: `mesh://blob/${token}` } }
+      ]
     })
   }
 
@@ -20,6 +20,6 @@ export function useSendMessage(chat: UseChatReturn) {
     sendText,
     sendWithAttachment,
     isLoading: chat.isLoading,
-    error: chat.error,
+    error: chat.error
   }
 }
