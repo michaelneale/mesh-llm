@@ -28,14 +28,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex};
 use url::Url;
 
-pub(crate) use self::config::validate_config;
 #[allow(unused_imports)]
 pub use self::config::ExternalPluginSpec;
 #[allow(unused_imports)]
 pub use self::config::{
     config_path, load_config, resolve_plugins, GpuAssignment, GpuConfig, MeshConfig,
-    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins,
+    ModelConfigEntry, PluginConfigEntry, PluginHostMode, ResolvedPlugins, TelemetryConfig,
+    TelemetryMetricsConfig,
 };
+pub(crate) use self::config::{survey_plugin_enabled, validate_config};
 use self::runtime::ExternalPlugin;
 pub(crate) use self::support::parse_optional_json;
 use self::support::{format_args_for_log, format_slice_for_log, format_tool_names_for_log};
@@ -50,6 +51,8 @@ use mesh_llm_plugin::MeshVisibility;
 pub const BLACKBOARD_PLUGIN_ID: &str = "blackboard";
 pub const BLOBSTORE_PLUGIN_ID: &str = "blobstore";
 pub const OPENAI_ENDPOINT_PLUGIN_ID: &str = "openai-endpoint";
+pub const SURVEY_PLUGIN_ID: &str = "survey";
+pub const SURVEY_CAPABILITY: &str = "survey.metrics.v1";
 #[allow(dead_code)]
 pub const BLACKBOARD_CAPABILITY: &str = "blackboard.v1";
 pub(crate) const PROTOCOL_VERSION: u32 = mesh_llm_plugin::PROTOCOL_VERSION;
@@ -1716,6 +1719,7 @@ pub async fn run_plugin_process(name: String) -> Result<()> {
         BLACKBOARD_PLUGIN_ID => crate::plugins::blackboard::run_plugin(name).await,
         BLOBSTORE_PLUGIN_ID => crate::plugins::blobstore::run_plugin(name).await,
         OPENAI_ENDPOINT_PLUGIN_ID => crate::plugins::openai_endpoint::run_plugin(name).await,
+        SURVEY_PLUGIN_ID => crate::plugins::survey::run_plugin(name).await,
         _ => bail!("Unknown built-in plugin '{}'", name),
     }
 }
@@ -1804,6 +1808,53 @@ mod tests {
         assert_eq!(resolved.externals.len(), 1);
         assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
         assert!(resolved.inactive.is_empty());
+    }
+
+    #[test]
+    fn survey_plugin_is_opt_in_builtin() {
+        let resolved = resolve_plugins(&MeshConfig::default(), private_host_mode()).unwrap();
+        assert!(!resolved
+            .externals
+            .iter()
+            .any(|spec| spec.name == SURVEY_PLUGIN_ID));
+
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: SURVEY_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: None,
+                args: Vec::new(),
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let resolved = resolve_plugins(&config, private_host_mode()).unwrap();
+        assert_eq!(resolved.externals.len(), 3);
+        assert_eq!(resolved.externals[0].name, BLACKBOARD_PLUGIN_ID);
+        assert_eq!(resolved.externals[1].name, SURVEY_PLUGIN_ID);
+        assert_eq!(resolved.externals[2].name, BLOBSTORE_PLUGIN_ID);
+        assert!(resolved.externals[1].args.contains(&"--plugin".to_string()));
+        assert!(resolved.externals[1]
+            .args
+            .contains(&SURVEY_PLUGIN_ID.to_string()));
+    }
+
+    #[test]
+    fn survey_plugin_rejects_custom_runtime_fields() {
+        let config = MeshConfig {
+            plugins: vec![PluginConfigEntry {
+                name: SURVEY_PLUGIN_ID.into(),
+                enabled: Some(true),
+                command: Some("/tmp/survey".into()),
+                args: Vec::new(),
+                url: None,
+            }],
+            ..MeshConfig::default()
+        };
+
+        let result = resolve_plugins(&config, private_host_mode());
+        assert!(result.is_err());
     }
 
     #[test]

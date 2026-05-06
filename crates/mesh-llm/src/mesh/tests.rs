@@ -3570,6 +3570,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_older_peer() -> Result<()>
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3673,6 +3674,7 @@ async fn config_subscribe_rejects_pinned_snapshot_for_malformed_peer_version() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3774,6 +3776,7 @@ async fn config_subscribe_allows_pinned_snapshot_for_same_release_prerelease_pee
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -3954,6 +3957,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_malformed_peer
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -4059,6 +4063,7 @@ async fn config_subscribe_closes_when_revision_becomes_pinned_for_older_peer() -
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,
@@ -4165,6 +4170,7 @@ async fn config_subscribe_keeps_stream_open_when_revision_becomes_pinned_for_sam
                     assignment: crate::plugin::GpuAssignment::Pinned,
                     ..Default::default()
                 },
+                telemetry: Default::default(),
                 models: vec![crate::plugin::ModelConfigEntry {
                     model: "Qwen3-8B-Q4_K_M".into(),
                     mmproj: None,

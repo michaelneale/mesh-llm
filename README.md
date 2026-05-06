@@ -277,6 +277,27 @@ Precedence rules:
 - Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
 - Plugin entries still live in the same file.
 
+Survey metrics export is opt-in. Enable the built-in `survey` plugin and configure an OTLP/HTTP metrics endpoint:
+
+```toml
+[telemetry]
+enabled = true
+service_name = "mesh-llm"
+endpoint = "https://otel.example.com"
+headers = { "authorization" = "Bearer TOKEN" }
+export_interval_secs = 15
+queue_size = 2048
+
+[telemetry.metrics]
+endpoint = "https://otel.example.com/v1/metrics"
+
+[[plugin]]
+name = "survey"
+enabled = true
+```
+
+`telemetry.metrics.endpoint` wins over `telemetry.endpoint`; when config endpoints are absent, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` and then `OTEL_EXPORTER_OTLP_ENDPOINT` are used. The survey path exports local model lifecycle metrics only; it does not export prompts, completions, logs, traces, hostnames, mesh gossip, or raw GPU stable IDs.
+
 Pinned startup notes:
 
 - `assignment = "pinned"` requires every configured `[[models]]` entry to include a `gpu_id`.
