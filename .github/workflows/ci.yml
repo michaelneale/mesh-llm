@@ -449,7 +449,7 @@ jobs:
         run: cargo build --release -p mesh-llm
       - name: CLI smoke test
         run: |
-          CUDA_STUB="$(find /usr/local/cuda -path '*/stubs/libcuda.so' -print -quit)"
+          CUDA_STUB="$(find -L /usr/local/cuda /usr/local/cuda-* -path '*/stubs/libcuda.so' -print -quit 2>/dev/null || true)"
           if [ -n "$CUDA_STUB" ]; then
             mkdir -p /tmp/cuda-stubs
             ln -sf "$CUDA_STUB" /tmp/cuda-stubs/libcuda.so.1
