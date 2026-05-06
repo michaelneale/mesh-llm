@@ -22,10 +22,11 @@
   package stages `30..31` and `60..61`.
 - Source/target native-sequence cache correctness is now covered by
   `evals/skippy-cache-correctness-gate.py`. The latest local Metal run passed
-  `21/21` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1, and
-  Qwen3Next for one-stage, split-middle, and split-final topologies. All rows
-  restored `0 -> 1`, suffix-prefill matched, repeated hits were stable, and
-  recurrent payload bytes were non-zero for `KvRecurrent` families.
+  `39/39` rows across Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1,
+  Jamba, LFM2, Mamba, Mamba2, RWKV6, RWKV7, and Qwen3Next for one-stage,
+  split-middle, and split-final topologies. All rows restored `0 -> 1`,
+  suffix-prefill matched, repeated hits were stable, and recurrent payload
+  bytes were non-zero for `KvRecurrent` families.
 
 ## DeepSeek3 Exact-State Certification
 

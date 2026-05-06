@@ -213,6 +213,70 @@ CASES = [
         2048,
     ),
     Case(
+        "jamba",
+        "Jamba",
+        "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+        HOME
+        / ".cache/huggingface/hub/models--bartowski--ai21labs_AI21-Jamba2-3B-GGUF/snapshots/02d70acd708332ec4e78e9ceefe116851a307411/ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
+        "kv-recurrent",
+        28,
+        2560,
+        prefix_tokens=16,
+    ),
+    Case(
+        "lfm2",
+        "LFM2",
+        "meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M",
+        HOME
+        / ".cache/huggingface/hub/models--meshllm--lfm2-350m-parity-q4_k_m-gguf/snapshots/8ee744b5e828d851b872fc5ac5dc6724976e8203/lfm2-350m-q4_k_m.gguf",
+        "kv-recurrent",
+        16,
+        1024,
+    ),
+    Case(
+        "mamba",
+        "Mamba",
+        "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+        HOME
+        / ".cache/huggingface/hub/models--mradermacher--mamba-130m-hf-GGUF/snapshots/ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1/mamba-130m-hf.Q4_K_M.gguf",
+        "kv-recurrent",
+        24,
+        768,
+    ),
+    Case(
+        "mamba2",
+        "Mamba2",
+        "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+        HOME
+        / ".cache/huggingface/hub/models--mradermacher--mamba-2.8b-hf-GGUF/snapshots/c71444344da0c2fd57d8e11d4d8b4b5debd16ca7/mamba-2.8b-hf.Q4_K_M.gguf",
+        "kv-recurrent",
+        64,
+        2560,
+        prefix_tokens=16,
+    ),
+    Case(
+        "rwkv6",
+        "RWKV6",
+        "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
+        HOME
+        / ".cache/huggingface/hub/models--latestissue--rwkv-6-finch-1b6-gguf/snapshots/9f4420bafb8fe463599b9983d81e12e1868c3746/rwkv-6-finch-1b6-Q4_K.gguf",
+        "kv-recurrent",
+        24,
+        2048,
+        prefix_tokens=16,
+    ),
+    Case(
+        "rwkv7",
+        "RWKV7",
+        "Mungert/rwkv7-191M-world-GGUF:Q4_K",
+        HOME
+        / ".cache/huggingface/hub/models--Mungert--rwkv7-191M-world-GGUF/snapshots/e49a4381662e78e48ca3079770a6a47e203c22ab/rwkv7-191M-world-f16-q4_k.gguf",
+        "kv-recurrent",
+        12,
+        768,
+        prefix_tokens=16,
+    ),
+    Case(
         "olmo",
         "OLMo",
         "meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16",

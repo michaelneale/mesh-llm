@@ -153,7 +153,21 @@ def main() -> int:
         if missing:
             raise SystemExit(f"unknown case(s): {', '.join(sorted(missing))}")
     else:
-        wanted = {"llama", "qwen3_dense", "gemma3", "olmo", "glm4", "falcon_h1", "qwen3next"}
+        wanted = {
+            "llama",
+            "qwen3_dense",
+            "gemma3",
+            "olmo",
+            "glm4",
+            "falcon_h1",
+            "jamba",
+            "lfm2",
+            "mamba",
+            "mamba2",
+            "qwen3next",
+            "rwkv6",
+            "rwkv7",
+        }
         selected = [case for case in selected if case.key in wanted]
 
     topologies = args.topology or ["one-stage", "split-middle", "split-final"]

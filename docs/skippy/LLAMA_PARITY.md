@@ -166,7 +166,7 @@ or a blocker is discovered.
 | `qwen2` | `qwen2` | selected | yes | pass | pass | `ResidentKv` | pass | ready for reviewed promotion |
 | `deepseek` | `deepseek` | selected | yes | pass | pass | `ResidentKv` | pass | promoted |
 | `mistral` | `mistral3` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
+| `lfm2` | `lfm2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; keep normal decode ownership sticky |
 | `gpt2` | `gpt2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `gemma` | `gemma` | selected | yes | pass with `f32` wire | pass | `ResidentKv` target | pending cache smoke | text split ready with `f32`; `f16`/`q8` rejected |
 | `mpt` | `mpt` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
@@ -182,14 +182,14 @@ or a blocker is discovered.
 | `exaone4` | `exaone4` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `command_r` | `command-r` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `cohere2` | `cohere2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
+| `jamba` | `jamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent cache restore ready; middle stage can be recurrent-only |
 | `falcon` | `falcon` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `internlm2` | `internlm2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `stablelm` | `stablelm` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
 | `starcoder2` | `starcoder2` | selected | yes | pass | pass | `ResidentKv` target | pending cache smoke | text split ready |
-| `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
-| `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
-| `rwkv6` | `rwkv6` | replacement selected | yes | pass | rejected too large | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
+| `mamba` | `mamba` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
+| `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
+| `rwkv6` | `rwkv6` | replacement selected | yes | pass | pass | `KvRecurrent` | pass | recurrent-only cache restore ready; keep normal decode ownership sticky |
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
 | `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
 | `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
@@ -228,12 +228,12 @@ themselves until the reviewed topology records are updated.
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
 | `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
-| `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `mamba2` | see `target/family-certify/llama-parity-mamba2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `rwkv6` | see `target/family-certify/llama-parity-rwkv6-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | rejected too large | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
-| `rwkv7` | `Mungert/rwkv7-191M-world-GGUF` plus `target/family-certify/rwkv7-sideband-*.json` | `single-step`, `chain`, and dtype matrix passed | validated on sampled artifact | accepted | activation-frame sideband carries layer-0 `v_first`; keep recurrent ownership sticky |
+| `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; keep recurrent ownership sticky for normal decode |
+| `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; middle-stage recurrent-only slices are valid |
+| `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes |
+| `mamba2` | see `target/family-certify/llama-parity-mamba2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes |
+| `rwkv6` | see `target/family-certify/llama-parity-rwkv6-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes; keep recurrent ownership sticky |
+| `rwkv7` | `Mungert/rwkv7-191M-world-GGUF` plus `target/family-certify/rwkv7-sideband-*.json` | `single-step`, `chain`, and dtype matrix passed | validated on sampled artifact | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes; activation-frame sideband carries layer-0 `v_first` |
 
 Raw run directories:
 
@@ -283,10 +283,11 @@ LLAMA_STAGE_BUILD_DIR=$PWD/.deps/llama-build/build-stage-abi-metal \
     --n-gpu-layers 999
 ```
 
-Latest local result: `21/21` rows passed. Every row restored into a different
+Latest local result: `39/39` rows passed. Every row restored into a different
 native sequence (`0 -> 1`), suffix-prefill-then-decode matched normal prefill,
-and repeated hits stayed stable. Recurrent payloads were non-zero for the
-`KvRecurrent` rows.
+and repeated hits stayed stable. `KvRecurrent` rows carried non-zero recurrent
+payloads. Pure recurrent families and recurrent-only stage ranges correctly
+recorded zero native KV bytes plus recurrent state.
 
 | Family | Model ref | Payload | Topology | Result | Seq remap | Source -> target seq | Suffix prefill | Payload bytes | Recurrent bytes | Repeated hits |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -311,6 +312,24 @@ and repeated hits stayed stable. Recurrent payloads were non-zero for the
 | Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `79430524` | `79037308` | pass |
 | Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `79168380` | `79037308` | pass |
 | Qwen3Next | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `79168380` | `79037308` | pass |
+| Jamba | `bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `10134156` | `10117772` | pass |
+| Jamba | `bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `10117772` | `10117772` | pass |
+| Jamba | `bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `10125964` | `10117772` | pass |
+| LFM2 | `meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `278796` | `82188` | pass |
+| LFM2 | `meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `147724` | `82188` | pass |
+| LFM2 | `meshllm/lfm2-350m-parity-q4_k_m-gguf:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `180492` | `82188` | pass |
+| Mamba | `mradermacher/mamba-130m-hf-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `2802268` | `2802268` | pass |
+| Mamba | `mradermacher/mamba-130m-hf-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `2802268` | `2802268` | pass |
+| Mamba | `mradermacher/mamba-130m-hf-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `2802268` | `2802268` | pass |
+| Mamba2 | `mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `24905244` | `24905244` | pass |
+| Mamba2 | `mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `24905244` | `24905244` | pass |
+| Mamba2 | `mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `24905244` | `24905244` | pass |
+| RWKV6 | `latestissue/rwkv-6-finch-1b6-gguf:Q4_K` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `12976732` | `12976732` | pass |
+| RWKV6 | `latestissue/rwkv-6-finch-1b6-gguf:Q4_K` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `12976732` | `12976732` | pass |
+| RWKV6 | `latestissue/rwkv-6-finch-1b6-gguf:Q4_K` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `12976732` | `12976732` | pass |
+| RWKV7 | `Mungert/rwkv7-191M-world-GGUF:Q4_K` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `2433340` | `2433340` | pass |
+| RWKV7 | `Mungert/rwkv7-191M-world-GGUF:Q4_K` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `2433340` | `2433340` | pass |
+| RWKV7 | `Mungert/rwkv7-191M-world-GGUF:Q4_K` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `2433340` | `2433340` | pass |
 - `target/family-certify/llama-parity-rwkv6-runtime-slice-3`
 - `target/family-certify/cache-smoke/reports`
 
@@ -318,15 +337,19 @@ and repeated hits stayed stable. Recurrent payloads were non-zero for the
 
 - Runtime-slice expansion now passes for `baichuan`, `bloom`, `command_r`,
   `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32` wire, `gpt2`,
-  `gptneox`, `granite`, `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`,
-  `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl`
-  text, `qwen2moe`, `qwen3moe`, `rwkv6`, `stablelm`, and `starcoder2`.
+  `gptneox`, `granite`, `internlm2`, `mistral3`, `mpt`, `olmo2`, `olmoe`,
+  `phi3`, `qwen2vl` text, `qwen3vl` text, `qwen2moe`, `qwen3moe`,
+  `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
+- `jamba`, `lfm2`, `mamba`, `mamba2`, `rwkv6`, and `rwkv7` now pass
+  `KvRecurrent` cache smoke for one-stage, split-middle, and split-final
+  restore into a different native sequence. Keep recurrent ownership sticky for
+  normal staged decode; the cache proof is for exact prefix restore.
 - `rwkv7` uses a wider activation-frame contract. Later RWKV7 layers depend on
   the layer-0 `v_first` tensor, so non-first stages receive hidden state plus a
   `v_first` activation sideband. The sampled 12-layer artifact now passes
-  two-stage, three-stage, and f32/f16/q8 wire checks.
+  two-stage, three-stage, f32/f16/q8 wire checks, and `KvRecurrent` cache smoke.
 - The old local `rwkv6` sample was not a GGUF artifact. Its files carry the
   legacy `fmgg` magic and fail GGUF metadata inspection, so the replacement
   candidate is `latestissue/rwkv-6-finch-1b6-gguf`. The replacement passed the

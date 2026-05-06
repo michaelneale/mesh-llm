@@ -338,6 +338,15 @@ activation producer, and late layers `30..31` plus `60..61` passed with
 deterministic synthetic upstream activations so only the owned stage range had
 to be materialized.
 
+The expanded source/target native-sequence correctness gate now covers both
+production cache shapes. The latest local Metal run passed `39/39` rows across
+Qwen3 dense, Llama, GLM4, Gemma3, OLMo, Falcon-H1, Jamba, LFM2, Mamba, Mamba2,
+RWKV6, RWKV7, and Qwen3Next for one-stage, split-middle, and split-final
+topologies. Every row restored from native sequence `0` into native sequence
+`1`, suffix-prefill-then-decode matched, repeated hits stayed stable, and
+recurrent-only ranges correctly recorded zero native KV bytes plus recurrent
+state.
+
 `state-handoff` reports distinguish behavioral exactness from byte-stable state
 re-export. `status = pass` means the restored cache state produced the same next
 token/output and repeat hits matched. `roundtrip_state_matches = false` means a

@@ -26,16 +26,16 @@ Last updated: 2026-05-06.
 | Gemma4 E4B | Supported | `unsloth/gemma-4-E4B-it-GGUF:Q4_K_M` | `layer_end=42`, `split=21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Use boundary `21`; do not cut at `12`, `14`, `24`, or `28`. | Token-id sideband required. |
 | Gemma3 | Supported | `ggml-org/gemma-3-1b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `1152` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Gemma2 | Supported | `bartowski/gemma-2-2b-it-GGUF:Q4_K_M` | `layer_end=26`, `splits=9,18`, activation width `2304` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
-| Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky. | Do not transfer recurrent state during normal decode. Exact state mobility rejected. |
+| Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
-| Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky until exact recurrent layer metadata is available. | Do not transfer recurrent state during normal decode. Exact state mobility rejected. |
+| Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky for normal decode until exact recurrent layer metadata is available. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 
 ## Text-Split Candidates
 
 These families now pass the cheap runtime-slice text lane, but are not promoted
-to the customer support matrix until cache smoke and reviewed topology records
-are updated.
+to the customer support matrix until the remaining cache smoke, reviewed
+topology records, and family-specific policy notes are updated.
 
 ```text
 Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
@@ -50,14 +50,15 @@ RWKV6, RWKV7, StableLM, StarCoder2
 | --- | --- |
 | Falcon-H1 | Recurrent state is too large to move. Keep recurrent range `0..24` sticky and transfer activation frames only. |
 | Gemma text | The sampled `gemma` architecture artifact only passed stage parity with `f32` activation wire. `f16` and `q8` changed the next-token argmax. |
-| Jamba | Hybrid attention/SSM text lane passed with recurrent range `0..28`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
-| Mamba | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
-| Mamba2 | Recurrent text lane passed with recurrent range `0..64`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
+| Jamba | Hybrid attention/SSM text lane and `KvRecurrent` cache smoke passed. Middle-stage cache records can have zero native KV bytes plus recurrent state; keep ownership sticky for normal decode. |
+| LFM2 | Recurrent text lane and `KvRecurrent` cache smoke passed. Keep ownership sticky for normal decode. |
+| Mamba | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
+| Mamba2 | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
 | Qwen2-MoE | Text lane passed; run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
 | Qwen3-MoE | Text lane passed; q8 activation wire validated. Run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
-| RWKV6 | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. Exact state mobility is rejected as too large. |
-| RWKV7 | Text lane passed after adding the layer-0 `v_first` activation sideband. Payloads are hidden state plus `v_first`, so budget RWKV7 activation handoffs at 2x hidden width and keep recurrent ownership sticky until `KvRecurrent` cache smoke passes. |
-| Qwen3Next | Same policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. |
+| RWKV6 | Recurrent text lane and `KvRecurrent` cache smoke passed with zero native KV bytes. Keep ownership sticky for normal decode. |
+| RWKV7 | Text lane passed after adding the layer-0 `v_first` activation sideband, and `KvRecurrent` cache smoke passed with zero native KV bytes. Payloads are hidden state plus `v_first`, so budget RWKV7 activation handoffs at 2x hidden width and keep recurrent ownership sticky for normal decode. |
+| Qwen3Next | Same normal-decode policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. Exact prefix cache restore uses `KvRecurrent`. |
 | DeepSeek3 | Package evidence uses selected stage parts only. The local gate covered real-input `0..1`, real-upstream expert layer `3..4`, and synthetic-upstream late layers `30..31` and `60..61`; full llama-server baseline requires a full GGUF and is intentionally not part of this package-only gate. |
 | Gemma4 E4B | Use split `21`. Avoid `12`, `14`, `24`, and `28`. Downstream slices need token-id sideband. |
 | MiniMax M2.7 | Sharded GGUF is supported. Materialize stage artifacts first; prompt tokenizer uses `stage-0.gguf` CPU-only. Do not keep full-model and staged-server residency alive together unless memory has been budgeted. |
@@ -98,13 +99,13 @@ activation handoff sizes for the recommended split.
 | Gemma4 E4B | 5,120 | Accepted, 0.50x Qwen |
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |
 | Gemma2 | 4,608 | Accepted, 0.93x Qwen |
-| Falcon-H1 | 4,096 | Rejected, 663.5x Qwen recurrent state |
+| Falcon-H1 | 4,096 | Accepted for `KvRecurrent` cache restore, 663.5x Qwen recurrent state |
 | Qwen2-MoE | 3,072 | Accepted, 0.25x Qwen |
 | Qwen3-MoE | 2,048 | Accepted, 1.00x Qwen |
-| RWKV6 | 4,096 | Rejected, 112.5x Qwen recurrent state |
+| RWKV6 | 4,096 | Accepted for `KvRecurrent` cache restore, 112.5x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
 | MiniMax M2.7 | 6,144 | Accepted, 2.21x Qwen |
-| Qwen3Next | 4,096 | Rejected, 685.2x Qwen recurrent state |
+| Qwen3Next | 4,096 | Accepted for `KvRecurrent` cache restore, 685.2x Qwen recurrent state |
 
 ## Neural Draft Status
 

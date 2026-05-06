@@ -50,14 +50,13 @@ impl KvStageIntegration {
                     )?;
                 }
                 StagePrefixCachePayload::KvRecurrent => {
-                    let Some(desc) = lookup.extra.kv_desc else {
-                        continue;
-                    };
-                    if let Some((kv, stats)) = lookup
-                        .payload
-                        .kv_bytes_timed()
-                        .context("reconstruct cached KV payload")?
-                    {
+                    if let (Some(desc), Some((kv, stats))) = (
+                        lookup.extra.kv_desc,
+                        lookup
+                            .payload
+                            .kv_bytes_timed()
+                            .context("reconstruct cached KV payload")?,
+                    ) {
                         add_reconstruct_stats(
                             &mut reconstruct_ms,
                             &mut reconstruct_bytes,
@@ -121,13 +120,15 @@ impl KvStageIntegration {
                     ExactStateExtra::default(),
                 ),
                 StagePrefixCachePayload::KvRecurrent => {
-                    let kv = runtime.export_kv_page(session_id, 0, token_count)?;
                     let recurrent = runtime.export_recurrent_state(session_id)?;
+                    let (kv_desc, kv) = match runtime.export_kv_page(session_id, 0, token_count) {
+                        Ok(kv) => (Some(kv.desc), kv.payload),
+                        Err(error) if is_absent_native_kv_page_export(&error) => (None, Vec::new()),
+                        Err(error) => return Err(error),
+                    };
                     (
-                        ExactStatePayload::kv_recurrent(kv.payload, recurrent),
-                        ExactStateExtra {
-                            kv_desc: Some(kv.desc),
-                        },
+                        ExactStatePayload::kv_recurrent(kv, recurrent),
+                        ExactStateExtra { kv_desc },
                     )
                 }
                 _ => return Ok(None),
@@ -153,6 +154,14 @@ impl KvStageIntegration {
         self.finish_record(&identity.page_id);
         result
     }
+}
+
+fn is_absent_native_kv_page_export(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("runtime memory type is not supported for native KV pages")
+            || message.contains("no KV cache layers selected by layer range")
+    })
 }
 
 impl StagePrefixCachePayload {

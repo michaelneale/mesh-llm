@@ -192,7 +192,7 @@ enum LocalStatePayload {
     FullState(Vec<u8>),
     RecurrentOnly(Vec<u8>),
     KvRecurrent {
-        kv_desc: RuntimeKvPageDesc,
+        kv_desc: Option<RuntimeKvPageDesc>,
         kv: Vec<u8>,
         recurrent: Vec<u8>,
     },
@@ -1643,7 +1643,7 @@ fn run_local_state_handoff(
         {
             state_payload.clone()
         } else {
-            export_local_state_payload(&mut restore, args, prefix.len() as u64)
+            export_local_state_payload_like(&mut restore, args, prefix.len() as u64, &state_payload)
                 .context("local state handoff restore export failed")?
         };
         let restore_export_ms = elapsed_ms(restore_export_started);
@@ -2039,20 +2039,43 @@ fn export_local_state_payload(
             session.export_recurrent_state()?,
         )),
         StatePayloadKind::KvRecurrent => {
-            let page = session.export_kv_page(
+            let recurrent = session.export_recurrent_state()?;
+            let (kv_desc, kv) = match session.export_kv_page(
                 args.state_layer_start as i32,
                 args.state_layer_end as i32,
                 0,
                 token_count,
-            )?;
-            let recurrent = session.export_recurrent_state()?;
+            ) {
+                Ok(page) => (Some(page.desc), page.payload),
+                Err(error) if is_absent_native_kv_page_export(&error) => (None, Vec::new()),
+                Err(error) => return Err(error),
+            };
             Ok(LocalStatePayload::KvRecurrent {
-                kv_desc: page.desc,
-                kv: page.payload,
+                kv_desc,
+                kv,
                 recurrent,
             })
         }
     }
+}
+
+fn export_local_state_payload_like(
+    session: &mut StageSession,
+    args: &BinaryStateHandoffConfig,
+    token_count: u64,
+    template: &LocalStatePayload,
+) -> Result<LocalStatePayload> {
+    if matches!(
+        template,
+        LocalStatePayload::KvRecurrent { kv_desc: None, .. }
+    ) {
+        return Ok(LocalStatePayload::KvRecurrent {
+            kv_desc: None,
+            kv: Vec::new(),
+            recurrent: session.export_recurrent_state()?,
+        });
+    }
+    export_local_state_payload(session, args, token_count)
 }
 
 fn measure_resident_state_bytes(
@@ -2111,10 +2134,20 @@ fn import_local_state_payload(
             kv,
             recurrent,
         } => {
-            session.import_kv_page(kv_desc, kv)?;
+            if let Some(kv_desc) = kv_desc {
+                session.import_kv_page(kv_desc, kv)?;
+            }
             session.import_recurrent_state_for_token_count(recurrent, token_count)
         }
     }
+}
+
+fn is_absent_native_kv_page_export(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        message.contains("runtime memory type is not supported for native KV pages")
+            || message.contains("no KV cache layers selected by layer range")
+    })
 }
 
 fn state_payload_kind_name(kind: StatePayloadKind) -> &'static str {
