@@ -250,7 +250,7 @@ pub(crate) fn telemetry_plugin_enabled(config: &MeshConfig) -> bool {
         .iter()
         .find(|entry| entry.name == TELEMETRY_PLUGIN_ID)
         .map(|entry| entry.enabled.unwrap_or(true))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Result<ResolvedPlugins> {
@@ -261,7 +261,7 @@ pub fn resolve_plugins(config: &MeshConfig, _host_mode: PluginHostMode) -> Resul
     let mut blobstore_enabled = true;
     let mut openai_endpoint_enabled = false;
     let mut openai_endpoint_url: Option<String> = None;
-    let mut telemetry_enabled = false;
+    let mut telemetry_enabled = true;
     for entry in &config.plugins {
         if names.insert(entry.name.clone(), ()).is_some() {
             bail!("Duplicate plugin entry '{}'", entry.name);

@@ -12,10 +12,10 @@ fn build_plugin(name: String) -> mesh_llm_plugin::SimplePlugin {
                 "mesh-telemetry",
                 crate::VERSION,
                 "Telemetry Metrics Plugin",
-                "Enables host-owned OTLP metrics export for local model lifecycle telemetry.",
+                "Enables host-owned OTLP metrics export for model lifecycle and routing telemetry.",
                 Some(
-                    "Configure [telemetry] and enable [[plugin]] name = \"telemetry\" \
-                     to export metrics-only OTLP telemetry.",
+                    "Configure [telemetry] to export metrics-only OTLP telemetry, \
+                     or set [[plugin]] name = \"telemetry\" enabled = false to opt out.",
                 ),
             ),
         ),

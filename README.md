@@ -277,7 +277,7 @@ Precedence rules:
 - Explicit `--ctx-size` overrides configured `ctx_size` for the selected startup models.
 - Plugin entries still live in the same file.
 
-Telemetry metrics export is opt-in. Enable the built-in `telemetry` plugin and configure `[telemetry]`; see [docs/plugins/telemetry.md](docs/plugins/telemetry.md).
+Telemetry metrics export is available through the built-in `telemetry` plugin. Configure `[telemetry]` to export metrics, or opt out with `[[plugin]] name = "telemetry" enabled = false`; see [docs/plugins/telemetry.md](docs/plugins/telemetry.md).
 
 Pinned startup notes:
 

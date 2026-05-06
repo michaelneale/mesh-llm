@@ -8,7 +8,7 @@ As implementation lands, this document should be updated to match the intended e
 
 Plugin-specific documentation:
 
-- [Telemetry](telemetry.md) - opt-in OTLP metrics-only local runtime telemetry
+- [Telemetry](telemetry.md) - built-in OTLP metrics-only runtime and routing telemetry
 
 The main goals are:
 

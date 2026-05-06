@@ -3759,7 +3759,15 @@ async fn run_auto(
             hardware::Metric::GpuFacts,
         ])
     };
-    let survey_telemetry = survey::SurveyTelemetry::start(&config, survey_hardware);
+    let survey_telemetry = survey::SurveyTelemetry::start(
+        &config,
+        survey_hardware,
+        survey::SurveyTelemetrySource {
+            node_id: node.id().fmt_short().to_string(),
+            node_role: if is_client { "client" } else { "worker" }.into(),
+        },
+    );
+    node.set_routing_telemetry_sink(survey_telemetry.routing_sink());
 
     // Advertise what we have on disk and what we want the mesh to serve
     node.set_available_models(local_models.clone()).await;

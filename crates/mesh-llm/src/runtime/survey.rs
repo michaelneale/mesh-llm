@@ -1,3 +1,6 @@
+use crate::network::metrics::{
+    AttemptOutcome, AttemptTarget, RequestOutcome, RequestService, RoutingTelemetrySink,
+};
 use crate::plugin;
 use crate::system::hardware;
 use anyhow::{Context, Result};
@@ -27,6 +30,26 @@ pub(super) struct SurveyTelemetry {
 struct SurveyTelemetryInner {
     queue: Arc<SurveyEventQueue>,
     hardware: hardware::HardwareSurvey,
+    source: SurveyTelemetrySource,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SurveyTelemetrySource {
+    pub(super) node_id: String,
+    pub(super) node_role: String,
+}
+
+impl SurveyTelemetrySource {
+    fn key_values(&self) -> Vec<KeyValue> {
+        let mut attrs = vec![
+            KeyValue::new("mesh_llm.source_node_role", self.node_role.clone()),
+            KeyValue::new("mesh_llm.service_version", crate::VERSION),
+        ];
+        if let Some(node_id) = redact_stable_id(&self.node_id) {
+            attrs.push(KeyValue::new("mesh_llm.source_node_id", node_id));
+        }
+        attrs
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -127,7 +150,11 @@ impl SurveyTelemetry {
         Self { inner: None }
     }
 
-    pub(super) fn start(config: &plugin::MeshConfig, hardware: hardware::HardwareSurvey) -> Self {
+    pub(super) fn start(
+        config: &plugin::MeshConfig,
+        hardware: hardware::HardwareSurvey,
+        source: SurveyTelemetrySource,
+    ) -> Self {
         let Some(settings) = SurveySettings::from_config(config) else {
             return Self::disabled();
         };
@@ -141,8 +168,17 @@ impl SurveyTelemetry {
         };
         spawn_survey_worker(queue.clone(), recorder);
         Self {
-            inner: Some(Arc::new(SurveyTelemetryInner { queue, hardware })),
+            inner: Some(Arc::new(SurveyTelemetryInner {
+                queue,
+                hardware,
+                source,
+            })),
         }
+    }
+
+    pub(super) fn routing_sink(&self) -> Option<Arc<dyn RoutingTelemetrySink>> {
+        self.inner.as_ref()?;
+        Some(Arc::new(self.clone()))
     }
 
     pub(super) fn model(&self, spec: SurveyModelSpec<'_>) -> SurveyLoadedModel {
@@ -198,6 +234,46 @@ impl SurveyTelemetry {
         if let Some(inner) = self.inner.as_ref() {
             inner.queue.push(event);
         }
+    }
+}
+
+impl RoutingTelemetrySink for SurveyTelemetry {
+    fn observe_inflight_requests(&self, current: u64) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        self.emit(SurveyEvent::InflightRequests {
+            source: inner.source.clone(),
+            current,
+        });
+    }
+
+    fn record_model_request(&self, model: Option<&str>, attempts: usize, outcome: RequestOutcome) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        self.emit(SurveyEvent::ModelRequest {
+            attrs: RequestAttributes::from_request(model, attempts, outcome, inner.source.clone()),
+        });
+    }
+
+    fn record_route_attempt(
+        &self,
+        model: Option<&str>,
+        target: &AttemptTarget,
+        outcome: AttemptOutcome,
+    ) {
+        let Some(inner) = self.inner.as_ref() else {
+            return;
+        };
+        self.emit(SurveyEvent::RouteAttempt {
+            attrs: RouteAttemptAttributes::from_attempt(
+                model,
+                target,
+                outcome,
+                inner.source.clone(),
+            ),
+        });
     }
 }
 
@@ -454,6 +530,119 @@ impl SurveyFailureReason {
 }
 
 #[derive(Clone, Debug)]
+struct RequestAttributes {
+    model: Option<String>,
+    source: SurveyTelemetrySource,
+    route_service: &'static str,
+    request_outcome: &'static str,
+    attempts: u64,
+}
+
+impl RequestAttributes {
+    fn from_request(
+        model: Option<&str>,
+        attempts: usize,
+        outcome: RequestOutcome,
+        source: SurveyTelemetrySource,
+    ) -> Self {
+        let (request_outcome, route_service) = match outcome {
+            RequestOutcome::Success(service) => ("success", request_service_label(service)),
+            RequestOutcome::Rejected(service) => ("rejected", request_service_label(service)),
+            RequestOutcome::Unavailable => ("unavailable", "unavailable"),
+        };
+        Self {
+            model: model.map(model_metric_value),
+            source,
+            route_service,
+            request_outcome,
+            attempts: attempts as u64,
+        }
+    }
+
+    fn key_values(&self) -> Vec<KeyValue> {
+        let mut attrs = self.source.key_values();
+        if let Some(model) = &self.model {
+            attrs.push(KeyValue::new("mesh_llm.model", model.clone()));
+        }
+        attrs.push(KeyValue::new("mesh_llm.route_service", self.route_service));
+        attrs.push(KeyValue::new(
+            "mesh_llm.request_outcome",
+            self.request_outcome,
+        ));
+        attrs.push(KeyValue::new(
+            "mesh_llm.route_attempt_count",
+            i64::try_from(self.attempts).unwrap_or(i64::MAX),
+        ));
+        attrs
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RouteAttemptAttributes {
+    model: Option<String>,
+    source: SurveyTelemetrySource,
+    target_kind: &'static str,
+    target_node_id: Option<String>,
+    attempt_outcome: &'static str,
+}
+
+impl RouteAttemptAttributes {
+    fn from_attempt(
+        model: Option<&str>,
+        target: &AttemptTarget,
+        outcome: AttemptOutcome,
+        source: SurveyTelemetrySource,
+    ) -> Self {
+        let (target_kind, target_node_id) = match target {
+            AttemptTarget::Local(_) => ("local", redact_stable_id(&source.node_id)),
+            AttemptTarget::Remote(node_id) => ("remote", redact_stable_id(node_id)),
+            AttemptTarget::Endpoint(_) => ("endpoint", None),
+        };
+        Self {
+            model: model.map(model_metric_value),
+            source,
+            target_kind,
+            target_node_id,
+            attempt_outcome: attempt_outcome_label(outcome),
+        }
+    }
+
+    fn key_values(&self) -> Vec<KeyValue> {
+        let mut attrs = self.source.key_values();
+        if let Some(model) = &self.model {
+            attrs.push(KeyValue::new("mesh_llm.model", model.clone()));
+        }
+        attrs.push(KeyValue::new("mesh_llm.target_kind", self.target_kind));
+        if let Some(node_id) = &self.target_node_id {
+            attrs.push(KeyValue::new("mesh_llm.target_node_id", node_id.clone()));
+        }
+        attrs.push(KeyValue::new(
+            "mesh_llm.attempt_outcome",
+            self.attempt_outcome,
+        ));
+        attrs
+    }
+}
+
+fn request_service_label(service: RequestService) -> &'static str {
+    match service {
+        RequestService::Local => "local",
+        RequestService::Remote => "remote",
+        RequestService::Endpoint => "endpoint",
+    }
+}
+
+fn attempt_outcome_label(outcome: AttemptOutcome) -> &'static str {
+    match outcome {
+        AttemptOutcome::Success => "success",
+        AttemptOutcome::Timeout => "timeout",
+        AttemptOutcome::Unavailable => "unavailable",
+        AttemptOutcome::ContextOverflow => "context_overflow",
+        AttemptOutcome::Rejected => "rejected",
+    }
+}
+
+#[derive(Clone, Debug)]
 enum SurveyEvent {
     LaunchSuccess {
         attrs: SurveyAttributes,
@@ -471,6 +660,16 @@ enum SurveyEvent {
     UnexpectedExit {
         attrs: SurveyAttributes,
         uptime_s: f64,
+    },
+    ModelRequest {
+        attrs: RequestAttributes,
+    },
+    RouteAttempt {
+        attrs: RouteAttemptAttributes,
+    },
+    InflightRequests {
+        source: SurveyTelemetrySource,
+        current: u64,
     },
 }
 
@@ -526,6 +725,9 @@ struct SurveyRecorder {
     loaded_models: Gauge<u64>,
     model_loaded: Gauge<u64>,
     model_context_length: Gauge<u64>,
+    model_request_total: Counter<u64>,
+    route_attempt_total: Counter<u64>,
+    requests_inflight: Gauge<u64>,
     launch_duration_ms: Histogram<f64>,
     uptime_s: Histogram<f64>,
     loaded_count: u64,
@@ -593,6 +795,20 @@ impl SurveyRecorder {
                 .with_description("Effective context length for a loaded local model.")
                 .with_unit("{token}")
                 .build(),
+            model_request_total: meter
+                .u64_counter("mesh_llm_model_request_total")
+                .with_description("Requests fronted by this node for a model.")
+                .build(),
+            route_attempt_total: meter
+                .u64_counter("mesh_llm_route_attempt_total")
+                .with_description(
+                    "Routing attempts from this node to local, remote, or endpoint targets.",
+                )
+                .build(),
+            requests_inflight: meter
+                .u64_gauge("mesh_llm_requests_inflight")
+                .with_description("Current in-flight requests fronted by this node.")
+                .build(),
             launch_duration_ms: meter
                 .f64_histogram("mesh_llm_model_launch_duration_ms")
                 .with_description("Local model launch duration.")
@@ -650,6 +866,17 @@ impl SurveyRecorder {
                     .record(self.loaded_count, &service_version_attrs());
                 self.model_loaded.record(0, &kv);
             }
+            SurveyEvent::ModelRequest { attrs } => {
+                let kv = attrs.key_values();
+                self.model_request_total.add(1, &kv);
+            }
+            SurveyEvent::RouteAttempt { attrs } => {
+                let kv = attrs.key_values();
+                self.route_attempt_total.add(1, &kv);
+            }
+            SurveyEvent::InflightRequests { source, current } => {
+                self.requests_inflight.record(current, &source.key_values());
+            }
         }
     }
 }
@@ -663,6 +890,13 @@ mod tests {
     use super::*;
     use crate::plugin::{MeshConfig, PluginConfigEntry, TelemetryConfig, TelemetryMetricsConfig};
     use std::collections::{BTreeMap, HashMap};
+
+    fn test_source() -> SurveyTelemetrySource {
+        SurveyTelemetrySource {
+            node_id: "source-node-raw".into(),
+            node_role: "client".into(),
+        }
+    }
 
     fn survey_config() -> MeshConfig {
         MeshConfig {
@@ -686,13 +920,33 @@ mod tests {
     }
 
     #[test]
-    fn settings_require_survey_plugin_opt_in() {
+    fn settings_default_to_enabled_with_endpoint() {
         let mut config = survey_config();
         config.plugins.clear();
+        assert!(SurveySettings::from_config_with_env(&config, |_| None).is_some());
+    }
+
+    #[test]
+    fn settings_disable_when_plugin_opted_out() {
+        let mut config = survey_config();
+        config.plugins = vec![PluginConfigEntry {
+            name: plugin::TELEMETRY_PLUGIN_ID.into(),
+            enabled: Some(false),
+            command: None,
+            args: Vec::new(),
+            url: None,
+        }];
         assert!(SurveySettings::from_config_with_env(&config, |_| {
             Some("https://env.example.com".into())
         })
         .is_none());
+    }
+
+    #[test]
+    fn settings_disable_when_telemetry_config_opted_out() {
+        let mut config = survey_config();
+        config.telemetry.enabled = Some(false);
+        assert!(SurveySettings::from_config_with_env(&config, |_| None).is_none());
     }
 
     #[test]
@@ -814,6 +1068,98 @@ mod tests {
             Some("skippy")
         );
         assert_eq!(kv.get("mesh_llm.is_soc").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn request_attributes_capture_model_service_and_attempt_count() {
+        let attrs = RequestAttributes::from_request(
+            Some("/private/models/Qwen3-8B-Q4_K_M.gguf"),
+            2,
+            RequestOutcome::Success(RequestService::Remote),
+            test_source(),
+        );
+        let kv: HashMap<_, _> = attrs
+            .key_values()
+            .into_iter()
+            .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+            .collect();
+
+        assert_eq!(
+            kv.get("mesh_llm.model").map(String::as_str),
+            Some("Qwen3-8B-Q4_K_M.gguf")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.route_service").map(String::as_str),
+            Some("remote")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.request_outcome").map(String::as_str),
+            Some("success")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.route_attempt_count").map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.source_node_role").map(String::as_str),
+            Some("client")
+        );
+    }
+
+    #[test]
+    fn route_attempt_attributes_hash_source_and_remote_node_ids() {
+        let attrs = RouteAttemptAttributes::from_attempt(
+            Some("Qwen/Qwen3-8B-GGUF:Q4_K_M"),
+            &AttemptTarget::Remote("remote-node-raw".into()),
+            AttemptOutcome::Timeout,
+            test_source(),
+        );
+        let kv: HashMap<_, _> = attrs
+            .key_values()
+            .into_iter()
+            .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+            .collect();
+
+        assert_eq!(
+            kv.get("mesh_llm.model").map(String::as_str),
+            Some("Qwen/Qwen3-8B-GGUF:Q4_K_M")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.target_kind").map(String::as_str),
+            Some("remote")
+        );
+        assert_eq!(
+            kv.get("mesh_llm.attempt_outcome").map(String::as_str),
+            Some("timeout")
+        );
+        let source_node_id = kv.get("mesh_llm.source_node_id").expect("source node id");
+        assert!(source_node_id.starts_with("sha256:"));
+        assert!(!source_node_id.contains("source-node-raw"));
+        let target_node_id = kv.get("mesh_llm.target_node_id").expect("target node id");
+        assert!(target_node_id.starts_with("sha256:"));
+        assert!(!target_node_id.contains("remote-node-raw"));
+    }
+
+    #[test]
+    fn route_attempt_attributes_do_not_export_endpoint_urls() {
+        let attrs = RouteAttemptAttributes::from_attempt(
+            None,
+            &AttemptTarget::Endpoint("https://private-endpoint.example.com/v1".into()),
+            AttemptOutcome::Rejected,
+            test_source(),
+        );
+        let kv: HashMap<_, _> = attrs
+            .key_values()
+            .into_iter()
+            .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+            .collect();
+
+        assert_eq!(
+            kv.get("mesh_llm.target_kind").map(String::as_str),
+            Some("endpoint")
+        );
+        assert!(!kv.contains_key("mesh_llm.target_node_id"));
+        assert!(!kv.values().any(|value| value.contains("private-endpoint")));
     }
 
     #[test]

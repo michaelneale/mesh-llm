@@ -17,7 +17,7 @@ pub(crate) async fn run_plugin_command(command: &PluginCommand, cli: &Cli) -> Re
         PluginCommand::Install { name } if name == plugin::TELEMETRY_PLUGIN_ID => {
             eprintln!("Telemetry is built into mesh-llm. Nothing to install.");
             eprintln!(
-                "Enable it with [[plugin]] name = \"telemetry\" enabled = true and configure [telemetry]."
+                "Configure [telemetry] to export metrics, or disable it with [[plugin]] name = \"telemetry\" enabled = false."
             );
         }
         PluginCommand::Install { name } => {
