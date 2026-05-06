@@ -20,6 +20,8 @@ const SPLIT_PARTICIPANT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const SPLIT_PARTICIPANT_STABLE_FOR: Duration = Duration::from_secs(2);
 const SPLIT_DEFAULT_MIN_PARTICIPANTS: usize = 2;
 const SPLIT_INITIAL_SHUTDOWN_GENERATION: u64 = 1;
+const RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR: u64 = 11;
+const RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR: u64 = 10;
 
 pub(super) enum RuntimeEvent {
     Exited { model: String, port: u16 },
@@ -135,6 +137,18 @@ pub(super) struct LocalRuntimeModelStartSpec<'a> {
 pub(super) enum SplitRuntimeStart {
     Started(SplitRuntimeGenerationHandle),
     Standby { coordinator: iroh::EndpointId },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StartupRuntimePlan {
+    Local,
+    Split { reason: SplitRuntimeReason },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SplitRuntimeReason {
+    Forced,
+    LocalCapacity,
 }
 
 pub(super) struct SplitRuntimeGenerationHandle {
@@ -325,12 +339,44 @@ pub(super) async fn start_runtime_local_model(
         .pinned_gpu
         .map(|gpu| gpu.vram_bytes)
         .unwrap_or_else(|| spec.node.vram_bytes());
+    let required_bytes = runtime_model_required_bytes(model_bytes);
     anyhow::ensure!(
-        my_vram >= (model_bytes as f64 * 1.1) as u64,
-        "runtime load only supports models that fit locally on this node"
+        my_vram >= required_bytes,
+        "runtime load only supports models that fit locally on this node; model requires {}, local capacity is {}",
+        format_gb(required_bytes),
+        format_gb(my_vram)
     );
 
     start_runtime_skippy_model(spec, model_name).await
+}
+
+pub(super) fn startup_runtime_plan(
+    explicit_split: bool,
+    local_vram_bytes: u64,
+    model_bytes: u64,
+) -> StartupRuntimePlan {
+    if explicit_split {
+        return StartupRuntimePlan::Split {
+            reason: SplitRuntimeReason::Forced,
+        };
+    }
+    if model_fits_runtime_capacity(model_bytes, local_vram_bytes) {
+        StartupRuntimePlan::Local
+    } else {
+        StartupRuntimePlan::Split {
+            reason: SplitRuntimeReason::LocalCapacity,
+        }
+    }
+}
+
+pub(super) fn model_fits_runtime_capacity(model_bytes: u64, local_vram_bytes: u64) -> bool {
+    local_vram_bytes >= runtime_model_required_bytes(model_bytes)
+}
+
+pub(super) fn runtime_model_required_bytes(model_bytes: u64) -> u64 {
+    model_bytes
+        .saturating_mul(RUNTIME_MODEL_FIT_HEADROOM_NUMERATOR)
+        .div_ceil(RUNTIME_MODEL_FIT_HEADROOM_DENOMINATOR)
 }
 
 pub(super) async fn start_runtime_split_model(
@@ -342,6 +388,7 @@ pub(super) async fn start_runtime_split_model(
         spec.node,
         model_ref,
         model_ref,
+        &package,
         spec.pinned_gpu.map(|gpu| gpu.vram_bytes),
         Duration::from_secs(30),
     )
@@ -443,6 +490,7 @@ enum SplitParticipantExclusionReason {
     Client,
     MissingVram,
     MissingModelInterest,
+    MissingModelSource,
 }
 
 impl SplitParticipantExclusionReason {
@@ -451,6 +499,7 @@ impl SplitParticipantExclusionReason {
             Self::Client => "client",
             Self::MissingVram => "missing_vram",
             Self::MissingModelInterest => "missing_model_interest",
+            Self::MissingModelSource => "missing_model_source",
         }
     }
 }
@@ -538,6 +587,21 @@ async fn load_split_runtime_generation(
             upstream: None,
             downstream: downstream.clone(),
         };
+        prepare_split_stage(spec.node, stage.node_id, load.clone()).await?;
+        wait_for_split_stage_source(
+            spec.node,
+            stage.node_id,
+            &load,
+            Duration::from_secs(30 * 60),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "prepare split stage {} on {}",
+                stage.stage_id,
+                stage.node_id.fmt_short()
+            )
+        })?;
         let response = if stage.node_id == spec.node.id() {
             spec.node
                 .send_local_stage_control(skippy::StageControlRequest::Load(load))
@@ -661,6 +725,7 @@ struct RuntimeSliceStagePlan {
     node_id: iroh::EndpointId,
     layer_start: u32,
     layer_end: u32,
+    parameter_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -762,6 +827,7 @@ impl SplitTopologyCoordinator {
             &self.node,
             &self.model_name,
             &self.model_ref,
+            &self.package,
             self.pinned_gpu.as_ref().map(|gpu| gpu.vram_bytes),
         )
         .await;
@@ -996,6 +1062,7 @@ async fn wait_for_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
     timeout: Duration,
 ) -> Result<Vec<SplitParticipant>> {
@@ -1006,7 +1073,8 @@ async fn wait_for_split_participants(
     let mut stable_since = tokio::time::Instant::now();
     loop {
         let snapshot =
-            collect_split_participants(node, model_name, model_ref, local_vram_override).await;
+            collect_split_participants(node, model_name, model_ref, package, local_vram_override)
+                .await;
         let signature = split_participant_signature(&snapshot.participants);
         let now = tokio::time::Instant::now();
         if signature != last_signature {
@@ -1062,6 +1130,7 @@ async fn collect_split_participants(
     node: &mesh::Node,
     model_name: &str,
     model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
     local_vram_override: Option<u64>,
 ) -> SplitParticipantSnapshot {
     let mut participants = vec![SplitParticipant {
@@ -1099,7 +1168,15 @@ async fn collect_split_participants(
                 .explicit_model_interests
                 .iter()
                 .any(|model| model == model_ref);
-        if wants_model {
+        if !wants_model {
+            excluded.push(SplitParticipantExclusion {
+                node_id: peer.id,
+                reason: SplitParticipantExclusionReason::MissingModelInterest,
+            });
+            continue;
+        }
+
+        if split_peer_source_available(node, peer.id, model_ref, package).await {
             participants.push(SplitParticipant {
                 node_id: peer.id,
                 vram_bytes: peer.vram_bytes,
@@ -1108,7 +1185,7 @@ async fn collect_split_participants(
         } else {
             excluded.push(SplitParticipantExclusion {
                 node_id: peer.id,
-                reason: SplitParticipantExclusionReason::MissingModelInterest,
+                reason: SplitParticipantExclusionReason::MissingModelSource,
             });
         }
     }
@@ -1120,6 +1197,30 @@ async fn collect_split_participants(
         participants,
         excluded,
     }
+}
+
+async fn split_peer_source_available(
+    node: &mesh::Node,
+    peer_id: iroh::EndpointId,
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+) -> bool {
+    let request = skippy::StageInventoryRequest {
+        model_id: model_ref.to_string(),
+        package_ref: package.package_ref.clone(),
+        manifest_sha256: package.manifest_sha256.clone(),
+    };
+    let result = node
+        .send_stage_control(peer_id, skippy::StageControlRequest::Inventory(request))
+        .await;
+    let Ok(skippy::StageControlResponse::Inventory(inventory)) = result else {
+        return false;
+    };
+    inventory
+        .available_ranges
+        .iter()
+        .chain(inventory.ready_ranges.iter())
+        .any(|range| range.layer_start == 0 && range.layer_end >= package.layer_count)
 }
 
 fn split_participant_signature(participants: &[SplitParticipant]) -> Vec<(String, u64)> {
@@ -1234,10 +1335,12 @@ fn plan_runtime_slice_topology(
                 node_id,
                 layer_start: stage.layer_start,
                 layer_end: stage.layer_end,
+                parameter_bytes: stage.parameter_bytes,
             })
         })
         .collect::<Result<Vec<_>>>()?;
     stages.sort_by_key(|stage| stage.stage_index);
+    validate_split_capacity(model_ref, package, participants, &stages)?;
     tracing::info!(
         topology_id,
         model_ref,
@@ -1245,6 +1348,51 @@ fn plan_runtime_slice_topology(
         "planned split runtime topology"
     );
     Ok(stages)
+}
+
+fn validate_split_capacity(
+    model_ref: &str,
+    package: &skippy::SkippyPackageIdentity,
+    participants: &[SplitParticipant],
+    stages: &[RuntimeSliceStagePlan],
+) -> Result<()> {
+    let total_vram_bytes = participants
+        .iter()
+        .map(|participant| participant.vram_bytes)
+        .sum::<u64>();
+    let required_total_bytes = runtime_model_required_bytes(package.source_model_bytes);
+    anyhow::ensure!(
+        total_vram_bytes >= required_total_bytes,
+        "aggregate split capacity for {model_ref} requires {}, mesh has {} across {} participant(s)",
+        format_gb(required_total_bytes),
+        format_gb(total_vram_bytes),
+        participants.len()
+    );
+
+    let vram_by_node = participants
+        .iter()
+        .map(|participant| (participant.node_id, participant.vram_bytes))
+        .collect::<HashMap<_, _>>();
+    for stage in stages {
+        let node_vram = vram_by_node
+            .get(&stage.node_id)
+            .copied()
+            .unwrap_or_default();
+        let required_stage_bytes = runtime_model_required_bytes(stage.parameter_bytes);
+        anyhow::ensure!(
+            node_vram >= required_stage_bytes,
+            "{} assigned to {} for {model_ref} requires {}, which exceeds node capacity {}",
+            stage.stage_id,
+            stage.node_id.fmt_short(),
+            format_gb(required_stage_bytes),
+            format_gb(node_vram)
+        );
+    }
+    Ok(())
+}
+
+fn format_gb(bytes: u64) -> String {
+    format!("{:.1}GB", bytes as f64 / 1e9)
 }
 
 fn split_stage_plan_labels(stages: &[RuntimeSliceStagePlan]) -> Vec<String> {
@@ -1337,6 +1485,107 @@ fn split_stage0_config(
     };
     config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
     config
+}
+
+async fn prepare_split_stage(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: skippy::StageLoadRequest,
+) -> Result<()> {
+    let prepare = skippy::StagePrepareRequest {
+        load,
+        coordinator_id: Some(node.id()),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Prepare(prepare))
+            .await
+    } else {
+        node.send_stage_control(stage_node_id, skippy::StageControlRequest::Prepare(prepare))
+            .await
+    }?;
+    let skippy::StageControlResponse::PrepareAccepted(accepted) = response else {
+        anyhow::bail!("unexpected response while preparing split stage");
+    };
+    anyhow::ensure!(
+        accepted.accepted,
+        "stage {} rejected prepare: {}",
+        accepted.status.stage_id,
+        accepted
+            .error
+            .unwrap_or_else(|| "unknown error".to_string())
+    );
+    Ok(())
+}
+
+async fn wait_for_split_stage_source(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let inventory = query_stage_inventory(node, stage_node_id, load).await?;
+        if inventory
+            .available_ranges
+            .iter()
+            .chain(inventory.ready_ranges.iter())
+            .any(|range| range.layer_start <= load.layer_start && range.layer_end >= load.layer_end)
+        {
+            tracing::info!(
+                topology_id = %load.topology_id,
+                run_id = %load.run_id,
+                stage_id = %load.stage_id,
+                node = %stage_node_id.fmt_short(),
+                "split stage source is available; loading runtime"
+            );
+            return Ok(());
+        }
+        if let Some(failed) = inventory.preparing_ranges.iter().find(|status| {
+            status.stage_id == load.stage_id
+                && matches!(status.state, skippy::StagePreparationState::Failed)
+        }) {
+            anyhow::bail!(
+                "stage {} source prepare failed: {}",
+                load.stage_id,
+                failed.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting for stage {} source availability after {:?}",
+                load.stage_id,
+                timeout
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn query_stage_inventory(
+    node: &mesh::Node,
+    stage_node_id: iroh::EndpointId,
+    load: &skippy::StageLoadRequest,
+) -> Result<skippy::StageLayerInventory> {
+    let request = skippy::StageInventoryRequest {
+        model_id: load.model_id.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+    };
+    let response = if stage_node_id == node.id() {
+        node.send_local_stage_control(skippy::StageControlRequest::Inventory(request))
+            .await
+    } else {
+        node.send_stage_control(
+            stage_node_id,
+            skippy::StageControlRequest::Inventory(request),
+        )
+        .await
+    }?;
+    let skippy::StageControlResponse::Inventory(inventory) = response else {
+        anyhow::bail!("unexpected response while querying stage inventory");
+    };
+    Ok(inventory)
 }
 
 fn split_stage_topology_instance(
@@ -1558,6 +1807,139 @@ mod tests {
     }
 
     #[test]
+    fn startup_runtime_plan_auto_splits_when_model_exceeds_local_capacity() {
+        assert_eq!(
+            startup_runtime_plan(false, 3_000_000_000, 4_800_000_000),
+            StartupRuntimePlan::Split {
+                reason: SplitRuntimeReason::LocalCapacity
+            }
+        );
+    }
+
+    #[test]
+    fn startup_runtime_plan_keeps_local_when_model_fits_without_split_flag() {
+        assert_eq!(
+            startup_runtime_plan(false, 6_000_000_000, 4_800_000_000),
+            StartupRuntimePlan::Local
+        );
+    }
+
+    #[test]
+    fn startup_runtime_plan_respects_explicit_split_for_fitting_model() {
+        assert_eq!(
+            startup_runtime_plan(true, 6_000_000_000, 4_800_000_000),
+            StartupRuntimePlan::Split {
+                reason: SplitRuntimeReason::Forced
+            }
+        );
+    }
+
+    #[test]
+    fn split_topology_planner_accepts_constrained_nodes_with_enough_aggregate_capacity() {
+        let participants = vec![
+            SplitParticipant {
+                node_id: make_id(1),
+                vram_bytes: 3_000_000_000,
+                first_joined_mesh_ts: None,
+            },
+            SplitParticipant {
+                node_id: make_id(2),
+                vram_bytes: 3_000_000_000,
+                first_joined_mesh_ts: None,
+            },
+        ];
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 4_800_000_000,
+            layer_count: 48,
+            ..package(48)
+        };
+
+        let stages = plan_runtime_slice_topology(
+            "topology-test",
+            "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+            &package,
+            &participants,
+        )
+        .expect("constrained nodes should form a split topology");
+
+        assert_eq!(stages.len(), 2);
+        assert_eq!(
+            stages
+                .iter()
+                .map(|stage| (stage.layer_start, stage.layer_end))
+                .collect::<Vec<_>>(),
+            vec![(0, 24), (24, 48)]
+        );
+    }
+
+    #[test]
+    fn split_topology_planner_rejects_insufficient_aggregate_capacity() {
+        let participants = vec![
+            SplitParticipant {
+                node_id: make_id(1),
+                vram_bytes: 2_000_000_000,
+                first_joined_mesh_ts: None,
+            },
+            SplitParticipant {
+                node_id: make_id(2),
+                vram_bytes: 2_000_000_000,
+                first_joined_mesh_ts: None,
+            },
+        ];
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 4_800_000_000,
+            layer_count: 48,
+            ..package(48)
+        };
+
+        let error = plan_runtime_slice_topology(
+            "topology-test",
+            "Hermes-2-Pro-Mistral-7B-Q4_K_M",
+            &package,
+            &participants,
+        )
+        .expect_err("aggregate split capacity should be enforced")
+        .to_string();
+
+        assert!(error.contains("aggregate split capacity"));
+        assert!(error.contains("requires 5.3GB"));
+        assert!(error.contains("has 4.0GB"));
+    }
+
+    #[test]
+    fn split_topology_planner_rejects_stage_that_exceeds_participant_capacity() {
+        let participants = vec![
+            SplitParticipant {
+                node_id: make_id(1),
+                vram_bytes: 900,
+                first_joined_mesh_ts: None,
+            },
+            SplitParticipant {
+                node_id: make_id(2),
+                vram_bytes: 200,
+                first_joined_mesh_ts: None,
+            },
+        ];
+        let package = skippy::SkippyPackageIdentity {
+            source_model_bytes: 1_000,
+            layer_count: 10,
+            ..package(10)
+        };
+
+        let error = plan_runtime_slice_topology(
+            "topology-test",
+            "tiny-capacity-test",
+            &package,
+            &participants,
+        )
+        .expect_err("per-stage split capacity should be enforced")
+        .to_string();
+
+        assert!(error.contains("stage-1"));
+        assert!(error.contains("exceeds node capacity"));
+    }
+
+    #[test]
     fn split_participant_signature_includes_vram_for_stability() {
         let node_id = make_id(9);
         let first = vec![SplitParticipant {
@@ -1595,6 +1977,7 @@ mod tests {
                 node_id: make_id(1),
                 layer_start: 0,
                 layer_end: 40,
+                parameter_bytes: 40_000_000,
             }],
         );
         let candidate = SplitTopologyGeneration::new(
@@ -1609,6 +1992,7 @@ mod tests {
                     node_id: make_id(1),
                     layer_start: 0,
                     layer_end: 16,
+                    parameter_bytes: 16_000_000,
                 },
                 RuntimeSliceStagePlan {
                     stage_id: "stage-1".into(),
@@ -1616,6 +2000,7 @@ mod tests {
                     node_id: make_id(2),
                     layer_start: 16,
                     layer_end: 40,
+                    parameter_bytes: 24_000_000,
                 },
             ],
         );
@@ -1634,6 +2019,7 @@ mod tests {
             node_id: make_id(1),
             layer_start: 0,
             layer_end: 40,
+            parameter_bytes: 40_000_000,
         }];
         let participants = vec![SplitParticipant {
             node_id: make_id(1),

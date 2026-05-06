@@ -2,7 +2,7 @@ use std::{
     collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, IsTerminal, Read, Write},
     net::{Shutdown, SocketAddr, TcpStream},
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -999,7 +999,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     };
     let interrupt = install_prompt_interrupt_handler()?;
     let mut history = PromptHistory::load(args.history_path.as_deref())?;
-    let mut editor = prompt_editor(&history)?;
+    let mut prompt_input = prompt_input(&history)?;
     if args.log_context.is_some() {
         eprintln!(
             "Type a prompt, use Up/Down for history, Ctrl-C to interrupt generation, :history, :logs [name] [lines], :rerun N, :noappend, :append, or :quit."
@@ -1012,7 +1012,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
     let mut live_session = PromptLiveSession::default();
     let mut append_transcript = true;
     loop {
-        let Some(input) = read_history_prompt(&mut editor, "> ")? else {
+        let Some(input) = read_history_prompt(&mut prompt_input, "> ")? else {
             break;
         };
         let raw_input = input.trim_end_matches(['\r', '\n']);
@@ -1110,7 +1110,7 @@ pub fn binary_repl(args: BinaryReplArgs) -> Result<()> {
             continue;
         }
         history.push(input)?;
-        let _ = editor.add_history_entry(input);
+        prompt_input.add_history_entry(input);
         let prompt_result = run_prompt(PromptRun {
             args: &args,
             tokenizer: &tokenizer,
@@ -3359,6 +3359,26 @@ impl PromptHistory {
     }
 }
 
+enum PromptInput {
+    Interactive(DefaultEditor),
+    Stdin(io::Lines<BufReader<io::Stdin>>),
+}
+
+impl PromptInput {
+    fn add_history_entry(&mut self, input: &str) {
+        if let Self::Interactive(editor) = self {
+            let _ = editor.add_history_entry(input);
+        }
+    }
+}
+
+fn prompt_input(history: &PromptHistory) -> Result<PromptInput> {
+    if io::stdin().is_terminal() {
+        return Ok(PromptInput::Interactive(prompt_editor(history)?));
+    }
+    Ok(PromptInput::Stdin(BufReader::new(io::stdin()).lines()))
+}
+
 fn prompt_editor(history: &PromptHistory) -> Result<DefaultEditor> {
     let mut editor = DefaultEditor::new().context("create prompt line editor")?;
     for prompt in &history.prompts {
@@ -3367,18 +3387,25 @@ fn prompt_editor(history: &PromptHistory) -> Result<DefaultEditor> {
     Ok(editor)
 }
 
-fn read_history_prompt(editor: &mut DefaultEditor, prompt: &str) -> Result<Option<String>> {
-    match editor.readline(prompt) {
-        Ok(input) => Ok(Some(input)),
-        Err(ReadlineError::Interrupted) => {
-            println!("^C");
-            Ok(Some(String::new()))
-        }
-        Err(ReadlineError::Eof) => {
-            println!();
-            Ok(None)
-        }
-        Err(error) => Err(anyhow!(error)).context("read prompt line"),
+fn read_history_prompt(input: &mut PromptInput, prompt: &str) -> Result<Option<String>> {
+    match input {
+        PromptInput::Interactive(editor) => match editor.readline(prompt) {
+            Ok(input) => Ok(Some(input)),
+            Err(ReadlineError::Interrupted) => {
+                println!("^C");
+                Ok(Some(String::new()))
+            }
+            Err(ReadlineError::Eof) => {
+                println!();
+                Ok(None)
+            }
+            Err(error) => Err(anyhow!(error)).context("read prompt line"),
+        },
+        PromptInput::Stdin(lines) => match lines.next() {
+            Some(Ok(line)) => Ok(Some(line)),
+            Some(Err(error)) => Err(error).context("read prompt line from stdin"),
+            None => Ok(None),
+        },
     }
 }
 

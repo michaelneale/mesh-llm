@@ -10,11 +10,12 @@ use self::discovery::{nostr_rediscovery, start_new_mesh};
 use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
-    remove_runtime_local_target, remove_serving_assignment, resolved_model_name,
-    set_advertised_model_context, start_runtime_local_model, start_runtime_split_model,
+    model_fits_runtime_capacity, remove_runtime_local_target, remove_serving_assignment,
+    resolved_model_name, runtime_model_required_bytes, set_advertised_model_context,
+    start_runtime_local_model, start_runtime_split_model, startup_runtime_plan,
     stop_split_generation_cleanup, withdraw_advertised_model, LocalRuntimeModelHandle,
     LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent, SplitCoordinatorAck,
-    SplitRuntimeStart,
+    SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
@@ -872,6 +873,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         flash_attention_override: flash_attention,
         slots,
     };
+    let local_capacity = pinned_gpu
+        .as_ref()
+        .map(|gpu| gpu.vram_bytes)
+        .unwrap_or_else(|| node.vram_bytes());
+    let model_bytes = election::total_model_bytes(&model_path);
+    let runtime_plan = startup_runtime_plan(split, local_capacity, model_bytes);
     let (
         mut loaded_name,
         mut handle,
@@ -879,45 +886,60 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mut split_cleanup,
         mut split_event_rx,
         mut coordinator_task,
-    ) = if split {
-        match start_runtime_split_model(start_spec, &model_ref).await {
-            Ok(SplitRuntimeStart::Started(mut loaded)) => (
-                loaded.loaded_name,
-                loaded.handle,
-                loaded.death_rx,
-                loaded.cleanup.take(),
-                loaded.coordinator_rx.take(),
-                loaded.coordinator_task.take(),
-            ),
-            Ok(SplitRuntimeStart::Standby { coordinator }) => {
-                drop(startup_load_guard);
+    ) = match runtime_plan {
+        StartupRuntimePlan::Split { reason } => {
+            if reason == SplitRuntimeReason::LocalCapacity {
+                let required_bytes = runtime_model_required_bytes(model_bytes);
                 let _ = emit_event(OutputEvent::Info {
                     message: format!(
-                        "Split runtime coordinator is {}; standing by for stage assignment",
-                        coordinator.fmt_short()
+                        "Model {model_name} exceeds local runtime capacity; attempting split runtime"
                     ),
-                    context: Some(format!("model={model_ref}")),
+                    context: Some(format!(
+                        "model={model_name} local_capacity_gb={:.1} required_capacity_gb={:.1} model_size_gb={:.1}",
+                        local_capacity as f64 / 1e9,
+                        required_bytes as f64 / 1e9,
+                        model_bytes as f64 / 1e9
+                    )),
                 });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
-                }
-                return;
             }
-            Err(err) => {
-                let _ = emit_event(OutputEvent::Error {
-                    message: format!("Failed to start model {model_name}: {err:#}"),
-                    context: Some(format!("model={model_name}")),
-                });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
+            match start_runtime_split_model(start_spec, &model_ref).await {
+                Ok(SplitRuntimeStart::Started(mut loaded)) => (
+                    loaded.loaded_name,
+                    loaded.handle,
+                    loaded.death_rx,
+                    loaded.cleanup.take(),
+                    loaded.coordinator_rx.take(),
+                    loaded.coordinator_task.take(),
+                ),
+                Ok(SplitRuntimeStart::Standby { coordinator }) => {
+                    drop(startup_load_guard);
+                    let _ = emit_event(OutputEvent::Info {
+                        message: format!(
+                            "Split runtime coordinator is {}; standing by for stage assignment",
+                            coordinator.fmt_short()
+                        ),
+                        context: Some(format!("model={model_ref}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
                 }
-                return;
+                Err(err) => {
+                    let _ = emit_event(OutputEvent::Error {
+                        message: format!("Failed to start model {model_name}: {err:#}"),
+                        context: Some(format!("model={model_name}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
+                }
             }
         }
-    } else {
-        match start_runtime_local_model(start_spec).await {
+        StartupRuntimePlan::Local => match start_runtime_local_model(start_spec).await {
             Ok((loaded_name, handle, death_rx)) => {
                 (loaded_name, handle, death_rx, None, None, None)
             }
@@ -932,7 +954,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 }
                 return;
             }
-        }
+        },
     };
     drop(startup_load_guard);
 
@@ -2757,6 +2779,26 @@ fn parse_size_str(s: &str) -> u64 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeModelCapacity {
+    required_bytes: u64,
+    fits: bool,
+}
+
+fn runtime_model_capacity_for_path(model_path: &Path, vram_bytes: u64) -> RuntimeModelCapacity {
+    let model_bytes = election::total_model_bytes(model_path);
+    let required_bytes = runtime_model_required_bytes(model_bytes);
+    RuntimeModelCapacity {
+        required_bytes,
+        fits: model_bytes == 0 || model_fits_runtime_capacity(model_bytes, vram_bytes),
+    }
+}
+
+fn runtime_model_capacity_for_ref(model: &str, vram_bytes: u64) -> RuntimeModelCapacity {
+    let model_path = models::find_model_path(model);
+    runtime_model_capacity_for_path(&model_path, vram_bytes)
+}
+
 /// Pick which model this node should serve, based on demand signals.
 ///
 /// Priority:
@@ -2808,17 +2850,13 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
 
     /// Check if a model fits in our VRAM. Returns false and logs if it doesn't.
     fn model_fits(model: &str, my_vram: u64) -> bool {
-        let model_path = models::find_model_path(model);
-        let model_bytes = std::fs::metadata(&model_path)
-            .map(|md| md.len())
-            .unwrap_or(0);
-        let needed = (model_bytes as f64 * 1.1) as u64;
-        if model_bytes > 0 && needed > my_vram {
+        let capacity = runtime_model_capacity_for_ref(model, my_vram);
+        if !capacity.fits {
             let _ = emit_event(OutputEvent::Info {
                 message: format!(
                     "Skipping {} — needs {:.1}GB, we have {:.1}GB",
                     model,
-                    needed as f64 / 1e9,
+                    capacity.required_bytes as f64 / 1e9,
                     my_vram as f64 / 1e9
                 ),
                 context: None,
@@ -3007,12 +3045,7 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
     let mut unserved: Vec<(String, u64)> = Vec::new();
     for (m, d) in &demand {
         if serving_count.get(m).copied().unwrap_or(0) == 0 && local_models.contains(m) {
-            let model_path = models::find_model_path(m);
-            let model_bytes = std::fs::metadata(&model_path)
-                .map(|md| md.len())
-                .unwrap_or(0);
-            let needed = (model_bytes as f64 * 1.1) as u64;
-            if model_bytes > 0 && needed > my_vram {
+            if !runtime_model_capacity_for_ref(m, my_vram).fits {
                 continue;
             }
             unserved.push((m.clone(), d.request_count));
@@ -3033,12 +3066,7 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
         }
         let servers = serving_count.get(m).copied().unwrap_or(0) as f64;
         if servers > 0.0 && d.request_count > 0 && local_models.contains(m) {
-            let model_path = models::find_model_path(m);
-            let model_bytes = std::fs::metadata(&model_path)
-                .map(|md| md.len())
-                .unwrap_or(0);
-            let needed = (model_bytes as f64 * 1.1) as u64;
-            if model_bytes > 0 && needed > my_vram {
+            if !runtime_model_capacity_for_ref(m, my_vram).fits {
                 continue;
             }
             ratios.push((m.clone(), d.request_count as f64 / servers));
@@ -4889,6 +4917,23 @@ mod tests {
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         }
+    }
+
+    #[test]
+    fn runtime_model_capacity_counts_split_gguf_parts() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let first_part = temp_dir.path().join("model-00001-of-00002.gguf");
+        let second_part = temp_dir.path().join("model-00002-of-00002.gguf");
+        std::fs::write(&first_part, vec![0u8; 100]).expect("write first split part");
+        std::fs::write(&second_part, vec![0u8; 200]).expect("write second split part");
+
+        let too_small = runtime_model_capacity_for_path(&first_part, 329);
+        assert_eq!(too_small.required_bytes, 330);
+        assert!(!too_small.fits);
+
+        let enough = runtime_model_capacity_for_path(&first_part, 330);
+        assert_eq!(enough.required_bytes, 330);
+        assert!(enough.fits);
     }
 
     #[test]
