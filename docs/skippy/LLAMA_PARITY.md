@@ -242,7 +242,7 @@ themselves until the reviewed topology records are updated.
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c`; local smoke via `cargo test -p skippy-server real_multimodal_local_smoke_when_fixture_is_set` with real mmproj/image fixtures | text `single-step`, `chain`, and dtype matrix passed; full-model local multimodal OpenAI smoke passed | validated for text; local projector validated | accepted for text/local runtime only | split multimodal still blocked: filtered stage-0 media prefill reaches `mtmd_helper_eval_chunks`, prints `embeddings required...`, then SIGSEGVs before activation forwarding |
 | `gemma3n` | `lmstudio-community/gemma-3n-E2B-it-GGUF` | blocked: llama.cpp reports `runtime-slice execution is not supported for this model architecture yet` | untested | untested | text and multimodal promotion blocked until Gemma3n graph support and media loader/projector strategy are implemented |
 | `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-4`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
-| `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
+| `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-2`, `/tmp/skippy-cache-correctness-dense-medium`, and `/Volumes/External/tmp/skippy-moe-expert-smoke-20260506` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke and MoE expert-stage smoke passed |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; keep recurrent ownership sticky for normal decode |
 | `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed; middle-stage recurrent-only slices are valid |
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke passed with zero native KV bytes |
@@ -278,7 +278,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-hunyuan-dense-runtime-slice-2`
 - `target/family-certify/llama-parity-hunyuan-moe-runtime-slice-1`
 - `target/family-certify/llama-parity-qwen2moe-runtime-slice-4`
-- `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
+- `target/family-certify/llama-parity-qwen3moe-runtime-slice-2`
 - `target/family-certify/rwkv7-sideband-single-step.json`
 - `target/family-certify/rwkv7-sideband-chain.json`
 - `target/family-certify/rwkv7-sideband-dtype-matrix.json`

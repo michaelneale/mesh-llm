@@ -66,10 +66,10 @@
     {
       "llama_model": "qwen3moe",
       "family": "qwen3moe",
-      "status": "candidate",
+      "status": "certified",
       "repo": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF",
       "include": "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M.gguf",
-      "notes": "text lane passed in llama-parity-qwen3moe-runtime-slice-1; q8 activation wire validated"
+      "notes": "text lane passed in llama-parity-qwen3moe-runtime-slice-2; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed; MoE expert-stage smoke already passed"
     },
     {
       "llama_model": "mistral3",

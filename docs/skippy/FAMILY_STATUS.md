@@ -39,6 +39,7 @@ Last updated: 2026-05-06.
 | OLMo | Supported | `meshllm/olmo-7b-instruct-hf-parity-f16-gguf:F16` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Mistral3 | Supported | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M` | `layer_end=26`, `splits=8,17`, activation width `3072` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Qwen2-MoE | Supported | `mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S` | `layer_end=28`, `splits=9,18`, activation width `1536` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | `ResidentKv` cache restore and MoE expert-stage smoke passed. |
+| Qwen3-MoE | Supported | `mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | `ResidentKv` cache restore and MoE expert-stage smoke passed. |
 | MiniMax M2.7 | Supported; neural draft pending | `unsloth/MiniMax-M2.7-GGUF:UD-Q2_K_XL` | `layer_end=62`, `splits=20,41`, activation width `3072` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Sharded GGUF supported. Materialize stage artifacts first; tokenizer uses `stage-0.gguf` CPU-only during staged prompt/spec. |
 | Qwen3Next | Supported | `bartowski/Qwen_Qwen3-Coder-Next-GGUF:IQ2_XS` | `layer_end=48`, `splits=16,32`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..48` sticky for normal decode until exact recurrent layer metadata is available. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | StableLM | Supported | `TheBloke/stablelm-zephyr-3b-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2560` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
@@ -52,7 +53,7 @@ topology records, and family-specific policy notes are updated.
 ```text
 Baichuan, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
 Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, MPT,
-OLMo2, OLMoE, Qwen3-MoE, Qwen2-VL text, Qwen3-VL text,
+OLMo2, OLMoE, Qwen2-VL text, Qwen3-VL text,
 RWKV6, RWKV7, StarCoder2
 ```
 
