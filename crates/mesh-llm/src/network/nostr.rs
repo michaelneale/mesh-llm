@@ -658,6 +658,8 @@ pub async fn publish_watchdog(
 /// Criteria for filtering discovered meshes.
 #[derive(Debug, Clone, Default)]
 pub struct MeshFilter {
+    /// Match meshes by name (case-insensitive exact match)
+    pub name: Option<String>,
     /// Match meshes serving (or wanting) this model name (substring match)
     pub model: Option<String>,
     /// Minimum total VRAM in GB
@@ -668,6 +670,12 @@ pub struct MeshFilter {
 
 impl MeshFilter {
     pub fn matches(&self, mesh: &DiscoveredMesh) -> bool {
+        if let Some(ref name) = self.name {
+            match &mesh.listing.name {
+                Some(n) if n.eq_ignore_ascii_case(name) => {}
+                _ => return false,
+            }
+        }
         if let Some(ref model) = self.model {
             let model_lower = model.to_lowercase();
             let has_model = mesh
