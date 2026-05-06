@@ -45,24 +45,53 @@ async fn display_runtime_result(
     verb: &str,
 ) -> Result<()> {
     let action_inf = if verb == "Loaded" { "load" } else { "unload" };
-    if resp.status().is_success() {
-        eprintln!("✅ {verb} runtime model");
-        eprintln!();
-        eprintln!("Model: {model_name}");
-        eprintln!("Scope: Local node");
+    let is_success = resp.status().is_success();
+    let body = resp.json::<serde_json::Value>().await.ok();
+    if is_success {
+        for line in runtime_success_lines(model_name, verb, body.as_ref()) {
+            eprintln!("{line}");
+        }
     } else {
         eprintln!("❌ Failed to {action_inf} runtime model");
         eprintln!();
         eprintln!("Model: {model_name}");
-        let reason = resp
-            .json::<serde_json::Value>()
-            .await
-            .ok()
-            .and_then(|v| v["error"].as_str().map(str::to_owned))
+        let reason = body
+            .as_ref()
+            .and_then(|value| value["error"].as_str().map(str::to_owned))
             .unwrap_or_else(|| "unknown error".to_string());
         eprintln!("Reason: {reason}");
     }
     Ok(())
+}
+
+fn runtime_success_lines(
+    model_name: &str,
+    verb: &str,
+    body: Option<&serde_json::Value>,
+) -> Vec<String> {
+    let response_model_key = match verb {
+        "Loaded" => "loaded",
+        "Unloaded" => "dropped",
+        _ => "model",
+    };
+    let display_model = body
+        .and_then(|value| value[response_model_key].as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(model_name);
+    let instance_id = body
+        .and_then(|value| value["instance_id"].as_str())
+        .filter(|value| !value.trim().is_empty());
+
+    let mut lines = vec![
+        format!("✅ {verb} runtime model"),
+        String::new(),
+        format!("Model: {display_model}"),
+    ];
+    if let Some(instance_id) = instance_id {
+        lines.push(format!("Instance: {instance_id}"));
+    }
+    lines.push("Scope: Local node".to_string());
+    lines
 }
 
 /// Percent-encode a string for use as a URL path segment.
@@ -196,4 +225,61 @@ fn find_pid(processes: &[serde_json::Value], model: &serde_json::Value) -> Optio
                     .unwrap_or(true)
         })
         .and_then(|process| process["pid"].as_u64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_success_lines;
+    use serde_json::json;
+
+    #[test]
+    fn runtime_success_lines_print_loaded_instance_id() {
+        let body = json!({
+            "loaded": "Qwen3-8B",
+            "instance_id": "runtime-2",
+        });
+
+        assert_eq!(
+            runtime_success_lines("fallback", "Loaded", Some(&body)),
+            vec![
+                "✅ Loaded runtime model".to_string(),
+                String::new(),
+                "Model: Qwen3-8B".to_string(),
+                "Instance: runtime-2".to_string(),
+                "Scope: Local node".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_success_lines_print_unloaded_instance_id() {
+        let body = json!({
+            "dropped": "Qwen3-8B",
+            "instance_id": "runtime-2",
+        });
+
+        assert_eq!(
+            runtime_success_lines("fallback", "Unloaded", Some(&body)),
+            vec![
+                "✅ Unloaded runtime model".to_string(),
+                String::new(),
+                "Model: Qwen3-8B".to_string(),
+                "Instance: runtime-2".to_string(),
+                "Scope: Local node".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_success_lines_omit_missing_instance_id() {
+        assert_eq!(
+            runtime_success_lines("Qwen3-8B", "Loaded", None),
+            vec![
+                "✅ Loaded runtime model".to_string(),
+                String::new(),
+                "Model: Qwen3-8B".to_string(),
+                "Scope: Local node".to_string(),
+            ]
+        );
+    }
 }

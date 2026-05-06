@@ -557,6 +557,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
             status: RuntimeLlamaEndpointStatus::Ready,
             model: Some("Qwen3-8B".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(1),
             last_success_unix_ms: Some(1),
             error: None,
@@ -599,6 +600,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
             status: RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-b".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(1),
             last_success_unix_ms: Some(1),
             error: None,
@@ -611,6 +613,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
             status: RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-a".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(2),
             last_success_unix_ms: Some(2),
             error: None,
@@ -633,6 +636,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
             status: RuntimeLlamaEndpointStatus::Unavailable,
             model: Some("model-a".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(3),
             last_success_unix_ms: None,
             error: None,
@@ -653,6 +657,77 @@ mod tests {
             Some("model-b")
         );
         assert_eq!(collector.runtime_llama_snapshot().items.slots_total, 1);
+    }
+
+    #[test]
+    fn runtime_data_llama_slots_keep_per_instance_snapshots_for_same_model() {
+        let collector = RuntimeDataCollector::new();
+        let producer = collector.producer(RuntimeDataSource {
+            scope: "runtime",
+            plugin_data_key: None,
+            plugin_endpoint_key: None,
+        });
+
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-a".to_string()),
+            instance_id: Some("runtime-1".to_string()),
+            last_attempt_unix_ms: Some(1),
+            last_success_unix_ms: Some(1),
+            error: None,
+            slots: vec![RuntimeLlamaSlotSnapshot {
+                id: Some(1),
+                is_processing: Some(false),
+                ..RuntimeLlamaSlotSnapshot::default()
+            }],
+        });
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-a".to_string()),
+            instance_id: Some("runtime-2".to_string()),
+            last_attempt_unix_ms: Some(2),
+            last_success_unix_ms: Some(2),
+            error: None,
+            slots: vec![RuntimeLlamaSlotSnapshot {
+                id: Some(2),
+                is_processing: Some(true),
+                ..RuntimeLlamaSlotSnapshot::default()
+            }],
+        });
+
+        let by_instance = collector.runtime_llama_snapshots_by_instance();
+        assert_eq!(by_instance.len(), 2);
+        assert_eq!(by_instance["runtime-1"].items.slots_busy, 0);
+        assert_eq!(by_instance["runtime-2"].items.slots_busy, 1);
+
+        producer.publish_llama_slots_snapshot(RuntimeLlamaSlotsSnapshot {
+            status: RuntimeLlamaEndpointStatus::Unavailable,
+            model: Some("model-a".to_string()),
+            instance_id: Some("runtime-1".to_string()),
+            last_attempt_unix_ms: Some(3),
+            last_success_unix_ms: None,
+            error: None,
+            slots: Vec::new(),
+        });
+
+        let by_instance = collector.runtime_llama_snapshots_by_instance();
+        assert_eq!(
+            by_instance["runtime-1"].slots.status,
+            RuntimeLlamaEndpointStatus::Unavailable
+        );
+        assert_eq!(
+            by_instance["runtime-2"].slots.status,
+            RuntimeLlamaEndpointStatus::Ready
+        );
+        assert_eq!(collector.runtime_llama_snapshot().items.slots_busy, 1);
+        assert_eq!(
+            collector
+                .runtime_llama_snapshot()
+                .slots
+                .instance_id
+                .as_deref(),
+            Some("runtime-2")
+        );
     }
 
     #[test]

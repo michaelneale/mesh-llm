@@ -1407,7 +1407,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
                 local_processes.clear();
                 local_processes.push(runtime_data::RuntimeProcessSnapshot {
                     model: "collector-model".into(),
-                    instance_id: None,
+                    instance_id: Some("runtime-1".into()),
                     backend: "collector-backend".into(),
                     pid: 777,
                     port: 9337,
@@ -1438,6 +1438,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
             runtime_data::RuntimeLlamaSlotsSnapshot {
                 status: runtime_data::RuntimeLlamaEndpointStatus::Ready,
                 model: Some("collector-model".into()),
+                instance_id: Some("runtime-1".into()),
                 last_attempt_unix_ms: Some(1_700_000_001_500),
                 last_success_unix_ms: Some(1_700_000_001_500),
                 error: None,
@@ -1514,6 +1515,10 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         json!("collector-model")
     );
     assert_eq!(
+        status_body["runtime"]["models"][0]["instance_id"],
+        json!("runtime-1")
+    );
+    assert_eq!(
         status_body["runtime"]["models"][0]["backend"],
         json!("collector-backend")
     );
@@ -1564,6 +1569,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
     assert!(runtime_response.starts_with("HTTP/1.1 200"));
     let runtime_body = json_body(&runtime_response);
     assert_eq!(runtime_body["models"][0]["name"], json!("collector-model"));
+    assert_eq!(runtime_body["models"][0]["instance_id"], json!("runtime-1"));
     assert_eq!(
         runtime_body["models"][0]["backend"],
         json!("collector-backend")
@@ -1582,6 +1588,10 @@ async fn runtime_data_api_routes_remain_payload_stable() {
     assert_eq!(
         processes_body["processes"][0]["name"],
         json!("collector-model")
+    );
+    assert_eq!(
+        processes_body["processes"][0]["instance_id"],
+        json!("runtime-1")
     );
     assert_eq!(
         processes_body["processes"][0]["backend"],
@@ -1609,6 +1619,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         json!("llama_requests_processing")
     );
     assert_eq!(llama_body["slots"]["status"], json!("ready"));
+    assert_eq!(llama_body["slots"]["instance_id"], json!("runtime-1"));
     assert_eq!(llama_body["slots"]["slots"][0]["id_task"], json!(42));
     assert_eq!(
         llama_body["slots"]["slots"][0]["extra"]["state"],
@@ -1621,6 +1632,19 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         llama_body["items"]["slots"][0]["is_processing"],
         json!(true)
     );
+    assert_eq!(
+        llama_body["instances"][0]["instance_id"],
+        json!("runtime-1")
+    );
+    assert_eq!(
+        llama_body["instances"][0]["model"],
+        json!("collector-model")
+    );
+    assert_eq!(
+        llama_body["instances"][0]["slots"]["status"],
+        json!("ready")
+    );
+    assert_eq!(llama_body["instances"][0]["items"]["slots_busy"], json!(1));
     llama_handle.abort();
 
     let (endpoints_addr, endpoints_handle) = spawn_management_test_server(state.clone()).await;

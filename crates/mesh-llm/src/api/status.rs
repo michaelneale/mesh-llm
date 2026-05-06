@@ -111,6 +111,18 @@ pub(crate) struct RuntimeLlamaPayload {
     pub(crate) metrics: RuntimeLlamaMetricsPayload,
     pub(crate) slots: RuntimeLlamaSlotsPayload,
     pub(crate) items: RuntimeLlamaItemsPayload,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub(crate) instances: Vec<RuntimeLlamaInstancePayload>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RuntimeLlamaInstancePayload {
+    pub(crate) instance_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) model: Option<String>,
+    pub(crate) metrics: RuntimeLlamaMetricsPayload,
+    pub(crate) slots: RuntimeLlamaSlotsPayload,
+    pub(crate) items: RuntimeLlamaItemsPayload,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -141,6 +153,8 @@ pub(crate) struct RuntimeLlamaSlotsPayload {
     pub(crate) status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) instance_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_attempt_unix_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -674,9 +688,40 @@ pub(super) fn build_runtime_processes_payload(
 
 pub(crate) fn build_runtime_llama_payload(
     snapshot: runtime_data::RuntimeLlamaRuntimeSnapshot,
+    snapshots_by_instance: BTreeMap<String, runtime_data::RuntimeLlamaRuntimeSnapshot>,
 ) -> RuntimeLlamaPayload {
+    let instances = snapshots_by_instance
+        .into_iter()
+        .map(|(instance_id, snapshot)| {
+            let model = snapshot.slots.model.clone();
+            let (metrics, slots, items) = build_runtime_llama_snapshot_payload(snapshot);
+            RuntimeLlamaInstancePayload {
+                instance_id,
+                model,
+                metrics,
+                slots,
+                items,
+            }
+        })
+        .collect();
+    let (metrics, slots, items) = build_runtime_llama_snapshot_payload(snapshot);
     RuntimeLlamaPayload {
-        metrics: RuntimeLlamaMetricsPayload {
+        metrics,
+        slots,
+        items,
+        instances,
+    }
+}
+
+fn build_runtime_llama_snapshot_payload(
+    snapshot: runtime_data::RuntimeLlamaRuntimeSnapshot,
+) -> (
+    RuntimeLlamaMetricsPayload,
+    RuntimeLlamaSlotsPayload,
+    RuntimeLlamaItemsPayload,
+) {
+    (
+        RuntimeLlamaMetricsPayload {
             status: runtime_llama_endpoint_status(snapshot.metrics.status),
             last_attempt_unix_ms: snapshot.metrics.last_attempt_unix_ms,
             last_success_unix_ms: snapshot.metrics.last_success_unix_ms,
@@ -693,9 +738,10 @@ pub(crate) fn build_runtime_llama_payload(
                 })
                 .collect(),
         },
-        slots: RuntimeLlamaSlotsPayload {
+        RuntimeLlamaSlotsPayload {
             status: runtime_llama_endpoint_status(snapshot.slots.status),
             model: snapshot.slots.model,
+            instance_id: snapshot.slots.instance_id,
             last_attempt_unix_ms: snapshot.slots.last_attempt_unix_ms,
             last_success_unix_ms: snapshot.slots.last_success_unix_ms,
             error: snapshot.slots.error,
@@ -715,7 +761,7 @@ pub(crate) fn build_runtime_llama_payload(
                 })
                 .collect(),
         },
-        items: RuntimeLlamaItemsPayload {
+        RuntimeLlamaItemsPayload {
             metrics: snapshot
                 .items
                 .metrics
@@ -741,7 +787,7 @@ pub(crate) fn build_runtime_llama_payload(
             slots_total: snapshot.items.slots_total,
             slots_busy: snapshot.items.slots_busy,
         },
-    }
+    )
 }
 
 fn runtime_llama_endpoint_status(status: runtime_data::RuntimeLlamaEndpointStatus) -> &'static str {

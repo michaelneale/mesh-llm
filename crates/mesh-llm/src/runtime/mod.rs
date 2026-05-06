@@ -409,11 +409,16 @@ fn dashboard_context_usage_for_process(
         .or_else(|| dashboard_context_usage_for_model(values_by_name, &process.name))
 }
 
-fn dashboard_lanes_for_model(
+fn dashboard_lanes_for_process(
+    snapshots_by_instance: &BTreeMap<String, crate::runtime_data::RuntimeLlamaRuntimeSnapshot>,
     snapshots_by_model: &BTreeMap<String, crate::runtime_data::RuntimeLlamaRuntimeSnapshot>,
-    model_name: &str,
+    process: &api::RuntimeProcessPayload,
 ) -> Option<Vec<DashboardModelLane>> {
-    let snapshot = snapshots_by_model.get(model_name)?;
+    let snapshot = process
+        .instance_id
+        .as_ref()
+        .and_then(|instance_id| snapshots_by_instance.get(instance_id))
+        .or_else(|| snapshots_by_model.get(&process.name))?;
 
     let mut lanes = snapshot
         .items
@@ -500,6 +505,8 @@ impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
             let process_rows = local_processes.lock().await.clone();
             let context_usage_by_name = local_context_usage.lock().await.clone();
             let llama_runtime_by_model = runtime_data_collector.runtime_llama_snapshots_by_model();
+            let llama_runtime_by_instance =
+                runtime_data_collector.runtime_llama_snapshots_by_instance();
             let request_metrics = node.local_request_metrics_snapshot();
             let accepted_request_counts_len = request_metrics.accepted_request_counts.len();
             let inventory_snapshot = provider.inventory_snapshot().await;
@@ -538,7 +545,11 @@ impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
                         &context_usage_by_name,
                         process,
                     ),
-                    lanes: dashboard_lanes_for_model(&llama_runtime_by_model, &process.name),
+                    lanes: dashboard_lanes_for_process(
+                        &llama_runtime_by_instance,
+                        &llama_runtime_by_model,
+                        process,
+                    ),
                     file_size_gb: dashboard_inventory_value_for_model(&size_by_name, &process.name)
                         .map(|size| *size as f64 / 1e9),
                 });
@@ -899,12 +910,13 @@ async fn refresh_dashboard_context_usage(
 fn publish_runtime_llama_slots(
     producer: Option<&crate::runtime_data::RuntimeDataProducer>,
     model_name: &str,
+    instance_id: Option<&str>,
     handle: &LocalRuntimeModelHandle,
 ) {
     let Some(producer) = producer else {
         return;
     };
-    if let Some(snapshot) = handle.llama_slots_snapshot(model_name) {
+    if let Some(snapshot) = handle.llama_slots_snapshot(model_name, instance_id) {
         producer.publish_llama_slots_snapshot(snapshot);
     }
 }
@@ -912,6 +924,7 @@ fn publish_runtime_llama_slots(
 fn publish_runtime_llama_unavailable(
     producer: Option<&crate::runtime_data::RuntimeDataProducer>,
     model_name: &str,
+    instance_id: Option<&str>,
 ) {
     let Some(producer) = producer else {
         return;
@@ -919,6 +932,7 @@ fn publish_runtime_llama_unavailable(
     producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
         status: crate::runtime_data::RuntimeLlamaEndpointStatus::Unavailable,
         model: Some(model_name.to_string()),
+        instance_id: instance_id.map(str::to_string),
         last_attempt_unix_ms: Some(current_time_unix_ms()),
         last_success_unix_ms: None,
         error: None,
@@ -1197,7 +1211,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     );
     upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
     refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-    publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+    publish_runtime_llama_slots(
+        runtime_data_producer.as_ref(),
+        &loaded_name,
+        Some(&instance_id),
+        &handle,
+    );
     if let Some(ref cs) = console_state {
         cs.upsert_local_process(payload).await;
         cs.update(true, true).await;
@@ -1236,7 +1255,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         tokio::select! {
             _ = context_usage_tick.tick() => {
                 refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
-                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+                publish_runtime_llama_slots(
+                    runtime_data_producer.as_ref(),
+                    &loaded_name,
+                    Some(&instance_id),
+                    &handle,
+                );
             }
             _ = &mut death_rx => {
                 let _ = emit_event(OutputEvent::Warning {
@@ -1272,7 +1296,11 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     )
                     .await
                 {
-                    publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &old_loaded_name);
+                    publish_runtime_llama_unavailable(
+                        runtime_data_producer.as_ref(),
+                        &old_loaded_name,
+                        Some(&instance_id),
+                    );
                 }
                 register_runtime_instance(
                     &runtime_instance_registry,
@@ -1307,7 +1335,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 loaded_name = next.loaded_name;
                 refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle)
                     .await;
-                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+                publish_runtime_llama_slots(
+                    runtime_data_producer.as_ref(),
+                    &loaded_name,
+                    Some(&instance_id),
+                    &handle,
+                );
                 death_rx = next.death_rx;
                 split_cleanup = next.cleanup.take();
                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
@@ -1345,7 +1378,11 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
     )
     .await
     {
-        publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &loaded_name);
+        publish_runtime_llama_unavailable(
+            runtime_data_producer.as_ref(),
+            &loaded_name,
+            Some(&instance_id),
+        );
     }
     upsert_dashboard_process(
         &dashboard_processes,
@@ -2933,7 +2970,8 @@ async fn startup_ready_reporter_uses_bound_urls_for_runtime_ready() {
 #[cfg(test)]
 #[test]
 fn dashboard_lanes_prefer_sparse_slot_ids() {
-    let mut snapshots = BTreeMap::new();
+    let snapshots_by_instance = BTreeMap::new();
+    let mut snapshots_by_model = BTreeMap::new();
     let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
     snapshot.items.slots = vec![
         crate::runtime_data::RuntimeLlamaSlotItem {
@@ -2951,9 +2989,19 @@ fn dashboard_lanes_prefer_sparse_slot_ids() {
             is_processing: true,
         },
     ];
-    snapshots.insert("model-a".to_string(), snapshot);
+    snapshots_by_model.insert("model-a".to_string(), snapshot);
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: None,
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4001,
+        pid: 1234,
+        slots: 2,
+        context_length: Some(8192),
+    };
 
-    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
         .expect("snapshot with slots should produce dashboard lanes");
 
     assert_eq!(lanes.len(), 2);
@@ -2966,7 +3014,8 @@ fn dashboard_lanes_prefer_sparse_slot_ids() {
 #[cfg(test)]
 #[test]
 fn dashboard_lanes_fall_back_to_slot_index_when_id_is_missing() {
-    let mut snapshots = BTreeMap::new();
+    let snapshots_by_instance = BTreeMap::new();
+    let mut snapshots_by_model = BTreeMap::new();
     let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
     snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
         index: 7,
@@ -2975,13 +3024,66 @@ fn dashboard_lanes_fall_back_to_slot_index_when_id_is_missing() {
         n_ctx: None,
         is_processing: true,
     }];
-    snapshots.insert("model-a".to_string(), snapshot);
+    snapshots_by_model.insert("model-a".to_string(), snapshot);
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: None,
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4001,
+        pid: 1234,
+        slots: 1,
+        context_length: Some(8192),
+    };
 
-    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
         .expect("snapshot with slots should produce dashboard lanes");
 
     assert_eq!(lanes.len(), 1);
     assert_eq!(lanes[0].index, 7);
+    assert!(lanes[0].active);
+}
+
+#[cfg(test)]
+#[test]
+fn dashboard_lanes_prefer_instance_snapshot_for_duplicate_models() {
+    let mut snapshots_by_instance = BTreeMap::new();
+    let snapshots_by_model = BTreeMap::new();
+    let mut first_snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    first_snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
+        index: 0,
+        id: Some(1),
+        id_task: None,
+        n_ctx: None,
+        is_processing: false,
+    }];
+    let mut second_snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    second_snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
+        index: 0,
+        id: Some(2),
+        id_task: None,
+        n_ctx: None,
+        is_processing: true,
+    }];
+    snapshots_by_instance.insert("runtime-1".to_string(), first_snapshot);
+    snapshots_by_instance.insert("runtime-2".to_string(), second_snapshot);
+
+    let process = api::RuntimeProcessPayload {
+        name: "model-a".to_string(),
+        instance_id: Some("runtime-2".to_string()),
+        backend: "skippy".to_string(),
+        status: "ready".to_string(),
+        port: 4002,
+        pid: 1235,
+        slots: 1,
+        context_length: Some(8192),
+    };
+
+    let lanes = dashboard_lanes_for_process(&snapshots_by_instance, &snapshots_by_model, &process)
+        .expect("instance snapshot should produce dashboard lanes");
+
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].index, 2);
     assert!(lanes[0].active);
 }
 
@@ -4441,11 +4543,12 @@ async fn run_auto(
         tokio::select! {
             _ = dashboard_context_usage_tick.tick() => {
                 let updates = runtime_models
-                    .values()
-                    .map(|entry| {
+                    .iter()
+                    .map(|(instance_id, entry)| {
                         publish_runtime_llama_slots(
                             runtime_data_producer.as_ref(),
                             &entry.model_name,
+                            Some(instance_id.as_str()),
                             &entry.handle,
                         );
                         (
@@ -4559,6 +4662,7 @@ async fn run_auto(
                             publish_runtime_llama_slots(
                                 runtime_data_producer.as_ref(),
                                 &loaded_name,
+                                Some(&instance_id),
                                 &handle,
                             );
                             runtime_models.insert(
@@ -4606,6 +4710,7 @@ async fn run_auto(
                                         publish_runtime_llama_unavailable(
                                             runtime_data_producer.as_ref(),
                                             &model,
+                                            Some(&unload.instance_id),
                                         );
                                     }
                                     upsert_dashboard_process(
@@ -4670,6 +4775,7 @@ async fn run_auto(
                                         publish_runtime_llama_unavailable(
                                             runtime_data_producer.as_ref(),
                                             &model,
+                                            Some(&unload.instance_id),
                                         );
                                         withdraw_advertised_model(&node, &model).await;
                                         set_advertised_model_context(&node, &model, None).await;
@@ -4721,6 +4827,7 @@ async fn run_auto(
                                     publish_runtime_llama_unavailable(
                                         runtime_data_producer.as_ref(),
                                         &model,
+                                        Some(&instance_id),
                                     );
                                 }
                                 upsert_dashboard_process(
@@ -4806,7 +4913,11 @@ async fn run_auto(
         remove_runtime_local_target(&target_tx, &name, handle.port);
         if unregister_runtime_instance(&runtime_instance_registry, &node, &name, &instance_id).await
         {
-            publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &name);
+            publish_runtime_llama_unavailable(
+                runtime_data_producer.as_ref(),
+                &name,
+                Some(&instance_id),
+            );
         }
         remove_dashboard_context_usage(&dashboard_context_usage, &name, &handle).await;
         let stopped_payload =
@@ -5561,6 +5672,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
             status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-a".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(1),
             last_success_unix_ms: Some(1),
             error: None,
@@ -5580,6 +5692,7 @@ mod tests {
         producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
             status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
             model: Some("model-b".to_string()),
+            instance_id: None,
             last_attempt_unix_ms: Some(2),
             last_success_unix_ms: Some(2),
             error: None,

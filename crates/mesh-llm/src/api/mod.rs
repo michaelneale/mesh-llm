@@ -578,13 +578,16 @@ impl MeshApi {
     }
 
     async fn runtime_llama(&self) -> RuntimeLlamaPayload {
-        let runtime_llama = self
-            .inner
-            .lock()
-            .await
-            .runtime_data_collector
-            .runtime_llama_snapshot();
-        status::build_runtime_llama_payload(runtime_llama)
+        let (runtime_llama, runtime_llama_by_instance) = {
+            let inner = self.inner.lock().await;
+            (
+                inner.runtime_data_collector.runtime_llama_snapshot(),
+                inner
+                    .runtime_data_collector
+                    .runtime_llama_snapshots_by_instance(),
+            )
+        };
+        status::build_runtime_llama_payload(runtime_llama, runtime_llama_by_instance)
     }
 
     async fn runtime_endpoints(&self) -> anyhow::Result<Vec<plugin::PluginEndpointSummary>> {

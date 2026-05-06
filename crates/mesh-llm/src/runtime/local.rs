@@ -68,6 +68,7 @@ impl LocalRuntimeModelHandle {
     pub(super) fn llama_slots_snapshot(
         &self,
         model_name: &str,
+        instance_id: Option<&str>,
     ) -> Option<RuntimeLlamaSlotsSnapshot> {
         match &self.inner {
             LocalRuntimeBackendHandle::Skippy { model, .. } => {
@@ -77,6 +78,7 @@ impl LocalRuntimeModelHandle {
                 Some(RuntimeLlamaSlotsSnapshot {
                     status: RuntimeLlamaEndpointStatus::Ready,
                     model: Some(model_name.to_string()),
+                    instance_id: instance_id.map(str::to_string),
                     last_attempt_unix_ms: Some(now),
                     last_success_unix_ms: Some(now),
                     error: None,
