@@ -358,8 +358,10 @@
     {
       "llama_model": "hunyuan-dense",
       "family": "hunyuan_dense",
-      "status": "needs_candidate",
-      "search": "Hunyuan dense GGUF small Q4_K_M"
+      "status": "certified",
+      "repo": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF",
+      "include": "hunyuan-1.8b-instruct-q4_k_m.gguf",
+      "notes": "text lane passed in llama-parity-hunyuan-dense-runtime-slice-2 after adding Hunyuan-Dense graph stage filtering; q8 activation wire validated; ResidentKv cache smoke passed"
     },
     {
       "llama_model": "hunyuan-moe",

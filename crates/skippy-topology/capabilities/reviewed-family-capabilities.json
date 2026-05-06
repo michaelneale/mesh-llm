@@ -492,5 +492,25 @@
       "split_constraints": [],
       "sidebands": []
     }
+  },
+  {
+    "model_id": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M",
+    "source_repo": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF",
+    "source_revision": "e3b14825a989269a5b97bc0ced18af69b94254bc",
+    "source_file": "hunyuan-1.8b-instruct-q4_k_m.gguf",
+    "canonical_ref": "Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF@e3b14825a989269a5b97bc0ced18af69b94254bc/hunyuan-1.8b-instruct-q4_k_m.gguf",
+    "distribution_id": "hunyuan-1.8b-instruct-q4_k_m",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "hunyuan_dense",
+      "layer_count": 32,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
   }
 ]

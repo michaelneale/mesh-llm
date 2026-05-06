@@ -178,6 +178,7 @@ or a blocker is discovered.
 | `granite` | `granite` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `granite_hybrid` | `granite-hybrid` | selected | yes | pass | rejected-too-large | `KvRecurrent` | pass | runtime-slice and recurrent cache restore ready; keep normal decode ownership sticky |
 | `granite_moe` | `granite-moe` | layout probe selected | yes | pass | pass | `ResidentKv` | pass | tiny random layout probe only; replace with a real small artifact when available |
+| `hunyuan_dense` | `hunyuan-dense` | selected | yes | pass | pass | `ResidentKv` | pass | runtime-slice and cache restore ready |
 | `bloom` | `bloom` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `gptneox` | `gptneox` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
 | `baichuan` | `baichuan` | selected | yes | pass | pass | `ResidentKv` | pass | cache restore ready |
@@ -227,6 +228,7 @@ themselves until the reviewed topology records are updated.
 | `granite` | see `target/family-certify/llama-parity-dense-tranche-2-granite-fix2` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed staged activation rescaling |
 | `granite_hybrid` | see `target/family-certify/llama-parity-granite-hybrid-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | rejected-too-large for full-state | `KvRecurrent` cache smoke passed; fixed Granite-Hybrid graph stage filtering |
 | `granite_moe` | see `target/family-certify/llama-parity-granite-moe-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed on tiny random layout probe; fixed Granite-MoE ABI allowlist |
+| `hunyuan_dense` | see `target/family-certify/llama-parity-hunyuan-dense-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed Hunyuan-Dense graph stage filtering |
 | `starcoder2` | see `target/family-certify/llama-parity-dense-tranche-2-external` and `/tmp/skippy-cache-correctness-dense-medium` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed |
 | `gpt2` | see `target/family-certify/llama-parity-decoder-tranche-3e` and `/tmp/skippy-cache-correctness-dense-small` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke passed; fixed mid-stage position input registration |
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` and `/tmp/skippy-cache-correctness-dense-gemma` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke passed with `f32`; `f16` predicted token `0`, `q8` predicted token `107` |
@@ -267,6 +269,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
 - `target/family-certify/llama-parity-granite-hybrid-runtime-slice-2`
 - `target/family-certify/llama-parity-granite-moe-runtime-slice-2`
+- `target/family-certify/llama-parity-hunyuan-dense-runtime-slice-2`
 - `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`
 - `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
 - `target/family-certify/rwkv7-sideband-single-step.json`
@@ -335,6 +338,7 @@ through mesh family policy and server-side auto-payload inference.
 | Phi2 | `TheBloke/phi-2-GGUF:Q4_K_M` | `ResidentKv` | split-final | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Granite-Hybrid | `magiccodingman/Granite-4.0-H-350M-Unsloth-MXFP4-Hybrid-GGUF:MXFP4_MOE-output_q6_K-router_gate_emb_q6_K` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `22885052` | `22622908` | pass |
 | Granite-MoE | `mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
+| Hunyuan-Dense | `Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `ResidentKv` | one-stage | pass | yes | `0 -> 1` | pass | `0` | `0` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | one-stage | pass | yes | `0 -> 1` | pass | `76923484` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-middle | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
 | Falcon-H1 | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `KvRecurrent` | split-final | pass | yes | `0 -> 1` | pass | `76661340` | `76530268` | pass |
@@ -370,8 +374,10 @@ through mesh family policy and server-side auto-payload inference.
 - Runtime-slice expansion and cache restore now pass for `baichuan`, `bloom`,
   `command_r`, `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32`
   wire, `gpt2`, `gptneox`, `granite`, `granite_hybrid`, `granite_moe`,
-  `internlm2`, `mistral3`, `mpt`, `olmo2`, `phi2`, `phi3`, `stablelm`, and
-  `starcoder2`.
+  `hunyuan_dense`, `internlm2`, `mistral3`, `mpt`, `olmo2`, `phi2`, `phi3`,
+  `stablelm`, and `starcoder2`.
+- `hunyuan_dense` required a llama.cpp stage-filter fix in the shared
+  Hunyuan-Dense/VL graph and uses `ResidentKv`.
 - `granite_hybrid` required a llama.cpp stage-filter fix for its hybrid graph
   and uses `KvRecurrent`; the exact full-state payload is too large to move as a
   production cache value.
