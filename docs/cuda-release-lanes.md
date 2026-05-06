@@ -63,8 +63,12 @@ The outer archive filename distinguishes the lanes:
 - `mesh-llm-x86_64-unknown-linux-gnu-cuda-blackwell.tar.gz`
 
 Both archives contain the same `mesh-llm` runtime binary name. The outer
-archive filename is what distinguishes the CUDA lane, and the embedded
-runtime uses the selected bundle's ABI libraries.
+archive filename distinguishes the CUDA lane, and the embedded runtime
+uses the selected bundle's ABI libraries. Match `--llama-flavor` to the
+bundle you installed:
+
+- `--llama-flavor cuda` for the primary CUDA lane
+- `--llama-flavor cuda-blackwell` for the Blackwell lane
 
 ## Installer behavior
 

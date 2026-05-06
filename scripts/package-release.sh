@@ -68,10 +68,7 @@ flavor_suffix() {
 }
 
 binary_flavor_for_release_flavor() {
-    case "$1" in
-        cuda-blackwell) printf 'cuda\n' ;;
-        *) printf '%s\n' "$1" ;;
-    esac
+    printf '%s\n' "$1"
 }
 
 bundle_bin_name() {

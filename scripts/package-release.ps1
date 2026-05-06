@@ -59,7 +59,10 @@ function Get-ReleaseFlavor {
     param([string]$RequestedFlavor)
 
     if ($RequestedFlavor) {
-        return $RequestedFlavor.ToLowerInvariant()
+        switch ($RequestedFlavor.ToLowerInvariant()) {
+            "hip" { return "rocm" }
+            default { return $RequestedFlavor.ToLowerInvariant() }
+        }
     }
 
     return "cpu"
@@ -70,14 +73,11 @@ function Get-BinaryFlavor {
 
     # The "release flavor" (outer archive name) and the "binary flavor"
     # (inner executable suffix / runtime BinaryFlavor lookup) are not
-    # always the same. cuda-blackwell archives contain -cuda binaries,
-    # and hip archives contain -rocm binaries. Mirrors the mapping in
-    # scripts/package-release.sh so Windows bundles stay compatible
-    # with the runtime's BinaryFlavor enum.
+    # always the same. hip archives contain -rocm binaries, while
+    # cuda-blackwell keeps its distinct runtime flavor suffix.
     if ($RequestedFlavor) {
         switch ($RequestedFlavor.ToLowerInvariant()) {
             "hip" { return "rocm" }
-            "cuda-blackwell" { return "cuda" }
             default { return $RequestedFlavor.ToLowerInvariant() }
         }
     }
