@@ -40,7 +40,8 @@ are updated.
 ```text
 Baichuan, Bloom, Cohere2, Command-R, EXAONE, EXAONE4, Falcon, Gemma text,
 GPT-NeoX, GPT2, Granite, InternLM2, Jamba, LFM2, Mamba, Mamba2, Mistral3, MPT,
-OLMo2, OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, RWKV6, StableLM, StarCoder2
+OLMo2, OLMoE, Phi3, Qwen2-MoE, Qwen3-MoE, Qwen2-VL text, Qwen3-VL text,
+RWKV6, StableLM, StarCoder2
 ```
 
 ## Exceptions
@@ -52,6 +53,8 @@ OLMo2, OLMoE, Phi3, Qwen2-VL text, Qwen3-VL text, RWKV6, StableLM, StarCoder2
 | Jamba | Hybrid attention/SSM text lane passed with recurrent range `0..28`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
 | Mamba2 | Recurrent text lane passed with recurrent range `0..64`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. |
+| Qwen2-MoE | Text lane passed; run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
+| Qwen3-MoE | Text lane passed; q8 activation wire validated. Run serving cache smoke and an MoE-specific route/expert smoke before support promotion. |
 | RWKV6 | Recurrent text lane passed with recurrent range `0..24`; keep ownership sticky for normal decode and smoke `KvRecurrent` before cache promotion. Exact state mobility is rejected as too large. |
 | RWKV7 | Later layers depend on layer-0 `v_first`, so arbitrary stage splits need an activation-frame sideband beyond the boundary hidden state. |
 | Qwen3Next | Same policy as Falcon-H1 for now: keep recurrent range `0..48` sticky until exact recurrent layer metadata exists. |
@@ -69,6 +72,7 @@ DeepSeek2
 GLM-4.7 Flash
 Gemma2
 Falcon-H1
+Qwen3-MoE
 ```
 
 All other supported families should ship with `f16` activation wire until q8 is
@@ -94,6 +98,8 @@ activation handoff sizes for the recommended split.
 | Gemma3 | 2,304 | Accepted, 0.24x Qwen |
 | Gemma2 | 4,608 | Accepted, 0.93x Qwen |
 | Falcon-H1 | 4,096 | Rejected, 663.5x Qwen recurrent state |
+| Qwen2-MoE | 3,072 | Accepted, 0.25x Qwen |
+| Qwen3-MoE | 2,048 | Accepted, 1.00x Qwen |
 | RWKV6 | 4,096 | Rejected, 112.5x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
 | MiniMax M2.7 | 6,144 | Accepted, 2.21x Qwen |

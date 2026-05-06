@@ -153,7 +153,7 @@ fn family_policy_for_normalized_family_id(
     match family_id {
         "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3" | "glm4"
         | "olmo" | "gemma2" | "gemma" | "gemma3" | "gemma4_a4b" | "gemma4_e4b" | "glm47_flash"
-        | "minimax_m27" => resident_kv_policy(activation_wire_dtype),
+        | "minimax_m27" | "qwen2moe" | "qwen3moe" => resident_kv_policy(activation_wire_dtype),
         "qwen3next" | "falcon_h1" | "rwkv6" => kv_recurrent_policy(activation_wire_dtype),
         _ => unknown_family_policy_with_wire_dtype(activation_wire_dtype),
     }
@@ -435,7 +435,7 @@ mod tests {
             match family_id {
                 "qwen2" | "qwen3_dense" | "llama" | "deepseek" | "deepseek2" | "deepseek3"
                 | "glm4" | "olmo" | "gemma" | "gemma2" | "gemma3" | "gemma4_a4b" | "gemma4_e4b"
-                | "glm47_flash" | "minimax_m27" => {
+                | "glm47_flash" | "minimax_m27" | "qwen2moe" | "qwen3moe" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {

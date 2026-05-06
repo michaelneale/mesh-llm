@@ -58,14 +58,18 @@
     {
       "llama_model": "qwen2moe",
       "family": "qwen2moe",
-      "status": "needs_candidate",
-      "search": "Qwen2MoE GGUF small Q4_K_M"
+      "status": "candidate",
+      "repo": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF",
+      "include": "Qwen2-1.5B-2x-MoE.Q4_K_S.gguf",
+      "notes": "text lane passed in llama-parity-qwen2moe-runtime-slice-3; q8 activation wire rejected"
     },
     {
       "llama_model": "qwen3moe",
       "family": "qwen3moe",
-      "status": "needs_candidate",
-      "search": "Qwen3 MoE GGUF small Q4_K_M"
+      "status": "candidate",
+      "repo": "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF",
+      "include": "Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder.Q4_K_M.gguf",
+      "notes": "text lane passed in llama-parity-qwen3moe-runtime-slice-1; q8 activation wire validated"
     },
     {
       "llama_model": "mistral3",

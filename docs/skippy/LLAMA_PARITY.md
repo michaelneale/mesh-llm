@@ -139,8 +139,8 @@ or a blocker is discovered.
 | `mamba2` | `mamba2` | selected | yes | pass | pass | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `rwkv6` | `rwkv6` | replacement selected | yes | pass | rejected too large | `KvRecurrent` target | pending cache smoke | text split ready; sticky recurrent ownership |
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
-| `qwen2moe` | `qwen2moe` | needs candidate | no | pending | pending | pending | pending | pending |
-| `qwen3moe` | `qwen3moe` | needs candidate | no | pending | pending | pending | pending | pending |
+| `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
+| `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
 | `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | pending |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
@@ -151,10 +151,9 @@ implementation.
 
 1. Add RWKV7 activation-frame sideband support for the layer-0 `v_first`
    value, then rerun the sampled RWKV7 text lane.
-2. Promote per-family activation-wire policy into topology selection so Gemma
-   can use `f32` while the default remains `f16`.
-3. Finish the missing downloads and run the same sweep for `bert`, `t5`,
-   `qwen2moe`, `qwen3moe`, and `llama4` where applicable.
+2. Finish the missing causal sweep for `llama4` where applicable.
+3. Keep `bert` and `t5` in the non-causal aux lane instead of promoting them
+   as causal stage-split serving.
 4. Promote multimodal only after projector/media sideband evidence, even when
    text-lane split support passes.
 
@@ -177,6 +176,8 @@ themselves until the reviewed topology records are updated.
 | `gemma` | see `target/family-certify/llama-parity-gemma-f32-wire-1` | `single-step`, `chain`, and dtype matrix passed with `f32` only | rejected | accepted | `ResidentKv` cache smoke pending; `f16` predicted token `0`, `q8` predicted token `107` |
 | `mpt`, `olmo2`, `olmoe` | see `target/family-certify/llama-parity-decoder-tranche-3c` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending |
 | `qwen2vl`, `qwen3vl` | see `target/family-certify/llama-parity-decoder-tranche-3c` | text `single-step`, `chain`, and dtype matrix passed | validated | accepted | text lane only; projector/media-token lane still required |
+| `qwen2moe` | see `target/family-certify/llama-parity-qwen2moe-runtime-slice-3` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
+| `qwen3moe` | see `target/family-certify/llama-parity-qwen3moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` cache smoke pending; MoE smoke required before promotion |
 | `lfm2` | see `target/family-certify/llama-parity-lfm2-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `jamba` | see `target/family-certify/llama-parity-jamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
 | `mamba` | see `target/family-certify/llama-parity-mamba-runtime-slice-2` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `KvRecurrent` cache smoke pending; keep recurrent ownership sticky |
@@ -207,6 +208,8 @@ Raw run directories:
 - `target/family-certify/llama-parity-lfm2-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba-runtime-slice-2`
 - `target/family-certify/llama-parity-mamba2-runtime-slice-2`
+- `target/family-certify/llama-parity-qwen2moe-runtime-slice-3`
+- `target/family-certify/llama-parity-qwen3moe-runtime-slice-1`
 - `target/family-certify/llama-parity-rwkv6-runtime-slice-3`
 - `target/family-certify/cache-smoke/reports`
 
@@ -216,7 +219,7 @@ Raw run directories:
   `cohere2`, `exaone`, `exaone4`, `falcon`, `gemma` with `f32` wire, `gpt2`,
   `gptneox`, `granite`, `internlm2`, `jamba`, `lfm2`, `mamba`, `mamba2`,
   `mistral3`, `mpt`, `olmo2`, `olmoe`, `phi3`, `qwen2vl` text, `qwen3vl`
-  text, `rwkv6`, `stablelm`, and `starcoder2`.
+  text, `qwen2moe`, `qwen3moe`, `rwkv6`, `stablelm`, and `starcoder2`.
   These rows still need serving cache smoke before cache-on-by-default
   promotion.
 - `rwkv7` needs a wider activation-frame contract. Later RWKV7 layers depend

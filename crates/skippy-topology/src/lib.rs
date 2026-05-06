@@ -772,6 +772,26 @@ pub fn qwen3_dense_capability(layer_count: u32, activation_width: u32) -> Family
     )
 }
 
+pub fn qwen2moe_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    dense_family_capability(
+        "qwen2moe",
+        layer_count,
+        activation_width,
+        WireValidation::Untested,
+        ExactStateMobility::Accepted,
+    )
+}
+
+pub fn qwen3moe_capability(layer_count: u32, activation_width: u32) -> FamilyCapabilityRecord {
+    dense_family_capability(
+        "qwen3moe",
+        layer_count,
+        activation_width,
+        WireValidation::Untested,
+        ExactStateMobility::Accepted,
+    )
+}
+
 pub fn dense_family_capability(
     family_id: impl Into<String>,
     layer_count: u32,
@@ -1052,6 +1072,12 @@ pub fn infer_family_capability(
     }
     if compact.contains("rwkv6") {
         return Some(rwkv6_capability(layer_count, activation_width));
+    }
+    if compact.contains("qwen2moe") {
+        return Some(qwen2moe_capability(layer_count, activation_width));
+    }
+    if compact.contains("qwen3moe") {
+        return Some(qwen3moe_capability(layer_count, activation_width));
     }
     if compact.contains("qwen3") {
         return Some(qwen3_dense_capability(layer_count, activation_width));

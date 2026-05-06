@@ -476,6 +476,18 @@ fn infers_known_family_capabilities_from_model_identity() {
             .family_id,
         "qwen3_dense"
     );
+    let qwen2moe = infer_family_capability("mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S", 28, 1536)
+        .expect("qwen2moe");
+    assert_eq!(qwen2moe.family_id, "qwen2moe");
+    assert_eq!(qwen2moe.q8_wire_validation, WireValidation::Rejected);
+    let qwen3moe = infer_family_capability(
+        "mradermacher/Qwen3-MOE-4x0.6B-2.4B-Writing-Thunder-GGUF:Q4_K_M",
+        28,
+        1024,
+    )
+    .expect("qwen3moe");
+    assert_eq!(qwen3moe.family_id, "qwen3moe");
+    assert_eq!(qwen3moe.q8_wire_validation, WireValidation::Validated);
     assert_eq!(
         infer_family_capability("meta/Llama-3.2-1B-Instruct", 16, 2048)
             .expect("llama")
