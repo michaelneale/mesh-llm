@@ -76,6 +76,58 @@ The rule is:
 cache target for parity. Production evidence should use `ResidentKv` or
 `KvRecurrent`.
 
+## Cache Correctness Exit Gate
+
+Before this branch is considered done, prove exact-prefix cache correctness by
+family/state-layout class. The important invariant is native sequence remap:
+state recorded from one runtime session/lane must restore exactly into a
+different runtime session/lane with a different backend sequence id.
+
+Required scenarios:
+
+1. Dense `ResidentKv` families:
+   - Use representative local GGUFs for Llama, Qwen dense, Gemma, GLM, OLMo,
+     or the closest locally available dense reviewed families.
+   - Use `ResidentKv` only.
+   - Record a prefix from session A, restore or borrow it into session B, and
+     verify the next token/logits match normal no-cache prefill.
+   - Verify suffix prefill after restore also matches normal prefill.
+   - Run one-stage and at least one split-stage topology.
+2. Hybrid/recurrent `KvRecurrent` families:
+   - Use Falcon-H1 and Qwen3Next/Qwen3.6 recurrent when available.
+   - Include MiniMax, RWKV, Mamba-like, Jamba, or LFM2 representatives when
+     available.
+   - Use `KvRecurrent` only.
+   - Verify attention KV plus recurrent/SSM state restores exactly into a
+     different target session/lane.
+   - Verify immediate decode and suffix-prefill-then-decode.
+   - Report payload bytes, imported tokens, hit/miss counters, and whether
+     recurrent bytes are non-zero.
+3. Negative policy checks:
+   - Confirm recurrent/stateful GGUFs do not select `ResidentKv`.
+   - Check whether current recurrent guards detect tensor names containing
+     `.ssm`, `ssm_`, `time_mix`, `recurrent`, or `rwkv`.
+   - If a stateful family uses different tensor naming, flag it and propose the
+     detection rule before enabling cache reuse.
+4. Split-stage correctness:
+   - Verify cache restore in staged serving, not only single-stage.
+   - Include stage 0, middle-stage, and final-stage restore where the harness
+     can observe the relevant cache/activation boundary.
+   - Vary layer ranges enough to catch stage-local KV or recurrent state shape
+     issues.
+
+Pass criteria:
+
+- Cached restore produces the same next token/logits as normal prefill.
+- Restore target is a different runtime session/lane from the recording source.
+- Repeated cache hits remain stable.
+- Unknown or failing families remain disabled or recompute-only.
+
+The final evidence table should include one row per family/model ref with:
+payload mode, one-stage result, split-stage result, source native seq id,
+target native seq id, imported tokens, payload bytes, recurrent bytes, hit/miss
+counters, repeated-hit stability, suffix-prefill result, and promotion decision.
+
 ## Certification Levels
 
 | Level | Meaning |
