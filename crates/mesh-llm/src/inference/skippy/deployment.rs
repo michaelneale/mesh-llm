@@ -82,7 +82,10 @@ pub(crate) fn stage0_config(
         materialized_path: None,
         materialized_pinned: false,
         model_path: Some(context.package.package_ref.clone()),
-        projector_path: context.projector_path.clone(),
+        projector_path: context
+            .projector_path
+            .clone()
+            .or_else(|| context.package.projector_path.clone()),
         stage_id: stage0.stage_id.clone(),
         stage_index: stage0.stage_index,
         layer_start: stage0.layer_start,
@@ -192,6 +195,7 @@ mod tests {
             source_model_bytes: Some(100),
             layer_count: 4,
             activation_width: 1024,
+            projector_path: Some("/tmp/package/projectors/mmproj.gguf".to_string()),
             layers: vec![StagePackageLayerInfo {
                 layer_index: 0,
                 tensor_count: 1,

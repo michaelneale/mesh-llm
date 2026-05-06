@@ -40,6 +40,8 @@ native exact-cache movement.
 - expose activation frames with descriptors and payloads
 - select layer-package parts from local or Hugging Face package refs
 - validate package ABI/manifest compatibility before loading or composing parts
+- expose declared `mmproj` projector artifacts from package manifests for
+  multimodal serving
 - compose materialized package stages for tools that need a concrete GGUF path
 - open selected package parts directly through the ABI for server runtime loads
 

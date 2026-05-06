@@ -699,12 +699,18 @@ impl Drop for RuntimeState {
 }
 
 pub fn load_runtime(config: &StageConfig) -> Result<Option<Arc<Mutex<RuntimeState>>>> {
-    let runtime_config = runtime_config_from_stage_config(config)?;
+    let mut runtime_config = runtime_config_from_stage_config(config)?;
 
     let model = match config.load_mode {
         LoadMode::LayerPackage => {
             let selected =
                 select_package_parts(config).context("select layer package parts for stage")?;
+            if runtime_config.projector_path.is_none() {
+                runtime_config.projector_path = selected
+                    .projector_paths
+                    .first()
+                    .map(|path| path.to_string_lossy().to_string());
+            }
             open_stage_model_from_parts(&selected.absolute_paths, &runtime_config)?
         }
         _ => {

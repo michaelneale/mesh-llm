@@ -81,6 +81,7 @@ pub(crate) struct StagePackageInfo {
     pub(crate) source_model_bytes: Option<u64>,
     pub(crate) layer_count: u32,
     pub(crate) activation_width: u32,
+    pub(crate) projector_path: Option<String>,
     pub(crate) layers: Vec<StagePackageLayerInfo>,
 }
 
@@ -330,6 +331,10 @@ fn stage_package_info(package_ref: &str, info: LayerPackageInfo) -> Result<Stage
         source_model_bytes: info.source_model_bytes,
         layer_count: info.layer_count,
         activation_width,
+        projector_path: info
+            .projectors
+            .first()
+            .map(|projector| projector.path.to_string_lossy().to_string()),
         layers: info
             .layers
             .into_iter()

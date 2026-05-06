@@ -38,6 +38,7 @@ pub struct SelectedPackageParts {
     pub manifest_sha256: String,
     pub selected_parts: Vec<PackagePart>,
     pub absolute_paths: Vec<PathBuf>,
+    pub projector_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +51,15 @@ pub struct LayerPackageInfo {
     pub source_model_bytes: Option<u64>,
     pub layer_count: u32,
     pub activation_width: Option<u32>,
+    pub projectors: Vec<PackageProjectorInfo>,
     pub layers: Vec<LayerPackageLayerInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageProjectorInfo {
+    pub kind: String,
+    pub path: PathBuf,
+    pub artifact_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +89,8 @@ struct PackageManifest {
     #[serde(default)]
     activation_width: Option<u32>,
     shared: PackageShared,
+    #[serde(default)]
+    projectors: Vec<PackageProjector>,
     layers: Vec<PackageLayer>,
     skippy_abi_version: String,
 }
@@ -113,6 +124,16 @@ struct PackageShared {
 
 #[derive(Debug, Deserialize)]
 struct PackageArtifact {
+    path: String,
+    tensor_count: usize,
+    tensor_bytes: u64,
+    artifact_bytes: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackageProjector {
+    kind: String,
     path: String,
     tensor_count: usize,
     tensor_bytes: u64,
@@ -254,18 +275,36 @@ pub fn select_layer_package_parts(request: &PackageStageRequest) -> Result<Selec
                 );
             }
         }
+        for projector in &manifest.projectors {
+            let absolute = package_dir.join(&projector.path);
+            let actual = file_sha256(&absolute)?;
+            if actual != projector.sha256 {
+                bail!(
+                    "package projector checksum mismatch for {}: expected {}, got {}",
+                    projector.path,
+                    projector.sha256,
+                    actual
+                );
+            }
+        }
     }
 
     let absolute_paths = parts
         .iter()
         .map(|part| package_dir.join(&part.path))
         .collect::<Vec<_>>();
+    let projector_paths = manifest
+        .projectors
+        .iter()
+        .map(|projector| projector_path(projector, &package_dir))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(SelectedPackageParts {
         package_dir,
         manifest_sha256,
         selected_parts: parts,
         absolute_paths,
+        projector_paths,
     })
 }
 
@@ -277,6 +316,15 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
     let manifest_sha256 = sha256_bytes(&manifest_contents);
     let manifest = load_manifest(&manifest_path, &manifest_contents)?;
     validate_manifest_identity(&manifest)?;
+    let projectors = manifest
+        .projectors
+        .into_iter()
+        .map(|projector| PackageProjectorInfo {
+            kind: projector.kind,
+            path: package_dir.join(projector.path),
+            artifact_bytes: projector.artifact_bytes,
+        })
+        .collect();
     Ok(LayerPackageInfo {
         package_dir,
         manifest_sha256,
@@ -299,6 +347,7 @@ pub fn inspect_layer_package(package_ref: &str) -> Result<LayerPackageInfo> {
             .flatten(),
         layer_count: manifest.layer_count,
         activation_width: manifest.activation_width,
+        projectors,
         layers: manifest
             .layers
             .into_iter()
@@ -538,12 +587,18 @@ fn validate_manifest_identity(manifest: &PackageManifest) -> Result<()> {
     validate_artifact_manifest("metadata", &manifest.shared.metadata)?;
     validate_artifact_manifest("embeddings", &manifest.shared.embeddings)?;
     validate_artifact_manifest("output", &manifest.shared.output)?;
+    for projector in &manifest.projectors {
+        validate_projector_manifest(projector)?;
+    }
     Ok(())
 }
 
 fn validate_artifact_manifest(role: &str, artifact: &PackageArtifact) -> Result<()> {
     if artifact.path.trim().is_empty() {
         bail!("package {role} artifact path must not be empty");
+    }
+    if Path::new(&artifact.path).is_absolute() {
+        bail!("package {role} artifact path must be relative");
     }
     if artifact.sha256.len() != 64 || !artifact.sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
         bail!("package {role} artifact sha256 must be a hex SHA-256 digest");
@@ -558,6 +613,25 @@ fn validate_artifact_manifest(role: &str, artifact: &PackageArtifact) -> Result<
         bail!("package {role} tensor_bytes must be greater than zero when tensors are present");
     }
     Ok(())
+}
+
+fn validate_projector_manifest(projector: &PackageProjector) -> Result<()> {
+    if projector.kind.trim().is_empty() {
+        bail!("package projector kind must not be empty");
+    }
+    if projector.kind != "mmproj" {
+        bail!("unsupported package projector kind {}", projector.kind);
+    }
+    validate_artifact_manifest(
+        &format!("{} projector", projector.kind),
+        &PackageArtifact {
+            path: projector.path.clone(),
+            tensor_count: projector.tensor_count,
+            tensor_bytes: projector.tensor_bytes,
+            artifact_bytes: projector.artifact_bytes,
+            sha256: projector.sha256.clone(),
+        },
+    )
 }
 
 fn push_part(
@@ -593,6 +667,31 @@ fn push_part(
         artifact_bytes: artifact.artifact_bytes,
     });
     Ok(())
+}
+
+fn projector_path(projector: &PackageProjector, package_dir: &Path) -> Result<PathBuf> {
+    let path = PathBuf::from(&projector.path);
+    if path.is_absolute() {
+        bail!(
+            "package projector paths must be relative: {}",
+            path.display()
+        );
+    }
+    let absolute = package_dir.join(&path);
+    let metadata = fs::metadata(&absolute)
+        .with_context(|| format!("read package projector metadata {}", absolute.display()))?;
+    if !metadata.is_file() {
+        bail!("package projector is not a file: {}", absolute.display());
+    }
+    if metadata.len() != projector.artifact_bytes {
+        bail!(
+            "package projector size mismatch for {}: expected {}, got {}",
+            path.display(),
+            projector.artifact_bytes,
+            metadata.len()
+        );
+    }
+    Ok(absolute)
 }
 
 fn materialized_path(
@@ -779,6 +878,8 @@ mod tests {
         fs::write(dir.path().join("embeddings.gguf"), b"embeddings").unwrap();
         fs::write(dir.path().join("output.gguf"), b"output").unwrap();
         fs::write(dir.path().join("layers/00000.gguf"), b"layer0").unwrap();
+        fs::create_dir_all(dir.path().join("projectors")).unwrap();
+        fs::write(dir.path().join("projectors/mmproj.gguf"), b"projector").unwrap();
         let manifest = serde_json::json!({
             "schema_version": 1,
             "model_id": "model-a",
@@ -819,6 +920,16 @@ mod tests {
                     "sha256": sha256_bytes(b"output")
                 }
             },
+            "projectors": [
+                {
+                    "kind": "mmproj",
+                    "path": "projectors/mmproj.gguf",
+                    "tensor_count": 1,
+                    "tensor_bytes": 1,
+                    "artifact_bytes": 9,
+                    "sha256": sha256_bytes(b"projector")
+                }
+            ],
             "layers": [
                 {
                     "layer_index": 0,
@@ -848,6 +959,12 @@ mod tests {
         assert_eq!(info.layer_count, 1);
         assert_eq!(info.activation_width, Some(4096));
         assert_eq!(info.source_model_bytes, Some(123));
+        assert_eq!(info.projectors.len(), 1);
+        assert_eq!(info.projectors[0].kind, "mmproj");
+        assert_eq!(
+            info.projectors[0].path,
+            dir.path().join("projectors/mmproj.gguf")
+        );
         assert_eq!(info.manifest_sha256.len(), 64);
     }
 }
