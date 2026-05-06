@@ -8,7 +8,6 @@
 use base64::Engine;
 use p256::ecdsa::signature::Verifier;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::error::CryptoError;
 
@@ -87,7 +86,7 @@ fn attestation_signing_bytes(att: &HardwareAttestation) -> Vec<u8> {
     push_str(&mut buf, &att.binary_hash);
     push_str(&mut buf, &att.timestamp);
 
-    Sha256::digest(&buf).to_vec()
+    buf
 }
 
 fn challenge_signing_bytes(nonce: &[u8], se_public_key: &str) -> Vec<u8> {
@@ -96,7 +95,7 @@ fn challenge_signing_bytes(nonce: &[u8], se_public_key: &str) -> Vec<u8> {
     buf.extend_from_slice(&(se_public_key.len() as u32).to_le_bytes());
     buf.extend_from_slice(se_public_key.as_bytes());
     buf.extend_from_slice(nonce);
-    Sha256::digest(&buf).to_vec()
+    buf
 }
 
 // ── Verification (all platforms) ──────────────────────────────────

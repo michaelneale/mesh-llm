@@ -16,6 +16,10 @@ use tokio::net::TcpStream;
 /// Global byte counter for tunnel traffic
 static BYTES_TRANSFERRED: AtomicU64 = AtomicU64::new(0);
 
+// Enough for a 64 MiB OpenAI object upload after NaCl overhead, base64
+// expansion, and the JSON encrypted request envelope.
+const MAX_ENCRYPTED_TUNNEL_PAYLOAD_BYTES: usize = 96 * 1024 * 1024;
+
 fn quic_response_first_byte_timeout() -> Duration {
     Duration::from_secs(5 * 60)
 }
@@ -116,7 +120,7 @@ async fn handle_inbound_http_stream(
         // Encrypted path: read full payload, decrypt, forward to backend,
         // stream encrypted response chunks back.
         let encrypted_json = quic_recv
-            .read_to_end(16 * 1024 * 1024)
+            .read_to_end(MAX_ENCRYPTED_TUNNEL_PAYLOAD_BYTES)
             .await
             .map_err(|e| anyhow::anyhow!("failed to read encrypted tunnel payload: {e}"))?;
 

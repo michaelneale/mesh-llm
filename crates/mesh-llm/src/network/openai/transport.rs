@@ -1694,8 +1694,10 @@ async fn route_remote_attempt(
                 return RouteAttemptResult::RetryableUnavailable;
             }
 
-            // If we encrypted outbound, the response comes back as 0xE1 + encrypted JSON.
-            // Decrypt it and write the plaintext HTTP response directly to the client.
+            // If we encrypted outbound, the response comes back as a magic byte,
+            // the host's raw public key, and length-prefixed encrypted chunks.
+            // Decrypt the chunks and write plaintext HTTP response bytes directly
+            // to the client.
             if let Some(ref session) = encryption_session {
                 // Signal end-of-request so the receiver's read_to_end completes.
                 if let Err(err) = quic_send.finish() {
@@ -3248,7 +3250,8 @@ pub async fn pipeline_proxy_local(
 }
 
 /// Handle an encrypted response from a remote host tunnel.
-/// Reads the 0xE1 magic + JSON, decrypts, writes plaintext HTTP response to client.
+/// Reads the magic byte, raw sender public key, and length-prefixed encrypted
+/// chunks, then writes plaintext HTTP response bytes to the client.
 ///
 /// `known_host_pub` is the host's gossiped inference public key — we use it to
 /// verify the response sender, NOT the self-declared key in the response payload.
