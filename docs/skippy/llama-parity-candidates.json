@@ -259,47 +259,47 @@
     {
       "llama_model": "jamba",
       "family": "jamba",
-      "status": "candidate_stateful",
+      "status": "certified",
       "repo": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF",
       "include": "*Q4_K_M.gguf",
       "recurrent": "all",
-      "notes": "replaces gated/non-GGUF AI21-Jamba-1.5-Mini source; text lane passed in llama-parity-jamba-runtime-slice-2; keep hybrid recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "replaces gated/non-GGUF AI21-Jamba-1.5-Mini source; text lane passed in llama-parity-jamba-runtime-slice-2; q8 activation wire validated; KvRecurrent native-sequence remap cache smoke passed; keep hybrid recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "mamba",
       "family": "mamba",
-      "status": "candidate_stateful",
+      "status": "certified",
       "repo": "mradermacher/mamba-130m-hf-GGUF",
       "include": "*Q4_K_M.gguf",
       "recurrent": "all",
-      "notes": "text lane passed in llama-parity-mamba-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "text lane passed in llama-parity-mamba-runtime-slice-2; q8 activation wire validated; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "mamba2",
       "family": "mamba2",
-      "status": "candidate_stateful",
+      "status": "certified",
       "repo": "mradermacher/mamba-2.8b-hf-GGUF",
       "include": "*Q4_K_M.gguf",
       "recurrent": "all",
-      "notes": "replaces stale mradermacher/mamba2-130m-GGUF; no small mamba2-130m GGUF candidate found; text lane passed in llama-parity-mamba2-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "replaces stale mradermacher/mamba2-130m-GGUF; no small mamba2-130m GGUF candidate found; text lane passed in llama-parity-mamba2-runtime-slice-2; q8 activation wire validated; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "rwkv6",
       "family": "rwkv6",
-      "status": "candidate_stateful",
+      "status": "certified",
       "repo": "latestissue/rwkv-6-finch-1b6-gguf",
       "include": "rwkv-6-finch-1b6-Q4_K.gguf",
       "recurrent": "all",
-      "notes": "replaces jpodivin/rwkv-4-pile-169m-GGUF because those local files use legacy fmgg/GGML magic and cannot be inspected as GGUF; text lane passed in llama-parity-rwkv6-runtime-slice-3; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "replaces jpodivin/rwkv-4-pile-169m-GGUF because those local files use legacy fmgg/GGML magic and cannot be inspected as GGUF; text lane passed in llama-parity-rwkv6-runtime-slice-3; f16 activation wire validated; q8 activation wire rejected; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "rwkv7",
       "family": "rwkv7",
-      "status": "candidate_stateful",
+      "status": "certified",
       "repo": "Mungert/rwkv7-191M-world-GGUF",
       "include": "*q4_k.gguf",
       "recurrent": "all",
-      "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF; text lane passed after adding the layer-0 v_first activation sideband; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "replaces stale mradermacher/RWKV-7-World-0.1B-v1-GGUF; text lane passed after adding the layer-0 v_first activation sideband; q8 activation wire validated on sampled artifact; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "falcon-h1",
@@ -350,11 +350,11 @@
     {
       "llama_model": "lfm2",
       "family": "lfm2",
-      "status": "candidate",
+      "status": "certified",
       "repo": "meshllm/lfm2-350m-parity-q4_k_m-gguf",
       "include": "*.gguf",
       "recurrent": "all",
-      "notes": "text lane passed in llama-parity-lfm2-runtime-slice-2; keep recurrent ownership sticky and complete KvRecurrent cache smoke before promotion"
+      "notes": "text lane passed in llama-parity-lfm2-runtime-slice-2; q8 activation wire validated; KvRecurrent native-sequence remap cache smoke passed; keep recurrent ownership sticky for normal decode"
     },
     {
       "llama_model": "hunyuan-dense",

@@ -35,6 +35,12 @@ Last updated: 2026-05-06.
 | Granite-MoE | Supported for layout parity | `mradermacher/tiny-random-granite-moe-GGUF:Q4_K_M` | `layer_end=6`, `splits=2,4`, activation width `64` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Tiny random GGUF certifies graph/tensor layout and cache mechanics; replace with a real small artifact when available. |
 | Hunyuan-Dense | Supported | `Edge-Quant/Hunyuan-1.8B-Instruct-Q4_K_M-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` cache smoke passed. |
 | Hunyuan-MoE | Supported | `unsloth/Hunyuan-A13B-Instruct-GGUF:UD-IQ2_XXS` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Real A13B MoE GGUF passed runtime-slice and `ResidentKv` native sequence remap cache smoke. |
+| LFM2 | Supported | `meshllm/lfm2-350m-parity-q4_k_m-gguf:q4_k_m` | `layer_end=16`, `splits=5,10`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..16` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
+| Jamba | Supported | `bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M` | `layer_end=28`, `splits=9,18`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..28` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; middle-stage recurrent-only slices are valid. |
+| Mamba | Supported | `mradermacher/mamba-130m-hf-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `768` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent`; cache restore can have zero native KV bytes. |
+| Mamba2 | Supported | `mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M` | `layer_end=64`, `splits=21,42`, activation width `2560` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..64` sticky for normal decode. | Use `KvRecurrent`; full-state mobility is rejected as too large. |
+| RWKV6 | Supported | `latestissue/rwkv-6-finch-1b6-gguf:Q4_K` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent`; cache restore can have zero native KV bytes. |
+| RWKV7 | Supported | `Mungert/rwkv7-191M-world-GGUF:q4_k` | `layer_end=12`, `splits=4,8`, activation width `768` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..12` sticky for normal decode. | Use `KvRecurrent`; downstream slices require the layer-0 `v_first` activation sideband. |
 | Falcon-H1 | Supported | `tiiuae/Falcon-H1-1.5B-Instruct-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | Keep recurrent range `0..24` sticky for normal decode. | Use `KvRecurrent` for exact prefix cache restore; native sequence remap cache smoke passed. |
 | Falcon | Supported | `Kondara/falcon-7b-instruct-Q4_K_M-GGUF:q4_k_m` | `layer_end=32`, `splits=10,21`, activation width `4544` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | InternLM2 | Supported | `lmstudio-community/internlm2_5-1_8b-chat-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
@@ -62,9 +68,8 @@ topology records, and family-specific policy notes are updated.
 
 ```text
 Command-R, Gemma text,
-Granite, Jamba, LFM2, Mamba, Mamba2,
-Qwen2-VL text, Qwen3-VL text,
-RWKV6, RWKV7
+Granite,
+Qwen2-VL text, Qwen3-VL text
 ```
 
 ## Exceptions
@@ -104,6 +109,11 @@ GPT-NeoX
 OLMo2
 OLMoE
 StarCoder2
+LFM2
+Jamba
+Mamba
+Mamba2
+RWKV7
 Mistral3
 Hunyuan-MoE
 InternLM2
@@ -113,7 +123,6 @@ Falcon
 Gemma2
 Falcon-H1
 Qwen3-MoE
-RWKV7 sampled artifact
 ```
 
 All other supported families should ship with `f16` activation wire until q8 is
@@ -154,6 +163,11 @@ activation handoff sizes for the recommended split.
 | Cohere2 | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 63.48x cache-hit speedup |
 | Falcon | 9,088 | Accepted; `ResidentKv` 64-token smoke passed, 1753.04x cache-hit speedup |
 | RWKV6 | 4,096 | Accepted for `KvRecurrent` cache restore, 112.5x Qwen recurrent state |
+| RWKV7 | 3,072 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 21.09x Qwen recurrent state; activation handoff carries hidden state plus `v_first` |
+| LFM2 | 2,048 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 0.82x Qwen recurrent state |
+| Jamba | 5,120 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 87.69x Qwen recurrent state |
+| Mamba | 1,536 | Full-state mobility rejected by recurrent policy; `KvRecurrent` cache restore accepted, 24.29x Qwen recurrent state |
+| Mamba2 | 5,120 | Full-state rejected as too large; `KvRecurrent` cache restore accepted, 215.84x Qwen recurrent state |
 | OLMo | 8,192 | Accepted, 4.55x Qwen |
 | OLMo2 | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 159.19x cache-hit speedup |
 | OLMoE | 4,096 | Accepted; `ResidentKv` 64-token smoke passed, 197.09x cache-hit speedup |

@@ -424,6 +424,106 @@
     }
   },
   {
+    "model_id": "meshllm/lfm2-350m-parity-q4_k_m-gguf:q4_k_m",
+    "source_repo": "meshllm/lfm2-350m-parity-q4_k_m-gguf",
+    "source_revision": "8ee744b5e828d851b872fc5ac5dc6724976e8203",
+    "source_file": "lfm2-350m-q4_k_m.gguf",
+    "canonical_ref": "meshllm/lfm2-350m-parity-q4_k_m-gguf@8ee744b5e828d851b872fc5ac5dc6724976e8203/lfm2-350m-q4_k_m.gguf",
+    "distribution_id": "lfm2-350m-q4_k_m",
+    "selector": "q4_k_m",
+    "capability": {
+      "family_id": "lfm2",
+      "layer_count": 16,
+      "activation_width": 1024,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 16
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF:Q4_K_M",
+    "source_repo": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF",
+    "source_revision": "02d70acd708332ec4e78e9ceefe116851a307411",
+    "source_file": "ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
+    "canonical_ref": "bartowski/ai21labs_AI21-Jamba2-3B-GGUF@02d70acd708332ec4e78e9ceefe116851a307411/ai21labs_AI21-Jamba2-3B-Q4_K_M.gguf",
+    "distribution_id": "ai21labs_AI21-Jamba2-3B-Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "jamba",
+      "layer_count": 28,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 28
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mamba-130m-hf-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mamba-130m-hf-GGUF",
+    "source_revision": "ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1",
+    "source_file": "mamba-130m-hf.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mamba-130m-hf-GGUF@ecd441bd76c60ebf9c3e71bfc3f83ba64fa1edd1/mamba-130m-hf.Q4_K_M.gguf",
+    "distribution_id": "mamba-130m-hf.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mamba",
+      "layer_count": 24,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 24
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
+    "model_id": "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
+    "source_repo": "mradermacher/mamba-2.8b-hf-GGUF",
+    "source_revision": "c71444344da0c2fd57d8e11d4d8b4b5debd16ca7",
+    "source_file": "mamba-2.8b-hf.Q4_K_M.gguf",
+    "canonical_ref": "mradermacher/mamba-2.8b-hf-GGUF@c71444344da0c2fd57d8e11d4d8b4b5debd16ca7/mamba-2.8b-hf.Q4_K_M.gguf",
+    "distribution_id": "mamba-2.8b-hf.Q4_K_M",
+    "selector": "Q4_K_M",
+    "capability": {
+      "family_id": "mamba2",
+      "layer_count": 64,
+      "activation_width": 2560,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 64
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF:Q4_K_S",
     "source_repo": "mradermacher/Qwen2-1.5B-2x-MoE-GGUF",
     "source_revision": "414ad2bb294cb29d2281ffa3e09a0293ae5d9f94",
@@ -486,6 +586,37 @@
       ],
       "split_constraints": [],
       "sidebands": []
+    }
+  },
+  {
+    "model_id": "Mungert/rwkv7-191M-world-GGUF:q4_k",
+    "source_repo": "Mungert/rwkv7-191M-world-GGUF",
+    "source_revision": "e49a4381662e78e48ca3079770a6a47e203c22ab",
+    "source_file": "rwkv7-191M-world-f16-q4_k.gguf",
+    "canonical_ref": "Mungert/rwkv7-191M-world-GGUF@e49a4381662e78e48ca3079770a6a47e203c22ab/rwkv7-191M-world-f16-q4_k.gguf",
+    "distribution_id": "rwkv7-191M-world-f16-q4_k",
+    "selector": "q4_k",
+    "capability": {
+      "family_id": "rwkv7",
+      "layer_count": 12,
+      "activation_width": 768,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "rejected_too_large",
+      "recurrent_ranges": [
+        {
+          "start": 0,
+          "end": 12
+        }
+      ],
+      "split_constraints": [],
+      "sidebands": [
+        {
+          "kind": "rwkv7_v_first",
+          "first_required_layer": 12,
+          "reason": "RWKV7 downstream slices require the layer-0 v_first activation sideband in addition to the boundary hidden state"
+        }
+      ]
     }
   },
   {
