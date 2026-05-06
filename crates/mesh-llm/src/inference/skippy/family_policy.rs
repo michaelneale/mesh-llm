@@ -473,7 +473,9 @@ mod tests {
                 | "hunyuan_moe" | "hunyuan_vl" | "gptneox" | "bloom" | "stablelm"
                 | "starcoder2" | "mpt" | "phi" | "phi2" | "phimoe" | "gpt2" | "mistral"
                 | "internlm2" | "baichuan" | "exaone" | "exaone4" | "cohere2" | "falcon"
-                | "qwen2vl" | "qwen3vl" => {
+                | "qwen2vl" | "qwen3vl" | "maincoder" | "openelm" | "minicpm" | "minicpm3"
+                | "plamo3" | "plm" | "refact" | "smallthinker" | "smollm3" | "arcee"
+                | "chatglm" | "codeshell" | "deci" | "xverse" => {
                     assert_eq!(
                         policy.prefix_cache,
                         FamilyPrefixCachePolicy::Auto {
@@ -553,6 +555,7 @@ mod tests {
             "mradermacher/mamba-2.8b-hf-GGUF:Q4_K_M",
             "latestissue/rwkv-6-finch-1b6-gguf:Q4_K",
             "Mungert/rwkv7-191M-world-GGUF:Q4_K",
+            "mradermacher/UnifiedReward-Edit-qwen35-4b-i1-GGUF:IQ2_M",
         ] {
             let policy = family_policy_for_model_id(model_id);
             assert!(
