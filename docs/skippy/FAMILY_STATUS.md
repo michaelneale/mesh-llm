@@ -21,6 +21,7 @@ Last updated: 2026-05-06.
 | DeepSeek LLM | Supported | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=30`, `splits=10,20`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. `ResidentKv` cache smoke passed. |
 | DeepSeek3 | Supported for package-backed stages | `unsloth/DeepSeek-V3.2-GGUF:UD-Q4_K_XL` via `meshllm/DeepSeek-V3.2-UD-Q4_K_XL-layers` | `layer_end=61`, activation width `7168`; materialize only the owned stage range | `f16`; q8 untested | `baseline,ngram,ngram-adaptive` | None | Use layer-package materialization and `ResidentKv`; do not require the full 406.8 GB layer set to be resident or merged. |
 | GLM-4.7 Flash | Supported | `unsloth/GLM-4.7-Flash-GGUF:Q4_K_M` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | GGUF uses the DeepSeek2/MLA runtime path. |
+| GLM4-MoE | Supported | `noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF:MXFP4_MOE` | `layer_end=47`, `splits=15,31`, activation width `2048` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | GLM4 9B | Supported | `meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M` | `layer_end=40`, `splits=13,27`, activation width `4096` | `f16`; q8 rejected | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted. |
 | Baichuan | Supported | `lucasxx/Baichuan2-7B-Chat-Q4_K_M-GGUF:Q4_K_M` | `layer_end=32`, `splits=10,21`, activation width `4096` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
 | Bloom | Supported | `QuantFactory/bloomz-560m-GGUF:Q4_K_M` | `layer_end=24`, `splits=8,16`, activation width `1024` | `f16`; q8 validated | `baseline,ngram,ngram-adaptive` | None | Exact state mobility accepted; `ResidentKv` native sequence remap cache smoke passed. |
@@ -105,6 +106,7 @@ q8 is currently validated for:
 Llama
 DeepSeek2
 GLM-4.7 Flash
+GLM4-MoE
 Baichuan
 Bloom
 GPT-NeoX
@@ -145,6 +147,7 @@ activation handoff sizes for the recommended split.
 | DeepSeek LLM | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 1.58x cache-hit speedup |
 | DeepSeek3 | 14,336 | Accepted for package-backed `ResidentKv`; full-GGUF llama-server baseline not required |
 | GLM-4.7 Flash | 4,096 | Accepted, 0.47x Qwen |
+| GLM4-MoE | 4,096 | Accepted; `ResidentKv` 64-token smoke passed |
 | GLM4 9B | 8,192 | Accepted, 0.36x Qwen |
 | Baichuan | 8,192 | Accepted; `ResidentKv` 64-token smoke passed, 130.11x cache-hit speedup |
 | Bloom | 2,048 | Accepted; `ResidentKv` 64-token smoke passed, 328.66x cache-hit speedup |

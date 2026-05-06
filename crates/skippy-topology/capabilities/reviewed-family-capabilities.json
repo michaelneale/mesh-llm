@@ -132,6 +132,26 @@
     }
   },
   {
+    "model_id": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF:MXFP4_MOE",
+    "source_repo": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF",
+    "source_revision": "32edcb1326558c4766554f0601f5f385e8cd77ff",
+    "source_file": "GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE.gguf",
+    "canonical_ref": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF@32edcb1326558c4766554f0601f5f385e8cd77ff/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE.gguf",
+    "distribution_id": "GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE",
+    "selector": "MXFP4_MOE",
+    "capability": {
+      "family_id": "glm4_moe",
+      "layer_count": 47,
+      "activation_width": 2048,
+      "default_wire_dtype": "f16",
+      "q8_wire_validation": "validated",
+      "exact_state_mobility": "accepted",
+      "recurrent_ranges": [],
+      "split_constraints": [],
+      "sidebands": []
+    }
+  },
+  {
     "model_id": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf:Q4_K_M",
     "source_repo": "meshllm/glm-4-9b-0414-parity-q4_k_m-gguf",
     "source_revision": "b15dd8df3957ace630d34943149a180282db4680",

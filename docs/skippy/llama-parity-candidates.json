@@ -193,8 +193,10 @@
     {
       "llama_model": "glm4-moe",
       "family": "glm4_moe",
-      "status": "needs_candidate",
-      "search": "GLM4 MoE GGUF Q4_K_M"
+      "status": "certified",
+      "repo": "noctrex/GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE-GGUF",
+      "include": "GLM-4.7-Flash-REAP-23B-A3B-MXFP4_MOE.gguf",
+      "notes": "text lane passed in llama-parity-glm4-moe-runtime-slice-1; q8 activation wire validated; ResidentKv native-sequence remap cache smoke passed"
     },
     {
       "llama_model": "granite",

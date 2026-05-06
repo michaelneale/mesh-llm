@@ -222,6 +222,7 @@ themselves until the reviewed topology records are updated.
 | --- | --- | --- | --- | --- | --- |
 | `qwen2` | `meshllm/qwen2.5-0.5b-instruct-parity-q8_0-gguf` | `single-step`, `chain`, and dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 10.82x cache-hit speedup |
 | `deepseek` | `Morgen0052/deepseek-llm-7b-chat-Q4_K_M-GGUF` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 1.58x cache-hit speedup |
+| `glm4_moe` | see `target/family-certify/llama-parity-glm4-moe-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` native-sequence remap cache smoke passed |
 | `mistral3` | `lmstudio-community/Ministral-3-3B-Instruct-2512-GGUF` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 88.40x cache-hit speedup |
 | `baichuan` | see `target/family-certify/llama-parity-baichuan-runtime-slice-1` | `single-step`, `chain`, and dtype matrix passed | validated | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 130.11x cache-hit speedup |
 | `phi` | see `target/family-certify/llama-parity-phi-runtime-slice-1` | `single-step`, `chain`, and f16 dtype matrix passed | rejected | accepted | `ResidentKv` borrowed-hit smoke passed, 64-token prefix, 2645.30x cache-hit speedup |
@@ -277,6 +278,7 @@ Raw run directories:
 - `target/family-certify/llama-parity-olmo2-runtime-slice-1`
 - `target/family-certify/llama-parity-olmoe-runtime-slice-1`
 - `target/family-certify/llama-parity-phimoe-runtime-slice-2`
+- `target/family-certify/llama-parity-glm4-moe-runtime-slice-1`
 - `target/family-certify/llama-parity-remaining-local-1`
 - `target/family-certify/llama-parity-remaining-external-1`
 - `target/family-certify/llama-parity-decoder-tranche-3c`
