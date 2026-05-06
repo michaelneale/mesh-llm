@@ -249,9 +249,7 @@ pub async fn resolve_model_spec_with_progress(input: &Path, progress: bool) -> R
     }
 
     if input.exists() {
-        let resolved = input
-            .canonicalize()
-            .with_context(|| format!("canonicalize existing model path {}", input.display()))?;
+        let resolved = input.canonicalize().unwrap_or_else(|_| input.to_path_buf());
         record_resolved_model_usage(&resolved, Some(raw.as_ref()));
         return Ok(resolved);
     }

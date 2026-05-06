@@ -1226,13 +1226,20 @@ fn activation_width(model_path: &Path) -> Result<u32> {
             model_path.display()
         )
     })?;
-    embedding_lengths.remove(&architecture).with_context(|| {
+    let width = embedding_lengths.remove(&architecture).with_context(|| {
         format!(
             "GGUF metadata for {} does not contain {}.embedding_length",
             model_path.display(),
             architecture
         )
-    })
+    })?;
+    anyhow::ensure!(
+        width > 0,
+        "GGUF metadata for {} has invalid {}.embedding_length 0",
+        model_path.display(),
+        architecture
+    );
+    Ok(width)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1756,6 +1763,21 @@ mod tests {
 
         assert_eq!(activation_width(&u16_model).unwrap(), 1024);
         assert_eq!(activation_width(&i32_model).unwrap(), 4096);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn activation_width_rejects_zero_embedding_length() {
+        let dir = unique_test_dir("activation-width-zero");
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("model.gguf");
+        let mut bytes = gguf_header(2);
+        push_string_kv(&mut bytes, "general.architecture", "qwen2");
+        push_u32_kv(&mut bytes, "qwen2.embedding_length", 0);
+        std::fs::write(&model, bytes).unwrap();
+
+        let error = activation_width(&model).unwrap_err().to_string();
+        assert!(error.contains("embedding_length 0"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

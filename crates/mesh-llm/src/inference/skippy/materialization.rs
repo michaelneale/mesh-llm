@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
@@ -140,7 +140,8 @@ pub(crate) fn is_layer_package_ref(value: &str) -> bool {
 /// using the `hf_hub` Rust library.
 ///
 /// Returns the local directory path containing the package files.
-/// If `package_ref` is already a local path, returns it as-is.
+/// If `package_ref` is already a local package path, validates its manifest paths
+/// and returns it.
 /// Resolve a layer package from the local HF cache without touching the HF SDK.
 /// Verifies that needed files exist locally; returns the snapshot dir path.
 fn resolve_local_package_files(
@@ -160,20 +161,22 @@ fn resolve_local_package_files(
         .pointer("/shared/metadata/path")
         .and_then(|v| v.as_str())
         .context("manifest missing /shared/metadata/path")?;
+    let metadata_path = safe_manifest_file_path(metadata_path)?;
     anyhow::ensure!(
-        package_dir.join(metadata_path).is_file(),
+        package_dir.join(&metadata_path).is_file(),
         "missing shared metadata: {}",
-        metadata_path
+        metadata_path.display()
     );
     if include_embeddings {
         if let Some(path) = manifest
             .pointer("/shared/embeddings/path")
             .and_then(|v| v.as_str())
         {
+            let path = safe_manifest_file_path(path)?;
             anyhow::ensure!(
-                package_dir.join(path).is_file(),
+                package_dir.join(&path).is_file(),
                 "missing shared embeddings: {}",
-                path
+                path.display()
             );
         }
     }
@@ -182,10 +185,11 @@ fn resolve_local_package_files(
             .pointer("/shared/output/path")
             .and_then(|v| v.as_str())
         {
+            let path = safe_manifest_file_path(path)?;
             anyhow::ensure!(
-                package_dir.join(path).is_file(),
+                package_dir.join(&path).is_file(),
                 "missing shared output: {}",
-                path
+                path.display()
             );
         }
     }
@@ -198,10 +202,11 @@ fn resolve_local_package_files(
                 .unwrap_or(i as u64) as u32;
             if idx >= layer_start && idx < layer_end {
                 if let Some(path) = layer.get("path").and_then(|a| a.as_str()) {
+                    let path = safe_manifest_file_path(path)?;
                     anyhow::ensure!(
-                        package_dir.join(path).is_file(),
+                        package_dir.join(&path).is_file(),
                         "missing layer file: {}",
-                        path
+                        path.display()
                     );
                 }
             }
@@ -223,6 +228,15 @@ pub(crate) fn resolve_hf_package_to_local(
             repo.clone(),
             revision.clone().unwrap_or_else(|| "main".to_string()),
         ),
+        StagePackageRef::LocalPackage(path) => {
+            return resolve_local_package_files(
+                path,
+                layer_start,
+                layer_end,
+                include_embeddings,
+                include_output,
+            );
+        }
         _ => return Ok(package_ref.to_string()),
     };
 
@@ -231,13 +245,34 @@ pub(crate) fn resolve_hf_package_to_local(
     // (where the sync SDK wrapper panics with "Cannot start a runtime").
     let cache_dir = crate::models::huggingface_hub_cache_dir();
     let repo_folder = format!("models--{}", repo.replace('/', "--"));
-    let ref_path = cache_dir.join(&repo_folder).join("refs").join(&revision);
+    let revision_cache_path = safe_manifest_file_path(&revision)
+        .with_context(|| format!("invalid HF revision for local cache lookup: {revision}"))?;
+    let ref_path = cache_dir
+        .join(&repo_folder)
+        .join("refs")
+        .join(&revision_cache_path);
+    let direct_snapshot_dir = cache_dir
+        .join(&repo_folder)
+        .join("snapshots")
+        .join(&revision_cache_path);
+    if direct_snapshot_dir.join("model-package.json").is_file() {
+        return resolve_local_package_files(
+            &direct_snapshot_dir,
+            layer_start,
+            layer_end,
+            include_embeddings,
+            include_output,
+        );
+    }
     if let Ok(commit_hash) = fs::read_to_string(&ref_path) {
         let commit_hash = commit_hash.trim();
+        let commit_hash_path = safe_manifest_file_path(commit_hash).with_context(|| {
+            format!("invalid HF cache commit hash for local cache lookup: {commit_hash}")
+        })?;
         let snapshot_dir = cache_dir
             .join(&repo_folder)
             .join("snapshots")
-            .join(commit_hash);
+            .join(commit_hash_path);
         if snapshot_dir.join("model-package.json").is_file() {
             return resolve_local_package_files(
                 &snapshot_dir,
@@ -274,20 +309,20 @@ pub(crate) fn resolve_hf_package_to_local(
         serde_json::from_slice(&manifest_contents).context("parse package manifest")?;
 
     // Collect the files we need to download
-    let mut needed_files: Vec<String> = Vec::new();
+    let mut needed_files: Vec<PathBuf> = Vec::new();
 
     // Always need shared/metadata.gguf — required for materialization
     let metadata_path = manifest
         .pointer("/shared/metadata/path")
         .and_then(|v| v.as_str())
         .context("manifest missing required /shared/metadata/path")?;
-    needed_files.push(metadata_path.to_string());
+    needed_files.push(safe_manifest_file_path(metadata_path)?);
     if include_embeddings {
         if let Some(path) = manifest
             .pointer("/shared/embeddings/path")
             .and_then(|v| v.as_str())
         {
-            needed_files.push(path.to_string());
+            needed_files.push(safe_manifest_file_path(path)?);
         }
     }
     if include_output {
@@ -295,7 +330,7 @@ pub(crate) fn resolve_hf_package_to_local(
             .pointer("/shared/output/path")
             .and_then(|v| v.as_str())
         {
-            needed_files.push(path.to_string());
+            needed_files.push(safe_manifest_file_path(path)?);
         }
     }
 
@@ -309,7 +344,7 @@ pub(crate) fn resolve_hf_package_to_local(
                 .unwrap_or(i as u64) as u32;
             if idx >= layer_start && idx < layer_end {
                 if let Some(path) = layer.get("path").and_then(|a| a.as_str()) {
-                    needed_files.push(path.to_string());
+                    needed_files.push(safe_manifest_file_path(path)?);
                 }
             }
         }
@@ -321,17 +356,34 @@ pub(crate) fn resolve_hf_package_to_local(
         if local_path.is_file() {
             continue; // already cached
         }
+        let file_name = file.to_string_lossy().to_string();
         model_api
             .download_file(
                 &hf_hub::RepoDownloadFileParams::builder()
-                    .filename(file.clone())
+                    .filename(file_name.clone())
                     .revision(revision.clone())
                     .build(),
             )
-            .with_context(|| format!("download layer package file: {file}"))?;
+            .with_context(|| format!("download layer package file: {file_name}"))?;
     }
 
     Ok(package_dir.to_string_lossy().to_string())
+}
+
+fn safe_manifest_file_path(path: &str) -> Result<PathBuf> {
+    anyhow::ensure!(!path.is_empty(), "manifest file path is empty");
+    let path = Path::new(path);
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        bail!("manifest file path is empty");
+    };
+    anyhow::ensure!(
+        matches!(first, Component::Normal(_))
+            && components.all(|component| matches!(component, Component::Normal(_))),
+        "manifest file path must be a safe relative path: {}",
+        path.display()
+    );
+    Ok(path.to_path_buf())
 }
 
 pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInfo> {
@@ -719,6 +771,173 @@ mod tests {
     }
 
     #[test]
+    fn safe_manifest_file_path_rejects_escaping_paths() {
+        assert_eq!(
+            safe_manifest_file_path("shared/metadata.gguf").unwrap(),
+            PathBuf::from("shared/metadata.gguf")
+        );
+
+        for path in [
+            "",
+            "/tmp/metadata.gguf",
+            "../metadata.gguf",
+            "shared/../metadata.gguf",
+        ] {
+            let error = safe_manifest_file_path(path).unwrap_err().to_string();
+            assert!(
+                error.contains("manifest file path"),
+                "unexpected error for {path:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_package_resolution_rejects_manifest_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::json!({
+                "shared": {
+                    "metadata": { "path": "../metadata.gguf" }
+                },
+                "layers": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = resolve_local_package_files(dir.path(), 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("safe relative path"), "{error}");
+    }
+
+    #[test]
+    fn local_package_ref_resolution_rejects_manifest_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("model-package.json"),
+            serde_json::json!({
+                "shared": {
+                    "metadata": { "path": "../metadata.gguf" }
+                },
+                "layers": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let error = resolve_hf_package_to_local(&dir.path().to_string_lossy(), 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("safe relative path"), "{error}");
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_resolution_rejects_revision_cache_traversal() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path());
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let error = resolve_hf_package_to_local("hf://owner/repo@../../evil", 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("invalid HF revision") || error.contains("safe relative path"),
+            "{error}"
+        );
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_resolution_rejects_ref_target_cache_traversal() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path());
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let refs_dir = temp
+            .path()
+            .join("hub")
+            .join("models--owner--repo")
+            .join("refs");
+        fs::create_dir_all(&refs_dir).unwrap();
+        fs::write(refs_dir.join("main"), "../../evil").unwrap();
+
+        let error = resolve_hf_package_to_local("hf://owner/repo", 0, 0, false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("invalid HF cache commit hash") || error.contains("safe relative path"),
+            "{error}"
+        );
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
+    #[serial]
+    fn hf_package_resolution_uses_direct_snapshot_revision_cache() {
+        let prev_hf_home = std::env::var_os("HF_HOME");
+        let prev_hf_cache = std::env::var_os("HF_HUB_CACHE");
+        let prev_huggingface_cache = std::env::var_os("HUGGINGFACE_HUB_CACHE");
+
+        let temp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_HOME", temp.path());
+        std::env::remove_var("HF_HUB_CACHE");
+        std::env::remove_var("HUGGINGFACE_HUB_CACHE");
+
+        let snapshot = temp
+            .path()
+            .join("hub")
+            .join("models--owner--repo")
+            .join("snapshots")
+            .join("abc123");
+        fs::create_dir_all(snapshot.join("shared")).unwrap();
+        fs::create_dir_all(snapshot.join("layers")).unwrap();
+        fs::write(snapshot.join("shared/metadata.gguf"), b"metadata").unwrap();
+        fs::write(snapshot.join("layers/layer-000.gguf"), b"layer").unwrap();
+        fs::write(
+            snapshot.join("model-package.json"),
+            serde_json::json!({
+                "shared": {
+                    "metadata": { "path": "shared/metadata.gguf" }
+                },
+                "layers": [
+                    { "layer_index": 0, "path": "layers/layer-000.gguf" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let resolved =
+            resolve_hf_package_to_local("hf://owner/repo@abc123", 0, 1, false, false).unwrap();
+
+        assert_eq!(PathBuf::from(resolved), snapshot);
+
+        restore_env("HF_HOME", prev_hf_home);
+        restore_env("HF_HUB_CACHE", prev_hf_cache);
+        restore_env("HUGGINGFACE_HUB_CACHE", prev_huggingface_cache);
+    }
+
+    #[test]
     #[serial]
     fn materialized_stage_preview_matches_source_removal_candidates() {
         let prev_xdg = std::env::var_os("XDG_CACHE_HOME");
@@ -742,7 +961,7 @@ mod tests {
         };
         let index_path = root.join("source-test.json");
         fs::write(&index_path, serde_json::to_vec_pretty(&index).unwrap()).unwrap();
-        fs::create_dir(root.join("source-unreadable.json")).unwrap();
+        fs::create_dir_all(root.join("source-unreadable.json")).unwrap();
 
         let preview = materialized_stages_for_sources(std::slice::from_ref(&source)).unwrap();
         assert_eq!(preview, vec![artifact.clone()]);

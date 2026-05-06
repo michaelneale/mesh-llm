@@ -10,7 +10,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     time::{Duration, SystemTime},
 };
 
@@ -81,6 +81,7 @@ pub struct CatalogPackage {
 // ---------------------------------------------------------------------------
 
 static CATALOG_ENTRIES: RwLock<Option<Vec<CatalogEntry>>> = RwLock::new(None);
+static CATALOG_ENSURE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Returns the directory where the catalog dataset is cached locally.
 pub fn catalog_cache_dir() -> PathBuf {
@@ -217,6 +218,20 @@ pub fn ensure_catalog() -> Result<()> {
             return Ok(());
         }
     }
+
+    let _ensure = CATALOG_ENSURE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("catalog ensure lock poisoned"))?;
+
+    {
+        let lock = CATALOG_ENTRIES
+            .read()
+            .map_err(|_| anyhow::anyhow!("catalog lock poisoned"))?;
+        if lock.is_some() && !is_catalog_stale() {
+            return Ok(());
+        }
+    }
+
     if is_catalog_stale() {
         refresh_catalog()
     } else {
