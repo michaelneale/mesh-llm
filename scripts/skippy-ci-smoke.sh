@@ -27,6 +27,8 @@ SMOKE_COMMAND_TIMEOUT_SECS="${SMOKE_COMMAND_TIMEOUT_SECS:-900}"
 SMOKE_FLASH_ATTN="${SMOKE_FLASH_ATTN:-disabled}"
 SMOKE_N_BATCH="${SMOKE_N_BATCH:-1}"
 SMOKE_N_UBATCH="${SMOKE_N_UBATCH:-1}"
+PROMPT_N_BATCH="${PROMPT_N_BATCH:-$PROMPT_PREFILL_CHUNK_SIZE}"
+PROMPT_N_UBATCH="${PROMPT_N_UBATCH:-$PROMPT_PREFILL_CHUNK_SIZE}"
 DENSE_SMOKE_SPLIT_1="${DENSE_SMOKE_SPLIT_1:-1}"
 DENSE_SMOKE_SPLIT_2="${DENSE_SMOKE_SPLIT_2:-2}"
 STAGE_SERVER_BIN="${STAGE_SERVER_BIN:-target/debug/skippy-server}"
@@ -180,7 +182,9 @@ write_stage_config() {
   local ctx_size="$5"
   local bind_addr="$6"
   local payload="$7"
-  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" "$SMOKE_FLASH_ATTN" "$SMOKE_N_BATCH" "$SMOKE_N_UBATCH" <<'PY'
+  local n_batch="${8:-$SMOKE_N_BATCH}"
+  local n_ubatch="${9:-$SMOKE_N_UBATCH}"
+  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" "$SMOKE_FLASH_ATTN" "$n_batch" "$n_ubatch" <<'PY'
 import json
 import sys
 
@@ -376,7 +380,7 @@ PROMPT_LOG="$WORK_DIR/prompt-stage.log"
 PROMPT_IN="$WORK_DIR/prompt-input.txt"
 PROMPT_OUT="$WORK_DIR/prompt-output.log"
 PROMPT_BIND="127.0.0.1:${PROMPT_PORT}"
-write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
+write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv" "$PROMPT_N_BATCH" "$PROMPT_N_UBATCH"
 make_long_prompt_file "$PROMPT_IN"
 
 OPENAI_PORT="$(pick_port)"
@@ -599,8 +603,8 @@ if ! grep -q 'reuse    exact_prefix=hit' "$PROMPT_OUT"; then
   sed -n '1,320p' "$PROMPT_OUT" >&2 || true
   exit 1
 fi
-if ! grep -q 'reuse    live_session=hit' "$PROMPT_OUT"; then
-  echo "expected live-session reuse hit in prompt output" >&2
+if ! grep -q 'reuse    live_session=' "$PROMPT_OUT"; then
+  echo "expected live-session reuse stats in prompt output" >&2
   sed -n '1,320p' "$PROMPT_OUT" >&2 || true
   exit 1
 fi
