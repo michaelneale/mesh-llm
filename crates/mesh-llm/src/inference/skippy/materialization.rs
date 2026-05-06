@@ -141,6 +141,75 @@ pub(crate) fn is_layer_package_ref(value: &str) -> bool {
 ///
 /// Returns the local directory path containing the package files.
 /// If `package_ref` is already a local path, returns it as-is.
+/// Resolve a layer package from the local HF cache without touching the HF SDK.
+/// Verifies that needed files exist locally; returns the snapshot dir path.
+fn resolve_local_package_files(
+    package_dir: &Path,
+    layer_start: u32,
+    layer_end: u32,
+    include_embeddings: bool,
+    include_output: bool,
+) -> Result<String> {
+    let manifest_path = package_dir.join("model-package.json");
+    let manifest_contents = fs::read(&manifest_path).context("read local package manifest")?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_contents).context("parse local package manifest")?;
+
+    // Verify shared/metadata.gguf exists
+    let metadata_path = manifest
+        .pointer("/shared/metadata/path")
+        .and_then(|v| v.as_str())
+        .context("manifest missing /shared/metadata/path")?;
+    anyhow::ensure!(
+        package_dir.join(metadata_path).is_file(),
+        "missing shared metadata: {}",
+        metadata_path
+    );
+    if include_embeddings {
+        if let Some(path) = manifest
+            .pointer("/shared/embeddings/path")
+            .and_then(|v| v.as_str())
+        {
+            anyhow::ensure!(
+                package_dir.join(path).is_file(),
+                "missing shared embeddings: {}",
+                path
+            );
+        }
+    }
+    if include_output {
+        if let Some(path) = manifest
+            .pointer("/shared/output/path")
+            .and_then(|v| v.as_str())
+        {
+            anyhow::ensure!(
+                package_dir.join(path).is_file(),
+                "missing shared output: {}",
+                path
+            );
+        }
+    }
+    // Verify needed layer files exist
+    if let Some(layers) = manifest.get("layers").and_then(|l| l.as_array()) {
+        for (i, layer) in layers.iter().enumerate() {
+            let idx = layer
+                .get("layer_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(i as u64) as u32;
+            if idx >= layer_start && idx < layer_end {
+                if let Some(path) = layer.get("path").and_then(|a| a.as_str()) {
+                    anyhow::ensure!(
+                        package_dir.join(path).is_file(),
+                        "missing layer file: {}",
+                        path
+                    );
+                }
+            }
+        }
+    }
+    Ok(package_dir.to_string_lossy().to_string())
+}
+
 pub(crate) fn resolve_hf_package_to_local(
     package_ref: &str,
     layer_start: u32,
@@ -156,6 +225,29 @@ pub(crate) fn resolve_hf_package_to_local(
         ),
         _ => return Ok(package_ref.to_string()),
     };
+
+    // Try to resolve from the local HF cache first — avoids the HF SDK entirely,
+    // which is critical on NFS (where flock fails) and inside async runtimes
+    // (where the sync SDK wrapper panics with "Cannot start a runtime").
+    let cache_dir = crate::models::huggingface_hub_cache_dir();
+    let repo_folder = format!("models--{}", repo.replace('/', "--"));
+    let ref_path = cache_dir.join(&repo_folder).join("refs").join(&revision);
+    if let Ok(commit_hash) = fs::read_to_string(&ref_path) {
+        let commit_hash = commit_hash.trim();
+        let snapshot_dir = cache_dir
+            .join(&repo_folder)
+            .join("snapshots")
+            .join(commit_hash);
+        if snapshot_dir.join("model-package.json").is_file() {
+            return resolve_local_package_files(
+                &snapshot_dir,
+                layer_start,
+                layer_end,
+                include_embeddings,
+                include_output,
+            );
+        }
+    }
 
     let api = crate::models::build_hf_api(false)?;
     let (owner, name) = repo.split_once('/').context("invalid HF repo format")?;
@@ -250,55 +342,25 @@ pub(crate) fn inspect_stage_package(package_ref: &str) -> Result<StagePackageInf
     stage_package_info(package_ref, info)
 }
 
-pub(crate) fn materialize_stage_load(
-    load: &StageLoadRequest,
-) -> Result<Option<(MaterializedStageArtifact, MaterializedStagePin)>> {
+/// Resolve an `hf://` package ref in a stage load request to a local directory.
+/// Returns the resolved local path if the package ref needed resolution, or `None`
+/// if it was already local / not a layer package.
+pub(crate) fn resolve_stage_load_package(load: &StageLoadRequest) -> Result<Option<String>> {
     if load.load_mode != LoadMode::LayerPackage {
         return Ok(None);
     }
     let is_first = load.layer_start == 0;
     let is_final = load.downstream.is_none();
-    let include_embeddings = is_first;
-    let include_output = is_final;
-    // Resolve hf:// to local dir with needed files downloaded
+    // Resolve hf:// to local dir — verifies files exist but does NOT
+    // materialize (concatenate) them into a single GGUF on disk.
     let local_ref = resolve_hf_package_to_local(
         &load.package_ref,
         load.layer_start,
         load.layer_end,
-        include_embeddings,
-        include_output,
+        is_first,  // include_embeddings
+        is_final,  // include_output
     )?;
-    let request = package_stage_request(
-        &load.model_id,
-        &load.topology_id,
-        &local_ref,
-        &load.stage_id,
-        load.layer_start,
-        load.layer_end,
-        is_final,
-    );
-    let materialized = package::materialize_layer_package_details(&request).with_context(|| {
-        format!(
-            "materialize skippy stage package {} layers {}..{}",
-            load.stage_id, load.layer_start, load.layer_end
-        )
-    })?;
-    let info = package::inspect_layer_package(&local_ref)?;
-    let artifact = MaterializedStageArtifact {
-        path: materialized.output_path,
-        manifest_sha256: materialized.manifest_sha256,
-        source_model_path: info.source_model_path,
-        source_model_sha256: info.source_model_sha256,
-        source_model_bytes: info.source_model_bytes,
-    };
-    let pin = pin_materialized_stage(
-        &artifact.path,
-        &local_ref,
-        &load.topology_id,
-        &load.run_id,
-        &load.stage_id,
-    )?;
-    Ok(Some((artifact, pin)))
+    Ok(Some(local_ref))
 }
 
 pub(crate) fn materialize_stage_config(

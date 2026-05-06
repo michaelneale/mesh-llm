@@ -302,8 +302,13 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
         .source_model_bytes
         .unwrap_or_else(|| info.layers.iter().map(|l| l.artifact_bytes).sum::<u64>());
 
+    // For local paths inside an HF cache, convert to hf:// so all nodes can resolve
+    // independently. HF cache dirs look like: .../models--owner--name/snapshots/<hash>/
+    let canonical_package_ref =
+        hf_ref_from_cache_path(package_ref).unwrap_or_else(|| package_ref.to_string());
+
     Ok(SkippyPackageIdentity {
-        package_ref: package_ref.to_string(),
+        package_ref: canonical_package_ref,
         manifest_sha256: info.manifest_sha256,
         source_model_path: PathBuf::from(&info.source_model_path),
         source_model_sha256: info.source_model_sha256,
@@ -313,6 +318,38 @@ pub(crate) fn identity_from_layer_package(package_ref: &str) -> Result<SkippyPac
         activation_width,
         tensor_count: info.layers.iter().map(|l| l.tensor_count as u64).sum(),
     })
+}
+
+/// Detect if a local path is inside an HF cache directory and convert to `hf://` ref.
+///
+/// HF cache paths look like:
+///   `.../hub/models--owner--name/snapshots/<hash>/`
+///
+/// Returns `Some("hf://owner/name")` if detected, `None` otherwise.
+fn hf_ref_from_cache_path(path: &str) -> Option<String> {
+    // Walk path components looking for "models--*" followed by "snapshots"
+    let path = std::path::Path::new(path);
+    let components: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    for (i, comp) in components.iter().enumerate() {
+        let s = comp.to_str()?;
+        if let Some(repo_part) = s.strip_prefix("models--") {
+            // Verify next component is "snapshots"
+            if components.get(i + 1).and_then(|c| c.to_str()) == Some("snapshots") {
+                // repo_part is "owner--name", convert to "owner/name"
+                let repo = repo_part.replacen("--", "/", 1);
+                if repo.contains('/') {
+                    return Some(format!("hf://{repo}"));
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

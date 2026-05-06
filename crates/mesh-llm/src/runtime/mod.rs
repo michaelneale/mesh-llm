@@ -1942,6 +1942,11 @@ async fn resolve_startup_models(
                 let path_str = resolved_path.to_string_lossy();
                 if path_str.starts_with("hf://") {
                     requested_ref.to_string()
+                } else if resolved_path.join("model-package.json").is_file() {
+                    // Layer package directory: read the canonical model_id from the manifest
+                    // so that all nodes agree on the model name regardless of local path.
+                    read_layer_package_model_id(&resolved_path)
+                        .unwrap_or_else(|| models::model_ref_for_path(&resolved_path))
                 } else {
                     models::model_ref_for_path(&resolved_path)
                 }
@@ -1964,12 +1969,28 @@ async fn resolve_startup_models(
     Ok(plans)
 }
 
+/// Read the `model_id` field from a layer package's `model-package.json`.
+fn read_layer_package_model_id(package_dir: &Path) -> Option<String> {
+    let manifest_path = package_dir.join("model-package.json");
+    let contents = std::fs::read(&manifest_path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&contents).ok()?;
+    manifest
+        .get("model_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Check the remote catalog for a layer package matching the model.
-/// Returns `Some("hf://meshllm/...")` if found, None otherwise.
+/// Returns `Some("hf://meshllm/...")` or a local package dir if found, None otherwise.
 fn resolve_split_layer_package(model_query: &str, model_path: &Path) -> Option<String> {
     // Already an hf:// ref — use as-is
     let path_str = model_path.to_string_lossy();
     if path_str.starts_with("hf://") {
+        return Some(path_str.to_string());
+    }
+
+    // Local directory with model-package.json — already a layer package on disk
+    if model_path.join("model-package.json").is_file() {
         return Some(path_str.to_string());
     }
 

@@ -179,11 +179,12 @@ impl StageControlState {
         let mut effective_load = load;
         effective_load.bind_addr = bind_addr.to_string();
         super::configure_materialized_stage_cache();
-        let materialized = super::materialize_stage_load(&effective_load)?;
-        let config = stage_config(
-            &effective_load,
-            materialized.as_ref().map(|(artifact, _)| artifact),
-        )?;
+        if let Some(local_ref) =
+            super::materialization::resolve_stage_load_package(&effective_load)?
+        {
+            effective_load.model_path = Some(local_ref);
+        }
+        let config = stage_config(&effective_load, None)?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -210,8 +211,8 @@ impl StageControlState {
             RunningStage {
                 load: effective_load.clone(),
                 server,
-                materialized: materialized.as_ref().map(|(artifact, _)| artifact.clone()),
-                _materialized_pin: materialized.map(|(_, pin)| pin),
+                materialized: None,
+                _materialized_pin: None,
             },
         );
         let status = self
