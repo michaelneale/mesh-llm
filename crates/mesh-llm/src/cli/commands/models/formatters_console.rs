@@ -214,15 +214,14 @@ impl ModelsFormatter for ConsoleFormatter {
             huggingface_cache_dir().display()
         )?;
         writeln!(&mut output)?;
-        writeln!(
-            &mut output,
-            "🗑️ Delete example: mesh-llm models delete {}",
-            rows[0].model_ref
-        )?;
+        writeln!(&mut output, "🗑️ Delete example: {}", rows[0].delete_command)?;
         writeln!(&mut output)?;
         for row in rows {
             writeln!(&mut output, "📦 {}", row.name)?;
             writeln!(&mut output, "   type: {}", installed_model_kind(&row.path))?;
+            if let Some(layer_count) = row.layer_count {
+                writeln!(&mut output, "   layers: {} 🧩", layer_count)?;
+            }
             if let Some(bytes) = row.size {
                 writeln!(&mut output, "   size: {} 📏", format_installed_size(bytes))?;
             }
@@ -258,21 +257,20 @@ impl ModelsFormatter for ConsoleFormatter {
             }
             writeln!(&mut output, "   capabilities: {}", caps.join("  "))?;
             writeln!(&mut output, "   ref: {}", row.model_ref)?;
-            writeln!(
-                &mut output,
-                "   show: mesh-llm models show {}",
-                row.model_ref
-            )?;
-            writeln!(
-                &mut output,
-                "   download: mesh-llm models download {}",
-                row.model_ref
-            )?;
-            writeln!(
-                &mut output,
-                "   delete: mesh-llm models delete {}",
-                row.model_ref
-            )?;
+            if let Some(command) = row.show_command.as_deref() {
+                writeln!(&mut output, "   show: {command}")?;
+            } else {
+                writeln!(&mut output, "   show: not available for layered packages")?;
+            }
+            if let Some(command) = row.download_command.as_deref() {
+                writeln!(&mut output, "   download: {command}")?;
+            } else {
+                writeln!(
+                    &mut output,
+                    "   download: not available for layered packages"
+                )?;
+            }
+            writeln!(&mut output, "   delete: {}", row.delete_command)?;
             writeln!(&mut output, "   path: {}", row.path.display())?;
             if let Some(model) = row.catalog_model {
                 writeln!(&mut output, "   about: {}", model.description)?;
@@ -401,12 +399,32 @@ impl ModelsFormatter for ConsoleFormatter {
         println!("🗑️ Model delete preview");
         println!();
         println!("Name: {}", resolved.display_name);
-        println!("Path: {}", resolved.path.display());
+        if resolved.paths.len() > 1 {
+            println!("Paths ({}):", resolved.paths.len());
+            for path in &resolved.paths {
+                println!("  {}", path.display());
+            }
+        } else {
+            println!("Path: {}", resolved.path.display());
+        }
         println!("Mode: installed model ref resolution");
-        let file_size = std::fs::metadata(&resolved.path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size = resolved
+            .paths
+            .iter()
+            .map(|path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+            .sum();
         println!("Size: {}", format_installed_size(file_size));
+        if resolved.derived_stage_paths.is_empty() {
+            println!("Derived stage cache files: 0");
+        } else {
+            println!(
+                "Derived stage cache files ({}):",
+                resolved.derived_stage_paths.len()
+            );
+            for path in &resolved.derived_stage_paths {
+                println!("  {}", path.display());
+            }
+        }
         if !resolved.matched_records.is_empty() {
             println!();
             println!("{} usage record(s) found:", resolved.matched_records.len());
