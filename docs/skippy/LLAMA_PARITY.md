@@ -141,7 +141,7 @@ or a blocker is discovered.
 | `qwen2vl` | `qwen2vl` | selected | yes | pass | pass | multimodal policy pending | pending projector/media lane | text split ready; multimodal pending |
 | `qwen2moe` | `qwen2moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
 | `qwen3moe` | `qwen3moe` | selected | yes | pass | pass | `ResidentKv` target; MoE smoke required | pending cache smoke | text split ready |
-| `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | pending |
+| `llama4` | `llama4` | package/remote only | no | package/remote pending | package/remote pending | package-local `ResidentKv` target | pending | no cheap artifact; local glogwa68 sample reports `llama`, not `llama4` |
 
 Broader coverage lives in `docs/skippy/llama-parity-candidates.json`. The board
 above tracks the active certification queue rather than every pinned llama.cpp
@@ -232,6 +232,9 @@ Raw run directories:
 - `gemma` is stage-correct only with `f32` activation wire for the sampled
   artifact. The earlier default-`f16` cheap run predicted token `0`, and `q8`
   predicted token `107`, while `f32` matched token `1106`.
+- `llama4` does not have a cheap local certification artifact yet. The local
+  `glogwa68/Llama-4-scout-GGUF` sample reports `general.architecture = llama`,
+  not `llama4`; official llama4 Scout GGUF artifacts are package/remote-sized.
 - The old `mistral3` candidate was not a `mistral3` GGUF. It reports
   `general.architecture = llama`, so it cannot be used for llama.cpp family
   parity even though the run itself passed. The replacement candidate is

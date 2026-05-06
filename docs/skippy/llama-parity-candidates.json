@@ -439,9 +439,9 @@
       "llama_model": "llama4",
       "family": "llama4",
       "status": "package_or_remote_only",
-      "repo": "glogwa68/Llama-4-scout-GGUF",
-      "include": "*Q4_K_M.gguf",
-      "notes": "too large for cheap full baseline on the local Mac; use package/materialized stage evidence"
+      "repo": "ggml-org/Llama-4-Scout-17B-16E-Instruct-GGUF",
+      "include": "Llama-4-Scout-17B-16E-Instruct-Q4_K_M-*.gguf",
+      "notes": "no cheap small llama4 artifact found; local glogwa68/Llama-4-scout-GGUF reports general.architecture=llama, so it is not valid llama4 family evidence; use package/materialized stage evidence on a remote machine with enough storage"
     }
   ]
 }
