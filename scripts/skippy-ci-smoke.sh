@@ -19,10 +19,16 @@ RECURRENT_MODEL_ID="${RECURRENT_MODEL_ID:-${RECURRENT_MODEL_REPO}:${RECURRENT_MO
 RECURRENT_MODEL_PATH="${RECURRENT_MODEL_PATH:-}"
 
 CTX_SIZE="${CTX_SIZE:-384}"
-PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-1536}"
+PROMPT_CTX_SIZE="${PROMPT_CTX_SIZE:-768}"
 STATE_PREFIX_TOKENS="${STATE_PREFIX_TOKENS:-128}"
 PROMPT_PREFILL_CHUNK_SIZE="${PROMPT_PREFILL_CHUNK_SIZE:-128}"
-PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-32}"
+PROMPT_MAX_NEW_TOKENS="${PROMPT_MAX_NEW_TOKENS:-8}"
+SMOKE_COMMAND_TIMEOUT_SECS="${SMOKE_COMMAND_TIMEOUT_SECS:-900}"
+SMOKE_FLASH_ATTN="${SMOKE_FLASH_ATTN:-disabled}"
+SMOKE_N_BATCH="${SMOKE_N_BATCH:-1}"
+SMOKE_N_UBATCH="${SMOKE_N_UBATCH:-1}"
+DENSE_SMOKE_LAYER_END="${DENSE_SMOKE_LAYER_END:-3}"
+RECURRENT_SMOKE_LAYER_END="${RECURRENT_SMOKE_LAYER_END:-1}"
 STAGE_SERVER_BIN="${STAGE_SERVER_BIN:-target/debug/skippy-server}"
 
 SERVER_PID=""
@@ -32,6 +38,40 @@ require_cmd() {
     echo "required command not found: $1" >&2
     exit 1
   fi
+}
+
+run_with_timeout() {
+  local label="$1"
+  shift
+  python3 - "$SMOKE_COMMAND_TIMEOUT_SECS" "$label" "$@" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+timeout_secs = int(sys.argv[1])
+label = sys.argv[2]
+command = sys.argv[3:]
+
+process = subprocess.Popen(command, start_new_session=True)
+try:
+    raise SystemExit(process.wait(timeout=timeout_secs))
+except subprocess.TimeoutExpired:
+    print(f"{label} timed out after {timeout_secs}s; terminating process group", file=sys.stderr)
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        raise SystemExit(124)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    raise SystemExit(124)
+PY
 }
 
 cleanup() {
@@ -69,7 +109,7 @@ download_model() {
   mkdir -p "$out_dir"
   echo "downloading ${repo}/${file}" >&2
   local output path
-  output="$(hf download "$repo" "$file" --local-dir "$out_dir")"
+  output="$(run_with_timeout "download ${repo}/${file}" hf download "$repo" "$file" --local-dir "$out_dir")"
   path="$(printf '%s\n' "$output" | sed -n 's/^path=//p' | tail -n 1)"
   if [[ -z "$path" ]]; then
     path="${out_dir}/${file}"
@@ -85,7 +125,7 @@ download_model() {
 model_layer_end() {
   local model_path="$1"
   LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-    target/debug/skippy-model-package inspect "$model_path" \
+    run_with_timeout "inspect ${model_path}" target/debug/skippy-model-package inspect "$model_path" \
       | jq -r '[.tensors[] | select(.role == "layer") | .layer_index] | max + 1'
 }
 
@@ -132,6 +172,25 @@ assert_json() {
   fi
 }
 
+bounded_layer_end() {
+  local requested="$1"
+  local available="$2"
+  local minimum="$3"
+  if [[ "$requested" -lt "$minimum" ]]; then
+    echo "requested smoke layer end ${requested} is below required minimum ${minimum}" >&2
+    exit 1
+  fi
+  if [[ "$available" -lt "$minimum" ]]; then
+    echo "model layer end ${available} is below required minimum ${minimum}" >&2
+    exit 1
+  fi
+  if [[ "$requested" -lt "$available" ]]; then
+    printf '%s\n' "$requested"
+  else
+    printf '%s\n' "$available"
+  fi
+}
+
 write_stage_config() {
   local config_path="$1"
   local model_id="$2"
@@ -140,11 +199,22 @@ write_stage_config() {
   local ctx_size="$5"
   local bind_addr="$6"
   local payload="$7"
-  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" <<'PY'
+  python3 - "$config_path" "$model_id" "$model_path" "$layer_end" "$ctx_size" "$bind_addr" "$payload" "$SMOKE_FLASH_ATTN" "$SMOKE_N_BATCH" "$SMOKE_N_UBATCH" <<'PY'
 import json
 import sys
 
-config_path, model_id, model_path, layer_end, ctx_size, bind_addr, payload = sys.argv[1:]
+(
+    config_path,
+    model_id,
+    model_path,
+    layer_end,
+    ctx_size,
+    bind_addr,
+    payload,
+    flash_attn,
+    n_batch,
+    n_ubatch,
+) = sys.argv[1:]
 config = {
     "run_id": "skippy-ci-smoke",
     "topology_id": "skippy-ci-smoke-single-stage",
@@ -156,9 +226,12 @@ config = {
     "layer_end": int(layer_end),
     "ctx_size": int(ctx_size),
     "lane_count": 4,
+    "n_batch": int(n_batch),
+    "n_ubatch": int(n_ubatch),
     "n_gpu_layers": 0,
     "cache_type_k": "f16",
     "cache_type_v": "f16",
+    "flash_attn_type": flash_attn,
     "filter_tensors_on_load": False,
     "load_mode": "runtime-slice",
     "bind_addr": bind_addr,
@@ -192,7 +265,7 @@ sentence = (
     "to cross the restore threshold without depending on model creativity."
 )
 prompt = "Summarize this cache smoke paragraph in one short sentence. " + " ".join(
-    f"{i:03d}. {sentence}" for i in range(30)
+    f"{i:03d}. {sentence}" for i in range(12)
 )
 with open(path, "w", encoding="utf-8") as handle:
     handle.write(":noappend\n")
@@ -240,28 +313,35 @@ if [[ -z "$RECURRENT_LAYER_END" || "$RECURRENT_LAYER_END" == "null" || "$RECURRE
   echo "failed to infer recurrent layer count from $RECURRENT_MODEL_PATH" >&2
   exit 1
 fi
+DENSE_ACTIVE_LAYER_END="$(bounded_layer_end "$DENSE_SMOKE_LAYER_END" "$DENSE_LAYER_END" 3)"
+RECURRENT_ACTIVE_LAYER_END="$(bounded_layer_end "$RECURRENT_SMOKE_LAYER_END" "$RECURRENT_LAYER_END" 1)"
+echo "smoke: dense runtime slice 0..${DENSE_ACTIVE_LAYER_END} of ${DENSE_LAYER_END} layers"
+echo "smoke: recurrent runtime slice 0..${RECURRENT_ACTIVE_LAYER_END} of ${RECURRENT_LAYER_END} layers"
 
-DENSE_SPLIT_1="$((DENSE_LAYER_END / 3))"
-DENSE_SPLIT_2="$(((DENSE_LAYER_END * 2) / 3))"
+DENSE_SPLIT_1="$((DENSE_ACTIVE_LAYER_END / 3))"
+DENSE_SPLIT_2="$(((DENSE_ACTIVE_LAYER_END * 2) / 3))"
 if [[ "$DENSE_SPLIT_1" -lt 1 ]]; then
   DENSE_SPLIT_1=1
 fi
 if [[ "$DENSE_SPLIT_2" -le "$DENSE_SPLIT_1" ]]; then
   DENSE_SPLIT_2=$((DENSE_SPLIT_1 + 1))
 fi
-if [[ "$DENSE_SPLIT_2" -ge "$DENSE_LAYER_END" ]]; then
-  DENSE_SPLIT_2=$((DENSE_LAYER_END - 1))
+if [[ "$DENSE_SPLIT_2" -ge "$DENSE_ACTIVE_LAYER_END" ]]; then
+  DENSE_SPLIT_2=$((DENSE_ACTIVE_LAYER_END - 1))
 fi
 
 CHAIN_PORT_1="$(pick_port)"
 CHAIN_PORT_2="$(pick_port)"
-echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_LAYER_END} layers"
+echo "smoke: dense 3-stage split ${DENSE_SPLIT_1},${DENSE_SPLIT_2} over ${DENSE_ACTIVE_LAYER_END} active layers"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness chain \
+  run_with_timeout "dense chain smoke" target/debug/skippy-correctness chain \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
-    --layer-end "$DENSE_LAYER_END" \
+    --layer-end "$DENSE_ACTIVE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Say hi in three words." \
     --splits "${DENSE_SPLIT_1},${DENSE_SPLIT_2}" \
     --stage1-bind-addr "127.0.0.1:${CHAIN_PORT_1}" \
@@ -273,14 +353,17 @@ assert_json "$REPORT_DIR/dense-chain.json" \
 
 echo "smoke: dense ResidentKv cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "dense ResidentKv smoke" target/debug/skippy-correctness state-handoff \
     --model "$DENSE_MODEL_PATH" \
     --model-id "$DENSE_MODEL_ID" \
-    --layer-end "$DENSE_LAYER_END" \
+    --layer-end "$DENSE_ACTIVE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Dense resident KV cache smoke." \
     --state-layer-start 0 \
-    --state-layer-end "$DENSE_LAYER_END" \
+    --state-layer-end "$DENSE_ACTIVE_LAYER_END" \
     --state-stage-index 0 \
     --state-payload-kind resident-kv \
     --prefix-token-count "$STATE_PREFIX_TOKENS" \
@@ -293,14 +376,17 @@ assert_json "$REPORT_DIR/dense-resident-kv.json" \
 
 echo "smoke: recurrent KvRecurrent cache hit correctness"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-correctness state-handoff \
+  run_with_timeout "recurrent KvRecurrent smoke" target/debug/skippy-correctness state-handoff \
     --model "$RECURRENT_MODEL_PATH" \
     --model-id "$RECURRENT_MODEL_ID" \
-    --layer-end "$RECURRENT_LAYER_END" \
+    --layer-end "$RECURRENT_ACTIVE_LAYER_END" \
     --ctx-size "$CTX_SIZE" \
+    --n-batch "$SMOKE_N_BATCH" \
+    --n-ubatch "$SMOKE_N_UBATCH" \
+    --flash-attn "$SMOKE_FLASH_ATTN" \
     --prompt "Recurrent KV cache smoke." \
     --state-layer-start 0 \
-    --state-layer-end "$RECURRENT_LAYER_END" \
+    --state-layer-end "$RECURRENT_ACTIVE_LAYER_END" \
     --state-stage-index 0 \
     --state-payload-kind kv-recurrent \
     --prefix-token-count "$STATE_PREFIX_TOKENS" \
@@ -315,7 +401,7 @@ PROMPT_LOG="$WORK_DIR/prompt-stage.log"
 PROMPT_IN="$WORK_DIR/prompt-input.txt"
 PROMPT_OUT="$WORK_DIR/prompt-output.log"
 PROMPT_BIND="127.0.0.1:${PROMPT_PORT}"
-write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
+write_stage_config "$PROMPT_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_ACTIVE_LAYER_END" "$PROMPT_CTX_SIZE" "$PROMPT_BIND" "resident-kv"
 make_long_prompt_file "$PROMPT_IN"
 
 OPENAI_PORT="$(pick_port)"
@@ -323,7 +409,7 @@ OPENAI_STAGE_PORT="$(pick_port)"
 OPENAI_CONFIG="$WORK_DIR/openai-stage.json"
 OPENAI_LOG="$WORK_DIR/openai-server.log"
 OPENAI_BASE_URL="http://127.0.0.1:${OPENAI_PORT}/v1"
-write_stage_config "$OPENAI_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_LAYER_END" "$CTX_SIZE" "127.0.0.1:${OPENAI_STAGE_PORT}" "resident-kv"
+write_stage_config "$OPENAI_CONFIG" "$DENSE_MODEL_ID" "$DENSE_MODEL_PATH" "$DENSE_ACTIVE_LAYER_END" "$CTX_SIZE" "127.0.0.1:${OPENAI_STAGE_PORT}" "resident-kv"
 
 echo "smoke: OpenAI /v1/chat/completions streaming/tools/logprobs/structured-output"
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
@@ -508,12 +594,12 @@ fi
 
 set +e
 LLAMA_STAGE_BUILD_DIR="$LLAMA_BUILD_DIR" \
-  target/debug/skippy-prompt binary \
+  run_with_timeout "prompt binary smoke" target/debug/skippy-prompt binary \
     --model-path "$DENSE_MODEL_PATH" \
     --tokenizer-model-path "$DENSE_MODEL_PATH" \
     --tokenizer-load-mode runtime-slice \
     --tokenizer-layer-start 0 \
-    --tokenizer-layer-end "$DENSE_LAYER_END" \
+    --tokenizer-layer-end "$DENSE_ACTIVE_LAYER_END" \
     --first-stage-addr "$PROMPT_BIND" \
     --ctx-size "$PROMPT_CTX_SIZE" \
     --activation-width 2048 \

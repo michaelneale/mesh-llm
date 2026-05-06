@@ -38,8 +38,14 @@ pub struct RuntimeArgs {
     pub ctx_size: u32,
     #[arg(long, default_value_t = 0)]
     pub n_gpu_layers: i32,
+    #[arg(long)]
+    pub n_batch: Option<u32>,
+    #[arg(long)]
+    pub n_ubatch: Option<u32>,
     #[arg(long, default_value = "Hello")]
     pub prompt: String,
+    #[arg(long = "flash-attn", value_enum, default_value = "auto")]
+    pub flash_attn: FlashAttentionArg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -48,6 +54,14 @@ pub enum StageLoadMode {
     RuntimeSlice,
     ArtifactSlice,
     LayerPackage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum FlashAttentionArg {
+    Auto,
+    Disabled,
+    Enabled,
 }
 
 #[derive(Args, Clone)]
