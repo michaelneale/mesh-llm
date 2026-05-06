@@ -68,6 +68,7 @@ fn gguf_public_api_derives_value_length_from_kv_heads() {
         .unwrap();
     let meta = scan_gguf_compact_meta(&tmp).expect("should parse GGUF fixture");
     assert_eq!(meta.head_count, 0);
+    assert_eq!(meta.kv_head_count, 8);
     assert_eq!(meta.key_length, 0);
     assert_eq!(meta.value_length, 512);
     let _ = std::fs::remove_file(&tmp);

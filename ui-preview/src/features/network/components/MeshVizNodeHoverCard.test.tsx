@@ -14,7 +14,7 @@ const node: MeshNode = {
   subLabel: 'Local node',
   servingModels: ['llama-local-q4'],
   latencyMs: 0.6,
-  vramGB: 16,
+  vramGB: 16
 }
 
 const peer: Peer = {
@@ -28,7 +28,7 @@ const peer: Peer = {
   loadPct: 33,
   shortId: 'abcd1234',
   role: 'you',
-  vramGB: 16,
+  vramGB: 16
 }
 
 function renderOpenHoverCard(cardNode: MeshNode, cardPeer?: Peer) {
@@ -40,7 +40,7 @@ function renderOpenHoverCard(cardNode: MeshNode, cardPeer?: Peer) {
         </HoverCardPrimitive.Trigger>
         <MeshVizNodeHoverCard node={cardNode} peer={cardPeer} />
       </HoverCardPrimitive.Root>
-    </div>,
+    </div>
   )
 }
 

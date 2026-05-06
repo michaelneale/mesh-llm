@@ -275,8 +275,8 @@ impl AffinityRouter {
 
 /// Compute the session-level key used to cache an auto-routed model choice.
 ///
-/// Prefers an explicit session hint from the request body (e.g. an
-/// OpenAI-style `user` field), then falls back to the same
+/// Prefers an explicit cache/session hint from the request body (e.g.
+/// OpenAI-style `prompt_cache_key` or `user` fields), then falls back to the same
 /// prefix/first-user-message hash sticky routing already uses. That way
 /// turn 2+ of a chat reliably maps to the same key.
 pub fn auto_model_session_key(parsed_body: Option<&Value>) -> Option<u64> {
@@ -386,7 +386,9 @@ pub struct PreparedTargets {
 }
 
 pub(crate) fn extract_session_hint_from_body(body: &Value) -> Option<String> {
-    top_level_string(body, "user").or_else(|| top_level_string(body, "session_id"))
+    top_level_string(body, "prompt_cache_key")
+        .or_else(|| top_level_string(body, "user"))
+        .or_else(|| top_level_string(body, "session_id"))
 }
 
 fn top_level_string(body: &Value, key: &str) -> Option<String> {
@@ -713,11 +715,12 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_session_hint_from_body_user_preferred() {
-        let body = parse_body(r#"{"user":"bob","session_id":"sess-1"}"#);
+    fn test_extract_session_hint_from_body_prompt_cache_key_preferred() {
+        let body =
+            parse_body(r#"{"prompt_cache_key":"cache-1","user":"bob","session_id":"sess-1"}"#);
         assert_eq!(
             extract_session_hint_from_body(&body),
-            Some("bob".to_string())
+            Some("cache-1".to_string())
         );
     }
 

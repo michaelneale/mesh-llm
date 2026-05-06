@@ -10,6 +10,7 @@
 //! **ALLOWED** under `runtime_dir/`:
 //! - `lock` — `flock(2)` advisory lock file held by the owning mesh-llm
 //! - `owner.json` — metadata about the owning instance (pid, version, api_port, started_at)
+//! - `logs/` — process-local runtime logs, including embedded skippy/llama.cpp native logs
 //!
 //! **FORBIDDEN** under `runtime_dir/`:
 //! - Application state, configuration, or catalog caches (live elsewhere under `~/.mesh-llm/`)
@@ -159,9 +160,9 @@ impl InstanceRuntime {
     /// Creates the following directories (idempotent):
     /// - `{root}/{pid}/`
     ///
-    /// Then opens `{root}/{pid}/lock` and acquires a **non-blocking exclusive
-    /// flock**. Returns `Err` if the lock cannot be obtained (i.e. another live
-    /// process already holds it).
+    /// Then opens `{root}/{pid}/lock`. On Unix this also acquires a
+    /// **non-blocking exclusive flock** and returns `Err` if the lock cannot be
+    /// obtained (i.e. another live process already holds it).
     ///
     /// # Platform notes
     ///
@@ -1095,6 +1096,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(unix)]
     fn acquire_second_time_fails() {
         let dir = tempdir().unwrap();
         let _g = EnvGuard::save_and_set("MESH_LLM_RUNTIME_ROOT", dir.path().to_str().unwrap());
@@ -1105,6 +1107,18 @@ mod tests {
             result.is_err(),
             "second acquire of same pid slot must fail while first is held"
         );
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(not(unix))]
+    fn acquire_second_time_is_best_effort_without_flock() {
+        let dir = tempdir().unwrap();
+        let _g = EnvGuard::save_and_set("MESH_LLM_RUNTIME_ROOT", dir.path().to_str().unwrap());
+
+        let _rt = InstanceRuntime::acquire(1003).expect("first acquire should succeed");
+        InstanceRuntime::acquire(1003)
+            .expect("non-Unix runtime acquisition is best-effort without flock");
     }
 
     #[test]

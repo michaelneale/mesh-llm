@@ -16,7 +16,7 @@ function adaptPeerToConfigNode(peer: PeerInfo): ConfigNode {
     cpu: peer.hardware_label ?? 'Unknown CPU',
     ramGB: 0,
     gpus: [],
-    placement: 'separate',
+    placement: 'separate'
   }
 }
 
@@ -32,7 +32,7 @@ function adaptModelToConfigModel(model: MeshModelRaw): ConfigModel {
     ctxMaxK: Math.round(model.context_length / 1000),
     moe: model.capabilities.moe,
     vision: model.capabilities.vision || (model.tags?.includes('vision') ?? false),
-    tags: model.tags ?? [],
+    tags: model.tags ?? []
   }
 }
 
@@ -45,6 +45,6 @@ export function adaptStatusToConfiguration(payload: StatusPayload, models: MeshM
     nodes,
     catalog,
     assigns: [],
-    preferredAssignId: undefined,
+    preferredAssignId: undefined
   }
 }

@@ -219,6 +219,7 @@ mod tests {
         for kind in [
             WireMessageKind::CheckpointSession,
             WireMessageKind::RestoreSession,
+            WireMessageKind::TrimSession,
         ] {
             let message = StageWireMessage {
                 kind,

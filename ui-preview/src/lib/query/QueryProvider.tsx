@@ -9,9 +9,5 @@ export type QueryProviderProps = {
 }
 
 export function QueryProvider({ children, client = defaultQueryClient }: QueryProviderProps) {
-  return (
-    <QueryClientProvider client={client}>
-      {children}
-    </QueryClientProvider>
-  )
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>
 }

@@ -1,0 +1,113 @@
+name: Resolve llama.cpp cache keys
+
+on:
+  workflow_call:
+    outputs:
+      cache_namespace:
+        description: Shared cache namespace for llama.cpp artifacts
+        value: ${{ jobs.resolve.outputs.cache_namespace }}
+      cuda_version:
+        description: CUDA version fragment used in cache keys and image tags
+        value: ${{ jobs.resolve.outputs.cuda_version }}
+      sha:
+        description: Resolved llama.cpp upstream SHA
+        value: ${{ jobs.resolve.outputs.sha }}
+      cuda_cache_inputs_hash:
+        description: Hash of repo inputs that affect CUDA cache artifacts
+        value: ${{ jobs.resolve.outputs.cuda_cache_inputs_hash }}
+      rocm_cache_inputs_hash:
+        description: Hash of repo inputs that affect ROCm cache artifacts
+        value: ${{ jobs.resolve.outputs.rocm_cache_inputs_hash }}
+      cuda_slim_cache_key:
+        description: Exact slim CUDA cache key
+        value: ${{ jobs.resolve.outputs.cuda_slim_cache_key }}
+      cuda_fat_cache_key:
+        description: Exact fat CUDA cache key
+        value: ${{ jobs.resolve.outputs.cuda_fat_cache_key }}
+      cuda_blackwell_fat_cache_key:
+        description: Exact fat CUDA cache key for the Blackwell lane
+        value: ${{ jobs.resolve.outputs.cuda_blackwell_fat_cache_key }}
+      cuda_blackwell_version:
+        description: CUDA version fragment used for the Blackwell lane
+        value: ${{ jobs.resolve.outputs.cuda_blackwell_version }}
+      rocm_slim_cache_key:
+        description: Exact slim ROCm cache key
+        value: ${{ jobs.resolve.outputs.rocm_slim_cache_key }}
+      rocm_fat_cache_key:
+        description: Exact fat ROCm cache key
+        value: ${{ jobs.resolve.outputs.rocm_fat_cache_key }}
+
+permissions:
+  contents: read
+
+env:
+  CACHE_NAMESPACE: mesh-llm
+
+jobs:
+  resolve:
+    name: Resolve llama.cpp cache keys
+    runs-on: ubuntu-latest
+    outputs:
+      cache_namespace: ${{ steps.cache_namespace.outputs.value }}
+      cuda_version: ${{ steps.cuda_version.outputs.value }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      cuda_cache_inputs_hash: ${{ steps.cache_inputs.outputs.cuda_hash }}
+      rocm_cache_inputs_hash: ${{ steps.cache_inputs.outputs.rocm_hash }}
+      cuda_slim_cache_key: ${{ steps.render.outputs.cuda_slim_cache_key }}
+      cuda_fat_cache_key: ${{ steps.render.outputs.cuda_fat_cache_key }}
+      cuda_blackwell_fat_cache_key: ${{ steps.render.outputs.cuda_blackwell_fat_cache_key }}
+      cuda_blackwell_version: ${{ steps.cuda_blackwell_version.outputs.value }}
+      rocm_slim_cache_key: ${{ steps.render.outputs.rocm_slim_cache_key }}
+      rocm_fat_cache_key: ${{ steps.render.outputs.rocm_fat_cache_key }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Expose cache namespace
+        id: cache_namespace
+        run: echo "value=${CACHE_NAMESPACE}" >> "$GITHUB_OUTPUT"
+
+      - name: Expose CUDA version
+        id: cuda_version
+        run: echo "value=${{ vars.CUDA_VERSION || '12.6.3' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Expose CUDA Blackwell version
+        id: cuda_blackwell_version
+        run: echo "value=${{ vars.CUDA_BLACKWELL_VERSION || '12.8.0' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve llama.cpp SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+          SHA="$(tr -d '[:space:]' < third_party/llama.cpp/upstream.txt)"
+          if [[ -z "$SHA" ]]; then
+            echo "Failed to resolve llama.cpp SHA" >&2
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Hash cache-key inputs
+        id: cache_inputs
+        run: |
+          set -euo pipefail
+          echo "cuda_hash=${{ hashFiles('scripts/build-linux.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "rocm_hash=${{ hashFiles('scripts/build-linux.sh', 'scripts/build-linux-rocm.sh', 'scripts/build-llama.sh', 'third_party/llama.cpp/upstream.txt', 'third_party/llama.cpp/patches/**', 'Justfile', '.github/workflows/ci.yml', '.github/workflows/warm-caches.yml', '.github/workflows/gpu-warm-cache-job.yml', '.github/workflows/llama-cache-keys.yml', '.github/cache-version.txt') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Render cache keys
+        id: render
+        env:
+          CACHE_NAMESPACE: ${{ steps.cache_namespace.outputs.value }}
+          CUDA_VERSION: ${{ steps.cuda_version.outputs.value }}
+          CUDA_BLACKWELL_VERSION: ${{ steps.cuda_blackwell_version.outputs.value }}
+          LLAMA_SHA: ${{ steps.resolve.outputs.sha }}
+          CUDA_HASH: ${{ steps.cache_inputs.outputs.cuda_hash }}
+          ROCM_HASH: ${{ steps.cache_inputs.outputs.rocm_hash }}
+        run: |
+          set -euo pipefail
+          {
+            echo "cuda_slim_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-slim-${LLAMA_SHA}-${CUDA_HASH}-arch89-cuda${CUDA_VERSION}"
+            echo "cuda_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-cuda${CUDA_VERSION}"
+            echo "cuda_blackwell_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-cuda-blackwell-fat-${LLAMA_SHA}-${CUDA_HASH}-arch75-80-86-87-89-90-100-120-cuda${CUDA_BLACKWELL_VERSION}"
+            echo "rocm_slim_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-slim-${LLAMA_SHA}-${ROCM_HASH}-gfx1100-rocm7.0"
+            echo "rocm_fat_cache_key=${CACHE_NAMESPACE}-skippy-abi-rocm-fat-${LLAMA_SHA}-${ROCM_HASH}-gfx90a-gfx942-gfx1100-gfx1101-gfx1102-gfx1200-gfx1201-rocm7.0"
+          } >> "$GITHUB_OUTPUT"

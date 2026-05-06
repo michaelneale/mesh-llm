@@ -9,12 +9,20 @@ function segColor(tone: TraceSegment['tone']): string {
 
 export function TraceBar({ segs }: { segs: TraceSegment[] }) {
   const total = segs.reduce((sum, seg) => sum + seg.ms, 0)
-  if (segs.length === 0 || total === 0) return <div className="rounded-[var(--radius)] border border-border p-3 text-[length:var(--density-type-annotation)] text-fg-faint">No trace segments recorded.</div>
+  if (segs.length === 0 || total === 0)
+    return (
+      <div className="rounded-[var(--radius)] border border-border p-3 text-[length:var(--density-type-annotation)] text-fg-faint">
+        No trace segments recorded.
+      </div>
+    )
   return (
     <div>
       <div className="flex h-2 overflow-hidden rounded-[var(--radius)] border border-border-soft bg-panel-strong">
         {segs.map((seg) => (
-          <div key={seg.id} style={{ width: `${(seg.ms / total) * 100}%`, background: segColor(seg.tone), opacity: 0.85 }} />
+          <div
+            key={seg.id}
+            style={{ width: `${(seg.ms / total) * 100}%`, background: segColor(seg.tone), opacity: 0.85 }}
+          />
         ))}
       </div>
       <div className="mt-2.5 grid gap-y-[5px]" style={{ gridTemplateColumns: '1fr auto', columnGap: 8 }}>
@@ -24,7 +32,9 @@ export function TraceBar({ segs }: { segs: TraceSegment[] }) {
               <span className="size-2 rounded-sm" style={{ background: segColor(seg.tone) }} />
               {seg.label}
             </div>
-            <span className="text-right font-mono text-[length:var(--density-type-caption)] text-fg-dim">{seg.ms} ms</span>
+            <span className="text-right font-mono text-[length:var(--density-type-caption)] text-fg-dim">
+              {seg.ms} ms
+            </span>
           </div>
         ))}
       </div>

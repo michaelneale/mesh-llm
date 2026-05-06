@@ -7,9 +7,10 @@ export function useLoadingGhostShimmer<TElement extends HTMLElement>(rootRef: Re
   const scopeRef = useRef<Scope | null>(null)
 
   useEffect(() => {
-    const prefersReducedMotion = typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (prefersReducedMotion) return undefined
 
     scopeRef.current = createScope({ root: rootRef }).add(() => {
@@ -20,7 +21,7 @@ export function useLoadingGhostShimmer<TElement extends HTMLElement>(rootRef: Re
         delay: stagger(70),
         loop: true,
         loopDelay: 280,
-        ease: 'inOutSine',
+        ease: 'inOutSine'
       })
     })
 

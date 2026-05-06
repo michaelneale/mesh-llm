@@ -10,17 +10,20 @@ use self::discovery::{nostr_rediscovery, start_new_mesh};
 use self::interactive::InitialPromptMode;
 use self::local::{
     add_runtime_local_target, add_serving_assignment, advertise_model_ready, local_process_payload,
-    remove_runtime_local_target, remove_serving_assignment, set_advertised_model_context,
-    start_runtime_local_model, start_runtime_split_model, stop_split_generation_cleanup,
-    withdraw_advertised_model, LocalRuntimeModelHandle, LocalRuntimeModelStartSpec,
-    ManagedModelController, RuntimeEvent, SplitCoordinatorAck, SplitRuntimeStart,
+    model_fits_runtime_capacity, remove_runtime_local_target, remove_serving_assignment,
+    resolved_model_name, runtime_model_required_bytes, set_advertised_model_context,
+    start_runtime_local_model, start_runtime_split_model, startup_runtime_plan,
+    stop_split_generation_cleanup, withdraw_advertised_model, LocalRuntimeModelHandle,
+    LocalRuntimeModelStartSpec, ManagedModelController, RuntimeEvent, SplitCoordinatorAck,
+    SplitRuntimeReason, SplitRuntimeStart, StartupRuntimePlan,
 };
 use self::proxy::{api_proxy, bootstrap_proxy};
 use crate::api;
 use crate::cli::output::{
-    emit_event, ConsoleSessionMode, DashboardAcceptedRequestBucket, DashboardEndpointRow,
-    DashboardModelRow, DashboardProcessRow, DashboardSnapshot, DashboardSnapshotFuture,
-    DashboardSnapshotProvider, OutputEvent, RuntimeStatus,
+    emit_event, sort_dashboard_endpoint_rows, ConsoleSessionMode, DashboardAcceptedRequestBucket,
+    DashboardEndpointRow, DashboardLaunchPlan, DashboardModelLane, DashboardModelRow,
+    DashboardProcessRow, DashboardSnapshot, DashboardSnapshotFuture, DashboardSnapshotProvider,
+    OutputEvent, RuntimeStatus,
 };
 use crate::cli::{Cli, Command, RuntimeSurface};
 use crate::crypto::{
@@ -39,7 +42,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use skippy_protocol::FlashAttentionType;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -51,6 +54,17 @@ use tracing_subscriber::fmt::MakeWriter;
 use zeroize::Zeroizing;
 
 const PRETTY_DASHBOARD_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(5);
+const DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+const DASHBOARD_FIRST_PAINT_TIMEOUT: Duration = Duration::from_secs(2);
+
+type DashboardContextUsage =
+    Arc<tokio::sync::Mutex<HashMap<String, HashMap<DashboardContextUsageSource, u64>>>>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct DashboardContextUsageSource {
+    port: u16,
+    pid: u32,
+}
 
 thread_local! {
     static ROUTING_TRACING_STDERR: Cell<bool> = const { Cell::new(false) };
@@ -177,6 +191,42 @@ fn write_stderr_line(message: &str) -> io::Result<()> {
     stderr.flush()
 }
 
+fn configure_skippy_native_logging(runtime_dir: Option<&Path>) -> Option<PathBuf> {
+    let Some(runtime_dir) = runtime_dir else {
+        skippy_runtime::suppress_native_logs();
+        tracing::debug!("suppressing skippy native logs without an instance runtime directory");
+        return None;
+    };
+
+    let log_dir = runtime_dir.join("logs");
+    if let Err(err) = std::fs::create_dir_all(&log_dir) {
+        tracing::warn!(
+            path = %log_dir.display(),
+            error = %err,
+            "failed to create skippy native log directory; suppressing native logs"
+        );
+        skippy_runtime::suppress_native_logs();
+        return None;
+    }
+
+    let native_log_path = log_dir.join("skippy-native.log");
+    if let Err(err) = skippy_runtime::redirect_native_logs_to_file(&native_log_path) {
+        tracing::warn!(
+            path = %native_log_path.display(),
+            error = %err,
+            "failed to redirect skippy native logs; suppressing native logs"
+        );
+        skippy_runtime::suppress_native_logs();
+        return None;
+    }
+
+    tracing::info!(
+        path = %native_log_path.display(),
+        "redirecting skippy native logs away from stdout"
+    );
+    Some(native_log_path)
+}
+
 fn current_time_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -195,6 +245,8 @@ fn publication_state_from_update(update: nostr::PublishStateUpdate) -> api::Publ
 struct RuntimeDashboardSnapshotProvider {
     node: mesh::Node,
     local_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    local_context_usage: DashboardContextUsage,
+    runtime_data_collector: crate::runtime_data::RuntimeDataCollector,
     plugin_manager: Option<plugin::PluginManager>,
     api_port: u16,
     console_port: Option<u16>,
@@ -225,14 +277,17 @@ impl RuntimeDashboardSnapshotProvider {
     fn new(
         node: mesh::Node,
         local_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+        local_context_usage: DashboardContextUsage,
         plugin_manager: Option<plugin::PluginManager>,
         api_port: u16,
         console_port: Option<u16>,
         headless: bool,
     ) -> Self {
         Self {
+            runtime_data_collector: node.runtime_data_collector(),
             node,
             local_processes,
+            local_context_usage,
             plugin_manager,
             api_port,
             console_port,
@@ -255,8 +310,10 @@ impl RuntimeDashboardSnapshotProvider {
         options: RuntimeDashboardSnapshotProviderTestOptions,
     ) -> Self {
         Self {
+            runtime_data_collector: node.runtime_data_collector(),
             node,
             local_processes,
+            local_context_usage: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             plugin_manager,
             api_port: options.api_port,
             console_port: options.console_port,
@@ -296,10 +353,107 @@ impl RuntimeDashboardSnapshotProvider {
     }
 }
 
+fn dashboard_inventory_value_for_model<'a, T>(
+    values_by_name: &'a HashMap<String, T>,
+    model_name: &str,
+) -> Option<&'a T> {
+    dashboard_inventory_model_keys(model_name)
+        .into_iter()
+        .find_map(|key| values_by_name.get(&key))
+}
+
+fn dashboard_context_usage_for_model(
+    values_by_name: &HashMap<String, HashMap<DashboardContextUsageSource, u64>>,
+    model_name: &str,
+) -> Option<u64> {
+    dashboard_inventory_model_keys(model_name)
+        .into_iter()
+        .filter_map(|key| values_by_name.get(&key))
+        .flat_map(|source_values| source_values.values().copied())
+        .max()
+}
+
+fn dashboard_lanes_for_model(
+    snapshots_by_model: &BTreeMap<String, crate::runtime_data::RuntimeLlamaRuntimeSnapshot>,
+    model_name: &str,
+) -> Option<Vec<DashboardModelLane>> {
+    let snapshot = snapshots_by_model.get(model_name)?;
+
+    let mut lanes = snapshot
+        .items
+        .slots
+        .iter()
+        .map(|slot| DashboardModelLane {
+            index: dashboard_lane_index_for_slot(slot),
+            active: slot.is_processing,
+        })
+        .collect::<Vec<_>>();
+    lanes.sort_by_key(|lane| lane.index);
+    (!lanes.is_empty()).then_some(lanes)
+}
+
+fn dashboard_lane_index_for_slot(slot: &crate::runtime_data::RuntimeLlamaSlotItem) -> usize {
+    slot.id
+        .and_then(|id| usize::try_from(id).ok())
+        .unwrap_or(slot.index)
+}
+
+fn dashboard_quantization_from_model_name(model_name: &str) -> Option<String> {
+    dashboard_inventory_model_keys(model_name)
+        .into_iter()
+        .map(|key| models::inventory::derive_quantization_type(&key))
+        .map(|quantization| quantization.trim().trim_end_matches(".gguf").to_string())
+        .find(|quantization| !quantization.is_empty())
+}
+
+fn dashboard_inventory_model_keys(model_name: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    push_dashboard_inventory_model_key(&mut keys, model_name.trim());
+    if let Some(base_name) = model_name.trim().rsplit('/').next() {
+        push_dashboard_inventory_model_key(&mut keys, base_name);
+    }
+
+    let seeds = keys.clone();
+    for key in seeds {
+        if let Some(without_gguf_variant) = strip_gguf_variant_marker(&key) {
+            push_dashboard_inventory_model_key(&mut keys, &without_gguf_variant);
+        }
+        push_dashboard_inventory_model_key(&mut keys, &key.replace(':', "-"));
+        if key.to_ascii_lowercase().ends_with(".gguf") {
+            push_dashboard_inventory_model_key(&mut keys, &key[..key.len().saturating_sub(5)]);
+        }
+    }
+    keys
+}
+
+fn strip_gguf_variant_marker(model_name: &str) -> Option<String> {
+    let lower = model_name.to_ascii_lowercase();
+    for marker in ["-gguf:", ":gguf:"] {
+        if let Some(index) = lower.find(marker) {
+            let variant_start = index + marker.len();
+            return Some(format!(
+                "{}-{}",
+                &model_name[..index],
+                &model_name[variant_start..]
+            ));
+        }
+    }
+    None
+}
+
+fn push_dashboard_inventory_model_key(keys: &mut Vec<String>, key: &str) {
+    let key = key.trim();
+    if !key.is_empty() && !keys.iter().any(|candidate| candidate == key) {
+        keys.push(key.to_string());
+    }
+}
+
 impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
     fn snapshot(&self) -> DashboardSnapshotFuture<'_> {
         let node = self.node.clone();
         let local_processes = self.local_processes.clone();
+        let local_context_usage = self.local_context_usage.clone();
+        let runtime_data_collector = self.runtime_data_collector.clone();
         let api_port = self.api_port;
         let console_port = self.console_port;
         let headless = self.headless;
@@ -308,35 +462,48 @@ impl DashboardSnapshotProvider for RuntimeDashboardSnapshotProvider {
 
         Box::pin(async move {
             let process_rows = local_processes.lock().await.clone();
+            let context_usage_by_name = local_context_usage.lock().await.clone();
+            let llama_runtime_by_model = runtime_data_collector.runtime_llama_snapshots_by_model();
             let request_metrics = node.local_request_metrics_snapshot();
             let accepted_request_counts_len = request_metrics.accepted_request_counts.len();
             let inventory_snapshot = provider.inventory_snapshot().await;
             let metadata_by_name = inventory_snapshot.metadata_by_name;
+            let size_by_name = inventory_snapshot.size_by_name;
             let mut loaded_model_rows = Vec::with_capacity(process_rows.len());
             for process in &process_rows {
-                let metadata = metadata_by_name.get(&process.name);
-                loaded_model_rows.push(DashboardModelRow {
-                    name: process.name.clone(),
-                    role: dashboard_role_for_local_process(process),
-                    status: runtime_status_from_process_status(&process.status),
-                    port: Some(process.port),
-                    device: Some(process.backend.clone()),
-                    slots: Some(process.slots),
-                    quantization: metadata
-                        .map(|model| model.quantization_type.trim())
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string),
-                    ctx_size: node
-                        .local_model_context_length(&process.name)
+                let metadata =
+                    dashboard_inventory_value_for_model(&metadata_by_name, &process.name);
+                let quantization = metadata
+                    .map(|model| model.quantization_type.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| dashboard_quantization_from_model_name(&process.name));
+                let ctx_size = if let Some(context_length) = process.context_length {
+                    Some(context_length)
+                } else {
+                    node.local_model_context_length(&process.name)
                         .await
                         .or_else(|| {
                             metadata
                                 .map(|model| model.context_length)
                                 .filter(|value| *value > 0)
-                        }),
-                    file_size_gb: inventory_snapshot
-                        .size_by_name
-                        .get(&process.name)
+                        })
+                };
+                loaded_model_rows.push(DashboardModelRow {
+                    name: process.name.clone(),
+                    role: dashboard_role_for_local_process(process),
+                    status: runtime_status_from_process_status(&process.status),
+                    port: Some(process.port),
+                    device: None,
+                    slots: Some(process.slots),
+                    quantization,
+                    ctx_size,
+                    ctx_used_tokens: dashboard_context_usage_for_model(
+                        &context_usage_by_name,
+                        &process.name,
+                    ),
+                    lanes: dashboard_lanes_for_model(&llama_runtime_by_model, &process.name),
+                    file_size_gb: dashboard_inventory_value_for_model(&size_by_name, &process.name)
                         .map(|size| *size as f64 / 1e9),
                 });
             }
@@ -437,22 +604,6 @@ fn build_dashboard_endpoint_rows(
     rows
 }
 
-fn sort_dashboard_endpoint_rows(rows: &mut [DashboardEndpointRow]) {
-    rows.sort_by(|left, right| {
-        dashboard_endpoint_sort_bucket(left)
-            .cmp(&dashboard_endpoint_sort_bucket(right))
-            .then_with(|| left.label.cmp(&right.label))
-    });
-}
-
-fn dashboard_endpoint_sort_bucket(row: &DashboardEndpointRow) -> u8 {
-    if row.label.starts_with("Plugin: ") {
-        1
-    } else {
-        0
-    }
-}
-
 #[allow(dead_code)]
 async fn plugin_dashboard_endpoint_rows(
     plugin_manager: &plugin::PluginManager,
@@ -525,6 +676,120 @@ async fn remove_dashboard_process(
         .retain(|process| process.name != model_name);
 }
 
+async fn refresh_dashboard_context_usage(
+    shared: &DashboardContextUsage,
+    model_name: &str,
+    handle: &LocalRuntimeModelHandle,
+) {
+    upsert_dashboard_context_usage(
+        shared,
+        model_name,
+        dashboard_context_usage_source(handle),
+        handle.ctx_used_tokens(),
+    )
+    .await;
+}
+
+fn publish_runtime_llama_slots(
+    producer: Option<&crate::runtime_data::RuntimeDataProducer>,
+    model_name: &str,
+    handle: &LocalRuntimeModelHandle,
+) {
+    let Some(producer) = producer else {
+        return;
+    };
+    if let Some(snapshot) = handle.llama_slots_snapshot(model_name) {
+        producer.publish_llama_slots_snapshot(snapshot);
+    }
+}
+
+fn publish_runtime_llama_unavailable(
+    producer: Option<&crate::runtime_data::RuntimeDataProducer>,
+    model_name: &str,
+) {
+    let Some(producer) = producer else {
+        return;
+    };
+    producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
+        status: crate::runtime_data::RuntimeLlamaEndpointStatus::Unavailable,
+        model: Some(model_name.to_string()),
+        last_attempt_unix_ms: Some(current_time_unix_ms()),
+        last_success_unix_ms: None,
+        error: None,
+        slots: Vec::new(),
+    });
+}
+
+async fn refresh_dashboard_context_usage_batch(
+    shared: &DashboardContextUsage,
+    updates: Vec<(String, DashboardContextUsageSource, Option<u64>)>,
+) {
+    let mut guard = shared.lock().await;
+    for (model_name, source, ctx_used_tokens) in updates {
+        if let Some(ctx_used_tokens) = ctx_used_tokens {
+            guard
+                .entry(model_name)
+                .or_default()
+                .insert(source, ctx_used_tokens);
+        } else {
+            remove_dashboard_context_usage_source_locked(&mut guard, &model_name, source);
+        }
+    }
+}
+
+async fn upsert_dashboard_context_usage(
+    shared: &DashboardContextUsage,
+    model_name: &str,
+    source: DashboardContextUsageSource,
+    ctx_used_tokens: Option<u64>,
+) {
+    let mut guard = shared.lock().await;
+    if let Some(ctx_used_tokens) = ctx_used_tokens {
+        guard
+            .entry(model_name.to_string())
+            .or_default()
+            .insert(source, ctx_used_tokens);
+    } else {
+        remove_dashboard_context_usage_source_locked(&mut guard, model_name, source);
+    }
+}
+
+async fn remove_dashboard_context_usage(
+    shared: &DashboardContextUsage,
+    model_name: &str,
+    handle: &LocalRuntimeModelHandle,
+) {
+    let mut guard = shared.lock().await;
+    remove_dashboard_context_usage_source_locked(
+        &mut guard,
+        model_name,
+        dashboard_context_usage_source(handle),
+    );
+}
+
+fn remove_dashboard_context_usage_source_locked(
+    guard: &mut HashMap<String, HashMap<DashboardContextUsageSource, u64>>,
+    model_name: &str,
+    source: DashboardContextUsageSource,
+) {
+    let should_remove_model = if let Some(source_values) = guard.get_mut(model_name) {
+        source_values.remove(&source);
+        source_values.is_empty()
+    } else {
+        false
+    };
+    if should_remove_model {
+        guard.remove(model_name);
+    }
+}
+
+fn dashboard_context_usage_source(handle: &LocalRuntimeModelHandle) -> DashboardContextUsageSource {
+    DashboardContextUsageSource {
+        port: handle.port,
+        pid: handle.pid(),
+    }
+}
+
 struct StartupLocalModelTask {
     node: mesh::Node,
     tunnel_mgr: tunnel::Manager,
@@ -545,6 +810,7 @@ struct StartupLocalModelTask {
     split: bool,
     stop_rx: tokio::sync::watch::Receiver<bool>,
     dashboard_processes: Arc<tokio::sync::Mutex<Vec<api::RuntimeProcessPayload>>>,
+    dashboard_context_usage: DashboardContextUsage,
     console_state: Option<api::MeshApi>,
     api_port: u16,
     startup_ready_reporter: StartupReadyReporter,
@@ -576,6 +842,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         split,
         mut stop_rx,
         dashboard_processes,
+        dashboard_context_usage,
         console_state,
         api_port,
         startup_ready_reporter,
@@ -585,6 +852,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         interactive_control_tx,
         interactive_console_state,
     } = params;
+
+    let runtime_data_producer = if let Some(cs) = console_state.as_ref() {
+        Some(cs.runtime_data_producer().await)
+    } else {
+        None
+    };
 
     let startup_load_guard = startup_load_gate.lock().await;
     let start_spec = LocalRuntimeModelStartSpec {
@@ -600,6 +873,12 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         flash_attention_override: flash_attention,
         slots,
     };
+    let local_capacity = pinned_gpu
+        .as_ref()
+        .map(|gpu| gpu.vram_bytes)
+        .unwrap_or_else(|| node.vram_bytes());
+    let model_bytes = election::total_model_bytes(&model_path);
+    let runtime_plan = startup_runtime_plan(split, local_capacity, model_bytes);
     let (
         mut loaded_name,
         mut handle,
@@ -607,45 +886,60 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         mut split_cleanup,
         mut split_event_rx,
         mut coordinator_task,
-    ) = if split {
-        match start_runtime_split_model(start_spec, &model_ref).await {
-            Ok(SplitRuntimeStart::Started(mut loaded)) => (
-                loaded.loaded_name,
-                loaded.handle,
-                loaded.death_rx,
-                loaded.cleanup.take(),
-                loaded.coordinator_rx.take(),
-                loaded.coordinator_task.take(),
-            ),
-            Ok(SplitRuntimeStart::Standby { coordinator }) => {
-                drop(startup_load_guard);
+    ) = match runtime_plan {
+        StartupRuntimePlan::Split { reason } => {
+            if reason == SplitRuntimeReason::LocalCapacity {
+                let required_bytes = runtime_model_required_bytes(model_bytes);
                 let _ = emit_event(OutputEvent::Info {
                     message: format!(
-                        "Split runtime coordinator is {}; standing by for stage assignment",
-                        coordinator.fmt_short()
+                        "Model {model_name} exceeds local runtime capacity; attempting split runtime"
                     ),
-                    context: Some(format!("model={model_ref}")),
+                    context: Some(format!(
+                        "model={model_name} local_capacity_gb={:.1} required_capacity_gb={:.1} model_size_gb={:.1}",
+                        local_capacity as f64 / 1e9,
+                        required_bytes as f64 / 1e9,
+                        model_bytes as f64 / 1e9
+                    )),
                 });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
-                }
-                return;
             }
-            Err(err) => {
-                let _ = emit_event(OutputEvent::Error {
-                    message: format!("Failed to start model {model_name}: {err:#}"),
-                    context: Some(format!("model={model_name}")),
-                });
-                update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
-                if let Some(cs) = console_state {
-                    cs.update(false, false).await;
+            match start_runtime_split_model(start_spec, &model_ref).await {
+                Ok(SplitRuntimeStart::Started(mut loaded)) => (
+                    loaded.loaded_name,
+                    loaded.handle,
+                    loaded.death_rx,
+                    loaded.cleanup.take(),
+                    loaded.coordinator_rx.take(),
+                    loaded.coordinator_task.take(),
+                ),
+                Ok(SplitRuntimeStart::Standby { coordinator }) => {
+                    drop(startup_load_guard);
+                    let _ = emit_event(OutputEvent::Info {
+                        message: format!(
+                            "Split runtime coordinator is {}; standing by for stage assignment",
+                            coordinator.fmt_short()
+                        ),
+                        context: Some(format!("model={model_ref}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
                 }
-                return;
+                Err(err) => {
+                    let _ = emit_event(OutputEvent::Error {
+                        message: format!("Failed to start model {model_name}: {err:#}"),
+                        context: Some(format!("model={model_name}")),
+                    });
+                    update_startup_target(&target_tx, &model_name, election::InferenceTarget::None);
+                    if let Some(cs) = console_state {
+                        cs.update(false, false).await;
+                    }
+                    return;
+                }
             }
         }
-    } else {
-        match start_runtime_local_model(start_spec).await {
+        StartupRuntimePlan::Local => match start_runtime_local_model(start_spec).await {
             Ok((loaded_name, handle, death_rx)) => {
                 (loaded_name, handle, death_rx, None, None, None)
             }
@@ -660,7 +954,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                 }
                 return;
             }
-        }
+        },
     };
     drop(startup_load_guard);
 
@@ -681,6 +975,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         handle.context_length,
     );
     upsert_dashboard_process(&dashboard_processes, payload.clone()).await;
+    refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
+    publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
     if let Some(ref cs) = console_state {
         cs.upsert_local_process(payload).await;
         cs.update(true, true).await;
@@ -693,10 +989,7 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         role: Some(handle.backend.clone()),
     });
     let _ = emit_event(OutputEvent::Info {
-        message: format!(
-            "Startup-loaded {} model '{}' on :{}",
-            handle.backend, loaded_name, handle.port
-        ),
+        message: format!("Startup-loaded model '{}' on :{}", loaded_name, handle.port),
         context: None,
     });
 
@@ -715,8 +1008,15 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         }
     }
 
+    let mut context_usage_tick = tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
+    context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
         tokio::select! {
+            _ = context_usage_tick.tick() => {
+                refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
+                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
+            }
             _ = &mut death_rx => {
                 let _ = emit_event(OutputEvent::Warning {
                     message: format!("Startup model '{loaded_name}' exited unexpectedly"),
@@ -767,7 +1067,19 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
                     cs.update(true, true).await;
                 }
                 let old_handle = std::mem::replace(&mut handle, next.handle);
+                remove_dashboard_context_usage(
+                    &dashboard_context_usage,
+                    &old_loaded_name,
+                    &old_handle,
+                )
+                .await;
+                if old_loaded_name != next.loaded_name {
+                    publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &old_loaded_name);
+                }
                 loaded_name = next.loaded_name;
+                refresh_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle)
+                    .await;
+                publish_runtime_llama_slots(runtime_data_producer.as_ref(), &loaded_name, &handle);
                 death_rx = next.death_rx;
                 split_cleanup = next.cleanup.take();
                 let _ = event.ack.send(SplitCoordinatorAck::Accepted);
@@ -812,6 +1124,8 @@ async fn startup_local_model_loop(params: StartupLocalModelTask) {
         ))
         .await;
     }
+    remove_dashboard_context_usage(&dashboard_context_usage, &loaded_name, &handle).await;
+    publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &loaded_name);
     handle.shutdown().await;
     if let Some(cleanup) = split_cleanup.take() {
         stop_split_generation_cleanup(&node, cleanup, u64::MAX).await;
@@ -871,7 +1185,10 @@ fn emit_shutdown(reason: Option<String>) {
 struct StartupReadyReporter {
     ready_by_model: Arc<Mutex<HashMap<String, bool>>>,
     emitted: Arc<AtomicBool>,
+    shutdown_requested: Arc<AtomicBool>,
     primary_model: String,
+    api_url: String,
+    console_url: Option<String>,
     api_port: u16,
     console_port: Option<u16>,
 }
@@ -880,6 +1197,8 @@ impl StartupReadyReporter {
     fn new(
         models: &[String],
         primary_model: String,
+        api_url: String,
+        console_url: Option<String>,
         api_port: u16,
         console_port: Option<u16>,
     ) -> Self {
@@ -887,13 +1206,20 @@ impl StartupReadyReporter {
         Self {
             ready_by_model: Arc::new(Mutex::new(ready_by_model)),
             emitted: Arc::new(AtomicBool::new(false)),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
             primary_model,
+            api_url,
+            console_url,
             api_port,
             console_port,
         }
     }
 
-    fn mark_ready_and_maybe_emit(&self, model_name: &str) {
+    fn mark_shutdown_requested(&self) {
+        self.shutdown_requested.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_ready_and_build_event(&self, model_name: &str) -> Option<OutputEvent> {
         let models_count = {
             let mut ready_by_model = self
                 .ready_by_model
@@ -909,36 +1235,41 @@ impl StartupReadyReporter {
             }
         };
 
-        let Some(models_count) = models_count else {
-            return;
+        let models_count = models_count?;
+
+        if self.shutdown_requested.load(Ordering::SeqCst) {
+            return None;
         };
 
         if self.emitted.swap(true, Ordering::SeqCst) {
-            return;
+            return None;
         }
 
-        let api_url = format!("http://localhost:{}", self.api_port);
-        let console_url = self
-            .console_port
-            .map(|port| format!("http://localhost:{port}"));
         let pi_command = Some(format!(
             "mesh-llm pi --host 127.0.0.1:{} --model {}",
             self.api_port,
             crate::cli::shell::single_quote(&self.primary_model)
         ));
         let goose_command = Some(format!(
-            "GOOSE_PROVIDER=openai OPENAI_HOST={api_url} OPENAI_API_KEY=mesh GOOSE_MODEL={} goose session",
-            self.primary_model
+            "GOOSE_PROVIDER=openai OPENAI_HOST={} OPENAI_API_KEY=mesh GOOSE_MODEL={} goose session",
+            self.api_url, self.primary_model
         ));
-        let _ = emit_event(OutputEvent::RuntimeReady {
-            api_url,
-            console_url,
+        Some(OutputEvent::RuntimeReady {
+            api_url: self.api_url.clone(),
+            console_url: self.console_url.clone(),
             api_port: self.api_port,
             console_port: self.console_port,
             models_count: Some(models_count),
             pi_command,
             goose_command,
-        });
+        })
+    }
+
+    fn mark_ready_and_maybe_emit(&self, model_name: &str) {
+        let Some(event) = self.mark_ready_and_build_event(model_name) else {
+            return;
+        };
+        let _ = emit_event(event);
         let _ = crate::cli::output::OutputManager::global().schedule_ready_prompt();
     }
 }
@@ -1173,7 +1504,7 @@ pub(crate) async fn run() -> Result<()> {
         autoupdate::check_for_update().await;
     }
 
-    if crate::cli::commands::dispatch(&cli).await? {
+    if should_short_circuit_after_dispatch(crate::cli::commands::dispatch(&cli).await?) {
         return Ok(());
     }
 
@@ -1752,6 +2083,667 @@ fn should_show_serve_config_help(
         && cli.discover.is_none()
 }
 
+fn should_short_circuit_after_dispatch(dispatched: bool) -> bool {
+    dispatched
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InteractiveSpawnRequest {
+    prompt_mode: InitialPromptMode,
+}
+
+fn serve_path_interactive_spawn_request(
+    input_handler_enabled: bool,
+    interactive_started: &AtomicBool,
+    stdin_is_tty: bool,
+) -> Option<InteractiveSpawnRequest> {
+    if !input_handler_enabled || !stdin_is_tty {
+        return None;
+    }
+    if interactive_started.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    Some(InteractiveSpawnRequest {
+        prompt_mode: InitialPromptMode::Deferred,
+    })
+}
+
+fn passive_path_interactive_spawn_request(
+    console_session_mode: Option<ConsoleSessionMode>,
+    stdin_is_tty: bool,
+) -> Option<InteractiveSpawnRequest> {
+    if console_session_mode.is_some() && stdin_is_tty {
+        Some(InteractiveSpawnRequest {
+            prompt_mode: InitialPromptMode::Immediate,
+        })
+    } else {
+        None
+    }
+}
+
+fn startup_launch_plan(
+    startup_models: &[StartupModelPlan],
+    primary_model_name: &str,
+    api_port: u16,
+    console_port: Option<u16>,
+    headless: bool,
+    default_parallel: Option<usize>,
+    default_backend_device: Option<String>,
+) -> DashboardLaunchPlan {
+    let mut llama_process_rows = Vec::new();
+
+    let mut model_rows: Vec<_> = startup_models
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let model_name = startup_model_display_name(model);
+            llama_process_rows.push(DashboardProcessRow {
+                name: format!("llama-server {model_name}"),
+                backend: String::new(),
+                status: RuntimeStatus::Loading,
+                port: 0,
+                pid: 0,
+            });
+
+            DashboardModelRow {
+                name: model_name,
+                role: Some(if index == 0 { "primary" } else { "model" }.to_string()),
+                status: RuntimeStatus::Loading,
+                port: None,
+                device: model
+                    .pinned_gpu
+                    .as_ref()
+                    .map(|gpu| gpu.backend_device.clone())
+                    .or_else(|| model.gpu_id.clone())
+                    .or_else(|| default_backend_device.clone()),
+                slots: model.parallel.or(default_parallel),
+                quantization: None,
+                ctx_size: model.ctx_size,
+                ctx_used_tokens: None,
+                lanes: None,
+                file_size_gb: None,
+            }
+        })
+        .collect();
+
+    let mut webserver_rows = vec![DashboardEndpointRow {
+        label: "API".to_string(),
+        status: RuntimeStatus::NotReady,
+        url: format!("http://localhost:{api_port}"),
+        port: api_port,
+        pid: None,
+    }];
+    if !headless {
+        if let Some(console_port) = console_port {
+            webserver_rows.push(DashboardEndpointRow {
+                label: "Console".to_string(),
+                status: RuntimeStatus::NotReady,
+                url: format!("http://localhost:{console_port}"),
+                port: console_port,
+                pid: None,
+            });
+        }
+    }
+    sort_dashboard_endpoint_rows(&mut webserver_rows);
+
+    if startup_models.is_empty() {
+        llama_process_rows.push(DashboardProcessRow {
+            name: format!("llama-server {primary_model_name}"),
+            backend: String::new(),
+            status: RuntimeStatus::Loading,
+            port: 0,
+            pid: 0,
+        });
+        model_rows.push(DashboardModelRow {
+            name: primary_model_name.to_string(),
+            role: Some("primary".to_string()),
+            status: RuntimeStatus::Loading,
+            port: None,
+            device: default_backend_device,
+            slots: default_parallel,
+            quantization: None,
+            ctx_size: None,
+            ctx_used_tokens: None,
+            lanes: None,
+            file_size_gb: None,
+        });
+    }
+
+    DashboardLaunchPlan {
+        llama_process_rows,
+        webserver_rows,
+        loaded_model_rows: model_rows,
+    }
+}
+
+fn serve_path_builtin_endpoint_ready_events(
+    api_url: String,
+    console_url: Option<String>,
+    headless: bool,
+) -> Vec<OutputEvent> {
+    let mut events = vec![OutputEvent::ApiReady { url: api_url }];
+
+    if !headless {
+        if let Some(console_url) = console_url {
+            events.push(OutputEvent::WebserverReady { url: console_url });
+        }
+    }
+
+    events
+}
+
+fn socket_addr_http_url(addr: std::net::SocketAddr) -> String {
+    format!("http://{addr}")
+}
+
+fn listener_http_url(
+    listener: &tokio::net::TcpListener,
+    fallback_port: u16,
+    label: &str,
+) -> String {
+    listener_http_endpoint(listener, fallback_port, label).0
+}
+
+fn listener_http_endpoint(
+    listener: &tokio::net::TcpListener,
+    fallback_port: u16,
+    label: &str,
+) -> (String, u16) {
+    listener
+        .local_addr()
+        .map(|addr| (socket_addr_http_url(addr), addr.port()))
+        .unwrap_or_else(|err| {
+            tracing::warn!("{label}: failed to read listener address: {err}");
+            (format!("http://localhost:{fallback_port}"), fallback_port)
+        })
+}
+
+async fn bind_runtime_tcp_listener(
+    port: u16,
+    listen_all: bool,
+    label: &str,
+) -> Result<tokio::net::TcpListener> {
+    let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
+    tokio::net::TcpListener::bind(format!("{addr}:{port}"))
+        .await
+        .with_context(|| format!("Failed to bind {label} to port {port}"))
+}
+
+fn startup_default_backend_device(binary_flavor: Option<backend::BinaryFlavor>) -> Option<String> {
+    let flavor = binary_flavor.or_else(platform_default_backend_flavor);
+    if flavor == Some(backend::BinaryFlavor::Metal) {
+        backend::backend_device_for_flavor(0, backend::BinaryFlavor::Metal)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_default_backend_flavor() -> Option<backend::BinaryFlavor> {
+    Some(backend::BinaryFlavor::Metal)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_default_backend_flavor() -> Option<backend::BinaryFlavor> {
+    None
+}
+
+fn startup_model_display_name(model: &StartupModelPlan) -> String {
+    let declared_ref = model.declared_ref.trim();
+    if declared_ref.is_empty() {
+        resolved_model_name(&model.resolved_path)
+    } else {
+        declared_ref.to_string()
+    }
+}
+
+async fn wait_for_dashboard_first_paint(
+    first_paint_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+) {
+    match tokio::time::timeout(DASHBOARD_FIRST_PAINT_TIMEOUT, first_paint_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(err))) => {
+            tracing::warn!("interactive dashboard first paint failed: {err}");
+        }
+        Ok(Err(_)) => {
+            tracing::warn!(
+                "interactive dashboard first paint channel closed before acknowledgement"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                "interactive dashboard first paint did not acknowledge before startup continued"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_active_serve_path_spawn_gate_behavior() {
+    let interactive_started = AtomicBool::new(false);
+
+    let request = serve_path_interactive_spawn_request(true, &interactive_started, true)
+        .expect("active serve path should request interactive startup before llama_ready");
+    assert_eq!(request.prompt_mode, InitialPromptMode::Deferred);
+    interactive::assert_deferred_initial_prompt_waits_for_runtime_ready();
+    assert_eq!(
+        interactive::interactive_entry_kind(Some(ConsoleSessionMode::InteractiveDashboard)),
+        interactive::InteractiveEntryKind::Tui
+    );
+    assert_eq!(
+        serve_path_interactive_spawn_request(true, &interactive_started, true),
+        None,
+        "the active serve path should only request interactive startup once"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_interactive_handler_spawns_once_across_startup_callbacks() {
+    let interactive_started = AtomicBool::new(false);
+
+    let request = serve_path_interactive_spawn_request(true, &interactive_started, true)
+        .expect("console bootstrap should claim the one-shot interactive spawn gate");
+    assert_eq!(request.prompt_mode, InitialPromptMode::Deferred);
+
+    assert_eq!(
+        serve_path_interactive_spawn_request(true, &interactive_started, true),
+        None,
+        "later startup or election callbacks must not spawn a second interactive handler"
+    );
+    assert_eq!(
+        serve_path_interactive_spawn_request(false, &interactive_started, true),
+        None,
+        "disabling the input handler later must not reopen the one-shot spawn gate"
+    );
+    assert!(
+        interactive_started.load(Ordering::Acquire),
+        "the console-bootstrap spawn should consume the one-shot gate permanently"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_passive_path_immediate_spawn_behavior() {
+    let request = passive_path_interactive_spawn_request(
+        Some(ConsoleSessionMode::InteractiveDashboard),
+        true,
+    )
+    .expect("passive/client pretty sessions should request interactive startup immediately");
+
+    assert_eq!(request.prompt_mode, InitialPromptMode::Immediate);
+    assert_eq!(
+        interactive::interactive_entry_kind(Some(ConsoleSessionMode::InteractiveDashboard)),
+        interactive::InteractiveEntryKind::Tui
+    );
+    assert_eq!(
+        passive_path_interactive_spawn_request(
+            Some(ConsoleSessionMode::InteractiveDashboard),
+            false
+        ),
+        None,
+        "stdin must still be a TTY before passive/client startup requests interactive input"
+    );
+}
+
+#[cfg(test)]
+pub(crate) async fn assert_non_serving_dispatch_short_circuit_behavior() {
+    let cli = Cli::parse_from(["mesh-llm", "models", "installed"]);
+
+    assert!(matches!(
+        cli.command.as_ref(),
+        Some(Command::Models {
+            command: crate::cli::models::ModelsCommand::Installed { json: false }
+        })
+    ));
+
+    let dispatched = crate::cli::commands::dispatch(&cli)
+        .await
+        .expect("models installed should stay on the plain dispatch path");
+    assert!(dispatched);
+    assert_eq!(
+        initial_console_session_mode_for_surface(None, ConsoleSessionMode::InteractiveDashboard,),
+        ConsoleSessionMode::None,
+        "non-serving commands must keep the plain output surface instead of interactive startup"
+    );
+    assert!(
+        should_short_circuit_after_dispatch(dispatched),
+        "non-serving commands must return before runtime startup can reach interactive setup"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_quitting_during_startup_cancels_without_late_ready_render() {
+    let reporter = StartupReadyReporter::new(
+        &["Qwen3-8B-Q4_K_M".to_string()],
+        "Qwen3-8B-Q4_K_M".to_string(),
+        "http://127.0.0.1:9337".to_string(),
+        Some("http://127.0.0.1:3131".to_string()),
+        9337,
+        Some(3131),
+    );
+    reporter.mark_shutdown_requested();
+    assert!(
+        reporter
+            .mark_ready_and_build_event("Qwen3-8B-Q4_K_M")
+            .is_none(),
+        "startup shutdown should cancel any late RuntimeReady emission"
+    );
+    crate::cli::output::assert_shutdown_suppresses_late_ready_render();
+}
+
+#[cfg(test)]
+pub(crate) fn assert_startup_launch_plan_describes_planned_runtime_before_process_start() {
+    let startup_models = vec![
+        StartupModelPlan {
+            declared_ref: "unsloth/Model-A-GGUF:Q4_K_M".to_string(),
+            resolved_path: PathBuf::from("/tmp/Model-A-Q4_K_M.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(8192),
+            gpu_id: Some("GPU0".to_string()),
+            pinned_gpu: None,
+            parallel: Some(2),
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
+        },
+        StartupModelPlan {
+            declared_ref: "Model-B".to_string(),
+            resolved_path: PathBuf::from("/tmp/Model-B.gguf"),
+            mmproj_path: None,
+            ctx_size: Some(4096),
+            gpu_id: None,
+            pinned_gpu: Some(StartupPinnedGpuTarget {
+                index: 1,
+                stable_id: "gpu-b".to_string(),
+                backend_device: "CUDA1".to_string(),
+                vram_bytes: 24 * 1024 * 1024 * 1024,
+            }),
+            parallel: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            n_batch: None,
+            n_ubatch: None,
+            flash_attention: FlashAttentionType::Auto,
+        },
+    ];
+
+    let plan = startup_launch_plan(
+        &startup_models,
+        "Fallback-Model",
+        9337,
+        Some(3131),
+        false,
+        Some(4),
+        None,
+    );
+
+    assert!(plan.llama_process_rows.iter().any(|row| {
+        row.name == "llama-server unsloth/Model-A-GGUF:Q4_K_M"
+            && row.status == RuntimeStatus::Loading
+            && row.port == 0
+    }));
+    assert!(plan.llama_process_rows.iter().any(|row| {
+        row.name == "llama-server Model-B" && row.status == RuntimeStatus::Loading && row.port == 0
+    }));
+    assert_eq!(plan.llama_process_rows.len(), 2);
+
+    let api_row = plan
+        .webserver_rows
+        .iter()
+        .find(|row| row.label == "API")
+        .expect("launch plan should include planned API row");
+    assert_eq!(api_row.status, RuntimeStatus::NotReady);
+    assert_eq!(api_row.port, 9337);
+
+    let console_row = plan
+        .webserver_rows
+        .iter()
+        .find(|row| row.label == "Console")
+        .expect("launch plan should include planned Console row");
+    assert_eq!(console_row.status, RuntimeStatus::NotReady);
+    assert_eq!(console_row.port, 3131);
+
+    let headless_plan = startup_launch_plan(
+        &startup_models,
+        "Fallback-Model",
+        9337,
+        Some(3131),
+        true,
+        Some(4),
+        None,
+    );
+    assert!(
+        headless_plan
+            .webserver_rows
+            .iter()
+            .any(|row| row.label == "API"),
+        "headless launch plan should keep the API row"
+    );
+    assert!(
+        headless_plan
+            .webserver_rows
+            .iter()
+            .all(|row| row.label != "Console"),
+        "headless launch plan should not seed a stale Console row"
+    );
+
+    let model_a = plan
+        .loaded_model_rows
+        .iter()
+        .find(|row| row.name == "unsloth/Model-A-GGUF:Q4_K_M")
+        .expect("launch plan should include first startup model row");
+    assert_eq!(model_a.role.as_deref(), Some("primary"));
+    assert_eq!(model_a.status, RuntimeStatus::Loading);
+    assert_eq!(model_a.device.as_deref(), Some("GPU0"));
+    assert_eq!(model_a.slots, Some(2));
+    assert_eq!(model_a.file_size_gb, None);
+
+    let model_b = plan
+        .loaded_model_rows
+        .iter()
+        .find(|row| row.name == "Model-B")
+        .expect("launch plan should include second startup model row");
+    assert_eq!(model_b.role.as_deref(), Some("model"));
+    assert_eq!(model_b.status, RuntimeStatus::Loading);
+    assert_eq!(model_b.device.as_deref(), Some("CUDA1"));
+    assert_eq!(model_b.slots, Some(4));
+    assert_eq!(model_b.file_size_gb, None);
+
+    let fallback_plan =
+        startup_launch_plan(&[], "Auto-Assigned-Model", 9337, None, false, Some(8), None);
+    assert!(fallback_plan.llama_process_rows.iter().any(|row| {
+        row.name == "llama-server Auto-Assigned-Model"
+            && row.status == RuntimeStatus::Loading
+            && row.port == 0
+    }));
+    let fallback_model = fallback_plan
+        .loaded_model_rows
+        .iter()
+        .find(|row| row.name == "Auto-Assigned-Model")
+        .expect("fallback launch plan should include planned loaded-model row");
+    assert_eq!(fallback_model.role.as_deref(), Some("primary"));
+    assert_eq!(fallback_model.status, RuntimeStatus::Loading);
+    assert_eq!(fallback_model.slots, Some(8));
+}
+
+#[test]
+fn startup_launch_plan_uses_metal_device_fallback_for_unpinned_model() {
+    let startup_models = vec![StartupModelPlan {
+        declared_ref: "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m".to_string(),
+        resolved_path: PathBuf::from("/tmp/qwen2.5-0.5b-instruct-q4_k_m.gguf"),
+        mmproj_path: None,
+        ctx_size: Some(4096),
+        gpu_id: None,
+        pinned_gpu: None,
+        parallel: Some(4),
+        cache_type_k: None,
+        cache_type_v: None,
+        n_batch: None,
+        n_ubatch: None,
+        flash_attention: FlashAttentionType::Auto,
+    }];
+
+    let plan = startup_launch_plan(
+        &startup_models,
+        "Fallback-Model",
+        9337,
+        None,
+        false,
+        Some(4),
+        startup_default_backend_device(Some(backend::BinaryFlavor::Metal)),
+    );
+    let model = plan
+        .loaded_model_rows
+        .iter()
+        .find(|row| row.name == startup_models[0].declared_ref)
+        .expect("launch plan should include unpinned local model row");
+
+    assert_eq!(model.device.as_deref(), Some("MTL0"));
+}
+
+#[test]
+fn serve_path_builtin_endpoint_ready_events_cover_api_and_console() {
+    let events = serve_path_builtin_endpoint_ready_events(
+        "http://127.0.0.1:9337".to_string(),
+        Some("http://127.0.0.1:3131".to_string()),
+        false,
+    );
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        &events[0],
+        OutputEvent::ApiReady { url } if url == "http://127.0.0.1:9337"
+    ));
+    assert!(matches!(
+        &events[1],
+        OutputEvent::WebserverReady { url } if url == "http://127.0.0.1:3131"
+    ));
+
+    let headless_events = serve_path_builtin_endpoint_ready_events(
+        "http://127.0.0.1:9444".to_string(),
+        Some("http://127.0.0.1:3222".to_string()),
+        true,
+    );
+    assert_eq!(headless_events.len(), 1);
+    assert!(matches!(
+        &headless_events[0],
+        OutputEvent::ApiReady { url } if url == "http://127.0.0.1:9444"
+    ));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn listener_http_url_uses_bound_ephemeral_addr() {
+    let listener = bind_runtime_tcp_listener(0, false, "test listener")
+        .await
+        .expect("ephemeral listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("bound listener should expose local address");
+
+    let url = listener_http_url(&listener, 0, "test listener");
+
+    assert_eq!(url, socket_addr_http_url(addr));
+    assert_ne!(url, "http://localhost:0");
+    assert!(!url.ends_with(":0"));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn startup_ready_reporter_uses_bound_urls_for_runtime_ready() {
+    let api_listener = bind_runtime_tcp_listener(0, false, "test API listener")
+        .await
+        .expect("ephemeral API listener should bind");
+    let console_listener = bind_runtime_tcp_listener(0, false, "test console listener")
+        .await
+        .expect("ephemeral console listener should bind");
+    let (api_url, api_port) = listener_http_endpoint(&api_listener, 0, "test API listener");
+    let (console_url, console_port) =
+        listener_http_endpoint(&console_listener, 0, "test console listener");
+    let models = vec!["model-a".to_string()];
+    let reporter = StartupReadyReporter::new(
+        &models,
+        "model-a".to_string(),
+        api_url.clone(),
+        Some(console_url.clone()),
+        api_port,
+        Some(console_port),
+    );
+
+    let Some(OutputEvent::RuntimeReady {
+        api_url: reported_api_url,
+        console_url: reported_console_url,
+        api_port: reported_api_port,
+        console_port: reported_console_port,
+        ..
+    }) = reporter.mark_ready_and_build_event("model-a")
+    else {
+        panic!("reporter should emit RuntimeReady when the model is ready");
+    };
+
+    assert_eq!(reported_api_url, api_url);
+    assert_eq!(reported_console_url.as_deref(), Some(console_url.as_str()));
+    assert_eq!(reported_api_port, api_port);
+    assert_eq!(reported_console_port, Some(console_port));
+    assert_ne!(reported_api_url, "http://localhost:0");
+    assert_ne!(reported_console_url.as_deref(), Some("http://localhost:0"));
+}
+
+#[cfg(test)]
+#[test]
+fn dashboard_lanes_prefer_sparse_slot_ids() {
+    let mut snapshots = BTreeMap::new();
+    let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    snapshot.items.slots = vec![
+        crate::runtime_data::RuntimeLlamaSlotItem {
+            index: 0,
+            id: Some(20),
+            id_task: None,
+            n_ctx: None,
+            is_processing: false,
+        },
+        crate::runtime_data::RuntimeLlamaSlotItem {
+            index: 1,
+            id: Some(10),
+            id_task: None,
+            n_ctx: None,
+            is_processing: true,
+        },
+    ];
+    snapshots.insert("model-a".to_string(), snapshot);
+
+    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+        .expect("snapshot with slots should produce dashboard lanes");
+
+    assert_eq!(lanes.len(), 2);
+    assert_eq!(lanes[0].index, 10);
+    assert!(lanes[0].active);
+    assert_eq!(lanes[1].index, 20);
+    assert!(!lanes[1].active);
+}
+
+#[cfg(test)]
+#[test]
+fn dashboard_lanes_fall_back_to_slot_index_when_id_is_missing() {
+    let mut snapshots = BTreeMap::new();
+    let mut snapshot = crate::runtime_data::RuntimeLlamaRuntimeSnapshot::default();
+    snapshot.items.slots = vec![crate::runtime_data::RuntimeLlamaSlotItem {
+        index: 7,
+        id: None,
+        id_task: None,
+        n_ctx: None,
+        is_processing: true,
+    }];
+    snapshots.insert("model-a".to_string(), snapshot);
+
+    let lanes = dashboard_lanes_for_model(&snapshots, "model-a")
+        .expect("snapshot with slots should produce dashboard lanes");
+
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].index, 7);
+    assert!(lanes[0].active);
+}
+
 fn initial_console_session_mode(explicit_surface: Option<RuntimeSurface>) -> ConsoleSessionMode {
     initial_console_session_mode_for_surface(
         explicit_surface,
@@ -1785,6 +2777,26 @@ fn parse_size_str(s: &str) -> u64 {
     } else {
         0
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeModelCapacity {
+    required_bytes: u64,
+    fits: bool,
+}
+
+fn runtime_model_capacity_for_path(model_path: &Path, vram_bytes: u64) -> RuntimeModelCapacity {
+    let model_bytes = election::total_model_bytes(model_path);
+    let required_bytes = runtime_model_required_bytes(model_bytes);
+    RuntimeModelCapacity {
+        required_bytes,
+        fits: model_bytes == 0 || model_fits_runtime_capacity(model_bytes, vram_bytes),
+    }
+}
+
+fn runtime_model_capacity_for_ref(model: &str, vram_bytes: u64) -> RuntimeModelCapacity {
+    let model_path = models::find_model_path(model);
+    runtime_model_capacity_for_path(&model_path, vram_bytes)
 }
 
 /// Pick which model this node should serve, based on demand signals.
@@ -1838,17 +2850,13 @@ async fn pick_model_assignment(node: &mesh::Node, local_models: &[String]) -> Op
 
     /// Check if a model fits in our VRAM. Returns false and logs if it doesn't.
     fn model_fits(model: &str, my_vram: u64) -> bool {
-        let model_path = models::find_model_path(model);
-        let model_bytes = std::fs::metadata(&model_path)
-            .map(|md| md.len())
-            .unwrap_or(0);
-        let needed = (model_bytes as f64 * 1.1) as u64;
-        if model_bytes > 0 && needed > my_vram {
+        let capacity = runtime_model_capacity_for_ref(model, my_vram);
+        if !capacity.fits {
             let _ = emit_event(OutputEvent::Info {
                 message: format!(
                     "Skipping {} — needs {:.1}GB, we have {:.1}GB",
                     model,
-                    needed as f64 / 1e9,
+                    capacity.required_bytes as f64 / 1e9,
                     my_vram as f64 / 1e9
                 ),
                 context: None,
@@ -2037,12 +3045,7 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
     let mut unserved: Vec<(String, u64)> = Vec::new();
     for (m, d) in &demand {
         if serving_count.get(m).copied().unwrap_or(0) == 0 && local_models.contains(m) {
-            let model_path = models::find_model_path(m);
-            let model_bytes = std::fs::metadata(&model_path)
-                .map(|md| md.len())
-                .unwrap_or(0);
-            let needed = (model_bytes as f64 * 1.1) as u64;
-            if model_bytes > 0 && needed > my_vram {
+            if !runtime_model_capacity_for_ref(m, my_vram).fits {
                 continue;
             }
             unserved.push((m.clone(), d.request_count));
@@ -2063,12 +3066,7 @@ async fn check_unserved_model(node: &mesh::Node, local_models: &[String]) -> Opt
         }
         let servers = serving_count.get(m).copied().unwrap_or(0) as f64;
         if servers > 0.0 && d.request_count > 0 && local_models.contains(m) {
-            let model_path = models::find_model_path(m);
-            let model_bytes = std::fs::metadata(&model_path)
-                .map(|md| md.len())
-                .unwrap_or(0);
-            let needed = (model_bytes as f64 * 1.1) as u64;
-            if model_bytes > 0 && needed > my_vram {
+            if !runtime_model_capacity_for_ref(m, my_vram).fits {
                 continue;
             }
             ratios.push((m.clone(), d.request_count as f64 / servers));
@@ -2298,6 +3296,7 @@ async fn run_auto(
     // (default 9337), so callbacks do not loop through the OpenAI surface.
     std::env::set_var("MESH_API_PORT", cli.console.to_string());
     skippy::configure_materialized_stage_cache();
+    configure_skippy_native_logging(runtime.as_ref().map(|runtime| runtime.dir()));
     let console_port = Some(cli.console);
     let is_client = cli.client;
 
@@ -2756,7 +3755,6 @@ async fn run_auto(
 
     let tunnel_mgr =
         tunnel::Manager::start(node.clone(), channels.rpc, channels.http, channels.stage).await?;
-    tunnel_mgr.set_http_port(api_port);
 
     // Election publishes per-model targets
     let (target_tx, target_rx) = tokio::sync::watch::channel(election::ModelTargets::default());
@@ -2770,42 +3768,13 @@ async fn run_auto(
     let mut runtime_models: HashMap<String, LocalRuntimeModelHandle> = HashMap::new();
     let mut managed_models: HashMap<String, ManagedModelController> = HashMap::new();
     let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let dashboard_context_usage = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let input_handler_enabled = crate::cli::output::OutputManager::global()
         .console_session_mode()
         .is_some();
 
-    // Take over listener from bootstrap proxy (if running), or bind a new one
-    let existing_listener = if let Some(tx) = bootstrap_listener_tx {
-        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        let _ = tx.send(resp_tx).await;
-        // Wait for bootstrap to hand back the TcpListener
-        resp_rx.await.ok()
-    } else {
-        None
-    };
-
-    // API proxy: model-aware routing
-    let proxy_node = node.clone();
-    let proxy_rx = target_rx.clone();
-    let proxy_affinity = affinity_router.clone();
-    let api_control_tx = control_tx.clone();
-    let api_proxy_handle = tokio::spawn(async move {
-        api_proxy(
-            proxy_node,
-            api_port,
-            proxy_rx,
-            api_control_tx,
-            existing_listener,
-            cli.listen_all,
-            proxy_affinity,
-        )
-        .await;
-    });
-
-    // Console (optional)
     let model_name_for_console = model_name.clone();
-    let mut console_server_handle = None;
-    let console_state = if let Some(cport) = console_port {
+    let console_state = if console_port.is_some() {
         let model_size_bytes = election::total_model_bytes(&model);
         let runtime_data_collector = node.runtime_data_collector();
         let runtime_data_producer =
@@ -2839,6 +3808,120 @@ async fn run_auto(
         if let Some(ref name) = cli.mesh_name {
             cs.set_mesh_name(name.clone()).await;
         }
+        Some(cs)
+    } else {
+        None
+    };
+
+    crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
+        RuntimeDashboardSnapshotProvider::new(
+            node.clone(),
+            dashboard_processes.clone(),
+            dashboard_context_usage.clone(),
+            Some(plugin_manager.clone()),
+            api_port,
+            console_port,
+            cli.headless,
+        ),
+    ));
+
+    let _ = emit_event(OutputEvent::LaunchPlan {
+        plan: startup_launch_plan(
+            &startup_models,
+            &model_name,
+            api_port,
+            console_port,
+            cli.headless,
+            config.gpu.parallel,
+            startup_default_backend_device(cli.llama_flavor),
+        ),
+    });
+
+    let interactive_started = Arc::new(AtomicBool::new(false));
+    let first_paint_rx = if let Some(request) = serve_path_interactive_spawn_request(
+        input_handler_enabled,
+        interactive_started.as_ref(),
+        std::io::stdin().is_terminal(),
+    ) {
+        if let Some(cs) = console_state.clone() {
+            let (first_paint_tx, first_paint_rx) = tokio::sync::oneshot::channel();
+            interactive::spawn_handler_with_first_paint_ack(
+                control_tx.clone(),
+                cs,
+                crate::cli::output::OutputManager::global(),
+                request.prompt_mode,
+                Some(first_paint_tx),
+            );
+            Some(first_paint_rx)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(first_paint_rx) = first_paint_rx {
+        wait_for_dashboard_first_paint(first_paint_rx).await;
+    }
+
+    // Take over listener from bootstrap proxy (if running), or bind a new one.
+    // The bind is completed before model startup so the dashboard can mark the
+    // built-in endpoints ready independently from model readiness.
+    let api_listener = if let Some(tx) = bootstrap_listener_tx {
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        let _ = tx.send(resp_tx).await;
+        // Wait for bootstrap to hand back the TcpListener
+        resp_rx
+            .await
+            .context("bootstrap API listener handoff was cancelled")?
+    } else {
+        bind_runtime_tcp_listener(api_port, cli.listen_all, "OpenAI-compatible API").await?
+    };
+
+    let console_listener = if let (Some(cport), Some(_)) = (console_port, console_state.as_ref()) {
+        Some((
+            cport,
+            bind_runtime_tcp_listener(cport, cli.listen_all, "Web console").await?,
+        ))
+    } else {
+        None
+    };
+    let (api_ready_url, ready_api_port) =
+        listener_http_endpoint(&api_listener, api_port, "OpenAI-compatible API");
+    let ready_console_endpoint = console_listener
+        .as_ref()
+        .map(|(port, listener)| listener_http_endpoint(listener, *port, "Web console"));
+    let ready_console_url = ready_console_endpoint.as_ref().map(|(url, _)| url.clone());
+    let ready_console_port = ready_console_endpoint.map(|(_, port)| port);
+    for event in serve_path_builtin_endpoint_ready_events(
+        api_ready_url.clone(),
+        ready_console_url.clone(),
+        cli.headless,
+    ) {
+        let _ = emit_event(event);
+    }
+
+    // API proxy: model-aware routing
+    let proxy_node = node.clone();
+    let proxy_rx = target_rx.clone();
+    let proxy_affinity = affinity_router.clone();
+    let api_control_tx = control_tx.clone();
+    let api_proxy_handle = tokio::spawn(async move {
+        api_proxy(
+            proxy_node,
+            api_port,
+            proxy_rx,
+            api_control_tx,
+            Some(api_listener),
+            cli.listen_all,
+            proxy_affinity,
+        )
+        .await;
+    });
+
+    // Console (optional)
+    let mut console_server_handle = None;
+    if let (Some((cport, listener)), Some(cs)) = (console_listener, console_state.clone()) {
         let cs2 = cs.clone();
         let console_rx = target_rx.clone();
         let mn = model_name_for_console.clone();
@@ -2857,23 +3940,17 @@ async fn run_auto(
                     }
                 }
             });
-            api::start(cport, cs2, adapted_rx, cli.listen_all, cli.headless).await;
+            api::start_with_listener(
+                cport,
+                cs2,
+                adapted_rx,
+                cli.listen_all,
+                cli.headless,
+                Some(listener),
+            )
+            .await;
         }));
-        Some(cs)
-    } else {
-        None
-    };
-
-    crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
-        RuntimeDashboardSnapshotProvider::new(
-            node.clone(),
-            dashboard_processes.clone(),
-            Some(plugin_manager.clone()),
-            api_port,
-            console_port,
-            cli.headless,
-        ),
-    ));
+    }
 
     if !is_client {
         if let Some(ref cs) = console_state {
@@ -2905,13 +3982,12 @@ async fn run_auto(
         .and_then(|m| m.parallel)
         .or(config.gpu.parallel)
         .unwrap_or(4);
-    let cb_console_port = console_port;
     let model_name_for_election = model_name.clone();
     let primary_target_tx = target_tx.clone();
     let console_state_for_election = console_state.clone();
     let interactive_console_state = console_state.clone();
     let interactive_control_tx = control_tx.clone();
-    let interactive_started = Arc::new(AtomicBool::new(false));
+
     let primary_model_name_for_advertise = model_name.clone();
     let startup_model_names: Vec<String> = startup_models
         .iter()
@@ -2920,8 +3996,10 @@ async fn run_auto(
     let startup_ready_reporter = StartupReadyReporter::new(
         &startup_model_names,
         model_name.clone(),
-        api_port,
-        cb_console_port,
+        api_ready_url,
+        ready_console_url,
+        ready_api_port,
+        ready_console_port,
     );
     let startup_load_gate = Arc::new(tokio::sync::Mutex::new(()));
     let primary_startup_ready_reporter = startup_ready_reporter.clone();
@@ -2957,6 +4035,7 @@ async fn run_auto(
     let startup_split = cli.split;
     let (primary_stop_tx, primary_stop_rx) = tokio::sync::watch::channel(false);
     let dashboard_processes_for_primary_task = dashboard_processes.clone();
+    let dashboard_context_usage_for_primary_task = dashboard_context_usage.clone();
     let primary_startup_load_gate = startup_load_gate.clone();
     let primary_task = tokio::spawn(async move {
         startup_local_model_loop(StartupLocalModelTask {
@@ -2979,6 +4058,7 @@ async fn run_auto(
             split: startup_split,
             stop_rx: primary_stop_rx,
             dashboard_processes: dashboard_processes_for_primary_task,
+            dashboard_context_usage: dashboard_context_usage_for_primary_task,
             console_state: console_state_for_election,
             api_port,
             startup_ready_reporter: primary_startup_ready_reporter,
@@ -3039,6 +4119,7 @@ async fn run_auto(
             let managed_model_name = extra_name.clone();
             let (extra_stop_tx, extra_stop_rx) = tokio::sync::watch::channel(false);
             let dashboard_processes_for_extra_task = dashboard_processes.clone();
+            let dashboard_context_usage_for_extra_task = dashboard_context_usage.clone();
             let extra_control_tx = control_tx.clone();
             let extra_task = tokio::spawn(async move {
                 startup_local_model_loop(StartupLocalModelTask {
@@ -3061,6 +4142,7 @@ async fn run_auto(
                     split: startup_split,
                     stop_rx: extra_stop_rx,
                     dashboard_processes: dashboard_processes_for_extra_task,
+                    dashboard_context_usage: dashboard_context_usage_for_extra_task,
                     console_state: extra_console_state,
                     api_port: api_port_extra,
                     startup_ready_reporter: extra_startup_ready_reporter,
@@ -3145,11 +4227,35 @@ async fn run_auto(
         None
     };
 
+    let runtime_data_producer = if let Some(cs) = console_state.as_ref() {
+        Some(cs.runtime_data_producer().await)
+    } else {
+        None
+    };
+
     // Wait for SIGINT/SIGTERM or runtime model control commands.
     let primary_model_name = model_name.clone();
+    let mut dashboard_context_usage_tick =
+        tokio::time::interval(DASHBOARD_CONTEXT_USAGE_REFRESH_INTERVAL);
+    dashboard_context_usage_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            _ = dashboard_context_usage_tick.tick() => {
+                let updates = runtime_models
+                    .iter()
+                    .map(|(name, handle)| {
+                        publish_runtime_llama_slots(runtime_data_producer.as_ref(), name, handle);
+                        (
+                            name.clone(),
+                            dashboard_context_usage_source(handle),
+                            handle.ctx_used_tokens(),
+                        )
+                    })
+                    .collect();
+                refresh_dashboard_context_usage_batch(&dashboard_context_usage, updates).await;
+            }
             _ = wait_shutdown_signal() => {
+                startup_ready_reporter.mark_shutdown_requested();
                 emit_shutdown(None);
                 break;
             }
@@ -3245,6 +4351,17 @@ async fn run_auto(
                                 ),
                                 context: None,
                             });
+                            refresh_dashboard_context_usage(
+                                &dashboard_context_usage,
+                                &loaded_name,
+                                &handle,
+                            )
+                            .await;
+                            publish_runtime_llama_slots(
+                                runtime_data_producer.as_ref(),
+                                &loaded_name,
+                                &handle,
+                            );
                             runtime_models.insert(loaded_name.clone(), handle);
                             Ok(loaded_name)
                         }
@@ -3260,6 +4377,10 @@ async fn run_auto(
                     api::RuntimeControlRequest::Unload { model, resp } => {
                         let result = if let Some(handle) = runtime_models.remove(&model) {
                             let port = handle.port;
+                            publish_runtime_llama_unavailable(
+                                runtime_data_producer.as_ref(),
+                                &model,
+                            );
                             remove_runtime_local_target(&target_tx, &model, port);
                             withdraw_advertised_model(&node, &model).await;
                             upsert_dashboard_process(
@@ -3276,6 +4397,8 @@ async fn run_auto(
                                 .await;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            remove_dashboard_context_usage(&dashboard_context_usage, &model, &handle)
+                                .await;
                             handle.shutdown().await;
                             remove_serving_assignment(&node, &model).await;
                             remove_dashboard_process(&dashboard_processes, &model).await;
@@ -3290,6 +4413,10 @@ async fn run_auto(
                         } else if let Some(controller) = managed_models.remove(&model) {
                             let _ = controller.stop_tx.send(true);
                             let _ = controller.task.await;
+                            publish_runtime_llama_unavailable(
+                                runtime_data_producer.as_ref(),
+                                &model,
+                            );
                             withdraw_advertised_model(&node, &model).await;
                             remove_serving_assignment(&node, &model).await;
                             remove_dashboard_process(&dashboard_processes, &model).await;
@@ -3307,6 +4434,7 @@ async fn run_auto(
                         let _ = resp.send(result);
                     }
                     api::RuntimeControlRequest::Shutdown => {
+                        startup_ready_reporter.mark_shutdown_requested();
                         emit_shutdown(None);
                         break;
                     }
@@ -3321,6 +4449,10 @@ async fn run_auto(
                             .unwrap_or(false);
                         if matches {
                             if let Some(handle) = runtime_models.remove(&model) {
+                                publish_runtime_llama_unavailable(
+                                    runtime_data_producer.as_ref(),
+                                    &model,
+                                );
                                 upsert_dashboard_process(
                                     &dashboard_processes,
                                     runtime_process_payload_with_status(&model, &handle, "exited"),
@@ -3332,6 +4464,12 @@ async fn run_auto(
                                     ))
                                     .await;
                                 }
+                                remove_dashboard_context_usage(
+                                    &dashboard_context_usage,
+                                    &model,
+                                    &handle,
+                                )
+                                .await;
                                 handle.shutdown().await;
                             }
                             remove_runtime_local_target(&target_tx, &model, port);
@@ -3384,8 +4522,10 @@ async fn run_auto(
             cs.upsert_local_process(shutting_down_payload).await;
         }
         remove_runtime_local_target(&target_tx, &name, handle.port);
+        publish_runtime_llama_unavailable(runtime_data_producer.as_ref(), &name);
         withdraw_advertised_model(&node, &name).await;
         remove_serving_assignment(&node, &name).await;
+        remove_dashboard_context_usage(&dashboard_context_usage, &name, &handle).await;
         let stopped_payload = runtime_process_payload_with_status(&name, &handle, "stopped");
         handle.shutdown().await;
         upsert_dashboard_process(&dashboard_processes, stopped_payload.clone()).await;
@@ -3509,14 +4649,13 @@ async fn run_passive(
         });
     }
 
-    let addr = if cli.listen_all {
-        "0.0.0.0"
-    } else {
-        "127.0.0.1"
-    };
-    let listener = tokio::net::TcpListener::bind(format!("{addr}:{local_port}"))
+    let listener = bind_runtime_tcp_listener(local_port, cli.listen_all, "OpenAI-compatible API")
         .await
         .with_context(|| format!("Failed to bind to port {local_port}"))?;
+    let api_ready_url = listener_http_url(&listener, local_port, "OpenAI-compatible API");
+    let cport = cli.console;
+    let console_listener = bind_runtime_tcp_listener(cport, cli.listen_all, "Web console").await?;
+    let console_ready_url = listener_http_url(&console_listener, cport, "Web console");
     if is_client {
         let _ = emit_event(OutputEvent::PassiveMode {
             role: "client".to_string(),
@@ -3534,24 +4673,21 @@ async fn run_passive(
             detail: Some("Standby ready".to_string()),
         });
     }
-    let _ = emit_event(OutputEvent::ApiReady {
-        url: format!("http://localhost:{local_port}"),
-    });
+    let _ = emit_event(OutputEvent::ApiReady { url: api_ready_url });
     if cli.headless {
         let _ = emit_event(OutputEvent::Info {
-            message: format!("Management API: http://localhost:{}", cli.console),
+            message: format!("Management API: {console_ready_url}"),
             context: None,
         });
     } else {
         let _ = emit_event(OutputEvent::WebserverReady {
-            url: format!("http://localhost:{}", cli.console),
+            url: console_ready_url,
         });
     }
 
     // Console
     let (control_tx, mut control_rx) =
         tokio::sync::mpsc::unbounded_channel::<api::RuntimeControlRequest>();
-    let cport = cli.console;
     let dashboard_processes = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let label = if is_client {
         "(client)".to_string()
@@ -3595,30 +4731,38 @@ async fn run_passive(
     let headless = cli.headless;
     let console_state_for_server = console_state.clone();
     let mut console_server_handle = Some(tokio::spawn(async move {
-        api::start(cport, console_state_for_server, rx, la, headless).await;
+        api::start_with_listener(
+            cport,
+            console_state_for_server,
+            rx,
+            la,
+            headless,
+            Some(console_listener),
+        )
+        .await;
     }));
     crate::cli::output::OutputManager::global().register_dashboard_snapshot_provider(Arc::new(
         RuntimeDashboardSnapshotProvider::new(
             node.clone(),
             dashboard_processes,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             Some(plugin_manager.clone()),
             local_port,
             Some(cport),
             headless,
         ),
     ));
-    if crate::cli::output::OutputManager::global()
-        .console_session_mode()
-        .is_some()
-        && std::io::stdin().is_terminal()
-    {
+    if let Some(request) = passive_path_interactive_spawn_request(
+        crate::cli::output::OutputManager::global().console_session_mode(),
+        std::io::stdin().is_terminal(),
+    ) {
         // Spawn input handler for both Dashboard and line-oriented Fallback modes;
         // spawn_handler internally selects the variant.
         interactive::spawn_handler(
             control_tx.clone(),
             console_state.clone(),
             crate::cli::output::OutputManager::global(),
-            InitialPromptMode::Immediate,
+            request.prompt_mode,
         );
     }
 
@@ -3789,11 +4933,11 @@ fn build_serving_list(startup_models: &[StartupModelPlan], model_ref: &str) -> V
 }
 
 #[cfg(test)]
-fn format_console_ready_line(headless: bool, console_port: u16) -> String {
+fn format_console_ready_line(headless: bool, console_url: &str) -> String {
     if headless {
-        format!("  Management API: http://localhost:{console_port}")
+        format!("  Management API: {console_url}")
     } else {
-        format!("  Console: http://localhost:{console_port}")
+        format!("  Console: {console_url}")
     }
 }
 
@@ -3833,6 +4977,63 @@ mod tests {
             n_ubatch: None,
             flash_attention: FlashAttentionType::Auto,
         }
+    }
+
+    #[test]
+    fn runtime_model_capacity_counts_split_gguf_parts() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let first_part = temp_dir.path().join("model-00001-of-00002.gguf");
+        let second_part = temp_dir.path().join("model-00002-of-00002.gguf");
+        std::fs::write(&first_part, vec![0u8; 100]).expect("write first split part");
+        std::fs::write(&second_part, vec![0u8; 200]).expect("write second split part");
+
+        let too_small = runtime_model_capacity_for_path(&first_part, 329);
+        assert_eq!(too_small.required_bytes, 330);
+        assert!(!too_small.fits);
+
+        let enough = runtime_model_capacity_for_path(&first_part, 330);
+        assert_eq!(enough.required_bytes, 330);
+        assert!(enough.fits);
+    }
+
+    #[test]
+    #[serial]
+    fn skippy_native_logging_setup_is_nonfatal_when_log_dir_cannot_be_created() {
+        struct RestoreNativeLogs;
+
+        impl Drop for RestoreNativeLogs {
+            fn drop(&mut self) {
+                skippy_runtime::restore_native_logs();
+            }
+        }
+
+        let _restore = RestoreNativeLogs;
+        let path = std::env::temp_dir().join(format!(
+            "mesh-native-log-runtime-file-{}-{}",
+            std::process::id(),
+            current_time_unix_ms()
+        ));
+        std::fs::write(&path, b"not a directory").expect("create runtime path file");
+
+        let configured_path = configure_skippy_native_logging(Some(&path));
+
+        std::fs::remove_file(&path).expect("remove runtime path file");
+        assert_eq!(configured_path, None);
+    }
+
+    #[test]
+    #[serial]
+    fn skippy_native_logging_setup_suppresses_logs_without_runtime_dir() {
+        struct RestoreNativeLogs;
+
+        impl Drop for RestoreNativeLogs {
+            fn drop(&mut self) {
+                skippy_runtime::restore_native_logs();
+            }
+        }
+
+        let _restore = RestoreNativeLogs;
+        assert_eq!(configure_skippy_native_logging(None), None);
     }
 
     async fn build_test_mesh_api() -> api::MeshApi {
@@ -3966,14 +5167,256 @@ mod tests {
                 }),
             },
         );
+        provider
+            .local_context_usage
+            .lock()
+            .await
+            .entry(model_name.clone())
+            .or_default()
+            .insert(
+                DashboardContextUsageSource {
+                    port: 4001,
+                    pid: 1234,
+                },
+                2048,
+            );
 
         let snapshot = provider.snapshot().await;
         assert_eq!(snapshot.loaded_model_rows.len(), 1);
         assert_eq!(snapshot.loaded_model_rows[0].slots, Some(4));
         assert_eq!(snapshot.loaded_model_rows[0].ctx_size, Some(8192));
+        assert_eq!(snapshot.loaded_model_rows[0].ctx_used_tokens, Some(2048));
         assert_eq!(snapshot.loaded_model_rows[0].file_size_gb, Some(24.0));
         assert_eq!(
             snapshot.loaded_model_rows[0].quantization.as_deref(),
+            Some("Q4_K_M")
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_snapshot_provider_uses_per_model_runtime_slot_snapshots() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let producer =
+            node.runtime_data_collector()
+                .producer(crate::runtime_data::RuntimeDataSource {
+                    scope: "runtime",
+                    plugin_data_key: None,
+                    plugin_endpoint_key: None,
+                });
+        let local_processes = Arc::new(tokio::sync::Mutex::new(vec![
+            api::RuntimeProcessPayload {
+                name: "model-a".to_string(),
+                backend: "skippy".to_string(),
+                status: "ready".to_string(),
+                port: 4001,
+                pid: 1234,
+                slots: 2,
+                context_length: Some(8192),
+            },
+            api::RuntimeProcessPayload {
+                name: "model-b".to_string(),
+                backend: "skippy".to_string(),
+                status: "ready".to_string(),
+                port: 4002,
+                pid: 1235,
+                slots: 2,
+                context_length: Some(8192),
+            },
+        ]));
+        producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
+            status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-a".to_string()),
+            last_attempt_unix_ms: Some(1),
+            last_success_unix_ms: Some(1),
+            error: None,
+            slots: vec![
+                crate::runtime_data::RuntimeLlamaSlotSnapshot {
+                    id: Some(0),
+                    is_processing: Some(true),
+                    ..crate::runtime_data::RuntimeLlamaSlotSnapshot::default()
+                },
+                crate::runtime_data::RuntimeLlamaSlotSnapshot {
+                    id: Some(1),
+                    is_processing: Some(false),
+                    ..crate::runtime_data::RuntimeLlamaSlotSnapshot::default()
+                },
+            ],
+        });
+        producer.publish_llama_slots_snapshot(crate::runtime_data::RuntimeLlamaSlotsSnapshot {
+            status: crate::runtime_data::RuntimeLlamaEndpointStatus::Ready,
+            model: Some("model-b".to_string()),
+            last_attempt_unix_ms: Some(2),
+            last_success_unix_ms: Some(2),
+            error: None,
+            slots: vec![
+                crate::runtime_data::RuntimeLlamaSlotSnapshot {
+                    id: Some(0),
+                    is_processing: Some(false),
+                    ..crate::runtime_data::RuntimeLlamaSlotSnapshot::default()
+                },
+                crate::runtime_data::RuntimeLlamaSlotSnapshot {
+                    id: Some(1),
+                    is_processing: Some(true),
+                    ..crate::runtime_data::RuntimeLlamaSlotSnapshot::default()
+                },
+            ],
+        });
+
+        let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
+            node,
+            local_processes,
+            None,
+            RuntimeDashboardSnapshotProviderTestOptions {
+                api_port: 9337,
+                console_port: Some(3131),
+                headless: false,
+                inventory_snapshot_ttl: Duration::from_secs(60),
+                inventory_snapshot_loader: Arc::new(
+                    crate::models::LocalModelInventorySnapshot::default,
+                ),
+            },
+        );
+
+        let snapshot = provider.snapshot().await;
+        let model_a = snapshot
+            .loaded_model_rows
+            .iter()
+            .find(|row| row.name == "model-a")
+            .expect("model-a row should be present");
+        let model_b = snapshot
+            .loaded_model_rows
+            .iter()
+            .find(|row| row.name == "model-b")
+            .expect("model-b row should be present");
+        assert_eq!(
+            model_a.lanes.as_ref().map(|lanes| {
+                lanes
+                    .iter()
+                    .map(|lane| (lane.index, lane.active))
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec![(0, true), (1, false)])
+        );
+        assert_eq!(
+            model_b.lanes.as_ref().map(|lanes| {
+                lanes
+                    .iter()
+                    .map(|lane| (lane.index, lane.active))
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec![(0, false), (1, true)])
+        );
+    }
+
+    #[tokio::test]
+    async fn dashboard_snapshot_provider_maps_canonical_model_refs_to_inventory_metadata() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let runtime_model_name = "unsloth/Qwen3.5-4B-GGUF:UD-Q4_K_XL".to_string();
+        let inventory_model_name = "Qwen3.5-4B-UD-Q4_K_XL".to_string();
+        let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
+            name: runtime_model_name.clone(),
+            backend: "skippy".to_string(),
+            status: "ready".to_string(),
+            port: 37615,
+            pid: 132098,
+            slots: 4,
+            context_length: Some(65_536),
+        }]));
+        let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
+            node,
+            local_processes,
+            None,
+            RuntimeDashboardSnapshotProviderTestOptions {
+                api_port: 9337,
+                console_port: Some(3131),
+                headless: false,
+                inventory_snapshot_ttl: Duration::from_secs(60),
+                inventory_snapshot_loader: Arc::new(move || {
+                    let mut snapshot = crate::models::LocalModelInventorySnapshot::default();
+                    snapshot
+                        .size_by_name
+                        .insert(inventory_model_name.clone(), 9_876_000_000);
+                    snapshot.metadata_by_name.insert(
+                        inventory_model_name.clone(),
+                        crate::proto::node::CompactModelMetadata {
+                            model_key: inventory_model_name.clone(),
+                            context_length: 4096,
+                            quantization_type: "Q4_K_XL".to_string(),
+                            ..Default::default()
+                        },
+                    );
+                    snapshot
+                }),
+            },
+        );
+
+        let snapshot = provider.snapshot().await;
+        assert_eq!(snapshot.loaded_model_rows.len(), 1);
+        let row = &snapshot.loaded_model_rows[0];
+        assert_eq!(row.name, runtime_model_name);
+        assert_eq!(row.device, None);
+        assert_eq!(row.slots, Some(4));
+        assert_eq!(row.ctx_size, Some(65_536));
+        assert_eq!(row.quantization.as_deref(), Some("Q4_K_XL"));
+        assert_eq!(row.file_size_gb, Some(9.876));
+    }
+
+    #[tokio::test]
+    async fn dashboard_snapshot_provider_prefers_node_context_over_inventory_metadata() {
+        let node = mesh::Node::new_for_tests(mesh::NodeRole::Worker)
+            .await
+            .expect("test node should initialize");
+        let model_name = "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL".to_string();
+        set_advertised_model_context(&node, &model_name, Some(131_072)).await;
+        let local_processes = Arc::new(tokio::sync::Mutex::new(vec![api::RuntimeProcessPayload {
+            name: model_name.clone(),
+            backend: "skippy".to_string(),
+            status: "ready".to_string(),
+            port: 34097,
+            pid: 132099,
+            slots: 4,
+            context_length: None,
+        }]));
+        let provider = RuntimeDashboardSnapshotProvider::with_inventory_loader(
+            node,
+            local_processes,
+            None,
+            RuntimeDashboardSnapshotProviderTestOptions {
+                api_port: 9337,
+                console_port: Some(3131),
+                headless: false,
+                inventory_snapshot_ttl: Duration::from_secs(60),
+                inventory_snapshot_loader: Arc::new(move || {
+                    let mut snapshot = crate::models::LocalModelInventorySnapshot::default();
+                    snapshot.metadata_by_name.insert(
+                        "Qwen3.6-27B-UD-Q4_K_XL".to_string(),
+                        crate::proto::node::CompactModelMetadata {
+                            model_key: "Qwen3.6-27B-UD-Q4_K_XL".to_string(),
+                            context_length: 4096,
+                            quantization_type: "Q4_K_XL".to_string(),
+                            ..Default::default()
+                        },
+                    );
+                    snapshot
+                }),
+            },
+        );
+
+        let snapshot = provider.snapshot().await;
+        assert_eq!(snapshot.loaded_model_rows.len(), 1);
+        let row = &snapshot.loaded_model_rows[0];
+        assert_eq!(row.ctx_size, Some(131_072));
+        assert_eq!(row.quantization.as_deref(), Some("Q4_K_XL"));
+    }
+
+    #[test]
+    fn dashboard_quantization_fallback_strips_direct_gguf_extension() {
+        assert_eq!(
+            dashboard_quantization_from_model_name("/models/Qwen3.5-4B-Q4_K_M.gguf").as_deref(),
             Some("Q4_K_M")
         );
     }
@@ -4253,6 +5696,26 @@ mod tests {
 
         let specs = build_startup_model_specs(&cli, &config).unwrap();
         assert!(specs.is_empty());
+    }
+
+    #[test]
+    fn early_tui_spawns_before_llama_ready_in_active_flow() {
+        assert_active_serve_path_spawn_gate_behavior();
+    }
+
+    #[test]
+    fn passive_path_tui_still_starts_immediately() {
+        assert_passive_path_immediate_spawn_behavior();
+    }
+
+    #[test]
+    fn interactive_handler_spawns_once_across_startup_callbacks() {
+        assert_interactive_handler_spawns_once_across_startup_callbacks();
+    }
+
+    #[tokio::test]
+    async fn non_serving_subcommands_retain_plain_output() {
+        assert_non_serving_dispatch_short_circuit_behavior().await;
     }
 
     #[test]
@@ -4822,6 +6285,13 @@ mod tests {
                 pid: Some(1000),
             },
             DashboardEndpointRow {
+                label: "Metrics".to_string(),
+                status: RuntimeStatus::Ready,
+                url: "metrics".to_string(),
+                port: 0,
+                pid: None,
+            },
+            DashboardEndpointRow {
                 label: "OpenAI-compatible API".to_string(),
                 status: RuntimeStatus::Ready,
                 url: "http://localhost:9337".to_string(),
@@ -4836,6 +6306,7 @@ mod tests {
         assert_eq!(
             labels,
             vec![
+                "Metrics".to_string(),
                 "OpenAI-compatible API".to_string(),
                 "Web console".to_string(),
                 "Plugin: alpha".to_string(),
@@ -4938,7 +6409,7 @@ mod tests {
 
     #[test]
     fn headless_host_logs_management_api_without_console_url() {
-        let line = format_console_ready_line(true, 3131);
+        let line = format_console_ready_line(true, "http://127.0.0.1:3131");
         assert!(
             line.contains("Management API"),
             "expected 'Management API' in headless output, got: {line}"
@@ -4951,7 +6422,7 @@ mod tests {
 
     #[test]
     fn default_host_mode_still_logs_console_url() {
-        let line = format_console_ready_line(false, 3131);
+        let line = format_console_ready_line(false, "http://127.0.0.1:3131");
         assert!(
             line.contains("Console:"),
             "expected 'Console:' in default output, got: {line}"
@@ -4964,8 +6435,8 @@ mod tests {
 
     #[test]
     fn active_startup_passes_headless_to_management_server() {
-        let headless_line = format_console_ready_line(true, 9090);
-        let normal_line = format_console_ready_line(false, 9090);
+        let headless_line = format_console_ready_line(true, "http://127.0.0.1:9090");
+        let normal_line = format_console_ready_line(false, "http://127.0.0.1:9090");
         assert_ne!(
             headless_line, normal_line,
             "headless and non-headless output must differ"
@@ -4976,7 +6447,7 @@ mod tests {
 
     #[test]
     fn headless_passive_mode_preserves_api_without_ui() {
-        let line = format_console_ready_line(true, 3131);
+        let line = format_console_ready_line(true, "http://127.0.0.1:3131");
         assert!(
             line.contains("Management API"),
             "passive headless output must contain 'Management API', got: {line}"
@@ -4989,7 +6460,7 @@ mod tests {
 
     #[test]
     fn passive_headless_promotion_keeps_ui_disabled() {
-        let promoted_line = format_console_ready_line(true, 3131);
+        let promoted_line = format_console_ready_line(true, "http://127.0.0.1:3131");
         assert!(
             promoted_line.contains("Management API"),
             "promoted headless node must still advertise Management API, got: {promoted_line}"
@@ -5002,7 +6473,7 @@ mod tests {
 
     #[test]
     fn default_passive_mode_still_serves_ui_when_not_headless() {
-        let line = format_console_ready_line(false, 3131);
+        let line = format_console_ready_line(false, "http://127.0.0.1:3131");
         assert!(
             line.contains("Console:"),
             "default passive output must contain 'Console:', got: {line}"

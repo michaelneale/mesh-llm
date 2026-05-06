@@ -1391,6 +1391,7 @@ async fn runtime_data_api_routes_remain_payload_stable() {
         inner.runtime_data_producer.publish_llama_slots_snapshot(
             runtime_data::RuntimeLlamaSlotsSnapshot {
                 status: runtime_data::RuntimeLlamaEndpointStatus::Ready,
+                model: Some("collector-model".into()),
                 last_attempt_unix_ms: Some(1_700_000_001_500),
                 last_success_unix_ms: Some(1_700_000_001_500),
                 error: None,

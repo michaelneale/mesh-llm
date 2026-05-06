@@ -20,8 +20,8 @@ pub use chat::{
 };
 pub use common::{
     completion_id, normalize_reasoning_template_options, now_unix_secs, FinishReason,
-    ReasoningConfig, ReasoningEffort, ReasoningTemplateOptions, StopSequence, StreamOptions, Usage,
-    THINKING_BOOLEAN_ALIASES,
+    PromptCacheRetention, ReasoningConfig, ReasoningEffort, ReasoningTemplateOptions, StopSequence,
+    StreamOptions, Usage, THINKING_BOOLEAN_ALIASES,
 };
 pub use completions::{
     CompletionChoice, CompletionChunk, CompletionChunkChoice, CompletionPrompt, CompletionRequest,

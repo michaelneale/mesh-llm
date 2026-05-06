@@ -38,20 +38,22 @@ class ControlledResizeObserver implements ResizeObserver {
 const controlledResizeObserver: ResizeObserver = {
   observe(): void {},
   unobserve(): void {},
-  disconnect(): void {},
+  disconnect(): void {}
 }
 
 function createMatchMedia(matches: boolean) {
-  return vi.fn((query: string): MediaQueryList => ({
-    matches,
-    media: query,
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: () => false,
-  }))
+  return vi.fn(
+    (query: string): MediaQueryList => ({
+      matches,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: () => false
+    })
+  )
 }
 
 function setMeshCanvasSize(width: number, height: number) {
@@ -91,7 +93,7 @@ function getMeshElement(selector: string) {
 
 function getMeshPackets() {
   return Array.from(document.querySelectorAll('.mesh-packet')).filter(
-    (element): element is HTMLElement => element instanceof HTMLElement,
+    (element): element is HTMLElement => element instanceof HTMLElement
   )
 }
 
@@ -149,9 +151,9 @@ function getNodeButton(label: string) {
 }
 
 function getMeshNodeLabel(nodeId: string) {
-  const label = screen.getAllByTestId('mesh-node-label').find((element) => (
-    element.getAttribute('data-node-id') === nodeId
-  ))
+  const label = screen
+    .getAllByTestId('mesh-node-label')
+    .find((element) => element.getAttribute('data-node-id') === nodeId)
 
   if (!(label instanceof HTMLElement)) {
     throw new Error(`Expected mesh node label for ${nodeId}`)
@@ -161,9 +163,9 @@ function getMeshNodeLabel(nodeId: string) {
 }
 
 function getMeshNodeContextHighlight(nodeId: string) {
-  const highlight = screen.getAllByTestId('mesh-node-context-highlight').find((element) => (
-    element.getAttribute('data-node-id') === nodeId
-  ))
+  const highlight = screen
+    .getAllByTestId('mesh-node-context-highlight')
+    .find((element) => element.getAttribute('data-node-id') === nodeId)
 
   if (!(highlight instanceof HTMLElement)) {
     throw new Error(`Expected mesh node context highlight for ${nodeId}`)
@@ -173,9 +175,9 @@ function getMeshNodeContextHighlight(nodeId: string) {
 }
 
 function getMeshNodeCore(nodeId: string) {
-  const core = screen.getAllByTestId('mesh-node-core').find((element) => (
-    element.getAttribute('data-node-id') === nodeId
-  ))
+  const core = screen
+    .getAllByTestId('mesh-node-core')
+    .find((element) => element.getAttribute('data-node-id') === nodeId)
 
   if (!(core instanceof HTMLElement)) {
     throw new Error(`Expected mesh node core for ${nodeId}`)
@@ -188,15 +190,13 @@ function expectMeshNodeCoreFill(nodeId: string, color: string, mixPercent: '14%'
   const core = getMeshNodeCore(nodeId)
 
   expect(core.style.color).toBe(color)
-  expect(core.style.backgroundColor).toBe(
-    `color-mix(in oklab, currentColor ${mixPercent}, var(--color-panel-strong))`,
-  )
+  expect(core.style.backgroundColor).toBe(`color-mix(in oklab, currentColor ${mixPercent}, var(--color-panel-strong))`)
 }
 
 function getMeshNodeCoreOverlay(nodeId: string) {
-  const overlay = screen.getAllByTestId('mesh-node-core-overlay').find((element) => (
-    element.getAttribute('data-node-id') === nodeId
-  ))
+  const overlay = screen
+    .getAllByTestId('mesh-node-core-overlay')
+    .find((element) => element.getAttribute('data-node-id') === nodeId)
 
   if (!(overlay instanceof HTMLElement)) {
     throw new Error(`Expected mesh node core overlay for ${nodeId}`)
@@ -253,7 +253,7 @@ function nearestNodeDistance(point: Pick<MeshNode, 'x' | 'y'>, nodes: Array<Pick
 function placementCentroid(nodes: Array<Pick<MeshNode, 'x' | 'y'>>) {
   return {
     x: nodes.reduce((sum, node) => sum + node.x, 0) / nodes.length,
-    y: nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length,
+    y: nodes.reduce((sum, node) => sum + node.y, 0) / nodes.length
   }
 }
 
@@ -267,24 +267,26 @@ function placementClusterRadius(nodes: Array<Pick<MeshNode, 'x' | 'y'>>, debugCo
 
   return Math.max(
     DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT * 2,
-    baseRadius + DEBUG_PLACEMENT_CLUSTER_PADDING_PERCENT + Math.sqrt(debugCount + 1) * DEBUG_PLACEMENT_CLUSTER_GROWTH_PERCENT,
+    baseRadius +
+      DEBUG_PLACEMENT_CLUSTER_PADDING_PERCENT +
+      Math.sqrt(debugCount + 1) * DEBUG_PLACEMENT_CLUSTER_GROWTH_PERCENT
   )
 }
 
 const OVERSIZED_MESH_NODES = [
   ...MESH_NODES,
   { id: 'north-edge', label: 'NORTH EDGE', subLabel: 'TEST EDGE', x: 6, y: 2, status: 'online' as const },
-  { id: 'south-edge', label: 'SOUTH EDGE', subLabel: 'TEST EDGE', x: 94, y: 98, status: 'online' as const },
+  { id: 'south-edge', label: 'SOUTH EDGE', subLabel: 'TEST EDGE', x: 94, y: 98, status: 'online' as const }
 ]
 const EXPANDED_BOUNDARY_MESH_NODES = [
   ...MESH_NODES,
   { id: 'west-boundary', label: 'WEST EDGE', subLabel: 'TEST EDGE', x: -40, y: 50, status: 'online' as const },
-  { id: 'east-boundary', label: 'EAST EDGE', subLabel: 'TEST EDGE', x: 180, y: 50, status: 'online' as const },
+  { id: 'east-boundary', label: 'EAST EDGE', subLabel: 'TEST EDGE', x: 180, y: 50, status: 'online' as const }
 ]
 const HUGE_BOUNDARY_MESH_NODES = [
   ...MESH_NODES,
   { id: 'far-west-boundary', label: 'FAR WEST', subLabel: 'TEST EDGE', x: -400, y: 50, status: 'online' as const },
-  { id: 'far-east-boundary', label: 'FAR EAST', subLabel: 'TEST EDGE', x: 700, y: 50, status: 'online' as const },
+  { id: 'far-east-boundary', label: 'FAR EAST', subLabel: 'TEST EDGE', x: 700, y: 50, status: 'online' as const }
 ]
 
 beforeEach(() => {
@@ -298,13 +300,13 @@ beforeEach(() => {
     configurable: true,
     get() {
       return this.classList.contains('mesh-canvas') ? meshCanvasWidth : 0
-    },
+    }
   })
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
     configurable: true,
     get() {
       return this.classList.contains('mesh-canvas') ? meshCanvasHeight : 0
-    },
+    }
   })
 
   HTMLElement.prototype.setPointerCapture = vi.fn()
@@ -318,7 +320,7 @@ beforeEach(() => {
   setFullscreenElement(null)
   Object.defineProperty(document, 'fullscreenElement', {
     configurable: true,
-    get: () => fullscreenElement,
+    get: () => fullscreenElement
   })
 })
 
@@ -328,10 +330,14 @@ function createMockDataTransfer() {
   return {
     dropEffect: 'none',
     effectAllowed: 'all',
-    get types() { return Array.from(data.keys()) },
+    get types() {
+      return Array.from(data.keys())
+    },
     getData: vi.fn((type: string) => data.get(type) ?? ''),
-    setData: vi.fn((type: string, value: string) => { data.set(type, value) }),
-    setDragImage: vi.fn(),
+    setData: vi.fn((type: string, value: string) => {
+      data.set(type, value)
+    }),
+    setDragImage: vi.fn()
   }
 }
 
@@ -370,7 +376,7 @@ describe('app surfaces', () => {
       role: 'peer',
       version: '0.64.0',
       vramGB: 24,
-      toksPerSec: 11.2,
+      toksPerSec: 11.2
     }
     const meshNodes = buildDashboardMeshNodes([...PEERS, joinedPeer], 'joined-peer-placement-test')
     const repeatedMeshNodes = buildDashboardMeshNodes([...PEERS, joinedPeer], 'joined-peer-placement-test')
@@ -394,10 +400,10 @@ describe('app surfaces', () => {
     }
 
     expect(nearestNodeDistance(joinedNode as MeshNode, MESH_NODES)).toBeLessThanOrEqual(
-      DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01,
+      DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01
     )
     expect(distanceFrom(joinedNode as MeshNode, baseCentroid)).toBeLessThanOrEqual(
-      placementClusterRadius(MESH_NODES, 0) + 0.01,
+      placementClusterRadius(MESH_NODES, 0) + 0.01
     )
     expect(repeatedJoinedNode?.x).toBe(joinedNode?.x)
     expect(repeatedJoinedNode?.y).toBe(joinedNode?.y)
@@ -522,7 +528,7 @@ describe('app surfaces', () => {
       { id: 'worker-2', label: 'WORKER 2', x: 60, y: 50, status: 'online', renderKind: 'worker' },
       { id: 'worker-3', label: 'WORKER 3', x: 50, y: 40, status: 'online', renderKind: 'worker' },
       { id: 'worker-4', label: 'WORKER 4', x: 50, y: 60, status: 'online', renderKind: 'worker' },
-      { id: 'worker-5', label: 'WORKER 5', x: 90, y: 90, status: 'online', renderKind: 'worker' },
+      { id: 'worker-5', label: 'WORKER 5', x: 90, y: 90, status: 'online', renderKind: 'worker' }
     ]
 
     render(<MeshViz nodes={sparseNodes} selfId="host" height={420} />)
@@ -550,7 +556,7 @@ describe('app surfaces', () => {
       { id: 'worker-2', label: 'WORKER 2', x: 60, y: 50, status: 'online', renderKind: 'worker' },
       { id: 'worker-3', label: 'WORKER 3', x: 50, y: 40, status: 'online', renderKind: 'worker' },
       { id: 'worker-4', label: 'WORKER 4', x: 50, y: 60, status: 'online', renderKind: 'worker' },
-      { id: 'worker-5', label: 'WORKER 5', x: 90, y: 90, status: 'online', renderKind: 'worker' },
+      { id: 'worker-5', label: 'WORKER 5', x: 90, y: 90, status: 'online', renderKind: 'worker' }
     ]
 
     render(<MeshViz nodes={nearestNodes} selfId="host" height={420} />)
@@ -575,7 +581,7 @@ describe('app surfaces', () => {
       { id: 'worker-1', label: 'WORKER 1', x: 46, y: 50, status: 'online', renderKind: 'worker' },
       { id: 'worker-2', label: 'WORKER 2', x: 54, y: 50, status: 'online', renderKind: 'worker' },
       { id: 'worker-3', label: 'WORKER 3', x: 50, y: 46, status: 'online', renderKind: 'worker' },
-      { id: 'worker-4', label: 'WORKER 4', x: 80, y: 80, status: 'online', renderKind: 'worker' },
+      { id: 'worker-4', label: 'WORKER 4', x: 80, y: 80, status: 'online', renderKind: 'worker' }
     ]
 
     render(<MeshViz nodes={crowdedClientNodes} selfId="host" height={420} />)
@@ -605,7 +611,7 @@ describe('app surfaces', () => {
       pointerId: 1,
       clientX: 100,
       clientY: 100,
-      cancelable: true,
+      cancelable: true
     })
 
     expect(pointerDownWasNotCanceled).toBe(false)
@@ -879,7 +885,7 @@ describe('app surfaces', () => {
   it('transitions MeshViz to recalculated bounds when an edge node is removed', async () => {
     const edgeNodes = [
       ...MESH_NODES,
-      { ...MESH_NODES[1], id: 'edge-node', peerId: 'edge-peer', label: 'EDGE', x: 94, y: 76 },
+      { ...MESH_NODES[1], id: 'edge-node', peerId: 'edge-peer', label: 'EDGE', x: 94, y: 76 }
     ]
     const { rerender } = render(<MeshViz nodes={edgeNodes} selfId="self" height={420} />)
     const canvas = getMeshCanvas()
@@ -954,7 +960,7 @@ describe('app surfaces', () => {
     expectMeshNodeCoreFill('self', 'oklch(0.66 0.22 28)', '18%')
     expect(screen.getByTestId('mesh-viz-line-grid')).toHaveAttribute(
       'stroke',
-      'color-mix(in oklab, var(--color-foreground) 7.2%, transparent)',
+      'color-mix(in oklab, var(--color-foreground) 7.2%, transparent)'
     )
     expect(screen.queryByTestId('mesh-viz-dot-grid')).not.toBeInTheDocument()
     expect(screen.queryByTestId('mesh-viz-accent-dot-grid')).not.toBeInTheDocument()
@@ -968,26 +974,17 @@ describe('app surfaces', () => {
     await user.click(gridStyleToggle)
 
     expect(screen.queryByTestId('mesh-viz-line-grid')).not.toBeInTheDocument()
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.64 0.025 252 / 9%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.64 0.025 252 / 9%)')
     expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('cx', '0')
     expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('cy', '0')
     expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('r', '1.35')
     const accentDot = screen.getByTestId('mesh-viz-accent-dot-grid')
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.72 0.115 220 / 13%)',
-    )
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.72 0.115 220 / 13%)')
     expect(Number(accentDot.getAttribute('cx'))).toBeGreaterThan(0)
     expect(accentDot.getAttribute('cx')).toBe(accentDot.getAttribute('cy'))
     expect(accentDot).toHaveAttribute('r', '1.25')
     const tertiaryDot = screen.getByTestId('mesh-viz-tertiary-dot-grid')
-    expect(tertiaryDot).toHaveAttribute(
-      'fill',
-      'oklch(0.76 0.105 72 / 7%)',
-    )
+    expect(tertiaryDot).toHaveAttribute('fill', 'oklch(0.76 0.105 72 / 7%)')
     expect(tertiaryDot).toHaveAttribute('cx', '0')
     expect(tertiaryDot.getAttribute('cy')).toBe(accentDot.getAttribute('cy'))
     expect(tertiaryDot).toHaveAttribute('r', '0.85')
@@ -1016,39 +1013,30 @@ describe('app surfaces', () => {
     expect(ashSignalSwatch.firstElementChild).toBe(screen.getByTestId('mesh-viz-dot-theme-1-index'))
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-1')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.64 0.025 252)',
+      'oklch(0.64 0.025 252)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-1')).toHaveClass('opacity-100')
     expect(screen.getByTestId('mesh-viz-dot-theme-2-color-1')).toHaveClass('opacity-45')
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-2')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.72 0.115 220)',
+      'oklch(0.72 0.115 220)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-3')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.76 0.105 72)',
+      'oklch(0.76 0.105 72)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-4')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.66 0.22 28)',
+      'oklch(0.66 0.22 28)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-index')).toHaveClass('text-foreground', 'opacity-100')
     expect(screen.getByTestId('mesh-viz-dot-theme-2-index')).toHaveClass('text-fg-faint', 'opacity-55')
 
     await user.click(coolTraceSwatch)
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.62 0.024 252 / 8%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.74 0.12 190 / 12%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.72 0.13 275 / 10%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.62 0.024 252 / 8%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.74 0.12 190 / 12%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.72 0.13 275 / 10%)')
     expectMeshNodeCoreFill('self', 'oklch(0.8 0.12 28)', '18%')
     expectMeshNodeCoreFill('lemony', 'oklch(0.74 0.12 190)', '14%')
 
@@ -1056,41 +1044,23 @@ describe('app surfaces', () => {
     expect(screen.getByRole('button', { name: /dot theme 2: cool trace/i })).toHaveAttribute('aria-pressed', 'true')
     await user.click(screen.getByRole('button', { name: /dot theme 3: warm trace/i }))
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.62 0.024 252 / 8%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.78 0.125 74 / 10%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.70 0.12 260 / 12%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.62 0.024 252 / 8%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.78 0.125 74 / 10%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.70 0.12 260 / 12%)')
     expectMeshNodeCoreFill('self', 'oklch(0.76 0.12 155)', '18%')
 
     await openDebugMenu(user)
     await user.click(screen.getByRole('button', { name: /dot theme 1: ash signal/i }))
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.64 0.025 252 / 9%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.72 0.115 220 / 13%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.76 0.105 72 / 7%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.64 0.025 252 / 9%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.72 0.115 220 / 13%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.76 0.105 72 / 7%)')
     expectMeshNodeCoreFill('self', 'oklch(0.66 0.22 28)', '18%')
   })
 
   it('keeps MeshViz palette colors independent from global accent tokens', () => {
     const paletteColors = Object.values(MESH_VIZ_DOT_COLOR_SCHEMES).flatMap((schemes) =>
-      schemes.flatMap((scheme) => [...scheme.colors, ...scheme.nodeColors]),
+      schemes.flatMap((scheme) => [...scheme.colors, ...scheme.nodeColors])
     )
 
     expect(paletteColors).not.toHaveLength(0)
@@ -1107,78 +1077,51 @@ describe('app surfaces', () => {
 
     fireEvent.keyDown(window, { key: 'g', ctrlKey: true })
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.52 0.022 252 / 12%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.54 0.12 220 / 12%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.58 0.18 28 / 9%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.52 0.022 252 / 12%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.54 0.12 220 / 12%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.58 0.18 28 / 9%)')
 
     await openDebugMenu(user)
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-1')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.68 0.018 252)',
+      'oklch(0.68 0.018 252)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-2')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.54 0.12 220)',
+      'oklch(0.54 0.12 220)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-3')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.58 0.18 28)',
+      'oklch(0.58 0.18 28)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-1-color-4')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.48 0.01 252)',
+      'oklch(0.48 0.01 252)'
     )
     expect(screen.getByTestId('mesh-viz-dot-theme-2-color-4')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.48 0.01 252)',
+      'oklch(0.48 0.01 252)'
     )
     expect(screen.getByRole('button', { name: /dot theme 1: paper signal/i })).toHaveAttribute('aria-pressed', 'true')
 
     await user.click(screen.getByRole('button', { name: /dot theme 2: field trace/i }))
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.55 0.02 252 / 11%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.53 0.13 145 / 13%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.50 0.12 265 / 10%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.55 0.02 252 / 11%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.53 0.13 145 / 13%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.50 0.12 265 / 10%)')
     expectMeshNodeCoreFill('self', 'oklch(0.48 0.01 252)', '18%')
     expectMeshNodeCoreFill('lemony', 'oklch(0.53 0.13 145)', '14%')
 
     await openDebugMenu(user)
     expect(screen.getByTestId('mesh-viz-dot-theme-3-color-4')).toHaveAttribute(
       'data-color-value',
-      'oklch(0.48 0.01 252)',
+      'oklch(0.48 0.01 252)'
     )
     await user.click(screen.getByRole('button', { name: /dot theme 3: amber trace/i }))
 
-    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.55 0.02 252 / 11%)',
-    )
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.56 0.13 74 / 11%)',
-    )
-    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.50 0.12 245 / 9%)',
-    )
+    expect(screen.getByTestId('mesh-viz-dot-grid')).toHaveAttribute('fill', 'oklch(0.55 0.02 252 / 11%)')
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.56 0.13 74 / 11%)')
+    expect(screen.getByTestId('mesh-viz-tertiary-dot-grid')).toHaveAttribute('fill', 'oklch(0.50 0.12 245 / 9%)')
     expectMeshNodeCoreFill('lemony', 'oklch(0.56 0.13 74)', '14%')
     expectMeshNodeCoreFill('self', 'oklch(0.48 0.01 252)', '18%')
   })
@@ -1277,7 +1220,9 @@ describe('app surfaces', () => {
 
   it('places new DEBUG nodes deterministically inside a sparse cluster envelope', async () => {
     const user = userEvent.setup()
-    const { unmount } = render(<MeshViz meshId="deterministic-test-mesh" nodes={MESH_NODES} selfId="self" height={420} />)
+    const { unmount } = render(
+      <MeshViz meshId="deterministic-test-mesh" nodes={MESH_NODES} selfId="self" height={420} />
+    )
 
     await openAddDebugNodesMenu(user)
     await user.click(screen.getByRole('menuitem', { name: /debug client/i }))
@@ -1298,11 +1243,11 @@ describe('app surfaces', () => {
       const nearestDistance = nearestNodeDistance(coordinate, placementNodes)
 
       expect(nearestNodeDistance(coordinate, placementNodes)).toBeLessThanOrEqual(
-        DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01,
+        DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01
       )
       expect(nearestDistance).toBeGreaterThanOrEqual(DEBUG_PLACEMENT_MIN_DISTANCE_PERCENT - 0.01)
       expect(distanceFrom(coordinate, baseCentroid)).toBeLessThanOrEqual(
-        placementClusterRadius(MESH_NODES, index) + 0.01,
+        placementClusterRadius(MESH_NODES, index) + 0.01
       )
       placementNodes.push(coordinate)
     }
@@ -1342,19 +1287,21 @@ describe('app surfaces', () => {
     for (const [index, coordinate] of coordinates.entries()) {
       const nearestDistance = nearestNodeDistance(coordinate, placementNodes)
 
-      expect(nearestDistance).toBeLessThanOrEqual(
-        DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01,
-      )
+      expect(nearestDistance).toBeLessThanOrEqual(DEBUG_PLACEMENT_MAX_DISTANCE_PERCENT + 0.01)
       expect(distanceFrom(coordinate, baseCentroid)).toBeLessThanOrEqual(
-        placementClusterRadius(MESH_NODES, index) + 0.01,
+        placementClusterRadius(MESH_NODES, index) + 0.01
       )
       placementNodes.push(coordinate)
     }
 
-    expect(coordinates.some((coordinate) => (
-      nearestNodeDistance(coordinate, MESH_NODES) >= DEBUG_PLACEMENT_MIN_DISTANCE_PERCENT - 0.01
-    ))).toBe(true)
-    expect(coordinates.every((coordinate) => distanceFrom(coordinate, baseCentroid) <= finalClusterRadius + 0.01)).toBe(true)
+    expect(
+      coordinates.some(
+        (coordinate) => nearestNodeDistance(coordinate, MESH_NODES) >= DEBUG_PLACEMENT_MIN_DISTANCE_PERCENT - 0.01
+      )
+    ).toBe(true)
+    expect(coordinates.every((coordinate) => distanceFrom(coordinate, baseCentroid) <= finalClusterRadius + 0.01)).toBe(
+      true
+    )
   })
 
   it('re-fits MeshViz after topology coordinates change even after manual panning', async () => {
@@ -1370,9 +1317,7 @@ describe('app surfaces', () => {
     fireEvent.pointerUp(canvas, { pointerId: 1 })
     await waitFor(() => expect(pixelValue(lemony29.style.left)).toBeCloseTo(initialLeft + 50, 1))
     const pannedLeft = pixelValue(lemony29.style.left)
-    const shiftedNodes = MESH_NODES.map((node) => (
-      node.id === 'lemony-29' ? { ...node, x: 82, y: 82 } : node
-    ))
+    const shiftedNodes = MESH_NODES.map((node) => (node.id === 'lemony-29' ? { ...node, x: 82, y: 82 } : node))
 
     rerender(<MeshViz nodes={shiftedNodes} selfId="self" height={420} />)
 
@@ -1396,7 +1341,7 @@ describe('app surfaces', () => {
       role: 'peer',
       renderKind: 'worker',
       x: 160,
-      y: 82,
+      y: 82
     }
 
     rerender(<MeshViz nodes={[...MESH_NODES, joinedNode]} selfId="self" height={420} />)
@@ -1538,7 +1483,10 @@ describe('app surfaces', () => {
     expect(screen.getByRole('menuitem', { name: /debug worker/i })).toHaveAttribute('aria-keyshortcuts', 'Shift+2')
     expect(screen.getByRole('menuitem', { name: /debug host/i })).toHaveAttribute('aria-keyshortcuts', 'Shift+3')
     expect(screen.getByRole('button', { name: /debug boundaries/i })).toHaveAttribute('aria-keyshortcuts', 'Control+B')
-    expect(screen.getByRole('button', { name: /toggle grid style \(lines\)/i })).toHaveAttribute('aria-keyshortcuts', 'Control+G')
+    expect(screen.getByRole('button', { name: /toggle grid style \(lines\)/i })).toHaveAttribute(
+      'aria-keyshortcuts',
+      'Control+G'
+    )
     expect(screen.getByRole('group', { name: /dot theme options/i })).toHaveAttribute('aria-keyshortcuts', 'Control+C')
     expect(screen.getByRole('button', { name: /cycle dot theme/i })).toHaveAttribute('aria-keyshortcuts', 'Control+C')
     expect(screen.getByRole('button', { name: /dot theme 1: ash signal/i })).toHaveAttribute('aria-pressed', 'true')
@@ -1586,10 +1534,7 @@ describe('app surfaces', () => {
       window.dispatchEvent(dotThemeEvent)
     })
     expect(dotThemeEvent.defaultPrevented).toBe(true)
-    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute(
-      'fill',
-      'oklch(0.74 0.12 190 / 12%)',
-    )
+    expect(screen.getByTestId('mesh-viz-accent-dot-grid')).toHaveAttribute('fill', 'oklch(0.74 0.12 190 / 12%)')
 
     const randomTrafficEvent = new KeyboardEvent('keydown', { key: 'z', bubbles: true, cancelable: true })
     window.dispatchEvent(randomTrafficEvent)
@@ -1623,7 +1568,9 @@ describe('app surfaces', () => {
     setFullscreenElement(canvas)
     fireEvent(document, new Event('fullscreenchange'))
 
-    await waitFor(() => expect(debugButton).toHaveClass('gap-3', 'px-5', 'py-2', 'text-[length:var(--density-type-caption)]'))
+    await waitFor(() =>
+      expect(debugButton).toHaveClass('gap-3', 'px-5', 'py-2', 'text-[length:var(--density-type-caption)]')
+    )
     await waitFor(() => expect(zoomInButton).toHaveClass('size-[52px]'))
     expect(zoomOutButton).toHaveClass('size-[52px]')
     expect(resetButton).toHaveClass('size-[52px]')
@@ -1631,18 +1578,23 @@ describe('app surfaces', () => {
     setFullscreenElement(null)
     fireEvent(document, new Event('fullscreenchange'))
 
-    await waitFor(() => expect(debugButton).toHaveClass('gap-1.5', 'px-2.5', 'py-1', 'text-[length:var(--density-type-annotation)]'))
+    await waitFor(() =>
+      expect(debugButton).toHaveClass('gap-1.5', 'px-2.5', 'py-1', 'text-[length:var(--density-type-annotation)]')
+    )
     await waitFor(() => expect(zoomInButton).toHaveClass('size-[26px]'))
   })
 
   it('renders chat and opens transparency from a message', async () => {
     const user = userEvent.setup()
-    window.localStorage.setItem(APP_STORAGE_KEYS.featureFlagOverrides, JSON.stringify({ chat: { transparencyTab: true } }))
+    window.localStorage.setItem(
+      APP_STORAGE_KEYS.featureFlagOverrides,
+      JSON.stringify({ chat: { transparencyTab: true } })
+    )
 
     render(
       <FeatureFlagProvider>
         <ChatTab />
-      </FeatureFlagProvider>,
+      </FeatureFlagProvider>
     )
 
     await user.click(screen.getByRole('button', { name: /inspect transparency/i }))
@@ -1729,7 +1681,9 @@ describe('app surfaces', () => {
     await user.click(screen.getByRole('button', { name: /qwen3-4b-q4_k_m, 2\.6 gb weights/i }))
     expect(screen.getByRole('button', { name: /remove qwen3-4b-q4_k_m/i })).toBeInTheDocument()
 
-    const carrackKeyboardTarget = screen.getByRole('button', { name: /collapse carrack\. use up and down arrows to select gpu slots/i })
+    const carrackKeyboardTarget = screen.getByRole('button', {
+      name: /collapse carrack\. use up and down arrows to select gpu slots/i
+    })
     expect(carrackKeyboardTarget).toHaveTextContent('▾')
     expect(carrackKeyboardTarget).not.toHaveTextContent(/carrack/i)
     expect(carrackKeyboardTarget).not.toHaveClass('focus-visible:outline-accent')
@@ -1748,13 +1702,21 @@ describe('app surfaces', () => {
     await user.click(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i }))
     expect(screen.getByRole('button', { name: /remove qwen3\.5-27b-q4_k_m/i })).toBeInTheDocument()
     await user.keyboard('{Alt>}{ArrowRight}{/Alt}')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights, 0\.4 gb context cache/i })).toHaveTextContent('17,408 ctx')
+    expect(
+      screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights, 0\.4 gb context cache/i })
+    ).toHaveTextContent('17,408 ctx')
     await user.keyboard('{Alt>}{ArrowLeft}{/Alt}')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights, 0\.4 gb context cache/i })).toHaveTextContent('16,384 ctx')
+    expect(
+      screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights, 0\.4 gb context cache/i })
+    ).toHaveTextContent('16,384 ctx')
     await user.keyboard('{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('32,768 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '32,768 ctx'
+    )
     await user.keyboard('{Alt>}{Shift>}{ArrowLeft}{/Shift}{/Alt}')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('16,384 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '16,384 ctx'
+    )
     await user.keyboard('{Shift>}{ArrowDown}{/Shift}')
     expect(screen.getByRole('button', { name: /remove qwen3\.5-27b-q4_k_m from gpu 3/i })).toBeInTheDocument()
     await user.keyboard('{Shift>}{ArrowUp}{/Shift}')
@@ -1784,7 +1746,9 @@ describe('app surfaces', () => {
     await user.click(reservedLane)
     expect(reservedLane).toHaveAttribute('aria-pressed', 'true')
     expect(within(carrackSection).getByRole('heading', { name: /system reserved space/i })).toBeInTheDocument()
-    expect(within(carrackSection).getByText(/invariant system reserved space and has no configurable settings/i)).toBeInTheDocument()
+    expect(
+      within(carrackSection).getByText(/invariant system reserved space and has no configurable settings/i)
+    ).toBeInTheDocument()
     expect(within(carrackSection).queryByRole('button', { name: /remove qwen3-4b-q4_k_m/i })).not.toBeInTheDocument()
 
     expect(within(perseusSection).getByRole('radio', { name: 'separate' })).toBeDisabled()
@@ -1796,7 +1760,9 @@ describe('app surfaces', () => {
     const sameNodeDestination = within(carrackSection).getByRole('region', { name: /rtx 5090 capacity/i })
     const sourceContainer = within(carrackSection).getByRole('region', { name: /rtx 3080 capacity/i })
 
-    fireEvent.dragStart(screen.getByRole('button', { name: /qwen3-4b-q4_k_m, 2\.6 gb weights/i }), { dataTransfer: assignedModelDrag })
+    fireEvent.dragStart(screen.getByRole('button', { name: /qwen3-4b-q4_k_m, 2\.6 gb weights/i }), {
+      dataTransfer: assignedModelDrag
+    })
     expect(assignedModelDrag.setData).toHaveBeenCalledWith('text/assign-id', 'a4')
     expect(assignedModelDrag.setData).toHaveBeenCalledWith('text/source-node', 'node-a')
     expect(assignedModelDrag.setData).toHaveBeenCalledWith('text/source-container', '7')
@@ -1816,7 +1782,9 @@ describe('app surfaces', () => {
     expect(assignedModelDrag.dropEffect).toBe('move')
 
     fireEvent.drop(sameNodeDestination, { dataTransfer: assignedModelDrag })
-    await waitFor(() => expect(within(sameNodeDestination).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sameNodeDestination).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument()
+    )
     expect(within(sourceContainer).queryByRole('button', { name: /qwen3-4b-q4_k_m/i })).not.toBeInTheDocument()
 
     await user.click(within(carrackSection).getByRole('radio', { name: 'pooled' }))
@@ -1857,10 +1825,14 @@ describe('app surfaces', () => {
     fireEvent.dragStart(screen.getByRole('button', { name: /qwen3-4b-q4_k_m, 2.6 gb/i }), {
       clientX: 12,
       clientY: 12,
-      dataTransfer: dragTransfer,
+      dataTransfer: dragTransfer
     })
     expect(dragTransfer.setData).toHaveBeenCalledWith('text/model', 'qwen4')
-    expect(dragTransfer.setDragImage).toHaveBeenCalledWith(expect.any(HTMLElement), expect.any(Number), expect.any(Number))
+    expect(dragTransfer.setDragImage).toHaveBeenCalledWith(
+      expect.any(HTMLElement),
+      expect.any(Number),
+      expect.any(Number)
+    )
     await user.click(screen.getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Model catalog' })).not.toBeInTheDocument())
 
@@ -1928,7 +1900,8 @@ describe('app surfaces', () => {
     await user.click(gpu3Capacity)
 
     const selectedGpu3Container = gpu3Capacity.closest('[data-config-container-selected="true"]')
-    if (!(selectedGpu3Container instanceof HTMLElement)) throw new Error('Expected clicked GPU 3 container to be selected')
+    if (!(selectedGpu3Container instanceof HTMLElement))
+      throw new Error('Expected clicked GPU 3 container to be selected')
 
     await user.click(within(carrackSection).getByRole('button', { name: 'Add model to carrack' }))
     await user.type(screen.getByRole('textbox', { name: 'Command bar search' }), 'phi')
@@ -1971,7 +1944,9 @@ describe('app surfaces', () => {
     const dispatchUndo = async () => {
       const event = new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
 
-      await act(async () => { window.dispatchEvent(event) })
+      await act(async () => {
+        window.dispatchEvent(event)
+      })
       expect(event.defaultPrevented).toBe(true)
     }
     const getCarrackSection = () => {
@@ -2012,11 +1987,12 @@ describe('app surfaces', () => {
     expect(saveButton).toBeEnabled()
 
     const saveEvent = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
-    await act(async () => { window.dispatchEvent(saveEvent) })
+    await act(async () => {
+      window.dispatchEvent(saveEvent)
+    })
     expect(saveEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
     expect(saveButton).toHaveAttribute('title', 'No changes to save')
-
   })
 
   it('reverts dirty configuration changes with the revert shortcut', async () => {
@@ -2032,7 +2008,9 @@ describe('app surfaces', () => {
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
     expect(saveButton).toBeEnabled()
     const revertEvent = new KeyboardEvent('keydown', { key: 'x', ctrlKey: true, bubbles: true, cancelable: true })
-    await act(async () => { window.dispatchEvent(revertEvent) })
+    await act(async () => {
+      window.dispatchEvent(revertEvent)
+    })
     expect(revertEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
     await expectTomlOccurrences(user, 'placement = "pooled"', 0)
@@ -2040,7 +2018,9 @@ describe('app surfaces', () => {
     await user.click(within(getCarrackSection()).getByRole('radio', { name: 'pooled' }))
     await expectTomlOccurrences(user, 'placement = "pooled"', 1)
     const saveEvent = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
-    await act(async () => { window.dispatchEvent(saveEvent) })
+    await act(async () => {
+      window.dispatchEvent(saveEvent)
+    })
     expect(saveEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
 
@@ -2052,8 +2032,15 @@ describe('app surfaces', () => {
     expect(screen.getByRole('button', { name: /phi-4-mini, .* weights/i })).toBeInTheDocument()
     expect(saveButton).toBeEnabled()
     await expectTomlOccurrences(user, 'placement = "pooled"', 1)
-    const revertToSavedEvent = new KeyboardEvent('keydown', { key: 'x', ctrlKey: true, bubbles: true, cancelable: true })
-    await act(async () => { window.dispatchEvent(revertToSavedEvent) })
+    const revertToSavedEvent = new KeyboardEvent('keydown', {
+      key: 'x',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    })
+    await act(async () => {
+      window.dispatchEvent(revertToSavedEvent)
+    })
     expect(revertToSavedEvent.defaultPrevented).toBe(true)
     expect(saveButton).toBeDisabled()
     await expectTomlOccurrences(user, 'placement = "pooled"', 1)
@@ -2068,7 +2055,9 @@ describe('app surfaces', () => {
     const dispatchShortcut = async (key: string) => {
       const event = new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true })
 
-      await act(async () => { window.dispatchEvent(event) })
+      await act(async () => {
+        window.dispatchEvent(event)
+      })
       expect(event.defaultPrevented).toBe(true)
     }
 
@@ -2077,15 +2066,21 @@ describe('app surfaces', () => {
 
     await user.keyboard('{ArrowDown}')
     await user.keyboard('{Alt>}{ArrowRight}{/Alt}')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('17,408 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '17,408 ctx'
+    )
     expect(undoButton).toBeEnabled()
 
     await dispatchShortcut('z')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('16,384 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '16,384 ctx'
+    )
     expect(redoButton).toBeEnabled()
 
     await dispatchShortcut('r')
-    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent('17,408 ctx')
+    expect(screen.getByRole('button', { name: /qwen3\.5-27b-q4_k_m, 17\.4 gb weights/i })).toHaveTextContent(
+      '17,408 ctx'
+    )
 
     await user.keyboard('{Shift>}{ArrowDown}{/Shift}')
     expect(screen.getByRole('button', { name: /remove qwen3\.5-27b-q4_k_m from gpu 3/i })).toBeInTheDocument()
@@ -2133,7 +2128,9 @@ describe('app surfaces', () => {
     const dispatchShortcut = async (key: string) => {
       const event = new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true })
 
-      await act(async () => { window.dispatchEvent(event) })
+      await act(async () => {
+        window.dispatchEvent(event)
+      })
       expect(event.defaultPrevented).toBe(true)
     }
 
@@ -2144,18 +2141,26 @@ describe('app surfaces', () => {
     const destinationContainer = within(carrackSection).getByRole('region', { name: /rtx 5090 capacity/i })
     const assignedModelDrag = createMockDataTransfer()
 
-    fireEvent.dragStart(within(sourceContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i }), { dataTransfer: assignedModelDrag })
+    fireEvent.dragStart(within(sourceContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i }), {
+      dataTransfer: assignedModelDrag
+    })
     fireEvent.dragEnter(destinationContainer, { dataTransfer: assignedModelDrag })
     fireEvent.dragOver(destinationContainer, { dataTransfer: assignedModelDrag })
     fireEvent.drop(destinationContainer, { dataTransfer: assignedModelDrag })
-    await waitFor(() => expect(within(destinationContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(destinationContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument()
+    )
     expect(within(sourceContainer).queryByRole('button', { name: /qwen3-4b-q4_k_m/i })).not.toBeInTheDocument()
 
     await dispatchShortcut('z')
-    await waitFor(() => expect(within(sourceContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sourceContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument()
+    )
     expect(within(destinationContainer).queryByRole('button', { name: /qwen3-4b-q4_k_m/i })).not.toBeInTheDocument()
     await dispatchShortcut('r')
-    await waitFor(() => expect(within(destinationContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(destinationContainer).getByRole('button', { name: /qwen3-4b-q4_k_m/i })).toBeInTheDocument()
+    )
     expect(within(sourceContainer).queryByRole('button', { name: /qwen3-4b-q4_k_m/i })).not.toBeInTheDocument()
 
     await user.click(within(carrackSection).getByRole('button', { name: 'Add model to carrack' }))
@@ -2165,16 +2170,22 @@ describe('app surfaces', () => {
     fireEvent.dragStart(screen.getByRole('button', { name: /phi-4-mini, .* gb, .* context, fits/i }), {
       clientX: 12,
       clientY: 12,
-      dataTransfer: catalogDrag,
+      dataTransfer: catalogDrag
     })
     fireEvent.dragEnter(sourceContainer, { dataTransfer: catalogDrag })
     fireEvent.dragOver(sourceContainer, { dataTransfer: catalogDrag })
     fireEvent.drop(sourceContainer, { dataTransfer: catalogDrag })
-    await waitFor(() => expect(within(sourceContainer).getByRole('button', { name: /phi-4-mini/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sourceContainer).getByRole('button', { name: /phi-4-mini/i })).toBeInTheDocument()
+    )
 
     await dispatchShortcut('z')
-    await waitFor(() => expect(within(sourceContainer).queryByRole('button', { name: /phi-4-mini/i })).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sourceContainer).queryByRole('button', { name: /phi-4-mini/i })).not.toBeInTheDocument()
+    )
     await dispatchShortcut('r')
-    await waitFor(() => expect(within(sourceContainer).getByRole('button', { name: /phi-4-mini/i })).toBeInTheDocument())
+    await waitFor(() =>
+      expect(within(sourceContainer).getByRole('button', { name: /phi-4-mini/i })).toBeInTheDocument()
+    )
   })
 })

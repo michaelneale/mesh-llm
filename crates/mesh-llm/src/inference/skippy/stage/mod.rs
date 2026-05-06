@@ -1,142 +1,21 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
-use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig, StageDevice};
+use skippy_protocol::{FlashAttentionType, LoadMode, PeerConfig, StageConfig};
 use skippy_server::{
     binary_transport::{BinaryStageOptions, WireCondition},
     telemetry::TelemetryLevel,
     EmbeddedServerHandle,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, Mutex};
 
-#[derive(Debug)]
-pub(crate) struct StageControlCommand {
-    pub(crate) request: StageControlRequest,
-    pub(crate) resp: oneshot::Sender<Result<StageControlResponse>>,
-}
+mod inventory;
+#[cfg(test)]
+mod tests;
+mod types;
 
-#[derive(Clone, Debug)]
-pub(crate) enum StageControlRequest {
-    Load(StageLoadRequest),
-    Stop(StageStopRequest),
-    Status(StageStatusFilter),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum StageControlResponse {
-    Ready(StageReadyResponse),
-    Status(Vec<StageStatusSnapshot>),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StageLoadRequest {
-    pub(crate) topology_id: String,
-    pub(crate) run_id: String,
-    pub(crate) model_id: String,
-    pub(crate) backend: String,
-    pub(crate) package_ref: String,
-    pub(crate) manifest_sha256: String,
-    pub(crate) stage_id: String,
-    pub(crate) stage_index: u32,
-    pub(crate) layer_start: u32,
-    pub(crate) layer_end: u32,
-    pub(crate) model_path: Option<String>,
-    pub(crate) projector_path: Option<String>,
-    pub(crate) selected_device: Option<StageDevice>,
-    pub(crate) bind_addr: String,
-    pub(crate) activation_width: i32,
-    pub(crate) wire_dtype: StageWireDType,
-    pub(crate) ctx_size: u32,
-    pub(crate) lane_count: u32,
-    pub(crate) n_batch: Option<u32>,
-    pub(crate) n_ubatch: Option<u32>,
-    pub(crate) n_gpu_layers: i32,
-    pub(crate) cache_type_k: String,
-    pub(crate) cache_type_v: String,
-    pub(crate) flash_attn_type: FlashAttentionType,
-    pub(crate) shutdown_generation: u64,
-    pub(crate) load_mode: LoadMode,
-    pub(crate) upstream: Option<StagePeerDescriptor>,
-    pub(crate) downstream: Option<StagePeerDescriptor>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StageStopRequest {
-    pub(crate) topology_id: String,
-    pub(crate) run_id: String,
-    pub(crate) stage_id: String,
-    pub(crate) shutdown_generation: u64,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct StageStatusFilter {
-    pub(crate) topology_id: Option<String>,
-    pub(crate) run_id: Option<String>,
-    pub(crate) stage_id: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StagePeerDescriptor {
-    pub(crate) stage_id: String,
-    pub(crate) stage_index: u32,
-    pub(crate) endpoint: String,
-    pub(crate) node_id: Option<iroh::EndpointId>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StageWireDType {
-    F32,
-    F16,
-    Q8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StageRuntimeState {
-    Starting,
-    Ready,
-    Stopping,
-    Stopped,
-    Failed,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StageReadyResponse {
-    pub(crate) accepted: bool,
-    pub(crate) status: StageStatusSnapshot,
-    pub(crate) error: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct StageStatusSnapshot {
-    pub(crate) topology_id: String,
-    pub(crate) run_id: String,
-    pub(crate) model_id: String,
-    pub(crate) backend: String,
-    pub(crate) package_ref: Option<String>,
-    pub(crate) manifest_sha256: Option<String>,
-    pub(crate) source_model_path: Option<String>,
-    pub(crate) source_model_sha256: Option<String>,
-    pub(crate) source_model_bytes: Option<u64>,
-    pub(crate) materialized_path: Option<String>,
-    pub(crate) materialized_pinned: bool,
-    pub(crate) projector_path: Option<String>,
-    pub(crate) stage_id: String,
-    pub(crate) stage_index: u32,
-    pub(crate) layer_start: u32,
-    pub(crate) layer_end: u32,
-    pub(crate) state: StageRuntimeState,
-    pub(crate) bind_addr: String,
-    pub(crate) activation_width: u32,
-    pub(crate) wire_dtype: StageWireDType,
-    pub(crate) selected_device: Option<StageDevice>,
-    pub(crate) ctx_size: u32,
-    pub(crate) lane_count: u32,
-    pub(crate) n_batch: Option<u32>,
-    pub(crate) n_ubatch: Option<u32>,
-    pub(crate) flash_attn_type: FlashAttentionType,
-    pub(crate) error: Option<String>,
-    pub(crate) shutdown_generation: u64,
-}
+use inventory::{resolve_inventory_source, run_stage_prepare_task};
+pub(crate) use types::*;
 
 struct RunningStage {
     load: StageLoadRequest,
@@ -148,6 +27,7 @@ struct RunningStage {
 #[derive(Default)]
 struct StageControlState {
     stages: HashMap<String, RunningStage>,
+    preparations: Arc<Mutex<HashMap<String, StagePreparationStatus>>>,
 }
 
 pub(crate) fn spawn_stage_control_loop() -> mpsc::UnboundedSender<StageControlCommand> {
@@ -174,7 +54,114 @@ impl StageControlState {
             StageControlRequest::Status(filter) => {
                 Ok(StageControlResponse::Status(self.statuses(&filter)))
             }
+            StageControlRequest::Inventory(request) => Ok(StageControlResponse::Inventory(
+                self.inventory(request).await,
+            )),
+            StageControlRequest::Prepare(request) => Ok(StageControlResponse::PrepareAccepted(
+                self.prepare(request).await?,
+            )),
+            StageControlRequest::CancelPrepare(cancel) => Ok(
+                StageControlResponse::PreparationStatus(preparation_status_from_cancel(cancel)),
+            ),
+            StageControlRequest::StatusUpdate(_status) => {
+                Ok(StageControlResponse::StatusAck(StageStatusAck {
+                    accepted: true,
+                    error: None,
+                }))
+            }
         }
+    }
+
+    async fn inventory(&self, request: StageInventoryRequest) -> StageLayerInventory {
+        let preparing_ranges = self
+            .preparations
+            .lock()
+            .await
+            .values()
+            .filter(|status| {
+                status.model_id == request.model_id
+                    && status.package_ref == request.package_ref
+                    && status.manifest_sha256 == request.manifest_sha256
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let source = resolve_inventory_source(&request);
+        let layer_count = source
+            .as_ref()
+            .map(|source| source.layer_count)
+            .unwrap_or(0);
+        let available_ranges = if source.is_some() && layer_count > 0 {
+            vec![LayerRange {
+                layer_start: 0,
+                layer_end: layer_count,
+            }]
+        } else {
+            Vec::new()
+        };
+        let ready_ranges = self
+            .stages
+            .values()
+            .filter(|stage| {
+                stage.load.model_id == request.model_id
+                    && stage.load.package_ref == request.package_ref
+                    && stage.load.manifest_sha256 == request.manifest_sha256
+            })
+            .map(|stage| LayerRange {
+                layer_start: stage.load.layer_start,
+                layer_end: stage.load.layer_end,
+            })
+            .collect::<Vec<_>>();
+        let missing_ranges = if source.is_none() && layer_count > 0 {
+            vec![LayerRange {
+                layer_start: 0,
+                layer_end: layer_count,
+            }]
+        } else {
+            Vec::new()
+        };
+        StageLayerInventory {
+            model_id: request.model_id,
+            package_ref: request.package_ref,
+            manifest_sha256: request.manifest_sha256,
+            layer_count,
+            ready_ranges,
+            available_ranges,
+            missing_ranges,
+            preparing_ranges,
+            source_model_path: source
+                .as_ref()
+                .map(|source| source.path.to_string_lossy().to_string()),
+            source_model_bytes: source.as_ref().and_then(|source| source.bytes),
+            source_model_kind: source
+                .as_ref()
+                .map(|source| source.kind)
+                .unwrap_or(SourceModelKind::Unknown),
+        }
+    }
+
+    async fn prepare(
+        &mut self,
+        request: StagePrepareRequest,
+    ) -> Result<StagePrepareAcceptedResponse> {
+        let key = stage_key(
+            &request.load.topology_id,
+            &request.load.run_id,
+            &request.load.stage_id,
+        );
+        let status = preparation_status_from_load(&request.load, StagePreparationState::Assigned);
+        self.preparations
+            .lock()
+            .await
+            .insert(key.clone(), status.clone());
+        let preparations = Arc::clone(&self.preparations);
+        tokio::spawn(async move {
+            run_stage_prepare_task(preparations, key, request.load).await;
+        });
+        Ok(StagePrepareAcceptedResponse {
+            accepted: true,
+            status,
+            error: None,
+        })
     }
 
     async fn load(&mut self, load: StageLoadRequest) -> Result<StageReadyResponse> {
@@ -193,7 +180,10 @@ impl StageControlState {
         effective_load.bind_addr = bind_addr.to_string();
         super::configure_materialized_stage_cache();
         let materialized = super::materialize_stage_load(&effective_load)?;
-        let config = stage_config(&effective_load)?;
+        let config = stage_config(
+            &effective_load,
+            materialized.as_ref().map(|(artifact, _)| artifact),
+        )?;
         let server = skippy_server::start_binary_stage(BinaryStageOptions {
             config,
             topology: None,
@@ -350,7 +340,10 @@ fn probe_binary_stage_ready(bind_addr: SocketAddr, timeout: Duration) -> Result<
         .unwrap_or_else(|| anyhow!("timed out waiting for binary stage ready at {bind_addr}")))
 }
 
-fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
+fn stage_config(
+    load: &StageLoadRequest,
+    materialized: Option<&super::materialization::MaterializedStageArtifact>,
+) -> Result<StageConfig> {
     anyhow::ensure!(!load.topology_id.is_empty(), "topology_id is required");
     anyhow::ensure!(!load.run_id.is_empty(), "run_id is required");
     anyhow::ensure!(!load.model_id.is_empty(), "model_id is required");
@@ -367,17 +360,19 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             "selected backend device must not be empty"
         );
     }
-    Ok(StageConfig {
+    let mut config = StageConfig {
         run_id: load.run_id.clone(),
         topology_id: load.topology_id.clone(),
         model_id: load.model_id.clone(),
         package_ref: Some(load.package_ref.clone()),
         manifest_sha256: Some(load.manifest_sha256.clone()),
-        source_model_path: load.model_path.clone(),
-        source_model_sha256: None,
-        source_model_bytes: None,
-        materialized_path: None,
-        materialized_pinned: false,
+        source_model_path: materialized
+            .map(|artifact| artifact.source_model_path.clone())
+            .or_else(|| load.model_path.clone()),
+        source_model_sha256: materialized.map(|artifact| artifact.source_model_sha256.clone()),
+        source_model_bytes: materialized.and_then(|artifact| artifact.source_model_bytes),
+        materialized_path: materialized.map(|artifact| artifact.path.to_string_lossy().to_string()),
+        materialized_pinned: materialized.is_some(),
         model_path: load.model_path.clone(),
         projector_path: load.projector_path.clone(),
         stage_id: load.stage_id.clone(),
@@ -397,11 +392,15 @@ fn stage_config(load: &StageLoadRequest) -> Result<StageConfig> {
             LoadMode::RuntimeSlice | LoadMode::LayerPackage
         ),
         selected_device: load.selected_device.clone(),
+        kv_cache: None,
         load_mode: load.load_mode.clone(),
         bind_addr: load.bind_addr.clone(),
         upstream: load.upstream.as_ref().map(peer_config),
         downstream: load.downstream.as_ref().map(peer_config),
-    })
+    };
+    let family_policy = super::family_policy_for_stage_config(&config);
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 fn peer_config(peer: &StagePeerDescriptor) -> PeerConfig {
@@ -507,6 +506,51 @@ fn stopped_status(stop: &StageStopRequest) -> StageStatusSnapshot {
     }
 }
 
+fn preparation_status_from_load(
+    load: &StageLoadRequest,
+    state: StagePreparationState,
+) -> StagePreparationStatus {
+    StagePreparationStatus {
+        topology_id: load.topology_id.clone(),
+        run_id: load.run_id.clone(),
+        model_id: load.model_id.clone(),
+        backend: load.backend.clone(),
+        package_ref: load.package_ref.clone(),
+        manifest_sha256: load.manifest_sha256.clone(),
+        stage_id: load.stage_id.clone(),
+        stage_index: load.stage_index,
+        layer_start: load.layer_start,
+        layer_end: load.layer_end,
+        state,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error: None,
+        shutdown_generation: load.shutdown_generation,
+    }
+}
+
+fn preparation_status_from_cancel(cancel: StageCancelPrepareRequest) -> StagePreparationStatus {
+    StagePreparationStatus {
+        topology_id: cancel.topology_id,
+        run_id: cancel.run_id,
+        model_id: String::new(),
+        backend: "skippy".to_string(),
+        package_ref: String::new(),
+        manifest_sha256: String::new(),
+        stage_id: cancel.stage_id,
+        stage_index: 0,
+        layer_start: 0,
+        layer_end: 0,
+        state: StagePreparationState::Cancelled,
+        bytes_done: None,
+        bytes_total: None,
+        bind_addr: None,
+        error: None,
+        shutdown_generation: cancel.shutdown_generation,
+    }
+}
+
 impl From<StageWireDType> for skippy_protocol::binary::WireActivationDType {
     fn from(value: StageWireDType) -> Self {
         match value {
@@ -514,154 +558,5 @@ impl From<StageWireDType> for skippy_protocol::binary::WireActivationDType {
             StageWireDType::F16 => Self::F16,
             StageWireDType::Q8 => Self::Q8,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Instant;
-
-    fn load_request() -> StageLoadRequest {
-        StageLoadRequest {
-            topology_id: "topology-a".to_string(),
-            run_id: "run-a".to_string(),
-            model_id: "model-a".to_string(),
-            backend: "skippy".to_string(),
-            package_ref: "pkg-a".to_string(),
-            manifest_sha256: "sha256".to_string(),
-            stage_id: "stage-0".to_string(),
-            stage_index: 0,
-            layer_start: 0,
-            layer_end: 12,
-            model_path: Some("/models/model.gguf".to_string()),
-            projector_path: Some("/models/mmproj.gguf".to_string()),
-            selected_device: Some(StageDevice {
-                backend_device: "CUDA0".to_string(),
-                stable_id: Some("GPU-123".to_string()),
-                index: Some(0),
-                vram_bytes: Some(24_000_000_000),
-            }),
-            bind_addr: "127.0.0.1:0".to_string(),
-            activation_width: 4096,
-            wire_dtype: StageWireDType::F16,
-            ctx_size: 8192,
-            lane_count: 3,
-            n_batch: Some(2048),
-            n_ubatch: Some(512),
-            n_gpu_layers: -1,
-            cache_type_k: "f16".to_string(),
-            cache_type_v: "q8_0".to_string(),
-            flash_attn_type: FlashAttentionType::Enabled,
-            shutdown_generation: 7,
-            load_mode: LoadMode::RuntimeSlice,
-            upstream: None,
-            downstream: Some(StagePeerDescriptor {
-                stage_id: "stage-1".to_string(),
-                stage_index: 1,
-                endpoint: "127.0.0.1:9001".to_string(),
-                node_id: None,
-            }),
-        }
-    }
-
-    #[test]
-    fn stage_config_preserves_backend_neutral_load_fields() {
-        let request = load_request();
-        let config = stage_config(&request).unwrap();
-
-        assert_eq!(config.topology_id, "topology-a");
-        assert_eq!(config.run_id, "run-a");
-        assert_eq!(config.model_id, "model-a");
-        assert_eq!(config.package_ref.as_deref(), Some("pkg-a"));
-        assert_eq!(config.manifest_sha256.as_deref(), Some("sha256"));
-        assert_eq!(
-            config.source_model_path.as_deref(),
-            Some("/models/model.gguf")
-        );
-        assert!(config.materialized_path.is_none());
-        assert!(!config.materialized_pinned);
-        assert_eq!(config.stage_id, "stage-0");
-        assert_eq!(config.stage_index, 0);
-        assert_eq!(config.layer_start, 0);
-        assert_eq!(config.layer_end, 12);
-        assert_eq!(config.lane_count, 3);
-        assert_eq!(config.n_batch, Some(2048));
-        assert_eq!(config.n_ubatch, Some(512));
-        assert_eq!(config.model_path.as_deref(), Some("/models/model.gguf"));
-        assert_eq!(
-            config.projector_path.as_deref(),
-            Some("/models/mmproj.gguf")
-        );
-        assert_eq!(config.flash_attn_type, FlashAttentionType::Enabled);
-        assert_eq!(
-            config
-                .selected_device
-                .as_ref()
-                .map(|d| d.backend_device.as_str()),
-            Some("CUDA0")
-        );
-        assert_eq!(
-            config.downstream.as_ref().map(|d| d.stage_id.as_str()),
-            Some("stage-1")
-        );
-        assert!(config.filter_tensors_on_load);
-    }
-
-    #[test]
-    fn stage_config_rejects_empty_selected_backend_device() {
-        let mut request = load_request();
-        request.selected_device = Some(StageDevice {
-            backend_device: String::new(),
-            stable_id: Some("uuid:GPU-123".into()),
-            index: Some(0),
-            vram_bytes: Some(24_000_000_000),
-        });
-
-        let err = stage_config(&request).unwrap_err().to_string();
-
-        assert!(err.contains("selected backend device"));
-    }
-
-    #[test]
-    fn stage_status_filter_matches_optional_identity_fields() {
-        let load = load_request();
-        assert!(StageStatusFilter {
-            topology_id: Some("topology-a".to_string()),
-            run_id: None,
-            stage_id: Some("stage-0".to_string()),
-        }
-        .matches(&load));
-        assert!(!StageStatusFilter {
-            topology_id: Some("other".to_string()),
-            run_id: None,
-            stage_id: None,
-        }
-        .matches(&load));
-    }
-
-    #[test]
-    fn materialize_stage_bind_addr_replaces_ephemeral_port() {
-        let bind_addr = materialize_stage_bind_addr("127.0.0.1:0".parse().unwrap()).unwrap();
-        assert_eq!(bind_addr.ip().to_string(), "127.0.0.1");
-        assert_ne!(bind_addr.port(), 0);
-    }
-
-    #[tokio::test]
-    async fn binary_stage_ready_probe_waits_for_wire_handshake() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let bind_addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(75));
-            let (mut stream, _) = listener.accept().unwrap();
-            skippy_protocol::binary::send_ready(&mut stream).unwrap();
-        });
-
-        let started = Instant::now();
-        wait_for_binary_stage_ready(bind_addr, Duration::from_secs(2))
-            .await
-            .unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(50));
-        server.join().unwrap();
     }
 }

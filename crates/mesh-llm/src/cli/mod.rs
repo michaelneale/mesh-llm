@@ -724,7 +724,7 @@ where
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
             None => {
-                normalized[pos] = OsString::from("--help");
+                normalized.remove(pos);
                 explicit_surface = Some(RuntimeSurface::Serve);
             }
             _ => {}
@@ -846,13 +846,13 @@ mod tests {
     }
 
     #[test]
-    fn normalize_runtime_surface_args_bare_serve_rewrites_to_help() {
+    fn normalize_runtime_surface_args_bare_serve_loads_default_config() {
         let normalized = normalize_runtime_surface_args(["mesh-llm", "serve"]);
 
         assert_eq!(normalized.explicit_surface, Some(RuntimeSurface::Serve));
         assert_eq!(
             normalized.normalized,
-            vec!["mesh-llm", "--help"]
+            vec!["mesh-llm"]
                 .into_iter()
                 .map(OsString::from)
                 .collect::<Vec<_>>()

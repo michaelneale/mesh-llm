@@ -33,7 +33,7 @@ const HOTKEYS = {
   removeHostNode: 'Shift+3',
   boundaries: 'Ctrl+B',
   gridStyle: 'Ctrl+G',
-  dotColorScheme: 'Ctrl+C',
+  dotColorScheme: 'Ctrl+C'
 } as const
 
 const ARIA_HOTKEYS = {
@@ -47,7 +47,7 @@ const ARIA_HOTKEYS = {
   removeHostNode: 'Shift+3',
   boundaries: 'Control+B',
   gridStyle: 'Control+G',
-  dotColorScheme: 'Control+C',
+  dotColorScheme: 'Control+C'
 } as const
 
 const triggerClassName =
@@ -65,11 +65,7 @@ const kbdClassName =
   'rounded-[3px] border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em] text-fg-faint'
 
 function ShortcutHint({ children }: { children: ReactNode }) {
-  return (
-    <kbd className={kbdClassName}>
-      {children}
-    </kbd>
-  )
+  return <kbd className={kbdClassName}>{children}</kbd>
 }
 
 function DebugAction({
@@ -79,7 +75,7 @@ function DebugAction({
   disabled,
   pressed,
   role,
-  shortcut,
+  shortcut
 }: {
   ariaKeyShortcuts: string
   children: ReactNode
@@ -109,7 +105,7 @@ function DotThemeSwatch({
   index,
   isSelected,
   onSelect,
-  scheme,
+  scheme
 }: {
   index: number
   isSelected: boolean
@@ -123,9 +119,7 @@ function DotThemeSwatch({
       className={cn(
         'group inline-flex min-w-0 items-center justify-center gap-1 rounded-[4px] border p-1 outline-none transition-[background-color,border-color,box-shadow] active:translate-y-px',
         'focus-visible:border-accent focus-visible:shadow-[var(--shadow-focus-accent)]',
-        isSelected
-          ? 'border-transparent bg-panel-strong/45'
-          : 'border-transparent hover:bg-panel-strong/55',
+        isSelected ? 'border-transparent bg-panel-strong/45' : 'border-transparent hover:bg-panel-strong/55'
       )}
       data-testid={`mesh-viz-dot-theme-${index + 1}-swatch`}
       onClick={onSelect}
@@ -134,7 +128,7 @@ function DotThemeSwatch({
       <span
         className={cn(
           'font-mono text-[10px] uppercase tracking-[0.08em] transition-opacity',
-          isSelected ? 'text-foreground opacity-100' : 'text-fg-faint opacity-55 group-hover:opacity-85',
+          isSelected ? 'text-foreground opacity-100' : 'text-fg-faint opacity-55 group-hover:opacity-85'
         )}
         data-testid={`mesh-viz-dot-theme-${index + 1}-index`}
       >
@@ -150,7 +144,7 @@ function DotThemeSwatch({
             className={cn(
               'size-3.5 transition-opacity',
               colorIndex > 0 && 'border-l border-border',
-              isSelected ? 'opacity-100' : 'opacity-45 group-hover:opacity-75',
+              isSelected ? 'opacity-100' : 'opacity-45 group-hover:opacity-75'
             )}
             data-color-value={color}
             data-testid={`mesh-viz-dot-theme-${index + 1}-color-${colorIndex + 1}`}
@@ -177,7 +171,7 @@ export function MeshVizDebugControls({
   onPlayRandomTraffic,
   onPlaySelfTraffic,
   onAddDebugNode,
-  onRemoveDebugNode,
+  onRemoveDebugNode
 }: MeshVizDebugControlsProps) {
   const debugMenuId = useId()
   const addNodesSubmenuId = useId()
@@ -242,7 +236,7 @@ export function MeshVizDebugControls({
             triggerClassName,
             isFullscreen
               ? 'gap-3 px-5 py-2 text-[length:var(--density-type-caption)]'
-              : 'gap-1.5 px-2.5 py-1 text-[length:var(--density-type-annotation)]',
+              : 'gap-1.5 px-2.5 py-1 text-[length:var(--density-type-annotation)]'
           )}
           onClick={toggleMenu}
           onPointerDown={(event) => event.stopPropagation()}
@@ -250,15 +244,15 @@ export function MeshVizDebugControls({
         >
           <Bug aria-hidden="true" className={triggerIconClassName} strokeWidth={1.9} />
           Debug
-          <ChevronUp aria-hidden="true" className={cn(triggerIconClassName, 'transition-transform', isOpen && 'rotate-180')} strokeWidth={1.9} />
+          <ChevronUp
+            aria-hidden="true"
+            className={cn(triggerIconClassName, 'transition-transform', isOpen && 'rotate-180')}
+            strokeWidth={1.9}
+          />
         </button>
 
         {isOpen ? (
-          <div
-            className={menuClassName}
-            id={debugMenuId}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
+          <div className={menuClassName} id={debugMenuId} onPointerDown={(event) => event.stopPropagation()}>
             <section aria-label="Traffic debug actions" className={sectionClassName}>
               <div className={sectionHeaderClassName}>
                 <Network aria-hidden="true" className="size-3 text-accent" strokeWidth={1.8} />
@@ -347,7 +341,10 @@ export function MeshVizDebugControls({
                   aria-controls={removeNodesSubmenuId}
                   aria-expanded={shouldShowRemoveNodesSubmenu}
                   aria-haspopup="menu"
-                  className={cn(itemClassName, debugNodeCount === 0 && 'cursor-not-allowed opacity-45 hover:bg-transparent')}
+                  className={cn(
+                    itemClassName,
+                    debugNodeCount === 0 && 'cursor-not-allowed opacity-45 hover:bg-transparent'
+                  )}
                   disabled={debugNodeCount === 0}
                   onClick={() => {
                     setIsAddNodesSubmenuOpen(false)

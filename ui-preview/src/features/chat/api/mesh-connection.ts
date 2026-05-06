@@ -56,7 +56,7 @@ async function* parseSSEStream(body: ReadableStream<Uint8Array>): AsyncGenerator
 async function* runConnect(
   model: string,
   messages: Array<UIMessage> | Array<ModelMessage>,
-  abortSignal?: AbortSignal,
+  abortSignal?: AbortSignal
 ): AsyncGenerator<StreamChunk> {
   const clientId = getClientId()
   const requestId = generateRequestId()
@@ -70,7 +70,7 @@ async function* runConnect(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildResponsesInput(messages, model, clientId, requestId)),
-      signal: abortSignal,
+      signal: abortSignal
     })
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') return
@@ -109,7 +109,6 @@ async function* runConnect(
 
 export function createMeshConnectionAdapter(model: string): ConnectConnectionAdapter {
   return {
-    connect: (_messages, _data, abortSignal) =>
-      runConnect(model, _messages, abortSignal),
+    connect: (_messages, _data, abortSignal) => runConnect(model, _messages, abortSignal)
   }
 }

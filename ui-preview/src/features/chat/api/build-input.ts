@@ -1,9 +1,5 @@
 import type { UIMessage, ModelMessage, MessagePart, ContentPart } from '@tanstack/ai'
-import type {
-  ResponsesRequest,
-  ResponsesInputMessage,
-  ResponsesInputContentBlock,
-} from '../../../lib/api/types'
+import type { ResponsesRequest, ResponsesInputMessage, ResponsesInputContentBlock } from '../../../lib/api/types'
 
 function isUIMessage(msg: UIMessage | ModelMessage): msg is UIMessage {
   return 'parts' in msg
@@ -15,20 +11,16 @@ function partToContentBlock(part: MessagePart): ResponsesInputContentBlock | nul
   }
   if (part.type === 'image') {
     const url =
-      part.source.type === 'url'
-        ? part.source.value
-        : `data:${part.source.mimeType};base64,${part.source.value}`
+      part.source.type === 'url' ? part.source.value : `data:${part.source.mimeType};base64,${part.source.value}`
     return { type: 'input_image', url }
   }
   if (part.type === 'document') {
     const url =
-      part.source.type === 'url'
-        ? part.source.value
-        : `data:${part.source.mimeType};base64,${part.source.value}`
+      part.source.type === 'url' ? part.source.value : `data:${part.source.mimeType};base64,${part.source.value}`
     return {
       type: 'input_file',
       url,
-      mime_type: part.source.mimeType,
+      mime_type: part.source.mimeType
     }
   }
   return null
@@ -40,20 +32,16 @@ function contentPartToBlock(part: ContentPart): ResponsesInputContentBlock | nul
   }
   if (part.type === 'image') {
     const url =
-      part.source.type === 'url'
-        ? part.source.value
-        : `data:${part.source.mimeType};base64,${part.source.value}`
+      part.source.type === 'url' ? part.source.value : `data:${part.source.mimeType};base64,${part.source.value}`
     return { type: 'input_image', url }
   }
   if (part.type === 'document') {
     const url =
-      part.source.type === 'url'
-        ? part.source.value
-        : `data:${part.source.mimeType};base64,${part.source.value}`
+      part.source.type === 'url' ? part.source.value : `data:${part.source.mimeType};base64,${part.source.value}`
     return {
       type: 'input_file',
       url,
-      mime_type: part.source.mimeType,
+      mime_type: part.source.mimeType
     }
   }
   return null
@@ -92,11 +80,9 @@ export function buildResponsesInput(
   messages: Array<UIMessage> | Array<ModelMessage>,
   model: string,
   clientId: string,
-  requestId: string,
+  requestId: string
 ): ResponsesRequest {
-  const input: ResponsesInputMessage[] = (
-    messages as ReadonlyArray<UIMessage | ModelMessage>
-  )
+  const input: ResponsesInputMessage[] = (messages as ReadonlyArray<UIMessage | ModelMessage>)
     .map((msg) => (isUIMessage(msg) ? convertUIMessage(msg) : convertModelMessage(msg)))
     .filter((m): m is ResponsesInputMessage => m !== null)
 
@@ -106,6 +92,6 @@ export function buildResponsesInput(
     request_id: requestId,
     input,
     stream: true,
-    stream_options: { include_usage: true },
+    stream_options: { include_usage: true }
   }
 }

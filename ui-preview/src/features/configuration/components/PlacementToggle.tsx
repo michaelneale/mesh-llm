@@ -5,7 +5,7 @@ import type { Placement } from '@/features/app-tabs/types'
 
 const PLACEMENT_OPTIONS: readonly SegmentedControlOption[] = [
   { value: 'separate', label: 'separate' },
-  { value: 'pooled', label: 'pooled' },
+  { value: 'pooled', label: 'pooled' }
 ]
 
 function isPlacement(value: string): value is Placement {
@@ -21,7 +21,14 @@ type PlacementToggleProps = {
   onChange: (placement: Placement) => void
 }
 
-export function PlacementToggle({ disabled = false, disabledReason, groupId, itemTabIndex, placement, onChange }: PlacementToggleProps) {
+export function PlacementToggle({
+  disabled = false,
+  disabledReason,
+  groupId,
+  itemTabIndex,
+  placement,
+  onChange
+}: PlacementToggleProps) {
   const descriptionId = disabledReason ? `${groupId}-placement-reason` : undefined
   const legendId = `${groupId}-placement-legend`
   const control = (
@@ -30,8 +37,14 @@ export function PlacementToggle({ disabled = false, disabledReason, groupId, ite
       className={cn('inline-flex', disabled && 'opacity-60')}
       disabled={disabled}
     >
-      <legend id={legendId} className="sr-only">VRAM placement</legend>
-      {descriptionId ? <span id={descriptionId} className="sr-only">{disabledReason}</span> : null}
+      <legend id={legendId} className="sr-only">
+        VRAM placement
+      </legend>
+      {descriptionId ? (
+        <span id={descriptionId} className="sr-only">
+          {disabledReason}
+        </span>
+      ) : null}
       <SegmentedControl
         ariaDescribedBy={descriptionId}
         ariaLabelledBy={legendId}

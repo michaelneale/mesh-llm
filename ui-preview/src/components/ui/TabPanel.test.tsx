@@ -9,15 +9,20 @@ const tabItems: TabPanelItem<'alpha' | 'beta'>[] = [
     value: 'alpha',
     label: 'Alpha',
     icon: Circle,
-    accessory: <span className="rounded-full border border-border-soft px-[5px] font-mono text-[length:var(--density-type-annotation)]">2</span>,
-    content: <div>Alpha panel</div>,
+    accessory: (
+      <span className="rounded-full border border-border-soft px-[5px] font-mono text-[length:var(--density-type-annotation)]">
+        2
+      </span>
+    ),
+    content: <div>Alpha panel</div>
   },
   {
     value: 'beta',
     label: 'Beta',
-    accessory: ({ active }) => (active ? <span title="Beta active marker" className="size-[5px] rounded-full bg-warn" /> : null),
-    content: <div>Beta panel</div>,
-  },
+    accessory: ({ active }) =>
+      active ? <span title="Beta active marker" className="size-[5px] rounded-full bg-warn" /> : null,
+    content: <div>Beta panel</div>
+  }
 ]
 
 describe('TabPanel', () => {
@@ -55,9 +60,9 @@ describe('TabPanel', () => {
         defaultValue="beta"
         tabs={[
           { value: 'alpha', label: 'Alpha', content: <div>Alpha panel</div> },
-          { value: 'beta', label: 'Beta', content: <div>Beta panel</div>, disabled: true },
+          { value: 'beta', label: 'Beta', content: <div>Beta panel</div>, disabled: true }
         ]}
-      />,
+      />
     )
 
     expect(screen.getByRole('tab', { name: 'Alpha' })).toHaveAttribute('data-active', 'true')
@@ -70,10 +75,10 @@ describe('TabPanel', () => {
         ariaLabel="Controlled disabled tabs"
         tabs={[
           { value: 'alpha', label: 'Alpha', content: <div>Alpha panel</div> },
-          { value: 'beta', label: 'Beta', content: <div>Beta panel</div>, disabled: true },
+          { value: 'beta', label: 'Beta', content: <div>Beta panel</div>, disabled: true }
         ]}
         value="beta"
-      />,
+      />
     )
 
     expect(screen.getByRole('tab', { name: 'Alpha' })).not.toHaveAttribute('data-active')

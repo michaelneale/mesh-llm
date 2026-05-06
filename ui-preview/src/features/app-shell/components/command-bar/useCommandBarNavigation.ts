@@ -1,4 +1,11 @@
-import { type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type SetStateAction, useCallback, useEffect, useRef } from 'react'
+import {
+  type Dispatch,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef
+} from 'react'
 import type { CommandBarBehavior, CommandBarMode, CommandBarNormalizedResult } from './command-bar-types'
 
 function isCommandBarNavigationTarget(target: EventTarget | null, listboxId: string) {
@@ -35,7 +42,7 @@ export function useCommandBarNavigation<T>({
   onModeSwitch,
   onSelectResult,
   results,
-  setActiveIndex,
+  setActiveIndex
 }: UseCommandBarNavigationOptions<T>): UseCommandBarNavigationResult {
   const activeOptionElementsRef = useRef(new Map<string, HTMLDivElement>())
   const shouldScrollActiveOptionIntoViewRef = useRef(false)
@@ -49,53 +56,56 @@ export function useCommandBarNavigation<T>({
     activeOptionElementsRef.current.delete(compositeKey)
   }, [])
 
-  const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.defaultPrevented) return
+  const handleKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.defaultPrevented) return
 
-    if (event.key === 'ArrowDown') {
-      if (!isCommandBarNavigationTarget(event.target, listboxId)) return
-      if (results.length === 0) return
+      if (event.key === 'ArrowDown') {
+        if (!isCommandBarNavigationTarget(event.target, listboxId)) return
+        if (results.length === 0) return
+        event.preventDefault()
+        shouldScrollActiveOptionIntoViewRef.current = true
+        setActiveIndex((currentIndex) => {
+          if (currentIndex < 0) return 0
+          return Math.min(currentIndex + 1, results.length - 1)
+        })
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        if (!isCommandBarNavigationTarget(event.target, listboxId)) return
+        if (results.length === 0) return
+        event.preventDefault()
+        shouldScrollActiveOptionIntoViewRef.current = true
+        setActiveIndex((currentIndex) => {
+          if (currentIndex < 0) return 0
+          return Math.max(currentIndex - 1, 0)
+        })
+        return
+      }
+
+      if (event.key === 'Enter') {
+        if (!isCommandBarNavigationTarget(event.target, listboxId)) return
+        const activeResult = results[activeIndex]
+        if (!activeResult) return
+        event.preventDefault()
+        void onSelectResult(activeResult)
+        return
+      }
+
+      if (behavior !== 'distinct') return
+      if (event.altKey || event.shiftKey) return
+      if (!/^\d$/.test(event.key) || event.key === '0') return
+      if (!event.ctrlKey) return
+
+      const nextMode = modes[Number(event.key) - 1]
+      if (!nextMode) return
+
       event.preventDefault()
-      shouldScrollActiveOptionIntoViewRef.current = true
-      setActiveIndex((currentIndex) => {
-        if (currentIndex < 0) return 0
-        return Math.min(currentIndex + 1, results.length - 1)
-      })
-      return
-    }
-
-    if (event.key === 'ArrowUp') {
-      if (!isCommandBarNavigationTarget(event.target, listboxId)) return
-      if (results.length === 0) return
-      event.preventDefault()
-      shouldScrollActiveOptionIntoViewRef.current = true
-      setActiveIndex((currentIndex) => {
-        if (currentIndex < 0) return 0
-        return Math.max(currentIndex - 1, 0)
-      })
-      return
-    }
-
-    if (event.key === 'Enter') {
-      if (!isCommandBarNavigationTarget(event.target, listboxId)) return
-      const activeResult = results[activeIndex]
-      if (!activeResult) return
-      event.preventDefault()
-      void onSelectResult(activeResult)
-      return
-    }
-
-    if (behavior !== 'distinct') return
-    if (event.altKey || event.shiftKey) return
-    if (!/^\d$/.test(event.key) || event.key === '0') return
-    if (!event.ctrlKey) return
-
-    const nextMode = modes[Number(event.key) - 1]
-    if (!nextMode) return
-
-    event.preventDefault()
-    onModeSwitch(nextMode.id)
-  }, [activeIndex, behavior, listboxId, modes, onModeSwitch, onSelectResult, results, setActiveIndex])
+      onModeSwitch(nextMode.id)
+    },
+    [activeIndex, behavior, listboxId, modes, onModeSwitch, onSelectResult, results, setActiveIndex]
+  )
 
   useEffect(() => {
     if (!isOpen) {

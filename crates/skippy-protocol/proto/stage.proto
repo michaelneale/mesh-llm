@@ -13,6 +13,10 @@ message StageControlRequest {
     LoadStage load_stage = 3;
     StopStage stop_stage = 4;
     GetStageStatus get_stage_status = 5;
+    GetLayerInventory get_layer_inventory = 6;
+    PrepareStage prepare_stage = 7;
+    CancelPrepareStage cancel_prepare_stage = 8;
+    StageStatusUpdate stage_status_update = 9;
   }
 }
 
@@ -21,6 +25,10 @@ message StageControlResponse {
   oneof response {
     StageReady stage_ready = 2;
     StageStatus stage_status = 3;
+    LayerInventory layer_inventory = 4;
+    PrepareStageAccepted prepare_stage_accepted = 5;
+    StagePreparationStatus stage_preparation_status = 6;
+    StageStatusAck stage_status_ack = 7;
   }
 }
 
@@ -68,10 +76,43 @@ message GetStageStatus {
   optional string stage_id = 3;
 }
 
+message GetLayerInventory {
+  string model_id = 1;
+  string package_ref = 2;
+  string manifest_sha256 = 3;
+}
+
+message PrepareStage {
+  LoadStage load_stage = 1;
+  optional bytes coordinator_id = 2;
+}
+
+message CancelPrepareStage {
+  string topology_id = 1;
+  string run_id = 2;
+  string stage_id = 3;
+  uint64 shutdown_generation = 4;
+}
+
+message StageStatusUpdate {
+  StagePreparationStatus status = 1;
+}
+
 message StageReady {
   bool accepted = 1;
   StageStatus status = 2;
   optional string error = 3;
+}
+
+message PrepareStageAccepted {
+  bool accepted = 1;
+  StagePreparationStatus status = 2;
+  optional string error = 3;
+}
+
+message StageStatusAck {
+  bool accepted = 1;
+  optional string error = 2;
 }
 
 message StageStatus {
@@ -103,6 +144,51 @@ message StageStatus {
   optional uint32 n_batch = 26;
   optional uint32 n_ubatch = 27;
   StageFlashAttnType flash_attn_type = 28;
+}
+
+message LayerInventory {
+  string model_id = 1;
+  string package_ref = 2;
+  string manifest_sha256 = 3;
+  uint32 layer_count = 4;
+  repeated LayerRange ready_ranges = 5;
+  repeated LayerRange available_ranges = 6;
+  repeated LayerRange missing_ranges = 7;
+  repeated StagePreparationStatus preparing_ranges = 8;
+  optional string source_model_path = 9;
+  optional uint64 source_model_bytes = 10;
+  SourceModelKind source_model_kind = 11;
+}
+
+message LayerRange {
+  uint32 layer_start = 1;
+  uint32 layer_end = 2;
+}
+
+message StagePreparationStatus {
+  string topology_id = 1;
+  string run_id = 2;
+  string model_id = 3;
+  string backend = 4;
+  string package_ref = 5;
+  string manifest_sha256 = 6;
+  string stage_id = 7;
+  uint32 stage_index = 8;
+  uint32 layer_start = 9;
+  uint32 layer_end = 10;
+  StagePreparationState state = 11;
+  optional uint64 bytes_done = 12;
+  optional uint64 bytes_total = 13;
+  optional string bind_addr = 14;
+  optional string error = 15;
+  uint64 shutdown_generation = 16;
+}
+
+enum SourceModelKind {
+  SOURCE_MODEL_KIND_UNSPECIFIED = 0;
+  SOURCE_MODEL_KIND_LAYER_PACKAGE = 1;
+  SOURCE_MODEL_KIND_PLAIN_GGUF = 2;
+  SOURCE_MODEL_KIND_SPLIT_GGUF = 3;
 }
 
 enum StageFlashAttnType {
@@ -155,4 +241,16 @@ enum StageRuntimeState {
   STAGE_RUNTIME_STATE_STOPPING = 3;
   STAGE_RUNTIME_STATE_STOPPED = 4;
   STAGE_RUNTIME_STATE_FAILED = 5;
+}
+
+enum StagePreparationState {
+  STAGE_PREPARATION_STATE_UNSPECIFIED = 0;
+  STAGE_PREPARATION_STATE_ASSIGNED = 1;
+  STAGE_PREPARATION_STATE_DOWNLOADING = 2;
+  STAGE_PREPARATION_STATE_AVAILABLE = 3;
+  STAGE_PREPARATION_STATE_RESOLVING = 4;
+  STAGE_PREPARATION_STATE_LOADING = 5;
+  STAGE_PREPARATION_STATE_READY = 6;
+  STAGE_PREPARATION_STATE_FAILED = 7;
+  STAGE_PREPARATION_STATE_CANCELLED = 8;
 }

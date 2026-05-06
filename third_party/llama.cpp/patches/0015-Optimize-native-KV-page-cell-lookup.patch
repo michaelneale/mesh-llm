@@ -1,17 +1,17 @@
-From 3014f4dc2f25ad3989ee055dc67b7de06ba587a4 Mon Sep 17 00:00:00 2001
+From 13237ccd1e1ab5e3ec55db2ea365846fc2a9037c Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 09:17:13 +1000
-Subject: [PATCH 15/34] Optimize native KV page cell lookup
+Subject: [PATCH 15/45] Optimize native KV page cell lookup
 
 ---
  src/llama-kv-cache.cpp | 29 +++++++++++++++--------------
  1 file changed, 15 insertions(+), 14 deletions(-)
 
 diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
-index 9c8bdaaa4..1b19f7e2b 100644
+index d03ca789..b59e7c3f 100644
 --- a/src/llama-kv-cache.cpp
 +++ b/src/llama-kv-cache.cpp
-@@ -1167,23 +1167,24 @@ bool llama_kv_cache::stage_export_kv_page(
+@@ -1168,23 +1168,24 @@ bool llama_kv_cache::stage_export_kv_page(
      }
      const auto & cells = v_cells[strm];
  

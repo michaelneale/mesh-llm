@@ -212,11 +212,12 @@ pub fn read_stage_message(mut reader: impl Read, n_embd: i32) -> io::Result<Stag
     for _ in 0..token_sideband_count {
         tokens.push(read_i32(&mut reader)?);
     }
-    let activation_bytes = if state.source_stage_index < 0 {
-        0
-    } else {
-        activation_wire_bytes(dtype, token_count, n_embd)?
-    };
+    let activation_bytes =
+        if state.source_stage_index < 0 || kind.is_activationless_prefix_cache_control() {
+            0
+        } else {
+            activation_wire_bytes(dtype, token_count, n_embd)?
+        };
     let mut activation = vec![0; activation_bytes];
     if activation_bytes > 0 {
         reader.read_exact(&mut activation)?;

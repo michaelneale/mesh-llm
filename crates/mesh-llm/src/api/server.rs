@@ -12,12 +12,13 @@ use tokio::{
 
 // ── Server ──
 
-pub async fn start(
+pub(crate) async fn start_with_listener(
     port: u16,
     state: MeshApi,
     mut target_rx: watch::Receiver<election::InferenceTarget>,
     listen_all: bool,
     headless: bool,
+    existing_listener: Option<TcpListener>,
 ) {
     state.set_headless(headless).await;
     // Watch election target changes
@@ -105,14 +106,24 @@ pub async fn start(
     });
 
     let addr = if listen_all { "0.0.0.0" } else { "127.0.0.1" };
-    let listener = match TcpListener::bind(format!("{addr}:{port}")).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("Management API: failed to bind :{port}: {e}");
-            return;
-        }
+    let listener = match existing_listener {
+        Some(listener) => listener,
+        None => match TcpListener::bind(format!("{addr}:{port}")).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("Management API: failed to bind :{port}: {e}");
+                return;
+            }
+        },
     };
-    tracing::info!("Management API on http://localhost:{port}");
+    let management_url = listener
+        .local_addr()
+        .map(|addr| format!("http://{addr}"))
+        .unwrap_or_else(|err| {
+            tracing::warn!("Management API: failed to read listener address: {err}");
+            format!("http://localhost:{port}")
+        });
+    tracing::info!("Management API on {management_url}");
 
     loop {
         let Ok((stream, _)) = listener.accept().await else {

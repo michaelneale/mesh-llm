@@ -34,10 +34,7 @@ fn main() {
                 workspace_root.join(path)
             }
         })
-        .unwrap_or_else(|_| {
-            let default_dir = workspace_root.join(".deps/llama.cpp/build-stage-abi-static");
-            default_dir
-        });
+        .unwrap_or_else(|_| workspace_root.join(".deps/llama.cpp/build-stage-abi-static"));
 
     let search_dirs = [
         build_dir.join("tools/mtmd"),
@@ -154,11 +151,36 @@ fn link_linux_cuda_libs(cmake_cache: &std::path::Path) {
     ] {
         link_linux_lib_from_cache(cmake_cache, cache_key, lib);
     }
+    // NCCL is conditionally linked by CMake when found on the system.
+    // Check CMakeCache for NCCL_LIBRARY to detect this and extract the search path.
+    if let Ok(contents) = std::fs::read_to_string(cmake_cache) {
+        if let Some(nccl_path) = cmake_cache_value(&contents, "NCCL_LIBRARY") {
+            if !nccl_path.contains("NOTFOUND") {
+                let path = std::path::PathBuf::from(&nccl_path);
+                if let Some(parent) = path.parent() {
+                    if parent.is_dir() {
+                        println!("cargo:rustc-link-search=native={}", parent.display());
+                    }
+                }
+                println!("cargo:rustc-link-lib=dylib=nccl");
+            }
+        }
+    }
 }
 
 fn link_linux_hip_libs() {
+    // Add ROCm library search paths
+    for search_path in ["/opt/rocm/lib", "/opt/rocm/hip/lib"] {
+        if std::path::Path::new(search_path).is_dir() {
+            println!("cargo:rustc-link-search=native={search_path}");
+        }
+    }
     for lib in ["amdhip64", "rocblas", "hipblas"] {
         println!("cargo:rustc-link-lib=dylib={lib}");
+    }
+    // RCCL (ROCm Collective Communications Library) provides the NCCL interface.
+    if std::path::Path::new("/opt/rocm/lib/librccl.so").exists() {
+        println!("cargo:rustc-link-lib=dylib=rccl");
     }
 }
 

@@ -61,27 +61,30 @@ export function useMeshVizTraffic({
   nodeColorForTraffic,
   selfId,
   updateCanvasSize,
-  viewportRef,
+  viewportRef
 }: MeshVizTrafficOptions) {
   const trafficPacketsRef = useRef<Map<number, TrafficPacket>>(new Map())
   const trafficPacketIdRef = useRef(0)
 
-  const placePacket = useCallback((element: HTMLSpanElement, point: Point) => {
-    // While a live pan/zoom transform is active, packet spans need to stay in the same
-    // committed viewport coordinate space as the React-rendered nodes/links. Their parent
-    // packet layer applies the live transform, so using viewportRef here would double-apply
-    // the in-progress pan/zoom and make packets drift until the viewport commit lands.
-    const placementViewport = liveLayerTransformActiveRef.current
-      ? liveLayerBaseViewportRef.current
-      : viewportRef.current
+  const placePacket = useCallback(
+    (element: HTMLSpanElement, point: Point) => {
+      // While a live pan/zoom transform is active, packet spans need to stay in the same
+      // committed viewport coordinate space as the React-rendered nodes/links. Their parent
+      // packet layer applies the live transform, so using viewportRef here would double-apply
+      // the in-progress pan/zoom and make packets drift until the viewport commit lands.
+      const placementViewport = liveLayerTransformActiveRef.current
+        ? liveLayerBaseViewportRef.current
+        : viewportRef.current
 
-    element.style.transform = packetTransform(
-      point,
-      canvasSizeRef.current.width,
-      canvasSizeRef.current.height,
-      placementViewport,
-    )
-  }, [canvasSizeRef, liveLayerBaseViewportRef, liveLayerTransformActiveRef, viewportRef])
+      element.style.transform = packetTransform(
+        point,
+        canvasSizeRef.current.width,
+        canvasSizeRef.current.height,
+        placementViewport
+      )
+    },
+    [canvasSizeRef, liveLayerBaseViewportRef, liveLayerTransformActiveRef, viewportRef]
+  )
 
   const hidePacket = useCallback((element: HTMLSpanElement) => {
     element.style.opacity = PACKET_HIDDEN_OPACITY
@@ -117,23 +120,26 @@ export function useMeshVizTraffic({
     trafficPacketsRef.current.clear()
   }, [])
 
-  const createTrafficPacketElement = useCallback((initialColor: string) => {
-    const packetLayerElement = packetLayerRef.current
+  const createTrafficPacketElement = useCallback(
+    (initialColor: string) => {
+      const packetLayerElement = packetLayerRef.current
 
-    if (!packetLayerElement) {
-      return undefined
-    }
+      if (!packetLayerElement) {
+        return undefined
+      }
 
-    const packetElement = document.createElement('span')
-    packetElement.className = PACKET_CLASS_NAME
-    packetElement.style.background = initialColor
-    packetElement.style.color = initialColor
-    packetElement.style.opacity = PACKET_HIDDEN_OPACITY
-    packetElement.style.transition = `opacity ${PACKET_FADE_DURATION}ms ease-out`
-    packetLayerElement.append(packetElement)
+      const packetElement = document.createElement('span')
+      packetElement.className = PACKET_CLASS_NAME
+      packetElement.style.background = initialColor
+      packetElement.style.color = initialColor
+      packetElement.style.opacity = PACKET_HIDDEN_OPACITY
+      packetElement.style.transition = `opacity ${PACKET_FADE_DURATION}ms ease-out`
+      packetLayerElement.append(packetElement)
 
-    return packetElement
-  }, [packetLayerRef])
+      return packetElement
+    },
+    [packetLayerRef]
+  )
 
   const placeTrafficPackets = useCallback(() => {
     trafficPacketsRef.current.forEach((packet) => {
@@ -157,7 +163,7 @@ export function useMeshVizTraffic({
       const linkIndex = links.findIndex(
         (link) =>
           (link.source.id === source.id && link.target.id === target.id) ||
-          (link.source.id === target.id && link.target.id === source.id),
+          (link.source.id === target.id && link.target.id === source.id)
       )
 
       if (linkIndex === -1) {
@@ -229,7 +235,7 @@ export function useMeshVizTraffic({
           packet.fadeOutTimer = window.setTimeout(() => {
             removeTrafficPacket(packetId)
           }, PACKET_FADE_DURATION)
-        },
+        }
       })
 
       const packet = trafficPacketsRef.current.get(packetId)
@@ -251,8 +257,8 @@ export function useMeshVizTraffic({
       removeTrafficPacket,
       renderNodes,
       showPacket,
-      updateCanvasSize,
-    ],
+      updateCanvasSize
+    ]
   )
 
   const playRandomTraffic = useCallback(() => {
@@ -263,10 +269,7 @@ export function useMeshVizTraffic({
     const link = links[Math.floor(Math.random() * links.length)]
     const reverse = Math.random() >= 0.5
 
-    return playTraffic(
-      reverse ? link.target.id : link.source.id,
-      reverse ? link.source.id : link.target.id,
-    )
+    return playTraffic(reverse ? link.target.id : link.source.id, reverse ? link.source.id : link.target.id)
   }, [links, playTraffic])
 
   const playSelfTraffic = useCallback(() => {
@@ -277,10 +280,7 @@ export function useMeshVizTraffic({
       return false
     }
 
-    return playTraffic(
-      selfId,
-      link.source.id === selfId ? link.target.id : link.source.id,
-    )
+    return playTraffic(selfId, link.source.id === selfId ? link.target.id : link.source.id)
   }, [links, playTraffic, selfId])
 
   return {
@@ -288,6 +288,6 @@ export function useMeshVizTraffic({
     placeTrafficPackets,
     playRandomTraffic,
     playSelfTraffic,
-    playTraffic,
+    playTraffic
   }
 }

@@ -12,49 +12,78 @@ export function DashboardLiveLoadingGhost() {
   const peerRows = ['peer-a', 'peer-b', 'peer-c', 'peer-d']
 
   useEffect(() => {
-    const prefersReducedMotion = typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (prefersReducedMotion) return undefined
 
     scopeRef.current = createScope({ root: rootRef }).add(() => {
       const clientPaths = [
         {
           from: [-146, -102],
-          points: [[-154, -78], [-124, -108], [-97, -56], [-88, -49], [-106, -64], [-122, -84]],
+          points: [
+            [-154, -78],
+            [-124, -108],
+            [-97, -56],
+            [-88, -49],
+            [-106, -64],
+            [-122, -84]
+          ],
           opacity: [0, 0.34, 0.46, 0.58, 0.72, 0.62, 0.48, 0.34, 0],
           scale: [0.52, 0.72, 0.84, 0.76, 0.96, 0.82, 0.9, 0.72, 0.52],
           duration: 11_800,
           delay: 220,
-          loopDelay: 1800,
+          loopDelay: 1800
         },
         {
           from: [150, -94],
-          points: [[158, -118], [126, -90], [92, -64], [82, -56], [102, -74], [124, -94]],
+          points: [
+            [158, -118],
+            [126, -90],
+            [92, -64],
+            [82, -56],
+            [102, -74],
+            [124, -94]
+          ],
           opacity: [0, 0.3, 0.42, 0.56, 0.7, 0.6, 0.46, 0.3, 0],
           scale: [0.5, 0.68, 0.82, 0.74, 0.92, 0.8, 0.88, 0.68, 0.5],
           duration: 12_900,
           delay: 1180,
-          loopDelay: 2600,
+          loopDelay: 2600
         },
         {
           from: [-150, 110],
-          points: [[-164, 136], [-126, 104], [-92, 64], [-82, 58], [-104, 72], [-124, 98]],
+          points: [
+            [-164, 136],
+            [-126, 104],
+            [-92, 64],
+            [-82, 58],
+            [-104, 72],
+            [-124, 98]
+          ],
           opacity: [0, 0.32, 0.44, 0.54, 0.68, 0.56, 0.44, 0.32, 0],
           scale: [0.5, 0.7, 0.84, 0.76, 0.94, 0.8, 0.88, 0.7, 0.5],
           duration: 12_200,
           delay: 2160,
-          loopDelay: 2200,
+          loopDelay: 2200
         },
         {
           from: [146, 116],
-          points: [[164, 140], [126, 118], [88, 70], [78, 62], [100, 80], [122, 104]],
+          points: [
+            [164, 140],
+            [126, 118],
+            [88, 70],
+            [78, 62],
+            [100, 80],
+            [122, 104]
+          ],
           opacity: [0, 0.28, 0.4, 0.52, 0.66, 0.55, 0.42, 0.28, 0],
           scale: [0.48, 0.66, 0.78, 0.72, 0.9, 0.76, 0.84, 0.66, 0.48],
           duration: 13_600,
           delay: 3120,
-          loopDelay: 3200,
-        },
+          loopDelay: 3200
+        }
       ]
 
       const meshTimeline = createTimeline({ loop: true, loopDelay: 320, defaults: { ease: 'outQuart' } })
@@ -62,7 +91,7 @@ export function DashboardLiveLoadingGhost() {
         .set('[data-dashboard-mesh-node]', {
           opacity: 0,
           scale: 0.54,
-          boxShadow: '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)',
+          boxShadow: '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)'
         })
         .set('[data-dashboard-mesh-core]', { scale: 0.94, opacity: 0.76 })
 
@@ -72,18 +101,26 @@ export function DashboardLiveLoadingGhost() {
         const linkSelector = `[data-dashboard-mesh-link="${index}"]`
 
         meshTimeline
-          .add(nodeSelector, {
-            opacity: [0, 1, 0.98],
-            scale: [0.6, 1.34, 1.08],
-            boxShadow: [
-              '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)',
-              '0 0 30px 3px color-mix(in oklab, var(--color-accent) 34%, transparent)',
-              '0 0 14px 1px color-mix(in oklab, var(--color-accent) 20%, transparent)',
-            ],
-            duration: 380,
-          }, start)
+          .add(
+            nodeSelector,
+            {
+              opacity: [0, 1, 0.98],
+              scale: [0.6, 1.34, 1.08],
+              boxShadow: [
+                '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)',
+                '0 0 30px 3px color-mix(in oklab, var(--color-accent) 34%, transparent)',
+                '0 0 14px 1px color-mix(in oklab, var(--color-accent) 20%, transparent)'
+              ],
+              duration: 380
+            },
+            start
+          )
           .add(linkSelector, { opacity: [0, 0.62], strokeDashoffset: [1, 0], duration: 420 }, start + 380)
-          .add('[data-dashboard-mesh-core]', { opacity: [0.76, 1, 0.84], scale: [0.94, 1.12, 0.98], duration: 360 }, start + 500)
+          .add(
+            '[data-dashboard-mesh-core]',
+            { opacity: [0.76, 1, 0.84], scale: [0.94, 1.12, 0.98], duration: 360 },
+            start + 500
+          )
       })
 
       const disconnectStart = 2720
@@ -95,19 +132,27 @@ export function DashboardLiveLoadingGhost() {
 
         meshTimeline
           .add(linkSelector, { opacity: [0.62, 0], strokeDashoffset: [0, -1], duration: 260, ease: 'inQuart' }, start)
-          .add(nodeSelector, {
-            opacity: [0.98, 0],
-            scale: [1.08, 0.72],
-            boxShadow: [
-              '0 0 14px 1px color-mix(in oklab, var(--color-accent) 20%, transparent)',
-              '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)',
-            ],
-            duration: 280,
-            ease: 'inQuart',
-          }, start + 90)
+          .add(
+            nodeSelector,
+            {
+              opacity: [0.98, 0],
+              scale: [1.08, 0.72],
+              boxShadow: [
+                '0 0 14px 1px color-mix(in oklab, var(--color-accent) 20%, transparent)',
+                '0 0 0 0 color-mix(in oklab, var(--color-accent) 0%, transparent)'
+              ],
+              duration: 280,
+              ease: 'inQuart'
+            },
+            start + 90
+          )
       })
 
-      meshTimeline.add('[data-dashboard-mesh-core]', { opacity: [0.84, 0.76], scale: [0.98, 0.94], duration: 260, ease: 'inQuart' }, disconnectStart + 860)
+      meshTimeline.add(
+        '[data-dashboard-mesh-core]',
+        { opacity: [0.84, 0.76], scale: [0.98, 0.94], duration: 260, ease: 'inQuart' },
+        disconnectStart + 860
+      )
 
       clientPaths.forEach((path, index) => {
         const selector = `[data-dashboard-client-node="${index}"]`
@@ -126,7 +171,7 @@ export function DashboardLiveLoadingGhost() {
           delay: path.delay,
           loop: true,
           loopDelay: path.loopDelay,
-          ease: 'inOutSine',
+          ease: 'inOutSine'
         })
       })
     })
@@ -140,7 +185,7 @@ export function DashboardLiveLoadingGhost() {
   return (
     <div ref={rootRef}>
       <DashboardLayout
-        hero={(
+        hero={
           <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel px-4 py-4">
             <div className="type-label text-fg-faint">Live API</div>
             <LoadingGhostBlock className="mt-3 h-6 max-w-[32rem]" shimmer />
@@ -150,61 +195,148 @@ export function DashboardLiveLoadingGhost() {
               <LoadingGhostBlock className="h-8 w-36" shimmer />
             </div>
           </section>
-        )}
-        status={(
+        }
+        status={
           <div className="grid grid-cols-4 gap-2.5">
-            {['load', 'tokens', 'requests', 'peers'].map((item) => <LoadingGhostBlock key={item} className="h-[74px]" panelShell shimmer />)}
+            {['load', 'tokens', 'requests', 'peers'].map((item) => (
+              <LoadingGhostBlock key={item} className="h-[74px]" panelShell shimmer />
+            ))}
           </div>
-        )}
-        topology={(
+        }
+        topology={
           <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3.5">
             <div className="flex items-center justify-between">
               <LoadingGhostBlock className="h-4 w-32" shimmer />
               <LoadingGhostBlock className="h-6 w-24 rounded-full" shimmer />
             </div>
             <div className="relative mt-4 grid h-[360px] place-items-center overflow-hidden rounded-[var(--radius)] border border-border-soft bg-[radial-gradient(ellipse_at_center,color-mix(in_oklab,var(--color-panel)_70%,var(--color-background)),var(--color-background)_76%)]">
-              <span aria-hidden="true" className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,color-mix(in_oklab,var(--color-accent)_8%,transparent),transparent_58%)] opacity-70" />
-              <span aria-hidden="true" className="pointer-events-none absolute inset-0 opacity-[0.34] [background-image:radial-gradient(circle,color-mix(in_oklab,var(--color-foreground)_12%,transparent)_0.75px,transparent_1.45px),radial-gradient(circle,color-mix(in_oklab,var(--color-accent)_10%,transparent)_0.6px,transparent_1.35px)] [background-position:0_0,10px_10px] [background-size:20px_20px,20px_20px] [mask-image:radial-gradient(ellipse_at_center,black_22%,transparent_90%)]" />
-              <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 size-[28rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[color:color-mix(in_oklab,var(--color-border)_62%,transparent)] opacity-[0.24]" />
-              <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 size-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[color:color-mix(in_oklab,var(--color-border)_46%,transparent)] opacity-[0.18]" />
-              <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 h-px w-[32rem] -translate-x-1/2 -translate-y-1/2 rotate-[-18deg] bg-[linear-gradient(90deg,transparent,color-mix(in_oklab,var(--color-accent)_14%,transparent),transparent)] opacity-45" />
-              <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-[linear-gradient(180deg,transparent,color-mix(in_oklab,var(--color-panel)_42%,transparent))] opacity-50" />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,color-mix(in_oklab,var(--color-accent)_8%,transparent),transparent_58%)] opacity-70"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 opacity-[0.34] [background-image:radial-gradient(circle,color-mix(in_oklab,var(--color-foreground)_12%,transparent)_0.75px,transparent_1.45px),radial-gradient(circle,color-mix(in_oklab,var(--color-accent)_10%,transparent)_0.6px,transparent_1.35px)] [background-position:0_0,10px_10px] [background-size:20px_20px,20px_20px] [mask-image:radial-gradient(ellipse_at_center,black_22%,transparent_90%)]"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-1/2 size-[28rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[color:color-mix(in_oklab,var(--color-border)_62%,transparent)] opacity-[0.24]"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-1/2 size-[38rem] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[color:color-mix(in_oklab,var(--color-border)_46%,transparent)] opacity-[0.18]"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute left-1/2 top-1/2 h-px w-[32rem] -translate-x-1/2 -translate-y-1/2 rotate-[-18deg] bg-[linear-gradient(90deg,transparent,color-mix(in_oklab,var(--color-accent)_14%,transparent),transparent)] opacity-45"
+              />
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-[linear-gradient(180deg,transparent,color-mix(in_oklab,var(--color-panel)_42%,transparent))] opacity-50"
+              />
               <div className="relative z-10 size-56">
                 <span className="absolute inset-0 rounded-full border border-border-soft" />
                 <svg aria-hidden="true" className="absolute inset-0 size-full" viewBox="0 0 224 224">
-                  <line className="opacity-30" data-dashboard-mesh-link="0" pathLength={1} stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))" strokeDasharray="0.055 0.055" strokeDashoffset={1} strokeLinecap="round" strokeWidth="1" x1="112" x2="40" y1="112" y2="56" />
-                  <line className="opacity-30" data-dashboard-mesh-link="1" pathLength={1} stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))" strokeDasharray="0.055 0.055" strokeDashoffset={1} strokeLinecap="round" strokeWidth="1" x1="112" x2="72" y1="112" y2="180" />
-                  <line className="opacity-30" data-dashboard-mesh-link="2" pathLength={1} stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))" strokeDasharray="0.055 0.055" strokeDashoffset={1} strokeLinecap="round" strokeWidth="1" x1="112" x2="176" y1="112" y2="88" />
+                  <line
+                    className="opacity-30"
+                    data-dashboard-mesh-link="0"
+                    pathLength={1}
+                    stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))"
+                    strokeDasharray="0.055 0.055"
+                    strokeDashoffset={1}
+                    strokeLinecap="round"
+                    strokeWidth="1"
+                    x1="112"
+                    x2="40"
+                    y1="112"
+                    y2="56"
+                  />
+                  <line
+                    className="opacity-30"
+                    data-dashboard-mesh-link="1"
+                    pathLength={1}
+                    stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))"
+                    strokeDasharray="0.055 0.055"
+                    strokeDashoffset={1}
+                    strokeLinecap="round"
+                    strokeWidth="1"
+                    x1="112"
+                    x2="72"
+                    y1="112"
+                    y2="180"
+                  />
+                  <line
+                    className="opacity-30"
+                    data-dashboard-mesh-link="2"
+                    pathLength={1}
+                    stroke="color-mix(in oklab, var(--color-accent) 48%, var(--color-border))"
+                    strokeDasharray="0.055 0.055"
+                    strokeDashoffset={1}
+                    strokeLinecap="round"
+                    strokeWidth="1"
+                    x1="112"
+                    x2="176"
+                    y1="112"
+                    y2="88"
+                  />
                 </svg>
-                <span className="absolute left-8 top-12 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform" data-dashboard-mesh-node="0" />
-                <span className="absolute bottom-9 left-16 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform" data-dashboard-mesh-node="1" />
-                <span className="absolute right-10 top-20 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform" data-dashboard-mesh-node="2" />
-                <span className="absolute left-1/2 top-1/2 size-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform" data-dashboard-client-node="0" />
-                <span className="absolute left-1/2 top-1/2 size-1.5 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform" data-dashboard-client-node="1" />
-                <span className="absolute left-1/2 top-1/2 size-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform" data-dashboard-client-node="2" />
-                <span className="absolute left-1/2 top-1/2 size-1.5 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform" data-dashboard-client-node="3" />
-                <span className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-accent-contrast bg-[color:color-mix(in_oklab,var(--color-accent-contrast)_22%,var(--color-panel))] text-accent-contrast shadow-[0_0_18px_color-mix(in_oklab,var(--color-accent-contrast)_24%,transparent)] will-change-transform" data-dashboard-mesh-core />
+                <span
+                  className="absolute left-8 top-12 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform"
+                  data-dashboard-mesh-node="0"
+                />
+                <span
+                  className="absolute bottom-9 left-16 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform"
+                  data-dashboard-mesh-node="1"
+                />
+                <span
+                  className="absolute right-10 top-20 size-4 rounded-full border border-[color:color-mix(in_oklab,var(--color-accent)_34%,var(--color-border))] bg-[color:color-mix(in_oklab,var(--color-accent)_16%,var(--color-panel-strong))] opacity-60 shadow-[0_0_10px_color-mix(in_oklab,var(--color-accent)_12%,transparent)] will-change-transform"
+                  data-dashboard-mesh-node="2"
+                />
+                <span
+                  className="absolute left-1/2 top-1/2 size-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform"
+                  data-dashboard-client-node="0"
+                />
+                <span
+                  className="absolute left-1/2 top-1/2 size-1.5 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform"
+                  data-dashboard-client-node="1"
+                />
+                <span
+                  className="absolute left-1/2 top-1/2 size-2 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform"
+                  data-dashboard-client-node="2"
+                />
+                <span
+                  className="absolute left-1/2 top-1/2 size-1.5 rounded-full border border-[color:color-mix(in_oklab,var(--color-foreground)_64%,var(--color-accent))] bg-[color:color-mix(in_oklab,var(--color-foreground)_76%,var(--color-accent))] shadow-[0_0_12px_color-mix(in_oklab,var(--color-foreground)_20%,transparent)] will-change-transform"
+                  data-dashboard-client-node="3"
+                />
+                <span
+                  className="absolute left-1/2 top-1/2 size-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-accent-contrast bg-[color:color-mix(in_oklab,var(--color-accent-contrast)_22%,var(--color-panel))] text-accent-contrast shadow-[0_0_18px_color-mix(in_oklab,var(--color-accent-contrast)_24%,transparent)] will-change-transform"
+                  data-dashboard-mesh-core
+                />
               </div>
             </div>
           </section>
-        )}
-        catalog={(
+        }
+        catalog={
           <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3.5">
             <LoadingGhostBlock className="h-4 w-36" shimmer />
             <div className="mt-3 space-y-2">
-              {catalogRows.map((row) => <LoadingGhostBlock key={row} className="h-14" shimmer />)}
+              {catalogRows.map((row) => (
+                <LoadingGhostBlock key={row} className="h-14" shimmer />
+              ))}
             </div>
           </section>
-        )}
-        peers={(
+        }
+        peers={
           <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3.5">
             <LoadingGhostBlock className="h-4 w-28" shimmer />
             <div className="mt-3 space-y-2">
-              {peerRows.map((row) => <LoadingGhostBlock key={row} className="h-10" shimmer />)}
+              {peerRows.map((row) => (
+                <LoadingGhostBlock key={row} className="h-10" shimmer />
+              ))}
             </div>
           </section>
-        )}
-        connect={(
+        }
+        connect={
           <section className="panel-shell rounded-[var(--radius-lg)] border border-border bg-panel p-3.5">
             <LoadingGhostBlock className="h-4 w-24" shimmer />
             <div className="mt-3 grid grid-cols-2 gap-3.5">
@@ -213,7 +345,7 @@ export function DashboardLiveLoadingGhost() {
             </div>
             <LoadingGhostBlock className="mt-3 h-11" shimmer />
           </section>
-        )}
+        }
         drawers={null}
       />
     </div>

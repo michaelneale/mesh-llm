@@ -4,12 +4,18 @@ import { StatusStrip } from '@/features/status/components/StatusStrip'
 
 describe('StatusStrip', () => {
   it('renders a single-point sparkline without invalid SVG coordinates', () => {
-    const { container } = render(<StatusStrip metrics={[{
-      id: 'single-point',
-      label: 'Single point',
-      value: 1,
-      sparkline: [42],
-    }]} />)
+    const { container } = render(
+      <StatusStrip
+        metrics={[
+          {
+            id: 'single-point',
+            label: 'Single point',
+            value: 1,
+            sparkline: [42]
+          }
+        ]}
+      />
+    )
     const points = Array.from(container.querySelectorAll('polyline'))
       .map((polyline) => polyline.getAttribute('points') ?? '')
       .join(' ')

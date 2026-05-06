@@ -24,10 +24,14 @@ export function ConfigurationTabs({ value, onValueChange, tabs }: ConfigurationT
     value: tab.id,
     label: tab.label,
     content: tab.content,
-    accessory: tab.accessory ?? (tab.dirty ? <span aria-hidden="true" className="size-[5px] rounded-full bg-warn" title="Unsaved changes" /> : undefined),
+    accessory:
+      tab.accessory ??
+      (tab.dirty ? (
+        <span aria-hidden="true" className="size-[5px] rounded-full bg-warn" title="Unsaved changes" />
+      ) : undefined),
     icon: tab.icon,
     renderIcon: tab.renderIcon,
-    triggerAttributes: { 'data-tab-dirty': tab.dirty ? 'true' : undefined },
+    triggerAttributes: { 'data-tab-dirty': tab.dirty ? 'true' : undefined }
   }))
 
   return (

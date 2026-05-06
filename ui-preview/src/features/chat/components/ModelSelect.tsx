@@ -3,7 +3,12 @@ import { ChevronDown, Cpu } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import type { ModelSelectOption } from '@/features/app-tabs/types'
 
-type ModelSelectProps = { options: ModelSelectOption[]; value: string; onChange: (value: string) => void; className?: string }
+type ModelSelectProps = {
+  options: ModelSelectOption[]
+  value: string
+  onChange: (value: string) => void
+  className?: string
+}
 
 function statusColor(tone: NonNullable<ModelSelectOption['status']>['tone'] = 'good') {
   if (tone === 'warn') return 'var(--color-warn)'
@@ -24,7 +29,7 @@ export function ModelSelect({ options, value, onChange, className }: ModelSelect
         className={cn(
           'ui-control inline-flex min-w-0 items-center gap-2 rounded-[var(--radius)] border px-2.5 py-[5px] font-mono text-[length:var(--density-type-control)]',
           'w-full sm:w-auto sm:min-w-[220px]',
-          className,
+          className
         )}
       >
         <Cpu className="size-3 shrink-0 text-fg-dim" />
@@ -52,7 +57,7 @@ export function ModelSelect({ options, value, onChange, className }: ModelSelect
                   'ui-row-action flex w-full min-w-0 items-center justify-between gap-3 px-3 py-2 text-left text-[length:var(--density-type-control)] outline-none',
                   index < options.length - 1 ? 'border-b border-border-soft' : '',
                   option.value === value ? 'bg-[color-mix(in_oklab,var(--color-accent)_10%,transparent)]' : '',
-                  'data-[highlighted]:bg-[color-mix(in_oklab,var(--color-accent)_8%,transparent)]',
+                  'data-[highlighted]:bg-[color-mix(in_oklab,var(--color-accent)_8%,transparent)]'
                 )}
               >
                 <Select.ItemText>
@@ -64,7 +69,7 @@ export function ModelSelect({ options, value, onChange, className }: ModelSelect
                     style={{
                       background: `color-mix(in oklab, ${statusColor(option.status.tone)} 18%, var(--color-background))`,
                       color: statusColor(option.status.tone),
-                      border: `1px solid color-mix(in oklab, ${statusColor(option.status.tone)} 30%, var(--color-background))`,
+                      border: `1px solid color-mix(in oklab, ${statusColor(option.status.tone)} 30%, var(--color-background))`
                     }}
                   >
                     <span className="size-[5px] rounded-full" style={{ background: statusColor(option.status.tone) }} />

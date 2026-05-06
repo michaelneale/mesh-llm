@@ -1,4 +1,4 @@
-use super::{prepare_binary_stage_connection, tensor_name_requires_recurrent_state};
+use super::prepare_binary_stage_connection;
 use std::{
     io,
     net::{TcpListener, TcpStream},
@@ -30,22 +30,4 @@ fn accepted_binary_stage_connection_is_blocking() {
     assert_ne!(flags, -1);
     assert_eq!(flags & libc::O_NONBLOCK, 0);
     drop(client.join().unwrap());
-}
-
-#[test]
-fn recurrent_tensor_names_disable_kv_only_cache() {
-    assert!(tensor_name_requires_recurrent_state("blk.0.ssm_a"));
-    assert!(tensor_name_requires_recurrent_state(
-        "blk.0.ssm_conv1d.weight"
-    ));
-    assert!(tensor_name_requires_recurrent_state(
-        "blk.0.time_mix_k.weight"
-    ));
-    assert!(tensor_name_requires_recurrent_state(
-        "blk.0.rwkv_gate.weight"
-    ));
-    assert!(!tensor_name_requires_recurrent_state("blk.0.attn_q.weight"));
-    assert!(!tensor_name_requires_recurrent_state(
-        "blk.0.ffn_down.weight"
-    ));
 }

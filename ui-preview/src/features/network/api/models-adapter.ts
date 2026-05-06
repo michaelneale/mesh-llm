@@ -35,6 +35,6 @@ export function adaptModelsToSummary(models: MeshModelRaw[]): ModelSummary[] {
     diskGB: model.disk_gb,
     ctxMaxK: Math.round(model.context_length / 1000),
     moe: model.capabilities.moe,
-    vision: model.capabilities.vision,
+    vision: model.capabilities.vision
   }))
 }

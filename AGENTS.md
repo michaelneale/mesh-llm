@@ -302,7 +302,13 @@ pkill -f mesh-llm
 
 If the embedded runtime fails to load, check mesh-llm stderr/log output and
 `~/.mesh-llm/runtime/` for the active instance metadata. The old external
-`llama-server` and `rpc-server` log files are no longer produced.
+`llama-server` and `rpc-server` log files are no longer produced. Embedded
+skippy/llama.cpp native logs are redirected away from the TUI into the active
+instance runtime directory:
+
+```text
+<runtime-root>/<pid>/logs/skippy-native.log
+```
 
 To override the runtime root (e.g., for tests or systemd):
 - `MESH_LLM_RUNTIME_ROOT=/path/to/custom/root` — highest priority

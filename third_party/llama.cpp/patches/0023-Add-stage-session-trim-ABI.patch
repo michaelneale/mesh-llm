@@ -1,7 +1,7 @@
-From 9f6be3ac16b751f7ceda51569918482281f2844a Mon Sep 17 00:00:00 2001
+From 217923dd1c1fa739fbf8aa7d5ebb140b1e42b23e Mon Sep 17 00:00:00 2001
 From: Mesh-LLM CI <ci@mesh-llm.local>
 Date: Mon, 27 Apr 2026 15:42:15 +1000
-Subject: [PATCH 23/34] Add stage session trim ABI
+Subject: [PATCH 23/45] Add stage session trim ABI
 
 ---
  include/skippy.h |  8 ++++++-
@@ -9,7 +9,7 @@ Subject: [PATCH 23/34] Add stage session trim ABI
  2 files changed, 67 insertions(+), 2 deletions(-)
 
 diff --git a/include/skippy.h b/include/skippy.h
-index bf54c23ea..ef4022b95 100644
+index bf54c23e..ef4022b9 100644
 --- a/include/skippy.h
 +++ b/include/skippy.h
 @@ -26,7 +26,7 @@ extern "C" {
@@ -42,7 +42,7 @@ index bf54c23ea..ef4022b95 100644
          struct skippy_session * session,
          int32_t layer_start,
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index b7188fb4b..5f5d33b4f 100644
+index b7188fb4..5f5d33b4 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -990,8 +990,12 @@ uint64_t skippy_abi_features(void) {

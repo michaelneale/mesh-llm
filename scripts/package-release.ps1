@@ -55,9 +55,26 @@ function Normalize-RecipeArgument {
     return $normalized.Trim()
 }
 
+function Get-ReleaseFlavor {
+    param([string]$RequestedFlavor)
+
+    if ($RequestedFlavor) {
+        switch ($RequestedFlavor.ToLowerInvariant()) {
+            "hip" { return "rocm" }
+            default { return $RequestedFlavor.ToLowerInvariant() }
+        }
+    }
+
+    return "cpu"
+}
+
 function Get-BinaryFlavor {
     param([string]$RequestedFlavor)
 
+    # The "release flavor" (outer archive name) and the "binary flavor"
+    # (inner executable suffix / runtime BinaryFlavor lookup) are not
+    # always the same. hip archives contain -rocm binaries, while
+    # cuda-blackwell keeps its distinct runtime flavor suffix.
     if ($RequestedFlavor) {
         switch ($RequestedFlavor.ToLowerInvariant()) {
             "hip" { return "rocm" }
@@ -149,11 +166,14 @@ $Version = Normalize-RecipeArgument $Version @("version")
 $OutputDir = Normalize-RecipeArgument $OutputDir @("output", "output_dir", "outputdir")
 $Flavor = Normalize-RecipeArgument $Flavor @("flavor", "backend")
 
+$releaseFlavor = Get-ReleaseFlavor $Flavor
 $binaryFlavor = Get-BinaryFlavor $Flavor
 $targetTriple = "x86_64-pc-windows-msvc"
 $archiveExt = "zip"
-$stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
-$versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $binaryFlavor
+# Outer archive names use the release flavor (e.g. cuda-blackwell); inner
+# binary names use the binary flavor (e.g. cuda) so the runtime finds them.
+$stableAsset = New-ReleaseAssetName -Prefix "mesh-llm" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $releaseFlavor
+$versionedAsset = New-ReleaseAssetName -Prefix "mesh-llm-$Version" -TargetTriple $targetTriple -ArchiveExt $archiveExt -BinaryFlavor $releaseFlavor
 
 $meshBinary = Join-Path $releaseBinDir "mesh-llm.exe"
 

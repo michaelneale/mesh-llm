@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 mod deployment;
+mod family_policy;
 mod hooks;
 mod kv_cache;
 mod materialization;
@@ -29,18 +30,22 @@ use skippy_server::{
     EmbeddedRuntimeStatus, EmbeddedServerHandle, EmbeddedState, SkippyRuntimeHandle,
 };
 
+pub(crate) use family_policy::{family_policy_for_model_path, family_policy_for_stage_config};
 pub(crate) use hooks::MeshAutoHookPolicy;
 pub(crate) use kv_cache::KvCachePolicy;
 pub(crate) use materialization::{
     configure_materialized_stage_cache, materialize_stage_config, materialize_stage_load,
     materialized_stage_cache_dir, prune_unpinned_materialized_stages,
-    remove_materialized_stages_for_sources, MaterializedStagePin,
+    remove_materialized_stages_for_sources,
 };
 pub(crate) use package::{synthetic_direct_gguf_package, SkippyPackageIdentity};
 pub(crate) use stage::{
-    spawn_stage_control_loop, StageControlCommand, StageControlRequest, StageControlResponse,
-    StageLoadRequest, StagePeerDescriptor, StageReadyResponse, StageRuntimeState,
-    StageStatusFilter, StageStatusSnapshot, StageStopRequest, StageWireDType,
+    spawn_stage_control_loop, LayerRange, SourceModelKind, StageCancelPrepareRequest,
+    StageControlCommand, StageControlRequest, StageControlResponse, StageInventoryRequest,
+    StageLayerInventory, StageLoadRequest, StagePeerDescriptor, StagePreparationState,
+    StagePreparationStatus, StagePrepareAcceptedResponse, StagePrepareRequest, StageReadyResponse,
+    StageRuntimeState, StageStatusAck, StageStatusFilter, StageStatusSnapshot, StageStopRequest,
+    StageWireDType,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,6 +73,8 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) projector_path: Option<String>,
     pub(crate) ctx_size: u32,
     pub(crate) lane_count: u32,
+    pub(crate) lanes: Vec<SkippySessionLaneStatus>,
+    pub(crate) max_session_tokens: u64,
     pub(crate) n_batch: Option<u32>,
     pub(crate) n_ubatch: Option<u32>,
     pub(crate) n_gpu_layers: i32,
@@ -81,6 +88,14 @@ pub(crate) struct SkippyModelStatus {
     pub(crate) started_at_unix_nanos: i64,
     pub(crate) stopped_at_unix_nanos: Option<i64>,
     pub(crate) last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SkippySessionLaneStatus {
+    pub(crate) index: usize,
+    pub(crate) active: bool,
+    pub(crate) session_id: Option<String>,
+    pub(crate) token_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -196,7 +211,7 @@ pub(crate) struct SkippyModelHandle {
     config: StageConfig,
     started_at_unix_nanos: i64,
     status: Arc<Mutex<HandleState>>,
-    _materialized_pin: Option<MaterializedStagePin>,
+    _materialized_pin: Option<materialization::MaterializedStagePin>,
 }
 
 pub(crate) struct SkippyHttpHandle {
@@ -239,6 +254,7 @@ impl SkippyModelHandle {
             )
         })?;
         let telemetry = Telemetry::new(None, 0, stage_config.clone(), TelemetryLevel::Off);
+        let family_policy = family_policy_for_stage_config(&stage_config);
         let binding = embedded_openai_backend(EmbeddedOpenAiArgs {
             bind_addr: "127.0.0.1:0"
                 .parse()
@@ -259,7 +275,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width: 0,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F32,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -298,6 +314,8 @@ impl SkippyModelHandle {
             config.materialized_pinned = true;
             pin
         });
+        let family_policy = family_policy_for_stage_config(&config);
+        config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
         let runtime = SkippyRuntimeHandle::load(EmbeddedRuntimeOptions {
             config: config.clone(),
             topology: None,
@@ -332,7 +350,7 @@ impl SkippyModelHandle {
             adaptive_speculative_window: false,
             draft_n_gpu_layers: None,
             activation_width,
-            wire_dtype: skippy_protocol::binary::WireActivationDType::F16,
+            wire_dtype: family_policy.activation_wire_dtype.into(),
             downstream_connect_timeout_secs: 30,
             downstream_wire_condition: WireCondition::new(0.0, None)?,
             telemetry,
@@ -449,7 +467,8 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         "skippy stage layer_end must be greater than zero"
     );
     let run_id = format!("mesh-skippy-{}", now_unix_nanos());
-    Ok(StageConfig {
+    let family_policy = family_policy_for_model_path(&options.model_path, Some(&options.model_id));
+    let mut config = StageConfig {
         run_id: run_id.clone(),
         topology_id: format!("topology-{run_id}"),
         model_id: options.model_id.clone(),
@@ -484,11 +503,14 @@ pub(crate) fn single_stage_config(options: &SkippyModelLoadOptions) -> Result<St
         flash_attn_type: options.flash_attn_type,
         filter_tensors_on_load: false,
         selected_device: options.selected_device.clone().map(Into::into),
+        kv_cache: None,
         load_mode: LoadMode::RuntimeSlice,
         bind_addr: "127.0.0.1:0".to_string(),
         upstream: None,
         downstream: None,
-    })
+    };
+    config.kv_cache = family_policy.stage_kv_cache_config_for_stage(&config);
+    Ok(config)
 }
 
 impl From<SkippyDeviceDescriptor> for StageDevice {
@@ -514,11 +536,11 @@ impl From<StageDevice> for SkippyDeviceDescriptor {
 }
 
 pub(crate) fn infer_layer_count(path: &Path) -> Result<u32> {
-    let info = ModelInfo::open(path)
-        .with_context(|| format!("open skippy model metadata {}", path.display()))?;
+    let info =
+        ModelInfo::open(path).with_context(|| format!("open model metadata {}", path.display()))?;
     let layer_count = info
         .tensors()
-        .with_context(|| format!("read skippy model tensors {}", path.display()))?
+        .with_context(|| format!("read model tensors {}", path.display()))?
         .into_iter()
         .filter_map(|tensor| tensor.layer_index)
         .max()
@@ -554,6 +576,18 @@ fn status_from_parts(
         projector_path: config.projector_path.clone(),
         ctx_size: config.ctx_size,
         lane_count: config.lane_count,
+        lanes: embedded
+            .sessions
+            .lanes
+            .iter()
+            .map(|lane| SkippySessionLaneStatus {
+                index: lane.index,
+                active: lane.active,
+                session_id: lane.session_id.clone(),
+                token_count: lane.token_count,
+            })
+            .collect(),
+        max_session_tokens: embedded.sessions.max_session_tokens,
         n_batch: config.n_batch,
         n_ubatch: config.n_ubatch,
         n_gpu_layers: config.n_gpu_layers,

@@ -1,14 +1,14 @@
-From 083a867588af536407c008fad3e6f0b4688495c0 Mon Sep 17 00:00:00 2001
+From b4ab2aa75f338c1730577ea5d8f6466cd548e201 Mon Sep 17 00:00:00 2001
 From: James Dumay <jameswdumay@gmail.com>
 Date: Sat, 25 Apr 2026 11:04:49 +1000
-Subject: [PATCH 03/34] Implement single-stage runtime ABI baseline
+Subject: [PATCH 03/45] Implement single-stage runtime ABI baseline
 
 ---
  src/skippy.cpp | 323 ++++++++++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 322 insertions(+), 1 deletion(-)
 
 diff --git a/src/skippy.cpp b/src/skippy.cpp
-index bd94fa37f..4feca3b8f 100644
+index bd94fa37..4feca3b8 100644
 --- a/src/skippy.cpp
 +++ b/src/skippy.cpp
 @@ -2,14 +2,27 @@

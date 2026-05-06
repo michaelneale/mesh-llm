@@ -10,15 +10,17 @@ use std::time::Duration;
 pub enum BinaryFlavor {
     Cpu,
     Cuda,
+    CudaBlackwell,
     Rocm,
     Vulkan,
     Metal,
 }
 
 impl BinaryFlavor {
-    pub const ALL: [BinaryFlavor; 5] = [
+    pub const ALL: [BinaryFlavor; 6] = [
         BinaryFlavor::Cpu,
         BinaryFlavor::Cuda,
+        BinaryFlavor::CudaBlackwell,
         BinaryFlavor::Rocm,
         BinaryFlavor::Vulkan,
         BinaryFlavor::Metal,
@@ -28,6 +30,7 @@ impl BinaryFlavor {
         match self {
             BinaryFlavor::Cpu => "cpu",
             BinaryFlavor::Cuda => "cuda",
+            BinaryFlavor::CudaBlackwell => "cuda-blackwell",
             BinaryFlavor::Rocm => "rocm",
             BinaryFlavor::Vulkan => "vulkan",
             BinaryFlavor::Metal => "metal",
@@ -78,7 +81,7 @@ pub(crate) fn backend_device_for_flavor(
 ) -> Option<String> {
     match binary_flavor {
         BinaryFlavor::Cpu => None,
-        BinaryFlavor::Cuda => Some(format!("CUDA{index}")),
+        BinaryFlavor::Cuda | BinaryFlavor::CudaBlackwell => Some(format!("CUDA{index}")),
         BinaryFlavor::Rocm => Some(format!("ROCm{index}")),
         BinaryFlavor::Vulkan => Some(format!("Vulkan{index}")),
         BinaryFlavor::Metal => Some(format!("MTL{index}")),

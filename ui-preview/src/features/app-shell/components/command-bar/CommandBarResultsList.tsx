@@ -6,7 +6,7 @@ import type {
   CommandBarBehavior,
   CommandBarMode,
   CommandBarNormalizedResult,
-  CommandBarResultContainerProps,
+  CommandBarResultContainerProps
 } from './command-bar-types'
 
 interface CommandBarResultsListProps<T> {
@@ -46,7 +46,7 @@ export function CommandBarResultsList<T>({
   ResultContainer,
   selectionError,
   showErrorState,
-  showLoadingState,
+  showLoadingState
 }: CommandBarResultsListProps<T>) {
   return (
     <div data-testid="command-bar-results" className="bg-panel px-2.5 py-2.5">
@@ -59,7 +59,13 @@ export function CommandBarResultsList<T>({
 
       <div {...listProps}>
         {results.length > 0 ? (
-          <ResultContainer listProps={listProps} query={query} modeId={activeModeId} activeIndex={activeIndex} results={results}>
+          <ResultContainer
+            listProps={listProps}
+            query={query}
+            modeId={activeModeId}
+            activeIndex={activeIndex}
+            results={results}
+          >
             {results.map((result, index) => {
               const mode = modeById.get(result.modeId)
               const ResultItem = mode?.ResultItem
@@ -94,7 +100,11 @@ export function CommandBarResultsList<T>({
                       )
                     }
 
-                    return <div className="truncate text-[length:var(--density-type-control)] font-medium text-foreground">{currentResult.searchText}</div>
+                    return (
+                      <div className="truncate text-[length:var(--density-type-control)] font-medium text-foreground">
+                        {currentResult.searchText}
+                      </div>
+                    )
                   }}
                 />
               )
@@ -105,7 +115,9 @@ export function CommandBarResultsList<T>({
             <Loader2 className="size-4 animate-spin" aria-hidden="true" />
             <div>
               <div className="font-medium text-foreground">Loading results</div>
-              <div className="text-[length:var(--density-type-label)] text-muted-foreground">Checking the latest matches.</div>
+              <div className="text-[length:var(--density-type-label)] text-muted-foreground">
+                Checking the latest matches.
+              </div>
             </div>
           </div>
         ) : showErrorState ? (
@@ -114,7 +126,9 @@ export function CommandBarResultsList<T>({
             <div className="text-[length:var(--density-type-label)] text-muted-foreground">{asyncErrorMessage}</div>
           </div>
         ) : (
-          <div className="px-3 py-6 text-[length:var(--density-type-caption)] text-muted-foreground">{emptyMessage}</div>
+          <div className="px-3 py-6 text-[length:var(--density-type-caption)] text-muted-foreground">
+            {emptyMessage}
+          </div>
         )}
       </div>
     </div>

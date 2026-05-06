@@ -7,7 +7,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
+  useState
 } from 'react'
 import { animate, createTimeline, type JSAnimation, type Timeline } from 'animejs'
 import { Maximize2, Minus, Plus, RotateCcw } from 'lucide-react'
@@ -19,7 +19,7 @@ import {
   MESH_VIZ_DOT_COLOR_SCHEMES,
   meshVizDotColorSchemeAtIndex,
   nextMeshVizDotColorSchemeIndex,
-  themeFromDocument,
+  themeFromDocument
 } from '@/features/network/lib/mesh-viz-dot-color-schemes'
 import {
   calculateMaxZoomOut,
@@ -44,7 +44,7 @@ import {
   type Viewport,
   type WorldPoint,
   viewportLayerTransform,
-  viewportsMatch,
+  viewportsMatch
 } from '@/features/network/lib/mesh-viewport'
 import type { MeshNode, Peer, ResolvedTheme } from '@/features/app-tabs/types'
 import { MeshVizDebugControls, type MeshVizGridMode } from './MeshVizDebugControls'
@@ -58,7 +58,7 @@ import {
   nodeVisuals,
   prefersReducedMotion,
   type DebugMeshNode,
-  type DebugNodeShortcut,
+  type DebugNodeShortcut
 } from './MeshViz.helpers'
 import { MeshVizNode, MeshVizNodeLabel, type MeshVizNodeLifecycle } from './MeshVizNode'
 import { useMeshVizTraffic } from './useMeshVizTraffic'
@@ -151,7 +151,7 @@ function currentElementOpacity(element: Element, fallback: number) {
     element instanceof HTMLElement || element instanceof SVGElement
       ? element.style.opacity || element.getAttribute('opacity') || window.getComputedStyle(element).opacity
       : element.getAttribute('opacity'),
-    fallback,
+    fallback
   )
 }
 
@@ -161,33 +161,41 @@ function currentElementScale(element: HTMLElement, fallback: number) {
 
 function currentStrokeDashOffset(element: SVGElement, fallback: number) {
   return numericCssValue(
-    element.style.getPropertyValue('stroke-dashoffset')
-      || element.getAttribute('stroke-dashoffset')
-      || window.getComputedStyle(element).getPropertyValue('stroke-dashoffset'),
-    fallback,
+    element.style.getPropertyValue('stroke-dashoffset') ||
+      element.getAttribute('stroke-dashoffset') ||
+      window.getComputedStyle(element).getPropertyValue('stroke-dashoffset'),
+    fallback
   )
 }
 
 function nodeJoinSettleDelay(index: number) {
-  return index * NODE_JOIN_STAGGER_MS + CONNECTED_NODE_PULSE_DELAY_MS + CONNECTED_NODE_PULSE_DURATION_MS + NODE_JOIN_SETTLE_BUFFER_MS
+  return (
+    index * NODE_JOIN_STAGGER_MS +
+    CONNECTED_NODE_PULSE_DELAY_MS +
+    CONNECTED_NODE_PULSE_DURATION_MS +
+    NODE_JOIN_SETTLE_BUFFER_MS
+  )
 }
 
 function nodeLeaveRemovalDelay(index: number) {
   return index * NODE_LEAVE_STAGGER_MS + NODE_LEAVE_DELAY_MS + NODE_LEAVE_DURATION_MS + NODE_LEAVE_SETTLE_BUFFER_MS
 }
 
-export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz({
-  nodes,
-  selfId,
-  meshId,
-  selectedNodeId,
-  height = 460,
-  compact = false,
-  enableDebugShortcuts = false,
-  animateTopology = true,
-  onFullscreen,
-  getNodePeer,
-}: MeshVizProps, ref) {
+export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
+  {
+    nodes,
+    selfId,
+    meshId,
+    selectedNodeId,
+    height = 460,
+    compact = false,
+    enableDebugShortcuts = false,
+    animateTopology = true,
+    onFullscreen,
+    getNodePeer
+  }: MeshVizProps,
+  ref
+) {
   const canvasRef = useRef<HTMLDivElement>(null)
   const gridPatternRef = useRef<SVGPatternElement>(null)
   const gridPathRef = useRef<SVGPathElement>(null)
@@ -232,13 +240,13 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     originX: 0,
     originY: 0,
     panX: 0,
-    panY: 0,
+    panY: 0
   })
   const touchPointersRef = useRef<Map<number, TouchPointState>>(new Map())
   const pinchZoomRef = useRef<PinchZoomState>({
     active: false,
     initialDistance: 1,
-    initialZoom: DEFAULT_VIEWPORT.zoom,
+    initialZoom: DEFAULT_VIEWPORT.zoom
   })
   const radarPingRef = useRef<HTMLSpanElement>(null)
   const [openNodeId, setOpenNodeId] = useState<string | undefined>()
@@ -250,9 +258,9 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
   const [showPanBounds, setShowPanBounds] = useState(false)
   const [gridMode, setGridMode] = useState<MeshVizGridMode>('line')
   const [dotColorSchemeIndex, setDotColorSchemeIndex] = useState(0)
-  const [dotColorSchemeTheme, setDotColorSchemeTheme] = useState<ResolvedTheme>(() => (
+  const [dotColorSchemeTheme, setDotColorSchemeTheme] = useState<ResolvedTheme>(() =>
     typeof document === 'undefined' ? 'dark' : themeFromDocument()
-  ))
+  )
   const [debugNodes, setDebugNodes] = useState<DebugMeshNode[]>([])
   const [exitingNodes, setExitingNodes] = useState<MeshNode[]>([])
   const [nodeLifecyclePhases, setNodeLifecyclePhases] = useState<Record<string, MeshVizNodeLifecycle>>({})
@@ -273,21 +281,31 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
   }, [currentRenderNodeIds, nodeLifecyclePhases, reduceMotion])
   const pendingExitingNodeIds = useMemo(
     () => new Set(pendingExitingNodes.map((node) => node.id)),
-    [pendingExitingNodes],
+    [pendingExitingNodes]
   )
-  const renderNodes = useMemo(() => [
-    ...currentRenderNodes,
-    ...exitingNodes.filter((node) => !currentRenderNodeIds.has(node.id)),
-    ...pendingExitingNodes.filter((node) => !currentRenderNodeIds.has(node.id) && !exitingNodes.some((exitingNode) => exitingNode.id === node.id)),
-  ], [currentRenderNodeIds, currentRenderNodes, exitingNodes, pendingExitingNodes])
+  const renderNodes = useMemo(
+    () => [
+      ...currentRenderNodes,
+      ...exitingNodes.filter((node) => !currentRenderNodeIds.has(node.id)),
+      ...pendingExitingNodes.filter(
+        (node) => !currentRenderNodeIds.has(node.id) && !exitingNodes.some((exitingNode) => exitingNode.id === node.id)
+      )
+    ],
+    [currentRenderNodeIds, currentRenderNodes, exitingNodes, pendingExitingNodes]
+  )
   const meshSeed = useMemo(
-    () => meshId ?? `${selfId}:${nodes.map((node) => node.id).sort().join('|')}`,
-    [meshId, nodes, selfId],
+    () =>
+      meshId ??
+      `${selfId}:${nodes
+        .map((node) => node.id)
+        .sort()
+        .join('|')}`,
+    [meshId, nodes, selfId]
   )
   const links = useMemo(() => buildMeshLinks(renderNodes, getNodePeer), [getNodePeer, renderNodes])
   const nodesFitSignature = useMemo(
     () => renderNodes.map((node) => `${node.id}:${node.x}:${node.y}`).join('|'),
-    [renderNodes],
+    [renderNodes]
   )
   const linkCount = links.length
   const shouldFadeNodeLabels = renderNodes.length >= NODE_LABEL_FADE_THRESHOLD
@@ -299,7 +317,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
   const dotColorScheme = meshVizDotColorSchemeAtIndex(dotColorSchemeTheme, dotColorSchemeIndex)
   const nodeBounds = useMemo(
     () => calculateNodeBounds(currentRenderNodes, { width: safeCanvasWidth, height: safeCanvasHeight }),
-    [currentRenderNodes, safeCanvasHeight, safeCanvasWidth],
+    [currentRenderNodes, safeCanvasHeight, safeCanvasWidth]
   )
   const nodeBoundsRect = nodeBoundsToScreenRect(nodeBounds, viewport)
   const deadZoneRect = nodeBoundsRect
@@ -307,7 +325,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         x: nodeBoundsRect.x - PAN_DEAD_ZONE_PX,
         y: nodeBoundsRect.y - PAN_DEAD_ZONE_PX,
         width: nodeBoundsRect.width + PAN_DEAD_ZONE_PX * 2,
-        height: nodeBoundsRect.height + PAN_DEAD_ZONE_PX * 2,
+        height: nodeBoundsRect.height + PAN_DEAD_ZONE_PX * 2
       }
     : undefined
   const centeredBoundsRect = nodeBoundsRect ? centerScreenRect(nodeBoundsRect) : undefined
@@ -323,30 +341,36 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     setViewportState(nextViewport)
   }, [])
 
-  const nodeLifecyclePhase = useCallback((nodeId: string): MeshVizNodeLifecycle => {
-    if (!animateTopology) {
+  const nodeLifecyclePhase = useCallback(
+    (nodeId: string): MeshVizNodeLifecycle => {
+      if (!animateTopology) {
+        return 'present'
+      }
+
+      if (pendingExitingNodeIds.has(nodeId)) {
+        return 'leaving'
+      }
+
+      if (nodeLifecyclePhases[nodeId]) {
+        return nodeLifecyclePhases[nodeId]
+      }
+
+      return 'entering'
+    },
+    [animateTopology, nodeLifecyclePhases, pendingExitingNodeIds]
+  )
+
+  const linkLifecyclePhase = useCallback(
+    (sourceNodeId: string, targetNodeId: string): MeshVizNodeLifecycle => {
+      const sourcePhase = nodeLifecyclePhase(sourceNodeId)
+      const targetPhase = nodeLifecyclePhase(targetNodeId)
+
+      if (sourcePhase === 'leaving' || targetPhase === 'leaving') return 'leaving'
+      if (sourcePhase === 'entering' || targetPhase === 'entering') return 'entering'
       return 'present'
-    }
-
-    if (pendingExitingNodeIds.has(nodeId)) {
-      return 'leaving'
-    }
-
-    if (nodeLifecyclePhases[nodeId]) {
-      return nodeLifecyclePhases[nodeId]
-    }
-
-    return 'entering'
-  }, [animateTopology, nodeLifecyclePhases, pendingExitingNodeIds])
-
-  const linkLifecyclePhase = useCallback((sourceNodeId: string, targetNodeId: string): MeshVizNodeLifecycle => {
-    const sourcePhase = nodeLifecyclePhase(sourceNodeId)
-    const targetPhase = nodeLifecyclePhase(targetNodeId)
-
-    if (sourcePhase === 'leaving' || targetPhase === 'leaving') return 'leaving'
-    if (sourcePhase === 'entering' || targetPhase === 'entering') return 'entering'
-    return 'present'
-  }, [nodeLifecyclePhase])
+    },
+    [nodeLifecyclePhase]
+  )
 
   const applyGridPattern = useCallback((nextViewport: Viewport) => {
     const nextGridSize = Math.max(18, GRID_SIZE_PX * nextViewport.zoom)
@@ -379,45 +403,40 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     }
   }, [])
 
-  const applyLayerTransform = useCallback((transform: LayerTransform) => {
-    const isIdentity = isIdentityLayerTransform(transform)
-    const htmlTransform = isIdentity
-      ? ''
-      : `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`
-    const svgTransform = isIdentity
-      ? ''
-      : `translate(${transform.x} ${transform.y}) scale(${transform.scale})`
+  const applyLayerTransform = useCallback(
+    (transform: LayerTransform) => {
+      const isIdentity = isIdentityLayerTransform(transform)
+      const htmlTransform = isIdentity
+        ? ''
+        : `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`
+      const svgTransform = isIdentity ? '' : `translate(${transform.x} ${transform.y}) scale(${transform.scale})`
 
-    if (svgPanLayerRef.current) {
-      if (svgTransform) {
-        svgPanLayerRef.current.setAttribute('transform', svgTransform)
-      } else {
-        svgPanLayerRef.current.removeAttribute('transform')
+      if (svgPanLayerRef.current) {
+        if (svgTransform) {
+          svgPanLayerRef.current.setAttribute('transform', svgTransform)
+        } else {
+          svgPanLayerRef.current.removeAttribute('transform')
+        }
       }
-    }
 
-    if (nodeLayerRef.current) {
-      nodeLayerRef.current.style.transform = htmlTransform
-      nodeLayerRef.current.style.setProperty(
-        '--mesh-node-live-scale',
-        isIdentity ? '1' : `${1 / transform.scale}`,
-      )
-    }
+      if (nodeLayerRef.current) {
+        nodeLayerRef.current.style.transform = htmlTransform
+        nodeLayerRef.current.style.setProperty('--mesh-node-live-scale', isIdentity ? '1' : `${1 / transform.scale}`)
+      }
 
-    if (labelLayerRef.current) {
-      labelLayerRef.current.style.transform = htmlTransform
-      labelLayerRef.current.style.setProperty(
-        '--mesh-node-live-scale',
-        isIdentity ? '1' : `${1 / transform.scale}`,
-      )
-    }
+      if (labelLayerRef.current) {
+        labelLayerRef.current.style.transform = htmlTransform
+        labelLayerRef.current.style.setProperty('--mesh-node-live-scale', isIdentity ? '1' : `${1 / transform.scale}`)
+      }
 
-    if (packetLayerRef.current) {
-      packetLayerRef.current.style.transform = htmlTransform
-    }
+      if (packetLayerRef.current) {
+        packetLayerRef.current.style.transform = htmlTransform
+      }
 
-    applyGridPattern(viewportRef.current)
-  }, [applyGridPattern])
+      applyGridPattern(viewportRef.current)
+    },
+    [applyGridPattern]
+  )
 
   const activateLiveLayerTransform = useCallback(() => {
     if (liveLayerTransformActiveRef.current) {
@@ -428,19 +447,22 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     liveLayerTransformActiveRef.current = true
   }, [])
 
-  const scheduleViewportLayerTransform = useCallback((nextViewport: Viewport) => {
-    activateLiveLayerTransform()
-    liveLayerTransformRef.current = viewportLayerTransform(liveLayerBaseViewportRef.current, nextViewport)
+  const scheduleViewportLayerTransform = useCallback(
+    (nextViewport: Viewport) => {
+      activateLiveLayerTransform()
+      liveLayerTransformRef.current = viewportLayerTransform(liveLayerBaseViewportRef.current, nextViewport)
 
-    if (panTransformFrameRef.current !== null) {
-      return
-    }
+      if (panTransformFrameRef.current !== null) {
+        return
+      }
 
-    panTransformFrameRef.current = window.requestAnimationFrame(() => {
-      panTransformFrameRef.current = null
-      applyLayerTransform(liveLayerTransformRef.current)
-    })
-  }, [activateLiveLayerTransform, applyLayerTransform])
+      panTransformFrameRef.current = window.requestAnimationFrame(() => {
+        panTransformFrameRef.current = null
+        applyLayerTransform(liveLayerTransformRef.current)
+      })
+    },
+    [activateLiveLayerTransform, applyLayerTransform]
+  )
 
   const clearViewportLayerTransform = useCallback(() => {
     liveLayerTransformActiveRef.current = false
@@ -489,64 +511,70 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     setViewportState(viewportRef.current)
   }, [clearViewportLayerTransform])
 
-  const transitionViewportTo = useCallback((targetViewport: Viewport) => {
-    const startViewport = viewportRef.current
+  const transitionViewportTo = useCallback(
+    (targetViewport: Viewport) => {
+      const startViewport = viewportRef.current
 
-    flushLiveViewportTransform()
+      flushLiveViewportTransform()
 
-    viewportAnimationRef.current?.revert()
-    viewportAnimationRef.current = undefined
+      viewportAnimationRef.current?.revert()
+      viewportAnimationRef.current = undefined
 
-    if (viewportsMatch(startViewport, targetViewport)) {
-      return
-    }
+      if (viewportsMatch(startViewport, targetViewport)) {
+        return
+      }
 
-    if (reduceMotion) {
-      setViewport(targetViewport)
-      return
-    }
-
-    const animatedViewport = { ...startViewport }
-
-    viewportAnimationRef.current = animate(animatedViewport, {
-      zoom: { from: startViewport.zoom, to: targetViewport.zoom },
-      panX: { from: startViewport.panX, to: targetViewport.panX },
-      panY: { from: startViewport.panY, to: targetViewport.panY },
-      duration: VIEWPORT_RECLAMP_DURATION,
-      ease: VIEWPORT_RECLAMP_EASE,
-      loop: false,
-      onUpdate: () => setViewport({ ...animatedViewport }),
-      onComplete: () => {
+      if (reduceMotion) {
         setViewport(targetViewport)
-        viewportAnimationRef.current = undefined
-      },
-    })
-  }, [flushLiveViewportTransform, reduceMotion, setViewport])
+        return
+      }
 
-  const calculateFitViewport = useCallback((size: { width: number; height: number }) => {
-    if (currentRenderNodes.length === 0 || size.width <= 0 || size.height <= 0) {
-      return DEFAULT_VIEWPORT
-    }
+      const animatedViewport = { ...startViewport }
 
-    const minX = Math.min(...currentRenderNodes.map((node) => node.x))
-    const maxX = Math.max(...currentRenderNodes.map((node) => node.x))
-    const minY = Math.min(...currentRenderNodes.map((node) => node.y))
-    const maxY = Math.max(...currentRenderNodes.map((node) => node.y))
-    const availableWidth = Math.max(1, size.width - FIT_PADDING_PX * 2)
-    const availableHeight = Math.max(1, size.height - FIT_PADDING_PX * 2)
-    const worldWidth = Math.max(1, ((maxX - minX) / 100) * size.width)
-    const worldHeight = Math.max(1, ((maxY - minY) / 100) * size.height)
-    const minZoom = calculateMaxZoomOut(currentRenderNodes, size)
-    const zoom = clamp(Math.min(availableWidth / worldWidth, availableHeight / worldHeight), minZoom, MAX_ZOOM)
-    const centerX = ((minX + maxX) / 2 / 100) * size.width
-    const centerY = ((minY + maxY) / 2 / 100) * size.height
+      viewportAnimationRef.current = animate(animatedViewport, {
+        zoom: { from: startViewport.zoom, to: targetViewport.zoom },
+        panX: { from: startViewport.panX, to: targetViewport.panX },
+        panY: { from: startViewport.panY, to: targetViewport.panY },
+        duration: VIEWPORT_RECLAMP_DURATION,
+        ease: VIEWPORT_RECLAMP_EASE,
+        loop: false,
+        onUpdate: () => setViewport({ ...animatedViewport }),
+        onComplete: () => {
+          setViewport(targetViewport)
+          viewportAnimationRef.current = undefined
+        }
+      })
+    },
+    [flushLiveViewportTransform, reduceMotion, setViewport]
+  )
 
-    return {
-      zoom,
-      panX: size.width * 0.5 - centerX * zoom,
-      panY: size.height * 0.5 - centerY * zoom,
-    }
-  }, [currentRenderNodes])
+  const calculateFitViewport = useCallback(
+    (size: { width: number; height: number }) => {
+      if (currentRenderNodes.length === 0 || size.width <= 0 || size.height <= 0) {
+        return DEFAULT_VIEWPORT
+      }
+
+      const minX = Math.min(...currentRenderNodes.map((node) => node.x))
+      const maxX = Math.max(...currentRenderNodes.map((node) => node.x))
+      const minY = Math.min(...currentRenderNodes.map((node) => node.y))
+      const maxY = Math.max(...currentRenderNodes.map((node) => node.y))
+      const availableWidth = Math.max(1, size.width - FIT_PADDING_PX * 2)
+      const availableHeight = Math.max(1, size.height - FIT_PADDING_PX * 2)
+      const worldWidth = Math.max(1, ((maxX - minX) / 100) * size.width)
+      const worldHeight = Math.max(1, ((maxY - minY) / 100) * size.height)
+      const minZoom = calculateMaxZoomOut(currentRenderNodes, size)
+      const zoom = clamp(Math.min(availableWidth / worldWidth, availableHeight / worldHeight), minZoom, MAX_ZOOM)
+      const centerX = ((minX + maxX) / 2 / 100) * size.width
+      const centerY = ((minY + maxY) / 2 / 100) * size.height
+
+      return {
+        zoom,
+        panX: size.width * 0.5 - centerX * zoom,
+        panY: size.height * 0.5 - centerY * zoom
+      }
+    },
+    [currentRenderNodes]
+  )
 
   const fitNodes = useCallback(() => {
     viewportAnimationRef.current?.revert()
@@ -559,57 +587,78 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     setViewport(calculateFitViewport(canvasSizeRef.current))
   }, [calculateFitViewport, flushLiveViewportTransform, nodesFitSignature, setViewport])
 
-  const zoomAroundPoint = useCallback((nextZoom: number, anchorX: number, anchorY: number, options?: { live?: boolean }) => {
-    const currentViewport = viewportRef.current
-    const canvasSize = canvasSizeRef.current
-    const minZoom = calculateMaxZoomOut(currentRenderNodes, canvasSize)
-    const zoom = clamp(nextZoom, minZoom, MAX_ZOOM)
-    const candidateFocus = {
-      x: (anchorX - currentViewport.panX) / currentViewport.zoom,
-      y: (anchorY - currentViewport.panY) / currentViewport.zoom,
-    }
-    const currentFocus = zoomFocusRef.current
-    const currentAnchor = zoomAnchorRef.current
-    const sameZoomAnchor = currentAnchor
-      && Math.abs(currentAnchor.x - anchorX) <= NODE_VISUAL_BOUNDS_PADDING_PX
-      && Math.abs(currentAnchor.y - anchorY) <= NODE_VISUAL_BOUNDS_PADDING_PX
-    const focusPoint = currentFocus && sameZoomAnchor ? currentFocus : candidateFocus
+  const zoomAroundPoint = useCallback(
+    (nextZoom: number, anchorX: number, anchorY: number, options?: { live?: boolean }) => {
+      const currentViewport = viewportRef.current
+      const canvasSize = canvasSizeRef.current
+      const minZoom = calculateMaxZoomOut(currentRenderNodes, canvasSize)
+      const zoom = clamp(nextZoom, minZoom, MAX_ZOOM)
+      const candidateFocus = {
+        x: (anchorX - currentViewport.panX) / currentViewport.zoom,
+        y: (anchorY - currentViewport.panY) / currentViewport.zoom
+      }
+      const currentFocus = zoomFocusRef.current
+      const currentAnchor = zoomAnchorRef.current
+      const sameZoomAnchor =
+        currentAnchor &&
+        Math.abs(currentAnchor.x - anchorX) <= NODE_VISUAL_BOUNDS_PADDING_PX &&
+        Math.abs(currentAnchor.y - anchorY) <= NODE_VISUAL_BOUNDS_PADDING_PX
+      const focusPoint = currentFocus && sameZoomAnchor ? currentFocus : candidateFocus
 
-    zoomAnchorRef.current = { x: anchorX, y: anchorY }
+      zoomAnchorRef.current = { x: anchorX, y: anchorY }
 
-    zoomFocusRef.current = focusPoint
+      zoomFocusRef.current = focusPoint
 
-    const nextViewport = clampViewportToPanBounds(currentRenderNodes, canvasSize, {
-      zoom,
-      panX: anchorX - focusPoint.x * zoom,
-      panY: anchorY - focusPoint.y * zoom,
-    }, focusPoint, minZoom)
+      const nextViewport = clampViewportToPanBounds(
+        currentRenderNodes,
+        canvasSize,
+        {
+          zoom,
+          panX: anchorX - focusPoint.x * zoom,
+          panY: anchorY - focusPoint.y * zoom
+        },
+        focusPoint,
+        minZoom
+      )
 
-    if (options?.live) {
-      viewportAnimationRef.current?.revert()
-      viewportAnimationRef.current = undefined
-      hasUserControlledViewportRef.current = true
-      viewportRef.current = nextViewport
-      scheduleViewportLayerTransform(nextViewport)
-      scheduleWheelZoomCommit()
-      return
-    }
+      if (options?.live) {
+        viewportAnimationRef.current?.revert()
+        viewportAnimationRef.current = undefined
+        hasUserControlledViewportRef.current = true
+        viewportRef.current = nextViewport
+        scheduleViewportLayerTransform(nextViewport)
+        scheduleWheelZoomCommit()
+        return
+      }
 
-    flushLiveViewportTransform()
-    setViewport(nextViewport, { userControlled: true })
-  }, [currentRenderNodes, flushLiveViewportTransform, scheduleViewportLayerTransform, scheduleWheelZoomCommit, setViewport])
+      flushLiveViewportTransform()
+      setViewport(nextViewport, { userControlled: true })
+    },
+    [
+      currentRenderNodes,
+      flushLiveViewportTransform,
+      scheduleViewportLayerTransform,
+      scheduleWheelZoomCommit,
+      setViewport
+    ]
+  )
 
-  const zoomAtCenter = useCallback((factor: number) => {
-    zoomAroundPoint(
-      viewportRef.current.zoom * factor,
-      canvasSizeRef.current.width * 0.5,
-      canvasSizeRef.current.height * 0.5,
-    )
-  }, [zoomAroundPoint])
+  const zoomAtCenter = useCallback(
+    (factor: number) => {
+      zoomAroundPoint(
+        viewportRef.current.zoom * factor,
+        canvasSizeRef.current.width * 0.5,
+        canvasSizeRef.current.height * 0.5
+      )
+    },
+    [zoomAroundPoint]
+  )
 
-  const nodeColorForTraffic = useCallback((node: MeshNode) => (
-    nodeVisuals(node, getNodePeer?.(node), node.id === selfId, false, dotColorScheme.nodeColors).fill
-  ), [dotColorScheme.nodeColors, getNodePeer, selfId])
+  const nodeColorForTraffic = useCallback(
+    (node: MeshNode) =>
+      nodeVisuals(node, getNodePeer?.(node), node.id === selfId, false, dotColorScheme.nodeColors).fill,
+    [dotColorScheme.nodeColors, getNodePeer, selfId]
+  )
 
   const updateCanvasSize = useCallback(() => {
     const canvasElement = canvasRef.current
@@ -620,34 +669,29 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
 
     const nextSize = {
       width: canvasElement.clientWidth,
-      height: canvasElement.clientHeight,
+      height: canvasElement.clientHeight
     }
     canvasSizeRef.current = nextSize
-    setCanvasSize((current) => (
+    setCanvasSize((current) =>
       current.width === nextSize.width && current.height === nextSize.height ? current : nextSize
-    ))
+    )
   }, [])
 
-  const {
-    clearTrafficPackets,
-    placeTrafficPackets,
-    playRandomTraffic,
-    playSelfTraffic,
-    playTraffic,
-  } = useMeshVizTraffic({
-    canvasRef,
-    canvasSizeRef,
-    links,
-    liveLayerBaseViewportRef,
-    liveLayerTransformActiveRef,
-    nodeColorForTraffic,
-    packetLayerRef,
-    reduceMotion,
-    renderNodes,
-    selfId,
-    updateCanvasSize,
-    viewportRef,
-  })
+  const { clearTrafficPackets, placeTrafficPackets, playRandomTraffic, playSelfTraffic, playTraffic } =
+    useMeshVizTraffic({
+      canvasRef,
+      canvasSizeRef,
+      links,
+      liveLayerBaseViewportRef,
+      liveLayerTransformActiveRef,
+      nodeColorForTraffic,
+      packetLayerRef,
+      reduceMotion,
+      renderNodes,
+      selfId,
+      updateCanvasSize,
+      viewportRef
+    })
 
   useEffect(() => {
     const previousSnapshots = topologyNodeSnapshotsRef.current
@@ -862,7 +906,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         }
 
         meshLifecycleTimelineRecordsRef.current.delete(timelineId)
-      },
+      }
     })
 
     newTransitions.forEach(({ node, phase }, index) => {
@@ -892,9 +936,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
             return phase === 'leaving'
           }
 
-          return phase === 'entering'
-            ? index >= otherTransitionIndex
-            : index <= otherTransitionIndex
+          return phase === 'entering' ? index >= otherTransitionIndex : index <= otherTransitionIndex
         })
         .map((link) => {
           const element = linkElements.get(link.id)
@@ -913,21 +955,29 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
 
         enteringCoreRestingShadows.set(nodeCoreElement, nodeCoreElement.style.boxShadow)
 
-        timeline.set(nodeCoreElement, {
-          opacity: 0,
-          scale: 0.54,
-          boxShadow: `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`,
-        }, start)
-        timeline.add(nodeCoreElement, {
-          opacity: [0, 1, 0.98],
-          scale: [0.6, 1.34, 1.08],
-          boxShadow: [
-            `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`,
-            `0 0 30px 3px color-mix(in oklab, ${nodeColor} 34%, transparent)`,
-            `0 0 14px 1px color-mix(in oklab, ${nodeColor} 20%, transparent)`,
-          ],
-          duration: NODE_JOIN_DURATION_MS,
-        }, start)
+        timeline.set(
+          nodeCoreElement,
+          {
+            opacity: 0,
+            scale: 0.54,
+            boxShadow: `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`
+          },
+          start
+        )
+        timeline.add(
+          nodeCoreElement,
+          {
+            opacity: [0, 1, 0.98],
+            scale: [0.6, 1.34, 1.08],
+            boxShadow: [
+              `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`,
+              `0 0 30px 3px color-mix(in oklab, ${nodeColor} 34%, transparent)`,
+              `0 0 14px 1px color-mix(in oklab, ${nodeColor} 20%, transparent)`
+            ],
+            duration: NODE_JOIN_DURATION_MS
+          },
+          start
+        )
 
         if (connectedLinkElements.length > 0) {
           for (const linkElement of connectedLinkElements) {
@@ -935,11 +985,15 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
           }
 
           timeline.set(connectedLinkElements, { opacity: 0, strokeDashoffset: 1 }, start)
-          timeline.add(connectedLinkElements, {
-            opacity: [0, 0.62],
-            strokeDashoffset: [1, 0],
-            duration: LINK_JOIN_DURATION_MS,
-          }, start + NODE_JOIN_DURATION_MS)
+          timeline.add(
+            connectedLinkElements,
+            {
+              opacity: [0, 0.62],
+              strokeDashoffset: [1, 0],
+              duration: LINK_JOIN_DURATION_MS
+            },
+            start + NODE_JOIN_DURATION_MS
+          )
         }
 
         const connectedCoreElements = connectedLinks
@@ -953,11 +1007,15 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
             pulsedCoreElements.add(element)
           }
 
-          timeline.add(connectedCoreElements, {
-            opacity: [0.98, 1, 0.98],
-            scale: [1, 1.12, 1],
-            duration: CONNECTED_NODE_PULSE_DURATION_MS,
-          }, start + CONNECTED_NODE_PULSE_DELAY_MS)
+          timeline.add(
+            connectedCoreElements,
+            {
+              opacity: [0.98, 1, 0.98],
+              scale: [1, 1.12, 1],
+              duration: CONNECTED_NODE_PULSE_DURATION_MS
+            },
+            start + CONNECTED_NODE_PULSE_DELAY_MS
+          )
         }
 
         return
@@ -968,25 +1026,33 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
 
       if (connectedLinkElements.length > 0) {
         for (const linkElement of connectedLinkElements) {
-          timeline.add(linkElement, {
-            opacity: [currentElementOpacity(linkElement, 0.62), 0],
-            strokeDashoffset: [currentStrokeDashOffset(linkElement, 0), -1],
-            duration: LINK_LEAVE_DURATION_MS,
-            ease: 'inQuart',
-          }, start)
+          timeline.add(
+            linkElement,
+            {
+              opacity: [currentElementOpacity(linkElement, 0.62), 0],
+              strokeDashoffset: [currentStrokeDashOffset(linkElement, 0), -1],
+              duration: LINK_LEAVE_DURATION_MS,
+              ease: 'inQuart'
+            },
+            start
+          )
         }
       }
 
-      timeline.add(nodeCoreElement, {
-        opacity: [currentElementOpacity(nodeCoreElement, 0.98), 0],
-        scale: [currentElementScale(nodeCoreElement, 1.08), 0.72],
-        boxShadow: [
-          nodeCoreElement.style.boxShadow || `0 0 14px 1px color-mix(in oklab, ${nodeColor} 20%, transparent)`,
-          `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`,
-        ],
-        duration: NODE_LEAVE_DURATION_MS,
-        ease: 'inQuart',
-      }, start + NODE_LEAVE_DELAY_MS)
+      timeline.add(
+        nodeCoreElement,
+        {
+          opacity: [currentElementOpacity(nodeCoreElement, 0.98), 0],
+          scale: [currentElementScale(nodeCoreElement, 1.08), 0.72],
+          boxShadow: [
+            nodeCoreElement.style.boxShadow || `0 0 14px 1px color-mix(in oklab, ${nodeColor} 20%, transparent)`,
+            `0 0 0 0 color-mix(in oklab, ${nodeColor} 0%, transparent)`
+          ],
+          duration: NODE_LEAVE_DURATION_MS,
+          ease: 'inQuart'
+        },
+        start + NODE_LEAVE_DELAY_MS
+      )
     })
 
     meshLifecycleTimelineRecordsRef.current.set(timelineId, { keys: timelineKeys, timeline })
@@ -1039,11 +1105,12 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       return undefined
     }
 
-    const restoredLinks = links.filter((link) => (
-      !previousLinkIds.has(link.id)
-      && !linkRestoreAnimationIdsRef.current.has(link.id)
-      && linkLifecyclePhase(link.source.id, link.target.id) === 'present'
-    ))
+    const restoredLinks = links.filter(
+      (link) =>
+        !previousLinkIds.has(link.id) &&
+        !linkRestoreAnimationIdsRef.current.has(link.id) &&
+        linkLifecyclePhase(link.source.id, link.target.id) === 'present'
+    )
 
     if (restoredLinks.length === 0) {
       return undefined
@@ -1063,9 +1130,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         linkElements.set(linkId, element)
       }
     })
-    const restoredLinkElements = restoredLinks
-      .map((link) => linkElements.get(link.id))
-      .filter(isDefined)
+    const restoredLinkElements = restoredLinks.map((link) => linkElements.get(link.id)).filter(isDefined)
 
     if (restoredLinkElements.length === 0) {
       return undefined
@@ -1093,43 +1158,50 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         }
 
         linkRestoreTimelineRecordsRef.current.delete(timelineId)
-      },
+      }
     })
 
     timeline.set(restoredLinkElements, { opacity: 0, strokeDashoffset: 1 }, 0)
-    timeline.add(restoredLinkElements, {
-      opacity: [0, 0.62],
-      strokeDashoffset: [1, 0],
-      duration: LINK_JOIN_DURATION_MS,
-    }, 0)
+    timeline.add(
+      restoredLinkElements,
+      {
+        opacity: [0, 0.62],
+        strokeDashoffset: [1, 0],
+        duration: LINK_JOIN_DURATION_MS
+      },
+      0
+    )
 
     linkRestoreTimelineRecordsRef.current.set(timelineId, { linkIds: restoredLinkIds, timeline })
 
     return undefined
   }, [links, linkLifecyclePhase, reduceMotion])
 
-  useEffect(() => () => {
-    for (const timeout of nodeLifecycleTimeoutsRef.current.values()) {
-      window.clearTimeout(timeout)
-    }
+  useEffect(
+    () => () => {
+      for (const timeout of nodeLifecycleTimeoutsRef.current.values()) {
+        window.clearTimeout(timeout)
+      }
 
-    nodeLifecycleTimeoutsRef.current.clear()
-    nodeLifecycleAnimationKeysRef.current.clear()
-    previousLinkIdsRef.current.clear()
-    linkRestoreAnimationIdsRef.current.clear()
+      nodeLifecycleTimeoutsRef.current.clear()
+      nodeLifecycleAnimationKeysRef.current.clear()
+      previousLinkIdsRef.current.clear()
+      linkRestoreAnimationIdsRef.current.clear()
 
-    for (const record of meshLifecycleTimelineRecordsRef.current.values()) {
-      record.timeline.revert()
-    }
+      for (const record of meshLifecycleTimelineRecordsRef.current.values()) {
+        record.timeline.revert()
+      }
 
-    meshLifecycleTimelineRecordsRef.current.clear()
+      meshLifecycleTimelineRecordsRef.current.clear()
 
-    for (const record of linkRestoreTimelineRecordsRef.current.values()) {
-      record.timeline.revert()
-    }
+      for (const record of linkRestoreTimelineRecordsRef.current.values()) {
+        record.timeline.revert()
+      }
 
-    linkRestoreTimelineRecordsRef.current.clear()
-  }, [])
+      linkRestoreTimelineRecordsRef.current.clear()
+    },
+    []
+  )
 
   useEffect(() => {
     if (openNodeId && !currentRenderNodeIds.has(openNodeId)) {
@@ -1141,19 +1213,22 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     }
   }, [currentRenderNodeIds, hoveredNodeId, openNodeId])
 
-  const addDebugNode = useCallback((shortcut: DebugNodeShortcut) => {
-    const blueprint = getDebugNodeShortcutBlueprint(shortcut)
+  const addDebugNode = useCallback(
+    (shortcut: DebugNodeShortcut) => {
+      const blueprint = getDebugNodeShortcutBlueprint(shortcut)
 
-    setDebugNodes((current) => {
-      const debugIndex = debugNodeCounterRef.current + 1
-      const placementNodes: MeshNode[] = [...nodes, ...current]
-      const position = chooseClusteredMeshNodePosition(meshSeed, debugIndex, blueprint, placementNodes)
-      const debugNode = createDebugNode(debugIndex, blueprint, position)
+      setDebugNodes((current) => {
+        const debugIndex = debugNodeCounterRef.current + 1
+        const placementNodes: MeshNode[] = [...nodes, ...current]
+        const position = chooseClusteredMeshNodePosition(meshSeed, debugIndex, blueprint, placementNodes)
+        const debugNode = createDebugNode(debugIndex, blueprint, position)
 
-      debugNodeCounterRef.current = debugIndex
-      return [...current, debugNode]
-    })
-  }, [meshSeed, nodes])
+        debugNodeCounterRef.current = debugIndex
+        return [...current, debugNode]
+      })
+    },
+    [meshSeed, nodes]
+  )
 
   const removeDebugNode = useCallback((shortcut: DebugNodeShortcut) => {
     setDebugNodes((current) => {
@@ -1291,9 +1366,9 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       typeof ResizeObserver === 'undefined'
         ? undefined
         : new ResizeObserver(() => {
-          updateCanvasSize()
-          placeTrafficPackets()
-        })
+            updateCanvasSize()
+            placeTrafficPackets()
+          })
 
     resizeObserver?.observe(canvasElement)
 
@@ -1326,7 +1401,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       duration: RADAR_PULSE_DURATION,
       ease: RADAR_PULSE_EASE,
       loop: true,
-      loopDelay: RADAR_PULSE_LOOP_DELAY,
+      loopDelay: RADAR_PULSE_LOOP_DELAY
     })
 
     return () => {
@@ -1344,12 +1419,10 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     const nodesChanged = fittedNodesSignatureRef.current !== nodesFitSignature
     const previousNodeIds = fittedNodeIdsRef.current
     const trackedPreviousNodes = previousNodeIds.size > 0
-    const addedNodes = trackedPreviousNodes
-      ? currentRenderNodes.filter((node) => !previousNodeIds.has(node.id))
-      : []
-    const addedNodeOutsideViewport = addedNodes.some((node) => (
-      !nodeFitsInsideViewport(node, canvasSize, viewportRef.current)
-    ))
+    const addedNodes = trackedPreviousNodes ? currentRenderNodes.filter((node) => !previousNodeIds.has(node.id)) : []
+    const addedNodeOutsideViewport = addedNodes.some(
+      (node) => !nodeFitsInsideViewport(node, canvasSize, viewportRef.current)
+    )
     const trackCurrentTopology = () => {
       fittedNodesSignatureRef.current = nodesFitSignature
       fittedNodeIdsRef.current = new Set(currentRenderNodes.map((node) => node.id))
@@ -1379,7 +1452,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         canvasSize,
         viewportRef.current,
         zoomFocusRef.current,
-        calculateMaxZoomOut(currentRenderNodes, canvasSize),
+        calculateMaxZoomOut(currentRenderNodes, canvasSize)
       )
 
       if (!viewportsMatch(clampedViewport, viewportRef.current)) {
@@ -1414,15 +1487,18 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     placeTrafficPackets()
   }, [clearViewportLayerTransform, placeTrafficPackets, viewport])
 
-  useEffect(() => () => {
-    if (panTransformFrameRef.current !== null) {
-      window.cancelAnimationFrame(panTransformFrameRef.current)
-    }
+  useEffect(
+    () => () => {
+      if (panTransformFrameRef.current !== null) {
+        window.cancelAnimationFrame(panTransformFrameRef.current)
+      }
 
-    if (wheelZoomCommitTimeoutRef.current !== null) {
-      window.clearTimeout(wheelZoomCommitTimeoutRef.current)
-    }
-  }, [])
+      if (wheelZoomCommitTimeoutRef.current !== null) {
+        window.clearTimeout(wheelZoomCommitTimeoutRef.current)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     if (!isPanning) {
@@ -1461,20 +1537,15 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
 
   const touchPoints = () => Array.from(touchPointersRef.current.values())
 
-  const distanceBetweenTouchPoints = (first: TouchPointState, second: TouchPointState) => (
+  const distanceBetweenTouchPoints = (first: TouchPointState, second: TouchPointState) =>
     Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)
-  )
 
-  const midpointRelativeToCanvas = (
-    element: HTMLDivElement,
-    first: TouchPointState,
-    second: TouchPointState,
-  ) => {
+  const midpointRelativeToCanvas = (element: HTMLDivElement, first: TouchPointState, second: TouchPointState) => {
     const rect = element.getBoundingClientRect()
 
     return {
       x: (first.clientX + second.clientX) * 0.5 - rect.left,
-      y: (first.clientY + second.clientY) * 0.5 - rect.top,
+      y: (first.clientY + second.clientY) * 0.5 - rect.top
     }
   }
 
@@ -1491,7 +1562,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     pinchZoomRef.current = {
       active: true,
       initialDistance: Math.max(1, distanceBetweenTouchPoints(first, second)),
-      initialZoom: viewportRef.current.zoom,
+      initialZoom: viewportRef.current.zoom
     }
   }
 
@@ -1526,7 +1597,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       touchPointersRef.current.set(event.pointerId, {
         pointerId: event.pointerId,
         clientX: event.clientX,
-        clientY: event.clientY,
+        clientY: event.clientY
       })
 
       if (touchPointersRef.current.size >= 2) {
@@ -1543,7 +1614,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       originX: event.clientX,
       originY: event.clientY,
       panX: viewportRef.current.panX,
-      panY: viewportRef.current.panY,
+      panY: viewportRef.current.panY
     }
     setIsPanning(true)
     setOpenNodeId(undefined)
@@ -1555,7 +1626,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
       touchPointersRef.current.set(event.pointerId, {
         pointerId: event.pointerId,
         clientX: event.clientX,
-        clientY: event.clientY,
+        clientY: event.clientY
       })
 
       const [first, second] = touchPoints()
@@ -1585,11 +1656,17 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     event.preventDefault()
     const canvasSize = canvasSizeRef.current
     const minZoom = calculateMaxZoomOut(currentRenderNodes, canvasSize)
-    const nextViewport = clampViewportToPanBounds(currentRenderNodes, canvasSize, {
-      zoom: viewportRef.current.zoom,
-      panX: drag.panX + event.clientX - drag.originX,
-      panY: drag.panY + event.clientY - drag.originY,
-    }, zoomFocusRef.current, minZoom)
+    const nextViewport = clampViewportToPanBounds(
+      currentRenderNodes,
+      canvasSize,
+      {
+        zoom: viewportRef.current.zoom,
+        panX: drag.panX + event.clientX - drag.originX,
+        panY: drag.panY + event.clientY - drag.originY
+      },
+      zoomFocusRef.current,
+      minZoom
+    )
 
     viewportRef.current = nextViewport
     scheduleViewportLayerTransform(nextViewport)
@@ -1633,28 +1710,31 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
     setIsPanning(false)
   }
 
-  const handleCanvasWheel = useCallback((event: WheelEvent) => {
-    if (event.deltaY === 0) {
-      return
-    }
+  const handleCanvasWheel = useCallback(
+    (event: WheelEvent) => {
+      if (event.deltaY === 0) {
+        return
+      }
 
-    if (event.cancelable) {
-      event.preventDefault()
-    }
-    event.stopPropagation()
+      if (event.cancelable) {
+        event.preventDefault()
+      }
+      event.stopPropagation()
 
-    const canvasElement = canvasRef.current
-    if (!canvasElement) {
-      return
-    }
+      const canvasElement = canvasRef.current
+      if (!canvasElement) {
+        return
+      }
 
-    const rect = canvasElement.getBoundingClientRect()
-    const anchorX = event.clientX - rect.left
-    const anchorY = event.clientY - rect.top
-    const factor = event.deltaY > 0 ? WHEEL_ZOOM_OUT : WHEEL_ZOOM_IN
+      const rect = canvasElement.getBoundingClientRect()
+      const anchorX = event.clientX - rect.left
+      const anchorY = event.clientY - rect.top
+      const factor = event.deltaY > 0 ? WHEEL_ZOOM_OUT : WHEEL_ZOOM_IN
 
-    zoomAroundPoint(viewportRef.current.zoom * factor, anchorX, anchorY, { live: true })
-  }, [zoomAroundPoint])
+      zoomAroundPoint(viewportRef.current.zoom * factor, anchorX, anchorY, { live: true })
+    },
+    [zoomAroundPoint]
+  )
 
   useEffect(() => {
     const canvasElement = canvasRef.current
@@ -1687,22 +1767,20 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
   const screenLinks = links.map((link) => ({
     ...link,
     sourcePoint: pointToScreen(link.source, safeCanvasWidth, safeCanvasHeight, viewport),
-    targetPoint: pointToScreen(link.target, safeCanvasWidth, safeCanvasHeight, viewport),
+    targetPoint: pointToScreen(link.target, safeCanvasWidth, safeCanvasHeight, viewport)
   }))
   const maxZoomOut = calculateMaxZoomOut(currentRenderNodes, canvasSize)
   const maxZoomOutLabel = maxZoomOut.toFixed(2)
   const viewportControlClassName = cn(
     'ui-control grid place-items-center rounded-[var(--radius)] border',
-    isFullscreen ? 'size-[52px]' : 'size-[26px]',
+    isFullscreen ? 'size-[52px]' : 'size-[26px]'
   )
   const viewportControlIconClassName = isFullscreen ? 'size-6' : 'size-3'
 
   return (
     <section className="panel-shell overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
       <header className="flex items-center justify-between border-b border-border-soft px-3.5 py-2.5">
-        <h2 className="type-panel-title">
-          Mesh overview
-        </h2>
+        <h2 className="type-panel-title">Mesh overview</h2>
         {!compact && (
           <button
             onClick={handleFullscreen}
@@ -1719,12 +1797,12 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
           data-testid="mesh-canvas"
           className={cn(
             'relative touch-none overflow-hidden rounded-[var(--radius-lg)] mesh-canvas',
-            isPanning ? 'cursor-grabbing' : 'cursor-grab',
+            isPanning ? 'cursor-grabbing' : 'cursor-grab'
           )}
           style={{
             height,
             background:
-              'radial-gradient(ellipse at 60% 40%, color-mix(in oklab, var(--color-accent) 10%, var(--color-panel-strong)) 0%, var(--color-panel-strong) 60%, var(--color-panel) 100%)',
+              'radial-gradient(ellipse at 60% 40%, color-mix(in oklab, var(--color-accent) 10%, var(--color-panel-strong)) 0%, var(--color-panel-strong) 60%, var(--color-panel) 100%)'
           }}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handleCanvasPointerMove}
@@ -1733,11 +1811,11 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
         >
           <div className="absolute left-3.5 top-3 z-10 flex flex-wrap items-center gap-2.5 font-mono text-[length:var(--density-type-label)] uppercase tracking-[0.14em] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-panel/90 px-2 py-px text-accent">
-              <span className="size-[5px] rounded-full bg-current mesh-live-pulse" />{' '}
-              Live
+              <span className="size-[5px] rounded-full bg-current mesh-live-pulse" /> Live
             </span>
             <span>
-                  {nodes.length} nodes{debugNodes.length > 0 ? ` + ${debugNodes.length} debug` : ''} · {linkCount} links · Nearest mesh
+              {nodes.length} nodes{debugNodes.length > 0 ? ` + ${debugNodes.length} debug` : ''} · {linkCount} links ·
+              Nearest mesh
             </span>
           </div>
 
@@ -1829,7 +1907,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
                   vectorEffect="non-scaling-stroke"
                 />
               ))}
-        {isDevelopment && showPanBounds && nodeBoundsRect && deadZoneRect && centeredBoundsRect && (
+              {isDevelopment && showPanBounds && nodeBoundsRect && deadZoneRect && centeredBoundsRect && (
                 <g aria-label="Mesh pan bounds debug overlay">
                   <rect
                     data-testid="mesh-pan-dead-zone-box"
@@ -1946,7 +2024,7 @@ export const MeshViz = forwardRef<MeshVizHandle, MeshVizProps>(function MeshViz(
             })}
           </div>
 
-        {isDevelopment && (
+          {isDevelopment && (
             <MeshVizDebugControls
               debugNodeCount={debugNodes.length}
               dotColorSchemeIndex={dotColorSchemeIndex}

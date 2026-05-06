@@ -88,7 +88,7 @@ test('measures MeshViz pan and zoom performance with 200 nodes', async ({ page }
         longTaskCount: longTasks.length,
         longTaskTotalMs: round(sum(longTasks)),
         longAnimationFrameCount: longAnimationFrames.length,
-        longAnimationFrameTotalMs: round(sum(longAnimationFrames)),
+        longAnimationFrameTotalMs: round(sum(longAnimationFrames))
       })
 
       observePerformanceEntries('longtask', longTasks)
@@ -121,7 +121,7 @@ test('measures MeshViz pan and zoom performance with 200 nodes', async ({ page }
         window.setTimeout(() => finish(lastFrameTimestamp ?? performance.now()), durationMs + 500)
       })
     },
-    { durationMs: MEASUREMENT_MS, frameBudgetMs: FRAME_BUDGET_MS, jankFrameMs: JANK_FRAME_MS },
+    { durationMs: MEASUREMENT_MS, frameBudgetMs: FRAME_BUDGET_MS, jankFrameMs: JANK_FRAME_MS }
   )
 
   const box = await canvas.boundingBox()
@@ -147,7 +147,7 @@ test('measures MeshViz pan and zoom performance with 200 nodes', async ({ page }
 
   await testInfo.attach('meshviz-200-node-performance.json', {
     body: JSON.stringify(metrics, null, 2),
-    contentType: 'application/json',
+    contentType: 'application/json'
   })
 
   console.info(`MeshViz 200-node perf: ${JSON.stringify(metrics)}`)
@@ -179,14 +179,14 @@ test('keeps in-flight traffic packets aligned during live panning', async ({ pag
   for (let index = 0; index < 4; index += 1) {
     await page.mouse.wheel(0, -120)
   }
-  await expect.poll(async () => page.getByTestId('mesh-packet-layer').evaluate((element) => element.style.transform))
+  await expect
+    .poll(async () => page.getByTestId('mesh-packet-layer').evaluate((element) => element.style.transform))
     .toContain('scale(')
 
   await page.keyboard.press('z')
 
   const packet = page.locator('.mesh-packet').first()
-  await expect.poll(async () => page.locator('.mesh-packet').count(), { timeout: 10_000 })
-    .toBeGreaterThan(0)
+  await expect.poll(async () => page.locator('.mesh-packet').count(), { timeout: 10_000 }).toBeGreaterThan(0)
   await expect(packet).toBeVisible()
 
   const packetLayer = page.getByTestId('mesh-packet-layer')
@@ -198,8 +198,7 @@ test('keeps in-flight traffic packets aligned during live panning', async ({ pag
   await page.mouse.down()
   await page.mouse.move(panStart.x - 220, panStart.y + 80)
 
-  await expect.poll(async () => packetLayer.evaluate((element) => element.style.transform))
-    .toContain('translate3d')
+  await expect.poll(async () => packetLayer.evaluate((element) => element.style.transform)).toContain('translate3d')
 
   const layerTransform = await packetLayer.evaluate((element) => element.style.transform)
 
@@ -235,7 +234,7 @@ test('keeps glowing node visuals stable during live zoom', async ({ page }) => {
   await page.waitForFunction(
     () => document.querySelector<HTMLElement>('[data-testid="mesh-packet-layer"]')?.style.transform.includes('scale('),
     undefined,
-    { polling: 10, timeout: 1000 },
+    { polling: 10, timeout: 1000 }
   )
 
   const liveNodeVisuals = await page.evaluate(() => {
@@ -251,7 +250,7 @@ test('keeps glowing node visuals stable during live zoom', async ({ page }) => {
     return {
       layerTransform: packetLayer.style.transform,
       coreWidth: coreBox.width,
-      coreHeight: coreBox.height,
+      coreHeight: coreBox.height
     }
   })
 
@@ -267,7 +266,7 @@ async function dragTo(
   endX: number,
   endY: number,
   steps: number,
-  delayMs: number,
+  delayMs: number
 ) {
   for (let step = 1; step <= steps; step += 1) {
     const progress = step / steps
@@ -316,6 +315,6 @@ function parseCssTranslate(transform: string): CssTranslate {
 
   return {
     x: Number.parseFloat(xValue),
-    y: Number.parseFloat(yValue),
+    y: Number.parseFloat(yValue)
   }
 }

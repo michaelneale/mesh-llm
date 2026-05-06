@@ -1,0 +1,1005 @@
+From d1c439cb92fad7ed0affc2358e076912936f4f96 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Tue, 5 May 2026 08:21:34 +1000
+Subject: [PATCH 39/46] Restore exact prefix state cache ABI
+
+---
+ include/skippy.h       |  91 ++++++++-
+ src/llama-kv-cache.cpp | 357 +++++++++++++++++++++++++++++++++++
+ src/llama-kv-cache.h   |  21 +++
+ src/skippy.cpp         | 410 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 878 insertions(+), 1 deletion(-)
+
+diff --git a/include/skippy.h b/include/skippy.h
+index d8dba876..b051b66c 100644
+--- a/include/skippy.h
++++ b/include/skippy.h
+@@ -26,7 +26,7 @@ extern "C" {
+ 
+ #define SKIPPY_ABI_VERSION_MAJOR 0
+ #define SKIPPY_ABI_VERSION_MINOR 1
+-#define SKIPPY_ABI_VERSION_PATCH 19
++#define SKIPPY_ABI_VERSION_PATCH 20
+ 
+ #define SKIPPY_MAX_LOGIT_BIAS 256
+ 
+@@ -36,13 +36,16 @@ enum skippy_feature {
+     SKIPPY_FEATURE_ARTIFACT_SLICE         = 1 << 2,
+     SKIPPY_FEATURE_MODEL_INTROSPECTION    = 1 << 3,
+     SKIPPY_FEATURE_GGUF_SLICE_WRITE       = 1 << 4,
++    SKIPPY_FEATURE_STATE_IMPORT_EXPORT    = 1 << 5,
+     SKIPPY_FEATURE_TOKENIZE_DETOKENIZE    = 1 << 6,
+     SKIPPY_FEATURE_ACTIVATION_FRAME       = 1 << 7,
++    SKIPPY_FEATURE_NATIVE_KV_PAGE         = 1 << 8,
+     SKIPPY_FEATURE_SESSION_RESET          = 1 << 9,
+     SKIPPY_FEATURE_BATCH_VERIFY           = 1 << 10,
+     SKIPPY_FEATURE_CHAT_TEMPLATE          = 1 << 11,
+     SKIPPY_FEATURE_SAMPLING_CONFIG        = 1 << 12,
+     SKIPPY_FEATURE_BATCH_VERIFY_FRAME     = 1 << 13,
++    SKIPPY_FEATURE_RECURRENT_STATE        = 1 << 14,
+     SKIPPY_FEATURE_LOGIT_BIAS             = 1 << 15,
+     SKIPPY_FEATURE_SESSION_TRIM           = 1 << 16,
+     SKIPPY_FEATURE_SESSION_CHECKPOINT     = 1 << 17,
+@@ -53,6 +56,10 @@ enum skippy_feature {
+     SKIPPY_FEATURE_CHAT_SAMPLING_GRAMMAR  = 1 << 22,
+ };
+ 
++enum skippy_kv_page_flag {
++    SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED      = 1 << 0,
++};
++
+ enum skippy_status {
+     SKIPPY_STATUS_OK                      = 0,
+     SKIPPY_STATUS_ERROR                   = 1,
+@@ -166,6 +173,22 @@ struct skippy_sampling_config {
+     llama_logit_bias logit_bias[SKIPPY_MAX_LOGIT_BIAS];
+ };
+ 
++struct skippy_kv_page_desc {
++    uint32_t version;
++    int32_t layer_start;
++    int32_t layer_end;
++    uint64_t token_start;
++    uint64_t token_count;
++    uint32_t layer_count;
++    uint32_t k_type;
++    uint32_t v_type;
++    uint32_t k_row_bytes;
++    uint32_t v_row_bytes;
++    uint32_t v_element_bytes;
++    uint64_t payload_bytes;
++    uint64_t flags;
++};
++
+ struct skippy_abi_version {
+     uint32_t major;
+     uint32_t minor;
+@@ -354,11 +377,77 @@ LLAMA_API enum skippy_status skippy_session_copy_output_activation_frame(
+         size_t * out_output_payload_bytes,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_export_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_export_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_export_recurrent_state(
++        struct skippy_session * session,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_recurrent_state(
++        struct skippy_session * session,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_trim_session(
+         struct skippy_session * session,
+         uint64_t token_count,
+         struct skippy_error ** out_error);
+ 
++LLAMA_API enum skippy_status skippy_export_kv_page(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        uint64_t token_start,
++        uint64_t token_count,
++        struct skippy_kv_page_desc * out_desc,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error);
++
++LLAMA_API enum skippy_status skippy_import_kv_page(
++        struct skippy_session * session,
++        const struct skippy_kv_page_desc * desc,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error);
++
+ LLAMA_API enum skippy_status skippy_session_save_prefix(
+         struct skippy_session * session,
+         int32_t cache_seq_id,
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 90b701a9..6bdbf42c 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -1127,6 +1127,363 @@ ggml_type llama_kv_cache::type_v() const {
+     return layers[0].v->type;
+ }
+ 
++bool llama_kv_cache::stage_export_kv_page(
++        llama_seq_id seq_id,
++        int32_t layer_start,
++        int32_t layer_end,
++        uint64_t token_start,
++        uint64_t token_count,
++        skippy_kv_page_desc * out_desc,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        std::string & error) const {
++    if (out_desc == nullptr || out_bytes == nullptr) {
++        error = "out_desc and out_bytes are required";
++        return false;
++    }
++    if (layer_start < 0 || layer_end <= layer_start) {
++        error = "invalid layer range";
++        return false;
++    }
++    if (token_count == 0) {
++        error = "token_count must be greater than zero";
++        return false;
++    }
++    if (token_start > static_cast<uint64_t>(std::numeric_limits<llama_pos>::max()) ||
++            token_count > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) ||
++            token_start + token_count < token_start ||
++            token_start + token_count > static_cast<uint64_t>(std::numeric_limits<llama_pos>::max())) {
++        error = "token range is too large";
++        return false;
++    }
++    if (seq_to_stream.empty() || v_cells.empty()) {
++        error = "KV cache has no stream";
++        return false;
++    }
++    if (seq_id < 0 || static_cast<size_t>(seq_id) >= seq_to_stream.size()) {
++        error = "sequence id is mapped to an invalid KV stream";
++        return false;
++    }
++
++    const uint32_t strm = seq_to_stream[seq_id];
++    if (strm >= v_cells.size()) {
++        error = "sequence id is mapped to an invalid KV stream";
++        return false;
++    }
++    const auto & cells = v_cells[strm];
++
++    std::vector<uint32_t> cell_idxs(static_cast<size_t>(token_count), std::numeric_limits<uint32_t>::max());
++    uint32_t found_cells = 0;
++    const llama_pos pos_start = static_cast<llama_pos>(token_start);
++    const llama_pos pos_end = static_cast<llama_pos>(token_start + token_count);
++    for (uint32_t i = 0; i < cells.size() && found_cells < token_count; ++i) {
++        if (!cells.seq_has(i, seq_id) || !cells.pos_in(i, pos_start, pos_end)) {
++            continue;
++        }
++        const size_t token_index = static_cast<size_t>(cells.pos_get(i) - pos_start);
++        if (token_index < cell_idxs.size() && cell_idxs[token_index] == std::numeric_limits<uint32_t>::max()) {
++            cell_idxs[token_index] = i;
++            ++found_cells;
++        }
++    }
++    if (found_cells != token_count) {
++        error = "requested token position is not present in the KV cache";
++        return false;
++    }
++
++    std::vector<const kv_layer *> selected;
++    selected.reserve(layers.size());
++    uint32_t k_row_bytes = 0;
++    uint32_t v_row_bytes = 0;
++    uint32_t v_element_bytes = 0;
++    uint32_t k_type = GGML_TYPE_COUNT;
++    uint32_t v_type = GGML_TYPE_COUNT;
++    uint64_t payload_bytes = 0;
++
++    for (const auto & layer : layers) {
++        const uint32_t il = layer.il;
++        if (il < static_cast<uint32_t>(layer_start) || il >= static_cast<uint32_t>(layer_end)) {
++            continue;
++        }
++        if (layer.k_stream.size() <= strm || layer.v_stream.size() <= strm || layer.k_stream[strm] == nullptr || layer.v_stream[strm] == nullptr) {
++            error = "KV layer stream is unavailable";
++            return false;
++        }
++
++        const size_t k_row = ggml_row_size(layer.k_stream[strm]->type, hparams.n_embd_k_gqa(il));
++        const size_t v_row = !v_trans ? ggml_row_size(layer.v_stream[strm]->type, hparams.n_embd_v_gqa(il)) : 0;
++        const size_t v_el  =  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++
++        if (k_row > std::numeric_limits<uint32_t>::max() ||
++                v_row > std::numeric_limits<uint32_t>::max() ||
++                v_el > std::numeric_limits<uint32_t>::max()) {
++            error = "KV row size exceeds descriptor capacity";
++            return false;
++        }
++        if (selected.empty()) {
++            k_row_bytes = static_cast<uint32_t>(k_row);
++            v_row_bytes = static_cast<uint32_t>(v_row);
++            v_element_bytes = static_cast<uint32_t>(v_el);
++            k_type = static_cast<uint32_t>(layer.k_stream[strm]->type);
++            v_type = static_cast<uint32_t>(layer.v_stream[strm]->type);
++        } else if (k_row_bytes != k_row ||
++                v_row_bytes != v_row ||
++                v_element_bytes != v_el ||
++                k_type != static_cast<uint32_t>(layer.k_stream[strm]->type) ||
++                v_type != static_cast<uint32_t>(layer.v_stream[strm]->type)) {
++            error = "native KV page export requires uniform K/V types and row sizes across selected layers";
++            return false;
++        }
++
++        const uint64_t v_bytes = v_trans ?
++            static_cast<uint64_t>(hparams.n_embd_v_gqa(il)) * token_count * v_el :
++            token_count * v_row;
++        const uint64_t k_bytes = token_count * k_row;
++        if (payload_bytes > std::numeric_limits<uint64_t>::max() - k_bytes ||
++                payload_bytes + k_bytes > std::numeric_limits<uint64_t>::max() - v_bytes) {
++            error = "KV page payload is too large";
++            return false;
++        }
++        payload_bytes += k_bytes + v_bytes;
++        selected.push_back(&layer);
++    }
++
++    if (selected.empty()) {
++        error = "no KV cache layers selected by layer range";
++        return false;
++    }
++    if (payload_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
++        error = "KV page payload exceeds addressable memory";
++        return false;
++    }
++
++    out_desc->version = 1;
++    out_desc->layer_start = layer_start;
++    out_desc->layer_end = layer_end;
++    out_desc->token_start = token_start;
++    out_desc->token_count = token_count;
++    out_desc->layer_count = static_cast<uint32_t>(selected.size());
++    out_desc->k_type = k_type;
++    out_desc->v_type = v_type;
++    out_desc->k_row_bytes = k_row_bytes;
++    out_desc->v_row_bytes = v_row_bytes;
++    out_desc->v_element_bytes = v_element_bytes;
++    out_desc->payload_bytes = payload_bytes;
++    out_desc->flags = v_trans ? SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED : 0;
++    *out_bytes = static_cast<size_t>(payload_bytes);
++
++    if (output == nullptr) {
++        return true;
++    }
++    if (output_capacity < static_cast<size_t>(payload_bytes)) {
++        error = "output buffer is too small";
++        return false;
++    }
++
++    char * dst = static_cast<char *>(output);
++    for (const auto * layer : selected) {
++        auto * k = layer->k_stream[strm];
++        for (uint32_t cell_idx : cell_idxs) {
++            ggml_backend_tensor_get(k, dst, static_cast<size_t>(cell_idx) * k_row_bytes, k_row_bytes);
++            dst += k_row_bytes;
++        }
++    }
++
++    if (!v_trans) {
++        for (const auto * layer : selected) {
++            auto * v = layer->v_stream[strm];
++            for (uint32_t cell_idx : cell_idxs) {
++                ggml_backend_tensor_get(v, dst, static_cast<size_t>(cell_idx) * v_row_bytes, v_row_bytes);
++                dst += v_row_bytes;
++            }
++        }
++    } else {
++        for (const auto * layer : selected) {
++            auto * v = layer->v_stream[strm];
++            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(layer->il);
++            for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
++                for (uint32_t cell_idx : cell_idxs) {
++                    const size_t src_offset = (static_cast<size_t>(cell_idx) + static_cast<size_t>(j) * cells.size()) * v_element_bytes;
++                    ggml_backend_tensor_get(v, dst, src_offset, v_element_bytes);
++                    dst += v_element_bytes;
++                }
++            }
++        }
++    }
++
++    return true;
++}
++
++bool llama_kv_cache::stage_import_kv_page(
++        llama_seq_id seq_id,
++        const skippy_kv_page_desc & desc,
++        const void * input,
++        size_t input_bytes,
++        std::string & error) {
++    if (input == nullptr) {
++        error = "input payload is required";
++        return false;
++    }
++    if (desc.version != 1) {
++        error = "unsupported native KV page descriptor version";
++        return false;
++    }
++    if (desc.layer_start < 0 || desc.layer_end <= desc.layer_start || desc.token_count == 0) {
++        error = "invalid native KV page descriptor";
++        return false;
++    }
++    if (desc.payload_bytes != input_bytes) {
++        error = "native KV page payload size does not match descriptor";
++        return false;
++    }
++    if (desc.token_start > static_cast<uint64_t>(std::numeric_limits<llama_pos>::max()) ||
++            desc.token_count > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) ||
++            desc.token_start + desc.token_count < desc.token_start ||
++            desc.token_start + desc.token_count > static_cast<uint64_t>(std::numeric_limits<llama_pos>::max())) {
++        error = "token range is too large";
++        return false;
++    }
++    if ((desc.flags & SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED) != (v_trans ? SKIPPY_KV_PAGE_FLAG_V_TRANSPOSED : 0)) {
++        error = "native KV page V transposition does not match runtime";
++        return false;
++    }
++    if (seq_to_stream.empty() || v_cells.empty()) {
++        error = "KV cache has no stream";
++        return false;
++    }
++    if (seq_id < 0 || static_cast<size_t>(seq_id) >= seq_to_stream.size() || seq_id >= LLAMA_MAX_SEQ) {
++        error = "sequence id is mapped to an invalid KV stream";
++        return false;
++    }
++
++    const uint32_t strm = seq_to_stream[seq_id];
++    if (strm >= v_cells.size()) {
++        error = "sequence id is mapped to an invalid KV stream";
++        return false;
++    }
++
++    std::vector<const kv_layer *> selected;
++    selected.reserve(layers.size());
++    for (const auto & layer : layers) {
++        const uint32_t il = layer.il;
++        if (il < static_cast<uint32_t>(desc.layer_start) || il >= static_cast<uint32_t>(desc.layer_end)) {
++            continue;
++        }
++        if (layer.k_stream.size() <= strm || layer.v_stream.size() <= strm || layer.k_stream[strm] == nullptr || layer.v_stream[strm] == nullptr) {
++            error = "KV layer stream is unavailable";
++            return false;
++        }
++        const size_t k_row = ggml_row_size(layer.k_stream[strm]->type, hparams.n_embd_k_gqa(il));
++        const size_t v_row = !v_trans ? ggml_row_size(layer.v_stream[strm]->type, hparams.n_embd_v_gqa(il)) : 0;
++        const size_t v_el  =  v_trans ? ggml_type_size(layer.v_stream[strm]->type) : 0;
++        if (desc.k_type != static_cast<uint32_t>(layer.k_stream[strm]->type) ||
++                desc.v_type != static_cast<uint32_t>(layer.v_stream[strm]->type) ||
++                desc.k_row_bytes != k_row ||
++                desc.v_row_bytes != v_row ||
++                desc.v_element_bytes != v_el) {
++            error = "native KV page descriptor does not match runtime KV cache layout";
++            return false;
++        }
++        selected.push_back(&layer);
++    }
++    if (selected.size() != desc.layer_count) {
++        error = "native KV page layer count does not match runtime";
++        return false;
++    }
++
++    uint64_t expected_bytes = 0;
++    for (const auto * layer : selected) {
++        expected_bytes += desc.token_count * desc.k_row_bytes;
++        expected_bytes += v_trans ?
++            static_cast<uint64_t>(hparams.n_embd_v_gqa(layer->il)) * desc.token_count * desc.v_element_bytes :
++            desc.token_count * desc.v_row_bytes;
++    }
++    if (expected_bytes != desc.payload_bytes) {
++        error = "native KV page descriptor payload size is inconsistent";
++        return false;
++    }
++
++    llama_ubatch ubatch = {};
++    auto udata = std::make_shared<llama_ubatch::data_t>();
++    const uint32_t n_tokens = static_cast<uint32_t>(desc.token_count);
++    const uint32_t n_pos = hparams.n_pos_per_embd();
++    udata->token.resize(n_tokens);
++    udata->pos.resize(static_cast<size_t>(n_tokens) * n_pos);
++    udata->n_seq_id.resize(n_tokens, 1);
++    udata->seq_id.resize(n_tokens);
++    udata->seq_id_unq = { seq_id };
++    udata->seq_idx.resize(LLAMA_MAX_SEQ, -1);
++    udata->seq_idx[seq_id] = 0;
++    udata->output.resize(n_tokens, 0);
++    udata->seq_id_data.resize(n_tokens, 0);
++    for (uint32_t i = 0; i < n_tokens; ++i) {
++        const llama_pos pos = static_cast<llama_pos>(desc.token_start + i);
++        for (uint32_t j = 0; j < n_pos; ++j) {
++            udata->pos[static_cast<size_t>(j) * n_tokens + i] = pos;
++        }
++        udata->seq_id_data[i] = seq_id;
++        udata->seq_id[i] = &udata->seq_id_data[i];
++    }
++    ubatch.b_equal_seqs = true;
++    ubatch.n_tokens = n_tokens;
++    ubatch.n_seq_tokens = n_tokens;
++    ubatch.n_seqs = 1;
++    ubatch.n_seqs_unq = 1;
++    ubatch.n_pos = n_pos;
++    ubatch.token = udata->token.data();
++    ubatch.embd = nullptr;
++    ubatch.pos = udata->pos.data();
++    ubatch.n_seq_id = udata->n_seq_id.data();
++    ubatch.seq_id = udata->seq_id.data();
++    ubatch.seq_id_unq = udata->seq_id_unq.data();
++    ubatch.seq_idx = udata->seq_idx.data();
++    ubatch.output = udata->output.data();
++    ubatch.data = std::move(udata);
++
++    seq_rm(seq_id, static_cast<llama_pos>(desc.token_start), static_cast<llama_pos>(desc.token_start + desc.token_count));
++    const slot_info sinfo = find_slot(ubatch, false);
++    if (sinfo.empty()) {
++        error = "failed to allocate KV cache cells for imported page";
++        return false;
++    }
++    apply_ubatch(sinfo, ubatch);
++
++    const char * src = static_cast<const char *>(input);
++    for (const auto * layer : selected) {
++        auto * k = layer->k_stream[strm];
++        for (uint32_t i = 0; i < n_tokens; ++i) {
++            ggml_backend_tensor_set(k, src, static_cast<size_t>(sinfo.idxs[0][i]) * desc.k_row_bytes, desc.k_row_bytes);
++            src += desc.k_row_bytes;
++        }
++    }
++
++    auto & cells = v_cells[strm];
++    if (!v_trans) {
++        for (const auto * layer : selected) {
++            auto * v = layer->v_stream[strm];
++            for (uint32_t i = 0; i < n_tokens; ++i) {
++                ggml_backend_tensor_set(v, src, static_cast<size_t>(sinfo.idxs[0][i]) * desc.v_row_bytes, desc.v_row_bytes);
++                src += desc.v_row_bytes;
++            }
++        }
++    } else {
++        for (const auto * layer : selected) {
++            auto * v = layer->v_stream[strm];
++            const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(layer->il);
++            for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
++                for (uint32_t i = 0; i < n_tokens; ++i) {
++                    const size_t dst_offset = (static_cast<size_t>(sinfo.idxs[0][i]) + static_cast<size_t>(j) * cells.size()) * desc.v_element_bytes;
++                    ggml_backend_tensor_set(v, src, dst_offset, desc.v_element_bytes);
++                    src += desc.v_element_bytes;
++                }
++            }
++        }
++    }
++
++    return src == static_cast<const char *>(input) + input_bytes;
++}
++
+ uint32_t llama_kv_cache::get_n_kv(const slot_info & sinfo) const {
+     uint32_t result = 0;
+ 
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 2c54cec5..d93120b9 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -13,6 +13,8 @@ struct llama_cparams;
+ struct llama_hparams;
+ struct llama_model;
+ struct llama_context;
++struct skippy_kv_page_desc;
++
+ //
+ // llama_kv_cache
+ //
+@@ -155,6 +157,25 @@ public:
+     ggml_type type_k() const;
+     ggml_type type_v() const;
+ 
++    bool stage_export_kv_page(
++            llama_seq_id seq_id,
++            int32_t layer_start,
++            int32_t layer_end,
++            uint64_t token_start,
++            uint64_t token_count,
++            skippy_kv_page_desc * out_desc,
++            void * output,
++            size_t output_capacity,
++            size_t * out_bytes,
++            std::string & error) const;
++
++    bool stage_import_kv_page(
++            llama_seq_id seq_id,
++            const skippy_kv_page_desc & desc,
++            const void * input,
++            size_t input_bytes,
++            std::string & error);
++
+     //
+     // graph_build API
+     //
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 3002b720..56ab40d7 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -1345,13 +1345,16 @@ uint64_t skippy_abi_features(void) {
+     return SKIPPY_FEATURE_RUNTIME_SLICE |
+            SKIPPY_FEATURE_MODEL_INTROSPECTION |
+            SKIPPY_FEATURE_GGUF_SLICE_WRITE |
++           SKIPPY_FEATURE_STATE_IMPORT_EXPORT |
+            SKIPPY_FEATURE_TOKENIZE_DETOKENIZE |
+            SKIPPY_FEATURE_ACTIVATION_FRAME |
++           SKIPPY_FEATURE_NATIVE_KV_PAGE |
+            SKIPPY_FEATURE_SESSION_RESET |
+            SKIPPY_FEATURE_BATCH_VERIFY |
+            SKIPPY_FEATURE_CHAT_TEMPLATE |
+            SKIPPY_FEATURE_SAMPLING_CONFIG |
+            SKIPPY_FEATURE_BATCH_VERIFY_FRAME |
++           SKIPPY_FEATURE_RECURRENT_STATE |
+            SKIPPY_FEATURE_LOGIT_BIAS |
+            SKIPPY_FEATURE_SESSION_TRIM |
+            SKIPPY_FEATURE_SESSION_CHECKPOINT |
+@@ -2207,6 +2210,212 @@ enum skippy_status skippy_session_copy_output_activation_frame(
+     return skippy_copy_output_activation_frame(session, token_count, output_payload, out_error);
+ }
+ 
++static enum skippy_status skippy_validate_state_range(
++        skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        struct skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr || session->stage_model == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    const skippy_runtime_config & config = session->stage_model->config;
++    const int32_t expected_layer_start = config.filter_tensors_on_load ? config.layer_start : 0;
++    const int32_t expected_layer_end = config.filter_tensors_on_load ?
++            config.layer_end : llama_model_n_layer(session->stage_model->model);
++    if (layer_start != expected_layer_start || layer_end != expected_layer_end) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state range must match the session layer range");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++    return SKIPPY_STATUS_OK;
++}
++
++static void skippy_update_session_state_after_import(
++        skippy_session * session,
++        uint32_t imported_cells) {
++    session->n_past = std::max<int32_t>(
++            session->n_past,
++            static_cast<int32_t>(std::min<uint32_t>(
++                    imported_cells,
++                    static_cast<uint32_t>(std::numeric_limits<int32_t>::max()))));
++    if (session->token_history.size() > static_cast<size_t>(session->n_past)) {
++        session->token_history.resize(static_cast<size_t>(session->n_past));
++    }
++    if (session->signal_history.size() > static_cast<size_t>(session->n_past)) {
++        session->signal_history.resize(static_cast<size_t>(session->n_past));
++    }
++    session->checkpoint_valid = false;
++}
++
++enum skippy_status skippy_export_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    if (out_bytes != nullptr) {
++        *out_bytes = 0;
++    }
++    enum skippy_status status = skippy_validate_state_range(session, layer_start, layer_end, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    session->ctx->synchronize();
++    const size_t required = llama_state_seq_get_size_ext(
++            session->ctx,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (out_bytes != nullptr) {
++        *out_bytes = required;
++    }
++    if (required == 0) {
++        return skippy_success(out_error);
++    }
++    if (output == nullptr || output_capacity < required) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "state output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    const size_t written = llama_state_seq_get_data_ext(
++            session->ctx,
++            static_cast<uint8_t *>(output),
++            output_capacity,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (written != required) {
++        if (out_bytes != nullptr) {
++            *out_bytes = written;
++        }
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to export sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_import_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    enum skippy_status status = skippy_validate_state_range(session, layer_start, layer_end, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    if (input == nullptr && input_bytes > 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state input is required when input_bytes is non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    uint32_t imported_cells = 0;
++    if (input_bytes >= sizeof(imported_cells)) {
++        std::memcpy(&imported_cells, input, sizeof(imported_cells));
++    }
++
++    session->ctx->synchronize();
++    const size_t read = llama_state_seq_set_data_ext(
++            session->ctx,
++            static_cast<const uint8_t *>(input),
++            input_bytes,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (read != input_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    skippy_update_session_state_after_import(session, imported_cells);
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_export_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    if (out_bytes != nullptr) {
++        *out_bytes = 0;
++    }
++    enum skippy_status status = skippy_validate_state_range(session, layer_start, layer_end, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++
++    session->ctx->synchronize();
++    const size_t required = llama_state_seq_get_size(session->ctx, session->seq_id);
++    if (out_bytes != nullptr) {
++        *out_bytes = required;
++    }
++    if (required == 0) {
++        return skippy_success(out_error);
++    }
++    if (output == nullptr || output_capacity < required) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "full state output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    const size_t written = llama_state_seq_get_data(
++            session->ctx,
++            static_cast<uint8_t *>(output),
++            output_capacity,
++            session->seq_id);
++    if (written != required) {
++        if (out_bytes != nullptr) {
++            *out_bytes = written;
++        }
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to export full sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_import_full_state(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    enum skippy_status status = skippy_validate_state_range(session, layer_start, layer_end, out_error);
++    if (status != SKIPPY_STATUS_OK) {
++        return status;
++    }
++    if (input == nullptr && input_bytes > 0) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "state input is required when input_bytes is non-zero");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    uint32_t imported_cells = 0;
++    if (input_bytes >= 2 * sizeof(uint32_t)) {
++        std::memcpy(&imported_cells, static_cast<const uint8_t *>(input) + sizeof(uint32_t), sizeof(imported_cells));
++    }
++
++    session->ctx->synchronize();
++    const size_t read = llama_state_seq_set_data(
++            session->ctx,
++            static_cast<const uint8_t *>(input),
++            input_bytes,
++            session->seq_id);
++    if (read != input_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import full sequence state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    skippy_update_session_state_after_import(session, imported_cells);
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
+ static llama_memory_recurrent * skippy_get_recurrent_memory(
+         skippy_session * session,
+         skippy_error ** out_error) {
+@@ -2234,6 +2443,207 @@ static llama_memory_recurrent * skippy_get_recurrent_memory(
+     return nullptr;
+ }
+ 
++enum skippy_status skippy_export_recurrent_state(
++        struct skippy_session * session,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    if (out_bytes == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "out_bytes is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    *out_bytes = 0;
++    skippy_error * recurrent_error = nullptr;
++    llama_memory_recurrent * recurrent = skippy_get_recurrent_memory(session, &recurrent_error);
++    if (recurrent_error != nullptr) {
++        if (out_error != nullptr) {
++            *out_error = recurrent_error;
++        } else {
++            skippy_error_free(recurrent_error);
++        }
++        return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    if (recurrent == nullptr) {
++        return skippy_success(out_error);
++    }
++
++    session->ctx->synchronize();
++    const size_t bytes = llama_state_seq_get_size_ext(
++            session->ctx,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    *out_bytes = bytes;
++    if (bytes == 0) {
++        return skippy_success(out_error);
++    }
++    if (output == nullptr || output_capacity < bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "recurrent state output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    const size_t written = llama_state_seq_get_data_ext(
++            session->ctx,
++            static_cast<uint8_t *>(output),
++            output_capacity,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (written != bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to export recurrent state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_import_recurrent_state(
++        struct skippy_session * session,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    if (input_bytes == 0) {
++        return skippy_success(out_error);
++    }
++    if (input == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "recurrent state input is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    skippy_error * recurrent_error = nullptr;
++    llama_memory_recurrent * recurrent = skippy_get_recurrent_memory(session, &recurrent_error);
++    if (recurrent_error != nullptr) {
++        if (out_error != nullptr) {
++            *out_error = recurrent_error;
++        } else {
++            skippy_error_free(recurrent_error);
++        }
++        return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    if (recurrent == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime has no recurrent memory");
++        return SKIPPY_STATUS_UNSUPPORTED;
++    }
++
++    session->ctx->synchronize();
++    const size_t read = llama_state_seq_set_data_ext(
++            session->ctx,
++            static_cast<const uint8_t *>(input),
++            input_bytes,
++            session->seq_id,
++            LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
++    if (read != input_bytes) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "failed to import recurrent state");
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
++static llama_kv_cache * skippy_get_kv_cache(
++        skippy_session * session,
++        skippy_error ** out_error) {
++    if (session == nullptr || session->ctx == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "session is required");
++        return nullptr;
++    }
++
++    llama_memory_t memory = session->ctx->get_memory();
++    if (memory == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, "runtime memory is unavailable");
++        return nullptr;
++    }
++
++    if (auto * hybrid = dynamic_cast<llama_memory_hybrid *>(memory)) {
++        llama_kv_cache * kv = hybrid->get_mem_attn();
++        if (kv == nullptr) {
++            skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime has no attention KV cache");
++        }
++        return kv;
++    }
++    if (auto * kv = dynamic_cast<llama_kv_cache *>(memory)) {
++        return kv;
++    }
++
++    skippy_set_error(out_error, SKIPPY_STATUS_UNSUPPORTED, "runtime memory type is not supported for native KV pages");
++    return nullptr;
++}
++
++enum skippy_status skippy_export_kv_page(
++        struct skippy_session * session,
++        int32_t layer_start,
++        int32_t layer_end,
++        uint64_t token_start,
++        uint64_t token_count,
++        struct skippy_kv_page_desc * out_desc,
++        void * output,
++        size_t output_capacity,
++        size_t * out_bytes,
++        struct skippy_error ** out_error) {
++    llama_kv_cache * kv = skippy_get_kv_cache(session, out_error);
++    if (kv == nullptr) {
++        return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->ctx->synchronize();
++
++    std::string error;
++    const bool ok = kv->stage_export_kv_page(
++            session->seq_id,
++            layer_start,
++            layer_end,
++            token_start,
++            token_count,
++            out_desc,
++            output,
++            output_capacity,
++            out_bytes,
++            error);
++    if (!ok) {
++        const bool too_small = out_bytes != nullptr && *out_bytes > output_capacity;
++        const enum skippy_status status = too_small ? SKIPPY_STATUS_BUFFER_TOO_SMALL : SKIPPY_STATUS_RUNTIME_ERROR;
++        skippy_set_error(out_error, status, error.c_str());
++        return status;
++    }
++    if (output == nullptr || (out_bytes != nullptr && *out_bytes > output_capacity)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_BUFFER_TOO_SMALL, "native KV page output buffer is too small");
++        return SKIPPY_STATUS_BUFFER_TOO_SMALL;
++    }
++
++    return skippy_success(out_error);
++}
++
++enum skippy_status skippy_import_kv_page(
++        struct skippy_session * session,
++        const struct skippy_kv_page_desc * desc,
++        const void * input,
++        size_t input_bytes,
++        struct skippy_error ** out_error) {
++    if (desc == nullptr) {
++        skippy_set_error(out_error, SKIPPY_STATUS_INVALID_ARGUMENT, "native KV page descriptor is required");
++        return SKIPPY_STATUS_INVALID_ARGUMENT;
++    }
++
++    llama_kv_cache * kv = skippy_get_kv_cache(session, out_error);
++    if (kv == nullptr) {
++        return out_error != nullptr && *out_error != nullptr ? (*out_error)->status : SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++
++    std::string error;
++    if (!kv->stage_import_kv_page(session->seq_id, *desc, input, input_bytes, error)) {
++        skippy_set_error(out_error, SKIPPY_STATUS_RUNTIME_ERROR, error.c_str());
++        return SKIPPY_STATUS_RUNTIME_ERROR;
++    }
++    session->n_past = std::max<int32_t>(
++            session->n_past,
++            static_cast<int32_t>(std::min<uint64_t>(
++                    desc->token_start + desc->token_count,
++                    static_cast<uint64_t>(std::numeric_limits<int32_t>::max()))));
++    session->ctx->synchronize();
++
++    return skippy_success(out_error);
++}
++
+ enum skippy_status skippy_trim_session(
+         struct skippy_session * session,
+         uint64_t token_count,
+-- 
+2.50.1 (Apple Git-155)

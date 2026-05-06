@@ -1,0 +1,35 @@
+From 527bb48e51d93c51079fda2b1acfd50af99214d5 Mon Sep 17 00:00:00 2001
+From: Mesh-LLM CI <ci@mesh-llm.local>
+Date: Wed, 6 May 2026 11:36:50 +1000
+Subject: [PATCH 46/46] Remap recurrent state imports to active session
+
+---
+ src/skippy.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/skippy.cpp b/src/skippy.cpp
+index 4486ad78..e17b59e4 100644
+--- a/src/skippy.cpp
++++ b/src/skippy.cpp
+@@ -2635,11 +2635,17 @@ enum skippy_status skippy_import_recurrent_state(
+         return SKIPPY_STATUS_UNSUPPORTED;
+     }
+ 
++    std::vector<uint8_t> remapped(input_bytes);
++    std::memcpy(remapped.data(), input, input_bytes);
++    if (input_bytes >= sizeof(uint32_t) + sizeof(session->seq_id)) {
++        std::memcpy(remapped.data() + sizeof(uint32_t), &session->seq_id, sizeof(session->seq_id));
++    }
++
+     session->ctx->synchronize();
+     const size_t read = llama_state_seq_set_data_ext(
+             session->ctx,
+-            static_cast<const uint8_t *>(input),
+-            input_bytes,
++            remapped.data(),
++            remapped.size(),
+             session->seq_id,
+             LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+     if (read != input_bytes) {
+-- 
+2.50.1 (Apple Git-155)

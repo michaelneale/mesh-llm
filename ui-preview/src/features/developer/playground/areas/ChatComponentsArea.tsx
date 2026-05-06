@@ -15,11 +15,12 @@ type TransparencyPreview = 'empty' | 'user' | 'assistant'
 export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState }) {
   const transparencyTabEnabled = useBooleanFeatureFlag('chat/transparencyTab')
   const [transparencyPreview, setTransparencyPreview] = useState<TransparencyPreview>('empty')
-  const transparencyMessage = transparencyPreview === 'user'
-    ? state.activeUserMessage?.inspectMessage
-    : transparencyPreview === 'assistant'
-      ? state.activeAssistantMessage?.inspectMessage
-      : undefined
+  const transparencyMessage =
+    transparencyPreview === 'user'
+      ? state.activeUserMessage?.inspectMessage
+      : transparencyPreview === 'assistant'
+        ? state.activeAssistantMessage?.inspectMessage
+        : undefined
 
   return (
     <SidebarTabs
@@ -34,7 +35,7 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
               <PlaygroundPanel
                 title="Chat preview controls"
                 description="Edit the header and message copy that drive the preview so sidebar, rows, transparency, and composer stay in sync."
-                actions={(
+                actions={
                   <button
                     className="ui-control inline-flex items-center rounded-[var(--radius)] border px-2.5 py-1 text-[length:var(--density-type-caption)] font-medium"
                     onClick={() => state.setPrompt('Draft a short onboarding note for a new mesh peer.')}
@@ -42,19 +43,37 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                   >
                     Load sample prompt
                   </button>
-                )}
+                }
               >
                 <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
                   <div className="space-y-3">
                     <TextField label="Header title" value={state.chatHeaderTitle} onChange={state.setChatHeaderTitle} />
-                    <TextField label="Conversation label" value={state.activeDraft.conversationLabel} onChange={(value) => state.updateActiveChatDraft('conversationLabel', value)} />
-                    <TextAreaField label="User message" rows={3} value={state.activeDraft.userBody} onChange={(value) => state.updateActiveChatDraft('userBody', value)} />
-                    <TextAreaField label="Assistant message" rows={4} value={state.activeDraft.assistantBody} onChange={(value) => state.updateActiveChatDraft('assistantBody', value)} />
+                    <TextField
+                      label="Conversation label"
+                      value={state.activeDraft.conversationLabel}
+                      onChange={(value) => state.updateActiveChatDraft('conversationLabel', value)}
+                    />
+                    <TextAreaField
+                      label="User message"
+                      rows={3}
+                      value={state.activeDraft.userBody}
+                      onChange={(value) => state.updateActiveChatDraft('userBody', value)}
+                    />
+                    <TextAreaField
+                      label="Assistant message"
+                      rows={4}
+                      value={state.activeDraft.assistantBody}
+                      onChange={(value) => state.updateActiveChatDraft('assistantBody', value)}
+                    />
                   </div>
                   <div className="rounded-[var(--radius)] border border-border bg-background px-3 py-2.5">
                     <div className="type-label text-fg-faint">Active thread</div>
-                    <div className="mt-2 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">{state.activeDraft.conversationLabel}</div>
-                    <div className="mt-1 text-[length:var(--density-type-caption)] text-fg-dim">Use the sidebar to swap threads. Edits only affect the current preview.</div>
+                    <div className="mt-2 font-mono text-[length:var(--density-type-caption-lg)] text-foreground">
+                      {state.activeDraft.conversationLabel}
+                    </div>
+                    <div className="mt-1 text-[length:var(--density-type-caption)] text-fg-dim">
+                      Use the sidebar to swap threads. Edits only affect the current preview.
+                    </div>
                   </div>
                 </div>
               </PlaygroundPanel>
@@ -77,18 +96,28 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                     state.setSidebarTab('conversations')
                   }}
                   showTransparency={transparencyTabEnabled}
-                  transparency={<TransparencyPane message={state.inspectedMessage} nodes={CHAT_HARNESS.transparencyNodes} />}
+                  transparency={
+                    <TransparencyPane message={state.inspectedMessage} nodes={CHAT_HARNESS.transparencyNodes} />
+                  }
                 />
 
                 <section className="flex min-h-0 flex-col overflow-hidden rounded-[var(--radius-lg)] border border-border bg-panel">
                   <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft px-3.5 py-2.5">
                     <div>
                       <h2 className="type-panel-title text-foreground">{state.chatHeaderTitle}</h2>
-                      <div className="mt-1 text-[length:var(--density-type-label)] text-fg-faint">{state.activeDraft.conversationLabel}</div>
+                      <div className="mt-1 text-[length:var(--density-type-label)] text-fg-faint">
+                        {state.activeDraft.conversationLabel}
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-[length:var(--density-type-caption)] text-fg-faint">{CHAT_HARNESS.modelLabel}</span>
-                      <ModelSelect options={state.chatOptions} value={state.selectedChatModel} onChange={state.setSelectedChatModel} />
+                      <span className="text-[length:var(--density-type-caption)] text-fg-faint">
+                        {CHAT_HARNESS.modelLabel}
+                      </span>
+                      <ModelSelect
+                        options={state.chatOptions}
+                        value={state.selectedChatModel}
+                        onChange={state.setSelectedChatModel}
+                      />
                     </div>
                   </header>
                   <div className="flex-1 space-y-4 overflow-auto px-5 py-4">
@@ -96,14 +125,18 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                       <MessageRow
                         key={message.id}
                         body={message.body}
-                        inspect={transparencyTabEnabled && message.inspectMessage
-                          ? () => {
-                              state.setInspectedMessage(message.inspectMessage)
-                              state.setSidebarTab('transparency')
-                            }
-                          : undefined}
+                        inspect={
+                          transparencyTabEnabled && message.inspectMessage
+                            ? () => {
+                                state.setInspectedMessage(message.inspectMessage)
+                                state.setSidebarTab('transparency')
+                              }
+                            : undefined
+                        }
                         inspectLabel={message.inspectLabel}
-                        inspected={Boolean(message.inspectMessage && state.inspectedMessage?.id === message.inspectMessage.id)}
+                        inspected={Boolean(
+                          message.inspectMessage && state.inspectedMessage?.id === message.inspectMessage.id
+                        )}
                         messageRole={message.messageRole}
                         model={message.model}
                         route={message.route}
@@ -122,7 +155,7 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                 </section>
               </div>
             </>
-          ),
+          )
         },
         {
           value: 'rows',
@@ -134,34 +167,43 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
             >
               <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                 <div className="space-y-4">
-                  {state.previewMessages.filter((message) => message.id === state.activeUserMessage?.id || message.id === state.activeAssistantMessage?.id).map((message) => (
-                    <MessageRow
-                      key={message.id}
-                      body={message.body}
-                      inspect={transparencyTabEnabled && message.inspectMessage
-                        ? () => {
-                            state.setInspectedMessage(message.inspectMessage)
-                            state.setSidebarTab('transparency')
-                          }
-                        : undefined}
-                      inspectLabel={message.inspectLabel}
-                      inspected={Boolean(message.inspectMessage && state.inspectedMessage?.id === message.inspectMessage.id)}
-                      messageRole={message.messageRole}
-                      model={message.model}
-                      route={message.route}
-                      routeNode={message.routeNode}
-                      showRouteMetadata={transparencyTabEnabled}
-                      timestamp={message.timestamp}
-                      tokens={message.tokens}
-                      tokPerSec={message.tokPerSec}
-                      ttft={message.ttft}
-                    />
-                  ))}
+                  {state.previewMessages
+                    .filter(
+                      (message) =>
+                        message.id === state.activeUserMessage?.id || message.id === state.activeAssistantMessage?.id
+                    )
+                    .map((message) => (
+                      <MessageRow
+                        key={message.id}
+                        body={message.body}
+                        inspect={
+                          transparencyTabEnabled && message.inspectMessage
+                            ? () => {
+                                state.setInspectedMessage(message.inspectMessage)
+                                state.setSidebarTab('transparency')
+                              }
+                            : undefined
+                        }
+                        inspectLabel={message.inspectLabel}
+                        inspected={Boolean(
+                          message.inspectMessage && state.inspectedMessage?.id === message.inspectMessage.id
+                        )}
+                        messageRole={message.messageRole}
+                        model={message.model}
+                        route={message.route}
+                        routeNode={message.routeNode}
+                        showRouteMetadata={transparencyTabEnabled}
+                        timestamp={message.timestamp}
+                        tokens={message.tokens}
+                        tokPerSec={message.tokPerSec}
+                        ttft={message.ttft}
+                      />
+                    ))}
                 </div>
                 <TransparencyPane message={state.inspectedMessage} nodes={CHAT_HARNESS.transparencyNodes} />
               </div>
             </PlaygroundPanel>
-          ),
+          )
         },
         {
           value: 'states',
@@ -173,9 +215,21 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                 description="Switch between empty, outbound user, and inbound assistant transparency payloads without depending on message-row clicks."
               >
                 <div className="mb-4 flex flex-wrap gap-1.5">
-                  <ToggleChip label="No message" pressed={transparencyPreview === 'empty'} onToggle={() => setTransparencyPreview('empty')} />
-                  <ToggleChip label="User route" pressed={transparencyPreview === 'user'} onToggle={() => setTransparencyPreview('user')} />
-                  <ToggleChip label="Assistant route" pressed={transparencyPreview === 'assistant'} onToggle={() => setTransparencyPreview('assistant')} />
+                  <ToggleChip
+                    label="No message"
+                    pressed={transparencyPreview === 'empty'}
+                    onToggle={() => setTransparencyPreview('empty')}
+                  />
+                  <ToggleChip
+                    label="User route"
+                    pressed={transparencyPreview === 'user'}
+                    onToggle={() => setTransparencyPreview('user')}
+                  />
+                  <ToggleChip
+                    label="Assistant route"
+                    pressed={transparencyPreview === 'assistant'}
+                    onToggle={() => setTransparencyPreview('assistant')}
+                  />
                 </div>
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
                   <div className="space-y-4">
@@ -213,9 +267,15 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                   <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft px-3.5 py-2.5">
                     <div>
                       <h2 className="type-panel-title text-foreground">{state.chatHeaderTitle}</h2>
-                      <div className="mt-1 text-[length:var(--density-type-label)] text-fg-faint">Unavailable live transport preview</div>
+                      <div className="mt-1 text-[length:var(--density-type-label)] text-fg-faint">
+                        Unavailable live transport preview
+                      </div>
                     </div>
-                    <ModelSelect options={state.chatOptions} value={state.selectedChatModel} onChange={state.setSelectedChatModel} />
+                    <ModelSelect
+                      options={state.chatOptions}
+                      value={state.selectedChatModel}
+                      onChange={state.setSelectedChatModel}
+                    />
                   </header>
                   <div className="flex-1 space-y-4 overflow-auto px-5 py-4">
                     {state.previewMessages.slice(0, 2).map((message) => (
@@ -237,8 +297,8 @@ export function ChatComponentsArea({ state }: { state: DeveloperPlaygroundState 
                 </section>
               </LiveDataUnavailableOverlay>
             </>
-          ),
-        },
+          )
+        }
       ]}
     />
   )

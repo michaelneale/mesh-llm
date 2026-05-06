@@ -3,7 +3,10 @@ import { useState } from 'react'
 import { Footer } from '@/features/shell/components/Footer'
 import { TopNav } from '@/features/shell/components/TopNav'
 import { PreferencesPanel } from '@/features/shell/components/PreferencesPanel'
-import { isConfigurationTabId, type ConfigurationTabId } from '@/features/configuration/components/configuration-tab-ids'
+import {
+  isConfigurationTabId,
+  type ConfigurationTabId
+} from '@/features/configuration/components/configuration-tab-ids'
 import { DEFAULT_DEVELOPER_PLAYGROUND_TAB } from '@/features/developer/playground/developer-playground-tabs'
 import { useUIPreferences } from '@/features/shell/hooks/useUiPreferences'
 import { SHELL_HARNESS } from '@/features/app-tabs/data'
@@ -37,7 +40,7 @@ function tabHrefsForPath(pathname: string) {
   return {
     network: hrefWithBasePath('/'),
     chat: hrefWithBasePath('/chat'),
-    configuration: hrefWithBasePath(configurationTabHref(pathname)),
+    configuration: hrefWithBasePath(configurationTabHref(pathname))
   }
 }
 
@@ -63,7 +66,10 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           onTabChange={(tab) => {
             if (tab === 'configuration' && !newConfigurationPageEnabled) return
             if (tab === 'configuration') {
-              void router.navigate({ to: '/configuration/$configurationTab', params: { configurationTab: pathToConfigurationTab(pathname) ?? 'defaults' } })
+              void router.navigate({
+                to: '/configuration/$configurationTab',
+                params: { configurationTab: pathToConfigurationTab(pathname) ?? 'defaults' }
+              })
               return
             }
 
@@ -79,11 +85,13 @@ export function RootLayout({ data = SHELL_HARNESS }: RootLayoutProps = {}) {
           joinCommands={data.topNavJoinCommands}
           joinLinks={data.topNavJoinLinks}
           showDeveloperPlayground={import.meta.env.DEV}
-          onOpenDeveloperPlayground={import.meta.env.DEV
-            ? () => {
-                void router.navigate({ to: '/__playground', search: { tab: DEFAULT_DEVELOPER_PLAYGROUND_TAB } })
-              }
-            : undefined}
+          onOpenDeveloperPlayground={
+            import.meta.env.DEV
+              ? () => {
+                  void router.navigate({ to: '/__playground', search: { tab: DEFAULT_DEVELOPER_PLAYGROUND_TAB } })
+                }
+              : undefined
+          }
           onOpenIdentity={() => setPreferencesOpen(true)}
         />
         <PreferencesPanel

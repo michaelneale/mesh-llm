@@ -30,7 +30,7 @@ function createMode({
   id,
   label,
   source,
-  onSelect = vi.fn(),
+  onSelect = vi.fn()
 }: {
   id: string
   label: string
@@ -45,11 +45,13 @@ function createMode({
     getItemKey: (item) => item.id,
     getSearchText: (item) => item.label,
     getKeywords: (item) => item.keywords ?? [],
-    onSelect,
+    onSelect
   }
 }
 
-function renderCommandBar(props: Partial<CommandBarModalProps<TestItem>> & { modes: readonly CommandBarMode<TestItem>[] }) {
+function renderCommandBar(
+  props: Partial<CommandBarModalProps<TestItem>> & { modes: readonly CommandBarMode<TestItem>[] }
+) {
   render(
     <CommandBarProvider>
       <OpenCommandBarButton />
@@ -59,11 +61,11 @@ function renderCommandBar(props: Partial<CommandBarModalProps<TestItem>> & { mod
         description="Search available results."
         {...props}
       />
-    </CommandBarProvider>,
+    </CommandBarProvider>
   )
 
   return {
-    openButton: screen.getByRole('button', { name: 'Open command bar' }) as HTMLButtonElement,
+    openButton: screen.getByRole('button', { name: 'Open command bar' }) as HTMLButtonElement
   }
 }
 
@@ -101,15 +103,15 @@ describe('CommandBarModal', () => {
         createMode({
           id: 'models',
           label: 'Models',
-          source: [{ id: 'phi', label: 'Phi-4 Mini' }],
+          source: [{ id: 'phi', label: 'Phi-4 Mini' }]
         }),
         createMode({
           id: 'actions',
           label: 'Actions',
-          source: [{ id: 'reload', label: 'Reload settings' }],
-        }),
+          source: [{ id: 'reload', label: 'Reload settings' }]
+        })
       ],
-      title: 'Model catalog',
+      title: 'Model catalog'
     })
 
     await openCommandBar(user)
@@ -127,15 +129,17 @@ describe('CommandBarModal', () => {
 
     renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        source: [
-          { id: 'alpha', label: 'Alpha' },
-          { id: 'beta', label: 'Beta', keywords: ['alpine'] },
-          { id: 'zalpha', label: 'Zalpha' },
-        ],
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          source: [
+            { id: 'alpha', label: 'Alpha' },
+            { id: 'beta', label: 'Beta', keywords: ['alpine'] },
+            { id: 'zalpha', label: 'Zalpha' }
+          ]
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -157,18 +161,18 @@ describe('CommandBarModal', () => {
           label: 'Models',
           source: [
             { id: 'phi', label: 'Phi-4 Mini' },
-            { id: 'qwen', label: 'Qwen 3' },
-          ],
+            { id: 'qwen', label: 'Qwen 3' }
+          ]
         }),
         createMode({
           id: 'actions',
           label: 'Actions',
           source: [
             { id: 'reload', label: 'Reload settings' },
-            { id: 'save', label: 'Save configuration' },
-          ],
-        }),
-      ],
+            { id: 'save', label: 'Save configuration' }
+          ]
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -178,7 +182,7 @@ describe('CommandBarModal', () => {
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Command bar search' }), {
       key: '2',
       ctrlKey: true,
-      bubbles: true,
+      bubbles: true
     })
 
     await waitFor(() => {
@@ -194,15 +198,17 @@ describe('CommandBarModal', () => {
 
     renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        onSelect,
-        source: [
-          { id: 'phi', label: 'Phi-4 Mini' },
-          { id: 'qwen', label: 'Qwen 3' },
-        ],
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          onSelect,
+          source: [
+            { id: 'phi', label: 'Phi-4 Mini' },
+            { id: 'qwen', label: 'Qwen 3' }
+          ]
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -219,11 +225,13 @@ describe('CommandBarModal', () => {
 
     renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        source: vi.fn(() => deferred.promise),
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          source: vi.fn(() => deferred.promise)
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -243,13 +251,15 @@ describe('CommandBarModal', () => {
 
     renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        source: vi.fn(async () => {
-          throw new Error('Network unavailable')
-        }),
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          source: vi.fn(async () => {
+            throw new Error('Network unavailable')
+          })
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -265,16 +275,18 @@ describe('CommandBarModal', () => {
 
     const { openButton } = renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        source: vi.fn((query, signal) => {
-          const deferred = createDeferred<readonly TestItem[]>()
-          deferredByQuery.set(query, deferred)
-          signalByQuery.set(query, signal)
-          return deferred.promise
-        }),
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          source: vi.fn((query, signal) => {
+            const deferred = createDeferred<readonly TestItem[]>()
+            deferredByQuery.set(query, deferred)
+            signalByQuery.set(query, signal)
+            return deferred.promise
+          })
+        })
+      ]
     })
 
     fireEvent.click(openButton)
@@ -311,14 +323,16 @@ describe('CommandBarModal', () => {
 
     renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        onSelect: () => {
-          throw new Error('Selection failed')
-        },
-        source: [{ id: 'phi', label: 'Phi-4 Mini' }],
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          onSelect: () => {
+            throw new Error('Selection failed')
+          },
+          source: [{ id: 'phi', label: 'Phi-4 Mini' }]
+        })
+      ]
     })
 
     await openCommandBar(user)
@@ -333,11 +347,13 @@ describe('CommandBarModal', () => {
 
     const { openButton } = renderCommandBar({
       behavior: 'distinct',
-      modes: [createMode({
-        id: 'models',
-        label: 'Models',
-        source: [{ id: 'phi', label: 'Phi-4 Mini' }],
-      })],
+      modes: [
+        createMode({
+          id: 'models',
+          label: 'Models',
+          source: [{ id: 'phi', label: 'Phi-4 Mini' }]
+        })
+      ]
     })
 
     await openCommandBar(user)

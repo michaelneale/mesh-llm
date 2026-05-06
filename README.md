@@ -91,7 +91,7 @@ just build
 
 Requires: `just`, `cmake`, Rust toolchain, Node.js 24 + npm. NVIDIA GPU builds need `nvcc` (CUDA toolkit). AMD GPU builds need ROCm/HIP. Vulkan GPU builds need the Vulkan development files plus `glslc`. CPU-only and Jetson/Tegra also work. For source builds, `just build` auto-detects CUDA vs ROCm vs Vulkan on Linux, or you can force `backend=rocm` or `backend=vulkan`. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-Windows source builds are also supported for `cuda`, `rocm`/`hip`, `vulkan`, and `cpu` via `just build`. Metal remains macOS-only. Tagged stable GitHub releases publish macOS bundles plus Linux CPU, Linux ARM64 CPU, Linux CUDA, Linux ROCm, and Linux Vulkan bundles. Prereleases use the same workflow and can optionally skip the Linux CUDA, Linux ROCm, and Linux Vulkan bundles. The Linux ARM64 CPU artifact is `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`. In install and release contexts, `arm64` and `aarch64` mean the same 64-bit ARM target, and generic 32-bit ARM is not a published release target. Windows publish jobs are currently commented out in `.github/workflows/release.yml`, but you can still generate the matching local Windows artifacts with `just release-build-windows`, `just release-build-cuda-windows`, `just release-build-rocm-windows`, `just release-build-vulkan-windows`, and the matching `release-bundle-*-windows` recipes.
+Windows source builds are also supported for `cuda`, `rocm`/`hip`, `vulkan`, and `cpu` via `just build`. Metal remains macOS-only. Tagged stable GitHub releases publish macOS bundles plus Linux CPU, Linux ARM64 CPU, Linux CUDA, Linux CUDA Blackwell, Linux ROCm, and Linux Vulkan bundles. Prereleases use the same workflow and can optionally skip the Linux CUDA, CUDA Blackwell, ROCm, and Vulkan bundles. The Linux ARM64 CPU artifact is `mesh-llm-aarch64-unknown-linux-gnu.tar.gz`. In install and release contexts, `arm64` and `aarch64` mean the same 64-bit ARM target, and generic 32-bit ARM is not a published release target. Windows publish jobs are currently commented out in `.github/workflows/release.yml`, but you can still generate the matching local Windows artifacts with `just release-build-windows`, `just release-build-cuda-windows`, `just release-build-cuda-blackwell-windows`, `just release-build-rocm-windows`, `just release-build-vulkan-windows`, and the matching `release-bundle-*-windows` recipes.
 
 ## Run
 Once installed, you can run:
@@ -555,7 +555,7 @@ curl -fsSL https://raw.githubusercontent.com/Mesh-LLM/mesh-llm/main/install.sh |
 Installed release bundles use flavor-specific llama.cpp binaries:
 
 - macOS: `metal`
-- Linux: `cpu`, `cuda`, `rocm`, `vulkan`
+- Linux: `cpu`, `cuda` (primary CUDA lane, built on the CUDA 12.6.3 toolkit; compatible with NVIDIA R535+ drivers; sm_75..sm_90 Turing–Hopper), `cuda-blackwell` (Blackwell lane, built on the CUDA 12.8 toolkit; requires R550+ drivers; adds sm_100/120 — sm_103 is a later CUDA release), `rocm`, `vulkan`
 - Linux ARM64 CPU: `cpu` (asset triple: `aarch64-unknown-linux-gnu`)
 
 For release and install naming, `arm64` and `aarch64` both refer to the same 64-bit ARM target. Generic 32-bit ARM is not a published release target.

@@ -23,11 +23,9 @@ use super::snapshots::{
 use super::subscriptions::{
     RuntimeDataDirty, RuntimeDataSubscriptionState, RuntimeDataSubscriptions,
 };
-use super::RuntimeLlamaRuntimeSnapshot;
-#[cfg(test)]
 use super::{
     RuntimeLlamaMetricItem, RuntimeLlamaMetricsSnapshot, RuntimeLlamaRuntimeItems,
-    RuntimeLlamaSlotItem, RuntimeLlamaSlotsSnapshot,
+    RuntimeLlamaRuntimeSnapshot, RuntimeLlamaSlotItem, RuntimeLlamaSlotsSnapshot,
 };
 use crate::api::status::{
     build_gpus, build_ownership_payload, LocalInstance, MeshModelPayload, NodeState, PeerPayload,
@@ -39,7 +37,7 @@ use crate::network::metrics::RoutingCollectorSnapshot;
 use crate::plugin::PluginEndpointSummary;
 use crate::runtime::instance::LocalInstanceSnapshot;
 use crate::runtime::wakeable::{WakeableInventoryEntry, WakeableState};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
@@ -104,6 +102,12 @@ impl RuntimeDataCollector {
         self.runtime_status_snapshot().llama_runtime
     }
 
+    pub(crate) fn runtime_llama_snapshots_by_model(
+        &self,
+    ) -> BTreeMap<String, RuntimeLlamaRuntimeSnapshot> {
+        self.runtime_status_snapshot().llama_runtime_by_model
+    }
+
     pub(crate) fn routing_snapshot(&self) -> RoutingCollectorSnapshot {
         self.snapshots().routing
     }
@@ -133,30 +137,58 @@ impl RuntimeDataCollector {
         self.update_runtime_status(RuntimeDataDirty::RUNTIME, |runtime_status| {
             let next_items =
                 build_llama_runtime_items(&snapshot, &runtime_status.llama_runtime.slots);
-            if runtime_status.llama_runtime.metrics == snapshot
-                && runtime_status.llama_runtime.items == next_items
+            let mut changed = false;
+            if runtime_status.llama_runtime.metrics != snapshot
+                || runtime_status.llama_runtime.items != next_items
             {
-                return false;
+                runtime_status.llama_runtime.metrics = snapshot.clone();
+                runtime_status.llama_runtime.items = next_items;
+                changed = true;
             }
-            runtime_status.llama_runtime.metrics = snapshot;
-            runtime_status.llama_runtime.items = next_items;
-            true
+
+            for runtime in runtime_status.llama_runtime_by_model.values_mut() {
+                let next_items = build_llama_runtime_items(&snapshot, &runtime.slots);
+                if runtime.metrics != snapshot || runtime.items != next_items {
+                    runtime.metrics = snapshot.clone();
+                    runtime.items = next_items;
+                    changed = true;
+                }
+            }
+
+            let selected = select_runtime_llama_projection(runtime_status);
+            if runtime_status.llama_runtime != selected {
+                runtime_status.llama_runtime = selected;
+                changed = true;
+            }
+            changed
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn replace_llama_slots_snapshot(&self, snapshot: RuntimeLlamaSlotsSnapshot) -> bool {
         self.update_runtime_status(RuntimeDataDirty::RUNTIME, |runtime_status| {
-            let next_items =
-                build_llama_runtime_items(&runtime_status.llama_runtime.metrics, &snapshot);
-            if runtime_status.llama_runtime.slots == snapshot
-                && runtime_status.llama_runtime.items == next_items
-            {
-                return false;
+            let next_runtime =
+                build_llama_runtime_snapshot(&runtime_status.llama_runtime.metrics, snapshot);
+            let mut changed = false;
+
+            if let Some(model) = next_runtime.slots.model.clone() {
+                if runtime_status.llama_runtime_by_model.get(&model) != Some(&next_runtime) {
+                    runtime_status
+                        .llama_runtime_by_model
+                        .insert(model, next_runtime);
+                    changed = true;
+                }
+
+                let selected = select_runtime_llama_projection(runtime_status);
+                if runtime_status.llama_runtime != selected {
+                    runtime_status.llama_runtime = selected;
+                    changed = true;
+                }
+            } else if runtime_status.llama_runtime != next_runtime {
+                runtime_status.llama_runtime = next_runtime;
+                changed = true;
             }
-            runtime_status.llama_runtime.slots = snapshot;
-            runtime_status.llama_runtime.items = next_items;
-            true
+
+            changed
         })
     }
 
@@ -650,7 +682,6 @@ impl RuntimeDataCollector {
     }
 }
 
-#[cfg(test)]
 fn build_llama_runtime_items(
     metrics: &RuntimeLlamaMetricsSnapshot,
     slots: &RuntimeLlamaSlotsSnapshot,
@@ -681,6 +712,53 @@ fn build_llama_runtime_items(
         slots_busy: slot_items.iter().filter(|slot| slot.is_processing).count(),
         slots: slot_items,
     }
+}
+
+fn build_llama_runtime_snapshot(
+    metrics: &RuntimeLlamaMetricsSnapshot,
+    slots: RuntimeLlamaSlotsSnapshot,
+) -> RuntimeLlamaRuntimeSnapshot {
+    RuntimeLlamaRuntimeSnapshot {
+        items: build_llama_runtime_items(metrics, &slots),
+        metrics: metrics.clone(),
+        slots,
+    }
+}
+
+fn select_runtime_llama_projection(
+    runtime_status: &RuntimeStatusSnapshot,
+) -> RuntimeLlamaRuntimeSnapshot {
+    if let Some(primary_ready) = runtime_status
+        .primary_model
+        .as_ref()
+        .and_then(|model| runtime_status.llama_runtime_by_model.get(model))
+        .filter(|snapshot| snapshot.slots.status == super::RuntimeLlamaEndpointStatus::Ready)
+    {
+        return primary_ready.clone();
+    }
+
+    if let Some((_, ready)) = runtime_status
+        .llama_runtime_by_model
+        .iter()
+        .find(|(_, snapshot)| snapshot.slots.status == super::RuntimeLlamaEndpointStatus::Ready)
+    {
+        return ready.clone();
+    }
+
+    if let Some(primary) = runtime_status
+        .primary_model
+        .as_ref()
+        .and_then(|model| runtime_status.llama_runtime_by_model.get(model))
+    {
+        return primary.clone();
+    }
+
+    runtime_status
+        .llama_runtime_by_model
+        .iter()
+        .next()
+        .map(|(_, snapshot)| snapshot.clone())
+        .unwrap_or_else(|| runtime_status.llama_runtime.clone())
 }
 
 struct RuntimeStatusDerivationInput<'a> {

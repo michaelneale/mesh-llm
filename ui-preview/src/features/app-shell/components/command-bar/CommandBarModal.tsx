@@ -7,7 +7,7 @@ import {
   useEffect,
   useId,
   useMemo,
-  useRef,
+  useRef
 } from 'react'
 import { cn } from '@/lib/cn'
 import { CommandBarResultsList } from './CommandBarResultsList'
@@ -16,13 +16,13 @@ import {
   filterCommandBarResults,
   getCommandBarErrorMessage,
   getCommandBarOptionId,
-  resolveCommandBarActiveIndex,
+  resolveCommandBarActiveIndex
 } from './command-bar-helpers'
 import type {
   CommandBarBehavior,
   CommandBarMode,
   CommandBarNormalizedResult,
-  CommandBarResultContainerProps,
+  CommandBarResultContainerProps
 } from './command-bar-types'
 import { useCommandBarAsyncResults } from './useCommandBarAsyncResults'
 import { useCommandBar } from './useCommandBar'
@@ -59,7 +59,7 @@ export function CommandBarModal<T>({
   interstitial,
   onClose,
   overlayClassName,
-  contentClassName,
+  contentClassName
 }: CommandBarModalProps<T>) {
   const {
     activeIndex,
@@ -72,7 +72,7 @@ export function CommandBarModal<T>({
     setActiveIndex,
     setActiveModeId,
     setQuery,
-    setSelectionError,
+    setSelectionError
   } = useCommandBar()
   const inputRef = useRef<HTMLInputElement>(null)
   const listboxId = useId()
@@ -90,22 +90,25 @@ export function CommandBarModal<T>({
     modeById,
     modes,
     query,
-    resolvedDistinctModeId,
+    resolvedDistinctModeId
   })
-  const activeMode = resolvedDistinctModeId ? modeById.get(resolvedDistinctModeId) ?? null : null
+  const activeMode = resolvedDistinctModeId ? (modeById.get(resolvedDistinctModeId) ?? null) : null
   const LeadingIcon = activeMode?.leadingIcon ?? fallbackIcon
   const results = useMemo(
-    () => filterCommandBarResults({
-      modes: resolvedModes,
-      behavior,
-      query,
-      activeModeId: resolvedDistinctModeId,
-      defaultModeId,
-    }),
-    [behavior, defaultModeId, query, resolvedDistinctModeId, resolvedModes],
+    () =>
+      filterCommandBarResults({
+        modes: resolvedModes,
+        behavior,
+        query,
+        activeModeId: resolvedDistinctModeId,
+        defaultModeId
+      }),
+    [behavior, defaultModeId, query, resolvedDistinctModeId, resolvedModes]
   )
-  const activeOptionId = activeIndex >= 0 ? getCommandBarOptionId(listboxId, results[activeIndex]?.compositeKey ?? '') : undefined
-  const ResultContainer = behavior === 'distinct' ? activeMode?.ResultContainer ?? DefaultResultContainer : DefaultResultContainer
+  const activeOptionId =
+    activeIndex >= 0 ? getCommandBarOptionId(listboxId, results[activeIndex]?.compositeKey ?? '') : undefined
+  const ResultContainer =
+    behavior === 'distinct' ? (activeMode?.ResultContainer ?? DefaultResultContainer) : DefaultResultContainer
   const showModeChips = behavior === 'distinct' && modes.length > 1
   const showModeShortcutHint = behavior === 'distinct' && modes.length > 1
   const modeShortcutHint = `${shortcutPrefix}1-${modes.length}`
@@ -117,33 +120,39 @@ export function CommandBarModal<T>({
       tabIndex: 0,
       'aria-label': 'Command bar results',
       'aria-activedescendant': activeOptionId,
-      className: 'overflow-hidden rounded-[var(--radius-lg)] border border-border bg-background',
+      className: 'overflow-hidden rounded-[var(--radius-lg)] border border-border bg-background'
     }),
-    [activeOptionId, listboxId],
+    [activeOptionId, listboxId]
   )
   const requestClose = useCallback(() => {
     closeCommandBar()
     onClose?.()
   }, [closeCommandBar, onClose])
 
-  const handleModeSwitch = useCallback((modeId: string) => {
-    setSelectionError(null)
-    setActiveModeId(modeId)
-  }, [setActiveModeId, setSelectionError])
+  const handleModeSwitch = useCallback(
+    (modeId: string) => {
+      setSelectionError(null)
+      setActiveModeId(modeId)
+    },
+    [setActiveModeId, setSelectionError]
+  )
 
-  const handleSelectResult = useCallback(async (result: CommandBarNormalizedResult<T>) => {
-    const mode = modeById.get(result.modeId)
-    if (!mode) return
+  const handleSelectResult = useCallback(
+    async (result: CommandBarNormalizedResult<T>) => {
+      const mode = modeById.get(result.modeId)
+      if (!mode) return
 
-    setSelectionError(null)
+      setSelectionError(null)
 
-    try {
-      const shouldClose = await Promise.resolve(mode.onSelect(result.item))
-      if (shouldClose !== false) requestClose()
-    } catch (error) {
-      setSelectionError(getCommandBarErrorMessage(error))
-    }
-  }, [modeById, requestClose, setSelectionError])
+      try {
+        const shouldClose = await Promise.resolve(mode.onSelect(result.item))
+        if (shouldClose !== false) requestClose()
+      } catch (error) {
+        setSelectionError(getCommandBarErrorMessage(error))
+      }
+    },
+    [modeById, requestClose, setSelectionError]
+  )
   const { handleKeyDown, registerOptionElement } = useCommandBarNavigation({
     activeIndex,
     behavior,
@@ -153,7 +162,7 @@ export function CommandBarModal<T>({
     onModeSwitch: handleModeSwitch,
     onSelectResult: handleSelectResult,
     results,
-    setActiveIndex,
+    setActiveIndex
   })
 
   useEffect(() => {
@@ -170,7 +179,12 @@ export function CommandBarModal<T>({
   const showErrorState = !showLoadingState && Boolean(asyncErrorMessage) && results.length === 0
 
   return (
-    <Dialog open={isOpen} onOpenChange={(nextOpen) => { if (!nextOpen) requestClose() }}>
+    <Dialog
+      open={isOpen}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) requestClose()
+      }}
+    >
       <DialogContent
         className={cn('gap-0 overflow-hidden p-0', contentClassName)}
         overlayClassName={overlayClassName}
@@ -199,7 +213,11 @@ export function CommandBarModal<T>({
             <div className="min-w-0 flex-1">
               <div className="text-[length:var(--density-type-body)] font-semibold text-foreground">{title}</div>
             </div>
-            {showModeShortcutHint ? <div className="font-mono text-[length:var(--density-type-label)] text-muted-foreground">{modeShortcutHint}</div> : null}
+            {showModeShortcutHint ? (
+              <div className="font-mono text-[length:var(--density-type-label)] text-muted-foreground">
+                {modeShortcutHint}
+              </div>
+            ) : null}
             <button
               type="button"
               aria-label="Close"
@@ -268,7 +286,10 @@ export function CommandBarModal<T>({
         </div>
 
         {interstitial ? (
-          <div data-testid="command-bar-interstitial" className="border-b border-border-soft bg-background px-3.5 py-2.5">
+          <div
+            data-testid="command-bar-interstitial"
+            className="border-b border-border-soft bg-background px-3.5 py-2.5"
+          >
             {interstitial}
           </div>
         ) : null}

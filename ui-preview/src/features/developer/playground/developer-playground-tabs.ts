@@ -7,10 +7,10 @@ export const DEVELOPER_PLAYGROUND_TAB_IDS = [
   'configuration-controls',
   'tokens-foundations',
   'feature-flags',
-  'meshviz-perf',
+  'meshviz-perf'
 ] as const
 
-export type DeveloperPlaygroundTabId = typeof DEVELOPER_PLAYGROUND_TAB_IDS[number]
+export type DeveloperPlaygroundTabId = (typeof DEVELOPER_PLAYGROUND_TAB_IDS)[number]
 
 export type DeveloperPlaygroundSearch = {
   tab: DeveloperPlaygroundTabId
@@ -22,6 +22,6 @@ export function isDeveloperPlaygroundTabId(value: unknown): value is DeveloperPl
 
 export function parseDeveloperPlaygroundSearch(search: Record<string, unknown>): DeveloperPlaygroundSearch {
   return {
-    tab: isDeveloperPlaygroundTabId(search.tab) ? search.tab : DEFAULT_DEVELOPER_PLAYGROUND_TAB,
+    tab: isDeveloperPlaygroundTabId(search.tab) ? search.tab : DEFAULT_DEVELOPER_PLAYGROUND_TAB
   }
 }

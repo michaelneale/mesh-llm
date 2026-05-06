@@ -25,7 +25,7 @@ pub(crate) use plugins::blackboard;
 use anyhow::Result;
 use std::time::Duration;
 
-pub const VERSION: &str = "0.65.1+skippy.20260504.kv.1";
+pub const VERSION: &str = "0.65.1+skippy.20260504.kv.2";
 
 /// Scrub dangerous environment variables before the async runtime starts.
 ///
@@ -49,3 +49,6 @@ pub async fn run_main() -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+include!("exact_test_wrappers.rs");

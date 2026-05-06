@@ -405,6 +405,7 @@ fn multimodal_stage_config(
         flash_attn_type: skippy_protocol::FlashAttentionType::Auto,
         filter_tensors_on_load: false,
         selected_device: None,
+        kv_cache: None,
         load_mode: skippy_protocol::LoadMode::RuntimeSlice,
         bind_addr: bind_addr.to_string(),
         upstream: None,
@@ -433,6 +434,7 @@ fn local_openai_backend(config: StageConfig) -> Result<StageOpenAiBackend> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
         hook_policy: None,
+        kv: None,
     })
 }
 
@@ -490,7 +492,7 @@ fn split_layer_for_fixture(fixture: &MultimodalSmokeFixture) -> Result<Option<u3
         eprintln!("skipping split multimodal smoke: model has fewer than two layers");
         return Ok(None);
     }
-    let split = env_u32(MM_SPLIT_LAYER_ENV)?.unwrap_or_else(|| fixture.layer_end / 2);
+    let split = env_u32(MM_SPLIT_LAYER_ENV)?.unwrap_or(fixture.layer_end / 2);
     if split == 0 || split >= fixture.layer_end {
         bail!(
             "{MM_SPLIT_LAYER_ENV} must be in 1..{} for this model",
@@ -606,6 +608,7 @@ async fn real_multimodal_split_smoke_when_fixture_is_set() -> Result<()> {
         adaptive_speculative_window: false,
         generation_limit: Arc::new(Semaphore::new(1)),
         hook_policy: None,
+        kv: None,
     };
     let response = backend
         .chat_completion(multimodal_chat_request(&fixture)?)
@@ -965,7 +968,7 @@ fn maps_generation_exhaustion_to_length_finish_reason() {
 #[test]
 fn generation_ids_are_unique_under_fast_creation() {
     let ids = (0..1024)
-        .map(|_| OpenAiGenerationIds::new())
+        .map(|_| OpenAiGenerationIds::new(OpenAiCacheHints::default()))
         .collect::<Vec<_>>();
     let mut sessions = std::collections::BTreeSet::new();
     let mut requests = std::collections::BTreeSet::new();

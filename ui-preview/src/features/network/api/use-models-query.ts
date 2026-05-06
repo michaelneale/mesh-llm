@@ -8,6 +8,6 @@ export function useModelsQuery(options?: { enabled?: boolean }) {
     queryFn: fetchModels,
     staleTime: 60_000,
     refetchInterval: 60_000,
-    enabled: options?.enabled ?? true,
+    enabled: options?.enabled ?? true
   })
 }
